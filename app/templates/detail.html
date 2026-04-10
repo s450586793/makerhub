@@ -1,98 +1,164 @@
-<!DOCTYPE html>
-<html lang="zh">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{{ detail.title }}</title>
-  <link rel="stylesheet" href="/static/css/app.css">
-</head>
-<body class="detail-page">
-  <div class="detail-shell">
-    <div class="detail-header">
-      <a class="detail-back" href="/">返回后台</a>
-      <div class="detail-search"></div>
-    </div>
+{% extends "base.html" %}
 
-    <div class="detail-card">
-      <div class="detail-title-row">
-        <div class="detail-author">
-          <img src="{{ detail.author_avatar }}" alt="{{ detail.author }}">
-          <div>
-            <h1>{{ detail.title }}</h1>
-            <div class="detail-author-name">{{ detail.author }}</div>
-          </div>
+{% block title %}{{ detail.title }} | makerhub{% endblock %}
+{% block body_class %}detail-page{% endblock %}
+
+{% block content %}
+<section class="detail-shell">
+  <div class="detail-toolbar">
+    <a class="button button-secondary" href="/models">返回模型库</a>
+    {% if detail.origin_url %}
+    <a class="button button-secondary" href="{{ detail.origin_url }}" target="_blank" rel="noreferrer">打开原始链接</a>
+    {% endif %}
+  </div>
+
+  <section class="detail-hero surface">
+    <div class="detail-main">
+      <div class="detail-gallery">
+        <div class="detail-cover-wrap">
+          {% if detail.cover_url %}
+          <img class="detail-cover" src="{{ detail.cover_url }}" alt="{{ detail.title }}">
+          {% else %}
+          <div class="media-placeholder media-placeholder--large">{{ detail.title[:1] }}</div>
+          {% endif %}
         </div>
+        {% if detail.gallery %}
+        <div class="detail-thumbs">
+          {% for image in detail.gallery[:8] %}
+          <img src="{{ image.url }}" alt="{{ detail.title }} {{ loop.index }}">
+          {% endfor %}
+        </div>
+        {% endif %}
       </div>
 
-      <div class="detail-main">
-        <div class="detail-gallery">
-          <div class="detail-cover-wrap">
-            <img class="detail-cover" src="{{ detail.cover }}" alt="{{ detail.title }}">
+      <aside class="detail-sidebar">
+        <div class="detail-title-block">
+          <span class="source-pill">{{ detail.source_label }}</span>
+          <h1>{{ detail.title }}</h1>
+          <div class="model-author">
+            {% if detail.author.avatar_url %}
+            <img src="{{ detail.author.avatar_url }}" alt="{{ detail.author.name }}">
+            {% else %}
+            <span class="avatar-placeholder">{{ detail.author.name[:1] }}</span>
+            {% endif %}
+            <span>{{ detail.author.name }}</span>
           </div>
-          <div class="detail-thumbs">
-            {% for thumb in detail.thumbs %}
-            <img src="{{ thumb }}" alt="thumb {{ loop.index }}">
-            {% endfor %}
-          </div>
+          <p>采集时间：{{ detail.collect_date or "未知时间" }}</p>
         </div>
 
-        <aside class="detail-profiles">
-          <h2>打印配置 ({{ detail.profiles|length }})</h2>
-          <div class="profile-tabs">
-            {% for profile in detail.profiles %}
-            <span class="profile-chip{% if loop.first %} is-active{% endif %}">{{ profile.machine }}</span>
-            {% endfor %}
+        <dl class="stat-grid">
+          <div><dt>下载</dt><dd>{{ detail.stats.downloads }}</dd></div>
+          <div><dt>点赞</dt><dd>{{ detail.stats.likes }}</dd></div>
+          <div><dt>收藏</dt><dd>{{ detail.stats.favorites }}</dd></div>
+          <div><dt>打印</dt><dd>{{ detail.stats.prints }}</dd></div>
+          <div><dt>浏览</dt><dd>{{ detail.stats.views }}</dd></div>
+          <div><dt>评论</dt><dd>{{ detail.stats.comments }}</dd></div>
+        </dl>
+
+        <section class="surface surface--nested">
+          <div class="section-card__header">
+            <div>
+              <span class="eyebrow">打印配置</span>
+              <h2>{{ detail.instances|length }} 个实例</h2>
+            </div>
           </div>
+          {% if detail.instances %}
           <div class="profile-list">
-            {% for profile in detail.profiles %}
+            {% for profile in detail.instances %}
             <article class="profile-card">
+              {% if profile.thumbnail_url %}
+              <img class="profile-card__thumb" src="{{ profile.thumbnail_url }}" alt="{{ profile.title }}">
+              {% endif %}
               <div class="profile-card__body">
                 <div class="profile-card__title">{{ profile.title }}</div>
-                <div class="profile-card__meta">{{ profile.time }} · {{ profile.plates }} 盘 · {{ profile.rating }}</div>
+                <div class="profile-card__meta">
+                  {{ profile.machine }}
+                  {% if profile.time %} · {{ profile.time }}{% endif %}
+                  {% if profile.plates %} · {{ profile.plates }} 盘{% endif %}
+                  {% if profile.rating %} · 评分 {{ profile.rating }}{% endif %}
+                </div>
               </div>
             </article>
             {% endfor %}
           </div>
-          <button class="download-btn">下载 3MF</button>
-        </aside>
-      </div>
-
-      <div class="detail-actions">
-        <button>助力</button>
-        <button>👍 {{ detail.stats.likes }}</button>
-        <button>⭐ {{ detail.stats.favorites }}</button>
-        <button>💬 {{ detail.stats.comments }}</button>
-        <button>⬇ {{ detail.stats.downloads }}</button>
-      </div>
-    </div>
-
-    <div class="detail-content-grid">
-      <section class="detail-content-card">
-        <h3>描述</h3>
-        <div class="rich-content">{{ detail.summary | safe }}</div>
-      </section>
-
-      <aside class="detail-side-card">
-        <h3>标签</h3>
-        <div class="tag-pills">
-          <span>海贼王</span>
-          <span>山治</span>
-          <span>巴拉蒂</span>
-        </div>
+          {% else %}
+          <p class="empty-copy">当前没有可展示的打印配置。</p>
+          {% endif %}
+        </section>
       </aside>
     </div>
+  </section>
 
-    <section class="detail-content-card">
-      <h3>评论 & 评分</h3>
-      <div class="comment-list">
-        {% for comment in detail.comments %}
-        <article class="comment-item">
-          <div class="comment-item__meta">{{ comment.author }} · {{ comment.time }}</div>
-          <div class="comment-item__body">{{ comment.content }}</div>
-        </article>
+  <section class="detail-content-grid">
+    <article class="surface section-card">
+      <div class="section-card__header">
+        <div>
+          <span class="eyebrow">详情</span>
+          <h2>模型描述</h2>
+        </div>
+      </div>
+      {% if detail.summary_html %}
+      <div class="rich-content">{{ detail.summary_html | safe }}</div>
+      {% else %}
+      <p class="empty-copy">{{ detail.summary_text or "当前没有描述内容。" }}</p>
+      {% endif %}
+    </article>
+
+    <aside class="surface section-card">
+      <div class="section-card__header">
+        <div>
+          <span class="eyebrow">标签</span>
+          <h2>模型标签</h2>
+        </div>
+      </div>
+      {% if detail.tags %}
+      <div class="tag-row">
+        {% for tag_value in detail.tags %}
+        <span class="tag-chip">{{ tag_value }}</span>
         {% endfor %}
       </div>
-    </section>
-  </div>
-</body>
-</html>
+      {% else %}
+      <p class="empty-copy">当前没有标签。</p>
+      {% endif %}
+    </aside>
+  </section>
+
+  <section class="surface section-card">
+    <div class="section-card__header">
+      <div>
+        <span class="eyebrow">评论</span>
+        <h2>评论与反馈</h2>
+      </div>
+    </div>
+    {% if detail.comments %}
+    <div class="comment-list">
+      {% for comment in detail.comments %}
+      <article class="comment-item">
+        <div class="comment-item__header">
+          <div class="model-author">
+            {% if comment.avatar_url %}
+            <img src="{{ comment.avatar_url }}" alt="{{ comment.author }}">
+            {% else %}
+            <span class="avatar-placeholder">{{ comment.author[:1] }}</span>
+            {% endif %}
+            <span>{{ comment.author }}</span>
+          </div>
+          <span>{{ comment.time }}</span>
+        </div>
+        <div class="comment-item__body">{{ comment.content }}</div>
+        {% if comment.images %}
+        <div class="comment-gallery">
+          {% for image_url in comment.images %}
+          <img src="{{ image_url }}" alt="{{ comment.author }} 评论图片 {{ loop.index }}">
+          {% endfor %}
+        </div>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty-copy">当前没有同步到评论内容。</p>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}

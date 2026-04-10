@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}makerhub{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body class="{% block body_class %}{% endblock %}">
+  <div class="site-shell">
+    <header class="site-header">
+      <div class="site-header__inner">
+        <a class="brand-mark" href="/">
+          <span class="brand-mark__badge">MH</span>
+          <span>
+            <strong>makerhub</strong>
+            <small>真实归档数据工作台</small>
+          </span>
+        </a>
+        <nav class="main-nav">
+          <a class="main-nav__link{% if active_page == 'home' %} is-active{% endif %}" href="/">首页</a>
+          <a class="main-nav__link{% if active_page == 'models' %} is-active{% endif %}" href="/models">模型库</a>
+          <a class="main-nav__link{% if active_page == 'settings' %} is-active{% endif %}" href="/settings">设置</a>
+          <a class="main-nav__link{% if active_page == 'tasks' %} is-active{% endif %}" href="/tasks">任务</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="page-shell">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+
+{% block title %}任务 | makerhub{% endblock %}
+
+{% block content %}
+<section class="page-intro">
+  <div>
+    <span class="eyebrow">任务</span>
+    <h1>归档队列、缺失 3MF 与本地整理任务</h1>
+    <p>首页只显示摘要，完整任务状态统一收纳在这里。</p>
+  </div>
+  <div class="intro-stats">
+    <div class="intro-stat">
+      <span>运行中/排队</span>
+      <strong>{{ summary.running_or_queued }}</strong>
+    </div>
+    <div class="intro-stat">
+      <span>缺失 3MF</span>
+      <strong>{{ summary.missing_3mf_count }}</strong>
+    </div>
+    <div class="intro-stat">
+      <span>整理任务</span>
+      <strong>{{ summary.organize_count }}</strong>
+    </div>
+  </div>
+</section>
+
+<section class="task-layout">
+  <article class="surface section-card">
+    <div class="section-card__header">
+      <div>
+        <span class="eyebrow">归档队列</span>
+        <h2>当前归档任务</h2>
+      </div>
+      <span class="count-pill">{{ archive_queue.running_count }} 运行中 / {{ archive_queue.queued_count }} 排队中</span>
+    </div>
+    <div class="task-columns">
+      <div class="task-column">
+        <h3>运行中</h3>
+        {% if archive_queue.active %}
+        {% for item in archive_queue.active %}
+        <div class="task-item">
+          <strong>{{ item.title or item.url or "未命名任务" }}</strong>
+          <span>{{ item.status }}</span>
+          {% if item.progress %}
+          <div class="progress-bar"><span style="width: {{ item.progress }}%"></span></div>
+          {% endif %}
+          <p>{{ item.message or "正在执行中" }}</p>
+        </div>
+        {% endfor %}
+        {% else %}
+        <p class="empty-copy">当前没有运行中的归档任务。</p>
+        {% endif %}
+      </div>
+      <div class="task-column">
+        <h3>排队中</h3>
+        {% if archive_queue.queued %}
+        {% for item in archive_queue.queued %}
+        <div class="task-item">
+          <strong>{{ item.title or item.url or "未命名任务" }}</strong>
+          <span>{{ item.status }}</span>
+          <p>{{ item.message or "等待归档" }}</p>
+        </div>
+        {% endfor %}
+        {% else %}
+        <p class="empty-copy">当前没有排队中的任务。</p>
+        {% endif %}
+      </div>
+      <div class="task-column">
+        <h3>最近失败</h3>
+        {% if archive_queue.recent_failures %}
+        {% for item in archive_queue.recent_failures %}
+        <div class="task-item task-item--error">
+          <strong>{{ item.title or item.url or "未命名任务" }}</strong>
+          <span>{{ item.status }}</span>
+          <p>{{ item.message or "失败原因未记录" }}</p>
+        </div>
+        {% endfor %}
+        {% else %}
+        <p class="empty-copy">暂无失败任务。</p>
+        {% endif %}
+      </div>
+    </div>
+  </article>
+
+  <article class="surface section-card">
+    <div class="section-card__header">
+      <div>
+        <span class="eyebrow">缺失 3MF</span>
+        <h2>待重新下载</h2>
+      </div>
+      <span class="count-pill">{{ missing_3mf.count }} 项</span>
+    </div>
+    {% if missing_3mf["items"] %}
+    <div class="table-like">
+      <div class="table-like__row table-like__row--head">
+        <span>模型 ID</span>
+        <span>标题</span>
+        <span>状态</span>
+      </div>
+      {% for item in missing_3mf["items"] %}
+      <div class="table-like__row">
+        <span>{{ item.model_id or "-" }}</span>
+        <span>{{ item.title or "未命名模型" }}</span>
+        <span>{{ item.status }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty-copy">当前没有缺失 3MF 任务。</p>
+    {% endif %}
+  </article>
+
+  <article class="surface section-card">
+    <div class="section-card__header">
+      <div>
+        <span class="eyebrow">本地整理</span>
+        <h2>本地整理任务</h2>
+      </div>
+      <span class="count-pill">{{ organize_tasks.count }} 项</span>
+    </div>
+    {% if organize_tasks["items"] %}
+    <div class="table-like">
+      <div class="table-like__row table-like__row--head">
+        <span>源目录</span>
+        <span>目标目录</span>
+        <span>状态</span>
+      </div>
+      {% for item in organize_tasks["items"] %}
+      <div class="table-like__row">
+        <span>{{ item.source_dir }}</span>
+        <span>{{ item.target_dir }}</span>
+        <span>{{ item.status }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty-copy">当前没有本地整理任务。</p>
+    {% endif %}
+  </article>
+</section>
+{% endblock %}

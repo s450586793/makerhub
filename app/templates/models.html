@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block title %}模型库 | makerhub{% endblock %}
+
+{% block content %}
+<section class="page-intro">
+  <div>
+    <span class="eyebrow">模型库</span>
+    <h1>本地归档模型列表</h1>
+    <p>直接读取 `/app/archive/**/meta.json`，统一按卡片网格浏览和筛选。</p>
+  </div>
+  <div class="intro-stats">
+    <div class="intro-stat">
+      <span>当前结果</span>
+      <strong>{{ count }}</strong>
+    </div>
+    <div class="intro-stat">
+      <span>总模型</span>
+      <strong>{{ total }}</strong>
+    </div>
+  </div>
+</section>
+
+<section class="surface surface--filters">
+  <form class="filter-bar" method="get" action="/models">
+    <label class="filter-field filter-field--wide">
+      <span>搜索</span>
+      <input type="text" name="q" value="{{ filters.q }}" placeholder="标题、作者、标签">
+    </label>
+    <label class="filter-field">
+      <span>来源</span>
+      <select name="source">
+        <option value="all" {% if filters.source == "all" %}selected{% endif %}>全部 ({{ source_counts.all }})</option>
+        <option value="cn" {% if filters.source == "cn" %}selected{% endif %}>国内 ({{ source_counts.cn }})</option>
+        <option value="global" {% if filters.source == "global" %}selected{% endif %}>国际 ({{ source_counts.global }})</option>
+        <option value="local" {% if filters.source == "local" %}selected{% endif %}>本地 ({{ source_counts.local }})</option>
+      </select>
+    </label>
+    <label class="filter-field">
+      <span>标签</span>
+      <select name="tag">
+        <option value="">全部标签</option>
+        {% for tag_value in tags %}
+        <option value="{{ tag_value }}" {% if filters.tag == tag_value %}selected{% endif %}>{{ tag_value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="filter-field">
+      <span>排序</span>
+      <select name="sort">
+        <option value="collectDate" {% if filters.sort == "collectDate" %}selected{% endif %}>采集时间倒序</option>
+        <option value="downloads" {% if filters.sort == "downloads" %}selected{% endif %}>下载量</option>
+        <option value="likes" {% if filters.sort == "likes" %}selected{% endif %}>点赞量</option>
+        <option value="prints" {% if filters.sort == "prints" %}selected{% endif %}>打印量</option>
+      </select>
+    </label>
+    <div class="filter-actions">
+      <button class="button button-primary" type="submit">应用筛选</button>
+      <a class="button button-secondary" href="/models">重置</a>
+    </div>
+  </form>
+</section>
+
+{% if items %}
+<section class="model-grid">
+  {% for model in items %}
+  <a class="model-card" href="{{ model.detail_path }}">
+    <div class="model-card__cover">
+      {% if model.cover_url %}
+      <img src="{{ model.cover_url }}" alt="{{ model.title }}">
+      {% else %}
+      <div class="media-placeholder">{{ model.title[:1] }}</div>
+      {% endif %}
+      <span class="source-pill">{{ model.source_label }}</span>
+    </div>
+    <div class="model-card__body">
+      <h2>{{ model.title }}</h2>
+      <div class="model-author">
+        {% if model.author.avatar_url %}
+        <img src="{{ model.author.avatar_url }}" alt="{{ model.author.name }}">
+        {% else %}
+        <span class="avatar-placeholder">{{ model.author.name[:1] }}</span>
+        {% endif %}
+        <span>{{ model.author.name }}</span>
+      </div>
+      <div class="tag-row">
+        {% for tag_value in model.tags[:4] %}
+        <span class="tag-chip">{{ tag_value }}</span>
+        {% endfor %}
+      </div>
+      <div class="meta-line">采集于 {{ model.collect_date or "未知时间" }}</div>
+      <dl class="stat-grid stat-grid--compact">
+        <div><dt>下载</dt><dd>{{ model.stats.downloads }}</dd></div>
+        <div><dt>点赞</dt><dd>{{ model.stats.likes }}</dd></div>
+        <div><dt>打印</dt><dd>{{ model.stats.prints }}</dd></div>
+        <div><dt>评论</dt><dd>{{ model.stats.comments }}</dd></div>
+      </dl>
+    </div>
+  </a>
+  {% endfor %}
+</section>
+{% else %}
+<section class="surface empty-state">
+  <h2>还没有匹配的模型</h2>
+  <p>当前筛选条件下没有命中结果。你可以重置条件，或者先去任务页发起新的归档任务。</p>
+</section>
+{% endif %}
+{% endblock %}

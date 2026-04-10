@@ -1,0 +1,597 @@
+import json
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Optional
+from urllib.parse import quote
+
+from bs4 import BeautifulSoup
+
+from app.core.settings import ARCHIVE_DIR
+from app.services.task_state import TaskStateStore
+
+
+SOURCE_LABELS = {
+    "cn": "MakerWorld 国内",
+    "global": "MakerWorld 国际",
+    "local": "本地模型",
+}
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        if value in ("", None):
+            return 0
+        if isinstance(value, str) and "." in value:
+            return int(float(value))
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _parse_timestamp(value: Any) -> int:
+    if isinstance(value, (int, float)):
+        raw = int(value)
+        if raw > 10_000_000_000:
+            return raw // 1000
+        return raw
+
+    if not isinstance(value, str):
+        return 0
+
+    raw = value.strip()
+    if not raw:
+        return 0
+
+    if raw.isdigit():
+        digits = int(raw)
+        if digits > 10_000_000_000:
+            return digits // 1000
+        return digits
+
+    try:
+        clean = raw.replace("Z", "+00:00")
+        return int(datetime.fromisoformat(clean).timestamp())
+    except ValueError:
+        return 0
+
+
+def _format_date(value: Any) -> str:
+    ts = _parse_timestamp(value)
+    if not ts:
+        return ""
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+
+
+def _read_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _archive_url(relative_path: Path) -> str:
+    return f"/archive/{quote(relative_path.as_posix(), safe='/')}"
+
+
+def _iter_local_candidates(model_root: Path, ref: str) -> list[Path]:
+    clean = ref.split("#", 1)[0].split("?", 1)[0].strip().lstrip("/")
+    if not clean:
+        return []
+
+    primary = model_root / clean
+    candidates = [primary]
+    if "/" not in clean:
+        name = Path(clean).name
+        candidates.extend(
+            [
+                model_root / "images" / name,
+                model_root / "instances" / name,
+                model_root / "attachments" / name,
+            ]
+        )
+    return candidates
+
+
+def _local_asset_url(model_root: Path, ref: str) -> Optional[str]:
+    if not ref or ref.startswith(("http://", "https://", "data:", "//")):
+        return None
+
+    candidates = _iter_local_candidates(model_root, ref)
+    if not candidates:
+        return None
+
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return _archive_url(candidate.relative_to(ARCHIVE_DIR))
+
+    try:
+        return _archive_url(candidates[0].relative_to(ARCHIVE_DIR))
+    except ValueError:
+        return None
+
+
+def _remote_asset_url(*values: Any) -> Optional[str]:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            raw = value.strip()
+            if raw.startswith("//"):
+                return f"https:{raw}"
+            if raw.startswith(("http://", "https://", "data:")):
+                return raw
+    return None
+
+
+def _asset_url_from_item(model_root: Path, item: Any) -> Optional[str]:
+    if isinstance(item, str):
+        return _local_asset_url(model_root, item) or _remote_asset_url(item)
+
+    if not isinstance(item, dict):
+        return None
+
+    local_keys = [
+        "relPath",
+        "localName",
+        "fileName",
+        "path",
+        "avatarRelPath",
+        "avatarLocal",
+        "avatar",
+    ]
+    for key in local_keys:
+        candidate = item.get(key)
+        if isinstance(candidate, str):
+            local = _local_asset_url(model_root, candidate)
+            if local:
+                return local
+
+    return _remote_asset_url(
+        item.get("url"),
+        item.get("originalUrl"),
+        item.get("imageUrl"),
+        item.get("coverUrl"),
+        item.get("thumbnail"),
+        item.get("avatarUrl"),
+        item.get("previewImage"),
+    )
+
+
+def _pick_image_url(model_root: Path, *items: Any) -> Optional[str]:
+    for item in items:
+        url = _asset_url_from_item(model_root, item)
+        if url:
+            return url
+    return None
+
+
+def _extract_tags(meta: dict) -> list[str]:
+    result: list[str] = []
+    for raw_list in (meta.get("tags") or [], meta.get("tagsOriginal") or []):
+        if not isinstance(raw_list, list):
+            continue
+        for item in raw_list:
+            if isinstance(item, dict):
+                value = str(item.get("name") or item.get("label") or "").strip()
+            else:
+                value = str(item).strip()
+            if value and value not in result:
+                result.append(value)
+    return result
+
+
+def _rewrite_summary_html(model_root: Path, html: str) -> str:
+    if not html:
+        return ""
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    for tag in soup.find_all(src=True):
+        raw = str(tag.get("src") or "").strip()
+        local = _local_asset_url(model_root, raw)
+        if local:
+            tag["src"] = local
+
+    for tag in soup.find_all(href=True):
+        raw = str(tag.get("href") or "").strip()
+        if raw.startswith(("http://", "https://", "mailto:", "tel:", "#", "javascript:")):
+            continue
+        local = _local_asset_url(model_root, raw)
+        if local:
+            tag["href"] = local
+
+    return str(soup)
+
+
+def _normalize_stats(meta: dict) -> dict:
+    stats = meta.get("stats") or meta.get("counts") or {}
+    return {
+        "likes": _safe_int(stats.get("likes") or stats.get("like")),
+        "favorites": _safe_int(stats.get("favorites") or stats.get("favorite")),
+        "downloads": _safe_int(stats.get("downloads") or stats.get("download")),
+        "prints": _safe_int(stats.get("prints") or stats.get("print")),
+        "views": _safe_int(stats.get("views") or stats.get("read") or stats.get("reads")),
+        "comments": _safe_int(stats.get("comments") or meta.get("commentCount")),
+    }
+
+
+def _format_duration(value: Any) -> str:
+    if value in ("", None):
+        return ""
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return ""
+        if any(char.isalpha() for char in raw):
+            return raw
+        value = _safe_int(raw)
+
+    seconds = _safe_int(value)
+    if not seconds:
+        return ""
+    if seconds >= 3600:
+        return f"{seconds / 3600:.1f} h"
+    return f"{seconds / 60:.1f} min"
+
+
+def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
+    normalized = []
+    for item in meta.get("instances") or []:
+        if not isinstance(item, dict):
+            continue
+
+        duration = (
+            item.get("time")
+            or item.get("timeText")
+            or item.get("durationText")
+            or _format_duration(item.get("printTimeSeconds") or item.get("duration"))
+        )
+        plates = _safe_int(item.get("plateCount") or item.get("plates") or item.get("plateNum"))
+        rating_value = item.get("rating") or item.get("score") or item.get("stars")
+        rating = str(rating_value).strip() if rating_value not in ("", None) else ""
+
+        normalized.append(
+            {
+                "title": str(
+                    item.get("name")
+                    or item.get("title")
+                    or item.get("profileName")
+                    or item.get("fileName")
+                    or "未命名打印配置"
+                ),
+                "machine": str(
+                    item.get("machine")
+                    or item.get("machineName")
+                    or item.get("printerModel")
+                    or item.get("printer")
+                    or item.get("device")
+                    or "通用"
+                ),
+                "time": str(duration),
+                "plates": plates,
+                "rating": rating,
+                "thumbnail_url": _pick_image_url(
+                    model_root,
+                    {
+                        "relPath": item.get("thumbnailLocal"),
+                        "url": item.get("thumbnailUrl"),
+                        "originalUrl": item.get("thumbnail"),
+                    },
+                    item.get("cover"),
+                    item.get("previewImage"),
+                    item.get("thumbnail"),
+                ),
+                "file_url": _local_asset_url(
+                    model_root,
+                    f"instances/{Path(str(item.get('fileName') or '')).name}",
+                )
+                if item.get("fileName")
+                else None,
+            }
+        )
+    return normalized
+
+
+def _normalize_comments(meta: dict, model_root: Path) -> list[dict]:
+    normalized = []
+    for item in meta.get("comments") or []:
+        if not isinstance(item, dict):
+            continue
+
+        comment_images = []
+        for image in item.get("images") or []:
+            url = _asset_url_from_item(model_root, image)
+            if url:
+                comment_images.append(url)
+
+        normalized.append(
+            {
+                "author": str(
+                    item.get("author")
+                    or item.get("userName")
+                    or item.get("nickname")
+                    or item.get("user")
+                    or "匿名用户"
+                ),
+                "time": str(
+                    item.get("time")
+                    or item.get("createdAt")
+                    or item.get("createTime")
+                    or item.get("updatedAt")
+                    or ""
+                ),
+                "content": str(
+                    item.get("content")
+                    or item.get("comment")
+                    or item.get("text")
+                    or item.get("message")
+                    or ""
+                ),
+                "avatar_url": _pick_image_url(
+                    model_root,
+                    {
+                        "avatarRelPath": item.get("avatarRelPath"),
+                        "avatarLocal": item.get("avatarLocal"),
+                        "avatarUrl": item.get("avatarUrl"),
+                    }
+                ),
+                "images": comment_images,
+            }
+        )
+    return normalized
+
+
+def _normalize_source(meta: dict, relative_dir: Path) -> str:
+    source_raw = str(meta.get("source") or "").strip().lower()
+    if relative_dir.parts and relative_dir.parts[0] == "local":
+        return "local"
+    if source_raw in {"mw_global", "global", "makerworld_global"}:
+        return "global"
+    if source_raw in {"mw_cn", "cn", "makerworld_cn"}:
+        return "cn"
+    return "local"
+
+
+def _sample_cover(title: str) -> str:
+    return f"https://placehold.co/960x960/f3f4f6/111827?text={quote(title or 'Makerhub')}"
+
+
+def _normalize_model(meta_path: Path) -> Optional[dict]:
+    try:
+        meta = _read_json(meta_path)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    model_root = meta_path.parent
+    relative_dir = model_root.relative_to(ARCHIVE_DIR)
+    source = _normalize_source(meta, relative_dir)
+    stats = _normalize_stats(meta)
+    tags = _extract_tags(meta)
+
+    cover_url = _pick_image_url(
+        model_root,
+        meta.get("cover"),
+        {"relPath": (meta.get("images") or {}).get("cover"), "url": meta.get("coverUrl")},
+    )
+
+    gallery = []
+    gallery_seen = set()
+
+    def add_gallery(items: list[Any], kind: str) -> None:
+        for item in items:
+            url = _asset_url_from_item(model_root, item)
+            if not url or url in gallery_seen:
+                continue
+            gallery_seen.add(url)
+            gallery.append({"url": url, "kind": kind})
+
+    if cover_url:
+        gallery_seen.add(cover_url)
+        gallery.append({"url": cover_url, "kind": "cover"})
+
+    add_gallery(meta.get("designImages") or [], "design")
+    add_gallery(meta.get("summaryImages") or [], "summary")
+
+    if not gallery and cover_url:
+        gallery.append({"url": cover_url, "kind": "cover"})
+
+    if not cover_url:
+        cover_url = gallery[0]["url"] if gallery else _sample_cover(str(meta.get("title") or "Makerhub"))
+
+    author = meta.get("author") if isinstance(meta.get("author"), dict) else {}
+    author_name = str(author.get("name") or meta.get("author") or "未知作者")
+    collect_ts = _parse_timestamp(meta.get("collectDate") or meta.get("update_time"))
+
+    summary = meta.get("summary") if isinstance(meta.get("summary"), dict) else {}
+    summary_html = _rewrite_summary_html(model_root, str(summary.get("html") or ""))
+    summary_text = str(summary.get("text") or summary.get("raw") or "")
+
+    return {
+        "model_dir": relative_dir.as_posix(),
+        "detail_path": f"/models/{quote(relative_dir.as_posix(), safe='/')}",
+        "meta_path": meta_path.as_posix(),
+        "title": str(meta.get("title") or relative_dir.name),
+        "id": str(meta.get("id") or ""),
+        "source": source,
+        "source_label": SOURCE_LABELS.get(source, "本地模型"),
+        "origin_url": str(meta.get("url") or ""),
+        "author": {
+            "name": author_name,
+            "url": str(author.get("url") or ""),
+            "avatar_url": _pick_image_url(
+                model_root,
+                {
+                    "avatarRelPath": author.get("avatarRelPath"),
+                    "avatarLocal": author.get("avatarLocal"),
+                    "avatarUrl": author.get("avatarUrl"),
+                },
+            ),
+        },
+        "cover_url": cover_url,
+        "gallery": gallery,
+        "tags": tags,
+        "stats": stats,
+        "collect_ts": collect_ts,
+        "collect_date": _format_date(meta.get("collectDate") or meta.get("update_time")),
+        "summary_html": summary_html,
+        "summary_text": summary_text,
+        "comments": _normalize_comments(meta, model_root),
+        "instances": _normalize_instances(meta, model_root),
+        "attachments": meta.get("attachments") or [],
+    }
+
+
+def load_archive_models() -> list[dict]:
+    models = []
+    for meta_path in sorted(ARCHIVE_DIR.rglob("meta.json")):
+        if not meta_path.is_file():
+            continue
+        model = _normalize_model(meta_path)
+        if model:
+            models.append(model)
+    return models
+
+
+def _sort_models(items: list[dict], sort_key: str) -> list[dict]:
+    if sort_key == "downloads":
+        return sorted(items, key=lambda item: item["stats"]["downloads"], reverse=True)
+    if sort_key == "likes":
+        return sorted(items, key=lambda item: item["stats"]["likes"], reverse=True)
+    if sort_key == "prints":
+        return sorted(items, key=lambda item: item["stats"]["prints"], reverse=True)
+    return sorted(items, key=lambda item: (item["collect_ts"], item["title"]), reverse=True)
+
+
+def build_models_payload(
+    q: str = "",
+    source: str = "all",
+    tag: str = "",
+    sort_key: str = "collectDate",
+) -> dict:
+    all_models = load_archive_models()
+    normalized_query = q.strip().lower()
+    normalized_tag = tag.strip().lower()
+    normalized_source = source.strip().lower() or "all"
+    items = all_models
+
+    if normalized_query:
+        items = [
+            item
+            for item in items
+            if normalized_query in item["title"].lower()
+            or normalized_query in item["author"]["name"].lower()
+            or any(normalized_query in tag_value.lower() for tag_value in item["tags"])
+        ]
+
+    if normalized_source != "all":
+        items = [item for item in items if item["source"] == normalized_source]
+
+    if normalized_tag:
+        items = [item for item in items if any(tag_value.lower() == normalized_tag for tag_value in item["tags"])]
+
+    items = _sort_models(items, sort_key)
+
+    all_tags = sorted({tag_value for model in all_models for tag_value in model["tags"]})
+    source_counts = {
+        "all": len(all_models),
+        "cn": len([item for item in all_models if item["source"] == "cn"]),
+        "global": len([item for item in all_models if item["source"] == "global"]),
+        "local": len([item for item in all_models if item["source"] == "local"]),
+    }
+
+    return {
+        "items": items,
+        "count": len(items),
+        "total": len(all_models),
+        "tags": all_tags,
+        "source_counts": source_counts,
+        "filters": {
+            "q": q,
+            "source": normalized_source,
+            "tag": tag,
+            "sort": sort_key,
+        },
+    }
+
+
+def get_model_detail(model_dir: str) -> Optional[dict]:
+    target = (ARCHIVE_DIR / model_dir).resolve()
+    try:
+        target.relative_to(ARCHIVE_DIR.resolve())
+    except ValueError:
+        return None
+
+    meta_path = target / "meta.json"
+    if not meta_path.exists():
+        return None
+    return _normalize_model(meta_path)
+
+
+def build_tasks_payload(missing_fallback: Optional[list[dict]] = None) -> dict:
+    store = TaskStateStore()
+    archive_queue = store.load_archive_queue()
+    missing_3mf = store.load_missing_3mf(fallback_items=missing_fallback)
+    organize_tasks = store.load_organize_tasks()
+
+    return {
+        "archive_queue": archive_queue,
+        "missing_3mf": missing_3mf,
+        "organize_tasks": organize_tasks,
+        "summary": {
+            "running_or_queued": archive_queue["running_count"] + archive_queue["queued_count"],
+            "missing_3mf_count": missing_3mf["count"],
+            "organize_count": organize_tasks["count"],
+        },
+    }
+
+
+def build_dashboard_payload(config) -> dict:
+    models_payload = build_models_payload()
+    tasks_payload = build_tasks_payload(
+        missing_fallback=[
+            item.model_dump() if hasattr(item, "model_dump") else item
+            for item in getattr(config, "missing_3mf", [])
+        ]
+    )
+    all_models = models_payload["items"]
+    now = int(time.time())
+    seven_days_ago = now - 7 * 24 * 60 * 60
+
+    cookie_map = {item.platform: item.cookie for item in config.cookies}
+    status_cards = [
+        {
+            "title": "国内 Cookie",
+            "status": "已配置" if cookie_map.get("cn", "").strip() else "未配置",
+            "enabled": bool(cookie_map.get("cn", "").strip()),
+        },
+        {
+            "title": "国际 Cookie",
+            "status": "已配置" if cookie_map.get("global", "").strip() else "未配置",
+            "enabled": bool(cookie_map.get("global", "").strip()),
+        },
+        {
+            "title": "HTTP 代理",
+            "status": "启用" if config.proxy.enabled else "停用",
+            "enabled": bool(config.proxy.enabled and (config.proxy.http_proxy or config.proxy.https_proxy)),
+        },
+    ]
+
+    recent_models = sorted(all_models, key=lambda item: item["collect_ts"], reverse=True)[:8]
+    recent_week_count = len([item for item in all_models if item["collect_ts"] >= seven_days_ago])
+
+    return {
+        "stats": [
+            {"label": "模型总数", "value": len(all_models), "hint": "来自 /app/archive/**/meta.json"},
+            {"label": "最近 7 天新增", "value": recent_week_count, "hint": "按 collectDate 统计"},
+            {"label": "缺失 3MF", "value": tasks_payload["missing_3mf"]["count"], "hint": "等待重新下载"},
+            {
+                "label": "运行中/排队任务",
+                "value": tasks_payload["summary"]["running_or_queued"],
+                "hint": "归档队列当前状态",
+            },
+        ],
+        "recent_models": recent_models,
+        "system_status": status_cards,
+        "task_summary": {
+            "running": tasks_payload["archive_queue"]["active"],
+            "queued_count": tasks_payload["archive_queue"]["queued_count"],
+            "recent_failures": tasks_payload["archive_queue"]["recent_failures"][:5],
+            "missing_3mf": tasks_payload["missing_3mf"]["items"][:5],
+        },
+    }

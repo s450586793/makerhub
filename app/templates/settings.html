@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+
+{% block title %}设置 | makerhub{% endblock %}
+
+{% block content %}
+<section class="page-intro">
+  <div>
+    <span class="eyebrow">设置</span>
+    <h1>连接、通知、用户与整理配置</h1>
+    <p>国内 Cookie、国际 Cookie 与 HTTP 代理统一收在“连接设置”，其它项按单页内标签管理。</p>
+  </div>
+</section>
+
+<section class="surface">
+  <div class="settings-tabs">
+    <button class="settings-tab is-active" type="button" data-settings-tab="connections">连接设置</button>
+    <button class="settings-tab" type="button" data-settings-tab="notifications">通知</button>
+    <button class="settings-tab" type="button" data-settings-tab="user">用户</button>
+    <button class="settings-tab" type="button" data-settings-tab="organizer">整理</button>
+  </div>
+
+  <div class="settings-panel is-active" data-settings-panel="connections">
+    <form class="settings-form" data-save-kind="connections">
+      <div class="settings-grid settings-grid--two">
+        <label class="field-card">
+          <span>国内 Cookie</span>
+          <textarea name="cookie_cn" rows="9" placeholder="makerworld.com.cn Cookie">{{ cookie_map.get("cn", "") }}</textarea>
+        </label>
+        <label class="field-card">
+          <span>国际 Cookie</span>
+          <textarea name="cookie_global" rows="9" placeholder="makerworld.com Cookie">{{ cookie_map.get("global", "") }}</textarea>
+        </label>
+      </div>
+      <div class="settings-grid settings-grid--three">
+        <label class="field-card">
+          <span>启用 HTTP 代理</span>
+          <label class="switch">
+            <input type="checkbox" name="proxy_enabled" {% if config.proxy.enabled %}checked{% endif %}>
+            <span>开启后归档请求将带上代理设置</span>
+          </label>
+        </label>
+        <label class="field-card">
+          <span>HTTP Proxy</span>
+          <input type="text" name="http_proxy" value="{{ config.proxy.http_proxy }}" placeholder="http://127.0.0.1:7890">
+        </label>
+        <label class="field-card">
+          <span>HTTPS Proxy</span>
+          <input type="text" name="https_proxy" value="{{ config.proxy.https_proxy }}" placeholder="http://127.0.0.1:7890">
+        </label>
+      </div>
+      <label class="field-card">
+        <span>No Proxy</span>
+        <input type="text" name="no_proxy" value="{{ config.proxy.no_proxy }}" placeholder="localhost,127.0.0.1">
+      </label>
+      <div class="form-footer">
+        <button class="button button-primary" type="submit">保存连接设置</button>
+        <span class="form-status" data-form-status></span>
+      </div>
+    </form>
+  </div>
+
+  <div class="settings-panel" data-settings-panel="notifications">
+    <form class="settings-form" data-save-kind="notifications">
+      <div class="settings-grid settings-grid--three">
+        <label class="field-card">
+          <span>启用通知</span>
+          <label class="switch">
+            <input type="checkbox" name="enabled" {% if config.notifications.enabled %}checked{% endif %}>
+            <span>任务状态更新时触发通知</span>
+          </label>
+        </label>
+        <label class="field-card">
+          <span>Telegram Bot Token</span>
+          <input type="text" name="telegram_bot_token" value="{{ config.notifications.telegram_bot_token }}" placeholder="bot token">
+        </label>
+        <label class="field-card">
+          <span>Telegram Chat ID</span>
+          <input type="text" name="telegram_chat_id" value="{{ config.notifications.telegram_chat_id }}" placeholder="chat id">
+        </label>
+      </div>
+      <label class="field-card">
+        <span>Webhook URL</span>
+        <input type="text" name="webhook_url" value="{{ config.notifications.webhook_url }}" placeholder="https://example.com/webhook">
+      </label>
+      <div class="form-footer">
+        <button class="button button-primary" type="submit">保存通知设置</button>
+        <span class="form-status" data-form-status></span>
+      </div>
+    </form>
+  </div>
+
+  <div class="settings-panel" data-settings-panel="user">
+    <form class="settings-form" data-save-kind="user">
+      <div class="settings-grid settings-grid--three">
+        <label class="field-card">
+          <span>用户名</span>
+          <input type="text" name="username" value="{{ config.user.username }}" placeholder="admin">
+        </label>
+        <label class="field-card">
+          <span>显示名称</span>
+          <input type="text" name="display_name" value="{{ config.user.display_name }}" placeholder="Admin">
+        </label>
+        <label class="field-card">
+          <span>密码提示</span>
+          <input type="text" name="password_hint" value="{{ config.user.password_hint }}" placeholder="请改成强密码">
+        </label>
+      </div>
+      <div class="form-footer">
+        <button class="button button-primary" type="submit">保存用户信息</button>
+        <span class="form-status" data-form-status></span>
+      </div>
+    </form>
+  </div>
+
+  <div class="settings-panel" data-settings-panel="organizer">
+    <form class="settings-form" data-save-kind="organizer">
+      <div class="settings-grid settings-grid--two">
+        <label class="field-card">
+          <span>本地整理扫描目录</span>
+          <input type="text" name="source_dir" value="{{ config.organizer.source_dir }}" placeholder="/app/local">
+        </label>
+        <label class="field-card">
+          <span>整理目标目录</span>
+          <input type="text" name="target_dir" value="{{ config.organizer.target_dir }}" placeholder="/app/archive">
+        </label>
+      </div>
+      <label class="field-card">
+        <span>整理模式</span>
+        <label class="switch">
+          <input type="checkbox" name="move_files" {% if config.organizer.move_files %}checked{% endif %}>
+          <span>启用后移动文件，而不是复制文件</span>
+        </label>
+      </label>
+      <div class="form-footer">
+        <button class="button button-primary" type="submit">保存整理配置</button>
+        <span class="form-status" data-form-status></span>
+      </div>
+    </form>
+  </div>
+</section>
+{% endblock %}

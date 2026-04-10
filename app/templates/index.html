@@ -1,98 +1,116 @@
-<!DOCTYPE html>
-<html lang="zh">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MW Portal</title>
-  <link rel="stylesheet" href="/static/css/app.css">
-</head>
-<body>
-  <div class="shell">
-    <aside class="sidebar">
-      <div class="brand">MW Portal</div>
-      <nav class="nav">
-        <button class="nav-item is-active" data-tab="cookie-cn">国内 Cookie</button>
-        <button class="nav-item" data-tab="cookie-global">国际 Cookie</button>
-        <button class="nav-item" data-tab="proxy">HTTP 代理</button>
-        <button class="nav-item" data-tab="archive">模型归档</button>
-        <button class="nav-item" data-tab="user">用户信息</button>
-        <button class="nav-item" data-tab="missing">缺失 3MF</button>
-        <button class="nav-item" data-tab="notify">通知</button>
-        <button class="nav-item" data-tab="organize">本地整理</button>
-      </nav>
-    </aside>
+{% extends "base.html" %}
 
-    <main class="main">
-      <header class="topbar">
-        <div>
-          <h1>全新重建版后台</h1>
-          <p>爬虫能力沿用旧项目，页面和任务系统重写。</p>
-        </div>
-        <a class="preview-link" href="/detail-preview">查看详情页预览</a>
-      </header>
+{% block title %}首页 | makerhub{% endblock %}
 
-      <section class="panel is-active" data-panel="cookie-cn">
-        <h2>国内 Cookie</h2>
-        <textarea rows="8" placeholder="makerworld.com.cn Cookie"></textarea>
-      </section>
-
-      <section class="panel" data-panel="cookie-global">
-        <h2>国际 Cookie</h2>
-        <textarea rows="8" placeholder="makerworld.com Cookie"></textarea>
-      </section>
-
-      <section class="panel" data-panel="proxy">
-        <h2>HTTP 代理</h2>
-        <div class="form-grid">
-          <input placeholder="http://127.0.0.1:7890">
-          <input placeholder="https://127.0.0.1:7890">
-          <input placeholder="localhost,127.0.0.1">
-        </div>
-      </section>
-
-      <section class="panel" data-panel="archive">
-        <h2>模型归档</h2>
-        <input class="wide" placeholder="输入单模型、作者上传页或收藏夹模型页链接">
-        <div class="hint">这里后面会接旧项目的爬虫核心和任务队列。</div>
-      </section>
-
-      <section class="panel" data-panel="user">
-        <h2>用户信息</h2>
-        <div class="form-grid">
-          <input placeholder="admin">
-          <input placeholder="显示名称">
-          <input placeholder="密码提示">
-        </div>
-      </section>
-
-      <section class="panel" data-panel="missing">
-        <h2>缺失 3MF 重新下载</h2>
-        <div class="table-like">
-          <div class="row head"><span>模型 ID</span><span>标题</span><span>状态</span></div>
-          <div class="row"><span>2247129</span><span>海上餐厅巴拉蒂</span><span>missing</span></div>
-        </div>
-      </section>
-
-      <section class="panel" data-panel="notify">
-        <h2>通知</h2>
-        <div class="form-grid">
-          <input placeholder="Telegram Bot Token">
-          <input placeholder="Chat ID">
-          <input placeholder="Webhook URL">
-        </div>
-      </section>
-
-      <section class="panel" data-panel="organize">
-        <h2>本地 3MF 文件整理</h2>
-        <div class="form-grid">
-          <input placeholder="源目录">
-          <input placeholder="目标目录">
-          <label class="checkbox"><input type="checkbox" checked> 移动文件而不是复制</label>
-        </div>
-      </section>
-    </main>
+{% block content %}
+<section class="hero-panel">
+  <div>
+    <span class="eyebrow">首页展示台</span>
+    <h1>直接查看归档总览、系统状态和任务摘要</h1>
+    <p>首页只负责展示真实数据，不再承载配置表单。模型归档、通知、Cookie 和整理配置已经拆分到独立页面。</p>
   </div>
+  <div class="hero-actions">
+    <a class="button button-primary" href="/models">进入模型库</a>
+    <a class="button button-secondary" href="/tasks">查看任务</a>
+    <a class="button button-secondary" href="/settings">打开设置</a>
+  </div>
+</section>
 
-  <script src="/static/js/app.js"></script>
-</body>
-</html>
+<section class="stats-grid">
+  {% for card in stats %}
+  <article class="surface stat-card">
+    <span>{{ card.label }}</span>
+    <strong>{{ card.value }}</strong>
+    <small>{{ card.hint }}</small>
+  </article>
+  {% endfor %}
+</section>
+
+<section class="dashboard-layout">
+  <article class="surface section-card">
+    <div class="section-card__header">
+      <div>
+        <span class="eyebrow">最近模型</span>
+        <h2>最近采集的 8 个模型</h2>
+      </div>
+      <a class="section-link" href="/models">查看全部</a>
+    </div>
+    {% if recent_models %}
+    <div class="mini-model-grid">
+      {% for model in recent_models %}
+      <a class="mini-model-card" href="{{ model.detail_path }}">
+        {% if model.cover_url %}
+        <img src="{{ model.cover_url }}" alt="{{ model.title }}">
+        {% else %}
+        <div class="media-placeholder">{{ model.title[:1] }}</div>
+        {% endif %}
+        <div>
+          <strong>{{ model.title }}</strong>
+          <span>{{ model.author.name }} · {{ model.collect_date or "未知时间" }}</span>
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty-copy">当前还没有归档模型，后续归档完成后这里会自动展示最新内容。</p>
+    {% endif %}
+  </article>
+
+  <article class="surface section-card">
+    <div class="section-card__header">
+      <div>
+        <span class="eyebrow">系统状态</span>
+        <h2>连接与代理状态</h2>
+      </div>
+      <a class="section-link" href="/settings">去设置</a>
+    </div>
+    <div class="status-list">
+      {% for item in system_status %}
+      <div class="status-item">
+        <div>
+          <strong>{{ item.title }}</strong>
+          <span>{{ item.status }}</span>
+        </div>
+        <span class="status-dot{% if item.enabled %} is-ok{% endif %}"></span>
+      </div>
+      {% endfor %}
+    </div>
+  </article>
+
+  <article class="surface section-card">
+    <div class="section-card__header">
+      <div>
+        <span class="eyebrow">任务摘要</span>
+        <h2>当前运行情况</h2>
+      </div>
+      <a class="section-link" href="/tasks">展开任务页</a>
+    </div>
+    <div class="summary-stack">
+      <div class="summary-box">
+        <strong>运行中任务</strong>
+        <span>{{ task_summary.running|length }} 个</span>
+      </div>
+      <div class="summary-box">
+        <strong>排队中任务</strong>
+        <span>{{ task_summary.queued_count }} 个</span>
+      </div>
+      <div class="summary-box">
+        <strong>待补 3MF</strong>
+        <span>{{ task_summary.missing_3mf|length }} 项</span>
+      </div>
+    </div>
+
+    {% if task_summary.recent_failures %}
+    <div class="summary-list">
+      <h3>最近失败</h3>
+      {% for item in task_summary.recent_failures %}
+      <div class="summary-list__item">
+        <strong>{{ item.title or item.url or "未命名任务" }}</strong>
+        <span>{{ item.message or "失败原因未记录" }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </article>
+</section>
+{% endblock %}

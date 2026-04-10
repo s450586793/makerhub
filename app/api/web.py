@@ -1,56 +1,135 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from app.core.settings import ROOT_DIR
+from app.core.store import JsonStore
+from app.services.catalog import build_dashboard_payload, build_models_payload, build_tasks_payload, get_model_detail, load_archive_models
 
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(ROOT_DIR / "app" / "templates"))
+store = JsonStore()
 
 
-DETAIL_PREVIEW = {
-    "title": "[少量换色]海上餐厅巴拉蒂/海贼王/山治（200+零件）",
-    "author": "肌肉弗兰奇",
-    "author_avatar": "https://makerworld.bblmw.cn/makerworld/model/CNa38cb95ec21242/design/cf9a45da2fedb987.png",
-    "cover": "https://makerworld.bblmw.cn/makerworld/model/DSM00000002247129/design/23185951b543dc84.png",
-    "thumbs": [
-        "https://makerworld.bblmw.cn/makerworld/model/DSM00000002247129/design/23185951b543dc84.png",
-        "https://makerworld.bblmw.cn/makerworld/model/DSM00000002247129/design/dabe95f6cb2bf9b9.png",
-        "https://makerworld.bblmw.cn/makerworld/model/DSM00000002247129/design/b9c717bde34f636d.png",
-        "https://makerworld.bblmw.cn/makerworld/model/DSM00000002247129/design/d1afae7c692540aa.png",
-    ],
-    "stats": {"likes": 29, "favorites": 87, "comments": 26, "downloads": 47, "prints": 23},
-    "profiles": [
-        {"machine": "P1S", "title": "海上餐厅-单色部分", "time": "29.6 h", "plates": 20, "rating": "5.0 (5)"},
-        {"machine": "H2C", "title": "海上餐厅-多色部分", "time": "16 h", "plates": 8, "rating": "5.0 (3)"},
-        {"machine": "X1E", "title": "增量部分（摆件版本）", "time": "12.3 h", "plates": 8, "rating": "4.9 (8)"},
-    ],
-    "summary": """
-    <div class="boost-card">
-      <div class="boost-card__title">Boost Me (免费)</div>
-      <div class="boost-card__body">你的助力，将会成为下艘船的碎片。</div>
-    </div>
-    <h3>描述</h3>
-    <p>这块区域会按目标站详情页的富文本结构复刻，包括大图、分段标题、说明区、评论区。</p>
-    <p>新项目里不再兼容旧模板，详情页单独按目标站页面做。</p>
-    """,
-    "comments": [
-        {"author": "用户 A", "time": "2026-03-23 11:20", "content": "这套结构很完整，细节做得很好。"},
-        {"author": "用户 B", "time": "2026-03-16 09:43", "content": "如果后续评论图片也能同步展示，详情页会更接近原站。"},
-    ],
-}
+def _sample_detail() -> dict:
+    return {
+        "title": "Makerhub 详情页预览",
+        "detail_path": "/detail-preview",
+        "source_label": "MakerWorld 国内",
+        "origin_url": "https://makerworld.com.cn/",
+        "collect_date": "2026-04-11",
+        "author": {
+            "name": "makerhub",
+            "url": "",
+            "avatar_url": "https://placehold.co/128x128/e5e7eb/111827?text=MH",
+        },
+        "cover_url": "https://placehold.co/1080x1080/f8fafc/111827?text=Makerhub",
+        "gallery": [
+            {"url": "https://placehold.co/1080x1080/f8fafc/111827?text=Makerhub", "kind": "cover"},
+            {"url": "https://placehold.co/1080x1080/e2e8f0/111827?text=Gallery+1", "kind": "design"},
+            {"url": "https://placehold.co/1080x1080/e2e8f0/111827?text=Gallery+2", "kind": "design"},
+        ],
+        "tags": ["详情页", "预览", "makerhub"],
+        "stats": {"likes": 0, "favorites": 0, "downloads": 0, "prints": 0, "views": 0, "comments": 0},
+        "summary_html": """
+        <p>当前没有真实归档模型，这里展示的是详情页占位版本。</p>
+        <p>首页、模型库、设置、任务四个页面已经按真实归档数据结构重构完成。</p>
+        """,
+        "summary_text": "当前没有真实归档模型。",
+        "comments": [],
+        "instances": [],
+        "attachments": [],
+    }
 
 
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    config = store.load()
+    payload = build_dashboard_payload(config)
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "active_page": "home",
+            **payload,
+        },
+    )
+
+
+@router.get("/models", response_class=HTMLResponse)
+async def models_page(
+    request: Request,
+    q: str = Query(""),
+    source: str = Query("all"),
+    tag: str = Query(""),
+    sort: str = Query("collectDate"),
+):
+    payload = build_models_payload(q=q, source=source, tag=tag, sort_key=sort)
+    return templates.TemplateResponse(
+        "models.html",
+        {
+            "request": request,
+            "active_page": "models",
+            **payload,
+        },
+    )
+
+
+@router.get("/models/{model_dir:path}", response_class=HTMLResponse)
+async def model_detail(request: Request, model_dir: str):
+    detail = get_model_detail(model_dir)
+    if not detail:
+        raise HTTPException(status_code=404, detail="模型不存在")
+
+    return templates.TemplateResponse(
+        "detail.html",
+        {
+            "request": request,
+            "active_page": "models",
+            "detail": detail,
+        },
+    )
+
+
+@router.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request):
+    config = store.load()
+    cookie_map = {item.platform: item.cookie for item in config.cookies}
+    return templates.TemplateResponse(
+        "settings.html",
+        {
+            "request": request,
+            "active_page": "settings",
+            "config": config,
+            "cookie_map": cookie_map,
+        },
+    )
+
+
+@router.get("/tasks", response_class=HTMLResponse)
+async def tasks_page(request: Request):
+    config = store.load()
+    payload = build_tasks_payload(missing_fallback=[item.model_dump() for item in config.missing_3mf])
+    return templates.TemplateResponse(
+        "tasks.html",
+        {
+            "request": request,
+            "active_page": "tasks",
+            **payload,
+        },
+    )
 
 
 @router.get("/detail-preview", response_class=HTMLResponse)
 async def detail_preview(request: Request):
+    models = load_archive_models()
+    detail = models[0] if models else _sample_detail()
     return templates.TemplateResponse(
         "detail.html",
-        {"request": request, "detail": DETAIL_PREVIEW},
+        {
+            "request": request,
+            "active_page": "models",
+            "detail": detail,
+        },
     )
-
