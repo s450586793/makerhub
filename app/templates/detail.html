@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ detail.title }}</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body class="detail-page">
+  <div class="detail-shell">
+    <div class="detail-header">
+      <a class="detail-back" href="/">返回后台</a>
+      <div class="detail-search"></div>
+    </div>
+
+    <div class="detail-card">
+      <div class="detail-title-row">
+        <div class="detail-author">
+          <img src="{{ detail.author_avatar }}" alt="{{ detail.author }}">
+          <div>
+            <h1>{{ detail.title }}</h1>
+            <div class="detail-author-name">{{ detail.author }}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="detail-main">
+        <div class="detail-gallery">
+          <div class="detail-cover-wrap">
+            <img class="detail-cover" src="{{ detail.cover }}" alt="{{ detail.title }}">
+          </div>
+          <div class="detail-thumbs">
+            {% for thumb in detail.thumbs %}
+            <img src="{{ thumb }}" alt="thumb {{ loop.index }}">
+            {% endfor %}
+          </div>
+        </div>
+
+        <aside class="detail-profiles">
+          <h2>打印配置 ({{ detail.profiles|length }})</h2>
+          <div class="profile-tabs">
+            {% for profile in detail.profiles %}
+            <span class="profile-chip{% if loop.first %} is-active{% endif %}">{{ profile.machine }}</span>
+            {% endfor %}
+          </div>
+          <div class="profile-list">
+            {% for profile in detail.profiles %}
+            <article class="profile-card">
+              <div class="profile-card__body">
+                <div class="profile-card__title">{{ profile.title }}</div>
+                <div class="profile-card__meta">{{ profile.time }} · {{ profile.plates }} 盘 · {{ profile.rating }}</div>
+              </div>
+            </article>
+            {% endfor %}
+          </div>
+          <button class="download-btn">下载 3MF</button>
+        </aside>
+      </div>
+
+      <div class="detail-actions">
+        <button>助力</button>
+        <button>👍 {{ detail.stats.likes }}</button>
+        <button>⭐ {{ detail.stats.favorites }}</button>
+        <button>💬 {{ detail.stats.comments }}</button>
+        <button>⬇ {{ detail.stats.downloads }}</button>
+      </div>
+    </div>
+
+    <div class="detail-content-grid">
+      <section class="detail-content-card">
+        <h3>描述</h3>
+        <div class="rich-content">{{ detail.summary | safe }}</div>
+      </section>
+
+      <aside class="detail-side-card">
+        <h3>标签</h3>
+        <div class="tag-pills">
+          <span>海贼王</span>
+          <span>山治</span>
+          <span>巴拉蒂</span>
+        </div>
+      </aside>
+    </div>
+
+    <section class="detail-content-card">
+      <h3>评论 & 评分</h3>
+      <div class="comment-list">
+        {% for comment in detail.comments %}
+        <article class="comment-item">
+          <div class="comment-item__meta">{{ comment.author }} · {{ comment.time }}</div>
+          <div class="comment-item__body">{{ comment.content }}</div>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+</body>
+</html>

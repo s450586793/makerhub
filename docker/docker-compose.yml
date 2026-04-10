@@ -1,0 +1,12 @@
+version: "3.8"
+
+services:
+  makerhub:
+    image: ghcr.io/s450586793/makerhub:latest
+    build: ..
+    container_name: makerhub
+    ports:
+      - "9050:8000"
+    volumes:
+      - ../data:/app/data
+    restart: unless-stopped
