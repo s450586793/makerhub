@@ -6,7 +6,4 @@ __pycache__/
 *.pyd
 .pytest_cache/
 .mypy_cache/
-data/*.json
-data/*.db
-data/*.sqlite3
-data/archive/
+runtime/

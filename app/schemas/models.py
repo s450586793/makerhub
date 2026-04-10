@@ -2,6 +2,8 @@ from typing import List
 
 from pydantic import BaseModel, Field
 
+from app.core.settings import ARCHIVE_DIR, CONFIG_DIR, LOCAL_DIR, LOGS_DIR, STATE_DIR
+
 
 class CookiePair(BaseModel):
     platform: str
@@ -39,9 +41,17 @@ class Missing3mfItem(BaseModel):
 
 
 class OrganizeTask(BaseModel):
-    source_dir: str = ""
-    target_dir: str = ""
+    source_dir: str = str(LOCAL_DIR)
+    target_dir: str = str(ARCHIVE_DIR)
     move_files: bool = True
+
+
+class RuntimePaths(BaseModel):
+    config_dir: str = str(CONFIG_DIR)
+    logs_dir: str = str(LOGS_DIR)
+    state_dir: str = str(STATE_DIR)
+    archive_dir: str = str(ARCHIVE_DIR)
+    local_dir: str = str(LOCAL_DIR)
 
 
 class AppConfig(BaseModel):
@@ -54,4 +64,4 @@ class AppConfig(BaseModel):
     user: UserProfile = Field(default_factory=UserProfile)
     missing_3mf: List[Missing3mfItem] = Field(default_factory=list)
     organizer: OrganizeTask = Field(default_factory=OrganizeTask)
-
+    paths: RuntimePaths = Field(default_factory=RuntimePaths)

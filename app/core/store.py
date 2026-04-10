@@ -1,14 +1,15 @@
 import json
 from pathlib import Path
 
-from app.core.settings import CONFIG_PATH, DATA_DIR
+from app.core.settings import CONFIG_DIR, CONFIG_PATH, ensure_app_dirs
 from app.schemas.models import AppConfig
 
 
 class JsonStore:
     def __init__(self, path: Path = CONFIG_PATH):
         self.path = path
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        ensure_app_dirs()
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
             self.save(AppConfig())
 
@@ -22,4 +23,3 @@ class JsonStore:
             encoding="utf-8",
         )
         return config
-
