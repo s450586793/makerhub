@@ -3,7 +3,7 @@
 {% block title %}任务 | makerhub{% endblock %}
 
 {% block content %}
-<section class="page-intro">
+<section class="page-intro" data-tasks-page data-running-count="{{ summary.running_or_queued }}">
   <div>
     <span class="eyebrow">任务</span>
     <h1>归档队列、缺失 3MF 与本地整理任务</h1>

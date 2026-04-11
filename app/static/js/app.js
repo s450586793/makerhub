@@ -133,17 +133,38 @@ function bindArchiveForm() {
 
     try {
       const response = await postJson("/api/archive", { url });
+      if (!response.accepted) {
+        setStatusTarget(status, response.message || "归档提交失败", "is-error");
+        return;
+      }
+
       const message = response.message || "已提交归档任务";
       setStatusTarget(status, message, "is-success");
       form.reset();
+      window.setTimeout(() => {
+        window.location.reload();
+      }, 800);
     } catch (error) {
       setStatusTarget(status, error.message || "归档提交失败", "is-error");
     }
   });
 }
 
+function bindTaskAutoRefresh() {
+  const page = document.querySelector("[data-tasks-page]");
+  if (!page) return;
+
+  const runningCount = Number(page.dataset.runningCount || "0");
+  if (!Number.isFinite(runningCount) || runningCount <= 0) return;
+
+  window.setTimeout(() => {
+    window.location.reload();
+  }, 5000);
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   bindSettingsTabs();
   bindSettingsForms();
   bindArchiveForm();
+  bindTaskAutoRefresh();
 });

@@ -1,16 +1,17 @@
-from dataclasses import dataclass
 from typing import List
 
+from app.services.archive_worker import ArchiveTaskManager
 
-@dataclass
+
 class CrawlerFeatureMap:
-    extract_next_data: bool = True
-    fetch_design_from_api: bool = True
-    collect_comments: bool = True
-    parse_summary: bool = True
-    fetch_instance_3mf: bool = True
-    extract_instances: bool = True
-    archive_model: bool = True
+    def __init__(self) -> None:
+        self.extract_next_data = True
+        self.fetch_design_from_api = True
+        self.collect_comments = True
+        self.parse_summary = True
+        self.fetch_instance_3mf = True
+        self.extract_instances = True
+        self.archive_model = True
 
 
 class LegacyCrawlerBridge:
@@ -29,6 +30,7 @@ class LegacyCrawlerBridge:
 
     def __init__(self) -> None:
         self.features = CrawlerFeatureMap()
+        self.manager = ArchiveTaskManager()
 
     def supported_input_types(self) -> List[str]:
         return [
@@ -38,10 +40,4 @@ class LegacyCrawlerBridge:
         ]
 
     def archive(self, url: str) -> dict:
-        return {
-            "accepted": True,
-            "url": url,
-            "mode": "queued",
-            "message": "新项目骨架已接管请求，下一步接入旧爬虫核心。",
-        }
-
+        return self.manager.submit(url)
