@@ -53,29 +53,37 @@ select {
 
 .site-shell {
   min-height: 100vh;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
 }
 
-.site-header {
+.site-shell--no-sidebar {
+  display: block;
+}
+
+.site-sidebar {
   position: sticky;
   top: 0;
-  z-index: 20;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.65);
-  background: rgba(248, 251, 250, 0.82);
-  backdrop-filter: blur(14px);
+  height: 100vh;
+  padding: 22px 18px;
+  border-right: 1px solid rgba(255, 255, 255, 0.45);
 }
 
-.site-header__inner,
-.page-shell {
-  width: min(var(--content-width), calc(100vw - 40px));
-  margin: 0 auto;
-}
-
-.site-header__inner {
-  min-height: 88px;
+.site-sidebar__inner {
+  height: 100%;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
+  flex-direction: column;
+  gap: 28px;
+  padding: 22px 18px;
+  border-radius: 28px;
+  background: rgba(248, 251, 250, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(16px);
+}
+
+.page-shell {
+  width: 100%;
+  margin: 0;
 }
 
 .brand-mark {
@@ -109,38 +117,42 @@ select {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
 }
 
-.main-nav {
-  display: inline-flex;
+.sidebar-nav {
+  display: grid;
+  gap: 10px;
+}
+
+.sidebar-nav__link {
+  min-height: 46px;
+  padding: 0 16px;
+  border-radius: 16px;
+  display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
-  border: 1px solid rgba(255, 255, 255, 0.7);
-}
-
-.main-nav__link {
-  padding: 11px 18px;
-  border-radius: 999px;
   color: var(--muted);
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 700;
 }
 
-.main-nav__link.is-active {
-  color: var(--text);
+.sidebar-nav__link.is-active {
+  color: var(--brand-strong);
   background: #fff;
   box-shadow: 0 10px 24px rgba(22, 33, 29, 0.08);
 }
 
 .page-shell {
-  padding: 34px 0 56px;
+  padding: 28px 28px 56px 12px;
   display: grid;
   gap: 22px;
 }
 
+.page-shell--full,
+.site-shell--no-sidebar .page-shell {
+  width: min(1540px, calc(100vw - 40px));
+  margin: 0 auto;
+  padding: 28px 0 56px;
+}
+
 .surface,
-.hero-panel,
 .page-intro,
 .stat-card,
 .model-card,
@@ -154,7 +166,6 @@ select {
 }
 
 .surface,
-.hero-panel,
 .page-intro {
   border-radius: var(--radius-xl);
 }
@@ -193,7 +204,6 @@ select {
   background: var(--brand);
 }
 
-.hero-panel,
 .page-intro {
   padding: 28px 30px;
   display: flex;
@@ -201,7 +211,6 @@ select {
   gap: 24px;
 }
 
-.hero-panel h1,
 .page-intro h1,
 .section-card h2,
 .detail-title-block h1 {
@@ -211,7 +220,6 @@ select {
   letter-spacing: -0.04em;
 }
 
-.hero-panel p,
 .page-intro p,
 .empty-copy,
 .section-card p,
@@ -222,7 +230,6 @@ select {
   color: var(--muted);
 }
 
-.hero-actions,
 .filter-actions,
 .form-footer {
   display: flex;
@@ -729,6 +736,22 @@ select:focus {
   color: var(--danger);
 }
 
+.archive-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+}
+
+.archive-form__input {
+  min-width: 0;
+}
+
+.archive-form__hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .task-layout {
   grid-template-columns: 1fr;
 }
@@ -980,29 +1003,42 @@ select:focus {
 }
 
 @media (max-width: 980px) {
-  .site-header__inner,
-  .page-shell {
-    width: min(var(--content-width), calc(100vw - 24px));
+  .site-shell {
+    display: block;
   }
 
-  .site-header__inner,
-  .hero-panel,
+  .site-sidebar {
+    position: static;
+    height: auto;
+    padding: 12px 12px 0;
+    border-right: 0;
+  }
+
+  .site-sidebar__inner,
   .page-intro {
     flex-direction: column;
-    align-items: flex-start;
   }
 
-  .main-nav,
+  .sidebar-nav,
   .settings-tabs {
     width: 100%;
     overflow-x: auto;
+  }
+
+  .sidebar-nav {
+    display: flex;
+  }
+
+  .sidebar-nav__link {
+    white-space: nowrap;
   }
 
   .stats-grid,
   .model-grid,
   .settings-grid--two,
   .settings-grid--three,
-  .filter-bar {
+  .filter-bar,
+  .archive-form {
     grid-template-columns: 1fr;
   }
 
@@ -1016,23 +1052,11 @@ select:focus {
 }
 
 @media (max-width: 720px) {
-  .site-header__inner {
-    min-height: auto;
-    padding: 14px 0;
+  .site-sidebar {
+    padding: 10px 10px 0;
   }
 
-  .main-nav {
-    padding: 0;
-    background: transparent;
-    border: 0;
-  }
-
-  .main-nav__link {
-    padding: 10px 14px;
-    background: rgba(255, 255, 255, 0.72);
-  }
-
-  .hero-panel,
+  .site-sidebar__inner,
   .page-intro,
   .surface,
   .detail-hero {

@@ -52,6 +52,7 @@ async def dashboard(request: Request):
         {
             "request": request,
             "active_page": "home",
+            "show_sidebar": True,
             **payload,
         },
     )
@@ -71,6 +72,7 @@ async def models_page(
         {
             "request": request,
             "active_page": "models",
+            "show_sidebar": True,
             **payload,
         },
     )
@@ -87,6 +89,7 @@ async def model_detail(request: Request, model_dir: str):
         {
             "request": request,
             "active_page": "models",
+            "show_sidebar": False,
             "detail": detail,
         },
     )
@@ -101,6 +104,7 @@ async def settings_page(request: Request):
         {
             "request": request,
             "active_page": "settings",
+            "show_sidebar": True,
             "config": config,
             "cookie_map": cookie_map,
         },
@@ -116,6 +120,7 @@ async def tasks_page(request: Request):
         {
             "request": request,
             "active_page": "tasks",
+            "show_sidebar": True,
             **payload,
         },
     )
@@ -130,6 +135,7 @@ async def detail_preview(request: Request):
         {
             "request": request,
             "active_page": "models",
+            "show_sidebar": False,
             "detail": detail,
         },
     )

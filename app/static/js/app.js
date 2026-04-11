@@ -15,14 +15,18 @@ async function postJson(url, payload) {
   return response.json();
 }
 
-function setFormStatus(form, message, type) {
-  const target = form.querySelector("[data-form-status]");
+function setStatusTarget(target, message, type) {
   if (!target) return;
   target.textContent = message;
   target.classList.remove("is-success", "is-error");
   if (type) {
     target.classList.add(type);
   }
+}
+
+function setFormStatus(form, message, type) {
+  const target = form.querySelector("[data-form-status]");
+  setStatusTarget(target, message, type);
 }
 
 function bindSettingsTabs() {
@@ -109,7 +113,37 @@ function bindSettingsForms() {
   });
 }
 
+function bindArchiveForm() {
+  const form = document.querySelector("[data-archive-form]");
+  if (!form) return;
+
+  const input = form.querySelector('input[name="url"]');
+  const status = document.querySelector("[data-archive-status]");
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const url = String(input?.value || "").trim();
+
+    if (!url) {
+      setStatusTarget(status, "请先输入要归档的链接", "is-error");
+      return;
+    }
+
+    setStatusTarget(status, "提交中...", null);
+
+    try {
+      const response = await postJson("/api/archive", { url });
+      const message = response.message || "已提交归档任务";
+      setStatusTarget(status, message, "is-success");
+      form.reset();
+    } catch (error) {
+      setStatusTarget(status, error.message || "归档提交失败", "is-error");
+    }
+  });
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   bindSettingsTabs();
   bindSettingsForms();
+  bindArchiveForm();
 });

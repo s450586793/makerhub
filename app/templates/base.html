@@ -6,10 +6,11 @@
   <title>{% block title %}makerhub{% endblock %}</title>
   <link rel="stylesheet" href="/static/css/app.css">
 </head>
-<body class="{% block body_class %}{% endblock %}">
-  <div class="site-shell">
-    <header class="site-header">
-      <div class="site-header__inner">
+<body class="{% if not show_sidebar|default(true) %}shell--no-sidebar {% endif %}{% block body_class %}{% endblock %}">
+  <div class="site-shell{% if not show_sidebar|default(true) %} site-shell--no-sidebar{% endif %}">
+    {% if show_sidebar|default(true) %}
+    <aside class="site-sidebar">
+      <div class="site-sidebar__inner">
         <a class="brand-mark" href="/">
           <span class="brand-mark__badge">MH</span>
           <span>
@@ -17,16 +18,18 @@
             <small>真实归档数据工作台</small>
           </span>
         </a>
-        <nav class="main-nav">
-          <a class="main-nav__link{% if active_page == 'home' %} is-active{% endif %}" href="/">首页</a>
-          <a class="main-nav__link{% if active_page == 'models' %} is-active{% endif %}" href="/models">模型库</a>
-          <a class="main-nav__link{% if active_page == 'settings' %} is-active{% endif %}" href="/settings">设置</a>
-          <a class="main-nav__link{% if active_page == 'tasks' %} is-active{% endif %}" href="/tasks">任务</a>
+
+        <nav class="sidebar-nav">
+          <a class="sidebar-nav__link{% if active_page == 'home' %} is-active{% endif %}" href="/">首页</a>
+          <a class="sidebar-nav__link{% if active_page == 'models' %} is-active{% endif %}" href="/models">模型库</a>
+          <a class="sidebar-nav__link{% if active_page == 'settings' %} is-active{% endif %}" href="/settings">设置</a>
+          <a class="sidebar-nav__link{% if active_page == 'tasks' %} is-active{% endif %}" href="/tasks">任务</a>
         </nav>
       </div>
-    </header>
+    </aside>
+    {% endif %}
 
-    <main class="page-shell">
+    <main class="page-shell{% if not show_sidebar|default(true) %} page-shell--full{% endif %}">
       {% block content %}{% endblock %}
     </main>
   </div>

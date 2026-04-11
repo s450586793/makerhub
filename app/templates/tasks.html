@@ -25,6 +25,26 @@
   </div>
 </section>
 
+<section class="surface section-card">
+  <div class="section-card__header">
+    <div>
+      <span class="eyebrow">归档入口</span>
+      <h2>输入链接开始归档</h2>
+    </div>
+  </div>
+  <form class="archive-form" data-archive-form>
+    <input
+      class="archive-form__input"
+      type="text"
+      name="url"
+      placeholder="支持单模型、作者上传页、收藏夹模型页链接"
+    >
+    <button class="button button-primary" type="submit">开始归档</button>
+  </form>
+  <p class="archive-form__hint">示例：`/zh/models/...`、`/zh/@xxx/upload`、`/zh/@xxx/collections/models`</p>
+  <span class="form-status" data-archive-status></span>
+</section>
+
 <section class="task-layout">
   <article class="surface section-card">
     <div class="section-card__header">
