@@ -17,7 +17,12 @@
       <div class="detail-gallery">
         <div class="detail-cover-wrap">
           {% if detail.cover_url %}
-          <img class="detail-cover" src="{{ detail.cover_url }}" alt="{{ detail.title }}">
+          <img
+            class="detail-cover"
+            src="{{ detail.cover_url }}"
+            alt="{{ detail.title }}"
+            {% if detail.cover_remote_url %}data-fallback-src="{{ detail.cover_remote_url }}"{% endif %}
+          >
           {% else %}
           <div class="media-placeholder media-placeholder--large">{{ detail.title[:1] }}</div>
           {% endif %}
@@ -25,7 +30,11 @@
         {% if detail.gallery %}
         <div class="detail-thumbs">
           {% for image in detail.gallery[:8] %}
-          <img src="{{ image.url }}" alt="{{ detail.title }} {{ loop.index }}">
+          <img
+            src="{{ image.url }}"
+            alt="{{ detail.title }} {{ loop.index }}"
+            {% if image.fallback_url %}data-fallback-src="{{ image.fallback_url }}"{% endif %}
+          >
           {% endfor %}
         </div>
         {% endif %}
@@ -37,13 +46,18 @@
           <h1>{{ detail.title }}</h1>
           <div class="model-author">
             {% if detail.author.avatar_url %}
-            <img src="{{ detail.author.avatar_url }}" alt="{{ detail.author.name }}">
+            <img
+              src="{{ detail.author.avatar_url }}"
+              alt="{{ detail.author.name }}"
+              {% if detail.author.avatar_remote_url %}data-fallback-src="{{ detail.author.avatar_remote_url }}"{% endif %}
+            >
             {% else %}
             <span class="avatar-placeholder">{{ detail.author.name[:1] }}</span>
             {% endif %}
             <span>{{ detail.author.name }}</span>
           </div>
           <p>采集时间：{{ detail.collect_date or "未知时间" }}</p>
+          <p>发布时间：{{ detail.publish_date or "未知时间" }}</p>
         </div>
 
         <dl class="stat-grid">
@@ -137,7 +151,11 @@
         <div class="comment-item__header">
           <div class="model-author">
             {% if comment.avatar_url %}
-            <img src="{{ comment.avatar_url }}" alt="{{ comment.author }}">
+            <img
+              src="{{ comment.avatar_url }}"
+              alt="{{ comment.author }}"
+              {% if comment.avatar_remote_url %}data-fallback-src="{{ comment.avatar_remote_url }}"{% endif %}
+            >
             {% else %}
             <span class="avatar-placeholder">{{ comment.author[:1] }}</span>
             {% endif %}
@@ -149,7 +167,20 @@
         {% if comment.images %}
         <div class="comment-gallery">
           {% for image_url in comment.images %}
-          <img src="{{ image_url }}" alt="{{ comment.author }} 评论图片 {{ loop.index }}">
+          <button
+            class="comment-gallery__item"
+            type="button"
+            data-lightbox-src="{{ image_url.full_url }}"
+            {% if image_url.fallback_url %}data-fallback-src="{{ image_url.fallback_url }}"{% endif %}
+            aria-label="查看大图"
+          >
+            <img
+              src="{{ image_url.thumb_url }}"
+              alt="{{ comment.author }} 评论图片 {{ loop.index }}"
+              loading="lazy"
+              {% if image_url.fallback_url %}data-fallback-src="{{ image_url.fallback_url }}"{% endif %}
+            >
+          </button>
           {% endfor %}
         </div>
         {% endif %}
@@ -161,4 +192,11 @@
     {% endif %}
   </section>
 </section>
+<div class="lightbox" data-lightbox hidden>
+  <button class="lightbox__backdrop" type="button" data-lightbox-close aria-label="关闭预览"></button>
+  <div class="lightbox__dialog">
+    <button class="lightbox__close" type="button" data-lightbox-close aria-label="关闭">×</button>
+    <img class="lightbox__image" src="" alt="评论图片大图">
+  </div>
+</div>
 {% endblock %}

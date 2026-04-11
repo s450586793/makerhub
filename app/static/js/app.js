@@ -29,6 +29,71 @@ function setFormStatus(form, message, type) {
   setStatusTarget(target, message, type);
 }
 
+function buildMaskedValue(rawValue) {
+  const clean = String(rawValue || "");
+  if (!clean) return "";
+  const length = Math.min(Math.max(clean.length, 9), 48);
+  return "•".repeat(length);
+}
+
+function maskSecretField(textarea) {
+  const rawValue = String(textarea.dataset.rawValue || "");
+  textarea.dataset.secretMasked = rawValue ? "true" : "false";
+  textarea.readOnly = Boolean(rawValue);
+  textarea.value = rawValue ? buildMaskedValue(rawValue) : "";
+}
+
+function unmaskSecretField(textarea) {
+  textarea.dataset.secretMasked = "false";
+  textarea.readOnly = false;
+  textarea.value = String(textarea.dataset.rawValue || "");
+}
+
+function readSecretValue(element) {
+  if (!element) return "";
+  if (element.dataset.secretMasked === "true") {
+    return String(element.dataset.rawValue || "");
+  }
+  const value = String(element.value || "");
+  element.dataset.rawValue = value;
+  return value;
+}
+
+function bindSecretFields() {
+  const fields = document.querySelectorAll("[data-secret-input]");
+  if (!fields.length) return;
+
+  fields.forEach((textarea) => {
+    textarea.dataset.rawValue = String(textarea.value || "");
+
+    const wrapper = textarea.closest(".secret-field");
+    const toggle = wrapper?.querySelector("[data-secret-toggle]");
+    if (!toggle) return;
+
+    if (textarea.dataset.rawValue) {
+      maskSecretField(textarea);
+      toggle.textContent = "显示";
+    } else {
+      textarea.dataset.secretMasked = "false";
+      textarea.readOnly = false;
+      toggle.textContent = "隐藏";
+    }
+
+    toggle.addEventListener("click", () => {
+      if (textarea.dataset.secretMasked === "true") {
+        unmaskSecretField(textarea);
+        toggle.textContent = "隐藏";
+        textarea.focus();
+        return;
+      }
+
+      textarea.dataset.rawValue = String(textarea.value || "");
+      maskSecretField(textarea);
+      toggle.textContent = "显示";
+    });
+  });
+}
+
 function bindSettingsTabs() {
   const tabs = document.querySelectorAll("[data-settings-tab]");
   const panels = document.querySelectorAll("[data-settings-panel]");
@@ -50,9 +115,11 @@ async function submitSettingsForm(form) {
   const formData = new FormData(form);
 
   if (kind === "connections") {
+    const cookieCn = readSecretValue(form.querySelector('[name="cookie_cn"]'));
+    const cookieGlobal = readSecretValue(form.querySelector('[name="cookie_global"]'));
     await postJson("/api/config/cookies", [
-      { platform: "cn", cookie: String(formData.get("cookie_cn") || "") },
-      { platform: "global", cookie: String(formData.get("cookie_global") || "") },
+      { platform: "cn", cookie: cookieCn },
+      { platform: "global", cookie: cookieGlobal },
     ]);
     await postJson("/api/config/proxy", {
       enabled: formData.get("proxy_enabled") === "on",
@@ -162,9 +229,71 @@ function bindTaskAutoRefresh() {
   }, 5000);
 }
 
+function bindImageFallbacks(root = document) {
+  const images = root.querySelectorAll("img[data-fallback-src]");
+  if (!images.length) return;
+
+  images.forEach((image) => {
+    if (image.dataset.fallbackBound === "true") return;
+    image.dataset.fallbackBound = "true";
+
+    image.addEventListener("error", () => {
+      const fallback = String(image.dataset.fallbackSrc || "").trim();
+      if (!fallback || image.dataset.fallbackTried === "true") return;
+      if (image.currentSrc === fallback || image.src === fallback) return;
+      image.dataset.fallbackTried = "true";
+      image.src = fallback;
+    });
+  });
+}
+
+function bindLightbox() {
+  const lightbox = document.querySelector("[data-lightbox]");
+  const lightboxImage = lightbox?.querySelector(".lightbox__image");
+  if (!lightbox || !lightboxImage) return;
+
+  const closeLightbox = () => {
+    lightbox.hidden = true;
+    lightboxImage.removeAttribute("src");
+    lightboxImage.removeAttribute("data-fallback-src");
+    document.body.classList.remove("is-lightbox-open");
+  };
+
+  document.querySelectorAll("[data-lightbox-src]").forEach((trigger) => {
+    trigger.addEventListener("click", () => {
+      const src = String(trigger.dataset.lightboxSrc || "").trim();
+      const fallback = String(trigger.dataset.fallbackSrc || "").trim();
+      if (!src && !fallback) return;
+
+      lightboxImage.src = src || fallback;
+      if (fallback) {
+        lightboxImage.dataset.fallbackSrc = fallback;
+      } else {
+        lightboxImage.removeAttribute("data-fallback-src");
+      }
+      lightbox.hidden = false;
+      document.body.classList.add("is-lightbox-open");
+      bindImageFallbacks(lightbox);
+    });
+  });
+
+  lightbox.querySelectorAll("[data-lightbox-close]").forEach((button) => {
+    button.addEventListener("click", closeLightbox);
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !lightbox.hidden) {
+      closeLightbox();
+    }
+  });
+}
+
 document.addEventListener("DOMContentLoaded", () => {
+  bindSecretFields();
   bindSettingsTabs();
   bindSettingsForms();
   bindArchiveForm();
   bindTaskAutoRefresh();
+  bindImageFallbacks();
+  bindLightbox();
 });

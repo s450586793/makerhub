@@ -27,7 +27,12 @@
       {% for model in recent_models %}
       <a class="mini-model-card" href="{{ model.detail_path }}">
         {% if model.cover_url %}
-        <img src="{{ model.cover_url }}" alt="{{ model.title }}">
+        <img
+          src="{{ model.cover_url }}"
+          alt="{{ model.title }}"
+          loading="lazy"
+          {% if model.cover_remote_url %}data-fallback-src="{{ model.cover_remote_url }}"{% endif %}
+        >
         {% else %}
         <div class="media-placeholder">{{ model.title[:1] }}</div>
         {% endif %}

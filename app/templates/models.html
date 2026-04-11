@@ -67,7 +67,12 @@
   <a class="model-card" href="{{ model.detail_path }}">
     <div class="model-card__cover">
       {% if model.cover_url %}
-      <img src="{{ model.cover_url }}" alt="{{ model.title }}">
+      <img
+        src="{{ model.cover_url }}"
+        alt="{{ model.title }}"
+        loading="lazy"
+        {% if model.cover_remote_url %}data-fallback-src="{{ model.cover_remote_url }}"{% endif %}
+      >
       {% else %}
       <div class="media-placeholder">{{ model.title[:1] }}</div>
       {% endif %}
@@ -77,7 +82,12 @@
       <h2>{{ model.title }}</h2>
       <div class="model-author">
         {% if model.author.avatar_url %}
-        <img src="{{ model.author.avatar_url }}" alt="{{ model.author.name }}">
+        <img
+          src="{{ model.author.avatar_url }}"
+          alt="{{ model.author.name }}"
+          loading="lazy"
+          {% if model.author.avatar_remote_url %}data-fallback-src="{{ model.author.avatar_remote_url }}"{% endif %}
+        >
         {% else %}
         <span class="avatar-placeholder">{{ model.author.name[:1] }}</span>
         {% endif %}
@@ -89,6 +99,7 @@
         {% endfor %}
       </div>
       <div class="meta-line">采集于 {{ model.collect_date or "未知时间" }}</div>
+      <div class="meta-line">发布于 {{ model.publish_date or "未知时间" }}</div>
       <dl class="stat-grid stat-grid--compact">
         <div><dt>下载</dt><dd>{{ model.stats.downloads }}</dd></div>
         <div><dt>点赞</dt><dd>{{ model.stats.likes }}</dd></div>

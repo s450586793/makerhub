@@ -161,6 +161,27 @@ def _pick_image_url(model_root: Path, *items: Any) -> Optional[str]:
     return None
 
 
+def _pick_remote_url(*items: Any) -> Optional[str]:
+    for item in items:
+        if isinstance(item, dict):
+            remote = _remote_asset_url(
+                item.get("url"),
+                item.get("originalUrl"),
+                item.get("imageUrl"),
+                item.get("coverUrl"),
+                item.get("thumbnail"),
+                item.get("avatarUrl"),
+                item.get("previewImage"),
+            )
+            if remote:
+                return remote
+        else:
+            remote = _remote_asset_url(item)
+            if remote:
+                return remote
+    return None
+
+
 def _extract_tags(meta: dict) -> list[str]:
     result: list[str] = []
     for raw_list in (meta.get("tags") or [], meta.get("tagsOriginal") or []):
@@ -288,6 +309,40 @@ def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
     return normalized
 
 
+def _extract_publish_value(meta: dict) -> Any:
+    direct_candidates = [
+        meta.get("publishTime"),
+        meta.get("publishedAt"),
+        meta.get("createTime"),
+        meta.get("createdAt"),
+        meta.get("onlineTime"),
+        meta.get("releaseTime"),
+    ]
+    for candidate in direct_candidates:
+        if _parse_timestamp(candidate):
+            return candidate
+
+    instance_values = []
+    for item in meta.get("instances") or []:
+        if not isinstance(item, dict):
+            continue
+        for candidate in (
+            item.get("publishTime"),
+            item.get("publishedAt"),
+            item.get("createTime"),
+            item.get("createdAt"),
+        ):
+            ts = _parse_timestamp(candidate)
+            if ts:
+                instance_values.append((ts, candidate))
+
+    if instance_values:
+        instance_values.sort(key=lambda item: item[0])
+        return instance_values[0][1]
+
+    return ""
+
+
 def _normalize_comments(meta: dict, model_root: Path) -> list[dict]:
     normalized = []
     for item in meta.get("comments") or []:
@@ -298,15 +353,48 @@ def _normalize_comments(meta: dict, model_root: Path) -> list[dict]:
         for image in item.get("images") or []:
             url = _asset_url_from_item(model_root, image)
             if url:
-                comment_images.append(url)
+                comment_images.append(
+                    {
+                        "thumb_url": url,
+                        "full_url": url,
+                        "fallback_url": _pick_remote_url(image) or "",
+                    }
+                )
+
+        author_raw = item.get("author")
+        author_name = ""
+        author_avatar_url = None
+        author_avatar_remote_url = ""
+        if isinstance(author_raw, dict):
+            author_name = str(author_raw.get("name") or author_raw.get("nickname") or author_raw.get("username") or "").strip()
+            author_avatar_url = _pick_image_url(
+                model_root,
+                {
+                    "avatarRelPath": author_raw.get("avatarRelPath"),
+                    "avatarLocal": author_raw.get("avatarLocal"),
+                    "avatarUrl": author_raw.get("avatarUrl"),
+                },
+            )
+            author_avatar_remote_url = _pick_remote_url(author_raw) or ""
+        elif isinstance(author_raw, str):
+            author_name = author_raw.strip()
+
+        fallback_author = ""
+        for candidate in (
+            item.get("userName"),
+            item.get("nickname"),
+            item.get("authorName"),
+            item.get("creatorName"),
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                fallback_author = candidate.strip()
+                break
 
         normalized.append(
             {
                 "author": str(
-                    item.get("author")
-                    or item.get("userName")
-                    or item.get("nickname")
-                    or item.get("user")
+                    author_name
+                    or fallback_author
                     or "匿名用户"
                 ),
                 "time": str(
@@ -329,7 +417,16 @@ def _normalize_comments(meta: dict, model_root: Path) -> list[dict]:
                         "avatarRelPath": item.get("avatarRelPath"),
                         "avatarLocal": item.get("avatarLocal"),
                         "avatarUrl": item.get("avatarUrl"),
-                    }
+                    },
+                )
+                or author_avatar_url,
+                "avatar_remote_url": (
+                    _pick_remote_url(
+                        {
+                            "avatarUrl": item.get("avatarUrl"),
+                        }
+                    )
+                    or author_avatar_remote_url
                 ),
                 "images": comment_images,
             }
@@ -369,6 +466,10 @@ def _normalize_model(meta_path: Path) -> Optional[dict]:
         meta.get("cover"),
         {"relPath": (meta.get("images") or {}).get("cover"), "url": meta.get("coverUrl")},
     )
+    cover_remote_url = _pick_remote_url(
+        meta.get("cover"),
+        {"url": meta.get("coverUrl")},
+    ) or ""
 
     gallery = []
     gallery_seen = set()
@@ -379,11 +480,17 @@ def _normalize_model(meta_path: Path) -> Optional[dict]:
             if not url or url in gallery_seen:
                 continue
             gallery_seen.add(url)
-            gallery.append({"url": url, "kind": kind})
+            gallery.append(
+                {
+                    "url": url,
+                    "kind": kind,
+                    "fallback_url": _pick_remote_url(item) or "",
+                }
+            )
 
     if cover_url:
         gallery_seen.add(cover_url)
-        gallery.append({"url": cover_url, "kind": "cover"})
+        gallery.append({"url": cover_url, "kind": "cover", "fallback_url": cover_remote_url})
 
     add_gallery(meta.get("designImages") or [], "design")
     add_gallery(meta.get("summaryImages") or [], "summary")
@@ -397,6 +504,8 @@ def _normalize_model(meta_path: Path) -> Optional[dict]:
     author = meta.get("author") if isinstance(meta.get("author"), dict) else {}
     author_name = str(author.get("name") or meta.get("author") or "未知作者")
     collect_ts = _parse_timestamp(meta.get("collectDate") or meta.get("update_time"))
+    publish_value = _extract_publish_value(meta)
+    publish_ts = _parse_timestamp(publish_value)
 
     summary = meta.get("summary") if isinstance(meta.get("summary"), dict) else {}
     summary_html = _rewrite_summary_html(model_root, str(summary.get("html") or ""))
@@ -422,13 +531,17 @@ def _normalize_model(meta_path: Path) -> Optional[dict]:
                     "avatarUrl": author.get("avatarUrl"),
                 },
             ),
+            "avatar_remote_url": _pick_remote_url(author) or "",
         },
         "cover_url": cover_url,
+        "cover_remote_url": cover_remote_url,
         "gallery": gallery,
         "tags": tags,
         "stats": stats,
         "collect_ts": collect_ts,
         "collect_date": _format_date(meta.get("collectDate") or meta.get("update_time")),
+        "publish_ts": publish_ts,
+        "publish_date": _format_date(publish_value),
         "summary_html": summary_html,
         "summary_text": summary_text,
         "comments": _normalize_comments(meta, model_root),
