@@ -30,7 +30,8 @@
               rows="9"
               placeholder="makerworld.com.cn Cookie"
               data-secret-input
-            >{{ cookie_map.get("cn", "") }}</textarea>
+              data-secret-length="{{ cookie_map.get("cn", "")|length }}"
+            >{{- cookie_map.get("cn", "") -}}</textarea>
             <button class="button button-secondary button-small" type="button" data-secret-toggle>显示</button>
           </div>
         </label>
@@ -42,7 +43,8 @@
               rows="9"
               placeholder="makerworld.com Cookie"
               data-secret-input
-            >{{ cookie_map.get("global", "") }}</textarea>
+              data-secret-length="{{ cookie_map.get("global", "")|length }}"
+            >{{- cookie_map.get("global", "") -}}</textarea>
             <button class="button button-secondary button-small" type="button" data-secret-toggle>显示</button>
           </div>
         </label>

@@ -40,7 +40,11 @@ function maskSecretField(textarea) {
   const rawValue = String(textarea.dataset.rawValue || "");
   textarea.dataset.secretMasked = rawValue ? "true" : "false";
   textarea.readOnly = Boolean(rawValue);
-  textarea.value = rawValue ? buildMaskedValue(rawValue) : "";
+  const templateLength = Number.parseInt(textarea.dataset.secretLength || "", 10);
+  const maskLength = Number.isFinite(templateLength) && templateLength > 0
+    ? templateLength
+    : Array.from(rawValue).length;
+  textarea.value = rawValue ? "•".repeat(maskLength) : "";
 }
 
 function unmaskSecretField(textarea) {
@@ -64,7 +68,8 @@ function bindSecretFields() {
   if (!fields.length) return;
 
   fields.forEach((textarea) => {
-    textarea.dataset.rawValue = String(textarea.value || "");
+    textarea.dataset.rawValue = String(textarea.defaultValue || textarea.value || "");
+    textarea.dataset.secretLength = String(Array.from(textarea.dataset.rawValue).length);
 
     const wrapper = textarea.closest(".secret-field");
     const toggle = wrapper?.querySelector("[data-secret-toggle]");
@@ -88,6 +93,7 @@ function bindSecretFields() {
       }
 
       textarea.dataset.rawValue = String(textarea.value || "");
+      textarea.dataset.secretLength = String(Array.from(textarea.dataset.rawValue).length);
       maskSecretField(textarea);
       toggle.textContent = "显示";
     });
