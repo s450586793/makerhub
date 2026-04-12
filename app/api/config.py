@@ -1,55 +1,88 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.core.store import JsonStore
-from app.schemas.models import AppConfig, ArchiveRequest, CookiePair, NotificationConfig, ProxyConfig, UserProfile
+from app.schemas.models import ArchiveRequest, CookiePair, NotificationConfig, ProxyConfig, UserSettingsUpdate
 from app.schemas.models import OrganizeTask
 from app.services.catalog import build_dashboard_payload, build_models_payload, build_tasks_payload
 from app.services.crawler import LegacyCrawlerBridge
+from app.services.auth import AuthManager
 
 
 router = APIRouter(prefix="/api")
 store = JsonStore()
 crawler = LegacyCrawlerBridge()
+auth_manager = AuthManager(store=store)
 
 
-@router.get("/config", response_model=AppConfig)
+def _public_config_payload(config) -> dict:
+    return {
+        "cookies": [item.model_dump() for item in config.cookies],
+        "proxy": config.proxy.model_dump(),
+        "notifications": config.notifications.model_dump(),
+        "user": {
+            "username": config.user.username,
+            "display_name": config.user.display_name,
+            "password_hint": config.user.password_hint,
+            "password_updated_at": config.user.password_updated_at,
+        },
+        "api_tokens": [item.model_dump() for item in auth_manager.list_api_tokens()],
+        "missing_3mf": [item.model_dump() for item in config.missing_3mf],
+        "organizer": config.organizer.model_dump(),
+        "paths": config.paths.model_dump(),
+    }
+
+
+def _require_session_auth(request: Request) -> None:
+    identity = getattr(request.state, "auth_identity", None) or {}
+    if identity.get("kind") != "session":
+        raise HTTPException(status_code=403, detail="此操作需要登录会话。")
+
+
+@router.get("/config")
 async def get_config():
-    return store.load()
+    return _public_config_payload(store.load())
 
 
-@router.post("/config/cookies", response_model=AppConfig)
-async def save_cookies(payload: list[CookiePair]):
+@router.post("/config/cookies")
+async def save_cookies(payload: list[CookiePair], request: Request):
+    _require_session_auth(request)
     config = store.load()
     config.cookies = payload
-    return store.save(config)
+    return _public_config_payload(store.save(config))
 
 
-@router.post("/config/proxy", response_model=AppConfig)
-async def save_proxy(payload: ProxyConfig):
+@router.post("/config/proxy")
+async def save_proxy(payload: ProxyConfig, request: Request):
+    _require_session_auth(request)
     config = store.load()
     config.proxy = payload
-    return store.save(config)
+    return _public_config_payload(store.save(config))
 
 
-@router.post("/config/notifications", response_model=AppConfig)
-async def save_notifications(payload: NotificationConfig):
+@router.post("/config/notifications")
+async def save_notifications(payload: NotificationConfig, request: Request):
+    _require_session_auth(request)
     config = store.load()
     config.notifications = payload
-    return store.save(config)
+    return _public_config_payload(store.save(config))
 
 
-@router.post("/config/user", response_model=AppConfig)
-async def save_user(payload: UserProfile):
+@router.post("/config/user")
+async def save_user(payload: UserSettingsUpdate, request: Request):
+    _require_session_auth(request)
     config = store.load()
-    config.user = payload
-    return store.save(config)
+    config.user.username = payload.username.strip() or "admin"
+    config.user.display_name = payload.display_name.strip() or "Admin"
+    config.user.password_hint = payload.password_hint.strip()
+    return _public_config_payload(store.save(config))
 
 
-@router.post("/config/organizer", response_model=AppConfig)
-async def save_organizer(payload: OrganizeTask):
+@router.post("/config/organizer")
+async def save_organizer(payload: OrganizeTask, request: Request):
+    _require_session_auth(request)
     config = store.load()
     config.organizer = payload
-    return store.save(config)
+    return _public_config_payload(store.save(config))
 
 
 @router.get("/dashboard")

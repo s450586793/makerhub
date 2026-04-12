@@ -130,6 +130,72 @@
         <span class="form-status" data-form-status></span>
       </div>
     </form>
+
+    <form class="settings-form token-card" data-password-form>
+      <div class="section-card__header">
+        <div>
+          <span class="eyebrow">密码</span>
+          <h2>修改登录密码</h2>
+        </div>
+      </div>
+      <div class="settings-grid settings-grid--three">
+        <label class="field-card">
+          <span>当前密码</span>
+          <input type="password" name="current_password" autocomplete="current-password" placeholder="当前密码">
+        </label>
+        <label class="field-card">
+          <span>新密码</span>
+          <input type="password" name="new_password" autocomplete="new-password" placeholder="至少 4 位">
+        </label>
+        <label class="field-card">
+          <span>确认新密码</span>
+          <input type="password" name="confirm_password" autocomplete="new-password" placeholder="再次输入新密码">
+        </label>
+      </div>
+      <div class="form-footer">
+        <button class="button button-primary" type="submit">更新密码</button>
+        <span class="form-status" data-password-status></span>
+      </div>
+    </form>
+
+    <section class="token-card" data-token-manager>
+      <div class="section-card__header">
+        <div>
+          <span class="eyebrow">Token</span>
+          <h2>API Token 管理</h2>
+        </div>
+      </div>
+      <form class="token-create-form" data-token-create-form>
+        <input type="text" name="name" placeholder="例如：家里 NAS / 自动化脚本">
+        <button class="button button-primary" type="submit">生成 Token</button>
+      </form>
+      <p class="archive-form__hint">后续通过 API 调用归档时，可在 `Authorization: Bearer &lt;token&gt;` 里传入。</p>
+      <div class="token-output" data-token-output hidden>
+        <strong>新 Token</strong>
+        <code data-token-value></code>
+      </div>
+      <span class="form-status" data-token-status></span>
+
+      <div class="token-list" data-token-list>
+        {% if token_items %}
+        {% for item in token_items %}
+        <article class="token-item" data-token-id="{{ item.id }}">
+          <div>
+            <strong>{{ item.name }}</strong>
+            <span>{{ item.token_prefix }}...</span>
+          </div>
+          <div class="token-item__meta">
+            <span>创建于 {{ item.created_at or "-" }}</span>
+            <span>最近使用 {{ item.last_used_at or "未使用" }}</span>
+          </div>
+          <button class="button button-secondary button-small" type="button" data-token-revoke="{{ item.id }}">撤销</button>
+        </article>
+        {% endfor %}
+        {% else %}
+        <p class="empty-copy">当前还没有 API Token。</p>
+        {% endif %}
+      </div>
+    </section>
   </div>
 
   <div class="settings-panel" data-settings-panel="organizer">

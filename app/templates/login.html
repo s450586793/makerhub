@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block title %}登录 | makerhub{% endblock %}
+{% block body_class %}login-page{% endblock %}
+
+{% block content %}
+<section class="login-shell">
+  <article class="login-card">
+    <div class="login-card__header">
+      <span class="brand-mark__badge">MH</span>
+      <div>
+        <h1>登录 makerhub</h1>
+        <p>公网访问先进入登录页，页面登录后可继续使用归档与本地浏览。</p>
+      </div>
+    </div>
+
+    <form class="login-form" method="post" action="/login">
+      <input type="hidden" name="next" value="{{ next_path }}">
+      <label class="field-card">
+        <span>用户名</span>
+        <input type="text" name="username" value="admin" autocomplete="username" required>
+      </label>
+      <label class="field-card">
+        <span>密码</span>
+        <input type="password" name="password" value="admin" autocomplete="current-password" required>
+      </label>
+      {% if error_message %}
+      <p class="form-status is-error">{{ error_message }}</p>
+      {% endif %}
+      <button class="button button-primary" type="submit">登录</button>
+    </form>
+  </article>
+</section>
+{% endblock %}

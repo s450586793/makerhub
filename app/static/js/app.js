@@ -1,18 +1,31 @@
-async function postJson(url, payload) {
+async function requestJson(url, options = {}) {
+  const method = options.method || "POST";
+  const payload = options.payload;
   const response = await fetch(url, {
-    method: "POST",
-    headers: {
+    method,
+    headers: payload !== undefined ? {
       "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
+    } : undefined,
+    body: payload !== undefined ? JSON.stringify(payload) : undefined,
   });
 
   if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || "请求失败");
+    let message = "请求失败";
+    try {
+      const payload = await response.json();
+      message = String(payload.detail || payload.message || message);
+    } catch (error) {
+      const raw = await response.text();
+      message = raw || message;
+    }
+    throw new Error(message);
   }
 
   return response.json();
+}
+
+async function postJson(url, payload) {
+  return requestJson(url, { method: "POST", payload });
 }
 
 function setStatusTarget(target, message, type) {
@@ -183,6 +196,119 @@ function bindSettingsForms() {
       }
     });
   });
+}
+
+function bindPasswordForm() {
+  const form = document.querySelector("[data-password-form]");
+  if (!form) return;
+
+  const status = form.querySelector("[data-password-status]");
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const currentPassword = String(form.querySelector('[name="current_password"]')?.value || "");
+    const newPassword = String(form.querySelector('[name="new_password"]')?.value || "");
+    const confirmPassword = String(form.querySelector('[name="confirm_password"]')?.value || "");
+
+    if (!currentPassword || !newPassword) {
+      setStatusTarget(status, "请先填写当前密码和新密码。", "is-error");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setStatusTarget(status, "两次输入的新密码不一致。", "is-error");
+      return;
+    }
+
+    setStatusTarget(status, "提交中...", null);
+    try {
+      const response = await postJson("/api/auth/password", {
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
+      setStatusTarget(status, response.message || "密码已更新，请重新登录。", "is-success");
+      form.reset();
+      window.setTimeout(() => {
+        window.location.href = "/login";
+      }, 900);
+    } catch (error) {
+      setStatusTarget(status, error.message || "更新失败", "is-error");
+    }
+  });
+}
+
+function bindTokenManager() {
+  const root = document.querySelector("[data-token-manager]");
+  if (!root) return;
+
+  const createForm = root.querySelector("[data-token-create-form]");
+  const status = root.querySelector("[data-token-status]");
+  const output = root.querySelector("[data-token-output]");
+  const outputValue = root.querySelector("[data-token-value]");
+  const tokenList = root.querySelector("[data-token-list]");
+
+  const renderTokenItem = (item) => {
+    if (!tokenList || !item) return;
+    const empty = tokenList.querySelector(".empty-copy");
+    if (empty) {
+      empty.remove();
+    }
+
+    const article = document.createElement("article");
+    article.className = "token-item";
+    article.dataset.tokenId = item.id;
+    article.innerHTML = `
+      <div>
+        <strong>${item.name}</strong>
+        <span>${item.token_prefix}...</span>
+      </div>
+      <div class="token-item__meta">
+        <span>创建于 ${item.created_at || "-"}</span>
+        <span>最近使用 ${item.last_used_at || "未使用"}</span>
+      </div>
+      <button class="button button-secondary button-small" type="button" data-token-revoke="${item.id}">撤销</button>
+    `;
+    tokenList.prepend(article);
+    bindRevokeButton(article.querySelector("[data-token-revoke]"));
+  };
+
+  const bindRevokeButton = (button) => {
+    if (!button) return;
+    button.addEventListener("click", async () => {
+      const tokenId = String(button.dataset.tokenRevoke || "");
+      if (!tokenId) return;
+      setStatusTarget(status, "撤销中...", null);
+      try {
+        await requestJson(`/api/auth/tokens/${tokenId}`, { method: "DELETE" });
+        button.closest(".token-item")?.remove();
+        if (tokenList && !tokenList.children.length) {
+          tokenList.innerHTML = '<p class="empty-copy">当前还没有 API Token。</p>';
+        }
+        setStatusTarget(status, "Token 已撤销。", "is-success");
+      } catch (error) {
+        setStatusTarget(status, error.message || "撤销失败", "is-error");
+      }
+    });
+  };
+
+  createForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const name = String(createForm.querySelector('[name="name"]')?.value || "");
+    setStatusTarget(status, "生成中...", null);
+
+    try {
+      const response = await postJson("/api/auth/tokens", { name });
+      if (output && outputValue) {
+        output.hidden = false;
+        outputValue.textContent = response.token || "";
+      }
+      renderTokenItem(response.item);
+      setStatusTarget(status, "Token 已生成，请立即保存。", "is-success");
+      createForm.reset();
+    } catch (error) {
+      setStatusTarget(status, error.message || "生成失败", "is-error");
+    }
+  });
+
+  root.querySelectorAll("[data-token-revoke]").forEach((button) => bindRevokeButton(button));
 }
 
 function bindArchiveForm() {
@@ -401,6 +527,8 @@ document.addEventListener("DOMContentLoaded", () => {
   bindSecretFields();
   bindSettingsTabs();
   bindSettingsForms();
+  bindPasswordForm();
+  bindTokenManager();
   bindArchiveForm();
   bindTaskAutoRefresh();
   bindDetailGallery();

@@ -2,6 +2,7 @@ from typing import List
 
 from pydantic import BaseModel, Field
 
+from app.core.security import default_admin_password_hash
 from app.core.settings import ARCHIVE_DIR, CONFIG_DIR, LOCAL_DIR, LOGS_DIR, STATE_DIR
 
 
@@ -28,6 +29,47 @@ class UserProfile(BaseModel):
     username: str = "admin"
     display_name: str = "Admin"
     password_hint: str = "请改成强密码"
+    password_hash: str = Field(default_factory=default_admin_password_hash)
+    password_updated_at: str = ""
+
+
+class UserSettingsUpdate(BaseModel):
+    username: str = "admin"
+    display_name: str = "Admin"
+    password_hint: str = "请改成强密码"
+
+
+class ApiTokenRecord(BaseModel):
+    id: str
+    name: str
+    token_prefix: str
+    token_hash: str
+    created_at: str
+    last_used_at: str = ""
+    disabled: bool = False
+
+
+class ApiTokenView(BaseModel):
+    id: str
+    name: str
+    token_prefix: str
+    created_at: str
+    last_used_at: str = ""
+    disabled: bool = False
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class ApiTokenCreateRequest(BaseModel):
+    name: str = ""
 
 
 class ArchiveRequest(BaseModel):
@@ -62,6 +104,7 @@ class AppConfig(BaseModel):
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
     notifications: NotificationConfig = Field(default_factory=NotificationConfig)
     user: UserProfile = Field(default_factory=UserProfile)
+    api_tokens: List[ApiTokenRecord] = Field(default_factory=list)
     missing_3mf: List[Missing3mfItem] = Field(default_factory=list)
     organizer: OrganizeTask = Field(default_factory=OrganizeTask)
     paths: RuntimePaths = Field(default_factory=RuntimePaths)

@@ -126,6 +126,10 @@ select {
   gap: 10px;
 }
 
+.sidebar-footer {
+  margin-top: auto;
+}
+
 .sidebar-nav__link {
   min-height: 46px;
   padding: 0 16px;
@@ -154,6 +158,49 @@ select {
   width: min(1540px, calc(100vw - 40px));
   margin: 0 auto;
   padding: 28px 0 56px;
+}
+
+.login-page {
+  min-height: 100vh;
+}
+
+.login-shell {
+  min-height: calc(100vh - 56px);
+  display: grid;
+  place-items: center;
+}
+
+.login-card {
+  width: min(520px, 100%);
+  padding: 30px;
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 24px;
+}
+
+.login-card__header {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.login-card__header h1,
+.token-card h2 {
+  margin: 0;
+}
+
+.login-card__header p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.login-form {
+  display: grid;
+  gap: 16px;
 }
 
 .surface,
@@ -766,6 +813,71 @@ select:focus {
 
 .form-status.is-error {
   color: var(--danger);
+}
+
+.token-card {
+  padding: 24px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 16px;
+}
+
+.token-create-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+}
+
+.token-output {
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  background: var(--surface-soft);
+  display: grid;
+  gap: 8px;
+}
+
+.token-output code {
+  padding: 12px 14px;
+  border-radius: 12px;
+  color: var(--text);
+  background: #fff;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.token-list {
+  display: grid;
+  gap: 12px;
+}
+
+.token-item {
+  padding: 16px 18px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: #fff;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px 18px;
+  align-items: center;
+}
+
+.token-item strong,
+.token-item__meta {
+  display: block;
+}
+
+.token-item > div:first-child {
+  display: grid;
+  gap: 6px;
+}
+
+.token-item > div:first-child span,
+.token-item__meta {
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .archive-form {
@@ -1896,7 +2008,8 @@ select:focus {
   .settings-grid--two,
   .settings-grid--three,
   .filter-bar,
-  .archive-form {
+  .archive-form,
+  .token-create-form {
     grid-template-columns: 1fr;
   }
 
@@ -1906,6 +2019,11 @@ select:focus {
 
   .filter-actions {
     justify-content: flex-start;
+  }
+
+  .token-item {
+    grid-template-columns: 1fr;
+    align-items: flex-start;
   }
 
   .doc-card {

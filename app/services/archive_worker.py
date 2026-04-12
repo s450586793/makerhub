@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 
 from app.core.settings import ARCHIVE_DIR, LOGS_DIR
 from app.core.store import JsonStore
+from app.services.batch_discovery import discover_batch_model_urls, extract_model_id, normalize_model_url, normalize_source_url
+from app.services.catalog import load_archive_models
 from app.services.legacy_archiver import archive_model as legacy_archive_model
 from app.services.task_state import TaskStateStore
 
@@ -28,6 +30,13 @@ def _select_cookie(url: str, config) -> str:
     platform = "global" if "makerworld.com" in netloc and "makerworld.com.cn" not in netloc else "cn"
     cookie_map = {item.platform: item.cookie for item in config.cookies}
     return str(cookie_map.get(platform) or "").strip()
+
+
+def _task_key(url: str) -> str:
+    model_id = extract_model_id(url)
+    if model_id:
+        return f"model:{model_id}"
+    return normalize_source_url(url)
 
 
 @contextmanager
@@ -73,7 +82,7 @@ class ArchiveTaskManager:
         self._worker: Optional[threading.Thread] = None
 
     def submit(self, url: str) -> dict:
-        clean_url = str(url or "").strip()
+        clean_url = normalize_source_url(url)
         if not clean_url:
             return {
                 "accepted": False,
@@ -81,33 +90,124 @@ class ArchiveTaskManager:
             }
 
         mode = _detect_mode(clean_url)
-        if mode != "single_model":
-            return {
-                "accepted": False,
-                "message": "当前版本仅支持单模型链接归档，作者页和收藏夹批量归档还未接入。",
-                "mode": mode,
-                "url": clean_url,
-            }
+        if mode == "single_model":
+            return self._submit_single(clean_url)
+        if mode in {"author_upload", "collection_models"}:
+            return self._submit_batch(clean_url, mode)
+        return {
+            "accepted": False,
+            "message": "无法识别该链接类型，请输入单模型、作者上传页或收藏夹页面。",
+            "mode": mode,
+            "url": clean_url,
+        }
 
+    def _queued_task_keys(self) -> set[str]:
+        queue = self.task_store.load_archive_queue()
+        items = (queue.get("active") or []) + (queue.get("queued") or [])
+        return {_task_key(item.get("url") or item.get("title") or "") for item in items if item.get("url") or item.get("title")}
+
+    def _archived_task_keys(self) -> set[str]:
+        keys = set()
+        for item in load_archive_models():
+            model_id = str(item.get("id") or "").strip()
+            if model_id:
+                keys.add(f"model:{model_id}")
+                continue
+            origin_url = str(item.get("origin_url") or "").strip()
+            if origin_url:
+                keys.add(_task_key(origin_url))
+        return keys
+
+    def _enqueue_single_task(self, url: str, message: str = "等待归档") -> str:
         task_id = uuid.uuid4().hex
         self.task_store.enqueue_archive_task(
             {
                 "id": task_id,
-                "url": clean_url,
-                "title": clean_url,
+                "url": url,
+                "title": url,
                 "status": "queued",
                 "progress": 0,
-                "message": "等待归档",
+                "message": message,
                 "updated_at": datetime.now().isoformat(),
             }
         )
+        return task_id
+
+    def _submit_single(self, clean_url: str) -> dict:
+        task_key = _task_key(clean_url)
+        if task_key in self._queued_task_keys():
+            return {
+                "accepted": False,
+                "message": "该模型已经在归档队列中。",
+                "mode": "single_model",
+                "url": clean_url,
+            }
+        if task_key in self._archived_task_keys():
+            return {
+                "accepted": False,
+                "message": "该模型已归档，无需重复加入。",
+                "mode": "single_model",
+                "url": clean_url,
+            }
+
+        task_id = self._enqueue_single_task(clean_url)
         self._ensure_worker()
         return {
             "accepted": True,
             "task_id": task_id,
-            "mode": mode,
+            "mode": "single_model",
             "url": clean_url,
             "message": "归档任务已加入队列。",
+        }
+
+    def _submit_batch(self, clean_url: str, mode: str) -> dict:
+        config = self.store.load()
+        cookie = _select_cookie(clean_url, config)
+        if not cookie:
+            return {
+                "accepted": False,
+                "message": "未找到可用 Cookie，请先到设置页配置对应站点 Cookie。",
+                "mode": mode,
+                "url": clean_url,
+            }
+
+        with _temporary_proxy_env(config):
+            discovered = discover_batch_model_urls(clean_url, cookie)
+
+        pending_keys = self._queued_task_keys()
+        archived_keys = self._archived_task_keys()
+        queued_count = 0
+        skipped_pending = 0
+        skipped_archived = 0
+
+        for model_url in discovered.get("items") or []:
+            key = _task_key(model_url)
+            if key in pending_keys:
+                skipped_pending += 1
+                continue
+            if key in archived_keys:
+                skipped_archived += 1
+                continue
+            self._enqueue_single_task(model_url, message=f"来自批量归档：{clean_url}")
+            pending_keys.add(key)
+            queued_count += 1
+
+        if queued_count > 0:
+            self._ensure_worker()
+
+        return {
+            "accepted": queued_count > 0,
+            "mode": mode,
+            "url": clean_url,
+            "discovered_count": len(discovered.get("items") or []),
+            "queued_count": queued_count,
+            "skipped_pending": skipped_pending,
+            "skipped_archived": skipped_archived,
+            "pages_scanned": discovered.get("pages_scanned") or 0,
+            "message": (
+                f"批量扫描完成：发现 {len(discovered.get('items') or [])} 个模型，"
+                f"新增入队 {queued_count} 个，已在队列 {skipped_pending} 个，已归档 {skipped_archived} 个。"
+            ),
         }
 
     def _ensure_worker(self) -> None:

@@ -1,15 +1,24 @@
-from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Form, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.core.settings import ROOT_DIR
 from app.core.store import JsonStore
 from app.services.catalog import build_dashboard_payload, build_models_payload, build_tasks_payload, get_model_detail, load_archive_models
+from app.services.auth import AuthManager, SESSION_COOKIE_NAME
 
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(ROOT_DIR / "app" / "templates"))
 store = JsonStore()
+auth_manager = AuthManager(store=store)
+
+
+def _safe_next_path(value: str) -> str:
+    candidate = str(value or "").strip()
+    if not candidate.startswith("/"):
+        return "/"
+    return candidate
 
 
 def _sample_detail() -> dict:
@@ -114,6 +123,67 @@ async def dashboard(request: Request):
     )
 
 
+@router.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request, next: str = Query("/")):
+    identity = getattr(request.state, "auth_identity", None) or {}
+    next_path = _safe_next_path(next)
+    if identity.get("kind") == "session":
+        return RedirectResponse(url=next_path, status_code=303)
+
+    return templates.TemplateResponse(
+        "login.html",
+        {
+            "request": request,
+            "show_sidebar": False,
+            "next_path": next_path,
+            "error_message": "",
+        },
+    )
+
+
+@router.post("/login", response_class=HTMLResponse)
+async def login_submit(
+    request: Request,
+    username: str = Form(""),
+    password: str = Form(""),
+    next: str = Form("/"),
+):
+    next_path = _safe_next_path(next)
+    if not auth_manager.authenticate_credentials(username, password):
+        return templates.TemplateResponse(
+            "login.html",
+            {
+                "request": request,
+                "show_sidebar": False,
+                "next_path": next_path,
+                "error_message": "用户名或密码错误。",
+            },
+            status_code=401,
+        )
+
+    session = auth_manager.create_session(username)
+    response = RedirectResponse(url=next_path, status_code=303)
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        session["id"],
+        max_age=14 * 24 * 60 * 60,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
+@router.get("/logout")
+async def logout(request: Request):
+    identity = getattr(request.state, "auth_identity", None) or {}
+    if identity.get("kind") == "session":
+        auth_manager.delete_session(str(identity.get("session_id") or ""))
+    response = RedirectResponse(url="/login", status_code=303)
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    return response
+
+
 @router.get("/models", response_class=HTMLResponse)
 async def models_page(
     request: Request,
@@ -163,6 +233,7 @@ async def settings_page(request: Request):
             "show_sidebar": True,
             "config": config,
             "cookie_map": cookie_map,
+            "token_items": auth_manager.list_api_tokens(),
         },
     )
 
