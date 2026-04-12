@@ -81,7 +81,7 @@ class ArchiveTaskManager:
         self._lock = threading.Lock()
         self._worker: Optional[threading.Thread] = None
 
-    def submit(self, url: str) -> dict:
+    def submit(self, url: str, force: bool = False) -> dict:
         clean_url = normalize_source_url(url)
         if not clean_url:
             return {
@@ -91,7 +91,7 @@ class ArchiveTaskManager:
 
         mode = _detect_mode(clean_url)
         if mode == "single_model":
-            return self._submit_single(clean_url)
+            return self._submit_single(clean_url, force=force)
         if mode in {"author_upload", "collection_models"}:
             return self._submit_batch(clean_url, mode)
         return {
@@ -133,7 +133,7 @@ class ArchiveTaskManager:
         )
         return task_id
 
-    def _submit_single(self, clean_url: str) -> dict:
+    def _submit_single(self, clean_url: str, force: bool = False) -> dict:
         task_key = _task_key(clean_url)
         if task_key in self._queued_task_keys():
             return {
@@ -142,7 +142,7 @@ class ArchiveTaskManager:
                 "mode": "single_model",
                 "url": clean_url,
             }
-        if task_key in self._archived_task_keys():
+        if not force and task_key in self._archived_task_keys():
             return {
                 "accepted": False,
                 "message": "该模型已归档，无需重复加入。",
@@ -150,14 +150,99 @@ class ArchiveTaskManager:
                 "url": clean_url,
             }
 
-        task_id = self._enqueue_single_task(clean_url)
+        queue_message = "等待归档" if not force else "等待重新下载缺失 3MF"
+        task_id = self._enqueue_single_task(clean_url, message=queue_message)
         self._ensure_worker()
         return {
             "accepted": True,
             "task_id": task_id,
             "mode": "single_model",
             "url": clean_url,
-            "message": "归档任务已加入队列。",
+            "message": "归档任务已加入队列。" if not force else "缺失 3MF 重新下载任务已加入队列。",
+        }
+
+    def retry_missing_3mf(self, model_url: str, model_id: str = "", title: str = "", instance_id: str = "") -> dict:
+        clean_url = normalize_source_url(model_url)
+        clean_model_id = str(model_id or "").strip()
+        if not clean_url and clean_model_id:
+            clean_url = normalize_model_url(f"/zh/models/{clean_model_id}")
+        if not clean_url:
+            return {
+                "accepted": False,
+                "message": "缺少可用模型链接，无法重新下载 3MF。",
+            }
+
+        config = self.store.load()
+        if not _select_cookie(clean_url, config):
+            message = "未找到可用 Cookie，请先到设置页配置对应站点 Cookie。"
+            self.task_store.update_missing_3mf_status(
+                model_id=clean_model_id,
+                title=title,
+                instance_id=instance_id,
+                status="missing",
+                message=message,
+            )
+            return {
+                "accepted": False,
+                "message": message,
+            }
+
+        result = self.submit(clean_url, force=True)
+        if result.get("accepted"):
+            self.task_store.update_missing_3mf_status(
+                model_id=clean_model_id,
+                title=title,
+                instance_id=instance_id,
+                status="queued",
+                message="已加入重新下载队列",
+            )
+            return result
+
+        message = str(result.get("message") or "")
+        if "已经在归档队列中" in message:
+            self.task_store.update_missing_3mf_status(
+                model_id=clean_model_id,
+                title=title,
+                instance_id=instance_id,
+                status="queued",
+                message="已存在于归档队列",
+            )
+        return result
+
+    def retry_all_missing_3mf(self) -> dict:
+        missing_payload = self.task_store.load_missing_3mf()
+        items = missing_payload.get("items") or []
+        accepted = 0
+        queued = 0
+        failed = 0
+        last_message = ""
+
+        for item in items:
+            result = self.retry_missing_3mf(
+                model_url=str(item.get("model_url") or ""),
+                model_id=str(item.get("model_id") or ""),
+                title=str(item.get("title") or ""),
+                instance_id=str(item.get("instance_id") or ""),
+            )
+            last_message = str(result.get("message") or "")
+            if result.get("accepted"):
+                accepted += 1
+                continue
+            if "已经在归档队列中" in last_message:
+                queued += 1
+            else:
+                failed += 1
+
+        return {
+            "accepted": accepted > 0 or queued > 0,
+            "accepted_count": accepted,
+            "queued_count": queued,
+            "failed_count": failed,
+            "message": (
+                f"缺失 3MF 重试完成：新增入队 {accepted} 个，已在队列 {queued} 个，失败 {failed} 个。"
+                if items
+                else "当前没有缺失 3MF 任务。"
+            ),
         }
 
     def _submit_batch(self, clean_url: str, mode: str) -> dict:
@@ -232,6 +317,13 @@ class ArchiveTaskManager:
             try:
                 self._run_single_task(task_id, task["url"])
             except Exception as exc:
+                model_id = extract_model_id(task.get("url") or "")
+                if model_id:
+                    self.task_store.update_missing_3mf_status(
+                        model_id=model_id,
+                        status="missing",
+                        message=str(exc),
+                    )
                 self.task_store.fail_archive_task(task_id, str(exc))
 
     def _run_single_task(self, task_id: str, url: str) -> None:
@@ -239,6 +331,14 @@ class ArchiveTaskManager:
         cookie = _select_cookie(url, config)
         if not cookie:
             raise RuntimeError("未找到可用 Cookie，请先到设置页配置对应站点 Cookie。")
+
+        model_id = extract_model_id(url)
+        if model_id:
+            self.task_store.update_missing_3mf_status(
+                model_id=model_id,
+                status="running",
+                message="正在尝试重新下载 3MF",
+            )
 
         def progress_callback(payload: dict) -> None:
             self.task_store.update_active_task(
@@ -262,12 +362,15 @@ class ArchiveTaskManager:
             missing_items.append(
                 {
                     "model_id": str(result.get("model_id") or ""),
+                    "model_url": normalize_source_url(url),
                     "title": str(item.get("title") or item.get("name") or result.get("base_name") or ""),
+                    "instance_id": str(item.get("id") or item.get("profileId") or item.get("instanceId") or ""),
                     "status": "missing",
+                    "message": "等待重新下载",
+                    "updated_at": datetime.now().isoformat(),
                 }
             )
-        if missing_items:
-            self.task_store.merge_missing_3mf_items(missing_items)
+        self.task_store.replace_missing_3mf_for_model(str(result.get("model_id") or ""), missing_items)
 
         self.task_store.update_active_task(
             task_id,

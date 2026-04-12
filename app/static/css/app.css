@@ -962,10 +962,19 @@ select:focus {
   background: rgba(255, 255, 255, 0.74);
 }
 
+.table-like__row--missing {
+  grid-template-columns: 140px minmax(0, 1fr) 120px 140px;
+}
+
 .table-like__row span {
   padding: 14px 16px;
   border-bottom: 1px solid var(--border);
   font-size: 14px;
+  min-width: 0;
+}
+
+.table-like__row span .button {
+  margin: -4px 0;
 }
 
 .table-like__row--head {

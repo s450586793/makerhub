@@ -360,6 +360,62 @@ function bindTaskAutoRefresh() {
   }, 5000);
 }
 
+function bindMissing3mfActions() {
+  const status = document.querySelector("[data-missing-3mf-status]");
+  const retryButtons = Array.from(document.querySelectorAll("[data-missing-retry]"));
+  const retryAllButton = document.querySelector("[data-missing-retry-all]");
+  if (!status && !retryButtons.length && !retryAllButton) return;
+
+  const withBusyState = async (button, runner) => {
+    if (!button) {
+      await runner();
+      return;
+    }
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = "处理中...";
+    try {
+      await runner();
+    } finally {
+      button.disabled = false;
+      button.textContent = original;
+    }
+  };
+
+  retryButtons.forEach((button) => {
+    button.addEventListener("click", async () => {
+      const payload = {
+        model_id: String(button.dataset.modelId || ""),
+        model_url: String(button.dataset.modelUrl || ""),
+        title: String(button.dataset.modelTitle || ""),
+      };
+      await withBusyState(button, async () => {
+        setStatusTarget(status, "正在加入重新下载队列...", null);
+        try {
+          const response = await postJson("/api/tasks/missing-3mf/retry", payload);
+          setStatusTarget(status, response.message || "已加入重新下载队列", "is-success");
+          window.setTimeout(() => window.location.reload(), 800);
+        } catch (error) {
+          setStatusTarget(status, error.message || "重新下载提交失败", "is-error");
+        }
+      });
+    });
+  });
+
+  retryAllButton?.addEventListener("click", async () => {
+    await withBusyState(retryAllButton, async () => {
+      setStatusTarget(status, "正在批量加入重新下载队列...", null);
+      try {
+        const response = await postJson("/api/tasks/missing-3mf/retry-all", {});
+        setStatusTarget(status, response.message || "批量重试已提交", "is-success");
+        window.setTimeout(() => window.location.reload(), 900);
+      } catch (error) {
+        setStatusTarget(status, error.message || "批量重试失败", "is-error");
+      }
+    });
+  });
+}
+
 function setImageSource(image, options = {}) {
   if (!image) return;
 
@@ -531,6 +587,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindTokenManager();
   bindArchiveForm();
   bindTaskAutoRefresh();
+  bindMissing3mfActions();
   bindDetailGallery();
   bindImageFallbacks();
   bindLightbox();

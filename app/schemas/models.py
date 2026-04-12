@@ -80,6 +80,16 @@ class Missing3mfItem(BaseModel):
     model_id: str
     title: str
     status: str = "missing"
+    model_url: str = ""
+    instance_id: str = ""
+    message: str = ""
+    updated_at: str = ""
+
+
+class Missing3mfRetryRequest(BaseModel):
+    model_id: str = ""
+    model_url: str = ""
+    title: str = ""
 
 
 class OrganizeTask(BaseModel):

@@ -1,7 +1,14 @@
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.core.store import JsonStore
-from app.schemas.models import ArchiveRequest, CookiePair, NotificationConfig, ProxyConfig, UserSettingsUpdate
+from app.schemas.models import (
+    ArchiveRequest,
+    CookiePair,
+    Missing3mfRetryRequest,
+    NotificationConfig,
+    ProxyConfig,
+    UserSettingsUpdate,
+)
 from app.schemas.models import OrganizeTask
 from app.services.catalog import build_dashboard_payload, build_models_payload, build_tasks_payload
 from app.services.crawler import LegacyCrawlerBridge
@@ -106,6 +113,23 @@ async def get_tasks_data():
     config = store.load()
     fallback_items = [item.model_dump() for item in config.missing_3mf]
     return build_tasks_payload(missing_fallback=fallback_items)
+
+
+@router.post("/tasks/missing-3mf/retry")
+async def retry_missing_3mf(payload: Missing3mfRetryRequest, request: Request):
+    _require_session_auth(request)
+    return crawler.retry_missing_3mf(
+        model_url=payload.model_url,
+        model_id=payload.model_id,
+        title=payload.title,
+        instance_id="",
+    )
+
+
+@router.post("/tasks/missing-3mf/retry-all")
+async def retry_all_missing_3mf(request: Request):
+    _require_session_auth(request)
+    return crawler.retry_all_missing_3mf()
 
 
 @router.post("/archive")

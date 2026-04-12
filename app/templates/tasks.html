@@ -109,20 +109,37 @@
         <span class="eyebrow">缺失 3MF</span>
         <h2>待重新下载</h2>
       </div>
-      <span class="count-pill">{{ missing_3mf.count }} 项</span>
+      <div class="filter-actions">
+        {% if missing_3mf["items"] %}
+        <button class="button button-secondary button-small" type="button" data-missing-retry-all>全部重试</button>
+        {% endif %}
+        <span class="count-pill">{{ missing_3mf.count }} 项</span>
+      </div>
     </div>
     {% if missing_3mf["items"] %}
+    <span class="form-status" data-missing-3mf-status></span>
     <div class="table-like">
-      <div class="table-like__row table-like__row--head">
+      <div class="table-like__row table-like__row--missing table-like__row--head">
         <span>模型 ID</span>
         <span>标题</span>
         <span>状态</span>
+        <span>操作</span>
       </div>
       {% for item in missing_3mf["items"] %}
-      <div class="table-like__row">
+      <div class="table-like__row table-like__row--missing">
         <span>{{ item.model_id or "-" }}</span>
         <span>{{ item.title or "未命名模型" }}</span>
         <span>{{ item.status }}</span>
+        <span>
+          <button
+            class="button button-secondary button-small"
+            type="button"
+            data-missing-retry
+            data-model-id="{{ item.model_id or '' }}"
+            data-model-url="{{ item.model_url or '' }}"
+            data-model-title="{{ item.title or '' }}"
+          >重新下载</button>
+        </span>
       </div>
       {% endfor %}
     </div>
