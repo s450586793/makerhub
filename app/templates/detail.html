@@ -4,7 +4,9 @@
 {% block body_class %}detail-page{% endblock %}
 
 {% block content %}
-<section class="detail-shell">
+{% set initial_main_url = detail.cover_url or (detail.gallery[0].url if detail.gallery else '') or (detail.instances[0].primary_image_url if detail.instances else '') %}
+{% set initial_main_fallback = detail.cover_remote_url or (detail.gallery[0].fallback_url if detail.gallery else '') or (detail.instances[0].primary_image_fallback_url if detail.instances else '') %}
+<section class="detail-shell" data-detail-page>
   <div class="detail-toolbar">
     <a class="button button-secondary" href="/models">返回模型库</a>
     {% if detail.origin_url %}
@@ -16,12 +18,13 @@
     <div class="detail-main">
       <div class="detail-gallery">
         <div class="detail-cover-wrap">
-          {% if detail.cover_url %}
+          {% if initial_main_url %}
           <img
             class="detail-cover"
-            src="{{ detail.cover_url }}"
+            src="{{ initial_main_url }}"
             alt="{{ detail.title }}"
-            {% if detail.cover_remote_url %}data-fallback-src="{{ detail.cover_remote_url }}"{% endif %}
+            data-detail-main-image
+            {% if initial_main_fallback %}data-fallback-src="{{ initial_main_fallback }}"{% endif %}
           >
           {% else %}
           <div class="media-placeholder media-placeholder--large">{{ detail.title[:1] }}</div>
@@ -29,12 +32,23 @@
         </div>
         {% if detail.gallery %}
         <div class="detail-thumbs">
-          {% for image in detail.gallery[:8] %}
-          <img
-            src="{{ image.url }}"
-            alt="{{ detail.title }} {{ loop.index }}"
-            {% if image.fallback_url %}data-fallback-src="{{ image.fallback_url }}"{% endif %}
+          {% for image in detail.gallery %}
+          <button
+            class="detail-thumb{% if loop.first %} is-active{% endif %}"
+            type="button"
+            data-detail-media
+            data-media-group="gallery"
+            data-media-src="{{ image.url }}"
+            data-media-alt="{{ detail.title }} {{ loop.index }}"
+            {% if image.fallback_url %}data-media-fallback="{{ image.fallback_url }}"{% endif %}
           >
+            <img
+              src="{{ image.url }}"
+              alt="{{ detail.title }} {{ loop.index }}"
+              loading="lazy"
+              {% if image.fallback_url %}data-fallback-src="{{ image.fallback_url }}"{% endif %}
+            >
+          </button>
           {% endfor %}
         </div>
         {% endif %}
@@ -79,9 +93,24 @@
           {% if detail.instances %}
           <div class="profile-list">
             {% for profile in detail.instances %}
-            <article class="profile-card">
+            <button
+              class="profile-card{% if loop.first %} is-active{% endif %}"
+              type="button"
+              data-instance-button="{{ profile.instance_key }}"
+              {% if profile.primary_image_url %}data-instance-primary-src="{{ profile.primary_image_url }}"{% endif %}
+              {% if profile.primary_image_fallback_url %}data-instance-primary-fallback="{{ profile.primary_image_fallback_url }}"{% endif %}
+              data-instance-primary-alt="{{ profile.title }}"
+            >
               {% if profile.thumbnail_url %}
-              <img class="profile-card__thumb" src="{{ profile.thumbnail_url }}" alt="{{ profile.title }}">
+              <img
+                class="profile-card__thumb"
+                src="{{ profile.thumbnail_url }}"
+                alt="{{ profile.title }}"
+                loading="lazy"
+                {% if profile.thumbnail_fallback_url %}data-fallback-src="{{ profile.thumbnail_fallback_url }}"{% endif %}
+              >
+              {% else %}
+              <span class="media-placeholder profile-card__thumb">{{ profile.title[:1] }}</span>
               {% endif %}
               <div class="profile-card__body">
                 <div class="profile-card__title">{{ profile.title }}</div>
@@ -91,8 +120,63 @@
                   {% if profile.plates %} · {{ profile.plates }} 盘{% endif %}
                   {% if profile.rating %} · 评分 {{ profile.rating }}{% endif %}
                 </div>
+                {% if profile.publish_date %}
+                <div class="profile-card__submeta">发布于 {{ profile.publish_date }}</div>
+                {% endif %}
               </div>
-            </article>
+            </button>
+            {% endfor %}
+          </div>
+          <div class="instance-panels">
+            {% for profile in detail.instances %}
+            <section
+              class="instance-panel{% if loop.first %} is-active{% endif %}"
+              data-instance-panel="{{ profile.instance_key }}"
+              {% if not loop.first %}hidden{% endif %}
+            >
+              <div class="instance-panel__head">
+                <div>
+                  <h3>{{ profile.title }}</h3>
+                  <div class="instance-panel__meta">
+                    <span>{{ profile.machine }}</span>
+                    {% if profile.time %}<span>{{ profile.time }}</span>{% endif %}
+                    {% if profile.plates %}<span>{{ profile.plates }} 盘</span>{% endif %}
+                    {% if profile.download_count %}<span>{{ profile.download_count }} 下载</span>{% endif %}
+                    {% if profile.print_count %}<span>{{ profile.print_count }} 打印</span>{% endif %}
+                  </div>
+                </div>
+                {% if profile.file_url %}
+                <a class="button button-secondary button-small" href="{{ profile.file_url }}" download>下载 3MF</a>
+                {% endif %}
+              </div>
+              {% if profile.summary %}
+              <p class="instance-panel__summary">{{ profile.summary }}</p>
+              {% endif %}
+              {% if profile.media %}
+              <div class="instance-media-strip">
+                {% for media in profile.media %}
+                <button
+                  class="detail-thumb detail-thumb--compact{% if loop.first %} is-active{% endif %}"
+                  type="button"
+                  data-detail-media
+                  data-instance-key="{{ profile.instance_key }}"
+                  data-media-group="instance-{{ profile.instance_key }}"
+                  data-media-src="{{ media.url }}"
+                  data-media-alt="{{ profile.title }} {{ media.label }}"
+                  {% if media.fallback_url %}data-media-fallback="{{ media.fallback_url }}"{% endif %}
+                >
+                  <img
+                    src="{{ media.url }}"
+                    alt="{{ profile.title }} {{ media.label }}"
+                    loading="lazy"
+                    {% if media.fallback_url %}data-fallback-src="{{ media.fallback_url }}"{% endif %}
+                  >
+                  <span class="detail-thumb__badge">{{ media.label }}</span>
+                </button>
+                {% endfor %}
+              </div>
+              {% endif %}
+            </section>
             {% endfor %}
           </div>
           {% else %}
@@ -136,6 +220,44 @@
       {% endif %}
     </aside>
   </section>
+
+  {% if detail.attachments %}
+  <section class="surface section-card">
+    <div class="section-card__header">
+      <div>
+        <span class="eyebrow">文档</span>
+        <h2>附件与手册</h2>
+      </div>
+    </div>
+    <div class="doc-groups">
+      {% for group in detail.attachments|groupby("category_label") %}
+      <section class="doc-group">
+        <div class="doc-group__title">{{ group.grouper }} ({{ group.list|length }})</div>
+        <div class="docs-list">
+          {% for attachment in group.list %}
+          {% set attachment_href = attachment.url or attachment.fallback_url %}
+          <article class="doc-card">
+            <div class="doc-card__icon doc-card__icon--{{ attachment.ext }}">{{ attachment.ext|upper }}</div>
+            <div class="doc-card__body">
+              <strong>{{ attachment.name }}</strong>
+              <span>{{ attachment.category_label }}</span>
+            </div>
+            <div class="doc-card__actions">
+              {% if attachment_href %}
+              <a class="doc-action" href="{{ attachment_href }}" target="_blank" rel="noreferrer">查看</a>
+              <a class="doc-action" href="{{ attachment_href }}" download>下载</a>
+              {% else %}
+              <span class="doc-action is-disabled">不可用</span>
+              {% endif %}
+            </div>
+          </article>
+          {% endfor %}
+        </div>
+      </section>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
 
   <section class="surface section-card">
     <div class="section-card__header">

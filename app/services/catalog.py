@@ -257,18 +257,98 @@ def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
         if not isinstance(item, dict):
             continue
 
+        instance_key = str(item.get("id") or item.get("profileId") or len(normalized) + 1)
         duration = (
             item.get("time")
             or item.get("timeText")
             or item.get("durationText")
             or _format_duration(item.get("printTimeSeconds") or item.get("duration"))
         )
-        plates = _safe_int(item.get("plateCount") or item.get("plates") or item.get("plateNum"))
+        plate_items = item.get("plates") if isinstance(item.get("plates"), list) else []
+        plates = _safe_int(item.get("plateCount") or item.get("plateNum")) or len(plate_items)
         rating_value = item.get("rating") or item.get("score") or item.get("stars")
         rating = str(rating_value).strip() if rating_value not in ("", None) else ""
+        publish_value = (
+            item.get("publishTime")
+            or item.get("publishedAt")
+            or item.get("createTime")
+            or item.get("createdAt")
+            or ""
+        )
+
+        media_items = []
+        for picture_index, picture in enumerate(item.get("pictures") or [], start=1):
+            if not isinstance(picture, dict):
+                continue
+            picture_url = _asset_url_from_item(model_root, picture)
+            if not picture_url:
+                continue
+            media_items.append(
+                {
+                    "label": f"图{picture.get('index') or picture_index}",
+                    "kind": "picture",
+                    "url": picture_url,
+                    "fallback_url": _pick_remote_url(picture) or "",
+                }
+            )
+
+        for plate_index, plate in enumerate(plate_items, start=1):
+            if not isinstance(plate, dict):
+                continue
+            plate_url = _pick_image_url(
+                model_root,
+                {
+                    "relPath": plate.get("thumbnailRelPath"),
+                    "localName": plate.get("thumbnailFile"),
+                    "url": plate.get("thumbnailUrl"),
+                },
+            )
+            if not plate_url:
+                continue
+            media_items.append(
+                {
+                    "label": f"P{plate.get('index') or plate_index}",
+                    "kind": "plate",
+                    "url": plate_url,
+                    "fallback_url": _pick_remote_url(
+                        {
+                            "url": plate.get("thumbnailUrl"),
+                            "originalUrl": plate.get("thumbnailUrl"),
+                        }
+                    )
+                    or "",
+                }
+            )
+
+        thumbnail_url = _pick_image_url(
+            model_root,
+            (item.get("pictures") or [None])[0],
+            {
+                "relPath": item.get("thumbnailLocal"),
+                "url": item.get("thumbnailUrl"),
+                "originalUrl": item.get("thumbnail"),
+            },
+            item.get("cover"),
+            item.get("previewImage"),
+            item.get("thumbnail"),
+        )
+        thumbnail_fallback_url = (
+            _pick_remote_url((item.get("pictures") or [None])[0])
+            or _pick_remote_url(
+                {
+                    "url": item.get("thumbnailUrl"),
+                    "originalUrl": item.get("thumbnail"),
+                    "coverUrl": item.get("cover"),
+                    "previewImage": item.get("previewImage"),
+                }
+            )
+            or ""
+        )
+        primary_media = media_items[0] if media_items else None
 
         normalized.append(
             {
+                "instance_key": instance_key,
                 "title": str(
                     item.get("name")
                     or item.get("title")
@@ -287,23 +367,22 @@ def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
                 "time": str(duration),
                 "plates": plates,
                 "rating": rating,
-                "thumbnail_url": _pick_image_url(
-                    model_root,
-                    {
-                        "relPath": item.get("thumbnailLocal"),
-                        "url": item.get("thumbnailUrl"),
-                        "originalUrl": item.get("thumbnail"),
-                    },
-                    item.get("cover"),
-                    item.get("previewImage"),
-                    item.get("thumbnail"),
-                ),
+                "publish_date": _format_date(publish_value),
+                "download_count": _safe_int(item.get("downloadCount")),
+                "print_count": _safe_int(item.get("printCount")),
+                "summary": str(item.get("summary") or item.get("summaryTranslated") or ""),
+                "thumbnail_url": thumbnail_url,
+                "thumbnail_fallback_url": thumbnail_fallback_url,
+                "primary_image_url": (primary_media or {}).get("url") or thumbnail_url,
+                "primary_image_fallback_url": (primary_media or {}).get("fallback_url") or thumbnail_fallback_url,
+                "media": media_items,
                 "file_url": _local_asset_url(
                     model_root,
                     f"instances/{Path(str(item.get('fileName') or '')).name}",
                 )
                 if item.get("fileName")
                 else None,
+                "file_name": str(item.get("fileName") or item.get("name") or ""),
             }
         )
     return normalized
@@ -434,6 +513,31 @@ def _normalize_comments(meta: dict, model_root: Path) -> list[dict]:
     return normalized
 
 
+def _normalize_attachments(meta: dict, model_root: Path) -> list[dict]:
+    normalized = []
+    for item in meta.get("attachments") or []:
+        if not isinstance(item, dict):
+            continue
+
+        name = str(item.get("name") or item.get("title") or item.get("localName") or item.get("fileName") or "未命名文件")
+        category = str(item.get("category") or "other").strip().lower()
+        normalized.append(
+            {
+                "name": name,
+                "category": category,
+                "category_label": {
+                    "guide": "组装指南",
+                    "manual": "使用手册",
+                    "bom": "BOM 清单",
+                }.get(category, "附件文件"),
+                "url": _asset_url_from_item(model_root, item) or _pick_remote_url(item) or "",
+                "fallback_url": _pick_remote_url(item) or "",
+                "ext": Path(name).suffix.lower().lstrip(".") or "file",
+            }
+        )
+    return normalized
+
+
 def _normalize_source(meta: dict, relative_dir: Path) -> str:
     source_raw = str(meta.get("source") or "").strip().lower()
     if relative_dir.parts and relative_dir.parts[0] == "local":
@@ -531,7 +635,7 @@ def _normalize_model(meta_path: Path) -> Optional[dict]:
                     "avatarUrl": author.get("avatarUrl"),
                 },
             ),
-            "avatar_remote_url": _pick_remote_url(author) or "",
+            "avatar_remote_url": _pick_remote_url({"avatarUrl": author.get("avatarUrl")}) or "",
         },
         "cover_url": cover_url,
         "cover_remote_url": cover_remote_url,
@@ -546,7 +650,7 @@ def _normalize_model(meta_path: Path) -> Optional[dict]:
         "summary_text": summary_text,
         "comments": _normalize_comments(meta, model_root),
         "instances": _normalize_instances(meta, model_root),
-        "attachments": meta.get("attachments") or [],
+        "attachments": _normalize_attachments(meta, model_root),
     }
 
 

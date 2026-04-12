@@ -19,6 +19,7 @@ def _sample_detail() -> dict:
         "source_label": "MakerWorld 国内",
         "origin_url": "https://makerworld.com.cn/",
         "collect_date": "2026-04-11",
+        "publish_date": "2026-03-09",
         "author": {
             "name": "makerhub",
             "url": "",
@@ -38,8 +39,63 @@ def _sample_detail() -> dict:
         """,
         "summary_text": "当前没有真实归档模型。",
         "comments": [],
-        "instances": [],
-        "attachments": [],
+        "instances": [
+            {
+                "instance_key": "preview-1",
+                "title": "单色部分.3mf",
+                "machine": "P1S",
+                "time": "29.6 h",
+                "plates": 20,
+                "rating": "5.0",
+                "publish_date": "2026-03-09",
+                "download_count": 29,
+                "print_count": 20,
+                "summary": "预览实例，用于展示实例切换与 P1/P2/P3 图片切换交互。",
+                "thumbnail_url": "https://placehold.co/320x320/f1f5f9/111827?text=I1",
+                "thumbnail_fallback_url": "",
+                "primary_image_url": "https://placehold.co/1080x1080/f8fafc/111827?text=Instance+1",
+                "primary_image_fallback_url": "",
+                "media": [
+                    {"label": "图1", "kind": "picture", "url": "https://placehold.co/1080x1080/f8fafc/111827?text=Instance+1", "fallback_url": ""},
+                    {"label": "P1", "kind": "plate", "url": "https://placehold.co/1080x1080/e2e8f0/111827?text=P1", "fallback_url": ""},
+                    {"label": "P2", "kind": "plate", "url": "https://placehold.co/1080x1080/dbeafe/111827?text=P2", "fallback_url": ""},
+                ],
+                "file_url": "/archive/preview/sample_1.3mf",
+                "file_name": "sample_1.3mf",
+            },
+            {
+                "instance_key": "preview-2",
+                "title": "多色部分.3mf",
+                "machine": "X1C",
+                "time": "16 h",
+                "plates": 8,
+                "rating": "5.0",
+                "publish_date": "2026-03-10",
+                "download_count": 17,
+                "print_count": 8,
+                "summary": "第二个预览实例，用于展示打印实例卡片切换。",
+                "thumbnail_url": "https://placehold.co/320x320/e2e8f0/111827?text=I2",
+                "thumbnail_fallback_url": "",
+                "primary_image_url": "https://placehold.co/1080x1080/e2e8f0/111827?text=Instance+2",
+                "primary_image_fallback_url": "",
+                "media": [
+                    {"label": "图1", "kind": "picture", "url": "https://placehold.co/1080x1080/e2e8f0/111827?text=Instance+2", "fallback_url": ""},
+                    {"label": "P1", "kind": "plate", "url": "https://placehold.co/1080x1080/d1fae5/111827?text=P1", "fallback_url": ""},
+                ],
+                "file_url": "/archive/preview/sample_2.3mf",
+                "file_name": "sample_2.3mf",
+            },
+        ],
+        "attachments": [
+            {
+                "name": "组装手册.pdf",
+                "category": "guide",
+                "category_label": "组装指南",
+                "url": "https://example.com/guide.pdf",
+                "fallback_url": "",
+                "ext": "pdf",
+            }
+        ],
     }
 
 

@@ -32,7 +32,7 @@ function setFormStatus(form, message, type) {
 function buildMaskedValue(rawValue) {
   const clean = String(rawValue || "");
   if (!clean) return "";
-  const length = Math.min(Math.max(clean.length, 9), 48);
+  const length = Array.from(clean).length;
   return "•".repeat(length);
 }
 
@@ -229,6 +229,30 @@ function bindTaskAutoRefresh() {
   }, 5000);
 }
 
+function setImageSource(image, options = {}) {
+  if (!image) return;
+
+  const src = String(options.src || options.fallback || "").trim();
+  const fallback = String(options.fallback || "").trim();
+  const alt = String(options.alt || "").trim();
+  if (!src) return;
+
+  if (alt) {
+    image.alt = alt;
+  }
+
+  if (fallback) {
+    image.dataset.fallbackSrc = fallback;
+  } else {
+    image.removeAttribute("data-fallback-src");
+  }
+
+  delete image.dataset.fallbackTried;
+  if (image.getAttribute("src") !== src) {
+    image.setAttribute("src", src);
+  }
+}
+
 function bindImageFallbacks(root = document) {
   const images = root.querySelectorAll("img[data-fallback-src]");
   if (!images.length) return;
@@ -244,6 +268,86 @@ function bindImageFallbacks(root = document) {
       image.dataset.fallbackTried = "true";
       image.src = fallback;
     });
+  });
+}
+
+function bindDetailGallery() {
+  const page = document.querySelector("[data-detail-page]");
+  const mainImage = page?.querySelector("[data-detail-main-image]");
+  if (!page || !mainImage) return;
+
+  const mediaButtons = Array.from(page.querySelectorAll("[data-detail-media]"));
+  const instanceButtons = Array.from(page.querySelectorAll("[data-instance-button]"));
+  const instancePanels = Array.from(page.querySelectorAll("[data-instance-panel]"));
+
+  const setActiveInstance = (instanceKey) => {
+    instanceButtons.forEach((button) => {
+      button.classList.toggle("is-active", button.dataset.instanceButton === instanceKey);
+    });
+
+    instancePanels.forEach((panel) => {
+      const active = panel.dataset.instancePanel === instanceKey;
+      panel.classList.toggle("is-active", active);
+      panel.hidden = !active;
+    });
+  };
+
+  const setActiveMedia = (group, activeButton) => {
+    mediaButtons.forEach((button) => {
+      if ((button.dataset.mediaGroup || "") !== group) return;
+      button.classList.toggle("is-active", button === activeButton);
+    });
+  };
+
+  const switchMainImage = (button) => {
+    const src = String(button.dataset.mediaSrc || "").trim();
+    const fallback = String(button.dataset.mediaFallback || "").trim();
+    const alt = String(button.dataset.mediaAlt || mainImage.alt || "").trim();
+    if (!src && !fallback) return;
+
+    setImageSource(mainImage, { src, fallback, alt });
+    bindImageFallbacks(page);
+  };
+
+  const activateInstance = (button) => {
+    const instanceKey = String(button.dataset.instanceButton || "").trim();
+    if (!instanceKey) return;
+
+    setActiveInstance(instanceKey);
+    const panel = instancePanels.find((item) => item.dataset.instancePanel === instanceKey);
+    const firstMedia = panel?.querySelector("[data-detail-media]");
+    if (firstMedia) {
+      setActiveMedia(String(firstMedia.dataset.mediaGroup || ""), firstMedia);
+      switchMainImage(firstMedia);
+      return;
+    }
+
+    switchMainImage({
+      dataset: {
+        mediaSrc: button.dataset.instancePrimarySrc || "",
+        mediaFallback: button.dataset.instancePrimaryFallback || "",
+        mediaAlt: button.dataset.instancePrimaryAlt || "",
+      },
+    });
+  };
+
+  mediaButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const group = String(button.dataset.mediaGroup || "").trim();
+      const instanceKey = String(button.dataset.instanceKey || "").trim();
+
+      if (instanceKey) {
+        setActiveInstance(instanceKey);
+      }
+      if (group) {
+        setActiveMedia(group, button);
+      }
+      switchMainImage(button);
+    });
+  });
+
+  instanceButtons.forEach((button) => {
+    button.addEventListener("click", () => activateInstance(button));
   });
 }
 
@@ -294,6 +398,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindSettingsForms();
   bindArchiveForm();
   bindTaskAutoRefresh();
+  bindDetailGallery();
   bindImageFallbacks();
   bindLightbox();
 });
