@@ -3,24 +3,6 @@
 {% block title %}模型库 | makerhub{% endblock %}
 
 {% block content %}
-<section class="page-intro">
-  <div>
-    <span class="eyebrow">模型库</span>
-    <h1>本地归档模型列表</h1>
-    <p>直接读取 `/app/archive/**/meta.json`，统一按卡片网格浏览和筛选。</p>
-  </div>
-  <div class="intro-stats">
-    <div class="intro-stat">
-      <span>当前结果</span>
-      <strong>{{ count }}</strong>
-    </div>
-    <div class="intro-stat">
-      <span>总模型</span>
-      <strong>{{ total }}</strong>
-    </div>
-  </div>
-</section>
-
 <section class="surface surface--filters">
   <form class="filter-bar" method="get" action="/models">
     <label class="filter-field filter-field--wide">
@@ -100,12 +82,6 @@
       </div>
       <div class="meta-line">采集于 {{ model.collect_date or "未知时间" }}</div>
       <div class="meta-line">发布于 {{ model.publish_date or "未知时间" }}</div>
-      <dl class="stat-grid stat-grid--compact">
-        <div><dt>下载</dt><dd>{{ model.stats.downloads }}</dd></div>
-        <div><dt>点赞</dt><dd>{{ model.stats.likes }}</dd></div>
-        <div><dt>打印</dt><dd>{{ model.stats.prints }}</dd></div>
-        <div><dt>评论</dt><dd>{{ model.stats.comments }}</dd></div>
-      </dl>
     </div>
   </a>
   {% endfor %}
