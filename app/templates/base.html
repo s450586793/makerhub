@@ -4,6 +4,18 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}makerhub{% endblock %}</title>
+  <script>
+    (() => {
+      const root = document.documentElement;
+      const preference = {{ theme_preference|default("auto")|tojson }};
+      const media = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+      const resolved = preference === "light" || preference === "dark"
+        ? preference
+        : (media && media.matches ? "dark" : "light");
+      root.dataset.themePreference = preference;
+      root.dataset.theme = resolved;
+    })();
+  </script>
   <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body class="{% if not show_sidebar|default(true) %}shell--no-sidebar {% endif %}{% block body_class %}{% endblock %}">

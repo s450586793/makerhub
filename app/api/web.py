@@ -21,6 +21,15 @@ def _safe_next_path(value: str) -> str:
     return candidate
 
 
+def _template_context(request: Request, *, runtime_config=None, **kwargs):
+    resolved_config = runtime_config or store.load()
+    return {
+        "request": request,
+        "theme_preference": resolved_config.user.theme_preference,
+        **kwargs,
+    }
+
+
 def _sample_detail() -> dict:
     return {
         "title": "Makerhub 详情页预览",
@@ -114,12 +123,13 @@ async def dashboard(request: Request):
     payload = build_dashboard_payload(config)
     return templates.TemplateResponse(
         "index.html",
-        {
-            "request": request,
-            "active_page": "home",
-            "show_sidebar": True,
+        _template_context(
+            request,
+            runtime_config=config,
+            active_page="home",
+            show_sidebar=True,
             **payload,
-        },
+        ),
     )
 
 
@@ -132,12 +142,12 @@ async def login_page(request: Request, next: str = Query("/")):
 
     return templates.TemplateResponse(
         "login.html",
-        {
-            "request": request,
-            "show_sidebar": False,
-            "next_path": next_path,
-            "error_message": "",
-        },
+        _template_context(
+            request,
+            show_sidebar=False,
+            next_path=next_path,
+            error_message="",
+        ),
     )
 
 
@@ -152,12 +162,12 @@ async def login_submit(
     if not auth_manager.authenticate_credentials(username, password):
         return templates.TemplateResponse(
             "login.html",
-            {
-                "request": request,
-                "show_sidebar": False,
-                "next_path": next_path,
-                "error_message": "用户名或密码错误。",
-            },
+            _template_context(
+                request,
+                show_sidebar=False,
+                next_path=next_path,
+                error_message="用户名或密码错误。",
+            ),
             status_code=401,
         )
 
@@ -195,12 +205,12 @@ async def models_page(
     payload = build_models_payload(q=q, source=source, tag=tag, sort_key=sort)
     return templates.TemplateResponse(
         "models.html",
-        {
-            "request": request,
-            "active_page": "models",
-            "show_sidebar": True,
+        _template_context(
+            request,
+            active_page="models",
+            show_sidebar=True,
             **payload,
-        },
+        ),
     )
 
 
@@ -212,12 +222,12 @@ async def model_detail(request: Request, model_dir: str):
 
     return templates.TemplateResponse(
         "detail.html",
-        {
-            "request": request,
-            "active_page": "models",
-            "show_sidebar": True,
-            "detail": detail,
-        },
+        _template_context(
+            request,
+            active_page="models",
+            show_sidebar=True,
+            detail=detail,
+        ),
     )
 
 
@@ -227,14 +237,15 @@ async def settings_page(request: Request):
     cookie_map = {item.platform: item.cookie for item in config.cookies}
     return templates.TemplateResponse(
         "settings.html",
-        {
-            "request": request,
-            "active_page": "settings",
-            "show_sidebar": True,
-            "config": config,
-            "cookie_map": cookie_map,
-            "token_items": auth_manager.list_api_tokens(),
-        },
+        _template_context(
+            request,
+            runtime_config=config,
+            active_page="settings",
+            show_sidebar=True,
+            config=config,
+            cookie_map=cookie_map,
+            token_items=auth_manager.list_api_tokens(),
+        ),
     )
 
 
@@ -244,12 +255,13 @@ async def tasks_page(request: Request):
     payload = build_tasks_payload(missing_fallback=[item.model_dump() for item in config.missing_3mf])
     return templates.TemplateResponse(
         "tasks.html",
-        {
-            "request": request,
-            "active_page": "tasks",
-            "show_sidebar": True,
+        _template_context(
+            request,
+            runtime_config=config,
+            active_page="tasks",
+            show_sidebar=True,
             **payload,
-        },
+        ),
     )
 
 
@@ -259,10 +271,10 @@ async def detail_preview(request: Request):
     detail = models[0] if models else _sample_detail()
     return templates.TemplateResponse(
         "detail.html",
-        {
-            "request": request,
-            "active_page": "models",
-            "show_sidebar": True,
-            "detail": detail,
-        },
+        _template_context(
+            request,
+            active_page="models",
+            show_sidebar=True,
+            detail=detail,
+        ),
     )

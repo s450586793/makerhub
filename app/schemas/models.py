@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Literal
 
 from pydantic import BaseModel, Field
 
@@ -29,6 +29,7 @@ class UserProfile(BaseModel):
     username: str = "admin"
     display_name: str = "Admin"
     password_hint: str = "请改成强密码"
+    theme_preference: Literal["light", "dark", "auto"] = "auto"
     password_hash: str = Field(default_factory=default_admin_password_hash)
     password_updated_at: str = ""
 
@@ -37,6 +38,10 @@ class UserSettingsUpdate(BaseModel):
     username: str = "admin"
     display_name: str = "Admin"
     password_hint: str = "请改成强密码"
+
+
+class ThemeSettingsUpdate(BaseModel):
+    theme_preference: Literal["light", "dark", "auto"] = "auto"
 
 
 class ApiTokenRecord(BaseModel):

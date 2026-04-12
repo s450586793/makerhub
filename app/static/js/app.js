@@ -28,6 +28,27 @@ async function postJson(url, payload) {
   return requestJson(url, { method: "POST", payload });
 }
 
+const themeMediaQuery = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+
+function normalizeThemePreference(preference) {
+  return ["light", "dark", "auto"].includes(preference) ? preference : "auto";
+}
+
+function resolveTheme(preference) {
+  const normalized = normalizeThemePreference(preference);
+  if (normalized === "light" || normalized === "dark") {
+    return normalized;
+  }
+  return themeMediaQuery?.matches ? "dark" : "light";
+}
+
+function applyThemePreference(preference) {
+  const normalized = normalizeThemePreference(preference);
+  const root = document.documentElement;
+  root.dataset.themePreference = normalized;
+  root.dataset.theme = resolveTheme(normalized);
+}
+
 function setStatusTarget(target, message, type) {
   if (!target) return;
   target.textContent = message;
@@ -128,6 +149,50 @@ function bindSettingsTabs() {
   });
 }
 
+function syncThemeToggle(form) {
+  const hiddenInput = form?.querySelector('[name="theme_preference"]');
+  const buttons = Array.from(form?.querySelectorAll("[data-theme-choice]") || []);
+  if (!hiddenInput || !buttons.length) return;
+
+  const value = normalizeThemePreference(String(hiddenInput.value || ""));
+  hiddenInput.value = value;
+  buttons.forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.themeChoice === value);
+  });
+}
+
+function bindThemeControls() {
+  const forms = document.querySelectorAll("[data-theme-form]");
+  if (!forms.length) return;
+
+  forms.forEach((form) => {
+    const hiddenInput = form.querySelector('[name="theme_preference"]');
+    const buttons = Array.from(form.querySelectorAll("[data-theme-choice]"));
+    if (!hiddenInput || !buttons.length) return;
+
+    syncThemeToggle(form);
+    buttons.forEach((button) => {
+      button.addEventListener("click", () => {
+        hiddenInput.value = normalizeThemePreference(String(button.dataset.themeChoice || "auto"));
+        syncThemeToggle(form);
+        applyThemePreference(hiddenInput.value);
+      });
+    });
+  });
+
+  const handleThemeChange = () => {
+    if ((document.documentElement.dataset.themePreference || "auto") === "auto") {
+      applyThemePreference("auto");
+    }
+  };
+
+  if (themeMediaQuery?.addEventListener) {
+    themeMediaQuery.addEventListener("change", handleThemeChange);
+  } else if (themeMediaQuery?.addListener) {
+    themeMediaQuery.addListener(handleThemeChange);
+  }
+}
+
 async function submitSettingsForm(form) {
   const kind = form.dataset.saveKind;
   const formData = new FormData(form);
@@ -165,6 +230,15 @@ async function submitSettingsForm(form) {
       password_hint: String(formData.get("password_hint") || ""),
     });
     return "用户信息已保存";
+  }
+
+  if (kind === "theme") {
+    const themePreference = normalizeThemePreference(String(formData.get("theme_preference") || "auto"));
+    await postJson("/api/config/theme", {
+      theme_preference: themePreference,
+    });
+    applyThemePreference(themePreference);
+    return "主题设置已保存";
   }
 
   if (kind === "organizer") {
@@ -580,8 +654,10 @@ function bindLightbox() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  applyThemePreference(document.documentElement.dataset.themePreference || "auto");
   bindSecretFields();
   bindSettingsTabs();
+  bindThemeControls();
   bindSettingsForms();
   bindPasswordForm();
   bindTokenManager();

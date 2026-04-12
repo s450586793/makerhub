@@ -7,6 +7,7 @@ from app.schemas.models import (
     Missing3mfRetryRequest,
     NotificationConfig,
     ProxyConfig,
+    ThemeSettingsUpdate,
     UserSettingsUpdate,
 )
 from app.schemas.models import OrganizeTask
@@ -30,6 +31,7 @@ def _public_config_payload(config) -> dict:
             "username": config.user.username,
             "display_name": config.user.display_name,
             "password_hint": config.user.password_hint,
+            "theme_preference": config.user.theme_preference,
             "password_updated_at": config.user.password_updated_at,
         },
         "api_tokens": [item.model_dump() for item in auth_manager.list_api_tokens()],
@@ -81,6 +83,14 @@ async def save_user(payload: UserSettingsUpdate, request: Request):
     config.user.username = payload.username.strip() or "admin"
     config.user.display_name = payload.display_name.strip() or "Admin"
     config.user.password_hint = payload.password_hint.strip()
+    return _public_config_payload(store.save(config))
+
+
+@router.post("/config/theme")
+async def save_theme(payload: ThemeSettingsUpdate, request: Request):
+    _require_session_auth(request)
+    config = store.load()
+    config.user.theme_preference = payload.theme_preference
     return _public_config_payload(store.save(config))
 
 

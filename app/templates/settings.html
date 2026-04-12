@@ -32,6 +32,7 @@
               placeholder="makerworld.com.cn Cookie"
               data-secret-input
               data-secret-length="{{ cookie_map.get("cn", "")|length }}"
+              spellcheck="false"
             >{{- cookie_map.get("cn", "") -}}</textarea>
             <button class="button button-secondary button-small" type="button" data-secret-toggle>显示</button>
           </div>
@@ -46,6 +47,7 @@
               placeholder="makerworld.com Cookie"
               data-secret-input
               data-secret-length="{{ cookie_map.get("global", "")|length }}"
+              spellcheck="false"
             >{{- cookie_map.get("global", "") -}}</textarea>
             <button class="button button-secondary button-small" type="button" data-secret-toggle>显示</button>
           </div>
@@ -110,6 +112,26 @@
   </div>
 
   <div class="settings-panel" data-settings-panel="user">
+    <form class="settings-form token-card" data-save-kind="theme" data-theme-form>
+      <div class="section-card__header">
+        <div>
+          <span class="eyebrow">主题</span>
+          <h2>整体显示模式</h2>
+        </div>
+      </div>
+      <input type="hidden" name="theme_preference" value="{{ config.user.theme_preference }}">
+      <div class="theme-toggle" data-theme-toggle>
+        <button class="theme-toggle__option" type="button" data-theme-choice="light">浅色</button>
+        <button class="theme-toggle__option" type="button" data-theme-choice="dark">深色</button>
+        <button class="theme-toggle__option" type="button" data-theme-choice="auto">自动</button>
+      </div>
+      <p class="archive-form__hint">“自动”会跟随你设备当前的浅色 / 深色模式。</p>
+      <div class="form-footer">
+        <button class="button button-primary" type="submit">保存主题设置</button>
+        <span class="form-status" data-form-status></span>
+      </div>
+    </form>
+
     <form class="settings-form" data-save-kind="user">
       <div class="settings-grid settings-grid--three">
         <label class="field-card">
