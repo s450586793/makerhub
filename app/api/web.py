@@ -50,7 +50,7 @@ def _sample_detail() -> dict:
                 "publish_date": "2026-03-09",
                 "download_count": 29,
                 "print_count": 20,
-                "summary": "预览实例，用于展示实例切换与 P1/P2/P3 图片切换交互。",
+                "summary": "预览实例，用于展示实例切换与 3MF 下载区域。",
                 "thumbnail_url": "https://placehold.co/320x320/f1f5f9/111827?text=I1",
                 "thumbnail_fallback_url": "",
                 "primary_image_url": "https://placehold.co/1080x1080/f8fafc/111827?text=Instance+1",
@@ -73,7 +73,7 @@ def _sample_detail() -> dict:
                 "publish_date": "2026-03-10",
                 "download_count": 17,
                 "print_count": 8,
-                "summary": "第二个预览实例，用于展示打印实例卡片切换。",
+                "summary": "第二个预览实例，用于展示打印实例切换。",
                 "thumbnail_url": "https://placehold.co/320x320/e2e8f0/111827?text=I2",
                 "thumbnail_fallback_url": "",
                 "primary_image_url": "https://placehold.co/1080x1080/e2e8f0/111827?text=Instance+2",
@@ -145,7 +145,7 @@ async def model_detail(request: Request, model_dir: str):
         {
             "request": request,
             "active_page": "models",
-            "show_sidebar": False,
+            "show_sidebar": True,
             "detail": detail,
         },
     )
@@ -191,7 +191,7 @@ async def detail_preview(request: Request):
         {
             "request": request,
             "active_page": "models",
-            "show_sidebar": False,
+            "show_sidebar": True,
             "detail": detail,
         },
     )

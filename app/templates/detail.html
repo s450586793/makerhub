@@ -6,338 +6,283 @@
 {% block content %}
 {% set initial_main_url = detail.cover_url or (detail.gallery[0].url if detail.gallery else '') or (detail.instances[0].primary_image_url if detail.instances else '') %}
 {% set initial_main_fallback = detail.cover_remote_url or (detail.gallery[0].fallback_url if detail.gallery else '') or (detail.instances[0].primary_image_fallback_url if detail.instances else '') %}
-<div class="mw-shell" data-detail-page>
-  <aside class="mw-side-rail">
-    <a class="mw-side-rail__logo" href="/models" aria-label="返回模型库">MH</a>
-    <nav class="mw-side-rail__nav">
-      <a class="mw-side-rail__icon" href="/models" aria-label="模型库">□</a>
-      <a class="mw-side-rail__icon" href="/tasks" aria-label="任务">◫</a>
-      <a class="mw-side-rail__icon" href="/settings" aria-label="设置">⚙</a>
-    </nav>
-  </aside>
-
-  <div class="mw-main">
-    <header class="mw-topbar">
-      <div class="mw-search">
-        <span class="mw-search__icon">⌕</span>
-        <span class="mw-search__text">{{ detail.tags[0] if detail.tags else "搜索模型" }}</span>
-      </div>
-      <div class="mw-topbar__actions">
-        <a class="mw-topbar__button" href="/models">模型库</a>
-        <a class="mw-topbar__button" href="/settings">设置</a>
-        {% if detail.origin_url %}
-        <a class="mw-topbar__button" href="{{ detail.origin_url }}" target="_blank" rel="noreferrer">原始链接</a>
-        {% endif %}
-      </div>
-    </header>
-
-    <section class="mw-card">
-      <div class="mw-head">
-        <div class="mw-head__main">
-          <div class="mw-head__author">
-            {% if detail.author.avatar_url %}
-            <img
-              class="mw-head__avatar"
-              src="{{ detail.author.avatar_url }}"
-              alt="{{ detail.author.name }}"
-              {% if detail.author.avatar_remote_url %}data-fallback-src="{{ detail.author.avatar_remote_url }}"{% endif %}
-            >
-            {% else %}
-            <span class="mw-head__avatar avatar-placeholder">{{ detail.author.name[:1] }}</span>
-            {% endif %}
-            <div class="mw-head__identity">
-              <h1>{{ detail.title }}</h1>
-              <div class="mw-head__subline">
-                <span>{{ detail.author.name }}</span>
-                <span class="mw-follow-pill">已归档</span>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="mw-head__aside">
-          <div class="mw-head__chips">
-            <span class="mw-chip mw-chip--solid">{{ detail.source_label }}</span>
-            {% for tag_value in detail.tags[:2] %}
-            <span class="mw-chip">{{ tag_value }}</span>
-            {% endfor %}
-          </div>
-          <div class="mw-head__links">
-            <a class="mw-inline-link" href="/models">返回模型库</a>
-            {% if detail.origin_url %}
-            <a class="mw-inline-link" href="{{ detail.origin_url }}" target="_blank" rel="noreferrer">打开原始链接</a>
-            {% endif %}
-          </div>
-        </div>
-      </div>
-
-      <div class="mw-hero">
-        <div class="mw-gallery">
-          <div class="mw-gallery__cover">
-            {% if initial_main_url %}
-            <img
-              class="mw-gallery__image"
-              src="{{ initial_main_url }}"
-              alt="{{ detail.title }}"
-              data-detail-main-image
-              {% if initial_main_fallback %}data-fallback-src="{{ initial_main_fallback }}"{% endif %}
-            >
-            {% else %}
-            <div class="media-placeholder media-placeholder--large">{{ detail.title[:1] }}</div>
-            {% endif %}
-            <button class="mw-gallery__preview" type="button">3D 预览</button>
-          </div>
-
-          {% if detail.gallery %}
-          <div class="mw-gallery__thumbs">
-            {% for image in detail.gallery %}
-            <button
-              class="mw-gallery__thumb{% if loop.first %} is-active{% endif %}"
-              type="button"
-              data-detail-media
-              data-media-group="gallery"
-              data-media-src="{{ image.url }}"
-              data-media-alt="{{ detail.title }} {{ loop.index }}"
-              {% if image.fallback_url %}data-media-fallback="{{ image.fallback_url }}"{% endif %}
-            >
-              <img
-                src="{{ image.url }}"
-                alt="{{ detail.title }} {{ loop.index }}"
-                loading="lazy"
-                {% if image.fallback_url %}data-fallback-src="{{ image.fallback_url }}"{% endif %}
-              >
-            </button>
-            {% endfor %}
-          </div>
-          {% endif %}
-        </div>
-
-        <aside class="mw-config-panel">
-          <div class="mw-config-panel__header">
-            <h2>打印配置 ({{ detail.instances|length }})</h2>
-            <div class="mw-config-panel__filters">
-              <span class="mw-filter-pill is-active">全部</span>
-              {% if detail.instances %}
-              {% for profile in detail.instances[:4] %}
-              <span class="mw-filter-pill">{{ profile.machine }}</span>
-              {% endfor %}
-              {% endif %}
-            </div>
-          </div>
-
-          {% if detail.instances %}
-          <div class="mw-profile-list">
-            {% for profile in detail.instances %}
-            <button
-              class="mw-profile-card{% if loop.first %} is-active{% endif %}"
-              type="button"
-              data-instance-button="{{ profile.instance_key }}"
-              {% if profile.primary_image_url %}data-instance-primary-src="{{ profile.primary_image_url }}"{% endif %}
-              {% if profile.primary_image_fallback_url %}data-instance-primary-fallback="{{ profile.primary_image_fallback_url }}"{% endif %}
-              data-instance-primary-alt="{{ profile.title }}"
-            >
-              {% if profile.thumbnail_url %}
-              <img
-                class="mw-profile-card__thumb"
-                src="{{ profile.thumbnail_url }}"
-                alt="{{ profile.title }}"
-                loading="lazy"
-                {% if profile.thumbnail_fallback_url %}data-fallback-src="{{ profile.thumbnail_fallback_url }}"{% endif %}
-              >
-              {% else %}
-              <span class="mw-profile-card__thumb media-placeholder">{{ profile.title[:1] }}</span>
-              {% endif %}
-              <div class="mw-profile-card__body">
-                <div class="mw-profile-card__title">{{ profile.title }}</div>
-                <div class="mw-profile-card__meta">
-                  {% if profile.time %}<span>{{ profile.time }}</span>{% endif %}
-                  {% if profile.plates %}<span>{{ profile.plates }} 盘</span>{% endif %}
-                  {% if profile.rating %}<span>★ {{ profile.rating }}</span>{% endif %}
-                  {% if profile.download_count %}<span>{{ profile.download_count }} 下载</span>{% endif %}
-                </div>
-              </div>
-            </button>
-            {% endfor %}
-          </div>
-
-          <div class="mw-instance-panels">
-            {% for profile in detail.instances %}
-            <section
-              class="mw-instance-panel{% if loop.first %} is-active{% endif %}"
-              data-instance-panel="{{ profile.instance_key }}"
-              {% if not loop.first %}hidden{% endif %}
-            >
-              {% if profile.summary %}
-              <p class="mw-instance-panel__summary">{{ profile.summary }}</p>
-              {% endif %}
-
-              {% if profile.media %}
-              <div class="mw-instance-panel__media">
-                {% for media in profile.media %}
-                <button
-                  class="mw-media-pill{% if loop.first %} is-active{% endif %}"
-                  type="button"
-                  data-detail-media
-                  data-instance-key="{{ profile.instance_key }}"
-                  data-media-group="instance-{{ profile.instance_key }}"
-                  data-media-src="{{ media.url }}"
-                  data-media-alt="{{ profile.title }} {{ media.label }}"
-                  {% if media.fallback_url %}data-media-fallback="{{ media.fallback_url }}"{% endif %}
-                >
-                  {{ media.label }}
-                </button>
-                {% endfor %}
-              </div>
-              {% endif %}
-
-              {% if profile.file_url %}
-              <a class="mw-download-button" href="{{ profile.file_url }}" download>下载 3MF</a>
-              {% endif %}
-            </section>
-            {% endfor %}
-          </div>
-          {% else %}
-          <p class="empty-copy">当前没有可展示的打印配置。</p>
-          {% endif %}
-        </aside>
-      </div>
-
-      <div class="mw-action-bar">
-        <button class="mw-action-bar__button" type="button">助力</button>
-        <button class="mw-action-bar__button" type="button">点赞 {{ detail.stats.likes }}</button>
-        <button class="mw-action-bar__button" type="button">收藏 {{ detail.stats.favorites }}</button>
-        <button class="mw-action-bar__button" type="button">评论 {{ detail.stats.comments }}</button>
-        <button class="mw-action-bar__button" type="button">分享</button>
-      </div>
-
-      <div class="mw-statline">
-        <span>下载 {{ detail.stats.downloads }}</span>
-        <span>点赞 {{ detail.stats.likes }}</span>
-        <span>打印 {{ detail.stats.prints }}</span>
-        <span>采集于 {{ detail.collect_date or "未知时间" }}</span>
-        <span>发布于 {{ detail.publish_date or "未知时间" }}</span>
-      </div>
-    </section>
-
-    <section class="mw-content-stack">
-      <article class="mw-section-card">
-        <div class="mw-section-card__header">
-          <div>
-            <span class="eyebrow">描述</span>
-            <h2>模型说明</h2>
-          </div>
-        </div>
-        {% if detail.summary_html %}
-        <div class="rich-content">{{ detail.summary_html | safe }}</div>
-        {% else %}
-        <p class="empty-copy">{{ detail.summary_text or "当前没有描述内容。" }}</p>
-        {% endif %}
-      </article>
-
-      {% if detail.attachments %}
-      <article class="mw-section-card">
-        <div class="mw-section-card__header">
-          <div>
-            <span class="eyebrow">文档</span>
-            <h2>文档 ({{ detail.attachments|length }})</h2>
-          </div>
-        </div>
-        <div class="mw-docs">
-          {% for attachment in detail.attachments %}
-          {% set attachment_href = attachment.url or attachment.fallback_url %}
-          <article class="mw-doc-card">
-            <div class="mw-doc-card__icon mw-doc-card__icon--{{ attachment.ext }}">{{ attachment.ext|upper }}</div>
-            <div class="mw-doc-card__body">
-              <strong>{{ attachment.name }}</strong>
-              <span>{{ attachment.category_label }}</span>
-            </div>
-            <div class="mw-doc-card__actions">
-              {% if attachment_href %}
-              <a class="mw-doc-action" href="{{ attachment_href }}" target="_blank" rel="noreferrer">查看</a>
-              <a class="mw-doc-action" href="{{ attachment_href }}" download>下载</a>
-              {% else %}
-              <span class="mw-doc-action is-disabled">不可用</span>
-              {% endif %}
-            </div>
-          </article>
-          {% endfor %}
-        </div>
-      </article>
-      {% endif %}
-
-      <article class="mw-section-card">
-        <div class="mw-section-card__header">
-          <div>
-            <span class="eyebrow">标签</span>
-            <h2>标签</h2>
-          </div>
-        </div>
-        {% if detail.tags %}
-        <div class="tag-row">
-          {% for tag_value in detail.tags %}
-          <span class="tag-chip">{{ tag_value }}</span>
-          {% endfor %}
-        </div>
-        {% else %}
-        <p class="empty-copy">当前没有标签。</p>
-        {% endif %}
-      </article>
-
-      <article class="mw-section-card">
-        <div class="mw-section-card__header">
-          <div>
-            <span class="eyebrow">评论</span>
-            <h2>评论与评分 ({{ detail.comments|length }})</h2>
-          </div>
-        </div>
-        {% if detail.comments %}
-        <div class="comment-list">
-          {% for comment in detail.comments %}
-          <article class="comment-item">
-            <div class="comment-item__header">
-              <div class="model-author">
-                {% if comment.avatar_url %}
-                <img
-                  src="{{ comment.avatar_url }}"
-                  alt="{{ comment.author }}"
-                  {% if comment.avatar_remote_url %}data-fallback-src="{{ comment.avatar_remote_url }}"{% endif %}
-                >
-                {% else %}
-                <span class="avatar-placeholder">{{ comment.author[:1] }}</span>
-                {% endif %}
-                <span>{{ comment.author }}</span>
-              </div>
-              <span>{{ comment.time }}</span>
-            </div>
-            <div class="comment-item__body">{{ comment.content }}</div>
-            {% if comment.images %}
-            <div class="comment-gallery">
-              {% for image_url in comment.images %}
-              <button
-                class="comment-gallery__item"
-                type="button"
-                data-lightbox-src="{{ image_url.full_url }}"
-                {% if image_url.fallback_url %}data-fallback-src="{{ image_url.fallback_url }}"{% endif %}
-                aria-label="查看大图"
-              >
-                <img
-                  src="{{ image_url.thumb_url }}"
-                  alt="{{ comment.author }} 评论图片 {{ loop.index }}"
-                  loading="lazy"
-                  {% if image_url.fallback_url %}data-fallback-src="{{ image_url.fallback_url }}"{% endif %}
-                >
-              </button>
-              {% endfor %}
-            </div>
-            {% endif %}
-          </article>
-          {% endfor %}
-        </div>
-        {% else %}
-        <p class="empty-copy">当前没有同步到评论内容。</p>
-        {% endif %}
-      </article>
-    </section>
+<div class="mw-detail-layout" data-detail-page>
+  <div class="detail-toolbar mw-detail-toolbar">
+    <a class="button button-secondary" href="/models">返回模型库</a>
   </div>
+
+  <section class="mw-card">
+    <div class="mw-head">
+      <div class="mw-head__main">
+        <div class="mw-head__author">
+          {% if detail.author.avatar_url %}
+          <img
+            class="mw-head__avatar"
+            src="{{ detail.author.avatar_url }}"
+            alt="{{ detail.author.name }}"
+            {% if detail.author.avatar_remote_url %}data-fallback-src="{{ detail.author.avatar_remote_url }}"{% endif %}
+          >
+          {% else %}
+          <span class="mw-head__avatar avatar-placeholder">{{ detail.author.name[:1] }}</span>
+          {% endif %}
+          <div class="mw-head__identity">
+            <h1>{{ detail.title }}</h1>
+            <div class="mw-head__subline">
+              <span>{{ detail.author.name }}</span>
+              <span class="mw-follow-pill">已归档</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="mw-head__aside">
+        <div class="mw-head__chips">
+          <span class="mw-chip mw-chip--solid">{{ detail.source_label }}</span>
+          {% for tag_value in detail.tags[:2] %}
+          <span class="mw-chip">{{ tag_value }}</span>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+
+    <div class="mw-hero">
+      <div class="mw-gallery">
+        <div class="mw-gallery__cover">
+          {% if initial_main_url %}
+          <img
+            class="mw-gallery__image"
+            src="{{ initial_main_url }}"
+            alt="{{ detail.title }}"
+            data-detail-main-image
+            {% if initial_main_fallback %}data-fallback-src="{{ initial_main_fallback }}"{% endif %}
+          >
+          {% else %}
+          <div class="media-placeholder media-placeholder--large">{{ detail.title[:1] }}</div>
+          {% endif %}
+          <button class="mw-gallery__preview" type="button">3D 预览</button>
+        </div>
+
+        {% if detail.gallery %}
+        <div class="mw-gallery__thumbs">
+          {% for image in detail.gallery %}
+          <button
+            class="mw-gallery__thumb{% if loop.first %} is-active{% endif %}"
+            type="button"
+            data-detail-media
+            data-media-group="gallery"
+            data-media-src="{{ image.url }}"
+            data-media-alt="{{ detail.title }} {{ loop.index }}"
+            {% if image.fallback_url %}data-media-fallback="{{ image.fallback_url }}"{% endif %}
+          >
+            <img
+              src="{{ image.url }}"
+              alt="{{ detail.title }} {{ loop.index }}"
+              loading="lazy"
+              {% if image.fallback_url %}data-fallback-src="{{ image.fallback_url }}"{% endif %}
+            >
+          </button>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+
+      <aside class="mw-config-panel">
+        <div class="mw-config-panel__header">
+          <h2>打印配置 ({{ detail.instances|length }})</h2>
+          <div class="mw-config-panel__filters">
+            <span class="mw-filter-pill is-active">全部</span>
+            {% if detail.instances %}
+            {% for profile in detail.instances[:4] %}
+            <span class="mw-filter-pill">{{ profile.machine or "通用" }}</span>
+            {% endfor %}
+            {% endif %}
+          </div>
+        </div>
+
+        {% if detail.instances %}
+        <div class="mw-profile-list">
+          {% for profile in detail.instances %}
+          {% set instance_primary_url = profile.primary_image_url or (profile.media[0].url if profile.media else '') %}
+          {% set instance_primary_fallback = profile.primary_image_fallback_url or (profile.media[0].fallback_url if profile.media else '') %}
+          <button
+            class="mw-profile-card mw-profile-card--text{% if loop.first %} is-active{% endif %}"
+            type="button"
+            data-instance-button="{{ profile.instance_key }}"
+            {% if instance_primary_url %}data-instance-primary-src="{{ instance_primary_url }}"{% endif %}
+            {% if instance_primary_fallback %}data-instance-primary-fallback="{{ instance_primary_fallback }}"{% endif %}
+            data-instance-primary-alt="{{ profile.title }}"
+          >
+            <div class="mw-profile-card__body">
+              <div class="mw-profile-card__title">{{ profile.title }}</div>
+              <div class="mw-profile-card__meta">
+                {% if profile.plates %}<span>{{ profile.plates }} 盘</span>{% endif %}
+                {% if profile.download_count %}<span>{{ profile.download_count }} 下载</span>{% endif %}
+                {% if profile.time %}<span>{{ profile.time }}</span>{% endif %}
+                {% if profile.rating %}<span>★ {{ profile.rating }}</span>{% endif %}
+              </div>
+            </div>
+          </button>
+          {% endfor %}
+        </div>
+
+        <div class="mw-instance-panels">
+          {% for profile in detail.instances %}
+          <section
+            class="mw-instance-panel{% if loop.first %} is-active{% endif %}"
+            data-instance-panel="{{ profile.instance_key }}"
+            {% if not loop.first %}hidden{% endif %}
+          >
+            {% if profile.summary %}
+            <p class="mw-instance-panel__summary">{{ profile.summary }}</p>
+            {% endif %}
+
+            {% if profile.file_url %}
+            <a class="mw-download-button" href="{{ profile.file_url }}" download>下载 3MF</a>
+            {% endif %}
+          </section>
+          {% endfor %}
+        </div>
+        {% else %}
+        <p class="empty-copy">当前没有可展示的打印配置。</p>
+        {% endif %}
+      </aside>
+    </div>
+
+    <div class="mw-action-bar">
+      <button class="mw-action-bar__button" type="button">助力</button>
+      <button class="mw-action-bar__button" type="button">点赞 {{ detail.stats.likes }}</button>
+      <button class="mw-action-bar__button" type="button">收藏 {{ detail.stats.favorites }}</button>
+      <button class="mw-action-bar__button" type="button">评论 {{ detail.stats.comments }}</button>
+      <button class="mw-action-bar__button" type="button">分享</button>
+    </div>
+
+    <div class="mw-statline">
+      <span>下载 {{ detail.stats.downloads }}</span>
+      <span>点赞 {{ detail.stats.likes }}</span>
+      <span>打印 {{ detail.stats.prints }}</span>
+      <span>采集于 {{ detail.collect_date or "未知时间" }}</span>
+      <span>发布于 {{ detail.publish_date or "未知时间" }}</span>
+    </div>
+  </section>
+
+  <section class="mw-content-stack">
+    <article class="mw-section-card">
+      <div class="mw-section-card__header">
+        <div>
+          <span class="eyebrow">描述</span>
+          <h2>模型说明</h2>
+        </div>
+      </div>
+      {% if detail.summary_html %}
+      <div class="rich-content">{{ detail.summary_html | safe }}</div>
+      {% else %}
+      <p class="empty-copy">{{ detail.summary_text or "当前没有描述内容。" }}</p>
+      {% endif %}
+    </article>
+
+    {% if detail.attachments %}
+    <article class="mw-section-card">
+      <div class="mw-section-card__header">
+        <div>
+          <span class="eyebrow">文档</span>
+          <h2>文档 ({{ detail.attachments|length }})</h2>
+        </div>
+      </div>
+      <div class="mw-docs">
+        {% for attachment in detail.attachments %}
+        {% set attachment_href = attachment.url or attachment.fallback_url %}
+        <article class="mw-doc-card">
+          <div class="mw-doc-card__icon mw-doc-card__icon--{{ attachment.ext }}">{{ attachment.ext|upper }}</div>
+          <div class="mw-doc-card__body">
+            <strong>{{ attachment.name }}</strong>
+            <span>{{ attachment.category_label }}</span>
+          </div>
+          <div class="mw-doc-card__actions">
+            {% if attachment_href %}
+            <a class="mw-doc-action" href="{{ attachment_href }}" target="_blank" rel="noreferrer">查看</a>
+            <a class="mw-doc-action" href="{{ attachment_href }}" download>下载</a>
+            {% else %}
+            <span class="mw-doc-action is-disabled">不可用</span>
+            {% endif %}
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+    </article>
+    {% endif %}
+
+    <article class="mw-section-card">
+      <div class="mw-section-card__header">
+        <div>
+          <span class="eyebrow">标签</span>
+          <h2>标签</h2>
+        </div>
+      </div>
+      {% if detail.tags %}
+      <div class="tag-row">
+        {% for tag_value in detail.tags %}
+        <span class="tag-chip">{{ tag_value }}</span>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="empty-copy">当前没有标签。</p>
+      {% endif %}
+    </article>
+
+    <article class="mw-section-card">
+      <div class="mw-section-card__header">
+        <div>
+          <span class="eyebrow">评论</span>
+          <h2>评论与评分 ({{ detail.comments|length }})</h2>
+        </div>
+      </div>
+      {% if detail.comments %}
+      <div class="comment-list">
+        {% for comment in detail.comments %}
+        <article class="comment-item">
+          <div class="comment-item__header">
+            <div class="model-author">
+              {% if comment.avatar_url %}
+              <img
+                src="{{ comment.avatar_url }}"
+                alt="{{ comment.author }}"
+                {% if comment.avatar_remote_url %}data-fallback-src="{{ comment.avatar_remote_url }}"{% endif %}
+              >
+              {% else %}
+              <span class="avatar-placeholder">{{ comment.author[:1] }}</span>
+              {% endif %}
+              <span>{{ comment.author }}</span>
+            </div>
+            <span>{{ comment.time }}</span>
+          </div>
+          <div class="comment-item__body">{{ comment.content }}</div>
+          {% if comment.images %}
+          <div class="comment-gallery">
+            {% for image_url in comment.images %}
+            <button
+              class="comment-gallery__item"
+              type="button"
+              data-lightbox-src="{{ image_url.full_url }}"
+              {% if image_url.fallback_url %}data-fallback-src="{{ image_url.fallback_url }}"{% endif %}
+              aria-label="查看大图"
+            >
+              <img
+                src="{{ image_url.thumb_url }}"
+                alt="{{ comment.author }} 评论图片 {{ loop.index }}"
+                loading="lazy"
+                {% if image_url.fallback_url %}data-fallback-src="{{ image_url.fallback_url }}"{% endif %}
+              >
+            </button>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="empty-copy">当前没有同步到评论内容。</p>
+      {% endif %}
+    </article>
+  </section>
 </div>
 
 <div class="lightbox" data-lightbox hidden>

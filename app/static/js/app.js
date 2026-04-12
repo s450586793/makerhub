@@ -32,8 +32,7 @@ function setFormStatus(form, message, type) {
 function buildMaskedValue(rawValue) {
   const clean = String(rawValue || "");
   if (!clean) return "";
-  const length = Array.from(clean).length;
-  return "•".repeat(length);
+  return Array.from(clean, () => "•").join("\u200b");
 }
 
 function maskSecretField(textarea) {
@@ -44,7 +43,7 @@ function maskSecretField(textarea) {
   const maskLength = Number.isFinite(templateLength) && templateLength > 0
     ? templateLength
     : Array.from(rawValue).length;
-  textarea.value = rawValue ? "•".repeat(maskLength) : "";
+  textarea.value = rawValue ? Array.from({ length: maskLength }, () => "•").join("\u200b") : "";
 }
 
 function unmaskSecretField(textarea) {
