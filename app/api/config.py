@@ -4,6 +4,7 @@ from app.core.store import JsonStore
 from app.core.settings import APP_VERSION
 from app.schemas.models import (
     ArchiveRequest,
+    Missing3mfCancelRequest,
     CookiePair,
     Missing3mfRetryRequest,
     ModelDeleteRequest,
@@ -164,7 +165,7 @@ async def retry_missing_3mf(payload: Missing3mfRetryRequest, request: Request):
         model_url=payload.model_url,
         model_id=payload.model_id,
         title=payload.title,
-        instance_id="",
+        instance_id=payload.instance_id,
     )
 
 
@@ -172,6 +173,17 @@ async def retry_missing_3mf(payload: Missing3mfRetryRequest, request: Request):
 async def retry_all_missing_3mf(request: Request):
     _require_session_auth(request)
     return crawler.retry_all_missing_3mf()
+
+
+@router.post("/tasks/missing-3mf/cancel")
+async def cancel_missing_3mf(payload: Missing3mfCancelRequest, request: Request):
+    _require_session_auth(request)
+    return crawler.cancel_missing_3mf(
+        model_url=payload.model_url,
+        model_id=payload.model_id,
+        title=payload.title,
+        instance_id=payload.instance_id,
+    )
 
 
 @router.post("/archive")

@@ -62,9 +62,32 @@
   text-decoration: none;
 }
 
+.missing-status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.missing-status small {
+  color: var(--muted);
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.missing-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 @media (max-width: 960px) {
   .bulk-actions {
     width: 100%;
+    justify-content: flex-start;
+  }
+
+  .missing-actions {
     justify-content: flex-start;
   }
 }

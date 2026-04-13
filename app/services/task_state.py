@@ -111,6 +111,36 @@ def _missing_3mf_key(item: dict) -> tuple[str, str, str]:
     )
 
 
+def _matches_missing_3mf_item(
+    item: dict,
+    *,
+    model_id: str = "",
+    title: str = "",
+    instance_id: str = "",
+    model_url: str = "",
+) -> bool:
+    item_model_id = str(item.get("model_id") or "").strip()
+    item_title = str(item.get("title") or "").strip()
+    item_instance_id = str(item.get("instance_id") or "").strip()
+    item_model_url = str(item.get("model_url") or "").strip()
+
+    target_model_id = str(model_id or "").strip()
+    target_title = str(title or "").strip()
+    target_instance_id = str(instance_id or "").strip()
+    target_model_url = str(model_url or "").strip()
+
+    if target_model_id and item_model_id != target_model_id:
+        return False
+    if target_instance_id and item_instance_id != target_instance_id:
+        return False
+    if target_title and item_title != target_title:
+        return False
+    if target_model_url and item_model_url != target_model_url:
+        return False
+
+    return any((target_model_id, target_title, target_instance_id, target_model_url))
+
+
 def _normalize_organize_tasks(payload: Any) -> dict:
     if isinstance(payload, list):
         items = payload
@@ -381,30 +411,49 @@ class TaskStateStore:
     def remove_missing_3mf_for_model(self, model_id: str) -> dict:
         return self.replace_missing_3mf_for_model(model_id, [])
 
+    def remove_missing_3mf_item(
+        self,
+        *,
+        model_id: str = "",
+        title: str = "",
+        instance_id: str = "",
+        model_url: str = "",
+    ) -> dict:
+        payload = self._read_json(MISSING_3MF_PATH, {"items": []})
+        items = _normalize_missing_3mf(payload).get("items", [])
+        remaining = [
+            item for item in items
+            if not _matches_missing_3mf_item(
+                item,
+                model_id=model_id,
+                title=title,
+                instance_id=instance_id,
+                model_url=model_url,
+            )
+        ]
+        return self.save_missing_3mf({"items": remaining})
+
     def update_missing_3mf_status(
         self,
         model_id: str,
         title: str = "",
         instance_id: str = "",
+        model_url: str = "",
         status: str = "",
         message: str = "",
     ) -> dict:
         payload = self._read_json(MISSING_3MF_PATH, {"items": []})
         items = _normalize_missing_3mf(payload).get("items", [])
-        target_model_id = str(model_id or "").strip()
-        target_title = str(title or "").strip()
-        target_instance_id = str(instance_id or "").strip()
         now = datetime.now().isoformat()
 
         for item in items:
-            item_model_id = str(item.get("model_id") or "").strip()
-            item_title = str(item.get("title") or "").strip()
-            item_instance_id = str(item.get("instance_id") or "").strip()
-            if target_model_id and item_model_id != target_model_id:
-                continue
-            if target_instance_id and item_instance_id != target_instance_id:
-                continue
-            if target_title and item_title != target_title:
+            if not _matches_missing_3mf_item(
+                item,
+                model_id=model_id,
+                title=title,
+                instance_id=instance_id,
+                model_url=model_url,
+            ):
                 continue
             if status:
                 item["status"] = status

@@ -99,6 +99,14 @@ class Missing3mfRetryRequest(BaseModel):
     model_id: str = ""
     model_url: str = ""
     title: str = ""
+    instance_id: str = ""
+
+
+class Missing3mfCancelRequest(BaseModel):
+    model_id: str = ""
+    model_url: str = ""
+    title: str = ""
+    instance_id: str = ""
 
 
 class OrganizeTask(BaseModel):

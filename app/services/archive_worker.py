@@ -177,8 +177,9 @@ class ArchiveTaskManager:
             message = "未找到可用 Cookie，请先到设置页配置对应站点 Cookie。"
             self.task_store.update_missing_3mf_status(
                 model_id=clean_model_id,
-                title=title,
-                instance_id=instance_id,
+                title="" if clean_model_id else title,
+                instance_id="" if clean_model_id else instance_id,
+                model_url="" if clean_model_id else clean_url,
                 status="missing",
                 message=message,
             )
@@ -191,8 +192,9 @@ class ArchiveTaskManager:
         if result.get("accepted"):
             self.task_store.update_missing_3mf_status(
                 model_id=clean_model_id,
-                title=title,
-                instance_id=instance_id,
+                title="" if clean_model_id else title,
+                instance_id="" if clean_model_id else instance_id,
+                model_url="" if clean_model_id else clean_url,
                 status="queued",
                 message="已加入重新下载队列",
             )
@@ -202,12 +204,39 @@ class ArchiveTaskManager:
         if "已经在归档队列中" in message:
             self.task_store.update_missing_3mf_status(
                 model_id=clean_model_id,
-                title=title,
-                instance_id=instance_id,
+                title="" if clean_model_id else title,
+                instance_id="" if clean_model_id else instance_id,
+                model_url="" if clean_model_id else clean_url,
                 status="queued",
                 message="已存在于归档队列",
             )
         return result
+
+    def cancel_missing_3mf(self, model_id: str = "", model_url: str = "", title: str = "", instance_id: str = "") -> dict:
+        clean_model_id = str(model_id or "").strip()
+        clean_title = str(title or "").strip()
+        clean_instance_id = str(instance_id or "").strip()
+        clean_url = normalize_source_url(model_url)
+
+        if not any((clean_model_id, clean_title, clean_instance_id, clean_url)):
+            return {
+                "success": False,
+                "message": "缺少可识别的缺失 3MF 条目标识。",
+            }
+
+        before = self.task_store.load_missing_3mf()
+        after = self.task_store.remove_missing_3mf_item(
+            model_id=clean_model_id,
+            title=clean_title,
+            instance_id=clean_instance_id,
+            model_url=clean_url,
+        )
+        removed = max(int(before.get("count") or 0) - int(after.get("count") or 0), 0)
+        return {
+            "success": removed > 0,
+            "removed_count": removed,
+            "message": "已取消该缺失 3MF 任务。" if removed else "没有找到可取消的缺失 3MF 任务。",
+        }
 
     def retry_all_missing_3mf(self) -> dict:
         missing_payload = self.task_store.load_missing_3mf()

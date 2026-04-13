@@ -50,5 +50,13 @@ class LegacyCrawlerBridge:
             instance_id=instance_id,
         )
 
+    def cancel_missing_3mf(self, model_url: str, model_id: str = "", title: str = "", instance_id: str = "") -> dict:
+        return self.manager.cancel_missing_3mf(
+            model_url=model_url,
+            model_id=model_id,
+            title=title,
+            instance_id=instance_id,
+        )
+
     def retry_all_missing_3mf(self) -> dict:
         return self.manager.retry_all_missing_3mf()

@@ -135,15 +135,31 @@
         >
           <span>{{ item.model_id || "-" }}</span>
           <span>{{ item.title || "未命名模型" }}</span>
-          <span>{{ item.status }}</span>
           <span>
+            <span class="missing-status">
+              <strong>{{ formatMissingStatus(item.status) }}</strong>
+              <small v-if="item.message">{{ item.message }}</small>
+            </span>
+          </span>
+          <span>
+            <span class="missing-actions">
             <button
               class="button button-secondary button-small"
               type="button"
+              :disabled="isMissingActionBusy(item) || isRetryLocked(item)"
               @click="retryMissing(item)"
             >
-              重新下载
+              {{ retryLabel(item) }}
             </button>
+            <button
+              class="button button-danger button-small"
+              type="button"
+              :disabled="isMissingActionBusy(item)"
+              @click="cancelMissing(item)"
+            >
+              取消
+            </button>
+            </span>
           </span>
         </div>
       </div>
@@ -212,7 +228,40 @@ const archiveUrl = ref("");
 const archiveStatus = ref("");
 const missingStatus = ref("");
 const submittingArchive = ref(false);
+const pendingMissingActionKey = ref("");
 let refreshTimer = null;
+
+function getMissingKey(item) {
+  return [
+    item?.model_id || "",
+    item?.instance_id || "",
+    item?.title || "",
+    item?.model_url || "",
+  ].join("::");
+}
+
+function isMissingActionBusy(item) {
+  return pendingMissingActionKey.value === getMissingKey(item);
+}
+
+function isRetryLocked(item) {
+  return ["queued", "running"].includes(String(item?.status || "").toLowerCase());
+}
+
+function retryLabel(item) {
+  const status = String(item?.status || "").toLowerCase();
+  if (status === "queued") return "已入队";
+  if (status === "running") return "处理中";
+  return "重新下载";
+}
+
+function formatMissingStatus(status) {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized === "queued") return "已入队";
+  if (normalized === "running") return "处理中";
+  if (normalized === "failed") return "失败";
+  return status || "missing";
+}
 
 function syncAutoRefresh() {
   const hasRunning = payload.value.summary.running_or_queued > 0;
@@ -255,6 +304,7 @@ async function submitArchive() {
 }
 
 async function retryMissing(item) {
+  pendingMissingActionKey.value = getMissingKey(item);
   try {
     const response = await apiRequest("/api/tasks/missing-3mf/retry", {
       method: "POST",
@@ -262,12 +312,15 @@ async function retryMissing(item) {
         model_id: item.model_id,
         model_url: item.model_url,
         title: item.title,
+        instance_id: item.instance_id,
       },
     });
     missingStatus.value = response.message || "已加入重试队列。";
     await load();
   } catch (error) {
     missingStatus.value = error instanceof Error ? error.message : "重试失败。";
+  } finally {
+    pendingMissingActionKey.value = "";
   }
 }
 
@@ -280,6 +333,27 @@ async function retryAllMissing() {
     await load();
   } catch (error) {
     missingStatus.value = error instanceof Error ? error.message : "重试失败。";
+  }
+}
+
+async function cancelMissing(item) {
+  pendingMissingActionKey.value = getMissingKey(item);
+  try {
+    const response = await apiRequest("/api/tasks/missing-3mf/cancel", {
+      method: "POST",
+      body: {
+        model_id: item.model_id,
+        model_url: item.model_url,
+        title: item.title,
+        instance_id: item.instance_id,
+      },
+    });
+    missingStatus.value = response.message || "已取消该缺失 3MF 任务。";
+    await load();
+  } catch (error) {
+    missingStatus.value = error instanceof Error ? error.message : "取消失败。";
+  } finally {
+    pendingMissingActionKey.value = "";
   }
 }
 
