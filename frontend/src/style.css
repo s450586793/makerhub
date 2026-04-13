@@ -1,0 +1,70 @@
+#app {
+  min-height: 100vh;
+}
+
+.button[disabled],
+.theme-toggle__option[disabled] {
+  cursor: not-allowed;
+  opacity: 0.56;
+}
+
+.button-danger {
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(135deg, #df5656 0%, #b84747 100%);
+  box-shadow: 0 12px 24px rgba(184, 71, 71, 0.22);
+}
+
+.section-card--compact {
+  padding: 20px 24px;
+}
+
+.section-card__header--compact {
+  align-items: center;
+}
+
+.bulk-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.model-card--interactive {
+  position: relative;
+}
+
+.model-card__checkbox {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: none;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+  z-index: 3;
+}
+
+.model-card__checkbox.is-visible {
+  display: grid;
+}
+
+.model-card__checkbox input {
+  width: 16px;
+  height: 16px;
+}
+
+.doc-action,
+.mw-statline a {
+  text-decoration: none;
+}
+
+@media (max-width: 960px) {
+  .bulk-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
