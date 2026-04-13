@@ -6,9 +6,21 @@
 
 ## 更新记录
 
+### 2026-04-13
+- 版本号升级到 `v0.2.1`
+- 缺失 3MF 重新下载成功后自动清理“最近失败”记录
+
+### 2026-04-13
+- 版本号升级到 `v0.2.0`，并改为由根目录 `VERSION` 文件统一维护
+- 前端整体重构为 Vue 3 SPA，登录、首页、模型库、详情、设置、任务全部改为前端路由 + API 驱动
+- FastAPI 不再渲染 Jinja 页面，只保留 `/api/*`、`/archive/*`、前端静态资源分发与登录重定向守卫
+- 新增模型详情 JSON 接口 `/api/models/{model_dir}`，模型库补上多选 / 全选 / 删除选中能力
+- Docker 改为 Node + Python 多阶段构建，镜像内直接携带打包后的 Vue 前端
+
 ### 2026-04-12
 - 设置页新增全站主题控制，支持浅色 / 深色 / 自动三档，并可跟随系统暗色模式
 - 左侧导航底部新增版本号展示，页面可直接看到当前站点版本
+- 左下角改为用户头像入口，退出登录与主题切换等用户操作统一收纳进弹窗
 - 模型库页删除顶部说明卡与卡片底部统计条，列表页改为更紧凑的纯筛选 + 卡片布局
 - 新增登录页，公网访问默认先进入单用户登录流程
 - 增加会话鉴权与 API Token 鉴权，页面、API 与 `/archive` 资源统一受保护
@@ -48,10 +60,10 @@
 - 详情页按目标站做高保真复刻
 
 当前阶段：
-- 已完成四页信息架构重构
-- 已完成真实归档数据扫描与首页 / 模型库聚合展示
-- 已完成设置页和任务页拆分
-- 下一步继续接入实际归档队列、批量抓取和 DSM 持续部署验证
+- 已完成 Vue 单页前端、FastAPI API 化和 Docker 多阶段打包
+- 已完成真实归档数据扫描与首页 / 模型库 / 设置 / 任务 / 详情页 API 驱动展示
+- 已完成模型库多选 / 全选 / 删除，以及设置页主题、Cookie、Token、密码管理
+- 下一步继续围绕批量归档体验、详情页高保真复刻与本地整理任务增强迭代
 
 运行目录约定：
 - `/app/config`：运行配置
@@ -66,10 +78,12 @@
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+npm --prefix frontend install
+npm --prefix frontend run build
 uvicorn app.main:app --reload
 ```
 
-默认情况下，本地开发环境会把运行数据写到仓库下的 `runtime/` 目录；Docker 容器内则固定使用 `/app/config`、`/app/logs`、`/app/state`、`/app/archive`、`/app/local`。
+默认情况下，本地开发环境会把运行数据写到仓库下的 `runtime/` 目录；FastAPI 会直接分发 `frontend/dist`。Docker 容器内则固定使用 `/app/config`、`/app/logs`、`/app/state`、`/app/archive`、`/app/local`。
 
 Docker：
 
@@ -87,6 +101,27 @@ docker run -d \
 ```
 
 Compose：
+
+```bash
+version: "3.8"
+
+services:
+  makerhub:
+    image: ghcr.io/s450586793/makerhub:latest
+    pull_policy: always
+    container_name: makerhub
+    ports:
+      - "9042:8000"
+    volumes:
+      - /volume4/docker/docker/makerhub/config:/app/config
+      - /volume4/docker/docker/makerhub/logs:/app/logs
+      - /volume4/docker/docker/makerhub/state:/app/state
+      - /volume2/entertainment/3D打印/makerhub:/app/archive
+      - /volume2/entertainment/3D打印/makerhub/local:/app/local
+    restart: unless-stopped
+```
+
+启动：
 
 ```bash
 docker compose -f compose.yaml up -d

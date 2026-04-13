@@ -320,6 +320,35 @@ class TaskStateStore:
         payload["recent_failures"] = recent_failures
         return self.save_archive_queue(payload)
 
+    def remove_recent_failures_for_model(self, model_id: str, url: str = "") -> dict:
+        model_key = str(model_id or "").strip()
+        url_key = str(url or "").strip()
+        if not model_key and not url_key:
+            return self.load_archive_queue()
+
+        payload = self._read_json(
+            ARCHIVE_QUEUE_PATH,
+            {"active": [], "queued": [], "recent_failures": []},
+        )
+        remaining = []
+        for item in payload.get("recent_failures") or []:
+            normalized = _normalize_task_item(item, "failed")
+            haystack = " ".join(
+                [
+                    str(normalized.get("url") or ""),
+                    str(normalized.get("title") or ""),
+                    str(normalized.get("id") or ""),
+                ]
+            )
+            if model_key and model_key in haystack:
+                continue
+            if url_key and (normalized.get("url") == url_key or normalized.get("title") == url_key):
+                continue
+            remaining.append(normalized)
+
+        payload["recent_failures"] = remaining
+        return self.save_archive_queue(payload)
+
     def merge_missing_3mf_items(self, items: list[dict]) -> dict:
         payload = self._read_json(MISSING_3MF_PATH, {"items": []})
         existing = _normalize_missing_3mf(payload).get("items", [])
@@ -348,6 +377,9 @@ class TaskStateStore:
             if str(item.get("model_id") or "").strip() != model_key or not model_key
         ]
         return self.merge_missing_3mf_items(remaining + (items or []))
+
+    def remove_missing_3mf_for_model(self, model_id: str) -> dict:
+        return self.replace_missing_3mf_for_model(model_id, [])
 
     def update_missing_3mf_status(
         self,

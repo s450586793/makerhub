@@ -370,7 +370,12 @@ class ArchiveTaskManager:
                     "updated_at": datetime.now().isoformat(),
                 }
             )
-        self.task_store.replace_missing_3mf_for_model(str(result.get("model_id") or ""), missing_items)
+        resolved_model_id = str(result.get("model_id") or "")
+        self.task_store.replace_missing_3mf_for_model(resolved_model_id, missing_items)
+        self.task_store.remove_recent_failures_for_model(
+            resolved_model_id,
+            url=normalize_source_url(url),
+        )
 
         self.task_store.update_active_task(
             task_id,
