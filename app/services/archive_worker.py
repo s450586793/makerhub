@@ -280,17 +280,25 @@ class ArchiveTaskManager:
         if queued_count > 0:
             self._ensure_worker()
 
+        discovered_count = len(discovered.get("items") or [])
+        expected_total = discovered.get("expected_total")
+        total_hint = ""
+        if isinstance(expected_total, int) and expected_total > discovered_count:
+            total_hint = f"（站点总数 {expected_total}）"
+
         return {
             "accepted": queued_count > 0,
             "mode": mode,
             "url": clean_url,
-            "discovered_count": len(discovered.get("items") or []),
+            "discovered_count": discovered_count,
+            "expected_total": expected_total,
             "queued_count": queued_count,
             "skipped_pending": skipped_pending,
             "skipped_archived": skipped_archived,
             "pages_scanned": discovered.get("pages_scanned") or 0,
+            "scan_mode": discovered.get("mode") or "",
             "message": (
-                f"批量扫描完成：发现 {len(discovered.get('items') or [])} 个模型，"
+                f"批量扫描完成：发现 {discovered_count} 个模型{total_hint}，"
                 f"新增入队 {queued_count} 个，已在队列 {skipped_pending} 个，已归档 {skipped_archived} 个。"
             ),
         }
