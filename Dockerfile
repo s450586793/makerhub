@@ -17,6 +17,10 @@ ENV MAKERHUB_STATE_DIR=/app/state
 ENV MAKERHUB_ARCHIVE_DIR=/app/archive
 ENV MAKERHUB_LOCAL_DIR=/app/local
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 RUN mkdir -p /app/config /app/logs /app/state /app/archive /app/local

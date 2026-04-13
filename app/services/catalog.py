@@ -9,6 +9,7 @@ from urllib.parse import quote
 from bs4 import BeautifulSoup
 
 from app.core.settings import ARCHIVE_DIR
+from app.services.batch_discovery import extract_model_id, normalize_source_url
 from app.services.task_state import TaskStateStore
 
 
@@ -17,6 +18,8 @@ SOURCE_LABELS = {
     "global": "MakerWorld 国际",
     "local": "本地模型",
 }
+
+LEGACY_CURL_FAILURE_MARKER = "No such file or directory: 'curl'"
 
 
 def _safe_int(value: Any) -> int:
@@ -118,6 +121,71 @@ def _remote_asset_url(*values: Any) -> Optional[str]:
             if raw.startswith(("http://", "https://", "data:")):
                 return raw
     return None
+
+
+def _failure_identity(item: dict) -> tuple[str, str]:
+    raw_url = str(item.get("url") or "").strip()
+    raw_title = str(item.get("title") or "").strip()
+    normalized_url = normalize_source_url(raw_url) if raw_url.startswith(("http://", "https://", "/")) else ""
+    model_id = extract_model_id(raw_url) or extract_model_id(raw_title)
+    return model_id, normalized_url
+
+
+def _prune_recent_failures(
+    store: TaskStateStore,
+    archive_queue: dict,
+    archive_models: list[dict],
+    missing_items: list[dict],
+) -> dict:
+    recent_failures = list(archive_queue.get("recent_failures") or [])
+    if not recent_failures:
+        return archive_queue
+
+    archived_model_ids = {
+        str(item.get("id") or "").strip()
+        for item in archive_models
+        if str(item.get("id") or "").strip()
+    }
+    archived_urls = {
+        normalize_source_url(str(item.get("origin_url") or "").strip())
+        for item in archive_models
+        if str(item.get("origin_url") or "").strip()
+    }
+    pending_missing_ids = {
+        str(item.get("model_id") or "").strip()
+        for item in missing_items
+        if str(item.get("model_id") or "").strip()
+    }
+
+    kept: list[dict] = []
+    changed = False
+    for item in recent_failures:
+        model_id, normalized_url = _failure_identity(item)
+        message = str(item.get("message") or "")
+        archived_match = (
+            (model_id and model_id in archived_model_ids)
+            or (normalized_url and normalized_url in archived_urls)
+        )
+        legacy_curl_failure = LEGACY_CURL_FAILURE_MARKER in message
+
+        if archived_match and (not model_id or model_id not in pending_missing_ids):
+            changed = True
+            continue
+        if legacy_curl_failure and (not model_id or model_id not in pending_missing_ids):
+            changed = True
+            continue
+        kept.append(item)
+
+    if not changed:
+        return archive_queue
+
+    return store.save_archive_queue(
+        {
+            "active": archive_queue.get("active") or [],
+            "queued": archive_queue.get("queued") or [],
+            "recent_failures": kept,
+        }
+    )
 
 
 def _asset_url_from_item(model_root: Path, item: Any) -> Optional[str]:
@@ -784,6 +852,13 @@ def build_tasks_payload(missing_fallback: Optional[list[dict]] = None) -> dict:
     store = TaskStateStore()
     archive_queue = store.load_archive_queue()
     missing_3mf = store.load_missing_3mf(fallback_items=missing_fallback)
+    archive_models = load_archive_models()
+    archive_queue = _prune_recent_failures(
+        store,
+        archive_queue,
+        archive_models,
+        missing_3mf.get("items") or [],
+    )
     organize_tasks = store.load_organize_tasks()
 
     return {
