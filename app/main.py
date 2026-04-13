@@ -16,12 +16,44 @@ ensure_app_dirs()
 app = FastAPI(title="makerhub", version=APP_VERSION)
 auth_manager = AuthManager()
 
+SPA_SHELL_PATHS = {
+    "/",
+    "/login",
+    "/models",
+    "/settings",
+    "/tasks",
+    "/detail-preview",
+}
+
+
+def _apply_cache_headers(path: str, response):
+    if path.startswith("/assets/"):
+        response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+        return response
+
+    if path.startswith("/archive/"):
+        response.headers.setdefault("Cache-Control", "public, max-age=3600")
+        return response
+
+    if (
+        path.startswith("/api/")
+        or path.startswith("/static/")
+        or path in SPA_SHELL_PATHS
+        or path.startswith("/models/")
+    ):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+
+    return response
+
 
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
     path = request.url.path
     if path.startswith("/static") or path.startswith("/assets"):
-        return await call_next(request)
+        response = await call_next(request)
+        return _apply_cache_headers(path, response)
 
     allow_api_token = path.startswith("/api") or path.startswith("/archive")
     identity = auth_manager.resolve_request_auth(request, allow_api_token=allow_api_token)
@@ -29,24 +61,30 @@ async def auth_guard(request: Request, call_next):
 
     if path == "/login":
         if identity and identity.get("kind") == "session":
-            return RedirectResponse(url="/", status_code=303)
-        return await call_next(request)
+            return _apply_cache_headers(path, RedirectResponse(url="/", status_code=303))
+        response = await call_next(request)
+        return _apply_cache_headers(path, response)
 
     if path == "/api/auth/login":
-        return await call_next(request)
+        response = await call_next(request)
+        return _apply_cache_headers(path, response)
 
     if identity is None:
         if path.startswith("/api") or path.startswith("/archive"):
-            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+            return _apply_cache_headers(path, JSONResponse({"detail": "Unauthorized"}, status_code=401))
         next_path = path
         if request.url.query:
             next_path = f"{path}?{request.url.query}"
-        return RedirectResponse(url=f"/login?next={quote(next_path, safe='/=?&')}", status_code=303)
+        return _apply_cache_headers(
+            path,
+            RedirectResponse(url=f"/login?next={quote(next_path, safe='/=?&')}", status_code=303),
+        )
 
     if path == "/login":
-        return RedirectResponse(url="/", status_code=303)
+        return _apply_cache_headers(path, RedirectResponse(url="/", status_code=303))
 
-    return await call_next(request)
+    response = await call_next(request)
+    return _apply_cache_headers(path, response)
 
 
 app.mount("/static", StaticFiles(directory=str(ROOT_DIR / "app" / "static")), name="static")

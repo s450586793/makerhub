@@ -15,7 +15,7 @@ export const appState = reactive({
     display_name: "",
   },
   config: null,
-  appVersion: "0.1.0",
+  appVersion: "",
   themePreference: getStoredThemePreference(),
 });
 

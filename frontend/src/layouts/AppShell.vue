@@ -26,7 +26,7 @@
           @theme-change="handleThemeChange"
         />
 
-        <span class="sidebar-version">v{{ appState.appVersion }}</span>
+        <span class="sidebar-version">{{ appState.appVersion ? `v${appState.appVersion}` : "版本读取中" }}</span>
       </div>
     </aside>
 
