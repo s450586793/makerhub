@@ -2159,6 +2159,130 @@ select:focus {
   cursor: pointer;
 }
 
+html[data-theme="dark"] .detail-page--makerworld {
+  --mw-detail-bg: #0c1412;
+  --mw-panel-bg: #121c19;
+  --mw-panel-soft: #172320;
+  --mw-panel-muted: #1b2a26;
+  --mw-border: rgba(255, 255, 255, 0.08);
+  --mw-border-strong: rgba(255, 255, 255, 0.14);
+  --mw-text: #edf6f1;
+  --mw-muted: #9db0a5;
+  background: var(--mw-detail-bg);
+  color: var(--mw-text);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-side-rail,
+html[data-theme="dark"] .detail-page--makerworld .mw-topbar,
+html[data-theme="dark"] .detail-page--makerworld .mw-card,
+html[data-theme="dark"] .detail-page--makerworld .mw-section-card,
+html[data-theme="dark"] .detail-page--makerworld .mw-config-panel {
+  background: var(--mw-panel-bg);
+  border-color: var(--mw-border);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+  color: var(--mw-text);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-side-rail__icon,
+html[data-theme="dark"] .detail-page--makerworld .mw-chip,
+html[data-theme="dark"] .detail-page--makerworld .mw-filter-pill,
+html[data-theme="dark"] .detail-page--makerworld .mw-media-pill,
+html[data-theme="dark"] .detail-page--makerworld .mw-gallery__thumb,
+html[data-theme="dark"] .detail-page--makerworld .mw-profile-card,
+html[data-theme="dark"] .detail-page--makerworld .doc-card,
+html[data-theme="dark"] .detail-page--makerworld .mw-doc-card,
+html[data-theme="dark"] .detail-page--makerworld .comment-gallery__item {
+  background: var(--mw-panel-muted);
+  border-color: var(--mw-border);
+  color: var(--mw-text);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-search,
+html[data-theme="dark"] .detail-page--makerworld .mw-gallery__cover {
+  background: var(--mw-panel-soft);
+  border-color: var(--mw-border);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-topbar__button,
+html[data-theme="dark"] .detail-page--makerworld .mw-inline-link,
+html[data-theme="dark"] .detail-page--makerworld .mw-follow-pill,
+html[data-theme="dark"] .detail-page--makerworld .doc-action,
+html[data-theme="dark"] .detail-page--makerworld .mw-doc-action {
+  background: var(--mw-panel-soft);
+  border-color: var(--mw-border-strong);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-topbar__button,
+html[data-theme="dark"] .detail-page--makerworld .mw-inline-link,
+html[data-theme="dark"] .detail-page--makerworld .mw-follow-pill {
+  color: var(--mw-text);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .doc-action,
+html[data-theme="dark"] .detail-page--makerworld .mw-doc-action {
+  color: var(--brand-strong);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-chip--solid,
+html[data-theme="dark"] .detail-page--makerworld .mw-filter-pill.is-active,
+html[data-theme="dark"] .detail-page--makerworld .mw-media-pill.is-active {
+  color: #ffffff;
+  background: #2c8f60;
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-config-panel__header {
+  border-color: var(--mw-border);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-profile-card.is-active {
+  background: #1f302a;
+  border-color: rgba(65, 199, 132, 0.38);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-action-bar {
+  border-color: rgba(65, 199, 132, 0.22);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-action-bar__button {
+  background: var(--mw-panel-bg);
+  border-right-color: var(--mw-border);
+  color: var(--mw-text);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-head__subline,
+html[data-theme="dark"] .detail-page--makerworld .mw-profile-card__meta,
+html[data-theme="dark"] .detail-page--makerworld .mw-instance-panel__summary,
+html[data-theme="dark"] .detail-page--makerworld .mw-statline,
+html[data-theme="dark"] .detail-page--makerworld .mw-search__icon,
+html[data-theme="dark"] .detail-page--makerworld .mw-search__text,
+html[data-theme="dark"] .detail-page--makerworld .doc-card__body span,
+html[data-theme="dark"] .detail-page--makerworld .mw-doc-card__body span,
+html[data-theme="dark"] .detail-page--makerworld .comment-item__header span:last-child {
+  color: var(--mw-muted);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .doc-card__icon,
+html[data-theme="dark"] .detail-page--makerworld .mw-doc-card__icon {
+  color: var(--brand-strong);
+  background: rgba(65, 199, 132, 0.16);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .doc-card__icon--pdf,
+html[data-theme="dark"] .detail-page--makerworld .mw-doc-card__icon--pdf {
+  color: #ff9c9c;
+  background: rgba(220, 38, 38, 0.18);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .lightbox__dialog {
+  background: rgba(18, 28, 25, 0.98);
+  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.42);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--mw-text);
+}
+
 @media (max-width: 1240px) {
   .stats-grid,
   .model-grid {
