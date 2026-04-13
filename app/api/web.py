@@ -2,7 +2,7 @@ from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app.core.settings import ROOT_DIR
+from app.core.settings import APP_VERSION, ROOT_DIR
 from app.core.store import JsonStore
 from app.services.catalog import build_dashboard_payload, build_models_payload, build_tasks_payload, get_model_detail, load_archive_models
 from app.services.auth import AuthManager, SESSION_COOKIE_NAME
@@ -26,6 +26,7 @@ def _template_context(request: Request, *, runtime_config=None, **kwargs):
     return {
         "request": request,
         "theme_preference": resolved_config.user.theme_preference,
+        "app_version": APP_VERSION,
         **kwargs,
     }
 

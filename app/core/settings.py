@@ -4,6 +4,7 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 RUNTIME_DIR = ROOT_DIR / "runtime"
+APP_VERSION = os.getenv("MAKERHUB_APP_VERSION", "0.1.0").strip() or "0.1.0"
 
 
 def _resolve_dir(env_name: str, fallback: Path) -> Path:

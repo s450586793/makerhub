@@ -7,13 +7,13 @@ from fastapi.staticfiles import StaticFiles
 from app.api.auth import router as auth_router
 from app.api.config import router as config_router
 from app.api.web import router as web_router
-from app.core.settings import ARCHIVE_DIR, ROOT_DIR, ensure_app_dirs
+from app.core.settings import APP_VERSION, ARCHIVE_DIR, ROOT_DIR, ensure_app_dirs
 from app.services.auth import AuthManager
 
 
 ensure_app_dirs()
 
-app = FastAPI(title="makerhub", version="0.1.0")
+app = FastAPI(title="makerhub", version=APP_VERSION)
 auth_manager = AuthManager()
 
 

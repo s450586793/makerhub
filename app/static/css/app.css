@@ -167,6 +167,8 @@ select {
 
 .sidebar-footer {
   margin-top: auto;
+  display: grid;
+  gap: 12px;
 }
 
 .sidebar-nav__link {
@@ -184,6 +186,15 @@ select {
   color: var(--brand-strong);
   background: var(--surface-strong);
   box-shadow: 0 10px 24px rgba(22, 33, 29, 0.08);
+}
+
+.sidebar-version {
+  padding: 0 16px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .page-shell {
