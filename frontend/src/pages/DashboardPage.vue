@@ -19,37 +19,6 @@
       <article class="surface section-card">
         <div class="section-card__header">
           <div>
-            <span class="eyebrow">最近模型</span>
-            <h2>最近采集的 8 个模型</h2>
-          </div>
-          <RouterLink class="section-link" to="/models">查看全部</RouterLink>
-        </div>
-        <div v-if="payload.recent_models?.length" class="mini-model-grid">
-          <RouterLink
-            v-for="model in payload.recent_models"
-            :key="model.model_dir"
-            class="mini-model-card"
-            :to="model.detail_path"
-          >
-            <img
-              v-if="model.cover_url"
-              :src="model.cover_url"
-              :alt="model.title"
-              loading="lazy"
-            >
-            <div v-else class="media-placeholder">{{ model.title.slice(0, 1) }}</div>
-            <div>
-              <strong>{{ model.title }}</strong>
-              <span>{{ model.author.name }} · {{ model.collect_date || "未知时间" }}</span>
-            </div>
-          </RouterLink>
-        </div>
-        <p v-else class="empty-copy">当前还没有归档模型，后续归档完成后这里会自动展示最新内容。</p>
-      </article>
-
-      <article class="surface section-card">
-        <div class="section-card__header">
-          <div>
             <span class="eyebrow">系统状态</span>
             <h2>连接与代理状态</h2>
           </div>
@@ -115,7 +84,6 @@ import { apiRequest } from "../lib/api";
 const loading = ref(true);
 const payload = ref({
   stats: [],
-  recent_models: [],
   system_status: [],
   task_summary: {
     running: [],
