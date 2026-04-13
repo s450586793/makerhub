@@ -138,15 +138,31 @@ function bindSettingsTabs() {
   const panels = document.querySelectorAll("[data-settings-panel]");
   if (!tabs.length || !panels.length) return;
 
+  const activateTab = (target) => {
+    const normalizedTarget = String(target || "").trim();
+    const fallback = tabs[0]?.dataset.settingsTab || "";
+    const activeTarget = Array.from(tabs).some((tab) => tab.dataset.settingsTab === normalizedTarget)
+      ? normalizedTarget
+      : fallback;
+
+    tabs.forEach((tab) => tab.classList.toggle("is-active", tab.dataset.settingsTab === activeTarget));
+    panels.forEach((panel) => {
+      panel.classList.toggle("is-active", panel.dataset.settingsPanel === activeTarget);
+    });
+  };
+
   tabs.forEach((button) => {
     button.addEventListener("click", () => {
       const target = button.dataset.settingsTab;
-      tabs.forEach((tab) => tab.classList.toggle("is-active", tab === button));
-      panels.forEach((panel) => {
-        panel.classList.toggle("is-active", panel.dataset.settingsPanel === target);
-      });
+      activateTab(target);
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", target);
+      window.history.replaceState({}, "", `${url.pathname}?${url.searchParams.toString()}`);
     });
   });
+
+  const initialTarget = new URL(window.location.href).searchParams.get("tab") || window.location.hash.replace(/^#/, "");
+  activateTab(initialTarget);
 }
 
 function syncThemeToggle(form) {
@@ -191,6 +207,50 @@ function bindThemeControls() {
   } else if (themeMediaQuery?.addListener) {
     themeMediaQuery.addListener(handleThemeChange);
   }
+}
+
+function bindUserMenu() {
+  const root = document.querySelector("[data-user-menu-root]");
+  const toggle = root?.querySelector("[data-user-menu-toggle]");
+  const menu = root?.querySelector("[data-user-menu]");
+  if (!root || !toggle || !menu) return;
+
+  const closeMenu = () => {
+    menu.hidden = true;
+    toggle.setAttribute("aria-expanded", "false");
+    root.classList.remove("is-open");
+  };
+
+  const openMenu = () => {
+    menu.hidden = false;
+    toggle.setAttribute("aria-expanded", "true");
+    root.classList.add("is-open");
+  };
+
+  toggle.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (menu.hidden) {
+      openMenu();
+      return;
+    }
+    closeMenu();
+  });
+
+  menu.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!root.contains(event.target)) {
+      closeMenu();
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeMenu();
+    }
+  });
 }
 
 async function submitSettingsForm(form) {
@@ -658,6 +718,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindSecretFields();
   bindSettingsTabs();
   bindThemeControls();
+  bindUserMenu();
   bindSettingsForms();
   bindPasswordForm();
   bindTokenManager();

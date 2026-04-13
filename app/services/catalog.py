@@ -1,4 +1,5 @@
 import json
+import shutil
 import time
 from datetime import datetime
 from pathlib import Path
@@ -738,6 +739,45 @@ def get_model_detail(model_dir: str) -> Optional[dict]:
     if not meta_path.exists():
         return None
     return _normalize_model(meta_path)
+
+
+def delete_archived_models(model_dirs: list[str]) -> dict:
+    removed: list[dict] = []
+    skipped: list[dict] = []
+
+    archive_root = ARCHIVE_DIR.resolve()
+    for raw_value in model_dirs:
+        clean_value = str(raw_value or "").strip().strip("/")
+        if not clean_value:
+            continue
+
+        target = (ARCHIVE_DIR / clean_value).resolve()
+        try:
+            target.relative_to(archive_root)
+        except ValueError:
+            skipped.append({"model_dir": clean_value, "reason": "非法路径"})
+            continue
+
+        if not target.exists() or not target.is_dir():
+            skipped.append({"model_dir": clean_value, "reason": "目录不存在"})
+            continue
+
+        detail = get_model_detail(clean_value) or {}
+        shutil.rmtree(target)
+        removed.append(
+            {
+                "model_dir": clean_value,
+                "id": str(detail.get("id") or ""),
+                "title": str(detail.get("title") or clean_value),
+            }
+        )
+
+    return {
+        "removed": removed,
+        "skipped": skipped,
+        "removed_count": len(removed),
+        "skipped_count": len(skipped),
+    }
 
 
 def build_tasks_payload(missing_fallback: Optional[list[dict]] = None) -> dict:

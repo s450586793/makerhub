@@ -1,29 +1,34 @@
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.core.store import JsonStore
+from app.core.settings import APP_VERSION
 from app.schemas.models import (
     ArchiveRequest,
     CookiePair,
     Missing3mfRetryRequest,
+    ModelDeleteRequest,
     NotificationConfig,
     ProxyConfig,
     ThemeSettingsUpdate,
     UserSettingsUpdate,
 )
 from app.schemas.models import OrganizeTask
-from app.services.catalog import build_dashboard_payload, build_models_payload, build_tasks_payload
+from app.services.catalog import build_dashboard_payload, build_models_payload, build_tasks_payload, delete_archived_models, get_model_detail
 from app.services.crawler import LegacyCrawlerBridge
 from app.services.auth import AuthManager
+from app.services.task_state import TaskStateStore
 
 
 router = APIRouter(prefix="/api")
 store = JsonStore()
 crawler = LegacyCrawlerBridge()
 auth_manager = AuthManager(store=store)
+task_state_store = TaskStateStore()
 
 
 def _public_config_payload(config) -> dict:
     return {
+        "app_version": APP_VERSION,
         "cookies": [item.model_dump() for item in config.cookies],
         "proxy": config.proxy.model_dump(),
         "notifications": config.notifications.model_dump(),
@@ -116,6 +121,33 @@ async def get_models_data(
     sort: str = Query("collectDate", description="collectDate / downloads / likes / prints"),
 ):
     return build_models_payload(q=q, source=source, tag=tag, sort_key=sort)
+
+
+@router.get("/models/{model_dir:path}")
+async def get_model_detail_data(model_dir: str):
+    detail = get_model_detail(model_dir)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="模型不存在。")
+    return detail
+
+
+@router.post("/models/delete")
+async def delete_models(payload: ModelDeleteRequest, request: Request):
+    _require_session_auth(request)
+    result = delete_archived_models(payload.model_dirs)
+
+    for item in result.get("removed") or []:
+        model_id = str(item.get("id") or "").strip()
+        if model_id:
+            task_state_store.remove_missing_3mf_for_model(model_id)
+
+    result["success"] = result.get("removed_count", 0) > 0
+    result["message"] = (
+        f"已删除 {result.get('removed_count', 0)} 个模型。"
+        if result.get("removed_count", 0)
+        else "没有删除任何模型。"
+    )
+    return result
 
 
 @router.get("/tasks")

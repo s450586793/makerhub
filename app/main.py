@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.auth import router as auth_router
 from app.api.config import router as config_router
 from app.api.web import router as web_router
-from app.core.settings import APP_VERSION, ARCHIVE_DIR, ROOT_DIR, ensure_app_dirs
+from app.core.settings import APP_VERSION, ARCHIVE_DIR, FRONTEND_DIST_DIR, ROOT_DIR, ensure_app_dirs
 from app.services.auth import AuthManager
 
 
@@ -20,7 +20,7 @@ auth_manager = AuthManager()
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
     path = request.url.path
-    if path.startswith("/static"):
+    if path.startswith("/static") or path.startswith("/assets"):
         return await call_next(request)
 
     allow_api_token = path.startswith("/api") or path.startswith("/archive")
@@ -33,9 +33,6 @@ async def auth_guard(request: Request, call_next):
         return await call_next(request)
 
     if path == "/api/auth/login":
-        return await call_next(request)
-
-    if path == "/logout":
         return await call_next(request)
 
     if identity is None:
@@ -53,6 +50,8 @@ async def auth_guard(request: Request, call_next):
 
 
 app.mount("/static", StaticFiles(directory=str(ROOT_DIR / "app" / "static")), name="static")
+if FRONTEND_DIST_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST_DIR / "assets")), name="assets")
 app.mount("/archive", StaticFiles(directory=str(ARCHIVE_DIR)), name="archive")
 app.include_router(web_router)
 app.include_router(auth_router)

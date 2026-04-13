@@ -4,7 +4,22 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 RUNTIME_DIR = ROOT_DIR / "runtime"
-APP_VERSION = os.getenv("MAKERHUB_APP_VERSION", "0.1.0").strip() or "0.1.0"
+FRONTEND_DIR = ROOT_DIR / "frontend"
+FRONTEND_DIST_DIR = FRONTEND_DIR / "dist"
+FRONTEND_INDEX_PATH = FRONTEND_DIST_DIR / "index.html"
+VERSION_PATH = ROOT_DIR / "VERSION"
+
+
+def _resolve_app_version() -> str:
+    env_value = os.getenv("MAKERHUB_APP_VERSION", "").strip()
+    if env_value:
+      return env_value
+    if VERSION_PATH.exists():
+      return VERSION_PATH.read_text(encoding="utf-8").strip() or "0.1.0"
+    return "0.1.0"
+
+
+APP_VERSION = _resolve_app_version()
 
 
 def _resolve_dir(env_name: str, fallback: Path) -> Path:

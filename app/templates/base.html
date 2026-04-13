@@ -38,8 +38,52 @@
           <a class="sidebar-nav__link{% if active_page == 'tasks' %} is-active{% endif %}" href="/tasks">任务</a>
         </nav>
 
-        <div class="sidebar-footer">
-          <a class="sidebar-nav__link" href="/logout">退出登录</a>
+        <div class="sidebar-footer" data-user-menu-root>
+          <button
+            class="user-launcher"
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded="false"
+            data-user-menu-toggle
+          >
+            <span class="user-launcher__avatar">{{ user_avatar_text }}</span>
+            <span class="user-launcher__meta">
+              <strong>{{ user_display_name }}</strong>
+              <small>{{ user_username }}</small>
+            </span>
+          </button>
+
+          <div class="user-menu" hidden data-user-menu>
+            <div class="user-menu__header">
+              <span class="user-menu__avatar">{{ user_avatar_text }}</span>
+              <div>
+                <span class="user-menu__role">管理员</span>
+                <strong>{{ user_display_name }}</strong>
+                <small>{{ user_username }}</small>
+              </div>
+            </div>
+
+            <div class="user-menu__group">
+              <a class="user-menu__link" href="/settings?tab=user">个人信息</a>
+              <a class="user-menu__link" href="/settings?tab=connections">系统设置</a>
+            </div>
+
+            <form class="user-menu__theme" data-save-kind="theme" data-theme-form>
+              <div class="user-menu__section-title">主题</div>
+              <input type="hidden" name="theme_preference" value="{{ theme_preference }}">
+              <div class="theme-toggle theme-toggle--compact" data-theme-toggle>
+                <button class="theme-toggle__option" type="button" data-theme-choice="light">浅色</button>
+                <button class="theme-toggle__option" type="button" data-theme-choice="dark">深色</button>
+                <button class="theme-toggle__option" type="button" data-theme-choice="auto">自动</button>
+              </div>
+              <span class="form-status" data-form-status></span>
+            </form>
+
+            <div class="user-menu__group user-menu__group--footer">
+              <a class="button button-secondary button-small user-menu__logout" href="/logout">退出登录</a>
+            </div>
+          </div>
+
           <span class="sidebar-version">v{{ app_version }}</span>
         </div>
       </div>

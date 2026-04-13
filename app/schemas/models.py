@@ -81,6 +81,10 @@ class ArchiveRequest(BaseModel):
     url: str
 
 
+class ModelDeleteRequest(BaseModel):
+    model_dirs: List[str] = Field(default_factory=list)
+
+
 class Missing3mfItem(BaseModel):
     model_id: str
     title: str
