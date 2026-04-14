@@ -1,10 +1,11 @@
+import json
 import os
 import threading
 import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 from app.core.settings import ARCHIVE_DIR, LOGS_DIR
@@ -13,6 +14,10 @@ from app.services.batch_discovery import discover_batch_model_urls, extract_mode
 from app.services.catalog import load_archive_models
 from app.services.legacy_archiver import archive_model as legacy_archive_model
 from app.services.task_state import TaskStateStore
+
+BATCH_TASK_MODES = {"author_upload", "collection_models"}
+BATCH_QUEUE_LOG_PATH = LOGS_DIR / "batch_queue.log"
+MAX_BATCH_CHILD_REQUEUE_ATTEMPTS = 3
 
 
 def _detect_mode(url: str) -> str:
@@ -38,6 +43,29 @@ def _task_key(url: str) -> str:
     if model_id:
         return f"model:{model_id}"
     return normalize_source_url(url)
+
+
+def _queue_item_key(item: dict) -> str:
+    return _task_key(item.get("url") or item.get("title") or "")
+
+
+def _append_batch_queue_log(event: str, **payload: Any) -> None:
+    try:
+        BATCH_QUEUE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with BATCH_QUEUE_LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "time": datetime.now().isoformat(),
+                        "event": event,
+                        **payload,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except Exception:
+        return
 
 
 @contextmanager
@@ -133,7 +161,7 @@ class ArchiveTaskManager:
     def _queued_task_keys(self) -> set[str]:
         queue = self.task_store.load_archive_queue()
         items = (queue.get("active") or []) + (queue.get("queued") or [])
-        return {_task_key(item.get("url") or item.get("title") or "") for item in items if item.get("url") or item.get("title")}
+        return {_queue_item_key(item) for item in items if item.get("url") or item.get("title")}
 
     def _archived_task_keys(self) -> set[str]:
         keys = set()
@@ -146,6 +174,233 @@ class ArchiveTaskManager:
             if origin_url:
                 keys.add(_task_key(origin_url))
         return keys
+
+    def _queue_state_snapshot(self) -> dict[str, Any]:
+        queue = self.task_store.load_archive_queue()
+        active = list(queue.get("active") or [])
+        queued = list(queue.get("queued") or [])
+        recent_failures = list(queue.get("recent_failures") or [])
+        return {
+            "queue": queue,
+            "active": active,
+            "queued": queued,
+            "recent_failures": recent_failures,
+            "active_by_key": {
+                _queue_item_key(item): item
+                for item in active
+                if _queue_item_key(item)
+            },
+            "queued_by_key": {
+                _queue_item_key(item): item
+                for item in queued
+                if _queue_item_key(item)
+            },
+            "failed_by_key": {
+                _queue_item_key(item): item
+                for item in recent_failures
+                if _queue_item_key(item)
+            },
+        }
+
+    def _normalize_batch_expected_items(self, items: Any) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for raw in items or []:
+            if isinstance(raw, str):
+                url = normalize_source_url(raw)
+                key = _task_key(url)
+                normalized.append(
+                    {
+                        "url": url,
+                        "task_key": key,
+                        "model_id": extract_model_id(url),
+                        "attempts": 1,
+                        "status": "",
+                        "last_task_id": "",
+                    }
+                )
+                continue
+
+            if not isinstance(raw, dict):
+                continue
+
+            url = normalize_source_url(str(raw.get("url") or ""))
+            key = str(raw.get("task_key") or "").strip() or _task_key(url)
+            normalized.append(
+                {
+                    "url": url,
+                    "task_key": key,
+                    "model_id": str(raw.get("model_id") or extract_model_id(url) or "").strip(),
+                    "attempts": max(int(raw.get("attempts") or 1), 1),
+                    "status": str(raw.get("status") or "").strip(),
+                    "last_task_id": str(raw.get("last_task_id") or raw.get("child_task_id") or "").strip(),
+                }
+            )
+        return normalized
+
+    def _refresh_batch_tasks(self) -> bool:
+        snapshot = self._queue_state_snapshot()
+        active_items = snapshot["active"]
+        batch_tasks = [
+            item
+            for item in active_items
+            if str(item.get("mode") or "") in BATCH_TASK_MODES
+            and self._normalize_batch_expected_items((item.get("meta") or {}).get("batch_expected_items"))
+        ]
+        if not batch_tasks:
+            return False
+
+        active_batch_ids = {str(item.get("id") or "") for item in batch_tasks}
+        active_child_by_key = {
+            _queue_item_key(item): item
+            for item in active_items
+            if str(item.get("id") or "") not in active_batch_ids and _queue_item_key(item)
+        }
+        queued_by_key = dict(snapshot["queued_by_key"])
+        failed_by_key = dict(snapshot["failed_by_key"])
+        archived_keys = self._archived_task_keys()
+
+        for batch_task in batch_tasks:
+            batch_id = str(batch_task.get("id") or "")
+            batch_url = str(batch_task.get("url") or "")
+            meta = dict(batch_task.get("meta") or {})
+            expected_items = self._normalize_batch_expected_items(meta.get("batch_expected_items"))
+            if not expected_items:
+                continue
+
+            completed_count = 0
+            running_count = 0
+            queued_count = 0
+            failed_count = 0
+            updated = False
+
+            for item in expected_items:
+                key = str(item.get("task_key") or "").strip() or _task_key(item.get("url") or "")
+                item["task_key"] = key
+                status = str(item.get("status") or "").strip()
+
+                if key in archived_keys:
+                    if status != "archived":
+                        item["status"] = "archived"
+                        updated = True
+                    completed_count += 1
+                    continue
+
+                if key in active_child_by_key:
+                    if status != "running":
+                        item["status"] = "running"
+                        updated = True
+                    running_count += 1
+                    continue
+
+                if key in queued_by_key:
+                    if status != "queued":
+                        item["status"] = "queued"
+                        updated = True
+                    queued_count += 1
+                    continue
+
+                if key in failed_by_key:
+                    if status != "failed":
+                        item["status"] = "failed"
+                        updated = True
+                    failed_count += 1
+                    continue
+
+                attempts = max(int(item.get("attempts") or 1), 1)
+                if attempts < MAX_BATCH_CHILD_REQUEUE_ATTEMPTS:
+                    child_task_id = self._enqueue_single_task(
+                        item.get("url") or "",
+                        message=f"批量任务补回：{batch_url}",
+                        mode="single_model",
+                        meta={
+                            "batch_parent_id": batch_id,
+                            "batch_source_url": batch_url,
+                            "batch_requeued": True,
+                        },
+                    )
+                    item["attempts"] = attempts + 1
+                    item["last_task_id"] = child_task_id
+                    item["status"] = "queued"
+                    queued_count += 1
+                    updated = True
+                    _append_batch_queue_log(
+                        "child_requeued",
+                        batch_task_id=batch_id,
+                        batch_url=batch_url,
+                        child_task_id=child_task_id,
+                        model_url=item.get("url") or "",
+                        model_id=item.get("model_id") or "",
+                        task_key=key,
+                        attempts=item["attempts"],
+                    )
+                    continue
+
+                if status != "failed":
+                    item["status"] = "failed"
+                    updated = True
+                    _append_batch_queue_log(
+                        "child_lost",
+                        batch_task_id=batch_id,
+                        batch_url=batch_url,
+                        model_url=item.get("url") or "",
+                        model_id=item.get("model_id") or "",
+                        task_key=key,
+                        attempts=attempts,
+                    )
+                failed_count += 1
+
+            total_expected = len(expected_items)
+            if total_expected <= 0:
+                continue
+
+            done_count = completed_count + failed_count
+            remaining_count = max(total_expected - done_count, 0)
+            progress = 60 + int((done_count / total_expected) * 40)
+
+            meta["batch_expected_items"] = expected_items
+            meta["batch_progress"] = {
+                "total": total_expected,
+                "completed": completed_count,
+                "failed": failed_count,
+                "running": running_count,
+                "queued": queued_count,
+                "remaining": remaining_count,
+            }
+
+            if done_count >= total_expected and running_count == 0 and queued_count == 0:
+                summary = (
+                    f"批量归档完成：成功 {completed_count} 个，失败 {failed_count} 个。"
+                )
+                self.task_store.update_active_task(
+                    batch_id,
+                    progress=100,
+                    message=summary,
+                    meta=meta,
+                )
+                self.task_store.complete_archive_task(batch_id)
+                _append_batch_queue_log(
+                    "batch_completed",
+                    batch_task_id=batch_id,
+                    batch_url=batch_url,
+                    completed=completed_count,
+                    failed=failed_count,
+                    total=total_expected,
+                )
+                continue
+
+            message = (
+                f"批量归档执行中：成功 {completed_count}/{total_expected}，"
+                f"运行中 {running_count}，排队中 {queued_count}，失败 {failed_count}。"
+            )
+            if updated or str(batch_task.get("message") or "") != message:
+                self.task_store.update_active_task(
+                    batch_id,
+                    progress=min(progress, 99),
+                    message=message,
+                    meta=meta,
+                )
+
+        return True
 
     def _prune_batch_previews(self) -> None:
         cutoff = time.time() - 15 * 60
@@ -489,9 +744,13 @@ class ArchiveTaskManager:
 
     def _run_loop(self) -> None:
         while True:
+            has_active_batch = self._refresh_batch_tasks()
             queue = self.task_store.load_archive_queue()
             queued = queue.get("queued") or []
             if not queued:
+                if has_active_batch:
+                    time.sleep(0.2)
+                    continue
                 return
 
             task = queued[0]
@@ -515,6 +774,8 @@ class ArchiveTaskManager:
                         message=str(exc),
                     )
                 self.task_store.fail_archive_task(task_id, str(exc))
+            finally:
+                self._refresh_batch_tasks()
 
     def _run_batch_task(self, task_id: str, url: str, mode: str, meta: Optional[dict] = None) -> None:
         config = self.store.load()
@@ -523,6 +784,27 @@ class ArchiveTaskManager:
             raise RuntimeError("未找到可用 Cookie，请先到设置页配置对应站点 Cookie。")
 
         meta = meta if isinstance(meta, dict) else {}
+        existing_expected_items = self._normalize_batch_expected_items(meta.get("batch_expected_items"))
+        if existing_expected_items:
+            batch_progress = meta.get("batch_progress") if isinstance(meta.get("batch_progress"), dict) else {}
+            total = max(int(batch_progress.get("total") or len(existing_expected_items)), 1)
+            completed = max(int(batch_progress.get("completed") or 0), 0)
+            failed = max(int(batch_progress.get("failed") or 0), 0)
+            progress = 60 + int(((completed + failed) / total) * 40)
+            self.task_store.update_active_task(
+                task_id,
+                progress=max(min(progress, 99), 1),
+                message="批量任务已恢复，正在继续处理子任务",
+                meta=meta,
+            )
+            _append_batch_queue_log(
+                "batch_resumed",
+                batch_task_id=task_id,
+                batch_url=url,
+                total=len(existing_expected_items),
+            )
+            return
+
         preview_items = list(meta.get("discovered_items") or [])
         if preview_items:
             print(f"[makerhub] batch_discovery reuse_preview mode={mode} url={url} items={len(preview_items)}", flush=True)
@@ -553,6 +835,7 @@ class ArchiveTaskManager:
         queued_count = 0
         skipped_pending = 0
         skipped_archived = 0
+        expected_items: list[dict[str, Any]] = []
         discovered_items = discovered.get("items") or []
         total_items = len(discovered_items)
 
@@ -567,12 +850,61 @@ class ArchiveTaskManager:
             key = _task_key(model_url)
             if key in pending_keys:
                 skipped_pending += 1
+                _append_batch_queue_log(
+                    "child_skipped_pending",
+                    batch_task_id=task_id,
+                    batch_url=url,
+                    model_url=model_url,
+                    model_id=extract_model_id(model_url),
+                    task_key=key,
+                    index=index,
+                    total=total_items,
+                )
             elif key in archived_keys:
                 skipped_archived += 1
+                _append_batch_queue_log(
+                    "child_skipped_archived",
+                    batch_task_id=task_id,
+                    batch_url=url,
+                    model_url=model_url,
+                    model_id=extract_model_id(model_url),
+                    task_key=key,
+                    index=index,
+                    total=total_items,
+                )
             else:
-                self._enqueue_single_task(model_url, message=f"来自批量归档：{url}")
+                child_task_id = self._enqueue_single_task(
+                    model_url,
+                    message=f"来自批量归档：{url}",
+                    mode="single_model",
+                    meta={
+                        "batch_parent_id": task_id,
+                        "batch_source_url": url,
+                    },
+                )
+                expected_items.append(
+                    {
+                        "url": model_url,
+                        "task_key": key,
+                        "model_id": extract_model_id(model_url),
+                        "attempts": 1,
+                        "status": "queued",
+                        "last_task_id": child_task_id,
+                    }
+                )
                 pending_keys.add(key)
                 queued_count += 1
+                _append_batch_queue_log(
+                    "child_enqueued",
+                    batch_task_id=task_id,
+                    batch_url=url,
+                    child_task_id=child_task_id,
+                    model_url=model_url,
+                    model_id=extract_model_id(model_url),
+                    task_key=key,
+                    index=index,
+                    total=total_items,
+                )
 
             if total_items:
                 progress = 55 + int((index / total_items) * 40)
@@ -594,15 +926,58 @@ class ArchiveTaskManager:
             f"skipped_pending={skipped_pending} skipped_archived={skipped_archived}",
             flush=True,
         )
+        meta.pop("discovered_items", None)
+        meta["batch_expected_items"] = expected_items
+        meta["batch_progress"] = {
+            "total": queued_count,
+            "completed": 0,
+            "failed": 0,
+            "running": 0,
+            "queued": queued_count,
+            "remaining": queued_count,
+        }
+        meta["batch_summary"] = {
+            "discovered": total_items,
+            "expected_total": expected_total,
+            "queued": queued_count,
+            "skipped_pending": skipped_pending,
+            "skipped_archived": skipped_archived,
+            "scan_mode": discovered.get("mode") or "",
+            "pages_scanned": discovered.get("pages_scanned") or 0,
+        }
+        summary_message = (
+            f"批量扫描完成：发现 {total_items} 个模型{total_hint}，"
+            f"新增入队 {queued_count} 个，已在队列 {skipped_pending} 个，已归档 {skipped_archived} 个。"
+        )
+        _append_batch_queue_log(
+            "batch_enqueued",
+            batch_task_id=task_id,
+            batch_url=url,
+            mode=mode,
+            discovered=total_items,
+            expected_total=expected_total,
+            queued=queued_count,
+            skipped_pending=skipped_pending,
+            skipped_archived=skipped_archived,
+        )
+        if queued_count <= 0:
+            self.task_store.update_active_task(
+                task_id,
+                progress=100,
+                message=summary_message,
+                meta=meta,
+            )
+            self.task_store.complete_archive_task(task_id)
+            return
+
         self.task_store.update_active_task(
             task_id,
-            progress=100,
+            progress=60,
             message=(
-                f"批量扫描完成：发现 {total_items} 个模型{total_hint}，"
-                f"新增入队 {queued_count} 个，已在队列 {skipped_pending} 个，已归档 {skipped_archived} 个。"
+                f"{summary_message} 子任务已入队，正在等待批量完成确认。"
             ),
+            meta=meta,
         )
-        self.task_store.complete_archive_task(task_id)
 
     def _run_single_task(self, task_id: str, url: str) -> None:
         config = self.store.load()
