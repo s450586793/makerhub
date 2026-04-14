@@ -3,11 +3,17 @@
     <form class="filter-bar" @submit.prevent="applyFilters">
       <label class="filter-field filter-field--wide">
         <span>搜索</span>
-        <input v-model.trim="filters.q" type="text" placeholder="标题、作者、标签">
+        <input
+          v-model.trim="filters.q"
+          type="text"
+          placeholder="标题、作者、标签"
+          @blur="applyFiltersIfChanged"
+          @keydown.enter.prevent="applyFilters"
+        >
       </label>
       <label class="filter-field">
         <span>来源</span>
-        <select v-model="filters.source">
+        <select v-model="filters.source" @change="applyFiltersIfChanged">
           <option value="all">全部 ({{ payload.source_counts.all || 0 }})</option>
           <option value="cn">国内 ({{ payload.source_counts.cn || 0 }})</option>
           <option value="global">国际 ({{ payload.source_counts.global || 0 }})</option>
@@ -16,14 +22,14 @@
       </label>
       <label class="filter-field">
         <span>标签</span>
-        <select v-model="filters.tag">
+        <select v-model="filters.tag" @change="applyFiltersIfChanged">
           <option value="">全部标签</option>
           <option v-for="tag in payload.tags" :key="tag" :value="tag">{{ tag }}</option>
         </select>
       </label>
       <label class="filter-field">
         <span>排序</span>
-        <select v-model="filters.sort">
+        <select v-model="filters.sort" @change="applyFiltersIfChanged">
           <option value="collectDate">采集时间倒序</option>
           <option value="downloads">下载量</option>
           <option value="likes">点赞量</option>
@@ -31,7 +37,6 @@
         </select>
       </label>
       <div class="filter-actions">
-        <button class="button button-primary" type="submit">应用筛选</button>
         <button class="button button-secondary" type="button" @click="resetFilters">重置</button>
       </div>
     </form>
@@ -146,6 +151,15 @@ function buildQuery(page = 1) {
   return query;
 }
 
+function buildRouteQuery() {
+  return {
+    q: filters.q || undefined,
+    source: filters.source !== "all" ? filters.source : undefined,
+    tag: filters.tag || undefined,
+    sort: filters.sort !== "collectDate" ? filters.sort : undefined,
+  };
+}
+
 async function fetchPage(page) {
   return apiRequest(`/api/models?${buildQuery(page).toString()}`);
 }
@@ -240,15 +254,28 @@ function ensureObserver() {
 }
 
 function applyFilters() {
-  router.replace({
-    path: "/models",
-    query: {
-      q: filters.q || undefined,
-      source: filters.source !== "all" ? filters.source : undefined,
-      tag: filters.tag || undefined,
-      sort: filters.sort !== "collectDate" ? filters.sort : undefined,
-    },
-  });
+  router.replace({ path: "/models", query: buildRouteQuery() });
+}
+
+function applyFiltersIfChanged() {
+  const nextQuery = buildRouteQuery();
+  const currentQuery = {
+    q: typeof route.query.q === "string" ? route.query.q : undefined,
+    source: typeof route.query.source === "string" ? route.query.source : undefined,
+    tag: typeof route.query.tag === "string" ? route.query.tag : undefined,
+    sort: typeof route.query.sort === "string" ? route.query.sort : undefined,
+  };
+
+  if (
+    currentQuery.q === nextQuery.q
+    && currentQuery.source === nextQuery.source
+    && currentQuery.tag === nextQuery.tag
+    && currentQuery.sort === nextQuery.sort
+  ) {
+    return;
+  }
+
+  applyFilters();
 }
 
 function resetFilters() {

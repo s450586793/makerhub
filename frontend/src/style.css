@@ -407,6 +407,15 @@
 }
 
 @media (max-width: 960px) {
+  .gallery-card__body {
+    padding: 15px;
+    gap: 12px;
+  }
+
+  .gallery-card__title {
+    font-size: 16px;
+  }
+
   .bulk-actions {
     width: 100%;
     justify-content: flex-start;
@@ -433,6 +442,15 @@
 }
 
 @media (max-width: 640px) {
+  .gallery-card__body {
+    padding: 13px;
+    gap: 10px;
+  }
+
+  .gallery-card__title {
+    font-size: 15px;
+  }
+
   .gallery-card__stats {
     grid-template-columns: 1fr;
   }

@@ -165,30 +165,40 @@ select {
 
 .shell-nav-toggle {
   position: fixed;
-  top: 18px;
-  right: 18px;
-  width: 46px;
-  height: 46px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
+  top: 20px;
+  left: 278px;
+  right: auto;
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
   display: inline-grid;
   place-items: center;
   gap: 4px;
   padding: 0;
-  color: var(--text);
-  background: var(--surface-glass);
+  color: #f4f7fb;
+  background: rgba(13, 17, 24, 0.94);
   backdrop-filter: blur(14px);
-  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.14);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
   cursor: pointer;
   z-index: 72;
 }
 
 .shell-nav-toggle span {
-  width: 18px;
+  width: 16px;
   height: 2px;
   border-radius: 999px;
   background: currentColor;
   transition: transform 0.18s ease, opacity 0.18s ease;
+}
+
+.site-shell--sidebar-hidden .shell-nav-toggle {
+  left: 14px;
+}
+
+html[data-theme="dark"] .shell-nav-toggle {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(9, 12, 18, 0.96);
 }
 
 .shell-nav-toggle:hover span:nth-child(1) {
@@ -395,7 +405,7 @@ select {
 }
 
 .page-shell {
-  padding: 28px 28px 56px 12px;
+  padding: 84px 28px 56px 12px;
   display: grid;
   gap: 22px;
 }
@@ -404,7 +414,7 @@ select {
 .site-shell--no-sidebar .page-shell {
   width: min(1540px, calc(100vw - 40px));
   margin: 0 auto;
-  padding: 28px 0 56px;
+  padding: 84px 0 56px;
 }
 
 .login-page {
@@ -746,8 +756,9 @@ select {
 
 .filter-bar {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) repeat(3, minmax(0, 1fr)) auto;
+  grid-template-columns: minmax(0, 2.2fr) repeat(3, minmax(120px, 1fr)) auto;
   gap: 14px;
+  align-items: end;
 }
 
 .filter-field {
@@ -759,6 +770,7 @@ select {
   font-size: 12px;
   font-weight: 700;
   color: var(--muted);
+  white-space: nowrap;
 }
 
 .filter-field--wide {
@@ -790,7 +802,7 @@ select:focus {
 }
 
 .model-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
 }
 
 .model-card {
@@ -1579,7 +1591,7 @@ select:focus {
 
 .detail-page--makerworld .page-shell {
   width: 100%;
-  padding: 28px 28px 56px 12px;
+  padding: 84px 28px 56px 12px;
 }
 
 .mw-detail-layout {
@@ -2354,9 +2366,12 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
 }
 
 @media (max-width: 1240px) {
-  .stats-grid,
-  .model-grid {
+  .stats-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .model-grid {
+    grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
   }
 
   .dashboard-layout,
@@ -2386,6 +2401,21 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
   .site-shell,
   .site-shell--sidebar-hidden {
     display: block;
+  }
+
+  .shell-nav-toggle,
+  .site-shell--sidebar-hidden .shell-nav-toggle {
+    top: 16px;
+    left: 16px;
+  }
+
+  .page-shell,
+  .detail-page--makerworld .page-shell {
+    padding-top: 76px;
+  }
+
+  .surface--filters {
+    padding: 14px 16px;
   }
 
   .site-sidebar {
@@ -2433,13 +2463,45 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
   }
 
   .stats-grid,
-  .model-grid,
   .settings-grid--two,
   .settings-grid--three,
-  .filter-bar,
   .archive-form,
   .token-create-form {
     grid-template-columns: 1fr;
+  }
+
+  .model-grid {
+    grid-template-columns: repeat(auto-fill, minmax(212px, 1fr));
+    gap: 16px;
+  }
+
+  .filter-bar {
+    grid-template-columns: minmax(0, 1.8fr) repeat(3, minmax(92px, 0.72fr)) auto;
+    gap: 10px;
+  }
+
+  .filter-field {
+    gap: 6px;
+  }
+
+  .filter-field span {
+    display: none;
+  }
+
+  .filter-bar input,
+  .filter-bar select {
+    min-height: 40px;
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+
+  .filter-actions {
+    justify-content: flex-end;
+  }
+
+  .filter-actions .button {
+    min-height: 40px;
+    padding: 0 14px;
   }
 
   .mini-model-grid {
@@ -2521,7 +2583,7 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
 @media (max-width: 720px) {
   .shell-nav-toggle {
     top: 14px;
-    right: 14px;
+    left: 14px;
   }
 
   .site-sidebar {
@@ -2534,6 +2596,25 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
   .surface,
   .detail-hero {
     padding: 20px;
+  }
+
+  .page-shell,
+  .detail-page--makerworld .page-shell {
+    padding-top: 72px;
+  }
+
+  .filter-bar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .filter-field--wide,
+  .filter-actions {
+    grid-column: 1 / -1;
+  }
+
+  .model-grid {
+    grid-template-columns: repeat(auto-fill, minmax(172px, 1fr));
+    gap: 14px;
   }
 
   .table-like__row {
