@@ -750,7 +750,7 @@ def build_models_payload(
     tag: str = "",
     sort_key: str = "collectDate",
     page: int = 1,
-    page_size: int = 24,
+    page_size: int = 8,
 ) -> dict:
     all_models = load_archive_models()
     normalized_query = q.strip().lower()
@@ -774,7 +774,7 @@ def build_models_payload(
         items = [item for item in items if any(tag_value.lower() == normalized_tag for tag_value in item["tags"])]
 
     items = _sort_models(items, sort_key)
-    safe_page_size = max(1, min(int(page_size or 24), 120))
+    safe_page_size = max(1, min(int(page_size or 8), 120))
     safe_page = max(int(page or 1), 1)
     total_filtered = len(items)
     start = (safe_page - 1) * safe_page_size

@@ -121,7 +121,7 @@ async def get_models_data(
     tag: str = Query("", description="按标签过滤"),
     sort: str = Query("collectDate", description="collectDate / downloads / likes / prints"),
     page: int = Query(1, ge=1, description="分页页码"),
-    page_size: int = Query(24, ge=1, le=120, description="每页数量"),
+    page_size: int = Query(8, ge=1, le=120, description="每页数量"),
 ):
     return build_models_payload(
         q=q,

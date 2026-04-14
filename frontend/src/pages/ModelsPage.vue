@@ -94,7 +94,7 @@ import { apiRequest } from "../lib/api";
 
 const route = useRoute();
 const router = useRouter();
-const PAGE_SIZE = 24;
+const PAGE_SIZE = 8;
 
 const payload = ref({
   items: [],
