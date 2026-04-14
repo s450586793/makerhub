@@ -12,6 +12,7 @@ from app.schemas.models import (
     CookiePair,
     Missing3mfRetryRequest,
     ModelDeleteRequest,
+    ModelFlagUpdateRequest,
     NotificationConfig,
     ProxyConfig,
     ThemeSettingsUpdate,
@@ -212,6 +213,8 @@ async def delete_models(payload: ModelDeleteRequest, request: Request):
         if model_id:
             task_state_store.remove_missing_3mf_for_model(model_id)
 
+    task_state_store.remove_model_flags(payload.model_dirs)
+
     result["success"] = result.get("removed_count", 0) > 0
     sidecar_count = int(result.get("sidecar_removed_count") or 0)
     result["message"] = (
@@ -220,6 +223,35 @@ async def delete_models(payload: ModelDeleteRequest, request: Request):
         else "没有删除任何模型。"
     )
     return result
+
+
+@router.get("/models/flags")
+async def get_model_flags():
+    return task_state_store.load_model_flags()
+
+
+@router.post("/models/flags/favorite")
+async def update_model_favorite(payload: ModelFlagUpdateRequest, request: Request):
+    _require_session_auth(request)
+    flags = task_state_store.update_model_flag(payload.model_dir, "favorites", payload.value)
+    return {
+        "success": True,
+        "model_dir": payload.model_dir,
+        "favorite": payload.value,
+        "flags": flags,
+    }
+
+
+@router.post("/models/flags/printed")
+async def update_model_printed(payload: ModelFlagUpdateRequest, request: Request):
+    _require_session_auth(request)
+    flags = task_state_store.update_model_flag(payload.model_dir, "printed", payload.value)
+    return {
+        "success": True,
+        "model_dir": payload.model_dir,
+        "printed": payload.value,
+        "flags": flags,
+    }
 
 
 @router.get("/tasks")

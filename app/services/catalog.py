@@ -751,6 +751,20 @@ def _sort_models(items: list[dict], sort_key: str) -> list[dict]:
     return sorted(items, key=lambda item: (item["collect_ts"], item["title"]), reverse=True)
 
 
+def _apply_model_flags(items: list[dict]) -> list[dict]:
+    flags_store = TaskStateStore().load_model_flags()
+    favorite_set = set(flags_store.get("favorites") or [])
+    printed_set = set(flags_store.get("printed") or [])
+
+    for item in items:
+        model_dir = str(item.get("model_dir") or "").strip().strip("/")
+        item["local_flags"] = {
+            "favorite": model_dir in favorite_set,
+            "printed": model_dir in printed_set,
+        }
+    return items
+
+
 def build_models_payload(
     q: str = "",
     source: str = "all",
@@ -787,6 +801,7 @@ def build_models_payload(
     start = (safe_page - 1) * safe_page_size
     end = start + safe_page_size
     paged_items = items[start:end]
+    paged_items = _apply_model_flags(paged_items)
 
     all_tags = sorted({tag_value for model in all_models for tag_value in model["tags"]})
     source_counts = {
@@ -825,7 +840,11 @@ def get_model_detail(model_dir: str, include_detail: bool = True) -> Optional[di
     meta_path = target / "meta.json"
     if not meta_path.exists():
         return None
-    return _normalize_model(meta_path, include_detail=include_detail)
+    detail = _normalize_model(meta_path, include_detail=include_detail)
+    if detail is None:
+        return None
+    _apply_model_flags([detail])
+    return detail
 
 
 def _delete_root_sidecar_files(archive_root: Path, model_dir: str) -> list[str]:

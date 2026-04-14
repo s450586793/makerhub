@@ -9,6 +9,7 @@ from app.core.settings import STATE_DIR, ensure_app_dirs
 ARCHIVE_QUEUE_PATH = STATE_DIR / "archive_queue.json"
 MISSING_3MF_PATH = STATE_DIR / "missing_3mf.json"
 ORGANIZE_TASKS_PATH = STATE_DIR / "organize_tasks.json"
+MODEL_FLAGS_PATH = STATE_DIR / "model_flags.json"
 
 
 def _normalize_task_item(item: Any, default_status: str) -> dict:
@@ -179,6 +180,29 @@ def _normalize_organize_tasks(payload: Any) -> dict:
     return {"items": normalized}
 
 
+def _normalize_model_flags(payload: Any) -> dict:
+    if not isinstance(payload, dict):
+        payload = {}
+
+    def _normalize_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in value:
+            clean = str(item or "").strip().strip("/")
+            if not clean or clean in seen:
+                continue
+            seen.add(clean)
+            result.append(clean)
+        return result
+
+    return {
+        "favorites": _normalize_list(payload.get("favorites")),
+        "printed": _normalize_list(payload.get("printed")),
+    }
+
+
 class TaskStateStore:
     def __init__(self) -> None:
         ensure_app_dirs()
@@ -240,6 +264,55 @@ class TaskStateStore:
         tasks = _normalize_organize_tasks(payload)
         tasks["count"] = len(tasks["items"])
         return tasks
+
+    def save_model_flags(self, payload: dict) -> dict:
+        normalized = _normalize_model_flags(payload)
+        self._write_json(MODEL_FLAGS_PATH, normalized)
+        return self.load_model_flags()
+
+    def load_model_flags(self) -> dict:
+        payload = self._read_json(MODEL_FLAGS_PATH, {"favorites": [], "printed": []})
+        flags = _normalize_model_flags(payload)
+        flags["favorite_count"] = len(flags["favorites"])
+        flags["printed_count"] = len(flags["printed"])
+        return flags
+
+    def update_model_flag(self, model_dir: str, flag_name: str, active: bool) -> dict:
+        clean_model_dir = str(model_dir or "").strip().strip("/")
+        if not clean_model_dir:
+            return self.load_model_flags()
+
+        if flag_name not in {"favorites", "printed"}:
+            return self.load_model_flags()
+
+        payload = self._read_json(MODEL_FLAGS_PATH, {"favorites": [], "printed": []})
+        flags = _normalize_model_flags(payload)
+        items = list(flags.get(flag_name) or [])
+        item_set = set(items)
+
+        if active:
+            if clean_model_dir not in item_set:
+                items.append(clean_model_dir)
+        else:
+            items = [item for item in items if item != clean_model_dir]
+
+        flags[flag_name] = items
+        return self.save_model_flags(flags)
+
+    def remove_model_flags(self, model_dirs: list[str]) -> dict:
+        clean_model_dirs = {
+            str(item or "").strip().strip("/")
+            for item in model_dirs or []
+            if str(item or "").strip().strip("/")
+        }
+        if not clean_model_dirs:
+            return self.load_model_flags()
+
+        payload = self._read_json(MODEL_FLAGS_PATH, {"favorites": [], "printed": []})
+        flags = _normalize_model_flags(payload)
+        flags["favorites"] = [item for item in flags.get("favorites") or [] if item not in clean_model_dirs]
+        flags["printed"] = [item for item in flags.get("printed") or [] if item not in clean_model_dirs]
+        return self.save_model_flags(flags)
 
     def enqueue_archive_task(self, item: dict) -> dict:
         payload = self._read_json(

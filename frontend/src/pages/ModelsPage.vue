@@ -69,6 +69,9 @@
       :selection-mode="selectionMode"
       :selected="selectedSet.has(model.model_dir)"
       @toggle="toggleItem"
+      @favorite="toggleFavorite"
+      @printed="togglePrinted"
+      @delete="deleteOne"
     />
   </section>
 
@@ -284,6 +287,29 @@ function clearSelection() {
   selectedSet.value = new Set();
 }
 
+function findModel(modelDir) {
+  return payload.value.items.find((item) => item.model_dir === modelDir) || null;
+}
+
+function patchLocalFlag(modelDir, key, value) {
+  payload.value = {
+    ...payload.value,
+    items: payload.value.items.map((item) => {
+      if (item.model_dir !== modelDir) {
+        return item;
+      }
+      return {
+        ...item,
+        local_flags: {
+          favorite: Boolean(item.local_flags?.favorite),
+          printed: Boolean(item.local_flags?.printed),
+          [key]: value,
+        },
+      };
+    }),
+  };
+}
+
 function handleArchiveCompleted() {
   if (document.hidden) {
     refreshWhenVisible = true;
@@ -318,6 +344,70 @@ async function deleteSelected() {
     selectedSet.value = new Set();
     selectionMode.value = false;
     await load({ append: false });
+  } catch (error) {
+    status.value = error instanceof Error ? error.message : "删除失败。";
+  } finally {
+    deleting.value = false;
+  }
+}
+
+async function toggleFavorite(modelDir) {
+  const model = findModel(modelDir);
+  if (!model) return;
+
+  const nextValue = !Boolean(model.local_flags?.favorite);
+  patchLocalFlag(modelDir, "favorite", nextValue);
+  try {
+    await apiRequest("/api/models/flags/favorite", {
+      method: "POST",
+      body: {
+        model_dir: modelDir,
+        value: nextValue,
+      },
+    });
+    status.value = nextValue ? "已加入本地收藏。" : "已取消本地收藏。";
+  } catch (error) {
+    patchLocalFlag(modelDir, "favorite", !nextValue);
+    status.value = error instanceof Error ? error.message : "更新本地收藏失败。";
+  }
+}
+
+async function togglePrinted(modelDir) {
+  const model = findModel(modelDir);
+  if (!model) return;
+
+  const nextValue = !Boolean(model.local_flags?.printed);
+  patchLocalFlag(modelDir, "printed", nextValue);
+  try {
+    await apiRequest("/api/models/flags/printed", {
+      method: "POST",
+      body: {
+        model_dir: modelDir,
+        value: nextValue,
+      },
+    });
+    status.value = nextValue ? "已标记为已打印。" : "已取消已打印标记。";
+  } catch (error) {
+    patchLocalFlag(modelDir, "printed", !nextValue);
+    status.value = error instanceof Error ? error.message : "更新已打印状态失败。";
+  }
+}
+
+async function deleteOne(modelDir) {
+  const model = findModel(modelDir);
+  if (!model) return;
+  if (!window.confirm(`确认删除「${model.title || modelDir}」吗？`)) return;
+
+  deleting.value = true;
+  status.value = "";
+  try {
+    const response = await apiRequest("/api/models/delete", {
+      method: "POST",
+      body: { model_dirs: [modelDir] },
+    });
+    status.value = response.message || "删除完成。";
+    selectedSet.value = new Set([...selectedSet.value].filter((item) => item !== modelDir));
+    await reloadVisiblePages();
   } catch (error) {
     status.value = error instanceof Error ? error.message : "删除失败。";
   } finally {

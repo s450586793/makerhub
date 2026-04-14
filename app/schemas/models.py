@@ -86,6 +86,11 @@ class ModelDeleteRequest(BaseModel):
     model_dirs: List[str] = Field(default_factory=list)
 
 
+class ModelFlagUpdateRequest(BaseModel):
+    model_dir: str = ""
+    value: bool = False
+
+
 class Missing3mfItem(BaseModel):
     model_id: str
     title: str

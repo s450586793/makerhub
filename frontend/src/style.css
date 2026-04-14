@@ -61,6 +61,200 @@
   height: 16px;
 }
 
+.gallery-card {
+  min-height: 100%;
+  grid-template-rows: auto 1fr;
+  border-radius: 24px;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.gallery-card:hover {
+  border-color: rgba(31, 157, 98, 0.18);
+  box-shadow: 0 24px 48px rgba(22, 33, 29, 0.14);
+}
+
+.gallery-card__cover {
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(15, 23, 42, 0.06)),
+    var(--cover-bg);
+}
+
+.gallery-card__cover img,
+.gallery-card__cover .media-placeholder {
+  transition: transform 0.28s ease;
+}
+
+.gallery-card:hover .gallery-card__cover img,
+.gallery-card:hover .gallery-card__cover .media-placeholder {
+  transform: scale(1.03);
+}
+
+.gallery-card__body {
+  height: 100%;
+  gap: 14px;
+  align-content: start;
+}
+
+.gallery-card__title {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.45;
+  letter-spacing: -0.02em;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.gallery-card__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.gallery-card__author {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.gallery-card__author span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gallery-card__source {
+  flex-shrink: 0;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(31, 157, 98, 0.14);
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--brand-strong);
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--brand-soft);
+}
+
+.gallery-card__stats {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  background: var(--surface-soft);
+}
+
+.gallery-stat {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.gallery-stat strong {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.gallery-stat span {
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.gallery-card__dates {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.gallery-card__dates span {
+  min-width: 0;
+  padding: 9px 10px;
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.gallery-card__actions {
+  margin-top: auto;
+  padding-top: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.gallery-card__local-flags {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.gallery-flag,
+.gallery-delete {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+}
+
+.gallery-flag {
+  color: var(--muted);
+  background: var(--surface-soft);
+}
+
+.gallery-flag::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.42;
+}
+
+.gallery-flag.is-active {
+  color: var(--brand-strong);
+  border-color: rgba(31, 157, 98, 0.2);
+  background: var(--brand-soft);
+}
+
+.gallery-delete {
+  flex-shrink: 0;
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.gallery-flag:hover,
+.gallery-delete:hover {
+  transform: translateY(-1px);
+}
+
+.gallery-delete:hover {
+  border-color: rgba(184, 71, 71, 0.24);
+}
+
 .list-loader-anchor {
   display: flex;
   justify-content: center;
@@ -168,5 +362,23 @@
 
   .missing-actions {
     justify-content: flex-start;
+  }
+
+  .gallery-card__meta,
+  .gallery-card__actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .gallery-card__source,
+  .gallery-delete {
+    align-self: flex-start;
+  }
+}
+
+@media (max-width: 640px) {
+  .gallery-card__stats,
+  .gallery-card__dates {
+    grid-template-columns: 1fr;
   }
 }
