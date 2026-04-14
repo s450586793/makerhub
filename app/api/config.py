@@ -1,4 +1,8 @@
+import asyncio
+import json
+
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 
 from app.core.store import JsonStore
 from app.core.settings import APP_VERSION
@@ -25,6 +29,35 @@ store = JsonStore()
 crawler = LegacyCrawlerBridge()
 auth_manager = AuthManager(store=store)
 task_state_store = TaskStateStore()
+
+
+def _task_identity(item: dict) -> str:
+    return str(item.get("id") or item.get("url") or item.get("title") or "")
+
+
+def _archive_event_snapshot() -> dict:
+    queue = task_state_store.load_archive_queue()
+
+    active = {}
+    for item in queue.get("active") or []:
+        identity = _task_identity(item)
+        if not identity:
+            continue
+        active[identity] = {
+            "mode": str(item.get("mode") or ""),
+            "url": str(item.get("url") or ""),
+            "title": str(item.get("title") or ""),
+        }
+
+    recent_failures = {_task_identity(item) for item in queue.get("recent_failures") or [] if _task_identity(item)}
+
+    return {
+        "active": active,
+        "recent_failures": recent_failures,
+        "running_count": int(queue.get("running_count") or 0),
+        "queued_count": int(queue.get("queued_count") or 0),
+        "failed_count": int(queue.get("failed_count") or 0),
+    }
 
 
 def _public_config_payload(config) -> dict:
@@ -194,6 +227,73 @@ async def get_tasks_data():
     config = store.load()
     fallback_items = [item.model_dump() for item in config.missing_3mf]
     return build_tasks_payload(missing_fallback=fallback_items)
+
+
+@router.get("/events/archive")
+async def stream_archive_events(request: Request):
+    async def event_stream():
+        snapshot = _archive_event_snapshot()
+        previous_active = dict(snapshot["active"])
+
+        yield (
+            "event: ready\n"
+            f"data: {json.dumps({'running_count': snapshot['running_count'], 'queued_count': snapshot['queued_count'], 'failed_count': snapshot['failed_count']}, ensure_ascii=False)}\n\n"
+        )
+
+        heartbeat_tick = 0
+        while True:
+            if await request.is_disconnected():
+                break
+
+            snapshot = _archive_event_snapshot()
+            current_active = dict(snapshot["active"])
+            recent_failures = set(snapshot["recent_failures"])
+            completed = []
+
+            for identity, metadata in previous_active.items():
+                if identity in current_active:
+                    continue
+
+                task_mode = str(metadata.get("mode") or "")
+                task_url = str(metadata.get("url") or "")
+                if not task_mode and "/models/" in task_url:
+                    task_mode = "single_model"
+                if task_mode != "single_model":
+                    continue
+                if identity in recent_failures:
+                    continue
+
+                completed.append(
+                    {
+                        "id": identity,
+                        "url": task_url,
+                        "title": str(metadata.get("title") or ""),
+                    }
+                )
+
+            if completed:
+                yield (
+                    "event: archive_completed\n"
+                    f"data: {json.dumps({'completed': completed, 'running_count': snapshot['running_count'], 'queued_count': snapshot['queued_count'], 'failed_count': snapshot['failed_count']}, ensure_ascii=False)}\n\n"
+                )
+
+            previous_active = current_active
+            heartbeat_tick += 1
+            if heartbeat_tick >= 15:
+                heartbeat_tick = 0
+                yield "event: ping\ndata: {}\n\n"
+
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/tasks/missing-3mf/retry")

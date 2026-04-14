@@ -79,9 +79,8 @@ import { onBeforeUnmount, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
 
 import { apiRequest } from "../lib/api";
+import { subscribeArchiveCompletion } from "../lib/archiveEvents";
 
-
-const DASHBOARD_POLL_MS = 5000;
 const loading = ref(true);
 const payload = ref({
   stats: [],
@@ -93,8 +92,9 @@ const payload = ref({
     missing_3mf: [],
   },
 });
-let pollTimer = null;
 let requestInFlight = false;
+let unsubscribeArchiveEvents = null;
+let refreshWhenVisible = false;
 
 async function load({ initial = false } = {}) {
   if (requestInFlight) {
@@ -114,40 +114,36 @@ async function load({ initial = false } = {}) {
   }
 }
 
-function stopPolling() {
-  if (pollTimer !== null) {
-    window.clearInterval(pollTimer);
-    pollTimer = null;
-  }
-}
-
-function startPolling() {
-  stopPolling();
+function handleArchiveCompleted() {
   if (document.hidden) {
+    refreshWhenVisible = true;
     return;
   }
-  pollTimer = window.setInterval(() => {
-    void load();
-  }, DASHBOARD_POLL_MS);
+  void load();
 }
 
 function handleVisibilityChange() {
   if (document.hidden) {
-    stopPolling();
     return;
   }
-  void load();
-  startPolling();
+  const shouldRefresh = refreshWhenVisible;
+  refreshWhenVisible = false;
+  if (!loading.value || shouldRefresh) {
+    void load();
+  }
 }
 
 onMounted(async () => {
   await load({ initial: true });
-  startPolling();
+  unsubscribeArchiveEvents = subscribeArchiveCompletion(handleArchiveCompleted);
   document.addEventListener("visibilitychange", handleVisibilityChange);
 });
 
 onBeforeUnmount(() => {
-  stopPolling();
+  if (typeof unsubscribeArchiveEvents === "function") {
+    unsubscribeArchiveEvents();
+    unsubscribeArchiveEvents = null;
+  }
   document.removeEventListener("visibilitychange", handleVisibilityChange);
 });
 </script>

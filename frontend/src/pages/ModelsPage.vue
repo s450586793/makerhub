@@ -90,6 +90,7 @@ import { useRoute, useRouter } from "vue-router";
 
 import ModelCard from "../components/ModelCard.vue";
 import { apiRequest } from "../lib/api";
+import { subscribeArchiveCompletion } from "../lib/archiveEvents";
 
 
 const route = useRoute();
@@ -122,8 +123,17 @@ const loadMoreTrigger = ref(null);
 
 let intersectionObserver = null;
 let requestToken = 0;
+let unsubscribeArchiveEvents = null;
+let refreshWhenVisible = false;
 
 const selectedCount = computed(() => selectedSet.value.size);
+
+function syncFiltersFromRoute() {
+  filters.q = typeof route.query.q === "string" ? route.query.q : "";
+  filters.source = typeof route.query.source === "string" ? route.query.source : "all";
+  filters.tag = typeof route.query.tag === "string" ? route.query.tag : "";
+  filters.sort = typeof route.query.sort === "string" ? route.query.sort : "collectDate";
+}
 
 function buildQuery(page = 1) {
   const query = new URLSearchParams();
@@ -136,15 +146,16 @@ function buildQuery(page = 1) {
   return query;
 }
 
+async function fetchPage(page) {
+  return apiRequest(`/api/models?${buildQuery(page).toString()}`);
+}
+
 async function load({ append = false } = {}) {
   const currentToken = ++requestToken;
-  filters.q = typeof route.query.q === "string" ? route.query.q : "";
-  filters.source = typeof route.query.source === "string" ? route.query.source : "all";
-  filters.tag = typeof route.query.tag === "string" ? route.query.tag : "";
-  filters.sort = typeof route.query.sort === "string" ? route.query.sort : "collectDate";
+  syncFiltersFromRoute();
 
   const nextPage = append ? payload.value.page + 1 : 1;
-  const response = await apiRequest(`/api/models?${buildQuery(nextPage).toString()}`);
+  const response = await fetchPage(nextPage);
   if (currentToken !== requestToken) {
     return;
   }
@@ -157,6 +168,35 @@ async function load({ append = false } = {}) {
   } else {
     payload.value = response;
   }
+
+  const available = new Set(payload.value.items.map((item) => item.model_dir));
+  selectedSet.value = new Set([...selectedSet.value].filter((item) => available.has(item)));
+  await nextTick();
+  ensureObserver();
+}
+
+async function reloadVisiblePages() {
+  const pagesToLoad = Math.max(Number(payload.value.page) || 1, 1);
+  const currentToken = ++requestToken;
+  syncFiltersFromRoute();
+
+  const responses = [];
+  for (let page = 1; page <= pagesToLoad; page += 1) {
+    responses.push(await fetchPage(page));
+  }
+
+  if (!responses.length || currentToken !== requestToken) {
+    return;
+  }
+
+  const lastResponse = responses[responses.length - 1];
+  const mergedItems = responses.flatMap((response) => response.items || []);
+  payload.value = {
+    ...lastResponse,
+    items: mergedItems,
+    count: mergedItems.length,
+    page: pagesToLoad,
+  };
 
   const available = new Set(payload.value.items.map((item) => item.model_dir));
   selectedSet.value = new Set([...selectedSet.value].filter((item) => available.has(item)));
@@ -244,6 +284,25 @@ function clearSelection() {
   selectedSet.value = new Set();
 }
 
+function handleArchiveCompleted() {
+  if (document.hidden) {
+    refreshWhenVisible = true;
+    return;
+  }
+  void reloadVisiblePages();
+}
+
+function handleVisibilityChange() {
+  if (document.hidden) {
+    return;
+  }
+  const shouldRefresh = refreshWhenVisible;
+  refreshWhenVisible = false;
+  if (shouldRefresh) {
+    void reloadVisiblePages();
+  }
+}
+
 async function deleteSelected() {
   if (!selectedCount.value) return;
   if (!window.confirm(`确认删除选中的 ${selectedCount.value} 个模型吗？`)) return;
@@ -271,9 +330,16 @@ watch(() => route.fullPath, () => {
 });
 onMounted(async () => {
   await load({ append: false });
+  unsubscribeArchiveEvents = subscribeArchiveCompletion(handleArchiveCompleted);
+  document.addEventListener("visibilitychange", handleVisibilityChange);
 });
 
 onBeforeUnmount(() => {
   disconnectObserver();
+  if (typeof unsubscribeArchiveEvents === "function") {
+    unsubscribeArchiveEvents();
+    unsubscribeArchiveEvents = null;
+  }
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
 });
 </script>
