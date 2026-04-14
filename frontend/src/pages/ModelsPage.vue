@@ -1,6 +1,17 @@
 <template>
   <section class="surface surface--filters">
     <form class="filter-bar" @submit.prevent="applyFilters">
+      <button
+        class="filter-nav-toggle"
+        type="button"
+        title="显示或隐藏导航"
+        aria-label="显示或隐藏导航"
+        @click="toggleSidebar"
+      >
+        <span />
+        <span />
+        <span />
+      </button>
       <label class="filter-field filter-field--wide">
         <span>搜索</span>
         <input
@@ -45,20 +56,6 @@
         <strong>当前结果 {{ payload.items.length }}</strong>
         <span>筛选命中 {{ payload.filtered_total }} / 总模型 {{ payload.total }}</span>
       </div>
-      <div class="bulk-actions model-toolbar-inline__actions">
-        <button class="button button-secondary button-small" type="button" @click="toggleSelectionMode">
-          {{ selectionMode ? "退出选择" : "选择" }}
-        </button>
-        <button class="button button-secondary button-small" type="button" :disabled="!payload.items.length" @click="selectAll">
-          全选
-        </button>
-        <button class="button button-secondary button-small" type="button" :disabled="!selectedCount" @click="clearSelection">
-          清空
-        </button>
-        <button class="button button-danger button-small" type="button" :disabled="!selectedCount || deleting" @click="deleteSelected">
-          {{ deleting ? "删除中..." : `删除 (${selectedCount})` }}
-        </button>
-      </div>
     </div>
     <span v-if="status" class="form-status model-toolbar-inline__status">{{ status }}</span>
   </section>
@@ -68,9 +65,6 @@
       v-for="model in payload.items"
       :key="model.model_dir"
       :model="model"
-      :selection-mode="selectionMode"
-      :selected="selectedSet.has(model.model_dir)"
-      @toggle="toggleItem"
       @favorite="toggleFavorite"
       @printed="togglePrinted"
       @delete="deleteOne"
@@ -90,7 +84,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import ModelCard from "../components/ModelCard.vue";
@@ -120,8 +114,6 @@ const filters = reactive({
   sort: "collectDate",
 });
 const status = ref("");
-const selectionMode = ref(false);
-const selectedSet = ref(new Set());
 const deleting = ref(false);
 const loadingMore = ref(false);
 const loadMoreTrigger = ref(null);
@@ -130,8 +122,6 @@ let intersectionObserver = null;
 let requestToken = 0;
 let unsubscribeArchiveEvents = null;
 let refreshWhenVisible = false;
-
-const selectedCount = computed(() => selectedSet.value.size);
 
 function syncFiltersFromRoute() {
   filters.q = typeof route.query.q === "string" ? route.query.q : "";
@@ -182,9 +172,6 @@ async function load({ append = false } = {}) {
   } else {
     payload.value = response;
   }
-
-  const available = new Set(payload.value.items.map((item) => item.model_dir));
-  selectedSet.value = new Set([...selectedSet.value].filter((item) => available.has(item)));
   await nextTick();
   ensureObserver();
 }
@@ -211,9 +198,6 @@ async function reloadVisiblePages() {
     count: mergedItems.length,
     page: pagesToLoad,
   };
-
-  const available = new Set(payload.value.items.map((item) => item.model_dir));
-  selectedSet.value = new Set([...selectedSet.value].filter((item) => available.has(item)));
   await nextTick();
   ensureObserver();
 }
@@ -282,33 +266,10 @@ function resetFilters() {
   router.replace("/models");
 }
 
-function toggleSelectionMode() {
-  selectionMode.value = !selectionMode.value;
-  if (!selectionMode.value) {
-    selectedSet.value = new Set();
+function toggleSidebar() {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event("makerhub:toggle-sidebar"));
   }
-}
-
-function toggleItem(modelDir) {
-  if (!selectionMode.value) {
-    selectionMode.value = true;
-  }
-  const next = new Set(selectedSet.value);
-  if (next.has(modelDir)) {
-    next.delete(modelDir);
-  } else {
-    next.add(modelDir);
-  }
-  selectedSet.value = next;
-}
-
-function selectAll() {
-  selectionMode.value = true;
-  selectedSet.value = new Set(payload.value.items.map((item) => item.model_dir));
-}
-
-function clearSelection() {
-  selectedSet.value = new Set();
 }
 
 function findModel(modelDir) {
@@ -350,28 +311,6 @@ function handleVisibilityChange() {
   refreshWhenVisible = false;
   if (shouldRefresh) {
     void reloadVisiblePages();
-  }
-}
-
-async function deleteSelected() {
-  if (!selectedCount.value) return;
-  if (!window.confirm(`确认删除选中的 ${selectedCount.value} 个模型吗？`)) return;
-
-  deleting.value = true;
-  status.value = "";
-  try {
-    const response = await apiRequest("/api/models/delete", {
-      method: "POST",
-      body: { model_dirs: [...selectedSet.value] },
-    });
-    status.value = response.message || "删除完成。";
-    selectedSet.value = new Set();
-    selectionMode.value = false;
-    await load({ append: false });
-  } catch (error) {
-    status.value = error instanceof Error ? error.message : "删除失败。";
-  } finally {
-    deleting.value = false;
   }
 }
 
@@ -430,7 +369,6 @@ async function deleteOne(modelDir) {
       body: { model_dirs: [modelDir] },
     });
     status.value = response.message || "删除完成。";
-    selectedSet.value = new Set([...selectedSet.value].filter((item) => item !== modelDir));
     await reloadVisiblePages();
   } catch (error) {
     status.value = error instanceof Error ? error.message : "删除失败。";

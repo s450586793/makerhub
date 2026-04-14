@@ -9,13 +9,6 @@
         @error="onCoverError"
       >
       <div v-else class="media-placeholder">{{ titleInitial }}</div>
-      <label :class="['model-card__checkbox', (selectionMode || selected) && 'is-visible']" @click.stop>
-        <input
-          type="checkbox"
-          :checked="selected"
-          @change="$emit('toggle', model.model_dir)"
-        >
-      </label>
     </div>
 
     <div class="model-card__body gallery-card__body">
@@ -97,17 +90,9 @@ const props = defineProps({
     type: Object,
     required: true,
   },
-  selectionMode: {
-    type: Boolean,
-    default: false,
-  },
-  selected: {
-    type: Boolean,
-    default: false,
-  },
 });
 
-defineEmits(["toggle", "favorite", "printed", "delete"]);
+defineEmits(["favorite", "printed", "delete"]);
 
 const router = useRouter();
 

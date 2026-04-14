@@ -34,6 +34,7 @@
 
     <main class="page-shell">
       <button
+        v-if="!useInlineNavToggle"
         class="shell-nav-toggle"
         type="button"
         :title="sidebarVisible ? '隐藏导航' : '显示导航'"
@@ -62,6 +63,7 @@ const route = useRoute();
 const COMPACT_MEDIA_QUERY = "(max-width: 980px)";
 
 const user = computed(() => currentUser());
+const useInlineNavToggle = computed(() => route.name === "models");
 const isCompact = ref(false);
 const desktopSidebarHidden = ref(false);
 const mobileSidebarOpen = ref(false);
@@ -115,6 +117,10 @@ function onWindowKeydown(event) {
   }
 }
 
+function onExternalToggleSidebar() {
+  toggleSidebar();
+}
+
 watch(() => route.fullPath, () => {
   closeSidebar();
 });
@@ -144,6 +150,7 @@ onMounted(() => {
   }
 
   window.addEventListener("keydown", onWindowKeydown);
+  window.addEventListener("makerhub:toggle-sidebar", onExternalToggleSidebar);
 });
 
 onBeforeUnmount(() => {
@@ -156,5 +163,6 @@ onBeforeUnmount(() => {
     }
   }
   window.removeEventListener("keydown", onWindowKeydown);
+  window.removeEventListener("makerhub:toggle-sidebar", onExternalToggleSidebar);
 });
 </script>

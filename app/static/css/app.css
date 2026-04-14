@@ -756,9 +756,31 @@ html[data-theme="dark"] .shell-nav-toggle {
 
 .filter-bar {
   display: grid;
-  grid-template-columns: minmax(0, 2.2fr) repeat(3, minmax(120px, 1fr)) auto;
+  grid-template-columns: auto minmax(0, 2.2fr) repeat(3, minmax(120px, 1fr)) auto;
   gap: 14px;
   align-items: end;
+}
+
+.filter-nav-toggle {
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  display: inline-grid;
+  place-items: center;
+  gap: 3px;
+  padding: 0;
+  color: #f4f7fb;
+  background: rgba(13, 17, 24, 0.94);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.24);
+  cursor: pointer;
+}
+
+.filter-nav-toggle span {
+  width: 14px;
+  height: 2.6px;
+  border-radius: 999px;
+  background: currentColor;
 }
 
 .filter-field {
@@ -2365,6 +2387,11 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
   color: var(--mw-text);
 }
 
+html[data-theme="dark"] .filter-nav-toggle {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(9, 12, 18, 0.96);
+}
+
 @media (max-width: 1240px) {
   .stats-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2476,12 +2503,28 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
   }
 
   .filter-bar {
-    grid-template-columns: minmax(0, 1.8fr) repeat(3, minmax(92px, 0.72fr)) auto;
+    grid-template-columns: 42px repeat(4, minmax(0, 1fr));
     gap: 10px;
+    align-items: stretch;
+  }
+
+  .filter-nav-toggle {
+    grid-column: 1;
+    grid-row: 1;
+    align-self: center;
+  }
+
+  .filter-field--wide {
+    grid-column: 2 / -1;
+    grid-row: 1;
   }
 
   .filter-field {
     gap: 6px;
+  }
+
+  .filter-field:not(.filter-field--wide) {
+    grid-row: 2;
   }
 
   .filter-field span {
@@ -2496,12 +2539,16 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
   }
 
   .filter-actions {
-    justify-content: flex-end;
+    grid-column: 5;
+    grid-row: 2;
+    justify-content: stretch;
   }
 
   .filter-actions .button {
+    width: 100%;
     min-height: 40px;
-    padding: 0 14px;
+    padding: 0 10px;
+    font-size: 13px;
   }
 
   .mini-model-grid {
@@ -2604,12 +2651,22 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
   }
 
   .filter-bar {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: 42px repeat(4, minmax(0, 1fr));
+    gap: 8px;
   }
 
-  .filter-field--wide,
+  .filter-field--wide {
+    grid-column: 2 / -1;
+    grid-row: 1;
+  }
+
+  .filter-field:not(.filter-field--wide) {
+    grid-row: 2;
+  }
+
   .filter-actions {
-    grid-column: 1 / -1;
+    grid-column: 5;
+    grid-row: 2;
   }
 
   .model-grid {
