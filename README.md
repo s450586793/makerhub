@@ -7,6 +7,11 @@
 ## 更新记录
 
 ### 2026-04-14
+- 版本号升级到 `v0.2.43`
+- 修复 `/@user/collections/models` 收藏夹拥有者 UID 解析错误的问题，不再把收藏夹里模型作者的 UID 误当成收藏夹所有者 UID
+- 收藏夹批量扫描新增基于页面自身 `__NEXT_DATA__` 的 owner UID 解析链路，并禁用对收藏夹场景有副作用的 sample-model 投票兜底
+
+### 2026-04-14
 - 版本号升级到 `v0.2.42`
 - 修复 `/@user/collections/models` 收藏夹批量扫描仍停留在首屏 20 条的问题，新增基于 MakerWorld `design-service` 收藏接口的专用发现链路
 - 收藏夹批量扫描改为直接调用 `favorites/designs/{uid}` 分页接口，并在拿到 `total` 后动态放宽扫描页数，避免被默认页数上限截断

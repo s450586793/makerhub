@@ -480,6 +480,131 @@ def _extract_author_handles_from_design(design: Any) -> set[str]:
     return handles
 
 
+def _normalize_handle_value(value: Any) -> str:
+    return str(value or "").strip().lstrip("@").strip().lower()
+
+
+def _node_matches_handle(node: Any, handle: str) -> bool:
+    if not isinstance(node, dict):
+        return False
+
+    expected_handle = _normalize_handle_value(handle)
+    if not expected_handle:
+        return False
+
+    for key in ("username", "userName", "slug", "handle", "userHandle", "user_handle", "creatorUsername"):
+        if _normalize_handle_value(node.get(key)) == expected_handle:
+            return True
+
+    for key in ("url", "homepage", "profileUrl", "authorUrl", "link", "href"):
+        candidate = _extract_handle_from_url(str(node.get(key) or ""))
+        if _normalize_handle_value(candidate) == expected_handle:
+            return True
+
+    return False
+
+
+def _collect_uid_votes_for_handle(payload: Any, handle: str) -> dict[str, int]:
+    votes: dict[str, int] = {}
+    for node in _iter_dicts(payload):
+        if not _node_matches_handle(node, handle):
+            continue
+        uid = _extract_uid(node)
+        if not uid:
+            continue
+        votes[uid] = votes.get(uid, 0) + 1
+    return votes
+
+
+def _resolve_uid_from_listing_html(
+    session: requests.Session,
+    source_url: str,
+    raw_cookie: str,
+    handle: str,
+    event_prefix: str,
+) -> str:
+    html_text = _fetch_listing_html(session, source_url, raw_cookie)
+    if not html_text:
+        _append_discovery_debug(f"{event_prefix}_html_missing", handle=handle, source_url=source_url)
+        return ""
+
+    try:
+        next_data = extract_next_data(html_text)
+    except Exception as exc:
+        _append_discovery_debug(
+            f"{event_prefix}_next_data_missing",
+            handle=handle,
+            source_url=source_url,
+            error=str(exc),
+        )
+        return ""
+
+    votes = _collect_uid_votes_for_handle(next_data, handle)
+    if not votes:
+        _append_discovery_debug(
+            f"{event_prefix}_next_data_no_match",
+            handle=handle,
+            source_url=source_url,
+        )
+        return ""
+
+    uid = max(votes.items(), key=lambda item: item[1])[0]
+    _append_discovery_debug(
+        f"{event_prefix}_resolved",
+        handle=handle,
+        uid=uid,
+        mode="next_data",
+        votes=votes,
+    )
+    return uid
+
+
+def _resolve_uid_by_handle_api(
+    session: requests.Session,
+    source_url: str,
+    raw_cookie: str,
+    handle: str,
+    event_prefix: str,
+) -> str:
+    normalized_handle = str(handle or "").strip("@").strip()
+    if not normalized_handle:
+        return ""
+
+    profile_payload = _api_get_json(
+        session,
+        source_url=source_url,
+        raw_cookie=raw_cookie,
+        service_name="design-service",
+        path=f"/profile/{quote(normalized_handle, safe='@._-')}",
+    )
+    uid = _extract_uid(profile_payload)
+    if uid:
+        _append_discovery_debug(f"{event_prefix}_resolved", handle=normalized_handle, uid=uid, mode="profile")
+        return uid
+
+    handle_variants = []
+    for candidate in (normalized_handle, f"@{normalized_handle}"):
+        if candidate and candidate not in handle_variants:
+            handle_variants.append(candidate)
+
+    for param_name in ("handle", "userHandle", "user_handle", "userName", "username", "slug"):
+        for handle_value in handle_variants:
+            payload = _api_get_json(
+                session,
+                source_url=source_url,
+                raw_cookie=raw_cookie,
+                service_name="user-service",
+                path="/user/uid",
+                params={param_name: handle_value},
+            )
+            uid = _extract_uid(payload)
+            if uid:
+                _append_discovery_debug(f"{event_prefix}_resolved", handle=normalized_handle, uid=uid, mode=param_name)
+                return uid
+
+    return ""
+
+
 def _resolve_author_uid_from_sample_models(
     session: requests.Session,
     source_url: str,
@@ -541,44 +666,61 @@ def _resolve_author_uid_from_sample_models(
 
 
 def _resolve_author_uid(session: requests.Session, source_url: str, raw_cookie: str, handle: str) -> str:
-    profile_payload = _api_get_json(
+    uid = _resolve_uid_by_handle_api(
         session,
         source_url=source_url,
         raw_cookie=raw_cookie,
-        service_name="design-service",
-        path=f"/profile/{quote(handle, safe='@._-')}",
+        handle=handle,
+        event_prefix="author_uid",
     )
-    uid = _extract_uid(profile_payload)
     if uid:
-        _append_discovery_debug("author_uid_resolved", handle=handle, uid=uid, mode="profile")
         return uid
 
-    handle_variants = []
-    normalized_handle = str(handle or "").strip("@").strip()
-    for candidate in (normalized_handle, f"@{normalized_handle}"):
-        if candidate and candidate not in handle_variants:
-            handle_variants.append(candidate)
-
-    for param_name in ("handle", "userHandle", "user_handle", "userName", "username", "slug"):
-        for handle_value in handle_variants:
-            payload = _api_get_json(
-                session,
-                source_url=source_url,
-                raw_cookie=raw_cookie,
-                service_name="user-service",
-                path="/user/uid",
-                params={param_name: handle_value},
-            )
-            uid = _extract_uid(payload)
-            if uid:
-                _append_discovery_debug("author_uid_resolved", handle=handle, uid=uid, mode=param_name)
-                return uid
+    uid = _resolve_uid_from_listing_html(
+        session,
+        source_url=source_url,
+        raw_cookie=raw_cookie,
+        handle=handle,
+        event_prefix="author_uid",
+    )
+    if uid:
+        return uid
 
     uid = _resolve_author_uid_from_sample_models(session, source_url, raw_cookie, handle)
     if uid:
         return uid
 
     _append_discovery_debug("author_uid_missing", handle=handle)
+    return ""
+
+
+def _resolve_collection_owner_uid(
+    session: requests.Session,
+    source_url: str,
+    raw_cookie: str,
+    handle: str,
+) -> str:
+    uid = _resolve_uid_by_handle_api(
+        session,
+        source_url=source_url,
+        raw_cookie=raw_cookie,
+        handle=handle,
+        event_prefix="collection_owner_uid",
+    )
+    if uid:
+        return uid
+
+    uid = _resolve_uid_from_listing_html(
+        session,
+        source_url=source_url,
+        raw_cookie=raw_cookie,
+        handle=handle,
+        event_prefix="collection_owner_uid",
+    )
+    if uid:
+        return uid
+
+    _append_discovery_debug("collection_owner_uid_missing", handle=handle, source_url=source_url)
     return ""
 
 
@@ -770,7 +912,7 @@ def _discover_collection_models_api(
     if not handle:
         return None
 
-    uid = _resolve_author_uid(session, source_url, raw_cookie, handle)
+    uid = _resolve_collection_owner_uid(session, source_url, raw_cookie, handle)
     if not uid:
         return None
 
