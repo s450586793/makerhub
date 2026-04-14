@@ -285,51 +285,23 @@ class ArchiveTaskManager:
                 "url": clean_url,
             }
 
-        with _temporary_proxy_env(config):
-            discovered = discover_batch_model_urls(clean_url, cookie)
+        batch_task_key = _task_key(clean_url)
+        if batch_task_key in self._queued_task_keys():
+            return {
+                "accepted": False,
+                "mode": mode,
+                "url": clean_url,
+                "message": "该批量归档任务已经在队列中。",
+            }
 
-        pending_keys = self._queued_task_keys()
-        archived_keys = self._archived_task_keys()
-        queued_count = 0
-        skipped_pending = 0
-        skipped_archived = 0
-
-        for model_url in discovered.get("items") or []:
-            key = _task_key(model_url)
-            if key in pending_keys:
-                skipped_pending += 1
-                continue
-            if key in archived_keys:
-                skipped_archived += 1
-                continue
-            self._enqueue_single_task(model_url, message=f"来自批量归档：{clean_url}")
-            pending_keys.add(key)
-            queued_count += 1
-
-        if queued_count > 0:
-            self._ensure_worker()
-
-        discovered_count = len(discovered.get("items") or [])
-        expected_total = discovered.get("expected_total")
-        total_hint = ""
-        if isinstance(expected_total, int) and expected_total > discovered_count:
-            total_hint = f"（站点总数 {expected_total}）"
-
+        task_id = self._enqueue_single_task(clean_url, message="等待扫描模型链接")
+        self._ensure_worker()
         return {
-            "accepted": queued_count > 0,
+            "accepted": True,
+            "task_id": task_id,
             "mode": mode,
             "url": clean_url,
-            "discovered_count": discovered_count,
-            "expected_total": expected_total,
-            "queued_count": queued_count,
-            "skipped_pending": skipped_pending,
-            "skipped_archived": skipped_archived,
-            "pages_scanned": discovered.get("pages_scanned") or 0,
-            "scan_mode": discovered.get("mode") or "",
-            "message": (
-                f"批量扫描完成：发现 {discovered_count} 个模型{total_hint}，"
-                f"新增入队 {queued_count} 个，已在队列 {skipped_pending} 个，已归档 {skipped_archived} 个。"
-            ),
+            "message": "批量归档任务已加入队列，后台正在扫描模型链接。",
         }
 
     def _ensure_worker(self) -> None:
@@ -348,11 +320,16 @@ class ArchiveTaskManager:
 
             task = queued[0]
             task_id = task["id"]
+            task_url = str(task.get("url") or "")
             self.task_store.start_archive_task(task_id)
             self.task_store.update_active_task(task_id, message="正在准备归档", progress=1)
 
             try:
-                self._run_single_task(task_id, task["url"])
+                task_mode = _detect_mode(task_url)
+                if task_mode in {"author_upload", "collection_models"}:
+                    self._run_batch_task(task_id, task_url, task_mode)
+                else:
+                    self._run_single_task(task_id, task_url)
             except Exception as exc:
                 model_id = extract_model_id(task.get("url") or "")
                 if model_id:
@@ -362,6 +339,70 @@ class ArchiveTaskManager:
                         message=str(exc),
                     )
                 self.task_store.fail_archive_task(task_id, str(exc))
+
+    def _run_batch_task(self, task_id: str, url: str, mode: str) -> None:
+        config = self.store.load()
+        cookie = _select_cookie(url, config)
+        if not cookie:
+            raise RuntimeError("未找到可用 Cookie，请先到设置页配置对应站点 Cookie。")
+
+        self.task_store.update_active_task(
+            task_id,
+            progress=5,
+            message="正在扫描模型链接",
+        )
+
+        with _temporary_proxy_env(config):
+            discovered = discover_batch_model_urls(url, cookie)
+
+        pending_keys = self._queued_task_keys()
+        archived_keys = self._archived_task_keys()
+        queued_count = 0
+        skipped_pending = 0
+        skipped_archived = 0
+        discovered_items = discovered.get("items") or []
+        total_items = len(discovered_items)
+
+        if total_items:
+            self.task_store.update_active_task(
+                task_id,
+                progress=55,
+                message=f"扫描完成，发现 {total_items} 个模型，正在加入归档队列",
+            )
+
+        for index, model_url in enumerate(discovered_items, start=1):
+            key = _task_key(model_url)
+            if key in pending_keys:
+                skipped_pending += 1
+            elif key in archived_keys:
+                skipped_archived += 1
+            else:
+                self._enqueue_single_task(model_url, message=f"来自批量归档：{url}")
+                pending_keys.add(key)
+                queued_count += 1
+
+            if total_items:
+                progress = 55 + int((index / total_items) * 40)
+                self.task_store.update_active_task(
+                    task_id,
+                    progress=min(progress, 95),
+                    message=f"正在加入归档队列：{index}/{total_items}",
+                )
+
+        expected_total = discovered.get("expected_total")
+        total_hint = ""
+        if isinstance(expected_total, int) and expected_total > total_items:
+            total_hint = f"（站点总数 {expected_total}）"
+
+        self.task_store.update_active_task(
+            task_id,
+            progress=100,
+            message=(
+                f"批量扫描完成：发现 {total_items} 个模型{total_hint}，"
+                f"新增入队 {queued_count} 个，已在队列 {skipped_pending} 个，已归档 {skipped_archived} 个。"
+            ),
+        )
+        self.task_store.complete_archive_task(task_id)
 
     def _run_single_task(self, task_id: str, url: str) -> None:
         config = self.store.load()
