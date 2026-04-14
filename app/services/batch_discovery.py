@@ -31,6 +31,7 @@ API_BROWSER_HEADERS = {
 }
 
 AUTHOR_BATCH_PAGE_LIMIT = 100
+HTML_BATCH_PAGE_LIMIT = 20
 DISCOVERY_DEBUG_LOG = LOGS_DIR / "batch_discovery.log"
 
 
@@ -712,16 +713,36 @@ def _extract_page_links(html_text: str, base_url: str) -> list[str]:
     return sorted(url for url in found if url)
 
 
-def _page_variants(base_url: str, page: int) -> list[str]:
+def _page_variants(base_url: str, page: int, limit: int = HTML_BATCH_PAGE_LIMIT) -> list[str]:
     if page <= 1:
         return [base_url]
     parsed = urlparse(base_url)
     existing = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    variants = []
-    for key in ("page", "pageNum", "pageNo", "p"):
+    offset = max(page - 1, 0) * max(limit, 1)
+    candidates = [
+        {"page": page},
+        {"page": page, "limit": limit},
+        {"pageNum": page},
+        {"pageNum": page, "limit": limit},
+        {"pageNo": page},
+        {"pageNo": page, "limit": limit},
+        {"p": page},
+        {"p": page, "limit": limit},
+        {"offset": offset, "limit": limit},
+        {"offset": offset, "page": page, "limit": limit},
+        {"current": page, "size": limit},
+        {"currentPage": page, "pageSize": limit},
+    ]
+    variants: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
         payload = dict(existing)
-        payload[key] = str(page)
-        variants.append(urlunparse(parsed._replace(query=urlencode(payload))))
+        payload.update({key: str(value) for key, value in candidate.items()})
+        variant = urlunparse(parsed._replace(query=urlencode(payload)))
+        if variant in seen:
+            continue
+        seen.add(variant)
+        variants.append(variant)
     return variants
 
 
@@ -732,18 +753,47 @@ def _discover_by_html(session: requests.Session, source_url: str, raw_cookie: st
 
     for page in range(1, max_pages + 1):
         best_links: list[str] = []
-        best_count = -1
+        best_total_count = -1
+        best_new_count = -1
+        best_variant = ""
         for variant in _page_variants(source_url, page):
             html_text = _fetch_listing_html(session, variant, raw_cookie)
             page_links = _extract_page_links(html_text, variant)
-            if len(page_links) > best_count:
+            new_link_count = len([link for link in page_links if link not in seen])
+            _append_discovery_debug(
+                "html_page_variant",
+                page=page,
+                variant=variant,
+                total_links=len(page_links),
+                new_links=new_link_count,
+            )
+
+            should_replace = False
+            if page <= 1:
+                should_replace = len(page_links) > best_total_count
+            else:
+                should_replace = (
+                    new_link_count > best_new_count
+                    or (new_link_count == best_new_count and len(page_links) > best_total_count)
+                )
+
+            if should_replace:
                 best_links = page_links
-                best_count = len(page_links)
+                best_total_count = len(page_links)
+                best_new_count = new_link_count
+                best_variant = variant
 
         if page == 1 and not best_links:
             raise RuntimeError("未能在页面中识别模型链接，请确认链接与 Cookie 是否有效。")
 
         new_links = [link for link in best_links if link not in seen]
+        _append_discovery_debug(
+            "html_page_selected",
+            page=page,
+            variant=best_variant,
+            total_links=len(best_links),
+            new_links=len(new_links),
+        )
         pages_scanned = page
         if not new_links and page > 1:
             break
