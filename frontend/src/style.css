@@ -55,8 +55,7 @@
 }
 
 .gallery-card {
-  min-height: 100%;
-  grid-template-rows: auto 1fr;
+  align-self: start;
   border-radius: 24px;
   transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
 }
@@ -85,7 +84,6 @@
 }
 
 .gallery-card__body {
-  height: 100%;
   gap: 14px;
   align-content: start;
 }
@@ -218,7 +216,6 @@
 }
 
 .gallery-card__actions {
-  margin-top: auto;
   padding-top: 2px;
   display: flex;
   align-items: center;
