@@ -7,6 +7,11 @@
 ## 更新记录
 
 ### 2026-04-14
+- 版本号升级到 `v0.2.45`
+- 收藏夹批量扫描新增多候选接口探测：除了 `/favorites/designs/{uid}`，现在也会尝试 `/favorites/{uid}/designs`
+- 收藏夹页的 `__NEXT_DATA__` 关键摘要会写入日志，便于定位 `userInfo.uid`、`designsData.total` 与接口返回不一致的问题
+
+### 2026-04-14
 - 版本号升级到 `v0.2.44`
 - 修复 `/@user/collections/models` 在收藏接口返回空结果时直接提前退出的问题
 - 收藏夹批量扫描现在会在 API `hits=0` 时自动回退到 HTML 扫描，避免把可见收藏页误判成“没有扫描到可归档模型”
