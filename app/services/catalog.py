@@ -622,7 +622,7 @@ def _sample_cover(title: str) -> str:
     return f"https://placehold.co/960x960/f3f4f6/111827?text={quote(title or 'Makerhub')}"
 
 
-def _normalize_model(meta_path: Path) -> Optional[dict]:
+def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[dict]:
     try:
         meta = _read_json(meta_path)
     except (json.JSONDecodeError, OSError):
@@ -644,32 +644,33 @@ def _normalize_model(meta_path: Path) -> Optional[dict]:
         {"url": meta.get("coverUrl")},
     ) or ""
 
-    gallery = []
-    gallery_seen = set()
+    gallery: list[dict] = []
+    if include_detail:
+        gallery_seen = set()
 
-    def add_gallery(items: list[Any], kind: str) -> None:
-        for item in items:
-            url = _asset_url_from_item(model_root, item)
-            if not url or url in gallery_seen:
-                continue
-            gallery_seen.add(url)
-            gallery.append(
-                {
-                    "url": url,
-                    "kind": kind,
-                    "fallback_url": _pick_remote_url(item) or "",
-                }
-            )
+        def add_gallery(items: list[Any], kind: str) -> None:
+            for item in items:
+                url = _asset_url_from_item(model_root, item)
+                if not url or url in gallery_seen:
+                    continue
+                gallery_seen.add(url)
+                gallery.append(
+                    {
+                        "url": url,
+                        "kind": kind,
+                        "fallback_url": _pick_remote_url(item) or "",
+                    }
+                )
 
-    if cover_url:
-        gallery_seen.add(cover_url)
-        gallery.append({"url": cover_url, "kind": "cover", "fallback_url": cover_remote_url})
+        if cover_url:
+            gallery_seen.add(cover_url)
+            gallery.append({"url": cover_url, "kind": "cover", "fallback_url": cover_remote_url})
 
-    add_gallery(meta.get("designImages") or [], "design")
-    add_gallery(meta.get("summaryImages") or [], "summary")
+        add_gallery(meta.get("designImages") or [], "design")
+        add_gallery(meta.get("summaryImages") or [], "summary")
 
-    if not gallery and cover_url:
-        gallery.append({"url": cover_url, "kind": "cover"})
+        if not gallery and cover_url:
+            gallery.append({"url": cover_url, "kind": "cover"})
 
     if not cover_url:
         cover_url = gallery[0]["url"] if gallery else _sample_cover(str(meta.get("title") or "Makerhub"))
@@ -680,11 +681,7 @@ def _normalize_model(meta_path: Path) -> Optional[dict]:
     publish_value = _extract_publish_value(meta)
     publish_ts = _parse_timestamp(publish_value)
 
-    summary = meta.get("summary") if isinstance(meta.get("summary"), dict) else {}
-    summary_html = _rewrite_summary_html(model_root, str(summary.get("html") or ""))
-    summary_text = str(summary.get("text") or summary.get("raw") or "")
-
-    return {
+    payload = {
         "model_dir": relative_dir.as_posix(),
         "detail_path": f"/models/{quote(relative_dir.as_posix(), safe='/')}",
         "meta_path": meta_path.as_posix(),
@@ -715,20 +712,30 @@ def _normalize_model(meta_path: Path) -> Optional[dict]:
         "collect_date": _format_date(meta.get("collectDate") or meta.get("update_time")),
         "publish_ts": publish_ts,
         "publish_date": _format_date(publish_value),
-        "summary_html": summary_html,
-        "summary_text": summary_text,
-        "comments": _normalize_comments(meta, model_root),
-        "instances": _normalize_instances(meta, model_root),
-        "attachments": _normalize_attachments(meta, model_root),
     }
+    if not include_detail:
+        return payload
+
+    summary = meta.get("summary") if isinstance(meta.get("summary"), dict) else {}
+    payload.update(
+        {
+            "gallery": gallery,
+            "summary_html": _rewrite_summary_html(model_root, str(summary.get("html") or "")),
+            "summary_text": str(summary.get("text") or summary.get("raw") or ""),
+            "comments": _normalize_comments(meta, model_root),
+            "instances": _normalize_instances(meta, model_root),
+            "attachments": _normalize_attachments(meta, model_root),
+        }
+    )
+    return payload
 
 
-def load_archive_models() -> list[dict]:
+def load_archive_models(include_detail: bool = False) -> list[dict]:
     models = []
     for meta_path in sorted(ARCHIVE_DIR.rglob("meta.json")):
         if not meta_path.is_file():
             continue
-        model = _normalize_model(meta_path)
+        model = _normalize_model(meta_path, include_detail=include_detail)
         if model:
             models.append(model)
     return models
@@ -752,7 +759,7 @@ def build_models_payload(
     page: int = 1,
     page_size: int = 8,
 ) -> dict:
-    all_models = load_archive_models()
+    all_models = load_archive_models(include_detail=False)
     normalized_query = q.strip().lower()
     normalized_tag = tag.strip().lower()
     normalized_source = source.strip().lower() or "all"
@@ -808,7 +815,7 @@ def build_models_payload(
     }
 
 
-def get_model_detail(model_dir: str) -> Optional[dict]:
+def get_model_detail(model_dir: str, include_detail: bool = True) -> Optional[dict]:
     target = (ARCHIVE_DIR / model_dir).resolve()
     try:
         target.relative_to(ARCHIVE_DIR.resolve())
@@ -818,7 +825,7 @@ def get_model_detail(model_dir: str) -> Optional[dict]:
     meta_path = target / "meta.json"
     if not meta_path.exists():
         return None
-    return _normalize_model(meta_path)
+    return _normalize_model(meta_path, include_detail=include_detail)
 
 
 def _delete_root_sidecar_files(archive_root: Path, model_dir: str) -> list[str]:
@@ -868,7 +875,7 @@ def delete_archived_models(model_dirs: list[str]) -> dict:
             skipped.append({"model_dir": clean_value, "reason": "目录不存在"})
             continue
 
-        detail = get_model_detail(clean_value) or {}
+        detail = get_model_detail(clean_value, include_detail=False) or {}
         shutil.rmtree(target)
         sidecar_files = _delete_root_sidecar_files(archive_root, clean_value)
         removed.append(
@@ -893,7 +900,7 @@ def build_tasks_payload(missing_fallback: Optional[list[dict]] = None) -> dict:
     store = TaskStateStore()
     archive_queue = store.load_archive_queue()
     missing_3mf = store.load_missing_3mf(fallback_items=missing_fallback)
-    archive_models = load_archive_models()
+    archive_models = load_archive_models(include_detail=False)
     archive_queue = _prune_recent_failures(
         store,
         archive_queue,
@@ -915,7 +922,7 @@ def build_tasks_payload(missing_fallback: Optional[list[dict]] = None) -> dict:
 
 
 def build_dashboard_payload(config) -> dict:
-    all_models = _sort_models(load_archive_models(), "collectDate")
+    all_models = _sort_models(load_archive_models(include_detail=False), "collectDate")
     tasks_payload = build_tasks_payload(
         missing_fallback=[
             item.model_dump() if hasattr(item, "model_dump") else item

@@ -108,7 +108,7 @@ class ArchiveTaskManager:
 
     def _archived_task_keys(self) -> set[str]:
         keys = set()
-        for item in load_archive_models():
+        for item in load_archive_models(include_detail=False):
             model_id = str(item.get("id") or "").strip()
             if model_id:
                 keys.add(f"model:{model_id}")
