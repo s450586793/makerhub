@@ -43,6 +43,22 @@
     <span class="form-status">{{ archiveStatus }}</span>
   </section>
 
+  <div
+    v-if="archiveSubmitDialog.visible"
+    class="submit-dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="archive-submit-dialog-title"
+    @click="closeArchiveSubmitDialog"
+  >
+    <div class="submit-dialog__panel" @click.stop>
+      <span class="submit-dialog__icon">✓</span>
+      <h2 id="archive-submit-dialog-title">任务已提交</h2>
+      <p>{{ archiveSubmitDialog.message }}</p>
+      <button class="button button-primary" type="button" @click="closeArchiveSubmitDialog">知道了</button>
+    </div>
+  </div>
+
   <section class="task-layout">
     <article class="surface section-card">
       <div class="section-card__header">
@@ -226,6 +242,10 @@ const payload = ref({
 
 const archiveUrl = ref("");
 const archiveStatus = ref("");
+const archiveSubmitDialog = ref({
+  visible: false,
+  message: "",
+});
 const missingStatus = ref("");
 const submittingArchive = ref(false);
 const pendingMissingActionKey = ref("");
@@ -263,6 +283,10 @@ function formatMissingStatus(status) {
   return status || "missing";
 }
 
+function closeArchiveSubmitDialog() {
+  archiveSubmitDialog.value.visible = false;
+}
+
 function syncAutoRefresh() {
   const hasRunning = payload.value.summary.running_or_queued > 0;
   if (hasRunning && !refreshTimer) {
@@ -293,7 +317,12 @@ async function submitArchive() {
       method: "POST",
       body: { url: archiveUrl.value },
     });
-    archiveStatus.value = response.message || "任务已提交。";
+    const message = response.message || "归档任务已加入队列。";
+    archiveStatus.value = message;
+    archiveSubmitDialog.value = {
+      visible: true,
+      message,
+    };
     archiveUrl.value = "";
     await load();
   } catch (error) {

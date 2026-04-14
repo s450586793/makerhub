@@ -107,6 +107,54 @@
   flex-wrap: wrap;
 }
 
+.submit-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(8, 15, 28, 0.46);
+  backdrop-filter: blur(8px);
+}
+
+.submit-dialog__panel {
+  width: min(420px, 100%);
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  border-radius: 26px;
+  padding: 30px;
+  text-align: center;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 20% 0%, rgba(69, 185, 137, 0.2), transparent 34%),
+    var(--surface);
+  box-shadow: 0 24px 80px rgba(8, 15, 28, 0.28);
+}
+
+.submit-dialog__icon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 16px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 28px;
+  font-weight: 800;
+  background: linear-gradient(135deg, #35b87f 0%, #1f8f67 100%);
+  box-shadow: 0 16px 34px rgba(31, 143, 103, 0.3);
+}
+
+.submit-dialog__panel h2 {
+  margin: 0 0 10px;
+}
+
+.submit-dialog__panel p {
+  margin: 0 0 22px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
 @media (max-width: 960px) {
   .bulk-actions {
     width: 100%;
