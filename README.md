@@ -7,6 +7,11 @@
 ## 更新记录
 
 ### 2026-04-15
+- 版本号升级到 `v0.2.48`
+- 修复收藏夹聚合页 `/@user/collections/models` 的扫描结果被空 `hits` 节点误判的问题，`/favorites/designs/{uid}` 现在会优先选择真正的模型命中结果
+- 收藏夹分页接口新增 payload 摘要日志，便于定位 `hits/total` 结构；实测 `https://makerworld.com.cn/zh/@s450586793/collections/models` 现已可稳定扫描到 `238` 个模型
+
+### 2026-04-15
 - 版本号升级到 `v0.2.47`
 - 收藏夹批量扫描请求头继续向 MakerWorld 前端对齐：补上 `X-BBL-Client-Name: MakerWorld`
 - 采集会话的 `User-Agent` 改成浏览器风格字符串，避免 `python-requests` 风格请求在收藏夹分页接口上被降级为空结果

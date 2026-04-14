@@ -155,15 +155,9 @@ def _build_api_headers(session: requests.Session, raw_cookie: str, referer: str)
     headers = dict(API_BROWSER_HEADERS)
     headers["Referer"] = referer or "https://makerworld.com.cn/"
     headers["User-Agent"] = session.headers.get("User-Agent", BROWSER_USER_AGENT)
+    headers["Origin"] = _origin_from_url(referer or "https://makerworld.com.cn/")
     if raw_cookie:
         headers["Cookie"] = raw_cookie
-
-    auth_token = _extract_auth_token(raw_cookie)
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
-        headers["token"] = auth_token
-        headers["X-Token"] = auth_token
-        headers["X-Access-Token"] = auth_token
     return headers
 
 
@@ -229,6 +223,7 @@ def _api_get_json(
             continue
         if isinstance(payload, dict):
             hits_payload = _extract_hits_payload(payload)
+            payload_summary = _payload_debug_summary(payload) if "/favorites" in path else []
             _append_discovery_debug(
                 "api_ok",
                 api_url=api_url,
@@ -241,6 +236,8 @@ def _api_get_json(
                 hits=len((hits_payload or {}).get("hits") or []),
                 total=(hits_payload or {}).get("total"),
                 has_next=(hits_payload or {}).get("hasNext"),
+                search_session_id=_extract_search_session_id(hits_payload or payload),
+                payload_summary=payload_summary,
             )
             return payload
     return None
@@ -280,11 +277,45 @@ def _extract_uid(payload: Any) -> str:
     return ""
 
 
+def _looks_like_design_hit(node: Any) -> bool:
+    if not isinstance(node, dict):
+        return False
+    if _extract_design_id_from_hit(node):
+        return True
+    return any(
+        key in node
+        for key in (
+            "title",
+            "name",
+            "coverUrl",
+            "designCreator",
+            "downloadCount",
+            "printCount",
+            "likeCount",
+            "commentCount",
+        )
+    )
+
+
 def _extract_hits_payload(payload: Any) -> Optional[dict]:
+    best_node: Optional[dict] = None
+    best_score: tuple[int, int, int, int] = (-1, -1, -1, -1)
     for node in _iter_dicts(payload):
-        if isinstance(node.get("hits"), list):
-            return node
-    return None
+        hits = node.get("hits")
+        if not isinstance(hits, list):
+            continue
+        total = _extract_total_count(node, len(hits))
+        design_like_count = sum(1 for hit in hits[:8] if _looks_like_design_hit(hit))
+        score = (
+            1 if design_like_count > 0 else 0,
+            max(int(total or 0), 0),
+            design_like_count,
+            len(hits),
+        )
+        if score > best_score:
+            best_node = node
+            best_score = score
+    return best_node
 
 
 def _extract_total_count(payload: dict, fallback: int) -> Optional[int]:
@@ -304,6 +335,67 @@ def _extract_has_next(payload: dict) -> Optional[bool]:
     if isinstance(value, bool):
         return value
     return None
+
+
+def _extract_search_session_id(payload: Any) -> str:
+    preferred_keys = ("searchSessionId", "search_session_id", "sessionId", "session_id")
+    fallback_keys = ("refreshId", "refresh_id")
+
+    for key_group in (preferred_keys, fallback_keys):
+        for node in _iter_dicts(payload):
+            for key in key_group:
+                value = node.get(key)
+                if value in (None, ""):
+                    continue
+                candidate = str(value).strip()
+                if candidate:
+                    return candidate
+    return ""
+
+
+def _payload_debug_summary(payload: Any) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for node in _iter_dicts(payload):
+        if not isinstance(node.get("hits"), list):
+            continue
+
+        hits = node.get("hits") or []
+        first_ids: list[str] = []
+        first_keys: list[str] = []
+        for hit in hits[:3]:
+            if isinstance(hit, dict):
+                design_id = _extract_design_id_from_hit(hit)
+                if design_id:
+                    first_ids.append(design_id)
+                for key in sorted(hit.keys())[:8]:
+                    if key not in first_keys:
+                        first_keys.append(key)
+            else:
+                rendered = str(hit).strip()
+                if rendered:
+                    first_ids.append(rendered[:48])
+
+        summary = {
+            "keys": sorted(node.keys())[:12],
+            "hits": len(hits),
+            "total": _extract_total_count(node, len(hits)),
+            "has_next": _extract_has_next(node),
+            "design_like_hits": sum(1 for hit in hits[:8] if _looks_like_design_hit(hit)),
+            "search_session_id": _extract_search_session_id(node),
+            "first_ids": first_ids[:6],
+            "first_hit_keys": first_keys[:12],
+        }
+        key = json.dumps(summary, ensure_ascii=False, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        summaries.append(summary)
+        if len(summaries) >= 8:
+            break
+
+    return summaries
 
 
 def _extract_design_id_from_hit(hit: Any) -> str:
@@ -890,10 +982,16 @@ def _discover_author_upload_api(
     }
 
 
-def _collection_route_query_params(source_url: str, handle: str) -> dict[str, Any]:
+def _collection_route_query_params(
+    source_url: str,
+    handle: str,
+    *,
+    include_handle: bool = False,
+    extra_params: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     base_params: dict[str, Any] = {}
     normalized_handle = str(handle or "").strip().lstrip("@")
-    if normalized_handle:
+    if include_handle and normalized_handle:
         base_params["handle"] = normalized_handle
 
     query_params = dict(parse_qsl(urlparse(source_url).query, keep_blank_values=True))
@@ -901,12 +999,29 @@ def _collection_route_query_params(source_url: str, handle: str) -> dict[str, An
         value = str(query_params.get(key) or "").strip()
         if value:
             base_params[key] = value
+    for key, value in (extra_params or {}).items():
+        if value in (None, ""):
+            continue
+        base_params[key] = value
     return base_params
 
 
-def _collection_designs_param_candidates(offset: int, limit: int, source_url: str, handle: str) -> list[dict[str, Any]]:
+def _collection_designs_param_candidates(
+    offset: int,
+    limit: int,
+    source_url: str,
+    handle: str,
+    *,
+    search_session_id: str = "",
+) -> list[dict[str, Any]]:
     page_index = max((offset // max(limit, 1)) + 1, 1)
-    base_params = _collection_route_query_params(source_url, handle)
+    extra_params = {"searchSessionId": search_session_id} if search_session_id else None
+    base_params = _collection_route_query_params(
+        source_url,
+        handle,
+        include_handle=False,
+        extra_params=extra_params,
+    )
     candidates = [
         {**base_params, "offset": offset, "limit": limit},
         {**base_params, "page": page_index, "limit": limit},
@@ -941,6 +1056,262 @@ def _collection_designs_path_candidates(uid: str) -> list[str]:
     return result
 
 
+def _collection_list_path_candidates(uid: str) -> list[str]:
+    candidates = [
+        f"/favorites/v2/list/{uid}",
+        f"/favoriteslist/{uid}",
+    ]
+    seen: set[str] = set()
+    result: list[str] = []
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        result.append(path)
+    return result
+
+
+def _collection_list_param_candidates(source_url: str, handle: str) -> list[dict[str, Any]]:
+    base_params = _collection_route_query_params(source_url, handle, include_handle=False)
+    candidates = [
+        base_params,
+        {**base_params, "offset": 0, "limit": 50},
+        {**base_params, "page": 1, "limit": 50},
+        {**base_params, "pageNum": 1, "limit": 50},
+        {**base_params, "pageNo": 1, "limit": 50},
+        {**base_params, "current": 1, "size": 50},
+    ]
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[tuple[str, Any], ...]] = set()
+    for candidate in candidates:
+        key = tuple(sorted(candidate.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
+
+
+def _extract_collection_entry_id(node: Any) -> str:
+    if not isinstance(node, dict):
+        return ""
+    for key in ("collectionId", "favoriteId", "favoritesId", "listId", "id"):
+        candidate = _coerce_numeric_string(node.get(key))
+        if candidate:
+            return candidate
+    return ""
+
+
+def _extract_collection_entries(payload: Any, owner_uid: str) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for node in _iter_dicts(payload):
+        collection_id = _extract_collection_entry_id(node)
+        if not collection_id or collection_id == owner_uid or collection_id in seen:
+            continue
+        if any(
+            key in node
+            for key in ("downloadCount", "printCount", "commentCount", "likeCount", "coverUrl", "designCreator", "user")
+        ):
+            continue
+        if not any(
+            key in node
+            for key in (
+                "designCount",
+                "designCnt",
+                "modelCount",
+                "modelsCount",
+                "collectionType",
+                "privacy",
+                "isDefault",
+                "isPublic",
+                "name",
+                "title",
+            )
+        ):
+            continue
+
+        seen.add(collection_id)
+        entries.append(
+            {
+                "id": collection_id,
+                "name": str(node.get("name") or node.get("title") or "").strip(),
+                "count": _extract_total_count(node, -1),
+            }
+        )
+    return entries
+
+
+def _fetch_collection_list_entries(
+    session: requests.Session,
+    source_url: str,
+    raw_cookie: str,
+    handle: str,
+    owner_uid: str,
+) -> list[dict[str, Any]]:
+    for path in _collection_list_path_candidates(owner_uid):
+        for params in _collection_list_param_candidates(source_url, handle):
+            payload = _api_get_json(
+                session,
+                source_url=source_url,
+                raw_cookie=raw_cookie,
+                service_name="design-service",
+                path=path,
+                params=params or None,
+            )
+            if payload is None:
+                continue
+
+            entries = _extract_collection_entries(payload, owner_uid)
+            _append_discovery_debug(
+                "collection_list_probe",
+                path=path,
+                params=params,
+                entry_count=len(entries),
+                entries=entries[:10],
+            )
+            if entries:
+                return entries
+    return []
+
+
+def _discover_collection_models_by_lists(
+    session: requests.Session,
+    source_url: str,
+    raw_cookie: str,
+    handle: str,
+    owner_uid: str,
+    max_pages: int,
+    limit: int = COLLECTION_BATCH_PAGE_LIMIT,
+) -> Optional[dict]:
+    entries = _fetch_collection_list_entries(
+        session,
+        source_url=source_url,
+        raw_cookie=raw_cookie,
+        handle=handle,
+        owner_uid=owner_uid,
+    )
+    if not entries:
+        return None
+
+    discovered: list[str] = []
+    seen_links: set[str] = set()
+    pages_scanned = 0
+    collections_scanned = 0
+    expected_total = sum(max(int(entry.get("count") or 0), 0) for entry in entries)
+    total_page_budget = max(max_pages, 1)
+    if expected_total > 0:
+        projected_pages = sum(
+            max((max(int(entry.get("count") or 0), 0) + max(limit, 1) - 1) // max(limit, 1), 1)
+            for entry in entries
+        )
+        total_page_budget = min(max(total_page_budget, projected_pages + 2), 240)
+
+    _append_discovery_debug(
+        "collection_list_discovery_start",
+        source_url=source_url,
+        handle=handle,
+        owner_uid=owner_uid,
+        entry_count=len(entries),
+        expected_total=expected_total,
+        total_page_budget=total_page_budget,
+        entries=entries[:10],
+    )
+
+    for entry in entries:
+        collection_id = str(entry.get("id") or "").strip()
+        if not collection_id:
+            continue
+
+        collections_scanned += 1
+        offset = 0
+        collection_expected = max(int(entry.get("count") or 0), 0)
+        collection_page_budget = max(1, max_pages)
+        if collection_expected > 0:
+            collection_page_budget = min(
+                max(collection_page_budget, (collection_expected + max(limit, 1) - 1) // max(limit, 1) + 1),
+                total_page_budget,
+            )
+        collection_pages_scanned = 0
+        collection_discovered_before = len(discovered)
+
+        while pages_scanned < total_page_budget and collection_pages_scanned < collection_page_budget:
+            payload = None
+            hits_payload = None
+            page_links: list[str] = []
+
+            for params in _collection_designs_param_candidates(offset, limit, source_url, handle):
+                payload = _api_get_json(
+                    session,
+                    source_url=source_url,
+                    raw_cookie=raw_cookie,
+                    service_name="design-service",
+                    path=f"/favorites/{collection_id}/designs",
+                    params=params,
+                )
+                if payload is None:
+                    continue
+                hits_payload = _extract_hits_payload(payload)
+                if hits_payload is None:
+                    continue
+                page_links = _extract_model_urls_from_hits(hits_payload, source_url)
+                _append_discovery_debug(
+                    "collection_list_page_probe",
+                    collection_id=collection_id,
+                    offset=offset,
+                    limit=limit,
+                    params=params,
+                    page_links=len(page_links),
+                    hits=len(hits_payload.get("hits") or []),
+                    total=hits_payload.get("total"),
+                )
+                break
+
+            if payload is None or hits_payload is None:
+                break
+
+            hits = hits_payload.get("hits") or []
+            pages_scanned += 1
+            collection_pages_scanned += 1
+            new_links = 0
+            for link in page_links:
+                if link in seen_links:
+                    continue
+                seen_links.add(link)
+                discovered.append(link)
+                new_links += 1
+
+            total = _extract_total_count(hits_payload, len(hits))
+            has_next = _extract_has_next(hits_payload)
+            if not hits:
+                break
+            if has_next is False:
+                break
+            if collection_expected > 0 and (len(discovered) - collection_discovered_before) >= collection_expected:
+                break
+            if total is not None and total >= 0 and new_links == 0 and offset > 0:
+                break
+            if new_links == 0 and offset > 0:
+                break
+            if len(hits) < limit and has_next is not True:
+                break
+
+            offset += max(len(hits), 1)
+
+    if not discovered:
+        return None
+
+    return {
+        "source_url": source_url,
+        "pages_scanned": pages_scanned,
+        "collections_scanned": collections_scanned,
+        "items": discovered,
+        "mode": "collection_models_lists",
+        "expected_total": expected_total if expected_total > 0 else len(discovered),
+    }
+
+
 def _fetch_collection_hits_payload(
     session: requests.Session,
     source_url: str,
@@ -950,6 +1321,7 @@ def _fetch_collection_hits_payload(
     offset: int,
     limit: int,
     seen_links: set[str],
+    search_session_id: str,
 ) -> tuple[Optional[dict], Optional[dict], list[str], str]:
     first_payload: Optional[dict] = None
     first_hits_payload: Optional[dict] = None
@@ -957,7 +1329,13 @@ def _fetch_collection_hits_payload(
     first_path = ""
 
     for path in _collection_designs_path_candidates(uid):
-        for params in _collection_designs_param_candidates(offset, limit, source_url, handle):
+        for params in _collection_designs_param_candidates(
+            offset,
+            limit,
+            source_url,
+            handle,
+            search_session_id=search_session_id,
+        ):
             payload = _api_get_json(
                 session,
                 source_url=source_url,
@@ -1041,6 +1419,7 @@ def _discover_collection_models_api(
     expected_total: Optional[int] = None
     page_budget = max(max_pages, 1)
     selected_path = ""
+    search_session_id = ""
 
     while pages_scanned < page_budget:
         payload, hits_payload, page_links, selected_path = _fetch_collection_hits_payload(
@@ -1052,6 +1431,7 @@ def _discover_collection_models_api(
             offset=offset,
             limit=limit,
             seen_links=seen,
+            search_session_id=search_session_id,
         )
         if payload is None:
             return None if pages_scanned == 0 else {
@@ -1073,6 +1453,9 @@ def _discover_collection_models_api(
 
         hits = hits_payload.get("hits") or []
         pages_scanned += 1
+        discovered_session_id = _extract_search_session_id(hits_payload) or _extract_search_session_id(payload)
+        if discovered_session_id:
+            search_session_id = discovered_session_id
         expected_total = _extract_total_count(hits_payload, len(hits))
         page_size = max(len(hits), 1)
         if expected_total:
@@ -1291,6 +1674,20 @@ def discover_batch_model_urls(url: str, raw_cookie: str, max_pages: int = 12) ->
         )
         if api_result is not None:
             return api_result
+
+        handle = _extract_collection_handle(source_url)
+        owner_uid = _resolve_collection_owner_uid(session, source_url, raw_cookie, handle) if handle else ""
+        if handle and owner_uid:
+            list_result = _discover_collection_models_by_lists(
+                session=session,
+                source_url=source_url,
+                raw_cookie=raw_cookie,
+                handle=handle,
+                owner_uid=owner_uid,
+                max_pages=max_pages,
+            )
+            if list_result is not None:
+                return list_result
 
     if AUTHOR_UPLOAD_RE.search(urlparse(source_url).path or ""):
         api_result = _discover_author_upload_api(
