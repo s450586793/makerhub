@@ -883,18 +883,33 @@ def _discover_author_upload_api(
     }
 
 
-def _collection_designs_param_candidates(offset: int, limit: int) -> list[dict[str, int]]:
+def _collection_route_query_params(source_url: str, handle: str) -> dict[str, Any]:
+    base_params: dict[str, Any] = {}
+    normalized_handle = str(handle or "").strip().lstrip("@")
+    if normalized_handle:
+        base_params["handle"] = normalized_handle
+
+    query_params = dict(parse_qsl(urlparse(source_url).query, keep_blank_values=True))
+    for key in ("query", "q", "keyword", "order", "status"):
+        value = str(query_params.get(key) or "").strip()
+        if value:
+            base_params[key] = value
+    return base_params
+
+
+def _collection_designs_param_candidates(offset: int, limit: int, source_url: str, handle: str) -> list[dict[str, Any]]:
     page_index = max((offset // max(limit, 1)) + 1, 1)
+    base_params = _collection_route_query_params(source_url, handle)
     candidates = [
-        {"offset": offset, "limit": limit},
-        {"page": page_index, "limit": limit},
-        {"pageNum": page_index, "limit": limit},
-        {"pageNo": page_index, "limit": limit},
-        {"current": page_index, "size": limit},
-        {"offset": offset, "page": page_index, "limit": limit},
+        {**base_params, "offset": offset, "limit": limit},
+        {**base_params, "page": page_index, "limit": limit},
+        {**base_params, "pageNum": page_index, "limit": limit},
+        {**base_params, "pageNo": page_index, "limit": limit},
+        {**base_params, "current": page_index, "size": limit},
+        {**base_params, "offset": offset, "page": page_index, "limit": limit},
     ]
-    deduped: list[dict[str, int]] = []
-    seen: set[tuple[tuple[str, int], ...]] = set()
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[tuple[str, Any], ...]] = set()
     for candidate in candidates:
         key = tuple(sorted(candidate.items()))
         if key in seen:
@@ -923,6 +938,7 @@ def _fetch_collection_hits_payload(
     session: requests.Session,
     source_url: str,
     raw_cookie: str,
+    handle: str,
     uid: str,
     offset: int,
     limit: int,
@@ -934,7 +950,7 @@ def _fetch_collection_hits_payload(
     first_path = ""
 
     for path in _collection_designs_path_candidates(uid):
-        for params in _collection_designs_param_candidates(offset, limit):
+        for params in _collection_designs_param_candidates(offset, limit, source_url, handle):
             payload = _api_get_json(
                 session,
                 source_url=source_url,
@@ -1024,6 +1040,7 @@ def _discover_collection_models_api(
             session,
             source_url=source_url,
             raw_cookie=raw_cookie,
+            handle=handle,
             uid=uid,
             offset=offset,
             limit=limit,
