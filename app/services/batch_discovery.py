@@ -984,6 +984,17 @@ def _discover_collection_models_api(
 
         offset += page_size
 
+    if not discovered:
+        _append_discovery_debug(
+            "collection_api_empty_fallback",
+            source_url=source_url,
+            handle=handle,
+            uid=uid,
+            pages_scanned=pages_scanned,
+            expected_total=expected_total,
+        )
+        return None
+
     return {
         "source_url": source_url,
         "pages_scanned": pages_scanned,
