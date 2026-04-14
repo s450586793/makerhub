@@ -350,6 +350,33 @@ class TaskStateStore:
         payload["recent_failures"] = recent_failures
         return self.save_archive_queue(payload)
 
+    def requeue_active_tasks(self, message: str = "服务重启后自动恢复") -> dict:
+        payload = self._read_json(
+            ARCHIVE_QUEUE_PATH,
+            {"active": [], "queued": [], "recent_failures": []},
+        )
+        active_items = [_normalize_task_item(item, "running") for item in (payload.get("active") or [])]
+        queued_items = [_normalize_task_item(item, "queued") for item in (payload.get("queued") or [])]
+        if not active_items:
+            queue = self.save_archive_queue(payload)
+            queue["recovered_count"] = 0
+            return queue
+
+        recovered = []
+        now = datetime.now().isoformat()
+        for item in active_items:
+            item["status"] = "queued"
+            item["progress"] = 0
+            item["message"] = message
+            item["updated_at"] = now
+            recovered.append(item)
+
+        payload["active"] = []
+        payload["queued"] = recovered + queued_items
+        queue = self.save_archive_queue(payload)
+        queue["recovered_count"] = len(recovered)
+        return queue
+
     def remove_recent_failures_for_model(self, model_id: str, url: str = "") -> dict:
         model_key = str(model_id or "").strip()
         url_key = str(url or "").strip()

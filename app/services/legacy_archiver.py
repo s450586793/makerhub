@@ -4,7 +4,9 @@ import re
 import shutil
 import sys
 import subprocess
+import time
 from datetime import datetime
+from html import escape
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
@@ -78,15 +80,72 @@ def _extract_auth_token(raw_cookie: str) -> str:
     )
 
 
-def download_file(session: requests.Session, url: str, dest: Path, overwrite: bool = False):
+IMAGE_TRANSFER_TIMEOUT_SECONDS = 45
+BINARY_TRANSFER_TIMEOUT_SECONDS = 300
+CONNECT_TIMEOUT_SECONDS = 15
+READ_TIMEOUT_SECONDS = 30
+
+
+def _stage_percent(start: int, end: int, current: int, total: int) -> int:
+    if total <= 0:
+        return end
+    bounded_current = min(max(current, 0), total)
+    return start + int((bounded_current / total) * max(end - start, 0))
+
+
+def _emit_stage_progress(
+    progress_callback,
+    start: int,
+    end: int,
+    current: int,
+    total: int,
+    message: str,
+):
+    if total <= 0:
+        emit_progress(progress_callback, end, message)
+        return
+    emit_progress(
+        progress_callback,
+        _stage_percent(start, end, current, total),
+        f"{message}（{current}/{total}）",
+        {"current": current, "total": total},
+    )
+
+
+def download_file(
+    session: requests.Session,
+    url: str,
+    dest: Path,
+    overwrite: bool = False,
+    *,
+    timeout: tuple[int, int] = (CONNECT_TIMEOUT_SECONDS, READ_TIMEOUT_SECONDS),
+    max_duration: int = IMAGE_TRANSFER_TIMEOUT_SECONDS,
+):
     if dest.exists() and not overwrite:
         log("存在，跳过：", dest)
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
-    resp = session.get(url, timeout=30, stream=True)
-    resp.raise_for_status()
-    with open(dest, "wb") as f:
-        shutil.copyfileobj(resp.raw, f)
+    temp_dest = dest.with_name(f"{dest.name}.part")
+    started_at = time.monotonic()
+    log("开始下载：", url, "->", dest)
+    try:
+        with session.get(url, timeout=timeout, stream=True) as resp:
+            resp.raise_for_status()
+            with temp_dest.open("wb") as f:
+                for chunk in resp.iter_content(chunk_size=64 * 1024):
+                    if max_duration > 0 and time.monotonic() - started_at > max_duration:
+                        raise TimeoutError(f"下载超时（>{max_duration}s）: {url}")
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+        temp_dest.replace(dest)
+    except Exception:
+        try:
+            if temp_dest.exists():
+                temp_dest.unlink()
+        except Exception:
+            pass
+        raise
     log("已下载：", dest)
 
 
@@ -720,7 +779,16 @@ def _extract_comment_count_from_payload(node: object, depth: int = 0, found: Opt
     return found
 
 
-def collect_comments(next_data: dict, design: dict, session: requests.Session, out_dir: Path) -> dict:
+def collect_comments(
+    next_data: dict,
+    design: dict,
+    session: requests.Session,
+    out_dir: Path,
+    progress_callback=None,
+    progress_start: int = 50,
+    progress_end: int = 55,
+) -> dict:
+    emit_progress(progress_callback, progress_start, "正在整理评论数据")
     comments: List[dict] = []
     seen: set[str] = set()
     _collect_comments_from_payload(next_data, comments, seen)
@@ -739,13 +807,37 @@ def collect_comments(next_data: dict, design: dict, session: requests.Session, o
             or _comment_numeric(counts.get("comments"))
         )
 
+    asset_total = 0
+    for item in comments:
+        author = item.get("author") if isinstance(item.get("author"), dict) else {}
+        if str(author.get("avatarUrl") or "").strip():
+            asset_total += 1
+        images = item.get("images") if isinstance(item.get("images"), list) else []
+        asset_total += sum(1 for image in images if isinstance(image, dict) and str(image.get("url") or "").strip())
+
+    asset_index = 0
     for idx, item in enumerate(comments, start=1):
         author = item.get("author") if isinstance(item.get("author"), dict) else {}
         avatar_url = str(author.get("avatarUrl") or "").strip()
         if avatar_url:
             avatar_name = f"comment_{idx:02d}_avatar.{pick_ext_from_url(avatar_url)}"
+            asset_index += 1
+            if asset_total and (asset_index == 1 or asset_index == asset_total or asset_index % 5 == 0):
+                _emit_stage_progress(
+                    progress_callback,
+                    progress_start,
+                    progress_end,
+                    asset_index,
+                    asset_total,
+                    "正在下载评论资源",
+                )
             try:
-                download_file(session, avatar_url, out_dir / avatar_name)
+                download_file(
+                    session,
+                    avatar_url,
+                    out_dir / avatar_name,
+                    max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+                )
                 author["avatarLocal"] = avatar_name
                 author["avatarRelPath"] = f"images/{avatar_name}"
             except Exception as exc:
@@ -758,12 +850,29 @@ def collect_comments(next_data: dict, design: dict, session: requests.Session, o
             if not url:
                 continue
             image_name = f"comment_{idx:02d}_img_{img_idx:02d}.{pick_ext_from_url(url)}"
+            asset_index += 1
+            if asset_total and (asset_index == 1 or asset_index == asset_total or asset_index % 5 == 0):
+                _emit_stage_progress(
+                    progress_callback,
+                    progress_start,
+                    progress_end,
+                    asset_index,
+                    asset_total,
+                    "正在下载评论资源",
+                )
             try:
-                download_file(session, url, out_dir / image_name)
+                download_file(
+                    session,
+                    url,
+                    out_dir / image_name,
+                    max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+                )
                 image["localName"] = image_name
                 image["relPath"] = f"images/{image_name}"
             except Exception as exc:
                 log("评论图片下载失败，保留原始链接：", url, exc)
+
+    emit_progress(progress_callback, progress_end, "评论整理完成")
 
     return {
         "count": max(comment_count, len(comments)),
@@ -771,7 +880,15 @@ def collect_comments(next_data: dict, design: dict, session: requests.Session, o
     }
 
 
-def parse_summary(design: dict, base_name: str, session: requests.Session, out_dir: Path):
+def parse_summary(
+    design: dict,
+    base_name: str,
+    session: requests.Session,
+    out_dir: Path,
+    progress_callback=None,
+    progress_start: int = 40,
+    progress_end: int = 45,
+):
     raw_html = (
         design.get("summary")
         or design.get("summaryHtml")
@@ -785,15 +902,31 @@ def parse_summary(design: dict, base_name: str, session: requests.Session, out_d
         raw_html = raw_html.get("html") or raw_html.get("raw") or raw_html.get("text") or ""
     soup = BeautifulSoup(raw_html, "html.parser")
     summary_images = []
-    idx = 1
+    image_nodes = []
     for img in soup.find_all("img"):
         src = img.get("src") or img.get("data-src")
-        if not src:
-            continue
+        if src:
+            image_nodes.append((img, src))
+
+    total_images = len(image_nodes)
+    for idx, (img, src) in enumerate(image_nodes, start=1):
+        _emit_stage_progress(
+            progress_callback,
+            progress_start,
+            progress_end,
+            idx,
+            total_images,
+            "正在下载摘要图片",
+        )
         ext = pick_ext_from_url(src)
         name = f"summary_img_{idx:02d}.{ext}"
         try:
-            download_file(session, src, out_dir / name)
+            download_file(
+                session,
+                src,
+                out_dir / name,
+                max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+            )
         except Exception as exc:
             log("摘要图片下载失败，保留原始链接：", src, exc)
             continue
@@ -806,7 +939,9 @@ def parse_summary(design: dict, base_name: str, session: requests.Session, out_d
                 "fileName": name,
             }
         )
-        idx += 1
+
+    if total_images:
+        emit_progress(progress_callback, progress_end, "摘要图片整理完成")
 
     html_local = str(soup)
     text_plain = " ".join(soup.get_text().split())
@@ -986,13 +1121,29 @@ def extract_design_attachments(design: dict) -> List[dict]:
     return attachments
 
 
-def collect_design_images(design: dict, session: requests.Session, out_dir: Path, base_name: str):
+def collect_design_images(
+    design: dict,
+    session: requests.Session,
+    out_dir: Path,
+    base_name: str,
+    progress_callback=None,
+    progress_start: int = 45,
+    progress_end: int = 50,
+):
     pics = _normalize_design_pictures(design)
     if not pics:
         return [], None
     design_images = []
     cover_meta = None
     for idx, p in enumerate(pics, start=1):
+        _emit_stage_progress(
+            progress_callback,
+            progress_start,
+            progress_end,
+            idx,
+            len(pics),
+            "正在下载设计图片",
+        )
         url = ""
         if isinstance(p, str):
             url = p
@@ -1003,7 +1154,16 @@ def collect_design_images(design: dict, session: requests.Session, out_dir: Path
         ext = pick_ext_from_url(url)
         fname = f"design_{idx:02d}.{ext}"
         rel = f"images/{fname}"
-        download_file(session, url, out_dir / fname)
+        try:
+            download_file(
+                session,
+                url,
+                out_dir / fname,
+                max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            log("设计图片下载失败，保留原始链接：", url, exc)
+            continue
         meta = {
             "index": idx,
             "originalUrl": url,
@@ -1013,6 +1173,7 @@ def collect_design_images(design: dict, session: requests.Session, out_dir: Path
         design_images.append(meta)
         if cover_meta is None:
             cover_meta = meta
+    emit_progress(progress_callback, progress_end, "设计图片整理完成")
     return design_images, cover_meta
 
 
@@ -1226,7 +1387,16 @@ def collect_instance_media(inst: dict, session: requests.Session, out_dir: Path,
             continue
         ext = pick_ext_from_url(thumb)
         fname = f"{base_name}_inst{inst.get('id')}_plate_{int(p.get('index',0)):02d}.{ext}"
-        download_file(session, thumb, out_dir / fname)
+        try:
+            download_file(
+                session,
+                thumb,
+                out_dir / fname,
+                max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            log("实例分盘缩略图下载失败，保留原始链接：", thumb, exc)
+            continue
         plate_out.append({
             "index": p.get("index", 0),
             "prediction": p.get("prediction"),
@@ -1250,7 +1420,16 @@ def collect_instance_media(inst: dict, session: requests.Session, out_dir: Path,
             continue
         ext = pick_ext_from_url(url)
         fname = f"{base_name}_inst{inst.get('id')}_pic_{pic_idx:02d}.{ext}"
-        download_file(session, url, out_dir / fname)
+        try:
+            download_file(
+                session,
+                url,
+                out_dir / fname,
+                max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            log("实例图片下载失败，保留原始链接：", url, exc)
+            continue
         pics_out.append({
             "index": pic_idx,
             "url": url,
@@ -1264,14 +1443,23 @@ def collect_instance_media(inst: dict, session: requests.Session, out_dir: Path,
         if cover:
             ext = pick_ext_from_url(cover)
             fname = f"{base_name}_inst{inst.get('id')}_pic_{pic_idx:02d}.{ext}"
-            download_file(session, cover, out_dir / fname)
-            pics_out.append({
-                "index": pic_idx,
-                "url": cover,
-                "relPath": f"images/{fname}",
-                "fileName": fname,
-                "isRealLifePhoto": 0,
-            })
+            try:
+                download_file(
+                    session,
+                    cover,
+                    out_dir / fname,
+                    max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                log("实例封面下载失败，保留原始链接：", cover, exc)
+            else:
+                pics_out.append({
+                    "index": pic_idx,
+                    "url": cover,
+                    "relPath": f"images/{fname}",
+                    "fileName": fname,
+                    "isRealLifePhoto": 0,
+                })
     return plate_out, pics_out
 
 
@@ -2011,6 +2199,100 @@ def _escape_json_for_inline_script(json_text: str) -> str:
 
 
 
+def build_fallback_index_html(meta: dict, assets: dict = None) -> str:
+    title = str(meta.get("title") or meta.get("name") or "MakerHub Archive")
+    author = normalize_author(meta)
+    stats = normalize_stats(meta)
+    images = normalize_images(meta)
+    summary_payload = meta.get("summary") if isinstance(meta.get("summary"), dict) else {}
+    summary_text = str(summary_payload.get("text") or summary_payload.get("raw") or meta.get("description") or "").strip()
+    hero_name = images.get("cover") or (images.get("design") or [None])[0] or (images.get("summary") or [None])[0]
+    hero_html = (
+        f'<img src="./images/{escape(hero_name)}" alt="{escape(title)}" style="width:100%;border-radius:16px;object-fit:cover;background:#f3f4f6;" />'
+        if hero_name
+        else '<div style="height:260px;border-radius:16px;background:#f3f4f6;"></div>'
+    )
+    gallery_files = list(dict.fromkeys((images.get("design") or []) + (images.get("summary") or [])))
+    gallery_html = "".join(
+        f'<img src="./images/{escape(name)}" alt="{escape(title)}" style="width:100%;border-radius:14px;background:#f3f4f6;" />'
+        for name in gallery_files
+    ) or '<p style="color:#6b7280;">当前没有离线图片。</p>'
+    instances = meta.get("instances") if isinstance(meta.get("instances"), list) else []
+    instances_html = "".join(
+        f'<li><a href="./instances/{escape(str(item.get("fileName") or ""))}">{escape(str(item.get("title") or item.get("name") or item.get("fileName") or "实例文件"))}</a></li>'
+        for item in instances
+        if str(item.get("fileName") or "").strip()
+    ) or '<li>当前没有可用 3MF 文件。</li>'
+    attachments = meta.get("attachments") if isinstance(meta.get("attachments"), list) else []
+    attachments_html = "".join(
+        f'<li><a href="./file/{escape(str(item.get("localName") or ""))}">{escape(str(item.get("name") or item.get("localName") or "附件"))}</a></li>'
+        for item in attachments
+        if str(item.get("localName") or "").strip()
+    )
+    attachments_section = (
+        f"""
+        <section>
+          <h2>附件</h2>
+          <ul>{attachments_html}</ul>
+        </section>
+        """
+        if attachments_html
+        else ""
+    )
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{escape(title)} - makerhub archive</title>
+  <style>
+    body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f7fb; color: #111827; }}
+    main {{ max-width: 1120px; margin: 0 auto; padding: 40px 24px 64px; }}
+    .hero {{ display: grid; gap: 24px; grid-template-columns: minmax(0, 1.2fr) minmax(320px, 420px); align-items: start; }}
+    .panel {{ background: #fff; border-radius: 20px; padding: 24px; box-shadow: 0 20px 60px rgba(15, 23, 42, 0.08); }}
+    .meta {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }}
+    .meta div {{ border-radius: 14px; background: #f8fafc; padding: 14px 16px; }}
+    .gallery {{ display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin-top: 24px; }}
+    h1, h2 {{ margin: 0 0 12px; }}
+    p {{ line-height: 1.7; }}
+    ul {{ margin: 0; padding-left: 18px; line-height: 1.8; }}
+    a {{ color: #2563eb; text-decoration: none; }}
+    @media (max-width: 900px) {{ .hero {{ grid-template-columns: 1fr; }} .meta {{ grid-template-columns: 1fr; }} }}
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <div class="panel">{hero_html}</div>
+      <div class="panel">
+        <p style="margin:0 0 8px;color:#2563eb;font-weight:600;">makerhub 离线归档</p>
+        <h1>{escape(title)}</h1>
+        <p style="margin:0;color:#6b7280;">作者：{escape(author.get("name") or "未知作者")}</p>
+        <div class="meta">
+          <div><strong>下载</strong><br />{escape(str(stats.get("downloads") or 0))}</div>
+          <div><strong>点赞</strong><br />{escape(str(stats.get("likes") or 0))}</div>
+          <div><strong>打印</strong><br />{escape(str(stats.get("prints") or 0))}</div>
+          <div><strong>收藏</strong><br />{escape(str(stats.get("favorites") or 0))}</div>
+        </div>
+        <p style="margin-top:20px;">{escape(summary_text or "当前没有离线简介。")}</p>
+      </div>
+    </section>
+    <section class="panel" style="margin-top:24px;">
+      <h2>图片</h2>
+      <div class="gallery">{gallery_html}</div>
+    </section>
+    <section class="panel" style="margin-top:24px;">
+      <h2>3MF 文件</h2>
+      <ul>{instances_html}</ul>
+    </section>
+    {attachments_section}
+  </main>
+</body>
+</html>
+"""
+
+
 def build_index_html(meta: dict, assets: dict = None) -> str:
     """基于 CSR 架构的离线 HTML 生成器，读取 model.html 骨架并注入数据和源码。"""
     app_dir = Path(__file__).parent
@@ -2019,6 +2301,18 @@ def build_index_html(meta: dict, assets: dict = None) -> str:
     components_css_path = app_dir / "static" / "css" / "components.css"
     model_css_path = app_dir / "static" / "css" / "model.css"
     model_js_path = app_dir / "static" / "js" / "model.js"
+
+    required_paths = [
+        template_path,
+        variables_css_path,
+        components_css_path,
+        model_css_path,
+        model_js_path,
+    ]
+    missing_paths = [path for path in required_paths if not path.exists()]
+    if missing_paths:
+        log("离线模板缺失，使用回退 HTML：", ", ".join(str(path) for path in missing_paths))
+        return build_fallback_index_html(meta, assets)
 
     with template_path.open("r", encoding="utf-8") as f:
         html = f.read()
@@ -2211,7 +2505,12 @@ def rebuild_once(meta_path: Path, progress_callback=None):
             meta_changed = True
         dest = instances_dir / fn
 
-        download_file(REBUILD_SESSION, url, dest)
+        download_file(
+            REBUILD_SESSION,
+            url,
+            dest,
+            max_duration=BINARY_TRANSFER_TIMEOUT_SECONDS,
+        )
         inst_files.append({
             "id": inst.get("id"),
             "title": inst.get("title") or inst.get("name") or str(inst.get("id")),
@@ -2247,7 +2546,12 @@ def rebuild_once(meta_path: Path, progress_callback=None):
                 att["relPath"] = rel_path
                 meta_changed = True
             dest = files_dir / local_name
-            download_file(REBUILD_SESSION, url, dest)
+            download_file(
+                REBUILD_SESSION,
+                url,
+                dest,
+                max_duration=BINARY_TRANSFER_TIMEOUT_SECONDS,
+            )
             attachment_files.append(local_name)
             emit_progress(
                 progress_callback,
@@ -2381,15 +2685,48 @@ def archive_model(
     if author.get("avatarUrl"):
         ext = pick_ext_from_url(author["avatarUrl"])
         fname = f"author_avatar.{ext}"
-        download_file(sess, author["avatarUrl"], images_dir / fname)
-        author["avatarLocal"] = fname
-        author["avatarRelPath"] = f"images/{fname}"
+        try:
+            download_file(
+                sess,
+                author["avatarUrl"],
+                images_dir / fname,
+                max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+            )
+            author["avatarLocal"] = fname
+            author["avatarRelPath"] = f"images/{fname}"
+        except Exception as exc:
+            log(logger, "作者头像下载失败，保留原始链接：", author["avatarUrl"], exc)
 
     emit_progress(progress_callback, 40, "正在整理摘要与设计图片")
-    summary = parse_summary(design, base_name, sess, images_dir)
-    design_images, cover_meta = collect_design_images(design, sess, images_dir, base_name)
+    summary = parse_summary(
+        design,
+        base_name,
+        sess,
+        images_dir,
+        progress_callback=progress_callback,
+        progress_start=40,
+        progress_end=45,
+    )
+    design_images, cover_meta = collect_design_images(
+        design,
+        sess,
+        images_dir,
+        base_name,
+        progress_callback=progress_callback,
+        progress_start=45,
+        progress_end=50,
+    )
     attachments = extract_design_attachments(design)
-    comments_bundle = collect_comments(next_data, design, sess, images_dir)
+    comments_bundle = collect_comments(
+        next_data,
+        design,
+        sess,
+        images_dir,
+        progress_callback=progress_callback,
+        progress_start=50,
+        progress_end=55,
+    )
+    emit_progress(progress_callback, 55, "摘要、图片与评论整理完成")
 
     parsed_origin = urlparse(fetch_url)
     origin = f"{parsed_origin.scheme}://{parsed_origin.netloc}" if parsed_origin.scheme and parsed_origin.netloc else "https://makerworld.com.cn"

@@ -311,6 +311,12 @@ class ArchiveTaskManager:
             self._worker = threading.Thread(target=self._run_loop, daemon=True)
             self._worker.start()
 
+    def resume_pending_tasks(self) -> dict:
+        queue = self.task_store.requeue_active_tasks()
+        if (queue.get("queued_count") or 0) > 0:
+            self._ensure_worker()
+        return queue
+
     def _run_loop(self) -> None:
         while True:
             queue = self.task_store.load_archive_queue()

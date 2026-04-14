@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.auth import router as auth_router
+from app.api.config import crawler as config_crawler
 from app.api.config import router as config_router
 from app.api.web import router as web_router
 from app.core.settings import APP_VERSION, ARCHIVE_DIR, FRONTEND_DIST_DIR, ROOT_DIR, ensure_app_dirs
@@ -46,6 +47,15 @@ def _apply_cache_headers(path: str, response):
         response.headers["Expires"] = "0"
 
     return response
+
+
+@app.on_event("startup")
+async def resume_archive_queue() -> None:
+    queue = config_crawler.manager.resume_pending_tasks()
+    recovered_count = int(queue.get("recovered_count") or 0)
+    queued_count = int(queue.get("queued_count") or 0)
+    if queued_count:
+        print(f"[makerhub] archive queue resumed queued={queued_count} recovered_active={recovered_count}", flush=True)
 
 
 @app.middleware("http")
