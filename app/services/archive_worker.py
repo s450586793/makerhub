@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
@@ -80,8 +81,10 @@ class ArchiveTaskManager:
         self.task_store = TaskStateStore()
         self._lock = threading.Lock()
         self._worker: Optional[threading.Thread] = None
+        self._preview_lock = threading.Lock()
+        self._batch_previews: dict[str, dict] = {}
 
-    def submit(self, url: str, force: bool = False) -> dict:
+    def submit(self, url: str, force: bool = False, preview_token: str = "") -> dict:
         clean_url = normalize_source_url(url)
         if not clean_url:
             return {
@@ -93,13 +96,39 @@ class ArchiveTaskManager:
         if mode == "single_model":
             return self._submit_single(clean_url, force=force)
         if mode in {"author_upload", "collection_models"}:
-            return self._submit_batch(clean_url, mode)
+            return self._submit_batch(clean_url, mode, preview_token=preview_token)
         return {
             "accepted": False,
             "message": "无法识别该链接类型，请输入单模型、作者上传页或收藏夹页面。",
             "mode": mode,
             "url": clean_url,
         }
+
+    def preview(self, url: str) -> dict:
+        clean_url = normalize_source_url(url)
+        if not clean_url:
+            return {
+                "accepted": False,
+                "message": "请先输入归档链接。",
+            }
+
+        mode = _detect_mode(clean_url)
+        if mode == "single_model":
+            return {
+                "accepted": True,
+                "mode": mode,
+                "url": clean_url,
+                "requires_confirmation": False,
+                "message": "识别为单模型链接。",
+            }
+        if mode not in {"author_upload", "collection_models"}:
+            return {
+                "accepted": False,
+                "message": "无法识别该链接类型，请输入单模型、作者上传页或收藏夹页面。",
+                "mode": mode,
+                "url": clean_url,
+            }
+        return self._preview_batch(clean_url, mode)
 
     def _queued_task_keys(self) -> set[str]:
         queue = self.task_store.load_archive_queue()
@@ -118,13 +147,54 @@ class ArchiveTaskManager:
                 keys.add(_task_key(origin_url))
         return keys
 
-    def _enqueue_single_task(self, url: str, message: str = "等待归档") -> str:
+    def _prune_batch_previews(self) -> None:
+        cutoff = time.time() - 15 * 60
+        with self._preview_lock:
+            expired_keys = [
+                key
+                for key, item in self._batch_previews.items()
+                if float(item.get("created_at") or 0) < cutoff
+            ]
+            for key in expired_keys:
+                self._batch_previews.pop(key, None)
+
+    def _store_batch_preview(self, clean_url: str, mode: str, discovered: dict) -> str:
+        self._prune_batch_previews()
+        preview_token = uuid.uuid4().hex
+        payload = {
+            "created_at": time.time(),
+            "url": clean_url,
+            "mode": mode,
+            "discovered_items": list(discovered.get("items") or []),
+            "expected_total": discovered.get("expected_total"),
+            "pages_scanned": discovered.get("pages_scanned"),
+            "scan_mode": discovered.get("mode") or "",
+        }
+        with self._preview_lock:
+            self._batch_previews[preview_token] = payload
+        return preview_token
+
+    def _consume_batch_preview(self, preview_token: str, clean_url: str, mode: str) -> Optional[dict]:
+        if not preview_token:
+            return None
+        self._prune_batch_previews()
+        with self._preview_lock:
+            preview = self._batch_previews.pop(preview_token, None)
+        if not preview:
+            return None
+        if preview.get("url") != clean_url or preview.get("mode") != mode:
+            return None
+        return preview
+
+    def _enqueue_single_task(self, url: str, message: str = "等待归档", mode: str = "", meta: Optional[dict] = None) -> str:
         task_id = uuid.uuid4().hex
         self.task_store.enqueue_archive_task(
             {
                 "id": task_id,
                 "url": url,
                 "title": url,
+                "mode": mode,
+                "meta": meta or {},
                 "status": "queued",
                 "progress": 0,
                 "message": message,
@@ -151,7 +221,7 @@ class ArchiveTaskManager:
             }
 
         queue_message = "等待归档" if not force else "等待重新下载缺失 3MF"
-        task_id = self._enqueue_single_task(clean_url, message=queue_message)
+        task_id = self._enqueue_single_task(clean_url, message=queue_message, mode="single_model")
         self._ensure_worker()
         return {
             "accepted": True,
@@ -274,7 +344,7 @@ class ArchiveTaskManager:
             ),
         }
 
-    def _submit_batch(self, clean_url: str, mode: str) -> dict:
+    def _preview_batch(self, clean_url: str, mode: str) -> dict:
         config = self.store.load()
         cookie = _select_cookie(clean_url, config)
         if not cookie:
@@ -294,14 +364,114 @@ class ArchiveTaskManager:
                 "message": "该批量归档任务已经在队列中。",
             }
 
-        task_id = self._enqueue_single_task(clean_url, message="等待扫描模型链接")
+        with _temporary_proxy_env(config):
+            discovered = discover_batch_model_urls(clean_url, cookie)
+
+        discovered_items = list(discovered.get("items") or [])
+        discovered_count = len(discovered_items)
+        if discovered_count <= 0:
+            return {
+                "accepted": False,
+                "mode": mode,
+                "url": clean_url,
+                "message": "没有扫描到可归档模型，请检查链接或 Cookie 是否有效。",
+            }
+
+        pending_keys = self._queued_task_keys()
+        archived_keys = self._archived_task_keys()
+        queued_count = 0
+        archived_count = 0
+        new_count = 0
+        for model_url in discovered_items:
+            key = _task_key(model_url)
+            if key in pending_keys:
+                queued_count += 1
+            elif key in archived_keys:
+                archived_count += 1
+            else:
+                new_count += 1
+
+        preview_token = self._store_batch_preview(clean_url, mode, discovered)
+        expected_total = discovered.get("expected_total")
+        total_hint = ""
+        if isinstance(expected_total, int) and expected_total > discovered_count:
+            total_hint = f"，站点标记总数 {expected_total}"
+
+        return {
+            "accepted": True,
+            "mode": mode,
+            "url": clean_url,
+            "requires_confirmation": True,
+            "preview_token": preview_token,
+            "discovered_count": discovered_count,
+            "expected_total": expected_total,
+            "queued_count": queued_count,
+            "archived_count": archived_count,
+            "new_count": new_count,
+            "message": (
+                f"本次扫描到 {discovered_count} 个模型{total_hint}。"
+                f" 其中新增 {new_count} 个，已在队列 {queued_count} 个，已归档 {archived_count} 个。"
+            ),
+        }
+
+    def _submit_batch(self, clean_url: str, mode: str, preview_token: str = "") -> dict:
+        config = self.store.load()
+        cookie = _select_cookie(clean_url, config)
+        if not cookie:
+            return {
+                "accepted": False,
+                "message": "未找到可用 Cookie，请先到设置页配置对应站点 Cookie。",
+                "mode": mode,
+                "url": clean_url,
+            }
+
+        batch_task_key = _task_key(clean_url)
+        if batch_task_key in self._queued_task_keys():
+            return {
+                "accepted": False,
+                "mode": mode,
+                "url": clean_url,
+                "message": "该批量归档任务已经在队列中。",
+            }
+
+        preview = self._consume_batch_preview(preview_token, clean_url, mode)
+        if preview_token and preview is None:
+            return {
+                "accepted": False,
+                "mode": mode,
+                "url": clean_url,
+                "message": "预扫描结果已失效，请重新扫描后再确认提交。",
+            }
+
+        preview_items = list((preview or {}).get("discovered_items") or [])
+        preview_count = len(preview_items)
+        task_message = "等待扫描模型链接"
+        if preview_count > 0:
+            task_message = f"已确认提交，等待批量入队（预扫描 {preview_count} 个模型）"
+
+        task_id = self._enqueue_single_task(
+            clean_url,
+            message=task_message,
+            mode=mode,
+            meta={
+                "discovered_items": preview_items,
+                "expected_total": (preview or {}).get("expected_total"),
+                "pages_scanned": (preview or {}).get("pages_scanned"),
+                "scan_mode": (preview or {}).get("scan_mode") or "",
+            },
+        )
         self._ensure_worker()
         return {
             "accepted": True,
             "task_id": task_id,
             "mode": mode,
             "url": clean_url,
-            "message": "批量归档任务已加入队列，后台正在扫描模型链接。",
+            "preview_count": preview_count,
+            "message": (
+                f"批量归档任务已加入队列，确认提交 {preview_count} 个预扫描模型。"
+                if preview_count > 0
+                else "批量归档任务已加入队列，后台正在扫描模型链接。"
+            ),
         }
 
     def _ensure_worker(self) -> None:
@@ -331,9 +501,9 @@ class ArchiveTaskManager:
             self.task_store.update_active_task(task_id, message="正在准备归档", progress=1)
 
             try:
-                task_mode = _detect_mode(task_url)
+                task_mode = str(task.get("mode") or "") or _detect_mode(task_url)
                 if task_mode in {"author_upload", "collection_models"}:
-                    self._run_batch_task(task_id, task_url, task_mode)
+                    self._run_batch_task(task_id, task_url, task_mode, meta=task.get("meta") or {})
                 else:
                     self._run_single_task(task_id, task_url)
             except Exception as exc:
@@ -346,21 +516,37 @@ class ArchiveTaskManager:
                     )
                 self.task_store.fail_archive_task(task_id, str(exc))
 
-    def _run_batch_task(self, task_id: str, url: str, mode: str) -> None:
+    def _run_batch_task(self, task_id: str, url: str, mode: str, meta: Optional[dict] = None) -> None:
         config = self.store.load()
         cookie = _select_cookie(url, config)
         if not cookie:
             raise RuntimeError("未找到可用 Cookie，请先到设置页配置对应站点 Cookie。")
 
-        print(f"[makerhub] batch_discovery start mode={mode} url={url}", flush=True)
-        self.task_store.update_active_task(
-            task_id,
-            progress=5,
-            message="正在扫描模型链接",
-        )
+        meta = meta if isinstance(meta, dict) else {}
+        preview_items = list(meta.get("discovered_items") or [])
+        if preview_items:
+            print(f"[makerhub] batch_discovery reuse_preview mode={mode} url={url} items={len(preview_items)}", flush=True)
+            discovered = {
+                "items": preview_items,
+                "expected_total": meta.get("expected_total"),
+                "pages_scanned": meta.get("pages_scanned"),
+                "mode": meta.get("scan_mode") or "preview",
+            }
+            self.task_store.update_active_task(
+                task_id,
+                progress=55,
+                message=f"已使用预扫描结果，发现 {len(preview_items)} 个模型，正在加入归档队列",
+            )
+        else:
+            print(f"[makerhub] batch_discovery start mode={mode} url={url}", flush=True)
+            self.task_store.update_active_task(
+                task_id,
+                progress=5,
+                message="正在扫描模型链接",
+            )
 
-        with _temporary_proxy_env(config):
-            discovered = discover_batch_model_urls(url, cookie)
+            with _temporary_proxy_env(config):
+                discovered = discover_batch_model_urls(url, cookie)
 
         pending_keys = self._queued_task_keys()
         archived_keys = self._archived_task_keys()

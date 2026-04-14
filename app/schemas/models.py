@@ -79,6 +79,7 @@ class ApiTokenCreateRequest(BaseModel):
 
 class ArchiveRequest(BaseModel):
     url: str
+    preview_token: str = ""
 
 
 class ModelDeleteRequest(BaseModel):

@@ -226,4 +226,9 @@ async def cancel_missing_3mf(payload: Missing3mfCancelRequest, request: Request)
 
 @router.post("/archive")
 async def archive_model(payload: ArchiveRequest):
-    return crawler.archive(payload.url)
+    return crawler.manager.submit(payload.url, preview_token=payload.preview_token)
+
+
+@router.post("/archive/preview")
+async def preview_archive_model(payload: ArchiveRequest):
+    return crawler.preview_archive(payload.url)

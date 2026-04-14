@@ -44,6 +44,8 @@ def _normalize_task_item(item: Any, default_status: str) -> dict:
         "message": str(item.get("message") or item.get("detail") or ""),
         "updated_at": str(item.get("updated_at") or item.get("time") or item.get("created_at") or ""),
         "url": str(item.get("url") or ""),
+        "mode": str(item.get("mode") or ""),
+        "meta": item.get("meta") if isinstance(item.get("meta"), dict) else {},
     }
 
 

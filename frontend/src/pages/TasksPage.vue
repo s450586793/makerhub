@@ -52,10 +52,31 @@
     @click="closeArchiveSubmitDialog"
   >
     <div class="submit-dialog__panel" @click.stop>
-      <span class="submit-dialog__icon">✓</span>
-      <h2 id="archive-submit-dialog-title">任务已提交</h2>
+      <span :class="['submit-dialog__icon', archiveSubmitDialog.variant === 'confirm' && 'submit-dialog__icon--confirm']">
+        {{ archiveSubmitDialog.variant === "confirm" ? archiveSubmitDialog.discoveredCount : "✓" }}
+      </span>
+      <h2 id="archive-submit-dialog-title">{{ archiveSubmitDialog.title }}</h2>
       <p>{{ archiveSubmitDialog.message }}</p>
-      <button class="button button-primary" type="button" @click="closeArchiveSubmitDialog">知道了</button>
+      <p v-if="archiveSubmitDialog.summary" class="submit-dialog__summary">{{ archiveSubmitDialog.summary }}</p>
+      <div class="submit-dialog__actions">
+        <button
+          v-if="archiveSubmitDialog.variant === 'confirm'"
+          class="button button-secondary"
+          type="button"
+          :disabled="confirmingArchive"
+          @click="closeArchiveSubmitDialog"
+        >
+          取消
+        </button>
+        <button
+          class="button button-primary"
+          type="button"
+          :disabled="confirmingArchive"
+          @click="handleArchiveDialogPrimaryAction"
+        >
+          {{ archiveSubmitDialog.variant === "confirm" ? (confirmingArchive ? "提交中..." : "确认提交") : "知道了" }}
+        </button>
+      </div>
     </div>
   </div>
 
@@ -244,10 +265,17 @@ const archiveUrl = ref("");
 const archiveStatus = ref("");
 const archiveSubmitDialog = ref({
   visible: false,
+  variant: "success",
+  title: "",
   message: "",
+  summary: "",
+  previewToken: "",
+  url: "",
+  discoveredCount: 0,
 });
 const missingStatus = ref("");
 const submittingArchive = ref(false);
+const confirmingArchive = ref(false);
 const pendingMissingActionKey = ref("");
 let refreshTimer = null;
 
@@ -287,6 +315,32 @@ function closeArchiveSubmitDialog() {
   archiveSubmitDialog.value.visible = false;
 }
 
+function openArchiveSuccessDialog(message) {
+  archiveSubmitDialog.value = {
+    visible: true,
+    variant: "success",
+    title: "任务已提交",
+    message,
+    summary: "",
+    previewToken: "",
+    url: "",
+    discoveredCount: 0,
+  };
+}
+
+function openArchiveConfirmDialog(preview) {
+  archiveSubmitDialog.value = {
+    visible: true,
+    variant: "confirm",
+    title: "确认批量归档",
+    message: `该链接扫描到 ${preview.discovered_count || 0} 个模型，确认后会把这批模型加入归档队列。`,
+    summary: preview.message || "",
+    previewToken: preview.preview_token || "",
+    url: preview.url || archiveUrl.value,
+    discoveredCount: preview.discovered_count || 0,
+  };
+}
+
 function syncAutoRefresh() {
   const hasRunning = payload.value.summary.running_or_queued > 0;
   if (hasRunning && !refreshTimer) {
@@ -311,24 +365,70 @@ async function submitArchive() {
   }
 
   submittingArchive.value = true;
-  archiveStatus.value = "";
+  archiveStatus.value = "正在识别链接类型...";
   try {
-    const response = await apiRequest("/api/archive", {
+    const preview = await apiRequest("/api/archive/preview", {
       method: "POST",
       body: { url: archiveUrl.value },
     });
-    const message = response.message || "归档任务已加入队列。";
-    archiveStatus.value = message;
-    archiveSubmitDialog.value = {
-      visible: true,
-      message,
-    };
-    archiveUrl.value = "";
-    await load();
+    if (preview.accepted === false) {
+      archiveStatus.value = preview.message || "预扫描失败。";
+      return;
+    }
+    if (preview.requires_confirmation) {
+      archiveStatus.value = preview.message || "批量链接扫描完成。";
+      openArchiveConfirmDialog(preview);
+      return;
+    }
+    await submitArchiveConfirmed({
+      url: preview.url || archiveUrl.value,
+      previewToken: "",
+      clearInput: true,
+    });
   } catch (error) {
     archiveStatus.value = error instanceof Error ? error.message : "提交失败。";
   } finally {
     submittingArchive.value = false;
+  }
+}
+
+async function submitArchiveConfirmed({ url, previewToken = "", clearInput = false } = {}) {
+  const response = await apiRequest("/api/archive", {
+    method: "POST",
+    body: {
+      url: url || archiveUrl.value,
+      preview_token: previewToken,
+    },
+  });
+  if (response.accepted === false) {
+    throw new Error(response.message || "归档任务提交失败。");
+  }
+  const message = response.message || "归档任务已加入队列。";
+  archiveStatus.value = message;
+  openArchiveSuccessDialog(message);
+  if (clearInput) {
+    archiveUrl.value = "";
+  }
+  await load();
+}
+
+async function handleArchiveDialogPrimaryAction() {
+  if (archiveSubmitDialog.value.variant !== "confirm") {
+    closeArchiveSubmitDialog();
+    return;
+  }
+  confirmingArchive.value = true;
+  try {
+    await submitArchiveConfirmed({
+      url: archiveSubmitDialog.value.url,
+      previewToken: archiveSubmitDialog.value.previewToken,
+      clearInput: true,
+    });
+  } catch (error) {
+    archiveStatus.value = error instanceof Error ? error.message : "提交失败。";
+    closeArchiveSubmitDialog();
+  } finally {
+    confirmingArchive.value = false;
   }
 }
 

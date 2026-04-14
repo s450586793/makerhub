@@ -132,6 +132,12 @@
   box-shadow: 0 16px 34px rgba(31, 143, 103, 0.3);
 }
 
+.submit-dialog__icon--confirm {
+  font-size: 20px;
+  background: linear-gradient(135deg, #3f7cff 0%, #2454c7 100%);
+  box-shadow: 0 16px 34px rgba(36, 84, 199, 0.28);
+}
+
 .submit-dialog__panel h2 {
   margin: 0 0 10px;
 }
@@ -140,6 +146,18 @@
   margin: 0 0 22px;
   color: var(--muted);
   line-height: 1.7;
+}
+
+.submit-dialog__summary {
+  margin-top: -8px;
+  font-size: 14px;
+}
+
+.submit-dialog__actions {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 @media (max-width: 960px) {
