@@ -31,6 +31,7 @@ API_BROWSER_HEADERS = {
 }
 
 AUTHOR_BATCH_PAGE_LIMIT = 100
+COLLECTION_BATCH_PAGE_LIMIT = 20
 HTML_BATCH_PAGE_LIMIT = 20
 DISCOVERY_DEBUG_LOG = LOGS_DIR / "batch_discovery.log"
 
@@ -430,6 +431,16 @@ def _extract_author_handle(source_url: str) -> str:
     return match.group(1).strip("@").strip()
 
 
+def _is_collection_models_url(source_url: str) -> bool:
+    return "/collections/models" in (urlparse(source_url).path or "").lower()
+
+
+def _extract_collection_handle(source_url: str) -> str:
+    if not _is_collection_models_url(source_url):
+        return ""
+    return _extract_handle_from_url(source_url)
+
+
 def _extract_handle_from_url(value: str) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -658,6 +669,188 @@ def _discover_author_upload_api(
     }
 
 
+def _collection_designs_param_candidates(offset: int, limit: int) -> list[dict[str, int]]:
+    page_index = max((offset // max(limit, 1)) + 1, 1)
+    candidates = [
+        {"offset": offset, "limit": limit},
+        {"page": page_index, "limit": limit},
+        {"pageNum": page_index, "limit": limit},
+        {"pageNo": page_index, "limit": limit},
+        {"current": page_index, "size": limit},
+        {"offset": offset, "page": page_index, "limit": limit},
+    ]
+    deduped: list[dict[str, int]] = []
+    seen: set[tuple[tuple[str, int], ...]] = set()
+    for candidate in candidates:
+        key = tuple(sorted(candidate.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
+
+
+def _fetch_collection_hits_payload(
+    session: requests.Session,
+    source_url: str,
+    raw_cookie: str,
+    uid: str,
+    offset: int,
+    limit: int,
+    seen_links: set[str],
+) -> tuple[Optional[dict], Optional[dict], list[str]]:
+    first_payload: Optional[dict] = None
+    first_hits_payload: Optional[dict] = None
+    first_page_links: list[str] = []
+
+    for params in _collection_designs_param_candidates(offset, limit):
+        payload = _api_get_json(
+            session,
+            source_url=source_url,
+            raw_cookie=raw_cookie,
+            service_name="design-service",
+            path=f"/favorites/designs/{uid}",
+            params=params,
+        )
+        if payload is None:
+            continue
+
+        hits_payload = _extract_hits_payload(payload)
+        if hits_payload is None:
+            continue
+
+        page_links = _extract_model_urls_from_hits(hits_payload, source_url)
+        if first_payload is None:
+            first_payload = payload
+            first_hits_payload = hits_payload
+            first_page_links = page_links
+
+        if offset <= 0:
+            _append_discovery_debug(
+                "collection_page_selected",
+                offset=offset,
+                limit=limit,
+                params=params,
+                page_links=len(page_links),
+                new_links=len(page_links),
+            )
+            return payload, hits_payload, page_links
+
+        new_links = [link for link in page_links if link not in seen_links]
+        if new_links:
+            _append_discovery_debug(
+                "collection_page_selected",
+                offset=offset,
+                limit=limit,
+                params=params,
+                page_links=len(page_links),
+                new_links=len(new_links),
+            )
+            return payload, hits_payload, page_links
+
+        _append_discovery_debug(
+            "collection_page_duplicate",
+            offset=offset,
+            limit=limit,
+            params=params,
+            page_links=len(page_links),
+        )
+
+    return first_payload, first_hits_payload, first_page_links
+
+
+def _discover_collection_models_api(
+    session: requests.Session,
+    source_url: str,
+    raw_cookie: str,
+    max_pages: int,
+    limit: int = COLLECTION_BATCH_PAGE_LIMIT,
+) -> Optional[dict]:
+    handle = _extract_collection_handle(source_url)
+    if not handle:
+        return None
+
+    uid = _resolve_author_uid(session, source_url, raw_cookie, handle)
+    if not uid:
+        return None
+
+    _append_discovery_debug("collection_discovery_start", source_url=source_url, handle=handle, uid=uid)
+
+    discovered: list[str] = []
+    seen: set[str] = set()
+    pages_scanned = 0
+    offset = 0
+    expected_total: Optional[int] = None
+    page_budget = max(max_pages, 1)
+
+    while pages_scanned < page_budget:
+        payload, hits_payload, page_links = _fetch_collection_hits_payload(
+            session,
+            source_url=source_url,
+            raw_cookie=raw_cookie,
+            uid=uid,
+            offset=offset,
+            limit=limit,
+            seen_links=seen,
+        )
+        if payload is None:
+            return None if pages_scanned == 0 else {
+                "source_url": source_url,
+                "pages_scanned": pages_scanned,
+                "items": discovered,
+                "mode": "collection_models_api_partial",
+                "expected_total": expected_total,
+            }
+
+        if hits_payload is None:
+            return None if pages_scanned == 0 else {
+                "source_url": source_url,
+                "pages_scanned": pages_scanned,
+                "items": discovered,
+                "mode": "collection_models_api_partial",
+                "expected_total": expected_total,
+            }
+
+        hits = hits_payload.get("hits") or []
+        pages_scanned += 1
+        expected_total = _extract_total_count(hits_payload, len(hits))
+        page_size = max(len(hits), 1)
+        if expected_total:
+            estimated_pages = max((expected_total + page_size - 1) // page_size, 1) + 1
+            page_budget = min(max(page_budget, estimated_pages), 120)
+
+        new_link_count = 0
+        for link in page_links:
+            if link in seen:
+                continue
+            seen.add(link)
+            discovered.append(link)
+            new_link_count += 1
+
+        if not hits:
+            break
+
+        has_next = _extract_has_next(hits_payload)
+        if has_next is False:
+            break
+        if expected_total is not None and len(discovered) >= expected_total:
+            break
+        if new_link_count == 0 and offset > 0:
+            break
+        if len(hits) < limit and has_next is not True:
+            break
+
+        offset += page_size
+
+    return {
+        "source_url": source_url,
+        "pages_scanned": pages_scanned,
+        "items": discovered,
+        "mode": "collection_models_api",
+        "expected_total": expected_total,
+    }
+
+
 def _collect_model_urls_from_node(node: object, found: set[str], base_url: str) -> None:
     if isinstance(node, str):
         normalized = normalize_model_url(node, fallback_base=base_url)
@@ -815,6 +1008,16 @@ def discover_batch_model_urls(url: str, raw_cookie: str, max_pages: int = 12) ->
     session = requests.Session()
     session.headers.update({"User-Agent": "Mozilla/5.0 (Makerhub Batch Scanner)"})
     session.cookies.update(parse_cookies(raw_cookie))
+
+    if _is_collection_models_url(source_url):
+        api_result = _discover_collection_models_api(
+            session=session,
+            source_url=source_url,
+            raw_cookie=raw_cookie,
+            max_pages=max_pages,
+        )
+        if api_result is not None:
+            return api_result
 
     if AUTHOR_UPLOAD_RE.search(urlparse(source_url).path or ""):
         api_result = _discover_author_upload_api(
