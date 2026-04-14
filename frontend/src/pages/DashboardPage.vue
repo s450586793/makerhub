@@ -75,12 +75,13 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from "vue";
+import { onBeforeUnmount, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
 
 import { apiRequest } from "../lib/api";
 
 
+const DASHBOARD_POLL_MS = 5000;
 const loading = ref(true);
 const payload = ref({
   stats: [],
@@ -92,15 +93,61 @@ const payload = ref({
     missing_3mf: [],
   },
 });
+let pollTimer = null;
+let requestInFlight = false;
 
-async function load() {
-  loading.value = true;
+async function load({ initial = false } = {}) {
+  if (requestInFlight) {
+    return;
+  }
+  requestInFlight = true;
+  if (initial) {
+    loading.value = true;
+  }
   try {
     payload.value = await apiRequest("/api/dashboard");
+  } catch (error) {
+    console.error("首页数据刷新失败", error);
   } finally {
     loading.value = false;
+    requestInFlight = false;
   }
 }
 
-onMounted(load);
+function stopPolling() {
+  if (pollTimer !== null) {
+    window.clearInterval(pollTimer);
+    pollTimer = null;
+  }
+}
+
+function startPolling() {
+  stopPolling();
+  if (document.hidden) {
+    return;
+  }
+  pollTimer = window.setInterval(() => {
+    void load();
+  }, DASHBOARD_POLL_MS);
+}
+
+function handleVisibilityChange() {
+  if (document.hidden) {
+    stopPolling();
+    return;
+  }
+  void load();
+  startPolling();
+}
+
+onMounted(async () => {
+  await load({ initial: true });
+  startPolling();
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+});
+
+onBeforeUnmount(() => {
+  stopPolling();
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
+});
 </script>
