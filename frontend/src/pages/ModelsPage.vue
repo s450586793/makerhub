@@ -41,7 +41,7 @@
     <div class="section-card__header section-card__header--compact">
       <div>
         <span class="eyebrow">选择操作</span>
-        <h2>当前结果 {{ payload.count }} / 总模型 {{ payload.total }}</h2>
+        <h2>当前结果 {{ payload.items.length }} / 筛选命中 {{ payload.filtered_total }} / 总模型 {{ payload.total }}</h2>
       </div>
       <div class="bulk-actions">
         <button class="button button-secondary button-small" type="button" @click="toggleSelectionMode">
@@ -72,6 +72,12 @@
     />
   </section>
 
+  <div v-if="payload.items.length" ref="loadMoreTrigger" class="list-loader-anchor">
+    <span v-if="loadingMore">正在加载更多模型...</span>
+    <span v-else-if="payload.has_more">下拉到底自动加载下一页</span>
+    <span v-else>已经到底了</span>
+  </div>
+
   <section v-else class="surface empty-state">
     <h2>还没有匹配的模型</h2>
     <p>当前筛选条件下没有命中结果。你可以重置条件，或者先去任务页发起新的归档任务。</p>
@@ -79,7 +85,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import ModelCard from "../components/ModelCard.vue";
@@ -88,11 +94,16 @@ import { apiRequest } from "../lib/api";
 
 const route = useRoute();
 const router = useRouter();
+const PAGE_SIZE = 24;
 
 const payload = ref({
   items: [],
   count: 0,
+  filtered_total: 0,
   total: 0,
+  page: 1,
+  page_size: PAGE_SIZE,
+  has_more: false,
   tags: [],
   source_counts: { all: 0, cn: 0, global: 0, local: 0 },
 });
@@ -106,25 +117,86 @@ const status = ref("");
 const selectionMode = ref(false);
 const selectedSet = ref(new Set());
 const deleting = ref(false);
+const loadingMore = ref(false);
+const loadMoreTrigger = ref(null);
+
+let intersectionObserver = null;
+let requestToken = 0;
 
 const selectedCount = computed(() => selectedSet.value.size);
 
-async function load() {
+function buildQuery(page = 1) {
+  const query = new URLSearchParams();
+  query.set("page", String(page));
+  query.set("page_size", String(PAGE_SIZE));
+  if (filters.q) query.set("q", filters.q);
+  if (filters.source && filters.source !== "all") query.set("source", filters.source);
+  if (filters.tag) query.set("tag", filters.tag);
+  if (filters.sort && filters.sort !== "collectDate") query.set("sort", filters.sort);
+  return query;
+}
+
+async function load({ append = false } = {}) {
+  const currentToken = ++requestToken;
   filters.q = typeof route.query.q === "string" ? route.query.q : "";
   filters.source = typeof route.query.source === "string" ? route.query.source : "all";
   filters.tag = typeof route.query.tag === "string" ? route.query.tag : "";
   filters.sort = typeof route.query.sort === "string" ? route.query.sort : "collectDate";
 
-  const query = new URLSearchParams();
-  if (filters.q) query.set("q", filters.q);
-  if (filters.source && filters.source !== "all") query.set("source", filters.source);
-  if (filters.tag) query.set("tag", filters.tag);
-  if (filters.sort && filters.sort !== "collectDate") query.set("sort", filters.sort);
+  const nextPage = append ? payload.value.page + 1 : 1;
+  const response = await apiRequest(`/api/models?${buildQuery(nextPage).toString()}`);
+  if (currentToken !== requestToken) {
+    return;
+  }
 
-  payload.value = await apiRequest(`/api/models${query.toString() ? `?${query.toString()}` : ""}`);
+  if (append) {
+    payload.value = {
+      ...response,
+      items: [...payload.value.items, ...response.items],
+    };
+  } else {
+    payload.value = response;
+  }
 
   const available = new Set(payload.value.items.map((item) => item.model_dir));
   selectedSet.value = new Set([...selectedSet.value].filter((item) => available.has(item)));
+  await nextTick();
+  ensureObserver();
+}
+
+async function loadMore() {
+  if (loadingMore.value || !payload.value.has_more) {
+    return;
+  }
+  loadingMore.value = true;
+  try {
+    await load({ append: true });
+  } finally {
+    loadingMore.value = false;
+  }
+}
+
+function disconnectObserver() {
+  if (intersectionObserver) {
+    intersectionObserver.disconnect();
+    intersectionObserver = null;
+  }
+}
+
+function ensureObserver() {
+  disconnectObserver();
+  if (!loadMoreTrigger.value) {
+    return;
+  }
+  intersectionObserver = new IntersectionObserver((entries) => {
+    const [entry] = entries;
+    if (entry?.isIntersecting) {
+      void loadMore();
+    }
+  }, {
+    rootMargin: "320px 0px",
+  });
+  intersectionObserver.observe(loadMoreTrigger.value);
 }
 
 function applyFilters() {
@@ -186,7 +258,7 @@ async function deleteSelected() {
     status.value = response.message || "删除完成。";
     selectedSet.value = new Set();
     selectionMode.value = false;
-    await load();
+    await load({ append: false });
   } catch (error) {
     status.value = error instanceof Error ? error.message : "删除失败。";
   } finally {
@@ -194,6 +266,14 @@ async function deleteSelected() {
   }
 }
 
-watch(() => route.fullPath, load);
-onMounted(load);
+watch(() => route.fullPath, () => {
+  void load({ append: false });
+});
+onMounted(async () => {
+  await load({ append: false });
+});
+
+onBeforeUnmount(() => {
+  disconnectObserver();
+});
 </script>

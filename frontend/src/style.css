@@ -30,8 +30,25 @@
   flex-wrap: wrap;
 }
 
+.model-grid {
+  display: block;
+  column-count: 4;
+  column-gap: 18px;
+}
+
+.model-grid .model-card {
+  width: 100%;
+  margin: 0 0 18px;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
 .model-card--interactive {
   position: relative;
+}
+
+.model-card--interactive:hover {
+  transform: translateY(-4px);
 }
 
 .model-card__checkbox {
@@ -55,6 +72,15 @@
 .model-card__checkbox input {
   width: 16px;
   height: 16px;
+}
+
+.list-loader-anchor {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 64px;
+  color: var(--muted);
+  font-size: 14px;
 }
 
 .doc-action,
@@ -87,7 +113,17 @@
     justify-content: flex-start;
   }
 
+  .model-grid {
+    column-count: 2;
+  }
+
   .missing-actions {
     justify-content: flex-start;
+  }
+}
+
+@media (max-width: 640px) {
+  .model-grid {
+    column-count: 1;
   }
 }

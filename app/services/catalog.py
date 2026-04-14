@@ -749,6 +749,8 @@ def build_models_payload(
     source: str = "all",
     tag: str = "",
     sort_key: str = "collectDate",
+    page: int = 1,
+    page_size: int = 24,
 ) -> dict:
     all_models = load_archive_models()
     normalized_query = q.strip().lower()
@@ -772,6 +774,12 @@ def build_models_payload(
         items = [item for item in items if any(tag_value.lower() == normalized_tag for tag_value in item["tags"])]
 
     items = _sort_models(items, sort_key)
+    safe_page_size = max(1, min(int(page_size or 24), 120))
+    safe_page = max(int(page or 1), 1)
+    total_filtered = len(items)
+    start = (safe_page - 1) * safe_page_size
+    end = start + safe_page_size
+    paged_items = items[start:end]
 
     all_tags = sorted({tag_value for model in all_models for tag_value in model["tags"]})
     source_counts = {
@@ -782,9 +790,13 @@ def build_models_payload(
     }
 
     return {
-        "items": items,
-        "count": len(items),
+        "items": paged_items,
+        "count": len(paged_items),
+        "filtered_total": total_filtered,
         "total": len(all_models),
+        "page": safe_page,
+        "page_size": safe_page_size,
+        "has_more": end < total_filtered,
         "tags": all_tags,
         "source_counts": source_counts,
         "filters": {
@@ -874,14 +886,13 @@ def build_tasks_payload(missing_fallback: Optional[list[dict]] = None) -> dict:
 
 
 def build_dashboard_payload(config) -> dict:
-    models_payload = build_models_payload()
+    all_models = _sort_models(load_archive_models(), "collectDate")
     tasks_payload = build_tasks_payload(
         missing_fallback=[
             item.model_dump() if hasattr(item, "model_dump") else item
             for item in getattr(config, "missing_3mf", [])
         ]
     )
-    all_models = models_payload["items"]
     now = int(time.time())
     seven_days_ago = now - 7 * 24 * 60 * 60
 
