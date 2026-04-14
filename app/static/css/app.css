@@ -147,7 +147,7 @@ select {
 
 .site-sidebar__head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
@@ -173,12 +173,15 @@ select {
 .sidebar-visibility-toggle,
 .shell-visibility-toggle {
   min-height: 34px;
+  min-width: 52px;
   padding: 0 12px;
   border: 1px solid var(--border);
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
+  white-space: nowrap;
   color: var(--text);
   font-size: 13px;
   font-weight: 700;
@@ -211,6 +214,8 @@ html[data-theme="dark"] .shell-visibility-toggle {
   display: inline-flex;
   align-items: center;
   gap: 14px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .brand-mark strong {
@@ -776,6 +781,11 @@ html[data-theme="dark"] .shell-visibility-toggle {
 .filter-field {
   display: grid;
   gap: 0;
+}
+
+.filter-bar input,
+.filter-bar select {
+  min-height: 46px;
 }
 
 .filter-field--wide {

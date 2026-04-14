@@ -21,9 +21,9 @@
       </label>
       <label class="filter-field">
         <select v-model="filters.tag" aria-label="标签筛选" @change="applyFiltersIfChanged">
+          <option value="">全部</option>
           <option value="__favorite__">收藏</option>
           <option value="__printed__">已打印</option>
-          <option value="">全部标签</option>
           <option v-for="tag in payload.tags" :key="tag" :value="tag">{{ tag }}</option>
         </select>
       </label>
