@@ -28,7 +28,14 @@ API_BROWSER_HEADERS = {
     "X-BBL-Client-Type": "web",
     "X-BBL-Client-Version": "00.00.00.01",
     "X-BBL-App-Source": "makerworld",
+    "X-BBL-Client-Name": "MakerWorld",
 }
+
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/135.0.0.0 Safari/537.36"
+)
 
 AUTHOR_BATCH_PAGE_LIMIT = 100
 COLLECTION_BATCH_PAGE_LIMIT = 20
@@ -147,7 +154,7 @@ def _service_endpoint_candidates(source_url: str, service_name: str, path: str) 
 def _build_api_headers(session: requests.Session, raw_cookie: str, referer: str) -> dict[str, str]:
     headers = dict(API_BROWSER_HEADERS)
     headers["Referer"] = referer or "https://makerworld.com.cn/"
-    headers["User-Agent"] = session.headers.get("User-Agent", "Mozilla/5.0 (Makerhub Batch Scanner)")
+    headers["User-Agent"] = session.headers.get("User-Agent", BROWSER_USER_AGENT)
     if raw_cookie:
         headers["Cookie"] = raw_cookie
 
@@ -1272,7 +1279,7 @@ def _discover_by_html(session: requests.Session, source_url: str, raw_cookie: st
 def discover_batch_model_urls(url: str, raw_cookie: str, max_pages: int = 12) -> dict:
     source_url = normalize_source_url(url)
     session = requests.Session()
-    session.headers.update({"User-Agent": "Mozilla/5.0 (Makerhub Batch Scanner)"})
+    session.headers.update({"User-Agent": BROWSER_USER_AGENT})
     session.cookies.update(parse_cookies(raw_cookie))
 
     if _is_collection_models_url(source_url):
