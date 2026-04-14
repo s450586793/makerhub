@@ -7,6 +7,11 @@
 ## 更新记录
 
 ### 2026-04-14
+- 版本号升级到 `v0.2.17`
+- 批量发现新增 `batch_discovery.log` 调试日志，作者页扫描会记录每次 API 尝试的 URL、参数、状态码以及 `hits/total/hasNext`
+- 便于直接从 DSM 的 `/volume4/docker/docker/makerhub/logs/batch_discovery.log` 复盘“为什么还是 20 个”
+
+### 2026-04-14
 - 版本号升级到 `v0.2.16`
 - 修复作者页批量归档在 DSM 环境里长时间卡在“正在扫描模型链接”的问题，缩短批量发现的单请求超时并移除慢的跨域 fallback
 - 作者页批量发现改为先用更大的 `limit` 拉首屏，并在后续页自动尝试 `offset / page / pageNum / pageNo / current` 参数变体，修复只拿到首批 20 条的情况

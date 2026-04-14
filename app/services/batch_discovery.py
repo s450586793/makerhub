@@ -1,10 +1,13 @@
+import json
 import re
+import time
 from typing import Any, Optional
 from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
 
+from app.core.settings import LOGS_DIR
 from app.services.legacy_archiver import extract_next_data, fetch_html_with_curl, fetch_html_with_requests, parse_cookies
 
 
@@ -22,6 +25,7 @@ API_BROWSER_HEADERS = {
 }
 
 AUTHOR_BATCH_PAGE_LIMIT = 100
+DISCOVERY_DEBUG_LOG = LOGS_DIR / "batch_discovery.log"
 
 
 def normalize_source_url(url: str) -> str:
@@ -33,6 +37,15 @@ def normalize_source_url(url: str) -> str:
     if not raw.startswith("http://") and not raw.startswith("https://"):
         return f"https://{raw.lstrip('/')}"
     return raw
+
+
+def _append_discovery_debug(event: str, **payload: Any) -> None:
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        with DISCOVERY_DEBUG_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"event": event, **payload}, ensure_ascii=False) + "\n")
+    except Exception:
+        return
 
 
 def normalize_model_url(url: str, fallback_base: str = "https://makerworld.com.cn") -> str:
@@ -149,20 +162,71 @@ def _api_get_json(
 ) -> Optional[dict]:
     headers = _build_api_headers(session, raw_cookie, source_url)
     for api_url in _service_endpoint_candidates(source_url, service_name, path):
+        started = time.time()
         try:
             response = session.get(api_url, params=params or None, headers=headers, timeout=(5, 12))
-        except Exception:
+        except Exception as exc:
+            _append_discovery_debug(
+                "api_error",
+                api_url=api_url,
+                service=service_name,
+                path=path,
+                params=params or {},
+                error=str(exc),
+                elapsed_ms=round((time.time() - started) * 1000, 1),
+            )
             continue
         if response.status_code >= 400:
+            _append_discovery_debug(
+                "api_response",
+                api_url=api_url,
+                service=service_name,
+                path=path,
+                params=params or {},
+                status_code=response.status_code,
+                elapsed_ms=round((time.time() - started) * 1000, 1),
+            )
             continue
         text = response.text or ""
         if _looks_like_html_response(text):
+            _append_discovery_debug(
+                "api_html_response",
+                api_url=api_url,
+                service=service_name,
+                path=path,
+                params=params or {},
+                status_code=response.status_code,
+                elapsed_ms=round((time.time() - started) * 1000, 1),
+            )
             continue
         try:
             payload = response.json()
         except Exception:
+            _append_discovery_debug(
+                "api_non_json",
+                api_url=api_url,
+                service=service_name,
+                path=path,
+                params=params or {},
+                status_code=response.status_code,
+                elapsed_ms=round((time.time() - started) * 1000, 1),
+            )
             continue
         if isinstance(payload, dict):
+            hits_payload = _extract_hits_payload(payload)
+            _append_discovery_debug(
+                "api_ok",
+                api_url=api_url,
+                service=service_name,
+                path=path,
+                params=params or {},
+                status_code=response.status_code,
+                elapsed_ms=round((time.time() - started) * 1000, 1),
+                uid=_extract_uid(payload),
+                hits=len((hits_payload or {}).get("hits") or []),
+                total=(hits_payload or {}).get("total"),
+                has_next=(hits_payload or {}).get("hasNext"),
+            )
             return payload
     return None
 
@@ -319,10 +383,35 @@ def _fetch_author_hits_payload(
             first_page_links = page_links
 
         if offset <= 0:
+            _append_discovery_debug(
+                "author_page_selected",
+                offset=offset,
+                limit=limit,
+                params=params,
+                page_links=len(page_links),
+                new_links=len(page_links),
+            )
             return payload, hits_payload, page_links
 
-        if any(link not in seen_links for link in page_links):
+        new_links = [link for link in page_links if link not in seen_links]
+        if new_links:
+            _append_discovery_debug(
+                "author_page_selected",
+                offset=offset,
+                limit=limit,
+                params=params,
+                page_links=len(page_links),
+                new_links=len(new_links),
+            )
             return payload, hits_payload, page_links
+
+        _append_discovery_debug(
+            "author_page_duplicate",
+            offset=offset,
+            limit=limit,
+            params=params,
+            page_links=len(page_links),
+        )
 
     return first_payload, first_hits_payload, first_page_links
 
@@ -344,6 +433,7 @@ def _resolve_author_uid(session: requests.Session, source_url: str, raw_cookie: 
     )
     uid = _extract_uid(profile_payload)
     if uid:
+        _append_discovery_debug("author_uid_resolved", handle=handle, uid=uid, mode="profile")
         return uid
 
     handle_variants = []
@@ -364,7 +454,9 @@ def _resolve_author_uid(session: requests.Session, source_url: str, raw_cookie: 
             )
             uid = _extract_uid(payload)
             if uid:
+                _append_discovery_debug("author_uid_resolved", handle=handle, uid=uid, mode=param_name)
                 return uid
+    _append_discovery_debug("author_uid_missing", handle=handle)
     return ""
 
 
@@ -382,6 +474,8 @@ def _discover_author_upload_api(
     uid = _resolve_author_uid(session, source_url, raw_cookie, handle)
     if not uid:
         return None
+
+    _append_discovery_debug("author_discovery_start", source_url=source_url, handle=handle, uid=uid)
 
     discovered: list[str] = []
     seen: set[str] = set()
