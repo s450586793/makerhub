@@ -742,6 +742,8 @@ def load_archive_models(include_detail: bool = False) -> list[dict]:
 
 
 def _sort_models(items: list[dict], sort_key: str) -> list[dict]:
+    if sort_key == "publishDate":
+        return sorted(items, key=lambda item: (item["publish_ts"], item["title"]), reverse=True)
     if sort_key == "downloads":
         return sorted(items, key=lambda item: item["stats"]["downloads"], reverse=True)
     if sort_key == "likes":
@@ -774,6 +776,7 @@ def build_models_payload(
     page_size: int = 8,
 ) -> dict:
     all_models = load_archive_models(include_detail=False)
+    all_models = _apply_model_flags(all_models)
     normalized_query = q.strip().lower()
     normalized_tag = tag.strip().lower()
     normalized_source = source.strip().lower() or "all"
@@ -792,7 +795,12 @@ def build_models_payload(
         items = [item for item in items if item["source"] == normalized_source]
 
     if normalized_tag:
-        items = [item for item in items if any(tag_value.lower() == normalized_tag for tag_value in item["tags"])]
+        if normalized_tag == "__favorite__":
+            items = [item for item in items if item.get("local_flags", {}).get("favorite")]
+        elif normalized_tag == "__printed__":
+            items = [item for item in items if item.get("local_flags", {}).get("printed")]
+        else:
+            items = [item for item in items if any(tag_value.lower() == normalized_tag for tag_value in item["tags"])]
 
     items = _sort_models(items, sort_key)
     safe_page_size = max(1, min(int(page_size or 8), 120))
@@ -801,7 +809,6 @@ def build_models_payload(
     start = (safe_page - 1) * safe_page_size
     end = start + safe_page_size
     paged_items = items[start:end]
-    paged_items = _apply_model_flags(paged_items)
 
     all_tags = sorted({tag_value for model in all_models for tag_value in model["tags"]})
     source_counts = {

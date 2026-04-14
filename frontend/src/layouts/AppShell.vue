@@ -4,13 +4,24 @@
 
     <aside :class="['site-sidebar', sidebarVisible && 'is-open', isCompact && 'is-compact']">
       <div class="site-sidebar__inner">
-        <RouterLink class="brand-mark" to="/" @click="closeSidebar">
-          <span class="brand-mark__badge">MH</span>
-          <span>
-            <strong>makerhub</strong>
-            <small>真实归档数据工作台</small>
-          </span>
-        </RouterLink>
+        <div class="site-sidebar__head">
+          <RouterLink class="brand-mark" to="/" @click="closeSidebar">
+            <span class="brand-mark__badge">MH</span>
+            <span>
+              <strong>makerhub</strong>
+              <small>真实归档数据工作台</small>
+            </span>
+          </RouterLink>
+          <button
+            class="sidebar-visibility-toggle"
+            type="button"
+            title="隐藏导航栏"
+            aria-label="隐藏导航栏"
+            @click="toggleSidebar"
+          >
+            隐藏
+          </button>
+        </div>
 
         <nav class="sidebar-nav">
           <RouterLink :class="navClass('/')" to="/" @click="closeSidebar">首页</RouterLink>
@@ -34,17 +45,14 @@
 
     <main class="page-shell">
       <button
-        v-if="!useInlineNavToggle"
-        class="shell-nav-toggle"
+        v-if="!sidebarVisible"
+        class="shell-visibility-toggle"
         type="button"
-        :title="sidebarVisible ? '隐藏导航' : '显示导航'"
-        :aria-label="sidebarVisible ? '隐藏导航' : '显示导航'"
-        :aria-expanded="String(sidebarVisible)"
+        title="显示导航栏"
+        aria-label="显示导航栏"
         @click="toggleSidebar"
       >
-        <span />
-        <span />
-        <span />
+        显示
       </button>
       <RouterView />
     </main>
@@ -63,7 +71,6 @@ const route = useRoute();
 const COMPACT_MEDIA_QUERY = "(max-width: 980px)";
 
 const user = computed(() => currentUser());
-const useInlineNavToggle = computed(() => route.name === "models");
 const isCompact = ref(false);
 const desktopSidebarHidden = ref(false);
 const mobileSidebarOpen = ref(false);
@@ -117,10 +124,6 @@ function onWindowKeydown(event) {
   }
 }
 
-function onExternalToggleSidebar() {
-  toggleSidebar();
-}
-
 watch(() => route.fullPath, () => {
   closeSidebar();
 });
@@ -150,7 +153,6 @@ onMounted(() => {
   }
 
   window.addEventListener("keydown", onWindowKeydown);
-  window.addEventListener("makerhub:toggle-sidebar", onExternalToggleSidebar);
 });
 
 onBeforeUnmount(() => {
@@ -163,6 +165,5 @@ onBeforeUnmount(() => {
     }
   }
   window.removeEventListener("keydown", onWindowKeydown);
-  window.removeEventListener("makerhub:toggle-sidebar", onExternalToggleSidebar);
 });
 </script>

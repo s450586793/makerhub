@@ -1,30 +1,18 @@
 <template>
   <section class="surface surface--filters">
     <form class="filter-bar" @submit.prevent="applyFilters">
-      <button
-        class="filter-nav-toggle"
-        type="button"
-        title="显示或隐藏导航"
-        aria-label="显示或隐藏导航"
-        @click="toggleSidebar"
-      >
-        <span />
-        <span />
-        <span />
-      </button>
       <label class="filter-field filter-field--wide">
-        <span>搜索</span>
         <input
           v-model.trim="filters.q"
           type="text"
+          aria-label="搜索模型"
           placeholder="标题、作者、标签"
           @blur="applyFiltersIfChanged"
           @keydown.enter.prevent="applyFilters"
         >
       </label>
       <label class="filter-field">
-        <span>来源</span>
-        <select v-model="filters.source" @change="applyFiltersIfChanged">
+        <select v-model="filters.source" aria-label="来源筛选" @change="applyFiltersIfChanged">
           <option value="all">全部 ({{ payload.source_counts.all || 0 }})</option>
           <option value="cn">国内 ({{ payload.source_counts.cn || 0 }})</option>
           <option value="global">国际 ({{ payload.source_counts.global || 0 }})</option>
@@ -32,16 +20,17 @@
         </select>
       </label>
       <label class="filter-field">
-        <span>标签</span>
-        <select v-model="filters.tag" @change="applyFiltersIfChanged">
+        <select v-model="filters.tag" aria-label="标签筛选" @change="applyFiltersIfChanged">
+          <option value="__favorite__">收藏</option>
+          <option value="__printed__">已打印</option>
           <option value="">全部标签</option>
           <option v-for="tag in payload.tags" :key="tag" :value="tag">{{ tag }}</option>
         </select>
       </label>
       <label class="filter-field">
-        <span>排序</span>
-        <select v-model="filters.sort" @change="applyFiltersIfChanged">
+        <select v-model="filters.sort" aria-label="排序方式" @change="applyFiltersIfChanged">
           <option value="collectDate">采集时间倒序</option>
+          <option value="publishDate">发布时间倒序</option>
           <option value="downloads">下载量</option>
           <option value="likes">点赞量</option>
           <option value="prints">打印量</option>
@@ -51,12 +40,6 @@
         <button class="button button-secondary" type="button" @click="resetFilters">重置</button>
       </div>
     </form>
-    <div class="model-toolbar-inline">
-      <div class="model-toolbar-inline__summary">
-        <strong>当前结果 {{ payload.items.length }}</strong>
-        <span>筛选命中 {{ payload.filtered_total }} / 总模型 {{ payload.total }}</span>
-      </div>
-    </div>
     <span v-if="status" class="form-status model-toolbar-inline__status">{{ status }}</span>
   </section>
 
@@ -264,12 +247,6 @@ function applyFiltersIfChanged() {
 
 function resetFilters() {
   router.replace("/models");
-}
-
-function toggleSidebar() {
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new Event("makerhub:toggle-sidebar"));
-  }
 }
 
 function findModel(modelDir) {

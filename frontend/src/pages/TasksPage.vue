@@ -2,8 +2,7 @@
   <section class="page-intro" data-tasks-page>
     <div>
       <span class="eyebrow">任务</span>
-      <h1>归档队列、缺失 3MF 与本地整理任务</h1>
-      <p>首页只显示摘要，完整任务状态统一收纳在这里。</p>
+      <h1>任务总览</h1>
     </div>
     <div class="intro-stats">
       <div class="intro-stat">
