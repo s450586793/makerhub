@@ -21,6 +21,8 @@ API_BROWSER_HEADERS = {
     "X-BBL-App-Source": "makerworld",
 }
 
+AUTHOR_BATCH_PAGE_LIMIT = 100
+
 
 def normalize_source_url(url: str) -> str:
     raw = str(url or "").strip()
@@ -97,16 +99,14 @@ def _api_base_candidates(source_url: str) -> list[str]:
     if "makerworld.com" in netloc and "makerworld.com.cn" not in netloc:
         preferred_site = "https://makerworld.com"
         preferred_api = "https://api.bambulab.com"
-        fallback_site = "https://makerworld.com.cn"
-        fallback_api = "https://api.bambulab.cn"
+        fallback_candidates = []
     else:
         preferred_site = "https://makerworld.com.cn"
         preferred_api = "https://api.bambulab.cn"
-        fallback_site = "https://makerworld.com"
-        fallback_api = "https://api.bambulab.com"
+        fallback_candidates = []
 
     bases: list[str] = []
-    for candidate in (_origin_from_url(source_url), preferred_site, preferred_api, fallback_site, fallback_api):
+    for candidate in (_origin_from_url(source_url), preferred_site, preferred_api, *fallback_candidates):
         if candidate and candidate not in bases:
             bases.append(candidate.rstrip("/"))
     return bases
@@ -150,7 +150,7 @@ def _api_get_json(
     headers = _build_api_headers(session, raw_cookie, source_url)
     for api_url in _service_endpoint_candidates(source_url, service_name, path):
         try:
-            response = session.get(api_url, params=params or None, headers=headers, timeout=30)
+            response = session.get(api_url, params=params or None, headers=headers, timeout=(5, 12))
         except Exception:
             continue
         if response.status_code >= 400:
@@ -262,6 +262,71 @@ def _extract_model_urls_from_hits(payload: dict, base_url: str) -> list[str]:
     return found
 
 
+def _author_published_param_candidates(offset: int, limit: int) -> list[dict[str, int]]:
+    page_index = max((offset // max(limit, 1)) + 1, 1)
+    candidates = [
+        {"offset": offset, "limit": limit},
+        {"page": page_index, "limit": limit},
+        {"pageNum": page_index, "limit": limit},
+        {"pageNo": page_index, "limit": limit},
+        {"current": page_index, "size": limit},
+        {"offset": offset, "page": page_index, "limit": limit},
+    ]
+    deduped: list[dict[str, int]] = []
+    seen: set[tuple[tuple[str, int], ...]] = set()
+    for candidate in candidates:
+        key = tuple(sorted(candidate.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
+
+
+def _fetch_author_hits_payload(
+    session: requests.Session,
+    source_url: str,
+    raw_cookie: str,
+    uid: str,
+    offset: int,
+    limit: int,
+    seen_links: set[str],
+) -> tuple[Optional[dict], Optional[dict], list[str]]:
+    first_payload: Optional[dict] = None
+    first_hits_payload: Optional[dict] = None
+    first_page_links: list[str] = []
+
+    for params in _author_published_param_candidates(offset, limit):
+        payload = _api_get_json(
+            session,
+            source_url=source_url,
+            raw_cookie=raw_cookie,
+            service_name="design-service",
+            path=f"/published/{uid}/design",
+            params=params,
+        )
+        if payload is None:
+            continue
+
+        hits_payload = _extract_hits_payload(payload)
+        if hits_payload is None:
+            continue
+
+        page_links = _extract_model_urls_from_hits(hits_payload, source_url)
+        if first_payload is None:
+            first_payload = payload
+            first_hits_payload = hits_payload
+            first_page_links = page_links
+
+        if offset <= 0:
+            return payload, hits_payload, page_links
+
+        if any(link not in seen_links for link in page_links):
+            return payload, hits_payload, page_links
+
+    return first_payload, first_hits_payload, first_page_links
+
+
 def _extract_author_handle(source_url: str) -> str:
     match = AUTHOR_UPLOAD_RE.search(urlparse(source_url).path or "")
     if not match:
@@ -308,7 +373,7 @@ def _discover_author_upload_api(
     source_url: str,
     raw_cookie: str,
     max_pages: int,
-    limit: int = 20,
+    limit: int = AUTHOR_BATCH_PAGE_LIMIT,
 ) -> Optional[dict]:
     handle = _extract_author_handle(source_url)
     if not handle:
@@ -325,13 +390,14 @@ def _discover_author_upload_api(
     expected_total: Optional[int] = None
 
     for _ in range(max_pages):
-        payload = _api_get_json(
+        payload, hits_payload, page_links = _fetch_author_hits_payload(
             session,
             source_url=source_url,
             raw_cookie=raw_cookie,
-            service_name="design-service",
-            path=f"/published/{uid}/design",
-            params={"offset": offset, "limit": limit},
+            uid=uid,
+            offset=offset,
+            limit=limit,
+            seen_links=seen,
         )
         if payload is None:
             return None if pages_scanned == 0 else {
@@ -342,7 +408,6 @@ def _discover_author_upload_api(
                 "expected_total": expected_total,
             }
 
-        hits_payload = _extract_hits_payload(payload)
         if hits_payload is None:
             return None if pages_scanned == 0 else {
                 "source_url": source_url,
@@ -355,13 +420,14 @@ def _discover_author_upload_api(
         hits = hits_payload.get("hits") or []
         pages_scanned += 1
         expected_total = _extract_total_count(hits_payload, len(hits))
-        page_links = _extract_model_urls_from_hits(hits_payload, source_url)
 
+        new_link_count = 0
         for link in page_links:
             if link in seen:
                 continue
             seen.add(link)
             discovered.append(link)
+            new_link_count += 1
 
         if not hits:
             break
@@ -370,6 +436,8 @@ def _discover_author_upload_api(
         if has_next is False:
             break
         if expected_total is not None and len(discovered) >= expected_total:
+            break
+        if new_link_count == 0 and offset > 0:
             break
         if len(hits) < limit:
             break

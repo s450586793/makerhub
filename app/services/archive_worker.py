@@ -346,6 +346,7 @@ class ArchiveTaskManager:
         if not cookie:
             raise RuntimeError("未找到可用 Cookie，请先到设置页配置对应站点 Cookie。")
 
+        print(f"[makerhub] batch_discovery start mode={mode} url={url}", flush=True)
         self.task_store.update_active_task(
             task_id,
             progress=5,
@@ -394,6 +395,13 @@ class ArchiveTaskManager:
         if isinstance(expected_total, int) and expected_total > total_items:
             total_hint = f"（站点总数 {expected_total}）"
 
+        print(
+            "[makerhub] batch_discovery done "
+            f"mode={mode} scan_mode={discovered.get('mode') or ''} pages={discovered.get('pages_scanned') or 0} "
+            f"expected_total={expected_total} discovered={total_items} queued={queued_count} "
+            f"skipped_pending={skipped_pending} skipped_archived={skipped_archived}",
+            flush=True,
+        )
         self.task_store.update_active_task(
             task_id,
             progress=100,
