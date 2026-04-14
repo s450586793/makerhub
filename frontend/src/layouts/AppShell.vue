@@ -6,7 +6,6 @@
       <div class="site-sidebar__inner">
         <div class="site-sidebar__head">
           <RouterLink class="brand-mark" to="/" @click="closeSidebar">
-            <span class="brand-mark__badge">MH</span>
             <span>
               <strong>makerhub</strong>
               <small>真实归档数据工作台</small>

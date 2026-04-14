@@ -213,7 +213,7 @@ html[data-theme="dark"] .shell-visibility-toggle {
 .brand-mark {
   display: inline-flex;
   align-items: center;
-  gap: 14px;
+  gap: 0;
   min-width: 0;
   flex: 1 1 auto;
 }
@@ -229,18 +229,6 @@ html[data-theme="dark"] .shell-visibility-toggle {
   margin-top: 2px;
   color: var(--muted);
   font-size: 12px;
-}
-
-.brand-mark__badge {
-  width: 44px;
-  height: 44px;
-  border-radius: 14px;
-  display: grid;
-  place-items: center;
-  color: #fff;
-  font-weight: 800;
-  background: linear-gradient(135deg, var(--brand) 0%, #123b2b 100%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
 }
 
 .sidebar-nav {
@@ -784,8 +772,16 @@ html[data-theme="dark"] .shell-visibility-toggle {
 }
 
 .filter-bar input,
-.filter-bar select {
+.filter-bar select,
+.filter-actions .button {
+  height: 46px;
   min-height: 46px;
+}
+
+.filter-bar input,
+.filter-bar select {
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 .filter-field--wide {
@@ -2509,6 +2505,7 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
 
   .filter-bar input,
   .filter-bar select {
+    height: 40px;
     min-height: 40px;
     padding: 10px 12px;
     font-size: 13px;
