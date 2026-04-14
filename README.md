@@ -7,6 +7,11 @@
 ## 更新记录
 
 ### 2026-04-14
+- 版本号升级到 `v0.2.18`
+- 修复作者页批量归档在 `user/uid` 接口失效时无法继续翻页的问题
+- 新增“从作者页已发现模型反推作者 UID”的兜底逻辑：会抽样读取模型详情里的 `designCreator.uid`，再回切到 `/published/{uid}/design` 补全作者全部模型
+
+### 2026-04-14
 - 版本号升级到 `v0.2.17`
 - 批量发现新增 `batch_discovery.log` 调试日志，作者页扫描会记录每次 API 尝试的 URL、参数、状态码以及 `hits/total/hasNext`
 - 便于直接从 DSM 的 `/volume4/docker/docker/makerhub/logs/batch_discovery.log` 复盘“为什么还是 20 个”

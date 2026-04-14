@@ -8,7 +8,13 @@ import requests
 from bs4 import BeautifulSoup
 
 from app.core.settings import LOGS_DIR
-from app.services.legacy_archiver import extract_next_data, fetch_html_with_curl, fetch_html_with_requests, parse_cookies
+from app.services.legacy_archiver import (
+    extract_next_data,
+    fetch_design_from_api,
+    fetch_html_with_curl,
+    fetch_html_with_requests,
+    parse_cookies,
+)
 
 
 MODEL_PATH_RE = re.compile(r"/(?:[a-z]{2}/)?models/(\d+)(?:[^\"'\\s<>]*)?", re.I)
@@ -423,6 +429,105 @@ def _extract_author_handle(source_url: str) -> str:
     return match.group(1).strip("@").strip()
 
 
+def _extract_handle_from_url(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("@"):
+        raw = f"/zh/{raw}"
+    parsed = urlparse(raw)
+    path = parsed.path or raw
+    match = re.search(r"(?:^|/)@([A-Za-z0-9_.-]+)(?:[/?#]|$)", path)
+    return match.group(1).strip("@").strip() if match else ""
+
+
+def _extract_author_handles_from_design(design: Any) -> set[str]:
+    handles: set[str] = set()
+    nodes: list[Any] = [design]
+    if isinstance(design, dict):
+        nodes.extend(
+            [
+                design.get("designCreator"),
+                design.get("user"),
+                design.get("author"),
+                design.get("creator"),
+            ]
+        )
+
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        for key in ("username", "userName", "slug", "handle", "creatorUsername"):
+            candidate = str(node.get(key) or "").strip().lstrip("@")
+            if candidate:
+                handles.add(candidate.lower())
+        for key in ("url", "homepage", "profileUrl", "authorUrl"):
+            candidate = _extract_handle_from_url(str(node.get(key) or ""))
+            if candidate:
+                handles.add(candidate.lower())
+    return handles
+
+
+def _resolve_author_uid_from_sample_models(
+    session: requests.Session,
+    source_url: str,
+    raw_cookie: str,
+    handle: str,
+) -> str:
+    html_text = _fetch_listing_html(session, source_url, raw_cookie)
+    page_links = _extract_page_links(html_text, source_url)
+    if not page_links:
+        _append_discovery_debug("author_uid_sample_no_links", handle=handle)
+        return ""
+
+    expected_handle = str(handle or "").strip().lstrip("@").lower()
+    votes: dict[str, int] = {}
+
+    for model_url in page_links[:8]:
+        design = fetch_design_from_api(
+            session,
+            raw_cookie,
+            model_url,
+            api_host_hint=_origin_from_url(source_url),
+        )
+        if not isinstance(design, dict):
+            _append_discovery_debug(
+                "author_uid_sample_design_missing",
+                handle=handle,
+                model_url=model_url,
+            )
+            continue
+
+        uid = _extract_uid(design)
+        handles = sorted(_extract_author_handles_from_design(design))
+        _append_discovery_debug(
+            "author_uid_sample_model",
+            handle=handle,
+            model_url=model_url,
+            uid=uid,
+            author_handles=handles,
+        )
+        if not uid:
+            continue
+        votes[uid] = votes.get(uid, 0) + 1
+        if expected_handle and expected_handle in handles:
+            _append_discovery_debug("author_uid_resolved", handle=handle, uid=uid, mode="sample_model")
+            return uid
+
+    if votes:
+        uid = max(votes.items(), key=lambda item: item[1])[0]
+        _append_discovery_debug(
+            "author_uid_resolved",
+            handle=handle,
+            uid=uid,
+            mode="sample_model_vote",
+            votes=votes,
+        )
+        return uid
+
+    return ""
+
+
 def _resolve_author_uid(session: requests.Session, source_url: str, raw_cookie: str, handle: str) -> str:
     profile_payload = _api_get_json(
         session,
@@ -456,6 +561,11 @@ def _resolve_author_uid(session: requests.Session, source_url: str, raw_cookie: 
             if uid:
                 _append_discovery_debug("author_uid_resolved", handle=handle, uid=uid, mode=param_name)
                 return uid
+
+    uid = _resolve_author_uid_from_sample_models(session, source_url, raw_cookie, handle)
+    if uid:
+        return uid
+
     _append_discovery_debug("author_uid_missing", handle=handle)
     return ""
 
