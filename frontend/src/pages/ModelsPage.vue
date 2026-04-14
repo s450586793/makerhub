@@ -35,15 +35,12 @@
         <button class="button button-secondary" type="button" @click="resetFilters">重置</button>
       </div>
     </form>
-  </section>
-
-  <section class="surface section-card section-card--compact">
-    <div class="section-card__header section-card__header--compact">
-      <div>
-        <span class="eyebrow">选择操作</span>
-        <h2>当前结果 {{ payload.items.length }} / 筛选命中 {{ payload.filtered_total }} / 总模型 {{ payload.total }}</h2>
+    <div class="model-toolbar-inline">
+      <div class="model-toolbar-inline__summary">
+        <strong>当前结果 {{ payload.items.length }}</strong>
+        <span>筛选命中 {{ payload.filtered_total }} / 总模型 {{ payload.total }}</span>
       </div>
-      <div class="bulk-actions">
+      <div class="bulk-actions model-toolbar-inline__actions">
         <button class="button button-secondary button-small" type="button" @click="toggleSelectionMode">
           {{ selectionMode ? "退出选择" : "选择" }}
         </button>
@@ -58,7 +55,7 @@
         </button>
       </div>
     </div>
-    <span class="form-status">{{ status }}</span>
+    <span v-if="status" class="form-status model-toolbar-inline__status">{{ status }}</span>
   </section>
 
   <section v-if="payload.items.length" class="model-grid">

@@ -38,22 +38,22 @@
 
       <div class="gallery-card__stats">
         <span class="gallery-stat">
-          <strong>点赞</strong>
-          <span>{{ formatStat(model.stats?.likes) }}</span>
+          <span class="gallery-stat__icon" aria-hidden="true" v-html="icons.like"></span>
+          <span class="gallery-stat__value">{{ formatStat(model.stats?.likes) }}</span>
         </span>
         <span class="gallery-stat">
-          <strong>收藏</strong>
-          <span>{{ formatStat(model.stats?.favorites) }}</span>
+          <span class="gallery-stat__icon" aria-hidden="true" v-html="icons.favorite"></span>
+          <span class="gallery-stat__value">{{ formatStat(model.stats?.favorites) }}</span>
         </span>
         <span class="gallery-stat">
-          <strong>下载</strong>
-          <span>{{ formatStat(model.stats?.downloads) }}</span>
+          <span class="gallery-stat__icon" aria-hidden="true" v-html="icons.download"></span>
+          <span class="gallery-stat__value">{{ formatStat(model.stats?.downloads) }}</span>
         </span>
       </div>
 
       <div class="gallery-card__dates">
-        <span>采集 {{ model.collect_date || "未知" }}</span>
-        <span>发布 {{ model.publish_date || "未知" }}</span>
+        <span><strong>采集</strong><em>{{ model.collect_date || "未知" }}</em></span>
+        <span><strong>发布</strong><em>{{ model.publish_date || "未知" }}</em></span>
       </div>
 
       <div class="gallery-card__actions">
@@ -61,20 +61,24 @@
           <button
             type="button"
             :class="['gallery-flag', model.local_flags?.favorite && 'is-active']"
+            :title="model.local_flags?.favorite ? '取消本地收藏' : '本地收藏'"
+            aria-label="本地收藏"
             @click.stop="$emit('favorite', model.model_dir)"
           >
-            本地收藏
+            <span aria-hidden="true" v-html="model.local_flags?.favorite ? icons.favoriteFilled : icons.favoriteOutline"></span>
           </button>
           <button
             type="button"
             :class="['gallery-flag', model.local_flags?.printed && 'is-active']"
+            :title="model.local_flags?.printed ? '取消已打印' : '标记已打印'"
+            aria-label="已打印"
             @click.stop="$emit('printed', model.model_dir)"
           >
-            已打印
+            <span aria-hidden="true" v-html="model.local_flags?.printed ? icons.printedFilled : icons.printedOutline"></span>
           </button>
         </div>
-        <button class="gallery-delete" type="button" @click.stop="$emit('delete', model.model_dir)">
-          删除
+        <button class="gallery-delete" type="button" title="删除模型" aria-label="删除模型" @click.stop="$emit('delete', model.model_dir)">
+          <span aria-hidden="true" v-html="icons.delete"></span>
         </button>
       </div>
     </div>
@@ -106,6 +110,17 @@ const props = defineProps({
 defineEmits(["toggle", "favorite", "printed", "delete"]);
 
 const router = useRouter();
+
+const icons = {
+  like: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7.4 8.2V16H4.7A1.7 1.7 0 0 1 3 14.3V9.9c0-.94.76-1.7 1.7-1.7h2.7Z"/><path d="M7.4 8.2 10 3.9c.42-.68 1.5-.38 1.5.42v2.48h2.66c1.15 0 1.99 1.1 1.68 2.2l-1.46 5.2A1.7 1.7 0 0 1 12.74 16H7.4"/></svg>',
+  favorite: '<svg viewBox="0 0 20 20" fill="currentColor"><path d="m10 2.4 2.27 4.6 5.08.74-3.67 3.58.86 5.06L10 13.98l-4.54 2.4.86-5.06-3.67-3.58L7.73 7 10 2.4Z"/></svg>',
+  download: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.5v8.2"/><path d="m6.8 8.8 3.2 3.2 3.2-3.2"/><path d="M4 15.3h12"/></svg>',
+  favoriteOutline: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m10 16.5-1.08-.98C5.1 12.05 2.6 9.78 2.6 6.97c0-2.03 1.6-3.57 3.62-3.57 1.15 0 2.25.54 2.94 1.4.69-.86 1.79-1.4 2.94-1.4 2.02 0 3.62 1.54 3.62 3.57 0 2.81-2.5 5.08-6.32 8.56L10 16.5Z"/></svg>',
+  favoriteFilled: '<svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 16.5 8.92 15.5C5.1 12.05 2.6 9.78 2.6 6.97 2.6 4.94 4.2 3.4 6.22 3.4c1.15 0 2.25.54 2.94 1.4.69-.86 1.79-1.4 2.94-1.4 2.02 0 3.62 1.54 3.62 3.57 0 2.81-2.5 5.08-6.32 8.56L10 16.5Z"/></svg>',
+  printedOutline: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="6.7"/><path d="m7.2 10.1 1.9 1.9 3.7-3.8"/></svg>',
+  printedFilled: '<svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 2.2a7.8 7.8 0 1 0 0 15.6 7.8 7.8 0 0 0 0-15.6Zm-1.1 10.96-3-2.98 1.16-1.17 1.83 1.83 4.06-4.08 1.17 1.17-5.22 5.23Z"/></svg>',
+  delete: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 6.1h10.2"/><path d="M8.1 6.1V4.7c0-.77.63-1.4 1.4-1.4h1c.77 0 1.4.63 1.4 1.4v1.4"/><path d="m6.2 6.1.72 9a1.4 1.4 0 0 0 1.4 1.29h3.32a1.4 1.4 0 0 0 1.4-1.29l.72-9"/><path d="M8.6 8.9v4.3"/><path d="M11.4 8.9v4.3"/></svg>',
+};
 
 const coverSrc = ref(props.model.cover_url || "");
 const authorAvatarSrc = ref(props.model.author?.avatar_url || "");
