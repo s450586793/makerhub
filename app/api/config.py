@@ -47,10 +47,38 @@ def _public_config_payload(config) -> dict:
     }
 
 
+def _session_payload(identity: dict, config=None) -> dict:
+    if not identity:
+        return {
+            "authenticated": False,
+            "kind": "",
+            "username": "",
+            "display_name": "",
+        }
+
+    return {
+        "authenticated": True,
+        "kind": identity.get("kind") or "",
+        "username": config.user.username if config else "",
+        "display_name": config.user.display_name if config else "",
+    }
+
+
 def _require_session_auth(request: Request) -> None:
     identity = getattr(request.state, "auth_identity", None) or {}
     if identity.get("kind") != "session":
         raise HTTPException(status_code=403, detail="此操作需要登录会话。")
+
+
+@router.get("/bootstrap")
+async def get_bootstrap(request: Request):
+    identity = getattr(request.state, "auth_identity", None) or {}
+    config = store.load() if identity else None
+    return {
+        "app_version": APP_VERSION,
+        "session": _session_payload(identity, config=config),
+        "theme_preference": config.user.theme_preference if config else "",
+    }
 
 
 @router.get("/config")

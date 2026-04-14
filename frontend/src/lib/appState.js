@@ -31,15 +31,39 @@ function applyConfigTheme(config) {
 }
 
 
-export async function refreshSession() {
-  const payload = await apiRequest("/api/auth/me", { redirectOn401: false });
+function applyBootstrap(payload) {
+  const session = payload?.session || {};
   appState.session = {
-    authenticated: Boolean(payload?.authenticated),
-    kind: String(payload?.kind || ""),
-    username: String(payload?.username || ""),
-    display_name: String(payload?.display_name || ""),
+    authenticated: Boolean(session?.authenticated),
+    kind: String(session?.kind || ""),
+    username: String(session?.username || ""),
+    display_name: String(session?.display_name || ""),
   };
+  appState.appVersion = String(payload?.app_version || appState.appVersion);
+  if (payload?.theme_preference) {
+    const nextPreference = normalizeThemePreference(payload.theme_preference);
+    appState.themePreference = nextPreference;
+    applyTheme(nextPreference);
+  } else {
+    applyTheme(appState.themePreference);
+  }
   return appState.session;
+}
+
+
+export async function refreshBootstrap() {
+  const payload = await apiRequest("/api/bootstrap", { redirectOn401: false });
+  const session = applyBootstrap(payload);
+  if (!session.authenticated) {
+    appState.config = null;
+  }
+  return payload;
+}
+
+
+export async function refreshSession() {
+  const payload = await refreshBootstrap();
+  return payload.session;
 }
 
 
@@ -47,6 +71,10 @@ export async function refreshConfig() {
   const payload = await apiRequest("/api/config");
   appState.config = payload;
   appState.appVersion = String(payload?.app_version || appState.appVersion);
+  if (appState.session.authenticated) {
+    appState.session.username = String(payload?.user?.username || appState.session.username || "");
+    appState.session.display_name = String(payload?.user?.display_name || appState.session.display_name || "");
+  }
   applyConfigTheme(payload);
   return payload;
 }
@@ -63,13 +91,7 @@ export async function bootstrapApp(options = {}) {
 
   bootstrapPromise = (async () => {
     appState.bootstrapping = true;
-    const session = await refreshSession();
-    if (session.authenticated) {
-      await refreshConfig();
-    } else {
-      appState.config = null;
-      applyTheme(appState.themePreference);
-    }
+    await refreshBootstrap();
     appState.ready = true;
     appState.bootstrapping = false;
     return appState;
@@ -94,13 +116,18 @@ export function currentUser() {
 
 export async function saveThemePreference(preference) {
   const normalized = normalizeThemePreference(preference);
-  await apiRequest("/api/config/theme", {
+  const payload = await apiRequest("/api/config/theme", {
     method: "POST",
     body: { theme_preference: normalized },
   });
+  appState.config = payload;
+  appState.appVersion = String(payload?.app_version || appState.appVersion);
+  if (appState.session.authenticated) {
+    appState.session.username = String(payload?.user?.username || appState.session.username || "");
+    appState.session.display_name = String(payload?.user?.display_name || appState.session.display_name || "");
+  }
   appState.themePreference = normalized;
   applyTheme(normalized);
-  await refreshConfig();
 }
 
 
