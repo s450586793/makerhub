@@ -152,8 +152,9 @@ async def delete_models(payload: ModelDeleteRequest, request: Request):
             task_state_store.remove_missing_3mf_for_model(model_id)
 
     result["success"] = result.get("removed_count", 0) > 0
+    sidecar_count = int(result.get("sidecar_removed_count") or 0)
     result["message"] = (
-        f"已删除 {result.get('removed_count', 0)} 个模型。"
+        f"已删除 {result.get('removed_count', 0)} 个模型，清理 {sidecar_count} 个遗留资源。"
         if result.get("removed_count", 0)
         else "没有删除任何模型。"
     )

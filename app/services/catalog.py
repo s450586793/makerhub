@@ -821,6 +821,21 @@ def get_model_detail(model_dir: str) -> Optional[dict]:
     return _normalize_model(meta_path)
 
 
+def _delete_root_sidecar_files(archive_root: Path, model_dir: str) -> list[str]:
+    removed: list[str] = []
+    prefixes = (f"{model_dir}_",)
+    exact_names = {f"{model_dir}_meta.json"}
+    for candidate in archive_root.iterdir():
+        if not candidate.is_file():
+            continue
+        name = candidate.name
+        if name not in exact_names and not name.startswith(prefixes):
+            continue
+        candidate.unlink()
+        removed.append(name)
+    return removed
+
+
 def delete_archived_models(model_dirs: list[str]) -> dict:
     removed: list[dict] = []
     skipped: list[dict] = []
@@ -839,16 +854,29 @@ def delete_archived_models(model_dirs: list[str]) -> dict:
             continue
 
         if not target.exists() or not target.is_dir():
+            sidecar_files = _delete_root_sidecar_files(archive_root, clean_value)
+            if sidecar_files:
+                removed.append(
+                    {
+                        "model_dir": clean_value,
+                        "id": str(extract_model_id(clean_value) or ""),
+                        "title": clean_value,
+                        "sidecar_removed_count": len(sidecar_files),
+                    }
+                )
+                continue
             skipped.append({"model_dir": clean_value, "reason": "目录不存在"})
             continue
 
         detail = get_model_detail(clean_value) or {}
         shutil.rmtree(target)
+        sidecar_files = _delete_root_sidecar_files(archive_root, clean_value)
         removed.append(
             {
                 "model_dir": clean_value,
                 "id": str(detail.get("id") or ""),
                 "title": str(detail.get("title") or clean_value),
+                "sidecar_removed_count": len(sidecar_files),
             }
         )
 
@@ -857,6 +885,7 @@ def delete_archived_models(model_dirs: list[str]) -> dict:
         "skipped": skipped,
         "removed_count": len(removed),
         "skipped_count": len(skipped),
+        "sidecar_removed_count": sum(item.get("sidecar_removed_count", 0) for item in removed),
     }
 
 

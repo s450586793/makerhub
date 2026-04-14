@@ -1615,6 +1615,27 @@ def strip_prefix(name: str, base_name: str) -> str:
     return name
 
 
+def move_or_replace(src: Path, dst: Path, label: str):
+    if not src.exists():
+        return False
+    try:
+        if src.resolve() == dst.resolve():
+            return True
+    except Exception:
+        pass
+    ensure_dir(dst.parent)
+    if dst.exists():
+        if dst.is_dir():
+            log("跳过移动，目标是目录:", src, "->", dst)
+            return False
+        log(f"覆盖 {label}:", src, "->", dst)
+        dst.unlink()
+    else:
+        log(f"移动 {label}:", src, "->", dst)
+    shutil.move(str(src), str(dst))
+    return True
+
+
 def choose_archive_base_name(design_id: int, title: str, existing_root: Optional[Path] = None) -> tuple[str, str]:
     desired = f"MW_{design_id}_{sanitize_filename(title or 'model')}"
     if existing_root is None:
@@ -2407,7 +2428,10 @@ def rebuild_once(meta_path: Path, progress_callback=None):
         meta = json.load(f)
 
     base_name = meta.get("baseName") or meta_path.stem.replace("_meta", "")
-    work_dir = meta_path.parent / base_name
+    if meta_path.name == "meta.json" and meta_path.parent.name == base_name:
+        work_dir = meta_path.parent
+    else:
+        work_dir = meta_path.parent / base_name
     ensure_dir(work_dir)
 
     emit_progress(progress_callback, 84, f"正在整理归档目录：{base_name}")
@@ -2436,11 +2460,9 @@ def rebuild_once(meta_path: Path, progress_callback=None):
     screenshot_file = None
     for p in glob_with_prefix_or_plain(meta_path.parent, base_name, ["_screenshot.*", "screenshot.*"]):
         dst = work_dir / f"screenshot{p.suffix.lower()}"
-        if not dst.exists():
-            log("移动 screenshot:", p, "->", dst)
-            shutil.move(str(p), str(dst))
-        screenshot_file = dst
-        break
+        if move_or_replace(p, dst, "screenshot"):
+            screenshot_file = dst
+            break
     if not screenshot_file:
         existing = next(iter(work_dir.glob("screenshot.*")), None)
         if existing:
@@ -2449,46 +2471,34 @@ def rebuild_once(meta_path: Path, progress_callback=None):
     # 4. 封面图 & 作者头像 & design & summary images
     for p in glob_with_prefix_or_plain(meta_path.parent, base_name, ["_cover.*", "cover.*"]):
         dst = images_dir / f"cover{p.suffix.lower()}"
-        if not dst.exists():
-            log("移动 cover:", p, "->", dst)
-            shutil.move(str(p), str(dst))
+        move_or_replace(p, dst, "cover")
         break
 
     for p in glob_with_prefix_or_plain(meta_path.parent, base_name, ["_author_avatar.*", "author_avatar.*"]):
         dst = images_dir / f"author_avatar{p.suffix.lower()}"
-        if not dst.exists():
-            log("移动 author_avatar:", p, "->", dst)
-            shutil.move(str(p), str(dst))
+        move_or_replace(p, dst, "author_avatar")
         break
 
     for p in glob_with_prefix_or_plain(meta_path.parent, base_name, ["_design_*", "design_*"]):
         new_name = strip_prefix(p.name, base_name)
         dst = images_dir / new_name
-        if not dst.exists():
-            log("移动 design 图片:", p, "->", dst)
-            shutil.move(str(p), str(dst))
+        move_or_replace(p, dst, "design 图片")
 
     for p in glob_with_prefix_or_plain(meta_path.parent, base_name, ["_summary_img_*", "summary_img_*"]):
         new_name = strip_prefix(p.name, base_name)
         dst = images_dir / new_name
-        if not dst.exists():
-            log("移动 summary 图片:", p, "->", dst)
-            shutil.move(str(p), str(dst))
+        move_or_replace(p, dst, "summary 图片")
 
     for p in glob_with_prefix_or_plain(meta_path.parent, base_name, ["_comment_*", "comment_*"]):
         new_name = strip_prefix(p.name, base_name)
         dst = images_dir / new_name
-        if not dst.exists():
-            log("移动 comment 资源:", p, "->", dst)
-            shutil.move(str(p), str(dst))
+        move_or_replace(p, dst, "comment 资源")
 
     # 5. 实例配图/plate 缩略图
     for p in glob_with_prefix_or_plain(meta_path.parent, base_name, ["_inst*_*"]):
-        new_name = strip_prefix(p.name, base_name)
+        new_name = p.name
         dst = images_dir / new_name
-        if not dst.exists():
-            log("移动实例图片:", p, "->", dst)
-            shutil.move(str(p), str(dst))
+        move_or_replace(p, dst, "实例图片")
 
     # 6. 下载 3MF 到 instances 目录
     instances = meta.get("instances", []) or []
@@ -2679,7 +2689,9 @@ def archive_model(
         raise RuntimeError("未获取到模型 ID")
     title = design.get("title") or "model"
     base_name, action = choose_archive_base_name(design_id, title, existing_root=existing_root)
-    images_dir = out_root
+    work_dir = out_root / base_name
+    images_dir = work_dir / "images"
+    ensure_dir(images_dir)
 
     author = extract_author(design, html_text)
     if author.get("avatarUrl"):
@@ -2732,7 +2744,7 @@ def archive_model(
     origin = f"{parsed_origin.scheme}://{parsed_origin.netloc}" if parsed_origin.scheme and parsed_origin.netloc else "https://makerworld.com.cn"
 
     inst_list = []
-    planned_instances_dir = out_root / base_name / "instances"
+    planned_instances_dir = work_dir / "instances"
     extracted_instances = extract_instances(design)
     total_instances = max(len(extracted_instances), 1)
     for idx, inst in enumerate(extracted_instances, start=1):
@@ -2798,14 +2810,13 @@ def archive_model(
         attachments=attachments,
         comments_bundle=comments_bundle,
     )
-    meta_path = out_root / f"{base_name}_meta.json"
+    meta_path = work_dir / "meta.json"
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     emit_progress(progress_callback, 78, "元数据已生成，准备落盘")
     log(logger, "已保存 meta:", meta_path)
 
     # 归档整理
     log_section("归档整理阶段")
-    work_dir = meta_path.parent / base_name
     work_dir.mkdir(parents=True, exist_ok=True)
     try:
         rebuild_once(meta_path, progress_callback=progress_callback)
@@ -2822,7 +2833,7 @@ def archive_model(
                 f.write(f"{datetime.now().isoformat()}\t{base_name}\t{m['id']}\t{m.get('title','')}\tcookie失效\n")
         log(logger, "缺失 3MF 已记录:", missing_log)
 
-    work_dir = meta_path.parent / (meta.get("baseName") or meta_path.stem.replace("_meta", ""))
+    work_dir = meta_path.parent
     emit_progress(progress_callback, 100, "归档完成")
     return {
         "base_name": base_name,
