@@ -1309,16 +1309,22 @@ select:focus {
   overflow: hidden;
   border-radius: var(--radius-lg);
   border: 1px solid var(--border);
+  background: var(--surface-strong);
 }
 
 .table-like__row {
   display: grid;
   grid-template-columns: 160px 1fr 140px;
-  background: rgba(255, 255, 255, 0.74);
+  color: var(--text);
+  background: var(--surface);
 }
 
 .table-like__row--missing {
   grid-template-columns: 140px minmax(0, 1fr) 120px 140px;
+}
+
+.table-like__row:not(.table-like__row--head):nth-child(even) {
+  background: var(--surface-soft);
 }
 
 .table-like__row span {
@@ -1326,6 +1332,10 @@ select:focus {
   border-bottom: 1px solid var(--border);
   font-size: 14px;
   min-width: 0;
+}
+
+.table-like__row:last-child span {
+  border-bottom: 0;
 }
 
 .table-like__row--missing span {
