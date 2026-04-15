@@ -132,7 +132,6 @@ def _failure_identity(item: dict) -> tuple[str, str]:
 
 
 def _prune_recent_failures(
-    store: TaskStateStore,
     archive_queue: dict,
     archive_models: list[dict],
     missing_items: list[dict],
@@ -179,13 +178,12 @@ def _prune_recent_failures(
     if not changed:
         return archive_queue
 
-    return store.save_archive_queue(
-        {
-            "active": archive_queue.get("active") or [],
-            "queued": archive_queue.get("queued") or [],
-            "recent_failures": kept,
-        }
-    )
+    payload = dict(archive_queue)
+    payload["recent_failures"] = kept
+    payload["running_count"] = len(payload.get("active") or [])
+    payload["queued_count"] = len(payload.get("queued") or [])
+    payload["failed_count"] = len(kept)
+    return payload
 
 
 def _asset_url_from_item(model_root: Path, item: Any) -> Optional[str]:
@@ -928,7 +926,6 @@ def build_tasks_payload(missing_fallback: Optional[list[dict]] = None) -> dict:
     missing_3mf = store.load_missing_3mf(fallback_items=missing_fallback)
     archive_models = load_archive_models(include_detail=False)
     archive_queue = _prune_recent_failures(
-        store,
         archive_queue,
         archive_models,
         missing_3mf.get("items") or [],

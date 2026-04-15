@@ -1,4 +1,5 @@
 import json
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -10,6 +11,7 @@ ARCHIVE_QUEUE_PATH = STATE_DIR / "archive_queue.json"
 MISSING_3MF_PATH = STATE_DIR / "missing_3mf.json"
 ORGANIZE_TASKS_PATH = STATE_DIR / "organize_tasks.json"
 MODEL_FLAGS_PATH = STATE_DIR / "model_flags.json"
+_STATE_LOCK = threading.RLock()
 
 
 def _normalize_task_item(item: Any, default_status: str) -> dict:
@@ -225,24 +227,7 @@ class TaskStateStore:
             encoding="utf-8",
         )
 
-    def save_archive_queue(self, payload: dict) -> dict:
-        normalized = _normalize_archive_queue(payload)
-        self._write_json(
-            ARCHIVE_QUEUE_PATH,
-            {
-                "active": normalized["active"],
-                "queued": normalized["queued"],
-                "recent_failures": normalized["recent_failures"],
-            },
-        )
-        return self.load_archive_queue()
-
-    def save_missing_3mf(self, payload: dict) -> dict:
-        normalized = _normalize_missing_3mf(payload)
-        self._write_json(MISSING_3MF_PATH, normalized)
-        return self.load_missing_3mf()
-
-    def load_archive_queue(self) -> dict:
+    def _load_archive_queue_unlocked(self) -> dict:
         payload = self._read_json(
             ARCHIVE_QUEUE_PATH,
             {"active": [], "queued": [], "recent_failures": []},
@@ -253,29 +238,81 @@ class TaskStateStore:
         queue["failed_count"] = len(queue["recent_failures"])
         return queue
 
-    def load_missing_3mf(self, fallback_items: Optional[list[dict]] = None) -> dict:
+    def _save_archive_queue_unlocked(self, payload: dict) -> dict:
+        normalized = _normalize_archive_queue(payload)
+        self._write_json(
+            ARCHIVE_QUEUE_PATH,
+            {
+                "active": normalized["active"],
+                "queued": normalized["queued"],
+                "recent_failures": normalized["recent_failures"],
+            },
+        )
+        return self._load_archive_queue_unlocked()
+
+    def _update_archive_queue(self, updater) -> dict:
+        with _STATE_LOCK:
+            payload = self._load_archive_queue_unlocked()
+            updated = updater(payload)
+            if updated is None:
+                updated = payload
+            return self._save_archive_queue_unlocked(updated)
+
+    def _load_missing_3mf_unlocked(self, fallback_items: Optional[list[dict]] = None) -> dict:
         payload = self._read_json(MISSING_3MF_PATH, {"items": []})
         missing = _normalize_missing_3mf(payload, fallback_items=fallback_items)
         missing["count"] = len(missing["items"])
         return missing
 
+    def _save_missing_3mf_unlocked(self, payload: dict) -> dict:
+        normalized = _normalize_missing_3mf(payload)
+        self._write_json(MISSING_3MF_PATH, normalized)
+        return self._load_missing_3mf_unlocked()
+
+    def _update_missing_3mf(self, updater) -> dict:
+        with _STATE_LOCK:
+            payload = self._load_missing_3mf_unlocked()
+            updated = updater(payload)
+            if updated is None:
+                updated = payload
+            return self._save_missing_3mf_unlocked(updated)
+
+    def save_archive_queue(self, payload: dict) -> dict:
+        with _STATE_LOCK:
+            return self._save_archive_queue_unlocked(payload)
+
+    def save_missing_3mf(self, payload: dict) -> dict:
+        with _STATE_LOCK:
+            return self._save_missing_3mf_unlocked(payload)
+
+    def load_archive_queue(self) -> dict:
+        with _STATE_LOCK:
+            return self._load_archive_queue_unlocked()
+
+    def load_missing_3mf(self, fallback_items: Optional[list[dict]] = None) -> dict:
+        with _STATE_LOCK:
+            return self._load_missing_3mf_unlocked(fallback_items=fallback_items)
+
     def load_organize_tasks(self) -> dict:
-        payload = self._read_json(ORGANIZE_TASKS_PATH, {"items": []})
-        tasks = _normalize_organize_tasks(payload)
-        tasks["count"] = len(tasks["items"])
-        return tasks
+        with _STATE_LOCK:
+            payload = self._read_json(ORGANIZE_TASKS_PATH, {"items": []})
+            tasks = _normalize_organize_tasks(payload)
+            tasks["count"] = len(tasks["items"])
+            return tasks
 
     def save_model_flags(self, payload: dict) -> dict:
-        normalized = _normalize_model_flags(payload)
-        self._write_json(MODEL_FLAGS_PATH, normalized)
-        return self.load_model_flags()
+        with _STATE_LOCK:
+            normalized = _normalize_model_flags(payload)
+            self._write_json(MODEL_FLAGS_PATH, normalized)
+            return self.load_model_flags()
 
     def load_model_flags(self) -> dict:
-        payload = self._read_json(MODEL_FLAGS_PATH, {"favorites": [], "printed": []})
-        flags = _normalize_model_flags(payload)
-        flags["favorite_count"] = len(flags["favorites"])
-        flags["printed_count"] = len(flags["printed"])
-        return flags
+        with _STATE_LOCK:
+            payload = self._read_json(MODEL_FLAGS_PATH, {"favorites": [], "printed": []})
+            flags = _normalize_model_flags(payload)
+            flags["favorite_count"] = len(flags["favorites"])
+            flags["printed_count"] = len(flags["printed"])
+            return flags
 
     def update_model_flag(self, model_dir: str, flag_name: str, active: bool) -> dict:
         clean_model_dir = str(model_dir or "").strip().strip("/")
@@ -285,19 +322,20 @@ class TaskStateStore:
         if flag_name not in {"favorites", "printed"}:
             return self.load_model_flags()
 
-        payload = self._read_json(MODEL_FLAGS_PATH, {"favorites": [], "printed": []})
-        flags = _normalize_model_flags(payload)
-        items = list(flags.get(flag_name) or [])
-        item_set = set(items)
+        with _STATE_LOCK:
+            payload = self._read_json(MODEL_FLAGS_PATH, {"favorites": [], "printed": []})
+            flags = _normalize_model_flags(payload)
+            items = list(flags.get(flag_name) or [])
+            item_set = set(items)
 
-        if active:
-            if clean_model_dir not in item_set:
-                items.append(clean_model_dir)
-        else:
-            items = [item for item in items if item != clean_model_dir]
+            if active:
+                if clean_model_dir not in item_set:
+                    items.append(clean_model_dir)
+            else:
+                items = [item for item in items if item != clean_model_dir]
 
-        flags[flag_name] = items
-        return self.save_model_flags(flags)
+            flags[flag_name] = items
+            return self.save_model_flags(flags)
 
     def remove_model_flags(self, model_dirs: list[str]) -> dict:
         clean_model_dirs = {
@@ -308,148 +346,147 @@ class TaskStateStore:
         if not clean_model_dirs:
             return self.load_model_flags()
 
-        payload = self._read_json(MODEL_FLAGS_PATH, {"favorites": [], "printed": []})
-        flags = _normalize_model_flags(payload)
-        flags["favorites"] = [item for item in flags.get("favorites") or [] if item not in clean_model_dirs]
-        flags["printed"] = [item for item in flags.get("printed") or [] if item not in clean_model_dirs]
-        return self.save_model_flags(flags)
+        with _STATE_LOCK:
+            payload = self._read_json(MODEL_FLAGS_PATH, {"favorites": [], "printed": []})
+            flags = _normalize_model_flags(payload)
+            flags["favorites"] = [item for item in flags.get("favorites") or [] if item not in clean_model_dirs]
+            flags["printed"] = [item for item in flags.get("printed") or [] if item not in clean_model_dirs]
+            return self.save_model_flags(flags)
 
     def enqueue_archive_task(self, item: dict) -> dict:
-        payload = self._read_json(
-            ARCHIVE_QUEUE_PATH,
-            {"active": [], "queued": [], "recent_failures": []},
-        )
-        queued = payload.get("queued") or []
-        queued.append(_normalize_task_item(item, "queued"))
-        payload["queued"] = queued
-        return self.save_archive_queue(payload)
+        def _mutate(payload: dict) -> dict:
+            queued = list(payload.get("queued") or [])
+            queued.append(_normalize_task_item(item, "queued"))
+            payload["queued"] = queued
+            return payload
+
+        return self._update_archive_queue(_mutate)
 
     def start_archive_task(self, task_id: str) -> dict:
-        payload = self._read_json(
-            ARCHIVE_QUEUE_PATH,
-            {"active": [], "queued": [], "recent_failures": []},
-        )
-        queued = payload.get("queued") or []
-        active = payload.get("active") or []
-        task = None
-        remaining = []
-        for item in queued:
-            normalized = _normalize_task_item(item, "queued")
-            if normalized["id"] == task_id and task is None:
-                normalized["status"] = "running"
-                normalized["updated_at"] = datetime.now().isoformat()
-                task = normalized
-                continue
-            remaining.append(normalized)
-
-        if task is None:
-            for item in active:
-                normalized = _normalize_task_item(item, "running")
-                if normalized["id"] == task_id:
+        def _mutate(payload: dict) -> dict:
+            queued = list(payload.get("queued") or [])
+            active = list(payload.get("active") or [])
+            task = None
+            remaining = []
+            for item in queued:
+                normalized = _normalize_task_item(item, "queued")
+                if normalized["id"] == task_id and task is None:
+                    normalized["status"] = "running"
+                    normalized["updated_at"] = datetime.now().isoformat()
                     task = normalized
-                else:
-                    remaining.append(normalized)
-            active = remaining
-            remaining = queued
+                    continue
+                remaining.append(normalized)
 
-        if task is not None:
-            active.append(task)
+            if task is None:
+                current_active = []
+                for item in active:
+                    normalized = _normalize_task_item(item, "running")
+                    if normalized["id"] == task_id:
+                        task = normalized
+                    else:
+                        current_active.append(normalized)
+                active = current_active
+            else:
+                active = [_normalize_task_item(item, "running") for item in active]
 
-        payload["queued"] = remaining
-        payload["active"] = active
-        return self.save_archive_queue(payload)
+            if task is not None:
+                active.append(task)
+
+            payload["queued"] = remaining
+            payload["active"] = active
+            return payload
+
+        return self._update_archive_queue(_mutate)
 
     def update_active_task(self, task_id: str, **changes: Any) -> dict:
-        payload = self._read_json(
-            ARCHIVE_QUEUE_PATH,
-            {"active": [], "queued": [], "recent_failures": []},
-        )
-        active = []
-        for item in payload.get("active") or []:
-            normalized = _normalize_task_item(item, "running")
-            if normalized["id"] == task_id:
-                normalized.update({key: value for key, value in changes.items() if value is not None})
-                normalized["updated_at"] = datetime.now().isoformat()
-            active.append(normalized)
-        payload["active"] = active
-        return self.save_archive_queue(payload)
+        def _mutate(payload: dict) -> dict:
+            active = []
+            for item in payload.get("active") or []:
+                normalized = _normalize_task_item(item, "running")
+                if normalized["id"] == task_id:
+                    normalized.update({key: value for key, value in changes.items() if value is not None})
+                    normalized["updated_at"] = datetime.now().isoformat()
+                active.append(normalized)
+            payload["active"] = active
+            return payload
+
+        return self._update_archive_queue(_mutate)
 
     def complete_archive_task(self, task_id: str) -> dict:
-        payload = self._read_json(
-            ARCHIVE_QUEUE_PATH,
-            {"active": [], "queued": [], "recent_failures": []},
-        )
-        payload["active"] = [
-            _normalize_task_item(item, "running")
-            for item in (payload.get("active") or [])
-            if _normalize_task_item(item, "running")["id"] != task_id
-        ]
-        return self.save_archive_queue(payload)
+        def _mutate(payload: dict) -> dict:
+            payload["active"] = [
+                _normalize_task_item(item, "running")
+                for item in (payload.get("active") or [])
+                if _normalize_task_item(item, "running")["id"] != task_id
+            ]
+            return payload
+
+        return self._update_archive_queue(_mutate)
 
     def fail_archive_task(self, task_id: str, message: str) -> dict:
-        payload = self._read_json(
-            ARCHIVE_QUEUE_PATH,
-            {"active": [], "queued": [], "recent_failures": []},
-        )
+        def _mutate(payload: dict) -> dict:
+            failed_item = None
+            active = []
+            for item in payload.get("active") or []:
+                normalized = _normalize_task_item(item, "running")
+                if normalized["id"] == task_id:
+                    normalized["status"] = "failed"
+                    normalized["message"] = message
+                    normalized["updated_at"] = datetime.now().isoformat()
+                    failed_item = normalized
+                else:
+                    active.append(normalized)
 
-        failed_item = None
-        active = []
-        for item in payload.get("active") or []:
-            normalized = _normalize_task_item(item, "running")
-            if normalized["id"] == task_id:
-                normalized["status"] = "failed"
-                normalized["message"] = message
-                normalized["updated_at"] = datetime.now().isoformat()
-                failed_item = normalized
-            else:
-                active.append(normalized)
+            queued = []
+            for item in payload.get("queued") or []:
+                normalized = _normalize_task_item(item, "queued")
+                if normalized["id"] == task_id and failed_item is None:
+                    normalized["status"] = "failed"
+                    normalized["message"] = message
+                    normalized["updated_at"] = datetime.now().isoformat()
+                    failed_item = normalized
+                else:
+                    queued.append(normalized)
 
-        queued = []
-        for item in payload.get("queued") or []:
-            normalized = _normalize_task_item(item, "queued")
-            if normalized["id"] == task_id and failed_item is None:
-                normalized["status"] = "failed"
-                normalized["message"] = message
-                normalized["updated_at"] = datetime.now().isoformat()
-                failed_item = normalized
-            else:
-                queued.append(normalized)
+            recent_failures = [_normalize_task_item(item, "failed") for item in (payload.get("recent_failures") or [])]
+            if failed_item is not None:
+                recent_failures.insert(0, failed_item)
+                recent_failures = recent_failures[:20]
 
-        recent_failures = [_normalize_task_item(item, "failed") for item in (payload.get("recent_failures") or [])]
-        if failed_item is not None:
-            recent_failures.insert(0, failed_item)
-            recent_failures = recent_failures[:20]
+            payload["active"] = active
+            payload["queued"] = queued
+            payload["recent_failures"] = recent_failures
+            return payload
 
-        payload["active"] = active
-        payload["queued"] = queued
-        payload["recent_failures"] = recent_failures
-        return self.save_archive_queue(payload)
+        return self._update_archive_queue(_mutate)
 
     def requeue_active_tasks(self, message: str = "服务重启后自动恢复") -> dict:
-        payload = self._read_json(
-            ARCHIVE_QUEUE_PATH,
-            {"active": [], "queued": [], "recent_failures": []},
-        )
-        active_items = [_normalize_task_item(item, "running") for item in (payload.get("active") or [])]
-        queued_items = [_normalize_task_item(item, "queued") for item in (payload.get("queued") or [])]
-        if not active_items:
-            queue = self.save_archive_queue(payload)
-            queue["recovered_count"] = 0
-            return queue
+        recovered_count = 0
 
-        recovered = []
-        now = datetime.now().isoformat()
-        for item in active_items:
-            item["status"] = "queued"
-            item["progress"] = 0
-            item["message"] = message
-            item["updated_at"] = now
-            recovered.append(item)
+        def _mutate(payload: dict) -> dict:
+            nonlocal recovered_count
+            active_items = [_normalize_task_item(item, "running") for item in (payload.get("active") or [])]
+            queued_items = [_normalize_task_item(item, "queued") for item in (payload.get("queued") or [])]
+            if not active_items:
+                recovered_count = 0
+                return payload
 
-        payload["active"] = []
-        payload["queued"] = recovered + queued_items
-        queue = self.save_archive_queue(payload)
-        queue["recovered_count"] = len(recovered)
+            recovered = []
+            now = datetime.now().isoformat()
+            for item in active_items:
+                item["status"] = "queued"
+                item["progress"] = 0
+                item["message"] = message
+                item["updated_at"] = now
+                recovered.append(item)
+
+            recovered_count = len(recovered)
+            payload["active"] = []
+            payload["queued"] = recovered + queued_items
+            return payload
+
+        queue = self._update_archive_queue(_mutate)
+        queue["recovered_count"] = recovered_count
         return queue
 
     def remove_recent_failures_for_model(self, model_id: str, url: str = "") -> dict:
@@ -458,57 +495,73 @@ class TaskStateStore:
         if not model_key and not url_key:
             return self.load_archive_queue()
 
-        payload = self._read_json(
-            ARCHIVE_QUEUE_PATH,
-            {"active": [], "queued": [], "recent_failures": []},
-        )
-        remaining = []
-        for item in payload.get("recent_failures") or []:
-            normalized = _normalize_task_item(item, "failed")
-            haystack = " ".join(
-                [
-                    str(normalized.get("url") or ""),
-                    str(normalized.get("title") or ""),
-                    str(normalized.get("id") or ""),
-                ]
-            )
-            if model_key and model_key in haystack:
-                continue
-            if url_key and (normalized.get("url") == url_key or normalized.get("title") == url_key):
-                continue
-            remaining.append(normalized)
+        def _mutate(payload: dict) -> dict:
+            remaining = []
+            for item in payload.get("recent_failures") or []:
+                normalized = _normalize_task_item(item, "failed")
+                haystack = " ".join(
+                    [
+                        str(normalized.get("url") or ""),
+                        str(normalized.get("title") or ""),
+                        str(normalized.get("id") or ""),
+                    ]
+                )
+                if model_key and model_key in haystack:
+                    continue
+                if url_key and (normalized.get("url") == url_key or normalized.get("title") == url_key):
+                    continue
+                remaining.append(normalized)
 
-        payload["recent_failures"] = remaining
-        return self.save_archive_queue(payload)
+            payload["recent_failures"] = remaining
+            return payload
+
+        return self._update_archive_queue(_mutate)
 
     def merge_missing_3mf_items(self, items: list[dict]) -> dict:
-        payload = self._read_json(MISSING_3MF_PATH, {"items": []})
-        existing = _normalize_missing_3mf(payload).get("items", [])
-        merged: list[dict] = []
-        seen = set()
+        def _mutate(payload: dict) -> dict:
+            existing = list(payload.get("items") or [])
+            merged: list[dict] = []
+            seen = set()
 
-        for item in existing + (items or []):
-            normalized_list = _normalize_missing_3mf([item]).get("items", [])
-            if not normalized_list:
-                continue
-            normalized = normalized_list[0]
-            key = _missing_3mf_key(normalized)
-            if key in seen:
-                continue
-            seen.add(key)
-            merged.append(normalized)
+            for item in existing + (items or []):
+                normalized_list = _normalize_missing_3mf([item]).get("items", [])
+                if not normalized_list:
+                    continue
+                normalized = normalized_list[0]
+                key = _missing_3mf_key(normalized)
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(normalized)
 
-        return self.save_missing_3mf({"items": merged})
+            return {"items": merged}
+
+        return self._update_missing_3mf(_mutate)
 
     def replace_missing_3mf_for_model(self, model_id: str, items: list[dict]) -> dict:
         model_key = str(model_id or "").strip()
-        payload = self._read_json(MISSING_3MF_PATH, {"items": []})
-        existing = _normalize_missing_3mf(payload).get("items", [])
-        remaining = [
-            item for item in existing
-            if str(item.get("model_id") or "").strip() != model_key or not model_key
-        ]
-        return self.merge_missing_3mf_items(remaining + (items or []))
+
+        def _mutate(payload: dict) -> dict:
+            existing = _normalize_missing_3mf(payload).get("items", [])
+            remaining = [
+                item for item in existing
+                if str(item.get("model_id") or "").strip() != model_key or not model_key
+            ]
+            merged: list[dict] = []
+            seen = set()
+            for item in remaining + (items or []):
+                normalized_list = _normalize_missing_3mf([item]).get("items", [])
+                if not normalized_list:
+                    continue
+                normalized = normalized_list[0]
+                key = _missing_3mf_key(normalized)
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(normalized)
+            return {"items": merged}
+
+        return self._update_missing_3mf(_mutate)
 
     def remove_missing_3mf_for_model(self, model_id: str) -> dict:
         return self.replace_missing_3mf_for_model(model_id, [])
@@ -521,19 +574,21 @@ class TaskStateStore:
         instance_id: str = "",
         model_url: str = "",
     ) -> dict:
-        payload = self._read_json(MISSING_3MF_PATH, {"items": []})
-        items = _normalize_missing_3mf(payload).get("items", [])
-        remaining = [
-            item for item in items
-            if not _matches_missing_3mf_item(
-                item,
-                model_id=model_id,
-                title=title,
-                instance_id=instance_id,
-                model_url=model_url,
-            )
-        ]
-        return self.save_missing_3mf({"items": remaining})
+        def _mutate(payload: dict) -> dict:
+            items = _normalize_missing_3mf(payload).get("items", [])
+            remaining = [
+                item for item in items
+                if not _matches_missing_3mf_item(
+                    item,
+                    model_id=model_id,
+                    title=title,
+                    instance_id=instance_id,
+                    model_url=model_url,
+                )
+            ]
+            return {"items": remaining}
+
+        return self._update_missing_3mf(_mutate)
 
     def update_missing_3mf_status(
         self,
@@ -544,23 +599,25 @@ class TaskStateStore:
         status: str = "",
         message: str = "",
     ) -> dict:
-        payload = self._read_json(MISSING_3MF_PATH, {"items": []})
-        items = _normalize_missing_3mf(payload).get("items", [])
-        now = datetime.now().isoformat()
+        def _mutate(payload: dict) -> dict:
+            items = _normalize_missing_3mf(payload).get("items", [])
+            now = datetime.now().isoformat()
 
-        for item in items:
-            if not _matches_missing_3mf_item(
-                item,
-                model_id=model_id,
-                title=title,
-                instance_id=instance_id,
-                model_url=model_url,
-            ):
-                continue
-            if status:
-                item["status"] = status
-            if message:
-                item["message"] = message
-            item["updated_at"] = now
+            for item in items:
+                if not _matches_missing_3mf_item(
+                    item,
+                    model_id=model_id,
+                    title=title,
+                    instance_id=instance_id,
+                    model_url=model_url,
+                ):
+                    continue
+                if status:
+                    item["status"] = status
+                if message:
+                    item["message"] = message
+                item["updated_at"] = now
 
-        return self.save_missing_3mf({"items": items})
+            return {"items": items}
+
+        return self._update_missing_3mf(_mutate)
