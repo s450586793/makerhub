@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app.core.store import JsonStore
@@ -23,6 +23,7 @@ from app.schemas.models import (
 from app.schemas.models import OrganizeTask
 from app.services.catalog import build_dashboard_payload, build_models_payload, build_tasks_payload, delete_archived_models, get_model_detail
 from app.services.crawler import LegacyCrawlerBridge
+from app.services.model_attachments import create_manual_attachment, delete_manual_attachment
 from app.services.auth import AuthManager
 from app.services.subscriptions import SubscriptionManager
 from app.services.task_state import TaskStateStore
@@ -210,6 +211,54 @@ async def get_model_detail_data(model_dir: str):
     if detail is None:
         raise HTTPException(status_code=404, detail="模型不存在。")
     return detail
+
+
+@router.post("/models/{model_dir:path}/attachments")
+async def upload_model_attachment(
+    model_dir: str,
+    request: Request,
+    file: UploadFile = File(...),
+    name: str = Form(""),
+    category: str = Form("assembly"),
+):
+    _require_session_auth(request)
+    try:
+        attachment = create_manual_attachment(model_dir, file, name=name, category=category)
+        detail = get_model_detail(model_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        await file.close()
+
+    if detail is None:
+        raise HTTPException(status_code=404, detail="模型不存在。")
+
+    return {
+        "success": True,
+        "attachment": attachment,
+        "detail": detail,
+        "message": "附件已上传到当前模型目录。",
+    }
+
+
+@router.delete("/models/{model_dir:path}/attachments/{attachment_id}")
+async def remove_model_attachment(model_dir: str, attachment_id: str, request: Request):
+    _require_session_auth(request)
+    try:
+        removed = delete_manual_attachment(model_dir, attachment_id)
+        detail = get_model_detail(model_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if detail is None:
+        raise HTTPException(status_code=404, detail="模型不存在。")
+
+    return {
+        "success": True,
+        "removed": removed,
+        "detail": detail,
+        "message": "附件已删除。",
+    }
 
 
 @router.post("/models/delete")

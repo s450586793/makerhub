@@ -234,28 +234,91 @@
         <p v-else class="empty-copy">{{ detail.summary_text || "当前没有描述内容。" }}</p>
       </article>
 
-      <article v-if="attachmentGroups.length" class="mw-section-card mw-section-card--docs">
+      <article class="mw-section-card mw-section-card--docs">
         <div class="mw-section-card__header">
-          <h2>文档 ({{ detail.attachments?.length || 0 }})</h2>
+          <div class="mw-section-card__heading">
+            <h2>文档 ({{ detail.attachments?.length || 0 }})</h2>
+            <p class="mw-section-card__hint">可以在这里补传组装图、说明书或其他附件。</p>
+          </div>
         </div>
-        <div class="mw-doc-groups">
+        <div v-if="attachmentGroups.length" class="mw-doc-groups">
           <section v-for="group in attachmentGroups" :key="group.label" class="doc-group">
             <h3 class="doc-group__title">{{ group.label }} ({{ group.items.length }})</h3>
-            <div class="mw-doc-downloads">
-              <a
+            <div class="mw-doc-cards">
+              <article
                 v-for="attachment in group.items"
-                :key="`${group.label}-${attachment.name}`"
-                :class="['mw-doc-download', !(attachment.url || attachment.fallback_url) && 'is-disabled']"
-                :href="attachment.url || attachment.fallback_url || undefined"
-                :target="attachment.url || attachment.fallback_url ? '_blank' : undefined"
-                :rel="attachment.url || attachment.fallback_url ? 'noreferrer' : undefined"
+                :key="attachment.id"
+                class="mw-doc-card"
               >
-                <span class="mw-doc-download__label">{{ attachment.name }}</span>
-                <span class="mw-doc-download__meta">{{ attachment.category_label }}</span>
-              </a>
+                <div :class="docIconClass(attachment)">{{ attachmentExtLabel(attachment) }}</div>
+                <div class="mw-doc-card__body">
+                  <strong>{{ attachment.name }}</strong>
+                  <div class="mw-doc-card__meta-row">
+                    <span>{{ attachment.category_label }}</span>
+                    <span v-if="attachment.is_manual" class="mw-doc-badge">手动上传</span>
+                    <span v-if="attachment.uploaded_at_label">{{ attachment.uploaded_at_label }}</span>
+                  </div>
+                </div>
+                <div class="mw-doc-card__actions">
+                  <a
+                    :class="['button button-secondary button-small mw-doc-action', !attachmentDownloadUrl(attachment) && 'is-disabled']"
+                    :href="attachmentDownloadUrl(attachment) || undefined"
+                    :target="attachmentDownloadUrl(attachment) ? '_blank' : undefined"
+                    :rel="attachmentDownloadUrl(attachment) ? 'noreferrer' : undefined"
+                  >
+                    打开
+                  </a>
+                  <button
+                    v-if="attachment.is_image && attachmentDownloadUrl(attachment)"
+                    class="button button-secondary button-small mw-doc-action"
+                    type="button"
+                    @click="openLightbox(attachmentDownloadUrl(attachment))"
+                  >
+                    预览
+                  </button>
+                  <button
+                    v-if="attachment.can_delete"
+                    :disabled="deletingAttachmentId === attachment.id"
+                    class="button button-secondary button-small mw-doc-action mw-doc-action--danger"
+                    type="button"
+                    @click="removeAttachment(attachment)"
+                  >
+                    {{ deletingAttachmentId === attachment.id ? "删除中..." : "删除" }}
+                  </button>
+                </div>
+              </article>
             </div>
           </section>
         </div>
+        <p v-else class="empty-copy">当前没有同步到文档附件，你可以在下方上传组装图或说明文件。</p>
+
+        <form class="mw-attachment-upload" @submit.prevent="submitAttachmentUpload">
+          <div class="mw-attachment-upload__fields">
+            <select v-model="attachmentForm.category" class="mw-attachment-upload__select">
+              <option v-for="item in attachmentCategories" :key="item.value" :value="item.value">{{ item.label }}</option>
+            </select>
+            <input
+              v-model.trim="attachmentForm.name"
+              class="mw-attachment-upload__input"
+              type="text"
+              placeholder="附件名称，可选"
+            >
+            <label class="mw-attachment-upload__file">
+              <input ref="attachmentFileInput" type="file" @change="onAttachmentFileChange">
+              <span>{{ attachmentForm.file?.name || "选择附件" }}</span>
+            </label>
+            <button
+              :disabled="attachmentUploading"
+              class="button button-primary button-small"
+              type="submit"
+            >
+              {{ attachmentUploading ? "上传中..." : "上传附件" }}
+            </button>
+          </div>
+          <p class="mw-attachment-upload__hint">支持上传组装图、PDF、压缩包等文件，文件会保存到当前模型目录。</p>
+          <p v-if="attachmentUploadMessage" class="mw-attachment-upload__status is-success">{{ attachmentUploadMessage }}</p>
+          <p v-if="attachmentUploadError" class="mw-attachment-upload__status is-error">{{ attachmentUploadError }}</p>
+        </form>
       </article>
 
       <article class="mw-section-card">
@@ -342,6 +405,25 @@ const currentMedia = ref({
 const activeInstanceKey = ref("");
 const authorAvatarSrc = ref("");
 const lightboxSrc = ref("");
+const attachmentFileInput = ref(null);
+const attachmentUploading = ref(false);
+const attachmentUploadMessage = ref("");
+const attachmentUploadError = ref("");
+const deletingAttachmentId = ref("");
+
+const attachmentForm = ref({
+  category: "assembly",
+  name: "",
+  file: null,
+});
+
+const attachmentCategories = [
+  { value: "assembly", label: "组装图" },
+  { value: "guide", label: "组装指南" },
+  { value: "manual", label: "使用手册" },
+  { value: "bom", label: "BOM 清单" },
+  { value: "other", label: "其他附件" },
+];
 
 const modelDir = computed(() => decodeURIComponent(route.path.replace(/^\/models\//, "")));
 
@@ -515,6 +597,22 @@ function formatStat(value) {
   return new Intl.NumberFormat("zh-CN").format(Number(value || 0));
 }
 
+function attachmentDownloadUrl(attachment) {
+  return attachment?.url || attachment?.fallback_url || "";
+}
+
+function attachmentExtLabel(attachment) {
+  return String(attachment?.ext || "file").slice(0, 4).toUpperCase();
+}
+
+function docIconClass(attachment) {
+  return [
+    "mw-doc-card__icon",
+    attachment?.ext === "pdf" && "mw-doc-card__icon--pdf",
+    attachment?.is_image && "mw-doc-card__icon--image",
+  ];
+}
+
 function commentGalleryClass(count) {
   if (count <= 1) return "comment-gallery--1";
   if (count === 2) return "comment-gallery--2";
@@ -528,6 +626,86 @@ function profilePreview(profile) {
 
 function profilePreviewFallback(profile) {
   return profile?.thumbnail_fallback_url || profile?.primary_image_fallback_url || "";
+}
+
+function resetAttachmentUploadState(options = {}) {
+  const { keepCategory = true, clearFeedback = true } = options;
+  if (clearFeedback) {
+    attachmentUploadMessage.value = "";
+    attachmentUploadError.value = "";
+  }
+  attachmentForm.value = {
+    category: keepCategory ? attachmentForm.value.category : "assembly",
+    name: "",
+    file: null,
+  };
+  if (attachmentFileInput.value) {
+    attachmentFileInput.value.value = "";
+  }
+}
+
+function onAttachmentFileChange(event) {
+  const [file] = event.target.files || [];
+  attachmentForm.value.file = file || null;
+  attachmentUploadMessage.value = "";
+  attachmentUploadError.value = "";
+}
+
+async function submitAttachmentUpload() {
+  if (!attachmentForm.value.file) {
+    attachmentUploadError.value = "请选择要上传的附件。";
+    return;
+  }
+
+  attachmentUploading.value = true;
+  attachmentUploadMessage.value = "";
+  attachmentUploadError.value = "";
+
+  const formData = new FormData();
+  formData.set("file", attachmentForm.value.file);
+  formData.set("category", attachmentForm.value.category);
+  if (attachmentForm.value.name) {
+    formData.set("name", attachmentForm.value.name);
+  }
+
+  try {
+    const payload = await apiRequest(`/api/models/${encodeURI(modelDir.value)}/attachments`, {
+      method: "POST",
+      body: formData,
+    });
+    detail.value = payload.detail;
+    attachmentUploadMessage.value = payload.message || "附件已上传。";
+    resetAttachmentUploadState({ clearFeedback: false });
+  } catch (error) {
+    attachmentUploadError.value = error instanceof Error ? error.message : "附件上传失败。";
+  } finally {
+    attachmentUploading.value = false;
+  }
+}
+
+async function removeAttachment(attachment) {
+  if (!attachment?.can_delete || !attachment?.id) {
+    return;
+  }
+  if (!window.confirm(`确认删除附件“${attachment.name}”吗？`)) {
+    return;
+  }
+
+  deletingAttachmentId.value = attachment.id;
+  attachmentUploadMessage.value = "";
+  attachmentUploadError.value = "";
+
+  try {
+    const payload = await apiRequest(`/api/models/${encodeURI(modelDir.value)}/attachments/${encodeURIComponent(attachment.id)}`, {
+      method: "DELETE",
+    });
+    detail.value = payload.detail;
+    attachmentUploadMessage.value = payload.message || "附件已删除。";
+  } catch (error) {
+    attachmentUploadError.value = error instanceof Error ? error.message : "附件删除失败。";
+  } finally {
+    deletingAttachmentId.value = "";
+  }
 }
 
 async function load() {
@@ -552,7 +730,10 @@ async function load() {
   }
 }
 
-watch(modelDir, load);
+watch(modelDir, () => {
+  resetAttachmentUploadState({ keepCategory: false });
+  load();
+});
 
 onMounted(load);
 onBeforeUnmount(() => {

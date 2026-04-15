@@ -1,4 +1,5 @@
 import json
+import mimetypes
 import shutil
 import time
 from datetime import datetime
@@ -11,6 +12,7 @@ from bs4 import BeautifulSoup
 from app.core.settings import ARCHIVE_DIR
 from app.core.store import JsonStore
 from app.services.batch_discovery import extract_model_id, normalize_source_url
+from app.services.model_attachments import ATTACHMENT_CATEGORY_LABELS, load_manual_attachments
 from app.services.task_state import TaskStateStore
 
 
@@ -66,6 +68,13 @@ def _format_date(value: Any) -> str:
     if not ts:
         return ""
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+
+
+def _format_datetime(value: Any) -> str:
+    ts = _parse_timestamp(value)
+    if not ts:
+        return ""
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 
 def _read_json(path: Path) -> dict:
@@ -606,24 +615,38 @@ def _normalize_comments(meta: dict, model_root: Path) -> list[dict]:
 
 def _normalize_attachments(meta: dict, model_root: Path) -> list[dict]:
     normalized = []
-    for item in meta.get("attachments") or []:
+    attachment_items = []
+    attachment_items.extend(meta.get("attachments") or [])
+    attachment_items.extend(load_manual_attachments(model_root))
+
+    for item in attachment_items:
         if not isinstance(item, dict):
             continue
 
         name = str(item.get("name") or item.get("title") or item.get("localName") or item.get("fileName") or "未命名文件")
         category = str(item.get("category") or "other").strip().lower()
+        ref_name = str(item.get("localName") or item.get("relPath") or item.get("fileName") or name)
+        ext = Path(ref_name).suffix.lower().lstrip(".") or "file"
+        mime_type = str(item.get("mimeType") or mimetypes.guess_type(ref_name)[0] or "")
+        attachment_id = str(item.get("id") or item.get("localName") or item.get("relPath") or item.get("url") or name)
+        source = str(item.get("source") or "origin").strip().lower() or "origin"
+        asset_url = _asset_url_from_item(model_root, item) or _pick_remote_url(item) or ""
         normalized.append(
             {
+                "id": attachment_id,
                 "name": name,
                 "category": category,
-                "category_label": {
-                    "guide": "组装指南",
-                    "manual": "使用手册",
-                    "bom": "BOM 清单",
-                }.get(category, "附件文件"),
-                "url": _asset_url_from_item(model_root, item) or _pick_remote_url(item) or "",
+                "category_label": ATTACHMENT_CATEGORY_LABELS.get(category, "附件文件"),
+                "url": asset_url,
                 "fallback_url": _pick_remote_url(item) or "",
-                "ext": Path(name).suffix.lower().lstrip(".") or "file",
+                "ext": ext,
+                "mime_type": mime_type,
+                "is_image": mime_type.startswith("image/") or ext in {"png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "avif"},
+                "is_manual": source == "manual",
+                "can_delete": source == "manual",
+                "uploaded_at": str(item.get("uploadedAt") or ""),
+                "uploaded_at_label": _format_datetime(item.get("uploadedAt")),
+                "source": source,
             }
         )
     return normalized
