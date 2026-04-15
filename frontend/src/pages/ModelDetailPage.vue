@@ -206,26 +206,61 @@
                 v-if="isProfilePopoverOpen(profile)"
                 :class="['mw-profile-popover', profilePopoverPlacement(profileIndex, detail.instances.length)]"
               >
-                <div class="mw-profile-popover__hero">
-                  <div class="mw-profile-popover__thumb-wrap">
+                <div v-if="profileMedia(profile).length" class="mw-profile-popover__gallery">
+                  <button
+                    class="mw-profile-popover__stage"
+                    type="button"
+                    @click="openLightbox(popoverCurrentMedia(profile)?.url || popoverCurrentMedia(profile)?.fallback_url || '')"
+                  >
                     <img
-                      v-if="profilePreview(profile)"
-                      class="mw-profile-popover__thumb"
-                      :src="profilePreview(profile)"
-                      :alt="profile.title"
+                      v-if="popoverCurrentMedia(profile)?.url || popoverCurrentMedia(profile)?.fallback_url"
+                      class="mw-profile-popover__stage-image"
+                      :src="popoverCurrentMedia(profile)?.url || popoverCurrentMedia(profile)?.fallback_url"
+                      :alt="`${profile.title} ${popoverCurrentMedia(profile)?.label || ''}`.trim()"
                       loading="lazy"
-                      @error="swapEventImage($event, profilePreviewFallback(profile))"
+                      @error="swapEventImage($event, popoverCurrentMedia(profile)?.fallback_url)"
                     >
-                    <span v-else class="mw-profile-popover__thumb avatar-placeholder">{{ detail.title.slice(0, 1) }}</span>
+                    <span v-else class="mw-profile-popover__stage-image avatar-placeholder">{{ detail.title.slice(0, 1) }}</span>
+                    <span class="mw-profile-popover__stage-badge">{{ popoverCurrentMedia(profile)?.label || "预览" }}</span>
+                  </button>
+
+                  <div class="mw-profile-popover__gallery-meta">
+                    <span>{{ popoverCurrentMedia(profile)?.kind === "plate" ? "分盘预览" : "配置图集" }}</span>
+                    <span>{{ currentPopoverMediaIndex(profile) + 1 }} / {{ profileMedia(profile).length }}</span>
                   </div>
-                  <div class="mw-profile-popover__hero-body">
-                    <div class="mw-profile-popover__eyebrow">打印配置</div>
-                    <h3>{{ profile.title }}</h3>
-                    <div class="mw-profile-popover__meta">
-                      <span>{{ profile.machine || "通用" }}</span>
-                      <span v-if="profile.time">{{ profile.time }}</span>
-                      <span v-if="profile.publish_date">上传于 {{ profile.publish_date }}</span>
-                    </div>
+
+                  <div v-if="profileMedia(profile).length > 1" class="mw-profile-popover__media-strip">
+                    <button
+                      v-for="(media, mediaIndex) in profileMedia(profile)"
+                      :key="`${profile.instance_key}-${media.label}-${mediaIndex}`"
+                      :class="['mw-profile-popover__media-thumb', currentPopoverMediaIndex(profile) === mediaIndex && 'is-active']"
+                      type="button"
+                      @mouseenter="selectPopoverMedia(profile, mediaIndex)"
+                      @focus="selectPopoverMedia(profile, mediaIndex)"
+                      @click="selectPopoverMedia(profile, mediaIndex)"
+                    >
+                      <span class="mw-profile-popover__media-thumb-figure">
+                        <img
+                          v-if="media.url || media.fallback_url"
+                          :src="media.url || media.fallback_url"
+                          :alt="`${profile.title} ${media.label}`.trim()"
+                          loading="lazy"
+                          @error="swapEventImage($event, media.fallback_url)"
+                        >
+                        <span v-else class="avatar-placeholder">{{ detail.title.slice(0, 1) }}</span>
+                      </span>
+                      <span class="mw-profile-popover__media-thumb-label">{{ media.label }}</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="mw-profile-popover__hero-body">
+                  <div class="mw-profile-popover__eyebrow">打印配置</div>
+                  <h3>{{ profile.title }}</h3>
+                  <div class="mw-profile-popover__meta">
+                    <span>{{ profile.machine || "通用" }}</span>
+                    <span v-if="profile.time">{{ profile.time }}</span>
+                    <span v-if="profile.publish_date">上传于 {{ profile.publish_date }}</span>
                   </div>
                 </div>
 
@@ -501,6 +536,7 @@ const attachmentUploadError = ref("");
 const deletingAttachmentId = ref("");
 const hoverPopoverEnabled = ref(false);
 const previewedInstanceKey = ref("");
+const popoverMediaState = ref({});
 
 let hoverPopoverMediaQuery = null;
 let hoverPopoverMediaListener = null;
@@ -717,6 +753,9 @@ function openProfilePopover(profile) {
     return;
   }
   previewedInstanceKey.value = profile.instance_key;
+  if (!(profile.instance_key in popoverMediaState.value)) {
+    selectPopoverMedia(profile, 0);
+  }
 }
 
 function closeProfilePopover(instanceKey = "") {
@@ -822,6 +861,59 @@ function profilePreviewFallback(profile) {
   return profile?.thumbnail_fallback_url || profile?.primary_image_fallback_url || "";
 }
 
+function profileMedia(profile) {
+  const mediaItems = Array.isArray(profile?.media)
+    ? profile.media.filter((item) => item && (item.url || item.fallback_url))
+    : [];
+  if (mediaItems.length) {
+    return mediaItems;
+  }
+  const previewUrl = profilePreview(profile);
+  const previewFallback = profilePreviewFallback(profile);
+  if (!previewUrl && !previewFallback) {
+    return [];
+  }
+  return [
+    {
+      label: "预览",
+      kind: "preview",
+      url: previewUrl || previewFallback,
+      fallback_url: previewFallback,
+    },
+  ];
+}
+
+function currentPopoverMediaIndex(profile) {
+  const mediaItems = profileMedia(profile);
+  if (!mediaItems.length || !profile?.instance_key) {
+    return 0;
+  }
+  const currentIndex = Number(popoverMediaState.value[profile.instance_key] ?? 0);
+  if (!Number.isInteger(currentIndex) || currentIndex < 0 || currentIndex >= mediaItems.length) {
+    return 0;
+  }
+  return currentIndex;
+}
+
+function popoverCurrentMedia(profile) {
+  const mediaItems = profileMedia(profile);
+  return mediaItems[currentPopoverMediaIndex(profile)] || null;
+}
+
+function selectPopoverMedia(profile, index) {
+  if (!profile?.instance_key) {
+    return;
+  }
+  const mediaItems = profileMedia(profile);
+  if (!mediaItems[index]) {
+    return;
+  }
+  popoverMediaState.value = {
+    ...popoverMediaState.value,
+    [profile.instance_key]: index,
+  };
+}
+
 function resetAttachmentUploadState(options = {}) {
   const { keepCategory = true, clearFeedback = true } = options;
   if (clearFeedback) {
@@ -906,6 +998,7 @@ async function load() {
   loading.value = true;
   errorMessage.value = "";
   previewedInstanceKey.value = "";
+  popoverMediaState.value = {};
   try {
     const payload = await apiRequest(`/api/models/${encodeURI(modelDir.value)}`);
     detail.value = payload;
