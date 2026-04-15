@@ -86,6 +86,11 @@
   writing-mode: horizontal-tb;
 }
 
+.subscription-toggle__copy {
+  display: block;
+  min-width: 0;
+}
+
 .page-intro--compact {
   margin-bottom: 12px;
 }
@@ -118,17 +123,30 @@
 }
 
 .subscription-toggle--wide {
-  min-width: 260px;
+  width: fit-content;
+  min-width: 0;
+  max-width: 100%;
   justify-content: flex-start;
+}
+
+.subscription-toggle__copy--wide {
+  display: inline-block;
+  min-width: max-content;
+  white-space: nowrap !important;
+  word-break: keep-all;
+  line-break: strict;
+  writing-mode: horizontal-tb !important;
+  text-orientation: mixed;
 }
 
 .subscription-create-form__actions {
   grid-column: 1 / -1;
   width: 100%;
-  display: flex;
+  display: grid;
+  grid-template-columns: max-content auto;
+  justify-content: flex-start;
   align-items: center;
   gap: 12px;
-  flex-wrap: wrap;
 }
 
 .subscription-create-form__actions .button {
@@ -659,7 +677,7 @@
 
   .subscription-create-form__actions {
     grid-column: auto;
-    flex-direction: column;
+    grid-template-columns: 1fr;
     align-items: stretch;
   }
 

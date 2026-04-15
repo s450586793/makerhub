@@ -44,7 +44,7 @@
       <div class="subscription-create-form__actions">
         <label class="subscription-toggle subscription-toggle--compact subscription-toggle--wide">
           <input v-model="createForm.initialize_from_source" type="checkbox">
-          <span>创建时初始化当前源页面</span>
+          <span class="subscription-toggle__copy subscription-toggle__copy--wide">创建时初始化当前源页面</span>
         </label>
         <button class="button button-primary" type="submit" :disabled="creating">
           {{ creating ? "提交中..." : "添加订阅" }}
