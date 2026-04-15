@@ -134,6 +134,7 @@
               <span v-for="machine in machineFilters.slice(0, 10)" :key="machine" class="mw-filter-pill">{{ machine }}</span>
             </div>
           </div>
+          <div class="mw-config-panel__divider"></div>
 
           <div v-if="detail.instances?.length" class="mw-profile-list">
             <button
@@ -158,13 +159,17 @@
               <div class="mw-profile-card__body">
                 <div class="mw-profile-card__title">{{ profile.title }}</div>
                 <div class="mw-profile-card__meta">
-                  <span>{{ profile.machine || "通用" }}</span>
-                  <span v-if="profile.time">{{ profile.time }}</span>
-                </div>
-                <div class="mw-profile-card__stats">
-                  <span v-if="profile.plates">{{ profile.plates }} 盘</span>
-                  <span v-if="profile.download_count">{{ formatStat(profile.download_count) }} 下载</span>
-                  <span v-if="profile.rating">★ {{ profile.rating }}</span>
+                  <span class="mw-profile-card__badge">{{ profile.machine || "通用" }}</span>
+                  <span v-if="profile.time" class="mw-profile-card__meta-item">
+                    <svg class="mw-profile-card__meta-icon" viewBox="0 0 16 17" fill="none">
+                      <path d="M15 8.52342C15 4.64449 11.866 1.5 8 1.5V8.52342L12.9395 13.5C14.2123 12.2282 15 10.4681 15 8.52342Z" fill="currentColor" opacity=".24"></path>
+                      <path d="M8 1.1a7.4 7.4 0 1 0 0 14.8 7.4 7.4 0 0 0 0-14.8Zm0 1.2a6.2 6.2 0 1 1 0 12.4 6.2 6.2 0 0 1 0-12.4Zm0 3.6a.6.6 0 0 1 .6.6v1.75l1.82 1.82a.6.6 0 1 1-.84.84L7.58 8.92A.6.6 0 0 1 7.4 8.5v-2a.6.6 0 0 1 .6-.6Z" fill="currentColor"></path>
+                    </svg>
+                    <span>{{ profile.time }}</span>
+                  </span>
+                  <span v-if="profile.plates" class="mw-profile-card__meta-item">{{ profile.plates }} 盘</span>
+                  <span v-if="profile.download_count" class="mw-profile-card__meta-item">{{ formatStat(profile.download_count) }} 下载</span>
+                  <span v-if="profile.rating" class="mw-profile-card__meta-item">★ {{ profile.rating }}</span>
                 </div>
               </div>
             </button>
@@ -221,41 +226,25 @@
         </div>
       </article>
 
-      <article v-if="attachmentGroups.length" class="mw-section-card">
+      <article v-if="attachmentGroups.length" class="mw-section-card mw-section-card--docs">
         <div class="mw-section-card__header">
           <h2>文档 ({{ detail.attachments?.length || 0 }})</h2>
         </div>
-        <div class="doc-groups">
+        <div class="mw-doc-groups">
           <section v-for="group in attachmentGroups" :key="group.label" class="doc-group">
             <h3 class="doc-group__title">{{ group.label }} ({{ group.items.length }})</h3>
-            <div class="docs-list">
-              <article v-for="attachment in group.items" :key="`${group.label}-${attachment.name}`" class="doc-card">
-                <div :class="['doc-card__icon', `doc-card__icon--${attachment.ext}`]">{{ (attachment.ext || "file").toUpperCase() }}</div>
-                <div class="doc-card__body">
-                  <strong>{{ attachment.name }}</strong>
-                  <span>{{ attachment.category_label }}</span>
-                </div>
-                <div class="doc-card__actions">
-                  <a
-                    v-if="attachment.url || attachment.fallback_url"
-                    class="doc-action"
-                    :href="attachment.url || attachment.fallback_url"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    查看
-                  </a>
-                  <a
-                    v-if="attachment.url || attachment.fallback_url"
-                    class="doc-action"
-                    :href="attachment.url || attachment.fallback_url"
-                    download
-                  >
-                    下载
-                  </a>
-                  <span v-else class="doc-action is-disabled">不可用</span>
-                </div>
-              </article>
+            <div class="mw-doc-downloads">
+              <a
+                v-for="attachment in group.items"
+                :key="`${group.label}-${attachment.name}`"
+                :class="['mw-doc-download', !(attachment.url || attachment.fallback_url) && 'is-disabled']"
+                :href="attachment.url || attachment.fallback_url || undefined"
+                :target="attachment.url || attachment.fallback_url ? '_blank' : undefined"
+                :rel="attachment.url || attachment.fallback_url ? 'noreferrer' : undefined"
+              >
+                <span class="mw-doc-download__label">{{ attachment.name }}</span>
+                <span class="mw-doc-download__meta">{{ attachment.category_label }}</span>
+              </a>
             </div>
           </section>
         </div>

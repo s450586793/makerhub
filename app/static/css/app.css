@@ -1855,6 +1855,9 @@ select:focus {
   line-height: 24px;
   font-weight: 700;
   letter-spacing: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .mw-head__subline {
@@ -1896,6 +1899,11 @@ select:focus {
 
 .mw-head__aside {
   justify-content: flex-end;
+}
+
+.mw-head__chips {
+  gap: 16px;
+  align-items: flex-end;
 }
 
 .mw-chip,
@@ -2057,6 +2065,12 @@ select:focus {
   font-weight: 700;
 }
 
+.mw-config-panel__divider {
+  width: 100%;
+  height: 1px;
+  background: rgba(15, 23, 42, 0.12);
+}
+
 .mw-config-panel__filters {
   flex-wrap: nowrap;
   overflow-x: auto;
@@ -2135,6 +2149,27 @@ select:focus {
   font-size: 12px;
   line-height: 18px;
   font-weight: 600;
+}
+
+.mw-profile-card__badge {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border-radius: 2px;
+  color: var(--brand);
+  background: rgba(0, 174, 66, 0.16);
+}
+
+.mw-profile-card__meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mw-profile-card__meta-icon {
+  width: 16px;
+  height: 17px;
+  flex-shrink: 0;
 }
 
 .mw-instance-panels {
@@ -2286,6 +2321,10 @@ select:focus {
   padding-bottom: 24px;
 }
 
+.mw-section-card--docs {
+  gap: 18px;
+}
+
 .mw-section-card__header {
   display: flex;
   align-items: flex-start;
@@ -2357,6 +2396,60 @@ select:focus {
   color: #9ca3af;
 }
 
+.mw-doc-groups {
+  display: grid;
+  gap: 18px;
+}
+
+.mw-doc-downloads {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.mw-doc-download {
+  width: 240px;
+  min-height: 40px;
+  padding: 8px 20px;
+  border: 1px solid var(--brand);
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  color: var(--brand);
+  text-align: center;
+  background: transparent;
+}
+
+.mw-doc-download:hover {
+  background: rgba(0, 174, 66, 0.12);
+}
+
+.mw-doc-download.is-disabled {
+  border-color: #9ca3af;
+  color: #9ca3af;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.mw-doc-download__label {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 22px;
+  overflow-wrap: anywhere;
+}
+
+.mw-doc-download__meta {
+  color: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  opacity: 0.78;
+}
+
 .rich-content {
   color: var(--text);
   line-height: 1.8;
@@ -2375,10 +2468,19 @@ select:focus {
 }
 
 .comment-item {
-  padding: 16px;
-  border-radius: 8px;
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  background: #fff;
+  padding: 24px 0;
+  border-radius: 0;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  background: transparent;
+}
+
+.comment-item:first-child {
+  padding-top: 0;
+}
+
+.comment-item:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
 }
 
 .comment-item .model-author {
@@ -2401,6 +2503,10 @@ select:focus {
   line-height: 1.65;
 }
 
+.comment-list {
+  gap: 0;
+}
+
 .comment-gallery {
   margin-top: 14px;
   grid-template-columns: repeat(auto-fill, minmax(112px, 112px));
@@ -2411,7 +2517,7 @@ select:focus {
   width: 112px;
   height: 112px;
   padding: 0;
-  border: 1px solid rgba(15, 23, 42, 0.06);
+  border: 0;
   border-radius: 8px;
   overflow: hidden;
   cursor: zoom-in;
@@ -2559,6 +2665,10 @@ html[data-theme="dark"] .detail-page--makerworld .mw-config-panel__header {
   border-color: var(--mw-border);
 }
 
+html[data-theme="dark"] .detail-page--makerworld .mw-config-panel__divider {
+  background: var(--mw-border);
+}
+
 html[data-theme="dark"] .detail-page--makerworld .mw-profile-card.is-active {
   background: #1f302a;
   border-color: rgba(65, 199, 132, 0.38);
@@ -2606,8 +2716,22 @@ html[data-theme="dark"] .detail-page--makerworld .mw-doc-card__icon--pdf {
 }
 
 html[data-theme="dark"] .detail-page--makerworld .comment-item {
-  background: var(--mw-panel-bg);
   border-color: var(--mw-border);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-doc-download {
+  border-color: var(--brand-strong);
+  color: var(--brand-strong);
+  background: transparent;
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-doc-download:hover {
+  background: rgba(65, 199, 132, 0.12);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-doc-download.is-disabled {
+  border-color: var(--mw-border-strong);
+  color: var(--mw-muted);
 }
 
 html[data-theme="dark"] .detail-page--makerworld .lightbox__dialog {
@@ -2836,6 +2960,10 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
     justify-content: flex-start;
   }
 
+  .mw-head__identity h1 {
+    white-space: normal;
+  }
+
   .mw-action-bar {
     grid-template-columns: repeat(5, minmax(0, 1fr));
   }
@@ -3001,5 +3129,9 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
 
   .mw-section-card {
     padding: 20px;
+  }
+
+  .mw-doc-download {
+    width: 100%;
   }
 }
