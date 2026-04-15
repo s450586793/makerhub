@@ -38,24 +38,6 @@
         {{ submittingArchive ? "提交中..." : "开始归档" }}
       </button>
     </form>
-    <div class="archive-form__options">
-      <label class="subscription-toggle archive-form__toggle-card">
-        <input v-model="archiveCreateSubscription" type="checkbox">
-        <span class="archive-form__toggle-copy">
-          <strong>作者页 / 收藏夹归档时同时创建订阅</strong>
-          <small>开启后会按下方 Cron 自动创建订阅任务。</small>
-        </span>
-      </label>
-      <label class="filter-field archive-form__cron">
-        <span class="archive-form__field-label">订阅 Cron</span>
-        <input
-          v-model.trim="archiveSubscriptionCron"
-          type="text"
-          placeholder="Cron，例如 0 */6 * * *"
-          :disabled="!archiveCreateSubscription"
-        >
-      </label>
-    </div>
     <p class="archive-form__hint">示例：`/zh/models/...`、`/zh/@xxx/upload`、`/zh/@xxx/collections/models`</p>
     <span class="form-status">{{ archiveStatus }}</span>
   </section>
@@ -299,8 +281,6 @@ const payload = ref({
 });
 
 const archiveUrl = ref("");
-const archiveCreateSubscription = ref(false);
-const archiveSubscriptionCron = ref("0 */6 * * *");
 const archiveStatus = ref("");
 const archiveSubmitDialog = ref({
   visible: false,
@@ -311,8 +291,6 @@ const archiveSubmitDialog = ref({
   previewToken: "",
   url: "",
   discoveredCount: 0,
-  createSubscription: false,
-  subscriptionCron: "0 */6 * * *",
 });
 const missingStatus = ref("");
 const submittingArchive = ref(false);
@@ -376,26 +354,19 @@ function openArchiveSuccessDialog(message) {
     previewToken: "",
     url: "",
     discoveredCount: 0,
-    createSubscription: false,
-    subscriptionCron: "0 */6 * * *",
   };
 }
 
 function openArchiveConfirmDialog(preview) {
-  const subscribeSummary = archiveCreateSubscription.value
-    ? `确认后会同时创建订阅，Cron 为 ${archiveSubscriptionCron.value || "0 */6 * * *"}。`
-    : "";
   archiveSubmitDialog.value = {
     visible: true,
     variant: "confirm",
     title: "确认批量归档",
     message: `该链接扫描到 ${preview.discovered_count || 0} 个模型，确认后会把这批模型加入归档队列。`,
-    summary: [preview.message || "", subscribeSummary].filter(Boolean).join(" "),
+    summary: preview.message || "",
     previewToken: preview.preview_token || "",
     url: preview.url || archiveUrl.value,
     discoveredCount: preview.discovered_count || 0,
-    createSubscription: archiveCreateSubscription.value,
-    subscriptionCron: archiveSubscriptionCron.value || "0 */6 * * *",
   };
 }
 
@@ -442,7 +413,6 @@ async function submitArchive() {
       url: preview.url || archiveUrl.value,
       previewToken: "",
       clearInput: true,
-      createSubscription: false,
     });
   } catch (error) {
     archiveStatus.value = error instanceof Error ? error.message : "提交失败。";
@@ -451,14 +421,12 @@ async function submitArchive() {
   }
 }
 
-async function submitArchiveConfirmed({ url, previewToken = "", clearInput = false, createSubscription = false, subscriptionCron = "" } = {}) {
+async function submitArchiveConfirmed({ url, previewToken = "", clearInput = false } = {}) {
   const response = await apiRequest("/api/archive", {
     method: "POST",
     body: {
       url: url || archiveUrl.value,
       preview_token: previewToken,
-      create_subscription: Boolean(createSubscription),
-      subscription_cron: subscriptionCron || archiveSubscriptionCron.value || "0 */6 * * *",
     },
   });
   if (response.accepted === false) {
@@ -469,8 +437,6 @@ async function submitArchiveConfirmed({ url, previewToken = "", clearInput = fal
   openArchiveSuccessDialog(message);
   if (clearInput) {
     archiveUrl.value = "";
-    archiveCreateSubscription.value = false;
-    archiveSubscriptionCron.value = "0 */6 * * *";
   }
   await load();
 }
@@ -486,8 +452,6 @@ async function handleArchiveDialogPrimaryAction() {
       url: archiveSubmitDialog.value.url,
       previewToken: archiveSubmitDialog.value.previewToken,
       clearInput: true,
-      createSubscription: archiveSubmitDialog.value.createSubscription,
-      subscriptionCron: archiveSubmitDialog.value.subscriptionCron,
     });
   } catch (error) {
     archiveStatus.value = error instanceof Error ? error.message : "提交失败。";

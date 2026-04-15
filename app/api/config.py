@@ -21,7 +21,6 @@ from app.schemas.models import (
     UserSettingsUpdate,
 )
 from app.schemas.models import OrganizeTask
-from app.services.archive_worker import detect_archive_mode
 from app.services.catalog import build_dashboard_payload, build_models_payload, build_tasks_payload, delete_archived_models, get_model_detail
 from app.services.crawler import LegacyCrawlerBridge
 from app.services.auth import AuthManager
@@ -420,34 +419,7 @@ async def cancel_missing_3mf(payload: Missing3mfCancelRequest, request: Request)
 
 @router.post("/archive")
 async def archive_model(payload: ArchiveRequest):
-    mode = detect_archive_mode(payload.url)
-    preview = None
-    if payload.create_subscription and mode in {"author_upload", "collection_models"}:
-        preview = crawler.manager.peek_batch_preview(payload.preview_token, payload.url, mode=mode)
-
     response = crawler.manager.submit(payload.url, preview_token=payload.preview_token)
-    if not response.get("accepted"):
-        return response
-
-    if payload.create_subscription and mode in {"author_upload", "collection_models"}:
-        discovered_items = list((preview or {}).get("discovered_items") or [])
-        try:
-            subscription_result = subscription_manager.upsert_from_archive(
-                url=payload.url,
-                mode=mode,
-                discovered_items=discovered_items,
-                cron=payload.subscription_cron,
-                name=payload.subscription_name,
-            )
-            response["subscription"] = subscription_result
-            subscription_name = ((subscription_result.get("subscription") or {}).get("name") or "").strip()
-            response["message"] = (
-                f"{response.get('message') or '归档任务已加入队列。'} "
-                f"订阅已{'创建' if subscription_result.get('created') else '更新'}"
-                f"{f'：{subscription_name}' if subscription_name else ''}。"
-            ).strip()
-        except ValueError as exc:
-            response["subscription_error"] = str(exc)
     return response
 
 

@@ -126,7 +126,7 @@
 
   <section v-else class="surface empty-state">
     <h2>还没有订阅</h2>
-    <p>你可以在这里添加订阅，或者在任务页归档作者/收藏夹时勾选“同时创建订阅”。</p>
+    <p>你可以在这里添加作者页或收藏夹订阅，后续会按 Cron 自动同步新模型。</p>
   </section>
 </template>
 
