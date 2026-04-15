@@ -1190,6 +1190,52 @@ select:focus {
   min-width: 0;
 }
 
+.archive-form__options {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: minmax(320px, 1.2fr) minmax(260px, 1fr);
+  gap: 14px;
+  align-items: stretch;
+}
+
+.archive-form__toggle-card {
+  width: 100%;
+  min-height: 56px;
+  padding: 12px 16px;
+  align-items: flex-start;
+}
+
+.archive-form__toggle-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  line-height: 1.4;
+}
+
+.archive-form__toggle-copy strong {
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.archive-form__toggle-copy small {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: normal;
+}
+
+.archive-form__cron {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.archive-form__field-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .archive-form__hint {
   margin: 0;
   color: var(--muted);
@@ -2536,6 +2582,10 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
   .settings-grid--three,
   .archive-form,
   .token-create-form {
+    grid-template-columns: 1fr;
+  }
+
+  .archive-form__options {
     grid-template-columns: 1fr;
   }
 

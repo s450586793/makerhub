@@ -39,11 +39,15 @@
       </button>
     </form>
     <div class="archive-form__options">
-      <label class="subscription-toggle">
+      <label class="subscription-toggle archive-form__toggle-card">
         <input v-model="archiveCreateSubscription" type="checkbox">
-        <span>作者页 / 收藏夹归档时同时创建订阅</span>
+        <span class="archive-form__toggle-copy">
+          <strong>作者页 / 收藏夹归档时同时创建订阅</strong>
+          <small>开启后会按下方 Cron 自动创建订阅任务。</small>
+        </span>
       </label>
       <label class="filter-field archive-form__cron">
+        <span class="archive-form__field-label">订阅 Cron</span>
         <input
           v-model.trim="archiveSubscriptionCron"
           type="text"
