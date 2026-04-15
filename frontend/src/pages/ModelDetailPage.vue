@@ -116,24 +116,39 @@
             <section class="mw-instance-panel is-active">
               <p v-if="activeInstance.summary" class="mw-instance-panel__summary">{{ activeInstance.summary }}</p>
               <a
-                v-if="activeInstance.file_url"
+                v-if="activeInstance.file_available && activeInstance.file_url"
                 class="mw-download-button"
                 :href="activeInstance.file_url"
                 download
               >
                 下载 3MF
               </a>
+              <span
+                v-else
+                class="mw-download-button is-disabled"
+                :title="activeInstance.file_status_message || '3MF 还未获取到'"
+              >
+                {{ activeInstanceDownloadLabel }}
+              </span>
+              <p v-if="!activeInstance.file_available && activeInstance.file_status_message" class="mw-instance-panel__note">
+                {{ activeInstance.file_status_message }}
+              </p>
             </section>
           </div>
         </aside>
       </div>
 
       <div class="mw-action-bar">
-        <div class="mw-action-bar__button">下载 {{ detail.stats?.downloads || 0 }}</div>
-        <div class="mw-action-bar__button">点赞 {{ detail.stats?.likes || 0 }}</div>
-        <div class="mw-action-bar__button">收藏 {{ detail.stats?.favorites || 0 }}</div>
-        <div class="mw-action-bar__button">评论 {{ detail.stats?.comments || 0 }}</div>
-        <div class="mw-action-bar__button">打印 {{ detail.stats?.prints || 0 }}</div>
+        <div
+          v-for="item in actionStats"
+          :key="item.key"
+          class="mw-action-bar__button"
+          :data-kind="item.key"
+          :title="`${item.label} ${formatStat(item.value)}`"
+        >
+          <span class="mw-action-bar__icon" aria-hidden="true" v-html="item.icon"></span>
+          <strong class="mw-action-bar__value">{{ formatStat(item.value) }}</strong>
+        </div>
       </div>
 
       <div class="mw-statline">
@@ -320,6 +335,46 @@ const attachmentGroups = computed(() => {
   return [...groups.entries()].map(([label, items]) => ({ label, items }));
 });
 
+const actionStats = computed(() => [
+  {
+    key: "downloads",
+    label: "下载",
+    value: detail.value?.stats?.downloads || 0,
+    icon: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.6v8.1"/><path d="m6.9 8.8 3.1 3.2 3.1-3.2"/><path d="M4.2 15.4h11.6"/></svg>',
+  },
+  {
+    key: "likes",
+    label: "点赞",
+    value: detail.value?.stats?.likes || 0,
+    icon: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M7.4 8.2V16H4.7A1.7 1.7 0 0 1 3 14.3V9.9c0-.94.76-1.7 1.7-1.7h2.7Z"/><path d="M7.4 8.2 10 3.9c.42-.68 1.5-.38 1.5.42v2.48h2.66c1.15 0 1.99 1.1 1.68 2.2l-1.46 5.2A1.7 1.7 0 0 1 12.74 16H7.4"/></svg>',
+  },
+  {
+    key: "favorites",
+    label: "收藏",
+    value: detail.value?.stats?.favorites || 0,
+    icon: '<svg viewBox="0 0 20 20" fill="currentColor"><path d="m10 2.4 2.27 4.6 5.08.74-3.67 3.58.86 5.06L10 13.98l-4.54 2.4.86-5.06-3.67-3.58L7.73 7 10 2.4Z"/></svg>',
+  },
+  {
+    key: "comments",
+    label: "评论",
+    value: detail.value?.stats?.comments || 0,
+    icon: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M4.1 5.4A2.4 2.4 0 0 1 6.5 3h7a2.4 2.4 0 0 1 2.4 2.4v5.2a2.4 2.4 0 0 1-2.4 2.4H9l-3.9 3v-3H6.5a2.4 2.4 0 0 1-2.4-2.4V5.4Z"/></svg>',
+  },
+  {
+    key: "prints",
+    label: "打印",
+    value: detail.value?.stats?.prints || 0,
+    icon: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M6 7.2V3.8h8v3.4"/><path d="M5.1 15.8h9.8v-4.7H5.1v4.7Z"/><path d="M4.3 7.2h11.4A1.3 1.3 0 0 1 17 8.5v3.1h-2.1"/><path d="M3 11.6V8.5a1.3 1.3 0 0 1 1.3-1.3"/><circle cx="14.3" cy="9.2" r=".7" fill="currentColor" stroke="none"/></svg>',
+  },
+]);
+
+const activeInstanceDownloadLabel = computed(() => {
+  if (activeInstance.value?.file_name) {
+    return "3MF 还未获取到";
+  }
+  return "当前没有 3MF";
+});
+
 function setMainMedia(key, src, fallback = "", alt = "") {
   currentMedia.value = {
     key,
@@ -377,6 +432,10 @@ function openLightbox(src) {
 function closeLightbox() {
   lightboxSrc.value = "";
   document.body.classList.remove("is-lightbox-open");
+}
+
+function formatStat(value) {
+  return new Intl.NumberFormat("zh-CN").format(Number(value || 0));
 }
 
 async function load() {

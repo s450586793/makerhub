@@ -113,6 +113,23 @@ def _local_asset_url(model_root: Path, ref: str) -> Optional[str]:
         return None
 
 
+def _existing_local_asset_url(model_root: Path, ref: str) -> Optional[str]:
+    if not ref or ref.startswith(("http://", "https://", "data:", "//")):
+        return None
+
+    candidates = _iter_local_candidates(model_root, ref)
+    if not candidates:
+        return None
+
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            try:
+                return _archive_url(candidate.relative_to(ARCHIVE_DIR))
+            except ValueError:
+                return None
+    return None
+
+
 def _remote_asset_url(*values: Any) -> Optional[str]:
     for value in values:
         if isinstance(value, str) and value.strip():
@@ -413,6 +430,15 @@ def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
             or ""
         )
         primary_media = media_items[0] if media_items else None
+        file_name = Path(str(item.get("fileName") or "")).name
+        file_ref = f"instances/{file_name}" if file_name else ""
+        file_url = _existing_local_asset_url(model_root, file_ref) if file_ref else None
+        if file_url:
+            file_status_message = "3MF 已获取完成，可直接下载。"
+        elif file_name:
+            file_status_message = "3MF 还未获取到，可能仍在归档中，或需要到任务页执行缺失 3MF 重新下载。"
+        else:
+            file_status_message = "当前打印配置没有可用的 3MF 文件。"
 
         normalized.append(
             {
@@ -444,13 +470,10 @@ def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
                 "primary_image_url": (primary_media or {}).get("url") or thumbnail_url,
                 "primary_image_fallback_url": (primary_media or {}).get("fallback_url") or thumbnail_fallback_url,
                 "media": media_items,
-                "file_url": _local_asset_url(
-                    model_root,
-                    f"instances/{Path(str(item.get('fileName') or '')).name}",
-                )
-                if item.get("fileName")
-                else None,
+                "file_url": file_url,
                 "file_name": str(item.get("fileName") or item.get("name") or ""),
+                "file_available": bool(file_url),
+                "file_status_message": file_status_message,
             }
         )
     return normalized

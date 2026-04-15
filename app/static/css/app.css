@@ -2000,6 +2000,13 @@ select:focus {
   line-height: 1.75;
 }
 
+.mw-instance-panel__note {
+  margin: 10px 0 0;
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
 .mw-media-pill {
   border: 0;
   cursor: pointer;
@@ -2017,6 +2024,12 @@ select:focus {
   background: #16a34a;
 }
 
+.mw-download-button.is-disabled {
+  color: #6b7280;
+  background: #e5e7eb;
+  cursor: not-allowed;
+}
+
 .mw-action-bar {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -2027,17 +2040,57 @@ select:focus {
 }
 
 .mw-action-bar__button {
-  min-height: 72px;
+  min-height: 78px;
+  padding: 10px 8px;
   border: 0;
   border-right: 1px solid rgba(15, 23, 42, 0.06);
+  display: grid;
+  place-items: center;
+  gap: 6px;
   background: #fff;
-  font-size: 18px;
-  font-weight: 700;
   color: #374151;
 }
 
-.mw-action-bar__button:first-child {
+.mw-action-bar__icon {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #6b7280;
+}
+
+.mw-action-bar__icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.mw-action-bar__value {
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1;
+  color: inherit;
+}
+
+.mw-action-bar__button[data-kind="downloads"] .mw-action-bar__icon {
   color: #8b5cf6;
+}
+
+.mw-action-bar__button[data-kind="likes"] .mw-action-bar__icon {
+  color: #2563eb;
+}
+
+.mw-action-bar__button[data-kind="favorites"] .mw-action-bar__icon {
+  color: #f59e0b;
+}
+
+.mw-action-bar__button[data-kind="comments"] .mw-action-bar__icon {
+  color: #0f766e;
+}
+
+.mw-action-bar__button[data-kind="prints"] .mw-action-bar__icon {
+  color: #16a34a;
 }
 
 .mw-action-bar__button:last-child {
@@ -2340,6 +2393,11 @@ html[data-theme="dark"] .detail-page--makerworld .mw-action-bar__button {
   background: var(--mw-panel-bg);
   border-right-color: var(--mw-border);
   color: var(--mw-text);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-download-button.is-disabled {
+  color: var(--mw-muted);
+  background: rgba(148, 163, 184, 0.12);
 }
 
 html[data-theme="dark"] .detail-page--makerworld .mw-head__subline,
