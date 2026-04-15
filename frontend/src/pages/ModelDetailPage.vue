@@ -10,9 +10,11 @@
   </section>
 
   <div v-else-if="detail" class="mw-detail-layout">
+    <RouterLink class="mw-back-link" to="/models">返回模型库</RouterLink>
+
     <section class="mw-card">
-      <div class="mw-head">
-        <div class="mw-head__main">
+      <header class="mw-head">
+        <div class="mw-head__top">
           <div class="mw-head__author">
             <img
               v-if="detail.author?.avatar_url"
@@ -30,10 +32,8 @@
               </div>
             </div>
           </div>
-        </div>
-        <div class="mw-head__aside">
-          <div class="mw-head__chips">
-            <span class="mw-chip mw-chip--solid">{{ detail.source_label }}</span>
+
+          <div class="mw-head__aside">
             <span
               v-if="detail.subscription_flags?.deleted_on_source"
               class="mw-chip mw-chip--danger"
@@ -41,70 +41,129 @@
             >
               源已删除
             </span>
-            <span v-for="tag in detail.tags?.slice(0, 2) || []" :key="tag" class="mw-chip">{{ tag }}</span>
+            <a
+              v-if="detail.origin_url"
+              class="mw-inline-link"
+              :href="detail.origin_url"
+              target="_blank"
+              rel="noreferrer"
+            >
+              原始链接
+            </a>
           </div>
         </div>
-      </div>
+
+        <div class="mw-head__chips">
+          <span class="mw-chip mw-chip--solid">{{ detail.source_label }}</span>
+          <span v-for="tag in detail.tags?.slice(0, 2) || []" :key="tag" class="mw-chip">{{ tag }}</span>
+        </div>
+      </header>
 
       <div class="mw-hero">
-        <div class="mw-gallery">
-          <div class="mw-gallery__cover">
-            <img
-              v-if="currentMedia.src"
-              class="mw-gallery__image"
-              :src="currentMedia.src"
-              :alt="currentMedia.alt || detail.title"
-              @error="onMainMediaError"
-            >
-            <div v-else class="media-placeholder media-placeholder--large">{{ detail.title.slice(0, 1) }}</div>
-            <button
-              v-if="currentMedia.src"
-              class="mw-gallery__preview"
-              type="button"
-              @click="openLightbox(currentMedia.src)"
-            >
-              查看大图
-            </button>
+        <div class="mw-hero__main">
+          <div class="mw-gallery">
+            <div class="mw-gallery__cover">
+              <img
+                v-if="currentMedia.src"
+                class="mw-gallery__image"
+                :src="currentMedia.src"
+                :alt="currentMedia.alt || detail.title"
+                @error="onMainMediaError"
+              >
+              <div v-else class="media-placeholder media-placeholder--large">{{ detail.title.slice(0, 1) }}</div>
+              <button
+                v-if="currentMedia.src"
+                class="mw-gallery__preview"
+                type="button"
+                @click="openLightbox(currentMedia.src)"
+              >
+                <span class="mw-gallery__preview-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M4.5 16.19V8.96l6.56 3.65v7.23L4.5 16.19Z" />
+                    <path d="M19.5 16.19V8.96l-6.56 3.65v7.23l6.56-3.65Z" />
+                    <path d="M12 10.98 5.49 7.37 12 3.75l6.51 3.62L12 10.98Z" />
+                  </svg>
+                </span>
+                <span>3D 预览</span>
+              </button>
+            </div>
+
+            <div v-if="detail.gallery?.length" class="mw-gallery__thumbs">
+              <button
+                v-for="(image, index) in detail.gallery"
+                :key="`${image.url}-${index}`"
+                :class="['mw-gallery__thumb', currentMedia.key === `gallery:${index}` && 'is-active']"
+                type="button"
+                @click="selectGallery(index)"
+              >
+                <img
+                  :src="image.url"
+                  :alt="`${detail.title} ${index + 1}`"
+                  loading="lazy"
+                  @error="swapEventImage($event, image.fallback_url)"
+                >
+              </button>
+            </div>
           </div>
 
-          <div v-if="detail.gallery?.length" class="mw-gallery__thumbs">
-            <button
-              v-for="(image, index) in detail.gallery"
-              :key="`${image.url}-${index}`"
-              :class="['mw-gallery__thumb', currentMedia.key === `gallery:${index}` && 'is-active']"
-              type="button"
-              @click="selectGallery(index)"
+          <div class="mw-action-bar">
+            <div
+              v-for="item in actionStats"
+              :key="item.key"
+              class="mw-action-bar__button"
+              :data-kind="item.key"
+              :title="`${item.label} ${formatStat(item.value)}`"
             >
-              <img
-                :src="image.url"
-                :alt="`${detail.title} ${index + 1}`"
-                loading="lazy"
-                @error="swapEventImage($event, image.fallback_url)"
-              >
-            </button>
+              <span class="mw-action-bar__icon" aria-hidden="true" v-html="item.icon"></span>
+              <strong class="mw-action-bar__value">{{ formatStat(item.value) }}</strong>
+            </div>
+          </div>
+
+          <div class="mw-statline">
+            <span>采集于 {{ detail.collect_date || "未知时间" }}</span>
+            <span>发布于 {{ detail.publish_date || "未知时间" }}</span>
           </div>
         </div>
 
         <aside class="mw-config-panel">
           <div class="mw-config-panel__header">
-            <h2>打印配置 ({{ detail.instances?.length || 0 }})</h2>
+            <h2>打印配置 <span>({{ detail.instances?.length || 0 }})</span></h2>
+
+            <div v-if="machineFilters.length" class="mw-config-panel__filters">
+              <span class="mw-filter-pill is-active">全部</span>
+              <span v-for="machine in machineFilters.slice(0, 10)" :key="machine" class="mw-filter-pill">{{ machine }}</span>
+            </div>
           </div>
 
           <div v-if="detail.instances?.length" class="mw-profile-list">
             <button
               v-for="profile in detail.instances"
               :key="profile.instance_key"
-              :class="['mw-profile-card', 'mw-profile-card--text', activeInstance?.instance_key === profile.instance_key && 'is-active']"
+              :class="['mw-profile-card', activeInstance?.instance_key === profile.instance_key && 'is-active']"
               type="button"
               @click="selectInstance(profile)"
             >
+              <div class="mw-profile-card__thumb-wrap">
+                <img
+                  v-if="profilePreview(profile)"
+                  class="mw-profile-card__thumb"
+                  :src="profilePreview(profile)"
+                  :alt="profile.title"
+                  loading="lazy"
+                  @error="swapEventImage($event, profilePreviewFallback(profile))"
+                >
+                <span v-else class="mw-profile-card__thumb avatar-placeholder">{{ detail.title.slice(0, 1) }}</span>
+              </div>
+
               <div class="mw-profile-card__body">
                 <div class="mw-profile-card__title">{{ profile.title }}</div>
                 <div class="mw-profile-card__meta">
-                  <span v-if="profile.machine">{{ profile.machine }}</span>
-                  <span v-if="profile.plates">{{ profile.plates }} 盘</span>
-                  <span v-if="profile.download_count">{{ profile.download_count }} 下载</span>
+                  <span>{{ profile.machine || "通用" }}</span>
                   <span v-if="profile.time">{{ profile.time }}</span>
+                </div>
+                <div class="mw-profile-card__stats">
+                  <span v-if="profile.plates">{{ profile.plates }} 盘</span>
+                  <span v-if="profile.download_count">{{ formatStat(profile.download_count) }} 下载</span>
                   <span v-if="profile.rating">★ {{ profile.rating }}</span>
                 </div>
               </div>
@@ -114,6 +173,11 @@
 
           <div v-if="activeInstance" class="mw-instance-panels">
             <section class="mw-instance-panel is-active">
+              <div class="mw-instance-panel__meta">
+                <span v-if="activeInstance.publish_date">上传于 {{ activeInstance.publish_date }}</span>
+                <span v-if="activeInstance.plates">{{ activeInstance.plates }} 盘</span>
+                <span v-if="activeInstance.download_count">{{ formatStat(activeInstance.download_count) }} 下载</span>
+              </div>
               <p v-if="activeInstance.summary" class="mw-instance-panel__summary">{{ activeInstance.summary }}</p>
               <a
                 v-if="activeInstance.file_available && activeInstance.file_url"
@@ -137,47 +201,29 @@
           </div>
         </aside>
       </div>
-
-      <div class="mw-action-bar">
-        <div
-          v-for="item in actionStats"
-          :key="item.key"
-          class="mw-action-bar__button"
-          :data-kind="item.key"
-          :title="`${item.label} ${formatStat(item.value)}`"
-        >
-          <span class="mw-action-bar__icon" aria-hidden="true" v-html="item.icon"></span>
-          <strong class="mw-action-bar__value">{{ formatStat(item.value) }}</strong>
-        </div>
-      </div>
-
-      <div class="mw-statline">
-        <span>采集于 {{ detail.collect_date || "未知时间" }}</span>
-        <span>发布于 {{ detail.publish_date || "未知时间" }}</span>
-        <span v-if="detail.origin_url">
-          <a :href="detail.origin_url" target="_blank" rel="noreferrer">原始链接</a>
-        </span>
-      </div>
     </section>
 
     <section class="mw-content-stack">
       <article class="mw-section-card">
         <div class="mw-section-card__header">
-          <div>
-            <span class="eyebrow">描述</span>
-            <h2>模型说明</h2>
-          </div>
+          <h2>介绍</h2>
         </div>
         <div v-if="detail.summary_html" class="rich-content" v-html="detail.summary_html"></div>
         <p v-else class="empty-copy">{{ detail.summary_text || "当前没有描述内容。" }}</p>
       </article>
 
+      <article v-if="detail.tags?.length" class="mw-section-card mw-section-card--compact">
+        <div class="mw-section-card__header">
+          <h2>标签</h2>
+        </div>
+        <div class="tag-row">
+          <span v-for="tag in detail.tags" :key="tag" class="tag-chip">{{ tag }}</span>
+        </div>
+      </article>
+
       <article v-if="attachmentGroups.length" class="mw-section-card">
         <div class="mw-section-card__header">
-          <div>
-            <span class="eyebrow">文档</span>
-            <h2>文档 ({{ detail.attachments?.length || 0 }})</h2>
-          </div>
+          <h2>文档 ({{ detail.attachments?.length || 0 }})</h2>
         </div>
         <div class="doc-groups">
           <section v-for="group in attachmentGroups" :key="group.label" class="doc-group">
@@ -217,23 +263,7 @@
 
       <article class="mw-section-card">
         <div class="mw-section-card__header">
-          <div>
-            <span class="eyebrow">标签</span>
-            <h2>标签</h2>
-          </div>
-        </div>
-        <div v-if="detail.tags?.length" class="tag-row">
-          <span v-for="tag in detail.tags" :key="tag" class="tag-chip">{{ tag }}</span>
-        </div>
-        <p v-else class="empty-copy">当前没有标签。</p>
-      </article>
-
-      <article class="mw-section-card">
-        <div class="mw-section-card__header">
-          <div>
-            <span class="eyebrow">评论</span>
-            <h2>评论与反馈 ({{ detail.comments?.length || 0 }})</h2>
-          </div>
+          <h2>评论与评分 ({{ detail.comments?.length || 0 }})</h2>
         </div>
         <div v-if="detail.comments?.length" class="comment-list">
           <article
@@ -321,6 +351,20 @@ const deletedSourceTitle = computed(() => {
     return "订阅源已删除该模型";
   }
   return `订阅源已删除该模型：${items.map((item) => item.name || item.url || "未命名订阅").join("、")}`;
+});
+
+const machineFilters = computed(() => {
+  const seen = new Set();
+  const items = [];
+  for (const instance of detail.value?.instances || []) {
+    const label = String(instance.machine || "").trim();
+    if (!label || seen.has(label)) {
+      continue;
+    }
+    seen.add(label);
+    items.push(label);
+  }
+  return items;
 });
 
 const attachmentGroups = computed(() => {
@@ -436,6 +480,14 @@ function closeLightbox() {
 
 function formatStat(value) {
   return new Intl.NumberFormat("zh-CN").format(Number(value || 0));
+}
+
+function profilePreview(profile) {
+  return profile?.thumbnail_url || profile?.primary_image_url || "";
+}
+
+function profilePreviewFallback(profile) {
+  return profile?.thumbnail_fallback_url || profile?.primary_image_fallback_url || "";
 }
 
 async function load() {
