@@ -153,46 +153,135 @@
           <div class="mw-config-panel__divider"></div>
 
           <div v-if="detail.instances?.length" class="mw-profile-list">
-            <button
-              v-for="profile in detail.instances"
+            <div
+              v-for="(profile, profileIndex) in detail.instances"
               :key="profile.instance_key"
-              :class="['mw-profile-card', activeInstance?.instance_key === profile.instance_key && 'is-active']"
-              type="button"
-              @click="selectInstance(profile)"
+              class="mw-profile-entry"
+              @mouseenter="openProfilePopover(profile)"
+              @mouseleave="closeProfilePopover(profile.instance_key)"
+              @focusin="openProfilePopover(profile)"
+              @focusout="handleProfileEntryFocusOut($event, profile)"
             >
-              <div class="mw-profile-card__thumb-wrap">
-                <img
-                  v-if="profilePreview(profile)"
-                  class="mw-profile-card__thumb"
-                  :src="profilePreview(profile)"
-                  :alt="profile.title"
-                  loading="lazy"
-                  @error="swapEventImage($event, profilePreviewFallback(profile))"
-                >
-                <span v-else class="mw-profile-card__thumb avatar-placeholder">{{ detail.title.slice(0, 1) }}</span>
-              </div>
-
-              <div class="mw-profile-card__body">
-                <div class="mw-profile-card__title">{{ profile.title }}</div>
-                <div class="mw-profile-card__meta">
-                  <span class="mw-profile-card__badge">{{ profile.machine || "通用" }}</span>
-                  <span v-if="profile.time" class="mw-profile-card__meta-item">
-                    <svg class="mw-profile-card__meta-icon" viewBox="0 0 16 17" fill="none">
-                      <path d="M15 8.52342C15 4.64449 11.866 1.5 8 1.5V8.52342L12.9395 13.5C14.2123 12.2282 15 10.4681 15 8.52342Z" fill="currentColor" opacity=".24"></path>
-                      <path d="M8 1.1a7.4 7.4 0 1 0 0 14.8 7.4 7.4 0 0 0 0-14.8Zm0 1.2a6.2 6.2 0 1 1 0 12.4 6.2 6.2 0 0 1 0-12.4Zm0 3.6a.6.6 0 0 1 .6.6v1.75l1.82 1.82a.6.6 0 1 1-.84.84L7.58 8.92A.6.6 0 0 1 7.4 8.5v-2a.6.6 0 0 1 .6-.6Z" fill="currentColor"></path>
-                    </svg>
-                    <span>{{ profile.time }}</span>
-                  </span>
-                  <span v-if="profile.plates" class="mw-profile-card__meta-item">{{ profile.plates }} 盘</span>
-                  <span v-if="profile.download_count" class="mw-profile-card__meta-item">{{ formatStat(profile.download_count) }} 下载</span>
-                  <span v-if="profile.rating" class="mw-profile-card__meta-item">★ {{ profile.rating }}</span>
+              <button
+                :class="[
+                  'mw-profile-card',
+                  activeInstance?.instance_key === profile.instance_key && 'is-active',
+                  isProfilePopoverOpen(profile) && 'is-previewing',
+                ]"
+                :aria-expanded="isProfilePopoverOpen(profile) ? 'true' : 'false'"
+                type="button"
+                @click="selectInstance(profile)"
+              >
+                <div class="mw-profile-card__thumb-wrap">
+                  <img
+                    v-if="profilePreview(profile)"
+                    class="mw-profile-card__thumb"
+                    :src="profilePreview(profile)"
+                    :alt="profile.title"
+                    loading="lazy"
+                    @error="swapEventImage($event, profilePreviewFallback(profile))"
+                  >
+                  <span v-else class="mw-profile-card__thumb avatar-placeholder">{{ detail.title.slice(0, 1) }}</span>
                 </div>
-              </div>
-            </button>
+
+                <div class="mw-profile-card__body">
+                  <div class="mw-profile-card__title">{{ profile.title }}</div>
+                  <div class="mw-profile-card__meta">
+                    <span class="mw-profile-card__badge">{{ profile.machine || "通用" }}</span>
+                    <span v-if="profile.time" class="mw-profile-card__meta-item">
+                      <svg class="mw-profile-card__meta-icon" viewBox="0 0 16 17" fill="none">
+                        <path d="M15 8.52342C15 4.64449 11.866 1.5 8 1.5V8.52342L12.9395 13.5C14.2123 12.2282 15 10.4681 15 8.52342Z" fill="currentColor" opacity=".24"></path>
+                        <path d="M8 1.1a7.4 7.4 0 1 0 0 14.8 7.4 7.4 0 0 0 0-14.8Zm0 1.2a6.2 6.2 0 1 1 0 12.4 6.2 6.2 0 0 1 0-12.4Zm0 3.6a.6.6 0 0 1 .6.6v1.75l1.82 1.82a.6.6 0 1 1-.84.84L7.58 8.92A.6.6 0 0 1 7.4 8.5v-2a.6.6 0 0 1 .6-.6Z" fill="currentColor"></path>
+                      </svg>
+                      <span>{{ profile.time }}</span>
+                    </span>
+                    <span v-if="profile.plates" class="mw-profile-card__meta-item">{{ profile.plates }} 盘</span>
+                    <span v-if="profile.download_count" class="mw-profile-card__meta-item">{{ formatStat(profile.download_count) }} 下载</span>
+                    <span v-if="profile.rating" class="mw-profile-card__meta-item">★ {{ profile.rating }}</span>
+                  </div>
+                </div>
+              </button>
+
+              <section
+                v-if="isProfilePopoverOpen(profile)"
+                :class="['mw-profile-popover', profilePopoverPlacement(profileIndex, detail.instances.length)]"
+              >
+                <div class="mw-profile-popover__hero">
+                  <div class="mw-profile-popover__thumb-wrap">
+                    <img
+                      v-if="profilePreview(profile)"
+                      class="mw-profile-popover__thumb"
+                      :src="profilePreview(profile)"
+                      :alt="profile.title"
+                      loading="lazy"
+                      @error="swapEventImage($event, profilePreviewFallback(profile))"
+                    >
+                    <span v-else class="mw-profile-popover__thumb avatar-placeholder">{{ detail.title.slice(0, 1) }}</span>
+                  </div>
+                  <div class="mw-profile-popover__hero-body">
+                    <div class="mw-profile-popover__eyebrow">打印配置</div>
+                    <h3>{{ profile.title }}</h3>
+                    <div class="mw-profile-popover__meta">
+                      <span>{{ profile.machine || "通用" }}</span>
+                      <span v-if="profile.time">{{ profile.time }}</span>
+                      <span v-if="profile.publish_date">上传于 {{ profile.publish_date }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="mw-profile-popover__stats">
+                  <span class="mw-profile-popover__stat">
+                    <strong>盘数</strong>
+                    <em>{{ profile.plates || 0 }}</em>
+                  </span>
+                  <span class="mw-profile-popover__stat">
+                    <strong>下载</strong>
+                    <em>{{ formatStat(profile.download_count) }}</em>
+                  </span>
+                  <span class="mw-profile-popover__stat">
+                    <strong>打印</strong>
+                    <em>{{ formatStat(profile.print_count) }}</em>
+                  </span>
+                  <span class="mw-profile-popover__stat">
+                    <strong>评分</strong>
+                    <em>{{ profile.rating || "-" }}</em>
+                  </span>
+                </div>
+
+                <p class="mw-profile-popover__summary">
+                  {{ profile.summary || "该打印配置可单独查看图集、分盘图片与 3MF 状态。" }}
+                </p>
+
+                <div class="mw-profile-popover__actions">
+                  <button class="button button-secondary button-small" type="button" @click="selectInstance(profile)">
+                    查看配置
+                  </button>
+                  <a
+                    v-if="profile.file_available && profile.file_url"
+                    class="mw-download-button mw-download-button--compact"
+                    :href="profile.file_url"
+                    download
+                  >
+                    下载 3MF
+                  </a>
+                  <span
+                    v-else
+                    class="mw-download-button mw-download-button--compact is-disabled"
+                    :title="profile.file_status_message || '3MF 还未获取到'"
+                  >
+                    {{ profile.file_name ? "3MF 还未获取到" : "当前没有 3MF" }}
+                  </span>
+                </div>
+
+                <p v-if="profile.file_status_message" class="mw-profile-popover__note">
+                  {{ profile.file_status_message }}
+                </p>
+              </section>
+            </div>
           </div>
           <p v-else class="empty-copy">当前没有可展示的打印配置。</p>
 
-          <div v-if="activeInstance" class="mw-instance-panels">
+          <div v-if="activeInstance && !hoverPopoverEnabled" class="mw-instance-panels mw-instance-panels--inline">
             <section class="mw-instance-panel is-active">
               <div class="mw-instance-panel__meta">
                 <span v-if="activeInstance.publish_date">上传于 {{ activeInstance.publish_date }}</span>
@@ -410,6 +499,11 @@ const attachmentUploading = ref(false);
 const attachmentUploadMessage = ref("");
 const attachmentUploadError = ref("");
 const deletingAttachmentId = ref("");
+const hoverPopoverEnabled = ref(false);
+const previewedInstanceKey = ref("");
+
+let hoverPopoverMediaQuery = null;
+let hoverPopoverMediaListener = null;
 
 const attachmentForm = ref({
   category: "assembly",
@@ -522,6 +616,52 @@ const activeInstanceDownloadLabel = computed(() => {
   return "当前没有 3MF";
 });
 
+function applyHoverPopoverEnabled(matches) {
+  hoverPopoverEnabled.value = matches;
+  if (!matches) {
+    previewedInstanceKey.value = "";
+  }
+}
+
+function parseProfileHash() {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  const rawHash = String(window.location.hash || "").trim();
+  if (!rawHash) {
+    return "";
+  }
+  const normalized = rawHash.replace(/^#/, "");
+  if (!normalized) {
+    return "";
+  }
+  if (/^profileId-/i.test(normalized)) {
+    return decodeURIComponent(normalized.replace(/^profileId-/i, ""));
+  }
+  return decodeURIComponent(normalized);
+}
+
+function findInstanceByHash(items = []) {
+  const hashValue = parseProfileHash();
+  if (!hashValue) {
+    return null;
+  }
+  return items.find((item) => String(item.instance_key) === hashValue) || null;
+}
+
+function syncProfileHash(instance) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const url = new URL(window.location.href);
+  if (instance?.instance_key) {
+    url.hash = `profileId-${encodeURIComponent(instance.instance_key)}`;
+  } else {
+    url.hash = "";
+  }
+  window.history.replaceState(window.history.state, "", url.toString());
+}
+
 function setMainMedia(key, src, fallback = "", alt = "") {
   currentMedia.value = {
     key,
@@ -547,7 +687,11 @@ function selectInstanceMedia(media, index) {
   );
 }
 
-function selectInstance(instance) {
+function selectInstance(instance, options = {}) {
+  const { syncHash = true } = options;
+  if (!instance) {
+    return;
+  }
   activeInstanceKey.value = instance.instance_key;
   if (instance.media?.length) {
     selectInstanceMedia(instance.media[0], 0);
@@ -558,6 +702,56 @@ function selectInstance(instance) {
       instance.primary_image_fallback_url || "",
       instance.title,
     );
+  }
+  if (syncHash) {
+    syncProfileHash(instance);
+  }
+}
+
+function isProfilePopoverOpen(profile) {
+  return hoverPopoverEnabled.value && previewedInstanceKey.value === profile?.instance_key;
+}
+
+function openProfilePopover(profile) {
+  if (!hoverPopoverEnabled.value || !profile) {
+    return;
+  }
+  previewedInstanceKey.value = profile.instance_key;
+}
+
+function closeProfilePopover(instanceKey = "") {
+  if (!hoverPopoverEnabled.value) {
+    return;
+  }
+  if (!instanceKey || previewedInstanceKey.value === instanceKey) {
+    previewedInstanceKey.value = "";
+  }
+}
+
+function handleProfileEntryFocusOut(event, profile) {
+  if (event.currentTarget?.contains(event.relatedTarget)) {
+    return;
+  }
+  closeProfilePopover(profile?.instance_key || "");
+}
+
+function profilePopoverPlacement(index, total) {
+  if (index === 0) {
+    return "is-align-top";
+  }
+  if (index >= total - 1) {
+    return "is-align-bottom";
+  }
+  return "";
+}
+
+function handleHashChange() {
+  if (!detail.value?.instances?.length) {
+    return;
+  }
+  const matched = findInstanceByHash(detail.value.instances);
+  if (matched) {
+    selectInstance(matched, { syncHash: false });
   }
 }
 
@@ -711,15 +905,19 @@ async function removeAttachment(attachment) {
 async function load() {
   loading.value = true;
   errorMessage.value = "";
+  previewedInstanceKey.value = "";
   try {
     const payload = await apiRequest(`/api/models/${encodeURI(modelDir.value)}`);
     detail.value = payload;
     authorAvatarSrc.value = payload.author?.avatar_url || "";
-    activeInstanceKey.value = payload.instances?.[0]?.instance_key || "";
-    if (payload.gallery?.length) {
+    const initialInstance = findInstanceByHash(payload.instances || []) || payload.instances?.[0] || null;
+    activeInstanceKey.value = initialInstance?.instance_key || "";
+    if (findInstanceByHash(payload.instances || [])) {
+      selectInstance(initialInstance, { syncHash: false });
+    } else if (payload.gallery?.length) {
       selectGallery(0);
-    } else if (payload.instances?.length) {
-      selectInstance(payload.instances[0]);
+    } else if (initialInstance) {
+      selectInstance(initialInstance, { syncHash: false });
     } else {
       setMainMedia("", payload.cover_url || "", payload.cover_remote_url || "", payload.title);
     }
@@ -736,7 +934,31 @@ watch(modelDir, () => {
 });
 
 onMounted(load);
+onMounted(() => {
+  if (typeof window === "undefined") {
+    return;
+  }
+  hoverPopoverMediaQuery = window.matchMedia("(min-width: 1241px) and (hover: hover) and (pointer: fine)");
+  applyHoverPopoverEnabled(hoverPopoverMediaQuery.matches);
+  hoverPopoverMediaListener = (event) => applyHoverPopoverEnabled(event.matches);
+  if (typeof hoverPopoverMediaQuery.addEventListener === "function") {
+    hoverPopoverMediaQuery.addEventListener("change", hoverPopoverMediaListener);
+  } else if (typeof hoverPopoverMediaQuery.addListener === "function") {
+    hoverPopoverMediaQuery.addListener(hoverPopoverMediaListener);
+  }
+  window.addEventListener("hashchange", handleHashChange);
+});
 onBeforeUnmount(() => {
   document.body.classList.remove("is-lightbox-open");
+  if (hoverPopoverMediaQuery && hoverPopoverMediaListener) {
+    if (typeof hoverPopoverMediaQuery.removeEventListener === "function") {
+      hoverPopoverMediaQuery.removeEventListener("change", hoverPopoverMediaListener);
+    } else if (typeof hoverPopoverMediaQuery.removeListener === "function") {
+      hoverPopoverMediaQuery.removeListener(hoverPopoverMediaListener);
+    }
+  }
+  if (typeof window !== "undefined") {
+    window.removeEventListener("hashchange", handleHashChange);
+  }
 });
 </script>
