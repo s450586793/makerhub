@@ -820,6 +820,7 @@ select:focus {
   overflow: hidden;
   border-radius: var(--radius-xl);
   display: grid;
+  height: 100%;
 }
 
 .model-card__cover {
@@ -836,7 +837,9 @@ select:focus {
 
 .model-card__body {
   padding: 18px;
-  display: grid;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
 }
 
@@ -1325,8 +1328,17 @@ select:focus {
   min-width: 0;
 }
 
+.table-like__row--missing span {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
 .table-like__row span .button {
   margin: -4px 0;
+}
+
+.table-like__row--missing .button {
+  margin: 0;
 }
 
 .table-like__row--head {
