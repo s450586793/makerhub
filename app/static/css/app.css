@@ -1235,6 +1235,12 @@ select:focus {
   background: var(--danger-soft);
 }
 
+.task-list-footer {
+  margin-top: 12px;
+  display: flex;
+  justify-content: center;
+}
+
 .progress-bar {
   width: 100%;
   height: 8px;

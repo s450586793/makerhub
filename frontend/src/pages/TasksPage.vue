@@ -105,9 +105,9 @@
       <div class="task-columns">
         <div class="task-column">
           <h3>运行中</h3>
-          <div v-if="payload.archive_queue.active.length">
+          <div v-if="visibleActiveTasks.length">
             <div
-              v-for="item in payload.archive_queue.active"
+              v-for="item in visibleActiveTasks"
               :key="item.id || item.title"
               class="task-item"
             >
@@ -116,14 +116,19 @@
               <div v-if="item.progress" class="progress-bar"><span :style="{ width: `${item.progress}%` }"></span></div>
               <p>{{ item.message || "正在执行中" }}</p>
             </div>
+            <div v-if="payload.archive_queue.active.length > activeVisibleLimit" class="task-list-footer">
+              <button class="button button-secondary button-small" type="button" @click="activeVisibleLimit += TASKS_PAGE_SIZE">
+                加载更多
+              </button>
+            </div>
           </div>
           <p v-else class="empty-copy">当前没有运行中的归档任务。</p>
         </div>
         <div class="task-column">
           <h3>排队中</h3>
-          <div v-if="payload.archive_queue.queued.length">
+          <div v-if="visibleQueuedTasks.length">
             <div
-              v-for="item in payload.archive_queue.queued"
+              v-for="item in visibleQueuedTasks"
               :key="item.id || item.title"
               class="task-item"
             >
@@ -131,20 +136,30 @@
               <span>{{ item.status }}</span>
               <p>{{ item.message || "等待归档" }}</p>
             </div>
+            <div v-if="payload.archive_queue.queued.length > queuedVisibleLimit" class="task-list-footer">
+              <button class="button button-secondary button-small" type="button" @click="queuedVisibleLimit += TASKS_PAGE_SIZE">
+                加载更多
+              </button>
+            </div>
           </div>
           <p v-else class="empty-copy">当前没有排队中的任务。</p>
         </div>
         <div class="task-column">
           <h3>最近失败</h3>
-          <div v-if="payload.archive_queue.recent_failures.length">
+          <div v-if="visibleFailureTasks.length">
             <div
-              v-for="item in payload.archive_queue.recent_failures"
+              v-for="item in visibleFailureTasks"
               :key="item.id || item.title"
               class="task-item task-item--error"
             >
               <strong>{{ item.title || item.url || "未命名任务" }}</strong>
               <span>{{ item.status }}</span>
               <p>{{ item.message || "失败原因未记录" }}</p>
+            </div>
+            <div v-if="payload.archive_queue.recent_failures.length > failureVisibleLimit" class="task-list-footer">
+              <button class="button button-secondary button-small" type="button" @click="failureVisibleLimit += TASKS_PAGE_SIZE">
+                加载更多
+              </button>
             </div>
           </div>
           <p v-else class="empty-copy">暂无失败任务。</p>
@@ -171,7 +186,7 @@
         </div>
       </div>
       <span class="form-status">{{ missingStatus }}</span>
-      <div v-if="payload.missing_3mf.items.length" class="table-like">
+      <div v-if="visibleMissingItems.length" class="table-like">
         <div class="table-like__row table-like__row--missing table-like__row--head">
           <span>模型 ID</span>
           <span>标题</span>
@@ -179,7 +194,7 @@
           <span>操作</span>
         </div>
         <div
-          v-for="item in payload.missing_3mf.items"
+          v-for="item in visibleMissingItems"
           :key="`${item.model_id}-${item.instance_id}-${item.title}`"
           class="table-like__row table-like__row--missing"
         >
@@ -212,6 +227,11 @@
             </span>
           </span>
         </div>
+      </div>
+      <div v-if="payload.missing_3mf.items.length > missingVisibleLimit" class="task-list-footer">
+        <button class="button button-secondary button-small" type="button" @click="missingVisibleLimit += TASKS_PAGE_SIZE">
+          加载更多
+        </button>
       </div>
       <p v-else class="empty-copy">当前没有缺失 3MF 任务。</p>
     </article>
@@ -246,7 +266,7 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
 import { apiRequest } from "../lib/api";
 
@@ -295,6 +315,16 @@ const submittingArchive = ref(false);
 const confirmingArchive = ref(false);
 const pendingMissingActionKey = ref("");
 let refreshTimer = null;
+const TASKS_PAGE_SIZE = 5;
+const activeVisibleLimit = ref(TASKS_PAGE_SIZE);
+const queuedVisibleLimit = ref(TASKS_PAGE_SIZE);
+const failureVisibleLimit = ref(TASKS_PAGE_SIZE);
+const missingVisibleLimit = ref(TASKS_PAGE_SIZE);
+
+const visibleActiveTasks = computed(() => payload.value.archive_queue.active.slice(0, activeVisibleLimit.value));
+const visibleQueuedTasks = computed(() => payload.value.archive_queue.queued.slice(0, queuedVisibleLimit.value));
+const visibleFailureTasks = computed(() => payload.value.archive_queue.recent_failures.slice(0, failureVisibleLimit.value));
+const visibleMissingItems = computed(() => payload.value.missing_3mf.items.slice(0, missingVisibleLimit.value));
 
 function getMissingKey(item) {
   return [
