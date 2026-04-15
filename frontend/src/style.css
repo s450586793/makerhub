@@ -77,6 +77,50 @@
   margin: 0;
 }
 
+.page-intro--compact {
+  margin-bottom: 12px;
+}
+
+.subscriptions-create-card {
+  display: grid;
+  gap: 10px;
+}
+
+.subscription-create-form--compact {
+  gap: 10px;
+  align-items: center;
+}
+
+.subscription-create-form--compact .filter-field {
+  flex: 1 1 220px;
+}
+
+.subscription-create-form--compact .filter-field--wide {
+  flex: 2 1 360px;
+}
+
+.subscription-toggle--compact {
+  min-height: 40px;
+  padding: 0 12px;
+  border-radius: 12px;
+  font-size: 13px;
+}
+
+.subscriptions-create-card .archive-form__hint,
+.subscriptions-create-card .form-status {
+  margin: 0;
+}
+
+.subscriptions-create-card .archive-form__hint {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.subscriptions-create-card .form-status {
+  min-height: 20px;
+  display: block;
+}
+
 .model-card--interactive {
   position: relative;
 }
@@ -172,6 +216,12 @@
 }
 
 .gallery-card__source--danger {
+  border-color: rgba(191, 74, 74, 0.18);
+  color: #a53030;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.mw-chip--danger {
   border-color: rgba(191, 74, 74, 0.18);
   color: #a53030;
   background: rgba(239, 68, 68, 0.1);
@@ -569,6 +619,14 @@
   .subscription-actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .page-intro--compact {
+    margin-bottom: 10px;
+  }
+
+  .subscriptions-create-card {
+    gap: 8px;
   }
 
   .subscription-toggle {

@@ -1,5 +1,5 @@
 <template>
-  <section class="page-intro">
+  <section class="page-intro page-intro--compact">
     <div>
       <span class="eyebrow">订阅</span>
       <h1>作者与收藏夹订阅</h1>
@@ -17,21 +17,17 @@
         <span>同步中</span>
         <strong>{{ payload.summary.running }}</strong>
       </div>
-      <div class="intro-stat">
-        <span>源端删除标记</span>
-        <strong>{{ payload.summary.deleted_marked }}</strong>
-      </div>
     </div>
   </section>
 
-  <section class="surface section-card">
-    <div class="section-card__header">
+  <section class="surface section-card section-card--compact subscriptions-create-card">
+    <div class="section-card__header section-card__header--compact">
       <div>
         <span class="eyebrow">新增订阅</span>
         <h2>创建新的定时订阅</h2>
       </div>
     </div>
-    <form class="subscription-create-form" @submit.prevent="createSubscription">
+    <form class="subscription-create-form subscription-create-form--compact" @submit.prevent="createSubscription">
       <label class="filter-field filter-field--wide">
         <input v-model.trim="createForm.url" type="text" placeholder="作者上传页或收藏夹模型页链接">
       </label>
@@ -41,11 +37,11 @@
       <label class="filter-field">
         <input v-model.trim="createForm.cron" type="text" placeholder="Cron，例如 0 */6 * * *">
       </label>
-      <label class="subscription-toggle">
+      <label class="subscription-toggle subscription-toggle--compact">
         <input v-model="createForm.enabled" type="checkbox">
         <span>启用</span>
       </label>
-      <label class="subscription-toggle">
+      <label class="subscription-toggle subscription-toggle--compact">
         <input v-model="createForm.initialize_from_source" type="checkbox">
         <span>创建时初始化当前源页面</span>
       </label>
@@ -146,7 +142,6 @@ const payload = ref({
   summary: {
     enabled: 0,
     running: 0,
-    deleted_marked: 0,
   },
 });
 const createForm = reactive({
@@ -209,7 +204,7 @@ async function createSubscription() {
     createForm.cron = "0 */6 * * *";
     createForm.enabled = true;
     createForm.initialize_from_source = true;
-    normalizePayload(response.subscriptions || { items: [], count: 0, summary: { enabled: 0, running: 0, deleted_marked: 0 } });
+    normalizePayload(response.subscriptions || { items: [], count: 0, summary: { enabled: 0, running: 0 } });
   } catch (error) {
     status.value = error instanceof Error ? error.message : "创建订阅失败。";
   } finally {
@@ -265,7 +260,7 @@ async function deleteSubscription(item) {
       method: "DELETE",
     });
     status.value = response.message || "订阅已删除。";
-    normalizePayload(response.subscriptions || { items: [], count: 0, summary: { enabled: 0, running: 0, deleted_marked: 0 } });
+    normalizePayload(response.subscriptions || { items: [], count: 0, summary: { enabled: 0, running: 0 } });
   } catch (error) {
     status.value = error instanceof Error ? error.message : "删除失败。";
   } finally {

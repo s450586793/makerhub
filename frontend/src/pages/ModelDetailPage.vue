@@ -34,6 +34,13 @@
         <div class="mw-head__aside">
           <div class="mw-head__chips">
             <span class="mw-chip mw-chip--solid">{{ detail.source_label }}</span>
+            <span
+              v-if="detail.subscription_flags?.deleted_on_source"
+              class="mw-chip mw-chip--danger"
+              :title="deletedSourceTitle"
+            >
+              源已删除
+            </span>
             <span v-for="tag in detail.tags?.slice(0, 2) || []" :key="tag" class="mw-chip">{{ tag }}</span>
           </div>
         </div>
@@ -291,6 +298,14 @@ const modelDir = computed(() => decodeURIComponent(route.path.replace(/^\/models
 
 const activeInstance = computed(() => {
   return detail.value?.instances?.find((item) => item.instance_key === activeInstanceKey.value) || null;
+});
+
+const deletedSourceTitle = computed(() => {
+  const items = detail.value?.subscription_flags?.deleted_sources || [];
+  if (!items.length) {
+    return "订阅源已删除该模型";
+  }
+  return `订阅源已删除该模型：${items.map((item) => item.name || item.url || "未命名订阅").join("、")}`;
 });
 
 const attachmentGroups = computed(() => {
