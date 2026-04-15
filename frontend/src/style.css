@@ -95,18 +95,18 @@
   gap: 10px;
 }
 
-.subscription-create-form--compact {
+.subscription-create-form.subscription-create-form--compact {
   display: grid;
   grid-template-columns: minmax(0, 2.2fr) minmax(180px, 1.1fr) minmax(180px, 1.1fr) auto;
   gap: 10px;
   align-items: center;
 }
 
-.subscription-create-form--compact .filter-field {
+.subscription-create-form.subscription-create-form--compact .filter-field {
   min-width: 0;
 }
 
-.subscription-create-form--compact .filter-field--wide {
+.subscription-create-form.subscription-create-form--compact .filter-field--wide {
   min-width: 0;
 }
 
@@ -118,11 +118,13 @@
 }
 
 .subscription-toggle--wide {
+  min-width: 260px;
   justify-content: flex-start;
 }
 
 .subscription-create-form__actions {
   grid-column: 1 / -1;
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -495,7 +497,7 @@
   flex-wrap: wrap;
 }
 
-.subscription-create-form,
+.subscription-create-form:not(.subscription-create-form--compact),
 .subscription-card__form {
   display: flex;
   flex-wrap: wrap;
@@ -644,14 +646,14 @@
   }
 
   .archive-form__options,
-  .subscription-create-form,
+  .subscription-create-form:not(.subscription-create-form--compact),
   .subscription-card__form,
   .subscription-actions {
     flex-direction: column;
     align-items: stretch;
   }
 
-  .subscription-create-form--compact {
+  .subscription-create-form.subscription-create-form--compact {
     grid-template-columns: 1fr;
   }
 
