@@ -9,6 +9,7 @@ from urllib.parse import quote
 from bs4 import BeautifulSoup
 
 from app.core.settings import ARCHIVE_DIR
+from app.core.store import JsonStore
 from app.services.batch_discovery import extract_model_id, normalize_source_url
 from app.services.task_state import TaskStateStore
 
@@ -765,6 +766,62 @@ def _apply_model_flags(items: list[dict]) -> list[dict]:
     return items
 
 
+def _apply_subscription_flags(items: list[dict]) -> list[dict]:
+    config = JsonStore().load()
+    subscriptions = {item.id: item for item in getattr(config, "subscriptions", [])}
+    state_payload = TaskStateStore().load_subscriptions_state()
+
+    deleted_by_key: dict[str, list[dict]] = {}
+    for state_item in state_payload.get("items") or []:
+        subscription_id = str(state_item.get("id") or "").strip()
+        subscription = subscriptions.get(subscription_id)
+        if not subscription:
+            continue
+
+        current_keys = {
+            str(child.get("task_key") or "").strip()
+            for child in state_item.get("current_items") or []
+            if str(child.get("task_key") or "").strip()
+        }
+        for child in state_item.get("tracked_items") or []:
+            key = str(child.get("task_key") or "").strip()
+            if not key or key in current_keys:
+                continue
+            deleted_by_key.setdefault(key, []).append(
+                {
+                    "id": subscription.id,
+                    "name": subscription.name,
+                    "mode": subscription.mode,
+                    "url": subscription.url,
+                }
+            )
+
+    for item in items:
+        model_id = str(item.get("id") or "").strip()
+        origin_url = normalize_source_url(str(item.get("origin_url") or "").strip())
+        keys = []
+        if model_id:
+            keys.append(f"model:{model_id}")
+        if origin_url:
+            keys.append(origin_url)
+
+        deleted_sources: list[dict] = []
+        seen_source_ids: set[str] = set()
+        for key in keys:
+            for source in deleted_by_key.get(key, []):
+                source_id = str(source.get("id") or "")
+                if source_id in seen_source_ids:
+                    continue
+                seen_source_ids.add(source_id)
+                deleted_sources.append(source)
+
+        item["subscription_flags"] = {
+            "deleted_on_source": bool(deleted_sources),
+            "deleted_sources": deleted_sources,
+        }
+    return items
+
+
 def build_models_payload(
     q: str = "",
     source: str = "all",
@@ -775,6 +832,7 @@ def build_models_payload(
 ) -> dict:
     all_models = load_archive_models(include_detail=False)
     all_models = _apply_model_flags(all_models)
+    all_models = _apply_subscription_flags(all_models)
     normalized_query = q.strip().lower()
     normalized_tag = tag.strip().lower()
     normalized_source = source.strip().lower() or "all"
@@ -849,6 +907,7 @@ def get_model_detail(model_dir: str, include_detail: bool = True) -> Optional[di
     if detail is None:
         return None
     _apply_model_flags([detail])
+    _apply_subscription_flags([detail])
     return detail
 
 

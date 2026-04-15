@@ -11,6 +11,7 @@ ARCHIVE_QUEUE_PATH = STATE_DIR / "archive_queue.json"
 MISSING_3MF_PATH = STATE_DIR / "missing_3mf.json"
 ORGANIZE_TASKS_PATH = STATE_DIR / "organize_tasks.json"
 MODEL_FLAGS_PATH = STATE_DIR / "model_flags.json"
+SUBSCRIPTIONS_STATE_PATH = STATE_DIR / "subscriptions_state.json"
 _STATE_LOCK = threading.RLock()
 
 
@@ -205,6 +206,99 @@ def _normalize_model_flags(payload: Any) -> dict:
     }
 
 
+def _normalize_subscription_source_item(item: Any) -> Optional[dict]:
+    if isinstance(item, str):
+        clean = str(item).strip()
+        if not clean:
+            return None
+        return {
+            "model_id": "",
+            "url": clean,
+            "task_key": clean,
+        }
+
+    if not isinstance(item, dict):
+        return None
+
+    model_id = str(item.get("model_id") or "").strip()
+    url = str(item.get("url") or "").strip()
+    task_key = str(item.get("task_key") or item.get("key") or "").strip()
+    if not any((model_id, url, task_key)):
+        return None
+    if not task_key:
+        task_key = f"model:{model_id}" if model_id else url
+    return {
+        "model_id": model_id,
+        "url": url,
+        "task_key": task_key,
+    }
+
+
+def _normalize_subscription_state(payload: Any) -> dict:
+    if isinstance(payload, list):
+        items = payload
+    elif isinstance(payload, dict):
+        items = payload.get("items") or payload.get("subscriptions") or []
+    else:
+        items = []
+
+    normalized: list[dict] = []
+    seen_ids: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        subscription_id = str(item.get("id") or "").strip()
+        if not subscription_id or subscription_id in seen_ids:
+            continue
+        seen_ids.add(subscription_id)
+
+        current_items = []
+        current_seen: set[str] = set()
+        for raw_child in item.get("current_items") or []:
+            child = _normalize_subscription_source_item(raw_child)
+            if not child:
+                continue
+            key = child["task_key"]
+            if key in current_seen:
+                continue
+            current_seen.add(key)
+            current_items.append(child)
+
+        tracked_items = []
+        tracked_seen: set[str] = set()
+        for raw_child in item.get("tracked_items") or []:
+            child = _normalize_subscription_source_item(raw_child)
+            if not child:
+                continue
+            key = child["task_key"]
+            if key in tracked_seen:
+                continue
+            tracked_seen.add(key)
+            tracked_items.append(child)
+
+        normalized.append(
+            {
+                "id": subscription_id,
+                "status": str(item.get("status") or "idle"),
+                "running": bool(item.get("running", False)),
+                "next_run_at": str(item.get("next_run_at") or ""),
+                "manual_requested_at": str(item.get("manual_requested_at") or ""),
+                "last_run_at": str(item.get("last_run_at") or ""),
+                "last_success_at": str(item.get("last_success_at") or ""),
+                "last_error_at": str(item.get("last_error_at") or ""),
+                "last_message": str(item.get("last_message") or ""),
+                "last_discovered_count": int(item.get("last_discovered_count") or 0),
+                "last_new_count": int(item.get("last_new_count") or 0),
+                "last_enqueued_count": int(item.get("last_enqueued_count") or 0),
+                "last_deleted_count": int(item.get("last_deleted_count") or 0),
+                "current_items": current_items,
+                "tracked_items": tracked_items,
+            }
+        )
+
+    return {"items": normalized}
+
+
 class TaskStateStore:
     def __init__(self) -> None:
         ensure_app_dirs()
@@ -277,6 +371,25 @@ class TaskStateStore:
                 updated = payload
             return self._save_missing_3mf_unlocked(updated)
 
+    def _load_subscriptions_state_unlocked(self) -> dict:
+        payload = self._read_json(SUBSCRIPTIONS_STATE_PATH, {"items": []})
+        state = _normalize_subscription_state(payload)
+        state["count"] = len(state["items"])
+        return state
+
+    def _save_subscriptions_state_unlocked(self, payload: dict) -> dict:
+        normalized = _normalize_subscription_state(payload)
+        self._write_json(SUBSCRIPTIONS_STATE_PATH, normalized)
+        return self._load_subscriptions_state_unlocked()
+
+    def _update_subscriptions_state(self, updater) -> dict:
+        with _STATE_LOCK:
+            payload = self._load_subscriptions_state_unlocked()
+            updated = updater(payload)
+            if updated is None:
+                updated = payload
+            return self._save_subscriptions_state_unlocked(updated)
+
     def save_archive_queue(self, payload: dict) -> dict:
         with _STATE_LOCK:
             return self._save_archive_queue_unlocked(payload)
@@ -299,6 +412,14 @@ class TaskStateStore:
             tasks = _normalize_organize_tasks(payload)
             tasks["count"] = len(tasks["items"])
             return tasks
+
+    def save_subscriptions_state(self, payload: dict) -> dict:
+        with _STATE_LOCK:
+            return self._save_subscriptions_state_unlocked(payload)
+
+    def load_subscriptions_state(self) -> dict:
+        with _STATE_LOCK:
+            return self._load_subscriptions_state_unlocked()
 
     def save_model_flags(self, payload: dict) -> dict:
         with _STATE_LOCK:
@@ -621,3 +742,91 @@ class TaskStateStore:
             return {"items": items}
 
         return self._update_missing_3mf(_mutate)
+
+    def upsert_subscription_state(self, item: dict) -> dict:
+        normalized_item = _normalize_subscription_state({"items": [item]}).get("items", [])
+        if not normalized_item:
+            return self.load_subscriptions_state()
+        target = normalized_item[0]
+        target_id = target["id"]
+
+        def _mutate(payload: dict) -> dict:
+            items = list(payload.get("items") or [])
+            replaced = False
+            merged: list[dict] = []
+            for existing in items:
+                if str(existing.get("id") or "") == target_id:
+                    merged.append(target)
+                    replaced = True
+                else:
+                    merged.append(existing)
+            if not replaced:
+                merged.append(target)
+            return {"items": merged}
+
+        return self._update_subscriptions_state(_mutate)
+
+    def patch_subscription_state(self, subscription_id: str, **changes: Any) -> dict:
+        target_id = str(subscription_id or "").strip()
+        if not target_id:
+            return self.load_subscriptions_state()
+
+        def _mutate(payload: dict) -> dict:
+            items = _normalize_subscription_state(payload).get("items", [])
+            updated_items: list[dict] = []
+            found = False
+            for existing in items:
+                if str(existing.get("id") or "") != target_id:
+                    updated_items.append(existing)
+                    continue
+                merged = dict(existing)
+                for key, value in changes.items():
+                    if value is None:
+                        continue
+                    merged[key] = value
+                updated_items.append(merged)
+                found = True
+
+            if not found:
+                baseline = {
+                    "id": target_id,
+                    "status": "idle",
+                    "running": False,
+                    "next_run_at": "",
+                    "manual_requested_at": "",
+                    "last_run_at": "",
+                    "last_success_at": "",
+                    "last_error_at": "",
+                    "last_message": "",
+                    "last_discovered_count": 0,
+                    "last_new_count": 0,
+                    "last_enqueued_count": 0,
+                    "last_deleted_count": 0,
+                    "current_items": [],
+                    "tracked_items": [],
+                }
+                for key, value in changes.items():
+                    if value is None:
+                        continue
+                    baseline[key] = value
+                updated_items.append(baseline)
+
+            return {"items": updated_items}
+
+        return self._update_subscriptions_state(_mutate)
+
+    def remove_subscription_state(self, subscription_ids: list[str]) -> dict:
+        clean_ids = {
+            str(item or "").strip()
+            for item in subscription_ids or []
+            if str(item or "").strip()
+        }
+        if not clean_ids:
+            return self.load_subscriptions_state()
+
+        def _mutate(payload: dict) -> dict:
+            items = _normalize_subscription_state(payload).get("items", [])
+            remaining = [item for item in items if str(item.get("id") or "") not in clean_ids]
+            return {"items": remaining}
+
+        return self._update_subscriptions_state(_mutate)

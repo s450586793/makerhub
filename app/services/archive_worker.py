@@ -20,7 +20,7 @@ BATCH_QUEUE_LOG_PATH = LOGS_DIR / "batch_queue.log"
 MAX_BATCH_CHILD_REQUEUE_ATTEMPTS = 3
 
 
-def _detect_mode(url: str) -> str:
+def detect_archive_mode(url: str) -> str:
     lowered = (url or "").lower()
     if "/collections/models" in lowered:
         return "collection_models"
@@ -120,7 +120,7 @@ class ArchiveTaskManager:
                 "message": "请先输入归档链接。",
             }
 
-        mode = _detect_mode(clean_url)
+        mode = detect_archive_mode(clean_url)
         if mode == "single_model":
             return self._submit_single(clean_url, force=force)
         if mode in {"author_upload", "collection_models"}:
@@ -140,7 +140,7 @@ class ArchiveTaskManager:
                 "message": "请先输入归档链接。",
             }
 
-        mode = _detect_mode(clean_url)
+        mode = detect_archive_mode(clean_url)
         if mode == "single_model":
             return {
                 "accepted": True,
@@ -441,6 +441,20 @@ class ArchiveTaskManager:
             return None
         return preview
 
+    def peek_batch_preview(self, preview_token: str, url: str, mode: Optional[str] = None) -> Optional[dict]:
+        clean_url = normalize_source_url(url)
+        clean_mode = mode or detect_archive_mode(clean_url)
+        if not preview_token or clean_mode not in BATCH_TASK_MODES:
+            return None
+        self._prune_batch_previews()
+        with self._preview_lock:
+            preview = self._batch_previews.get(preview_token)
+            if not preview:
+                return None
+            if preview.get("url") != clean_url or preview.get("mode") != clean_mode:
+                return None
+            return dict(preview)
+
     def _enqueue_single_task(self, url: str, message: str = "等待归档", mode: str = "", meta: Optional[dict] = None) -> str:
         task_id = uuid.uuid4().hex
         self.task_store.enqueue_archive_task(
@@ -729,6 +743,61 @@ class ArchiveTaskManager:
             ),
         }
 
+    def submit_discovered_batch(
+        self,
+        *,
+        source_url: str,
+        mode: str,
+        discovered_items: list[str],
+        expected_total: Any = None,
+        pages_scanned: Any = None,
+        scan_mode: str = "",
+        message_prefix: str = "",
+        meta: Optional[dict] = None,
+    ) -> dict:
+        clean_url = normalize_source_url(source_url)
+        clean_mode = mode if mode in BATCH_TASK_MODES else detect_archive_mode(clean_url)
+        if clean_mode not in BATCH_TASK_MODES:
+            return {
+                "accepted": False,
+                "message": "仅作者上传页或收藏夹页面支持批量归档。",
+                "mode": clean_mode,
+                "url": clean_url,
+            }
+
+        normalized_items = [normalize_source_url(item) for item in discovered_items or [] if normalize_source_url(item)]
+        if not normalized_items:
+            return {
+                "accepted": False,
+                "message": "本次同步没有新增模型需要入队。",
+                "mode": clean_mode,
+                "url": clean_url,
+                "queued_count": 0,
+            }
+
+        task_id = self._enqueue_single_task(
+            clean_url,
+            message=f"订阅同步发现 {len(normalized_items)} 个新增模型，等待批量入队",
+            mode=clean_mode,
+            meta={
+                "discovered_items": normalized_items,
+                "expected_total": expected_total,
+                "pages_scanned": pages_scanned,
+                "scan_mode": scan_mode or "subscription",
+                "child_queue_message_prefix": message_prefix or f"来自批量归档：{clean_url}",
+                **(meta or {}),
+            },
+        )
+        self._ensure_worker()
+        return {
+            "accepted": True,
+            "task_id": task_id,
+            "mode": clean_mode,
+            "url": clean_url,
+            "queued_count": len(normalized_items),
+            "message": f"已把 {len(normalized_items)} 个新增模型加入归档队列。",
+        }
+
     def _ensure_worker(self) -> None:
         with self._lock:
             if self._worker and self._worker.is_alive():
@@ -760,7 +829,7 @@ class ArchiveTaskManager:
             self.task_store.update_active_task(task_id, message="正在准备归档", progress=1)
 
             try:
-                task_mode = str(task.get("mode") or "") or _detect_mode(task_url)
+                task_mode = str(task.get("mode") or "") or detect_archive_mode(task_url)
                 if task_mode in {"author_upload", "collection_models"}:
                     self._run_batch_task(task_id, task_url, task_mode, meta=task.get("meta") or {})
                 else:
@@ -846,6 +915,8 @@ class ArchiveTaskManager:
                 message=f"扫描完成，发现 {total_items} 个模型，正在加入归档队列",
             )
 
+        child_queue_message_prefix = str(meta.get("child_queue_message_prefix") or "").strip() or f"来自批量归档：{url}"
+
         for index, model_url in enumerate(discovered_items, start=1):
             key = _task_key(model_url)
             if key in pending_keys:
@@ -875,7 +946,7 @@ class ArchiveTaskManager:
             else:
                 child_task_id = self._enqueue_single_task(
                     model_url,
-                    message=f"来自批量归档：{url}",
+                    message=child_queue_message_prefix,
                     mode="single_model",
                     meta={
                         "batch_parent_id": task_id,

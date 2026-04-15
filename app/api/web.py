@@ -32,6 +32,11 @@ async def models_page(_: Request):
     return _serve_spa()
 
 
+@router.get("/subscriptions", response_class=HTMLResponse)
+async def subscriptions_page(_: Request):
+    return _serve_spa()
+
+
 @router.get("/models/{model_dir:path}", response_class=HTMLResponse)
 async def model_detail(_: Request, model_dir: str):
     return _serve_spa()

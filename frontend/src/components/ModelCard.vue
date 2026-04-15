@@ -26,7 +26,16 @@
           <span v-else class="avatar-placeholder">{{ authorInitial }}</span>
           <span>{{ authorName }}</span>
         </div>
-        <span class="gallery-card__source">{{ model.source_label }}</span>
+        <div class="gallery-card__badges">
+          <span class="gallery-card__source">{{ model.source_label }}</span>
+          <span
+            v-if="model.subscription_flags?.deleted_on_source"
+            class="gallery-card__source gallery-card__source--danger"
+            :title="deletedSourceTitle"
+          >
+            源已删除
+          </span>
+        </div>
       </div>
 
       <div class="gallery-card__stats">
@@ -114,6 +123,13 @@ const detailPath = computed(() => props.model.detail_path || encodeModelPath(pro
 const titleInitial = computed(() => String(props.model.title || "M").trim().slice(0, 1) || "M");
 const authorName = computed(() => String(props.model.author?.name || "未知作者").trim() || "未知作者");
 const authorInitial = computed(() => String(props.model.author?.name || "作").trim().slice(0, 1) || "作");
+const deletedSourceTitle = computed(() => {
+  const items = props.model.subscription_flags?.deleted_sources || [];
+  if (!items.length) {
+    return "订阅源已删除该模型";
+  }
+  return `订阅源已删除该模型：${items.map((item) => item.name || item.url || "未命名订阅").join("、")}`;
+});
 
 function goDetail() {
   router.push(detailPath.value);

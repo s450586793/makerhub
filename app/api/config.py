@@ -15,13 +15,17 @@ from app.schemas.models import (
     ModelFlagUpdateRequest,
     NotificationConfig,
     ProxyConfig,
+    SubscriptionCreateRequest,
+    SubscriptionUpdateRequest,
     ThemeSettingsUpdate,
     UserSettingsUpdate,
 )
 from app.schemas.models import OrganizeTask
+from app.services.archive_worker import detect_archive_mode
 from app.services.catalog import build_dashboard_payload, build_models_payload, build_tasks_payload, delete_archived_models, get_model_detail
 from app.services.crawler import LegacyCrawlerBridge
 from app.services.auth import AuthManager
+from app.services.subscriptions import SubscriptionManager
 from app.services.task_state import TaskStateStore
 
 
@@ -30,6 +34,11 @@ store = JsonStore()
 crawler = LegacyCrawlerBridge()
 auth_manager = AuthManager(store=store)
 task_state_store = TaskStateStore()
+subscription_manager = SubscriptionManager(
+    archive_manager=crawler.manager,
+    store=store,
+    task_store=task_state_store,
+)
 
 
 def _task_identity(item: dict) -> str:
@@ -75,6 +84,7 @@ def _public_config_payload(config) -> dict:
             "password_updated_at": config.user.password_updated_at,
         },
         "api_tokens": [item.model_dump() for item in auth_manager.list_api_tokens()],
+        "subscriptions": [item.model_dump() for item in config.subscriptions],
         "missing_3mf": [item.model_dump() for item in config.missing_3mf],
         "organizer": config.organizer.model_dump(),
         "paths": config.paths.model_dump(),
@@ -261,6 +271,58 @@ async def get_tasks_data():
     return build_tasks_payload(missing_fallback=fallback_items)
 
 
+@router.get("/subscriptions")
+async def get_subscriptions_data():
+    return subscription_manager.list_payload()
+
+
+@router.post("/subscriptions")
+async def create_subscription(payload: SubscriptionCreateRequest, request: Request):
+    _require_session_auth(request)
+    try:
+        return subscription_manager.create_subscription(
+            url=payload.url,
+            cron=payload.cron,
+            name=payload.name,
+            enabled=payload.enabled,
+            initialize_from_source=payload.initialize_from_source,
+        )
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.put("/subscriptions/{subscription_id}")
+async def update_subscription(subscription_id: str, payload: SubscriptionUpdateRequest, request: Request):
+    _require_session_auth(request)
+    try:
+        return subscription_manager.update_subscription(
+            subscription_id,
+            name=payload.name,
+            cron=payload.cron,
+            enabled=payload.enabled,
+        )
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/subscriptions/{subscription_id}")
+async def delete_subscription(subscription_id: str, request: Request):
+    _require_session_auth(request)
+    try:
+        return subscription_manager.delete_subscription(subscription_id)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/subscriptions/{subscription_id}/sync")
+async def sync_subscription(subscription_id: str, request: Request):
+    _require_session_auth(request)
+    try:
+        return subscription_manager.request_sync(subscription_id)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/events/archive")
 async def stream_archive_events(request: Request):
     async def event_stream():
@@ -358,7 +420,35 @@ async def cancel_missing_3mf(payload: Missing3mfCancelRequest, request: Request)
 
 @router.post("/archive")
 async def archive_model(payload: ArchiveRequest):
-    return crawler.manager.submit(payload.url, preview_token=payload.preview_token)
+    mode = detect_archive_mode(payload.url)
+    preview = None
+    if payload.create_subscription and mode in {"author_upload", "collection_models"}:
+        preview = crawler.manager.peek_batch_preview(payload.preview_token, payload.url, mode=mode)
+
+    response = crawler.manager.submit(payload.url, preview_token=payload.preview_token)
+    if not response.get("accepted"):
+        return response
+
+    if payload.create_subscription and mode in {"author_upload", "collection_models"}:
+        discovered_items = list((preview or {}).get("discovered_items") or [])
+        try:
+            subscription_result = subscription_manager.upsert_from_archive(
+                url=payload.url,
+                mode=mode,
+                discovered_items=discovered_items,
+                cron=payload.subscription_cron,
+                name=payload.subscription_name,
+            )
+            response["subscription"] = subscription_result
+            subscription_name = ((subscription_result.get("subscription") or {}).get("name") or "").strip()
+            response["message"] = (
+                f"{response.get('message') or '归档任务已加入队列。'} "
+                f"订阅已{'创建' if subscription_result.get('created') else '更新'}"
+                f"{f'：{subscription_name}' if subscription_name else ''}。"
+            ).strip()
+        except ValueError as exc:
+            response["subscription_error"] = str(exc)
+    return response
 
 
 @router.post("/archive/preview")

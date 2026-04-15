@@ -7,6 +7,7 @@ import LoginPage from "./pages/LoginPage.vue";
 import ModelDetailPage from "./pages/ModelDetailPage.vue";
 import ModelsPage from "./pages/ModelsPage.vue";
 import SettingsPage from "./pages/SettingsPage.vue";
+import SubscriptionsPage from "./pages/SubscriptionsPage.vue";
 import TasksPage from "./pages/TasksPage.vue";
 import { appState, bootstrapApp } from "./lib/appState";
 
@@ -51,6 +52,14 @@ const routes = [
         meta: {
           title: "模型详情 | makerhub",
           bodyClass: "detail-page detail-page--makerworld",
+        },
+      },
+      {
+        path: "subscriptions",
+        name: "subscriptions",
+        component: SubscriptionsPage,
+        meta: {
+          title: "订阅 | makerhub",
         },
       },
       {

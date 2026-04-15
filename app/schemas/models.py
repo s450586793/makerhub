@@ -80,6 +80,9 @@ class ApiTokenCreateRequest(BaseModel):
 class ArchiveRequest(BaseModel):
     url: str
     preview_token: str = ""
+    create_subscription: bool = False
+    subscription_name: str = ""
+    subscription_cron: str = "0 */6 * * *"
 
 
 class ModelDeleteRequest(BaseModel):
@@ -121,6 +124,55 @@ class OrganizeTask(BaseModel):
     move_files: bool = True
 
 
+class SubscriptionRecord(BaseModel):
+    id: str
+    name: str = ""
+    url: str
+    mode: Literal["author_upload", "collection_models"]
+    cron: str = "0 */6 * * *"
+    enabled: bool = True
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class SubscriptionCreateRequest(BaseModel):
+    name: str = ""
+    url: str
+    cron: str = "0 */6 * * *"
+    enabled: bool = True
+    initialize_from_source: bool = True
+
+
+class SubscriptionUpdateRequest(BaseModel):
+    name: str = ""
+    cron: str = "0 */6 * * *"
+    enabled: bool = True
+
+
+class SubscriptionSourceItem(BaseModel):
+    model_id: str = ""
+    url: str = ""
+    task_key: str = ""
+
+
+class SubscriptionStateItem(BaseModel):
+    id: str
+    status: Literal["idle", "running", "success", "error"] = "idle"
+    running: bool = False
+    next_run_at: str = ""
+    manual_requested_at: str = ""
+    last_run_at: str = ""
+    last_success_at: str = ""
+    last_error_at: str = ""
+    last_message: str = ""
+    last_discovered_count: int = 0
+    last_new_count: int = 0
+    last_enqueued_count: int = 0
+    last_deleted_count: int = 0
+    current_items: List[SubscriptionSourceItem] = Field(default_factory=list)
+    tracked_items: List[SubscriptionSourceItem] = Field(default_factory=list)
+
+
 class RuntimePaths(BaseModel):
     config_dir: str = str(CONFIG_DIR)
     logs_dir: str = str(LOGS_DIR)
@@ -138,6 +190,7 @@ class AppConfig(BaseModel):
     notifications: NotificationConfig = Field(default_factory=NotificationConfig)
     user: UserProfile = Field(default_factory=UserProfile)
     api_tokens: List[ApiTokenRecord] = Field(default_factory=list)
+    subscriptions: List[SubscriptionRecord] = Field(default_factory=list)
     missing_3mf: List[Missing3mfItem] = Field(default_factory=list)
     organizer: OrganizeTask = Field(default_factory=OrganizeTask)
     paths: RuntimePaths = Field(default_factory=RuntimePaths)

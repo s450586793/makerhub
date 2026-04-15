@@ -46,6 +46,37 @@
   font-size: 13px;
 }
 
+.archive-form__options {
+  margin-top: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.archive-form__cron {
+  min-width: min(320px, 100%);
+  flex: 1 1 280px;
+}
+
+.subscription-toggle {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface-soft);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.subscription-toggle input {
+  margin: 0;
+}
+
 .model-card--interactive {
   position: relative;
 }
@@ -106,6 +137,14 @@
   gap: 12px;
 }
 
+.gallery-card__badges {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .gallery-card__author {
   min-width: 0;
   flex: 1 1 auto;
@@ -130,6 +169,12 @@
   font-size: 12px;
   font-weight: 700;
   background: var(--brand-soft);
+}
+
+.gallery-card__source--danger {
+  border-color: rgba(191, 74, 74, 0.18);
+  color: #a53030;
+  background: rgba(239, 68, 68, 0.1);
 }
 
 .gallery-card__stats {
@@ -370,6 +415,98 @@
   flex-wrap: wrap;
 }
 
+.subscription-create-form,
+.subscription-card__form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.subscription-grid {
+  display: grid;
+  gap: 18px;
+}
+
+.subscription-card {
+  display: grid;
+  gap: 16px;
+}
+
+.subscription-card__header {
+  align-items: flex-start;
+}
+
+.subscription-card__status {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.subscription-card__meta {
+  display: grid;
+  gap: 4px;
+}
+
+.subscription-card__meta a {
+  color: var(--brand-strong);
+  word-break: break-all;
+}
+
+.subscription-stats {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.subscription-times {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.subscription-times span {
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 14px;
+  display: grid;
+  gap: 4px;
+  background: var(--surface-soft);
+}
+
+.subscription-times strong {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.subscription-times em {
+  font-style: normal;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.subscription-card__message {
+  margin: 0;
+  color: var(--muted);
+}
+
+.subscription-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.count-pill--ok {
+  color: #126442;
+  background: rgba(31, 157, 98, 0.12);
+}
+
+.count-pill--warn {
+  color: #2454c7;
+  background: rgba(63, 124, 255, 0.12);
+}
+
 @media (max-width: 960px) {
   .gallery-card__body {
     padding: 15px;
@@ -393,6 +530,10 @@
     flex-direction: column;
   }
 
+  .gallery-card__badges {
+    justify-content: flex-start;
+  }
+
   .gallery-card__source {
     align-self: flex-start;
   }
@@ -400,6 +541,11 @@
   .gallery-card__stats,
   .gallery-card__actions {
     gap: 8px;
+  }
+
+  .subscription-stats,
+  .subscription-times {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -415,5 +561,22 @@
 
   .gallery-stat__value {
     font-size: 14px;
+  }
+
+  .archive-form__options,
+  .subscription-create-form,
+  .subscription-card__form,
+  .subscription-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .subscription-toggle {
+    justify-content: flex-start;
+  }
+
+  .subscription-stats,
+  .subscription-times {
+    grid-template-columns: 1fr;
   }
 }
