@@ -41,13 +41,15 @@
         <input v-model="createForm.enabled" type="checkbox">
         <span>启用</span>
       </label>
-      <label class="subscription-toggle subscription-toggle--compact">
-        <input v-model="createForm.initialize_from_source" type="checkbox">
-        <span>创建时初始化当前源页面</span>
-      </label>
-      <button class="button button-primary" type="submit" :disabled="creating">
-        {{ creating ? "提交中..." : "添加订阅" }}
-      </button>
+      <div class="subscription-create-form__actions">
+        <label class="subscription-toggle subscription-toggle--compact subscription-toggle--wide">
+          <input v-model="createForm.initialize_from_source" type="checkbox">
+          <span>创建时初始化当前源页面</span>
+        </label>
+        <button class="button button-primary" type="submit" :disabled="creating">
+          {{ creating ? "提交中..." : "添加订阅" }}
+        </button>
+      </div>
     </form>
     <p class="archive-form__hint">创建后会按 Cron 定时扫描目标链接；如果链接里的模型被删除，模型库只做标记，不删除本地归档。</p>
     <span class="form-status">{{ status }}</span>

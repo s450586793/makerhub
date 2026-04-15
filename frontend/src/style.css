@@ -71,10 +71,19 @@
   color: var(--text);
   font-size: 14px;
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .subscription-toggle input {
   margin: 0;
+  flex: 0 0 auto;
+}
+
+.subscription-toggle span {
+  min-width: 0;
+  line-height: 1.4;
+  white-space: normal;
+  writing-mode: horizontal-tb;
 }
 
 .page-intro--compact {
@@ -87,16 +96,18 @@
 }
 
 .subscription-create-form--compact {
+  display: grid;
+  grid-template-columns: minmax(0, 2.2fr) minmax(180px, 1.1fr) minmax(180px, 1.1fr) auto;
   gap: 10px;
   align-items: center;
 }
 
 .subscription-create-form--compact .filter-field {
-  flex: 1 1 220px;
+  min-width: 0;
 }
 
 .subscription-create-form--compact .filter-field--wide {
-  flex: 2 1 360px;
+  min-width: 0;
 }
 
 .subscription-toggle--compact {
@@ -104,6 +115,22 @@
   padding: 0 12px;
   border-radius: 12px;
   font-size: 13px;
+}
+
+.subscription-toggle--wide {
+  justify-content: flex-start;
+}
+
+.subscription-create-form__actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.subscription-create-form__actions .button {
+  min-width: 120px;
 }
 
 .subscriptions-create-card .archive-form__hint,
@@ -620,6 +647,16 @@
   .subscription-create-form,
   .subscription-card__form,
   .subscription-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .subscription-create-form--compact {
+    grid-template-columns: 1fr;
+  }
+
+  .subscription-create-form__actions {
+    grid-column: auto;
     flex-direction: column;
     align-items: stretch;
   }
