@@ -207,26 +207,8 @@
                 :class="[
                   'mw-profile-popover',
                   profilePopoverPlacement(profileIndex, detail.instances.length),
-                  !hoverPopoverEnabled && 'is-compact',
                 ]"
               >
-                <div v-if="!hoverPopoverEnabled" class="mw-profile-popover__compact-chrome">
-                  <span class="mw-profile-popover__sheet-handle" aria-hidden="true"></span>
-                  <div class="mw-profile-popover__compact-header">
-                    <div class="mw-profile-popover__compact-copy">
-                      <span class="mw-profile-popover__compact-eyebrow">打印配置预览</span>
-                      <strong>{{ profile.title }}</strong>
-                    </div>
-                    <button
-                      class="mw-profile-popover__close"
-                      type="button"
-                      aria-label="关闭打印配置预览"
-                      @click="closeProfilePopover(profile.instance_key, { force: true })"
-                    >
-                      ×
-                    </button>
-                  </div>
-                </div>
                 <div v-if="profileMedia(profile).length" class="mw-profile-popover__gallery">
                   <button
                     class="mw-profile-popover__stage"
@@ -489,14 +471,6 @@
       </article>
     </section>
 
-    <button
-      v-if="compactPopoverVisible"
-      class="mw-profile-popover-backdrop"
-      type="button"
-      aria-label="关闭打印配置预览"
-      @click="closeProfilePopover('', { force: true })"
-    ></button>
-
     <div v-if="lightboxSrc" class="lightbox" @click="closeLightbox">
       <button class="lightbox__backdrop" type="button" aria-label="关闭预览"></button>
       <div class="lightbox__dialog" @click.stop>
@@ -658,10 +632,6 @@ const heroDownloadStatus = computed(() => {
   return activeInstance.value?.file_status_message || "3MF 还未获取到";
 });
 
-const compactPopoverVisible = computed(() => {
-  return !hoverPopoverEnabled.value && Boolean(previewedInstanceKey.value);
-});
-
 const heroDownloadLabel = computed(() => {
   if (!activeInstance.value) {
     return "选择打印配置";
@@ -816,6 +786,17 @@ function handleHashChange() {
   if (matched) {
     selectInstance(matched, { syncHash: false });
   }
+}
+
+function handleWindowPointerDown(event) {
+  if (hoverPopoverEnabled.value || !previewedInstanceKey.value) {
+    return;
+  }
+  const target = event.target;
+  if (target instanceof Element && target.closest(".mw-profile-entry")) {
+    return;
+  }
+  previewedInstanceKey.value = "";
 }
 
 function swapEventImage(event, fallbackUrl) {
@@ -1057,6 +1038,7 @@ onMounted(() => {
     hoverPopoverMediaQuery.addListener(hoverPopoverMediaListener);
   }
   window.addEventListener("hashchange", handleHashChange);
+  window.addEventListener("pointerdown", handleWindowPointerDown);
 });
 onBeforeUnmount(() => {
   document.body.classList.remove("is-lightbox-open");
@@ -1069,6 +1051,7 @@ onBeforeUnmount(() => {
   }
   if (typeof window !== "undefined") {
     window.removeEventListener("hashchange", handleHashChange);
+    window.removeEventListener("pointerdown", handleWindowPointerDown);
   }
 });
 </script>
