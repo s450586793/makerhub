@@ -262,11 +262,32 @@ html[data-theme="dark"] .shell-visibility-toggle {
 
 .sidebar-version {
   padding: 0 16px;
+  display: grid;
+  gap: 4px;
   color: var(--muted);
   font-size: 12px;
   font-weight: 600;
+}
+
+.sidebar-version__line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar-version__label {
+  min-width: 42px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.sidebar-version__value {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.sidebar-version__value.is-update {
+  color: var(--brand-strong);
 }
 
 .user-launcher {

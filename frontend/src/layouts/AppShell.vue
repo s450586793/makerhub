@@ -39,7 +39,18 @@
           @theme-change="handleThemeChange"
         />
 
-        <span class="sidebar-version">{{ appState.appVersion ? `v${appState.appVersion}` : "版本读取中" }}</span>
+        <div class="sidebar-version">
+          <span class="sidebar-version__line">
+            <span class="sidebar-version__label">当前</span>
+            <span class="sidebar-version__value">{{ appState.appVersion ? `v${appState.appVersion}` : "读取中" }}</span>
+          </span>
+          <span class="sidebar-version__line">
+            <span class="sidebar-version__label">GitHub</span>
+            <span :class="['sidebar-version__value', appState.githubUpdateAvailable && 'is-update']">
+              {{ githubVersionText }}
+            </span>
+          </span>
+        </div>
       </div>
     </aside>
 
@@ -81,6 +92,15 @@ let mediaListener = null;
 const sidebarVisible = computed(() => (
   isCompact.value ? mobileSidebarOpen.value : !desktopSidebarHidden.value
 ));
+const githubVersionText = computed(() => {
+  if (appState.githubLatestVersion) {
+    return `v${appState.githubLatestVersion}`;
+  }
+  if (appState.githubVersionError) {
+    return "读取失败";
+  }
+  return "读取中";
+});
 
 function navClass(prefix) {
   const active = prefix === "/"

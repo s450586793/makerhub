@@ -1,5 +1,8 @@
 import asyncio
 import json
+import time
+from datetime import datetime
+from urllib.request import Request, urlopen
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -44,10 +47,92 @@ local_organizer = LocalOrganizerService(
     store=store,
     task_store=task_state_store,
 )
+GITHUB_VERSION_URL = "https://raw.githubusercontent.com/s450586793/makerhub/main/VERSION"
+GITHUB_VERSION_CACHE_TTL_SECONDS = 300
+github_version_cache = {
+    "version": "",
+    "checked_at": 0.0,
+    "checked_at_iso": "",
+    "error": "",
+}
 
 
 def _task_identity(item: dict) -> str:
     return str(item.get("id") or item.get("url") or item.get("title") or "")
+
+
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _read_latest_github_version() -> str:
+    request = Request(
+        GITHUB_VERSION_URL,
+        headers={
+            "User-Agent": "makerhub-version-check",
+            "Cache-Control": "no-cache",
+        },
+    )
+    with urlopen(request, timeout=5) as response:
+        charset = response.headers.get_content_charset() or "utf-8"
+        return response.read().decode(charset, errors="ignore").strip()
+
+
+async def _get_github_version_status(force: bool = False) -> dict:
+    now = time.time()
+    checked_at = float(github_version_cache.get("checked_at") or 0)
+    if not force and checked_at and now - checked_at < GITHUB_VERSION_CACHE_TTL_SECONDS:
+        return {
+            "github_latest_version": str(github_version_cache.get("version") or ""),
+            "github_version_checked_at": str(github_version_cache.get("checked_at_iso") or ""),
+            "github_version_error": str(github_version_cache.get("error") or ""),
+            "github_update_available": bool(
+                str(github_version_cache.get("version") or "").strip()
+                and str(github_version_cache.get("version") or "").strip() != APP_VERSION
+            ),
+        }
+
+    checked_at_iso = _now_iso()
+    try:
+        version = await asyncio.to_thread(_read_latest_github_version)
+        if not version:
+            raise ValueError("GitHub VERSION 为空")
+        github_version_cache.update(
+            {
+                "version": version,
+                "checked_at": now,
+                "checked_at_iso": checked_at_iso,
+                "error": "",
+            }
+        )
+    except Exception as exc:
+        github_version_cache.update(
+            {
+                "checked_at": now,
+                "checked_at_iso": checked_at_iso,
+                "error": str(exc),
+            }
+        )
+
+    return {
+        "github_latest_version": str(github_version_cache.get("version") or ""),
+        "github_version_checked_at": str(github_version_cache.get("checked_at_iso") or ""),
+        "github_version_error": str(github_version_cache.get("error") or ""),
+        "github_update_available": bool(
+            str(github_version_cache.get("version") or "").strip()
+            and str(github_version_cache.get("version") or "").strip() != APP_VERSION
+        ),
+    }
+
+
+def _with_version_status(payload: dict, version_status: dict) -> dict:
+    return {
+        **payload,
+        "github_latest_version": str(version_status.get("github_latest_version") or ""),
+        "github_version_checked_at": str(version_status.get("github_version_checked_at") or ""),
+        "github_version_error": str(version_status.get("github_version_error") or ""),
+        "github_update_available": bool(version_status.get("github_update_available")),
+    }
 
 
 def _archive_event_snapshot() -> dict:
@@ -131,16 +216,17 @@ def _require_session_auth(request: Request) -> None:
 async def get_bootstrap(request: Request):
     identity = getattr(request.state, "auth_identity", None) or {}
     config = store.load() if identity else None
-    return {
+    payload = {
         "app_version": APP_VERSION,
         "session": _session_payload(identity, config=config),
         "theme_preference": config.user.theme_preference if config else "",
     }
+    return _with_version_status(payload, await _get_github_version_status())
 
 
 @router.get("/config")
 async def get_config():
-    return _public_config_payload(store.load())
+    return _with_version_status(_public_config_payload(store.load()), await _get_github_version_status())
 
 
 @router.post("/config/cookies")
@@ -148,7 +234,7 @@ async def save_cookies(payload: list[CookiePair], request: Request):
     _require_session_auth(request)
     config = store.load()
     config.cookies = payload
-    return _public_config_payload(store.save(config))
+    return _with_version_status(_public_config_payload(store.save(config)), await _get_github_version_status())
 
 
 @router.post("/config/proxy")
@@ -156,7 +242,7 @@ async def save_proxy(payload: ProxyConfig, request: Request):
     _require_session_auth(request)
     config = store.load()
     config.proxy = payload
-    return _public_config_payload(store.save(config))
+    return _with_version_status(_public_config_payload(store.save(config)), await _get_github_version_status())
 
 
 @router.post("/config/notifications")
@@ -164,7 +250,7 @@ async def save_notifications(payload: NotificationConfig, request: Request):
     _require_session_auth(request)
     config = store.load()
     config.notifications = payload
-    return _public_config_payload(store.save(config))
+    return _with_version_status(_public_config_payload(store.save(config)), await _get_github_version_status())
 
 
 @router.post("/config/user")
@@ -174,7 +260,7 @@ async def save_user(payload: UserSettingsUpdate, request: Request):
     config.user.username = payload.username.strip() or "admin"
     config.user.display_name = payload.display_name.strip() or "Admin"
     config.user.password_hint = payload.password_hint.strip()
-    return _public_config_payload(store.save(config))
+    return _with_version_status(_public_config_payload(store.save(config)), await _get_github_version_status())
 
 
 @router.post("/config/theme")
@@ -182,7 +268,7 @@ async def save_theme(payload: ThemeSettingsUpdate, request: Request):
     _require_session_auth(request)
     config = store.load()
     config.user.theme_preference = payload.theme_preference
-    return _public_config_payload(store.save(config))
+    return _with_version_status(_public_config_payload(store.save(config)), await _get_github_version_status())
 
 
 @router.post("/config/organizer")
@@ -190,7 +276,7 @@ async def save_organizer(payload: OrganizeTask, request: Request):
     _require_session_auth(request)
     config = store.load()
     config.organizer = payload
-    return _public_config_payload(store.save(config))
+    return _with_version_status(_public_config_payload(store.save(config)), await _get_github_version_status())
 
 
 @router.get("/dashboard")
