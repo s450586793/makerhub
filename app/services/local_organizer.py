@@ -1,12 +1,14 @@
 import hashlib
+import html
 import json
 import shutil
 import threading
 import time
+import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from app.core.settings import ARCHIVE_DIR, LOGS_DIR
 from app.core.store import JsonStore
@@ -20,6 +22,7 @@ ORGANIZER_MIN_FILE_AGE_SECONDS = 2
 ORGANIZER_TASK_LIMIT = 50
 ORGANIZER_PREVIEW_LIMIT = 6
 PREVIEW_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
+ORGANIZER_IGNORED_DIR_NAMES = {"_duplicates", "_failed", "_skipped"}
 
 
 def _now_iso() -> str:
@@ -48,6 +51,21 @@ def _safe_relative_string(path: Path, base: Path) -> str:
 
 def _ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _normalize_identity_text(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _coerce_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 class LocalOrganizerService:
@@ -112,6 +130,7 @@ class LocalOrganizerService:
         except OSError:
             pass
 
+        library_index = self._build_library_index(library_root)
         existing_items = self.task_store.load_organize_tasks().get("items") or []
         known_by_fingerprint = {
             str(item.get("fingerprint") or ""): item
@@ -128,14 +147,32 @@ class LocalOrganizerService:
             if str(existing.get("status") or "").lower() in {"running", "success", "skipped"}:
                 continue
 
-            self._organize_file(
+            analysis = self._inspect_3mf(candidate)
+            duplicate_match = library_index["configs"].get(str(analysis.get("config_fingerprint") or "")) if analysis else None
+            model_match = library_index["models"].get(str(analysis.get("model_key") or "")) if analysis else None
+
+            if duplicate_match:
+                self._handle_duplicate_file(
+                    source_path=candidate,
+                    source_dir=source_dir,
+                    move_files=bool(organizer.move_files),
+                    fingerprint=fingerprint,
+                    duplicate_match=duplicate_match,
+                )
+                continue
+
+            result = self._organize_file(
                 source_path=candidate,
                 source_dir=source_dir,
                 library_root=library_root,
                 move_files=bool(organizer.move_files),
                 fingerprint=fingerprint,
                 existing=existing,
+                analysis=analysis,
+                matched_model=model_match,
             )
+            if result:
+                self._register_library_item(library_index, result)
 
     def _iter_candidates(self, source_dir: Path) -> list[Path]:
         now = time.time()
@@ -161,6 +198,9 @@ class LocalOrganizerService:
         except ValueError:
             return False
 
+        if any(part in ORGANIZER_IGNORED_DIR_NAMES for part in relative.parts[:-1]):
+            return True
+
         # Organizer-generated 3MF files always live under `<model_dir>/instances/`.
         # When `/app/local` is mounted to the same host path as `/app/archive/local`,
         # we must skip those files or the organizer will recursively re-import itself.
@@ -185,6 +225,258 @@ class LocalOrganizerService:
             return ""
         return f"{path.resolve()}::{stat.st_size}::{stat.st_mtime_ns}"
 
+    def _sha256_file(self, path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                if chunk:
+                    digest.update(chunk)
+        return digest.hexdigest()
+
+    def _parse_3mf_metadata(self, source_path: Path) -> dict[str, str]:
+        metadata: dict[str, str] = {}
+        try:
+            with zipfile.ZipFile(source_path) as archive:
+                model_member = ""
+                for name in archive.namelist():
+                    if str(name or "").lower() == "3d/3dmodel.model":
+                        model_member = name
+                        break
+                if not model_member:
+                    return metadata
+
+                root = ET.fromstring(archive.read(model_member))
+                for node in root.findall(".//{*}metadata"):
+                    key = str(node.attrib.get("name") or "").strip()
+                    if not key:
+                        continue
+                    value = node.text or node.attrib.get("value") or ""
+                    metadata[key] = html.unescape(str(value or "")).strip()
+        except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile, ET.ParseError, KeyError):
+            return {}
+        return metadata
+
+    def _derive_model_key(self, analysis: dict[str, Any]) -> str:
+        design_model_id = str(analysis.get("design_model_id") or "").strip()
+        if design_model_id:
+            return f"design_model:{design_model_id}"
+
+        title = _normalize_identity_text(analysis.get("model_title") or analysis.get("profile_title") or analysis.get("source_title"))
+        designer = _normalize_identity_text(analysis.get("designer"))
+        if title:
+            return f"title_designer:{title}|{designer}"
+        return ""
+
+    def _derive_config_fingerprint(self, analysis: dict[str, Any]) -> str:
+        design_profile_id = str(analysis.get("design_profile_id") or "").strip()
+        if design_profile_id:
+            return f"design_profile:{design_profile_id}"
+        file_hash = str(analysis.get("file_hash") or "").strip()
+        if file_hash:
+            return f"sha256:{file_hash}"
+        return ""
+
+    def _inspect_3mf(self, source_path: Path) -> dict[str, Any]:
+        file_hash = self._sha256_file(source_path)
+        metadata = self._parse_3mf_metadata(source_path)
+        model_title = str(metadata.get("Title") or source_path.stem).strip() or source_path.stem
+        profile_title = str(metadata.get("ProfileTitle") or model_title).strip() or model_title
+        designer = str(metadata.get("Designer") or metadata.get("ProfileUserName") or "").strip()
+        analysis = {
+            "source_title": source_path.stem.strip() or source_path.name,
+            "model_title": model_title,
+            "profile_title": profile_title,
+            "designer": designer,
+            "design_model_id": str(metadata.get("DesignModelId") or "").strip(),
+            "design_profile_id": str(metadata.get("DesignProfileId") or "").strip(),
+            "file_hash": file_hash,
+            "metadata": metadata,
+        }
+        analysis["model_key"] = self._derive_model_key(analysis)
+        analysis["config_fingerprint"] = self._derive_config_fingerprint(analysis)
+        return analysis
+
+    def _build_library_index(self, library_root: Path) -> dict[str, dict[str, dict[str, Any]]]:
+        models: dict[str, dict[str, Any]] = {}
+        configs: dict[str, dict[str, Any]] = {}
+
+        for meta_path in sorted(library_root.rglob("meta.json")):
+            try:
+                payload = json.loads(meta_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+
+            model_root = meta_path.parent
+            model_info = {
+                "model_root": model_root,
+                "model_dir": self._model_dir_string(model_root),
+                "title": str(payload.get("title") or model_root.name),
+                "author": self._author_name(payload),
+            }
+
+            model_key = self._model_key_from_meta(payload)
+            if model_key:
+                models.setdefault(model_key, model_info)
+
+            for config_key, config_info in self._config_entries_from_meta(payload, model_root):
+                configs.setdefault(config_key, config_info)
+
+        return {"models": models, "configs": configs}
+
+    def _author_name(self, meta: dict[str, Any]) -> str:
+        author = meta.get("author")
+        if isinstance(author, dict):
+            return str(author.get("name") or "").strip()
+        if isinstance(author, str):
+            return author.strip()
+        return ""
+
+    def _model_key_from_meta(self, meta: dict[str, Any]) -> str:
+        local_import = _coerce_dict(meta.get("localImport"))
+        design_model_id = str(local_import.get("designModelId") or meta.get("id") or "").strip()
+        if design_model_id:
+            return f"design_model:{design_model_id}"
+
+        title = _normalize_identity_text(meta.get("title"))
+        author = _normalize_identity_text(self._author_name(meta))
+        if title:
+            return f"title_designer:{title}|{author}"
+        return ""
+
+    def _config_entries_from_meta(self, meta: dict[str, Any], model_root: Path) -> list[tuple[str, dict[str, Any]]]:
+        entries: list[tuple[str, dict[str, Any]]] = []
+        instances = meta.get("instances") if isinstance(meta.get("instances"), list) else []
+        for inst in instances:
+            if not isinstance(inst, dict):
+                continue
+            profile_id = str(inst.get("profileId") or inst.get("profile_id") or inst.get("profileID") or "").strip()
+            local_import = _coerce_dict(inst.get("localImport"))
+            file_hash = str(local_import.get("fileHash") or "").strip()
+            config_fingerprint = str(local_import.get("configFingerprint") or "").strip()
+
+            key = ""
+            if profile_id:
+                key = f"design_profile:{profile_id}"
+            elif config_fingerprint:
+                key = config_fingerprint
+            elif file_hash:
+                key = f"sha256:{file_hash}"
+
+            if not key:
+                continue
+
+            entries.append(
+                (
+                    key,
+                    {
+                        "model_root": model_root,
+                        "model_dir": self._model_dir_string(model_root),
+                        "model_title": str(meta.get("title") or model_root.name),
+                        "instance_title": str(inst.get("title") or inst.get("name") or inst.get("fileName") or ""),
+                        "instance_id": str(inst.get("id") or ""),
+                        "profile_id": profile_id,
+                    },
+                )
+            )
+
+        local_import = _coerce_dict(meta.get("localImport"))
+        top_key = str(local_import.get("configFingerprint") or "").strip()
+        if not top_key:
+            top_hash = str(local_import.get("fileHash") or "").strip()
+            if top_hash:
+                top_key = f"sha256:{top_hash}"
+        if top_key:
+            entries.append(
+                (
+                    top_key,
+                    {
+                        "model_root": model_root,
+                        "model_dir": self._model_dir_string(model_root),
+                        "model_title": str(meta.get("title") or model_root.name),
+                        "instance_title": "",
+                        "instance_id": "",
+                        "profile_id": str(local_import.get("designProfileId") or "").strip(),
+                    },
+                )
+            )
+
+        return entries
+
+    def _handle_duplicate_file(
+        self,
+        *,
+        source_path: Path,
+        source_dir: Path,
+        move_files: bool,
+        fingerprint: str,
+        duplicate_match: dict[str, Any],
+    ) -> None:
+        task_id = _task_id_from_fingerprint(fingerprint)
+        source_path_text = source_path.as_posix()
+        target_path = ""
+        status_message = f"该 3MF 与模型库现有配置重复，已跳过。命中模型：{duplicate_match.get('model_title') or duplicate_match.get('model_dir') or '未知模型'}"
+
+        if duplicate_match.get("instance_title"):
+            status_message += f" / 配置：{duplicate_match.get('instance_title')}"
+
+        try:
+            if move_files:
+                duplicates_dir = source_dir / "_duplicates"
+                duplicates_dir.mkdir(parents=True, exist_ok=True)
+                target = self._ensure_unique_filename(duplicates_dir, source_path.name)
+                shutil.move(str(source_path), str(target))
+                target_path = target.as_posix()
+
+            self.task_store.upsert_organize_task(
+                {
+                    "id": task_id,
+                    "title": source_path.stem.strip() or source_path.name,
+                    "file_name": source_path.name,
+                    "source_dir": source_dir.as_posix(),
+                    "target_dir": str(duplicate_match.get("model_dir") or ""),
+                    "source_path": source_path_text,
+                    "target_path": target_path,
+                    "status": "skipped",
+                    "message": status_message,
+                    "progress": 100,
+                    "updated_at": _now_iso(),
+                    "move_files": move_files,
+                    "fingerprint": fingerprint,
+                    "model_dir": str(duplicate_match.get("model_dir") or ""),
+                },
+                limit=ORGANIZER_TASK_LIMIT,
+            )
+            _append_organizer_log(
+                "duplicate_skipped",
+                source=source_path_text,
+                duplicate_model=str(duplicate_match.get("model_dir") or ""),
+                duplicate_instance=str(duplicate_match.get("instance_id") or ""),
+                moved_to=target_path,
+            )
+        except Exception as exc:
+            self.task_store.upsert_organize_task(
+                {
+                    "id": task_id,
+                    "title": source_path.stem.strip() or source_path.name,
+                    "file_name": source_path.name,
+                    "source_dir": source_dir.as_posix(),
+                    "target_dir": str(duplicate_match.get("model_dir") or ""),
+                    "source_path": source_path_text,
+                    "target_path": target_path,
+                    "status": "failed",
+                    "message": f"重复文件处理失败：{exc}",
+                    "progress": 0,
+                    "updated_at": _now_iso(),
+                    "move_files": move_files,
+                    "fingerprint": fingerprint,
+                    "model_dir": str(duplicate_match.get("model_dir") or ""),
+                },
+                limit=ORGANIZER_TASK_LIMIT,
+            )
+            _append_organizer_log("duplicate_skip_failed", source=source_path_text, error=str(exc))
+
     def _organize_file(
         self,
         *,
@@ -194,7 +486,9 @@ class LocalOrganizerService:
         move_files: bool,
         fingerprint: str,
         existing: dict,
-    ) -> None:
+        analysis: Optional[dict[str, Any]] = None,
+        matched_model: Optional[dict[str, Any]] = None,
+    ) -> Optional[dict[str, Any]]:
         task_id = _task_id_from_fingerprint(fingerprint)
         source_path_text = source_path.as_posix()
         relative_source = _safe_relative_string(source_path, source_dir)
@@ -223,13 +517,22 @@ class LocalOrganizerService:
         target_file: Optional[Path] = None
 
         try:
-            model_root = self._prepare_model_root(library_root, source_path, existing=existing)
+            model_root = self._prepare_model_root(
+                library_root,
+                source_path,
+                existing=existing,
+                matched_model=matched_model,
+            )
             instances_dir = model_root / "instances"
             images_dir = model_root / "images"
             instances_dir.mkdir(parents=True, exist_ok=True)
             images_dir.mkdir(parents=True, exist_ok=True)
 
             target_file = self._copy_or_move_file(source_path, instances_dir, move_files=move_files)
+
+            progress_message = "3MF 已写入模型目录，正在生成元数据。"
+            if matched_model:
+                progress_message = "已命中现有模型目录，正在补充新的打印配置。"
 
             self.task_store.upsert_organize_task(
                 {
@@ -241,7 +544,7 @@ class LocalOrganizerService:
                     "source_path": source_path_text,
                     "target_path": target_file.as_posix(),
                     "status": "running",
-                    "message": "3MF 已写入模型目录，正在生成元数据。",
+                    "message": progress_message,
                     "progress": 70,
                     "updated_at": _now_iso(),
                     "move_files": move_files,
@@ -252,16 +555,32 @@ class LocalOrganizerService:
             )
 
             preview_paths = self._extract_preview_images(target_file, images_dir)
-            meta = self._build_meta(
-                model_root=model_root,
-                title=source_title,
-                source_relative_path=relative_source,
-                original_filename=source_path.name,
-                target_file=target_file,
-                move_files=move_files,
-                fingerprint=fingerprint,
-                preview_paths=preview_paths,
-            )
+            if matched_model:
+                meta = self._append_instance_to_existing_meta(
+                    model_root=model_root,
+                    target_file=target_file,
+                    source_relative_path=relative_source,
+                    original_filename=source_path.name,
+                    move_files=move_files,
+                    fingerprint=fingerprint,
+                    preview_paths=preview_paths,
+                    analysis=analysis or {},
+                )
+                success_message = "本地 3MF 已并入现有模型目录。"
+            else:
+                meta = self._build_meta(
+                    model_root=model_root,
+                    title=source_title,
+                    source_relative_path=relative_source,
+                    original_filename=source_path.name,
+                    target_file=target_file,
+                    move_files=move_files,
+                    fingerprint=fingerprint,
+                    preview_paths=preview_paths,
+                    analysis=analysis or {},
+                )
+                success_message = "本地 3MF 已整理完成。"
+
             (model_root / "meta.json").write_text(
                 json.dumps(meta, ensure_ascii=False, indent=2),
                 encoding="utf-8",
@@ -277,7 +596,7 @@ class LocalOrganizerService:
                     "source_path": source_path_text,
                     "target_path": target_file.as_posix(),
                     "status": "success",
-                    "message": "本地 3MF 已整理完成。",
+                    "message": success_message,
                     "progress": 100,
                     "updated_at": _now_iso(),
                     "move_files": move_files,
@@ -292,7 +611,13 @@ class LocalOrganizerService:
                 target=str(target_file),
                 model_dir=self._model_dir_string(model_root),
                 move_files=move_files,
+                reused_model=bool(matched_model),
             )
+            return {
+                "model_root": model_root,
+                "meta": meta,
+                "analysis": analysis or {},
+            }
         except Exception as exc:
             self.task_store.upsert_organize_task(
                 {
@@ -314,8 +639,22 @@ class LocalOrganizerService:
                 limit=ORGANIZER_TASK_LIMIT,
             )
             _append_organizer_log("organize_failed", source=source_path_text, error=str(exc))
+            return None
 
-    def _prepare_model_root(self, library_root: Path, source_path: Path, *, existing: dict) -> Path:
+    def _prepare_model_root(
+        self,
+        library_root: Path,
+        source_path: Path,
+        *,
+        existing: dict,
+        matched_model: Optional[dict[str, Any]],
+    ) -> Path:
+        if matched_model:
+            matched_root = matched_model.get("model_root")
+            if isinstance(matched_root, Path) and matched_root.is_dir():
+                matched_root.mkdir(parents=True, exist_ok=True)
+                return matched_root
+
         existing_model_dir = str(existing.get("model_dir") or "").strip().strip("/")
         if existing_model_dir:
             try:
@@ -337,20 +676,23 @@ class LocalOrganizerService:
         raise RuntimeError("无法为本地模型分配新的目标目录。")
 
     def _copy_or_move_file(self, source_path: Path, instances_dir: Path, *, move_files: bool) -> Path:
-        file_name = sanitize_filename(source_path.name) or "model.3mf"
-        suffix = Path(file_name).suffix or ".3mf"
-        stem = Path(file_name).stem or "model"
-        target = instances_dir / f"{stem}{suffix}"
-        index = 2
-        while target.exists():
-            target = instances_dir / f"{stem}_{index}{suffix}"
-            index += 1
-
+        target = self._ensure_unique_filename(instances_dir, source_path.name)
         _ensure_parent(target)
         if move_files:
             shutil.move(str(source_path), str(target))
         else:
             shutil.copy2(source_path, target)
+        return target
+
+    def _ensure_unique_filename(self, parent: Path, raw_name: str) -> Path:
+        file_name = sanitize_filename(raw_name) or "model.3mf"
+        suffix = Path(file_name).suffix or ".3mf"
+        stem = Path(file_name).stem or "model"
+        target = parent / f"{stem}{suffix}"
+        index = 2
+        while target.exists():
+            target = parent / f"{stem}_{index}{suffix}"
+            index += 1
         return target
 
     def _extract_preview_images(self, target_file: Path, images_dir: Path) -> list[str]:
@@ -374,7 +716,7 @@ class LocalOrganizerService:
                     stem = sanitize_filename(Path(original_name).stem) or "preview"
                     candidate_name = f"{stem}{suffix}"
                     index = 2
-                    while candidate_name in written_names:
+                    while candidate_name in written_names or (images_dir / candidate_name).exists():
                         candidate_name = f"{stem}_{index}{suffix}"
                         index += 1
 
@@ -404,6 +746,100 @@ class LocalOrganizerService:
             score = 3
         return (score, name)
 
+    def _next_local_instance_id(self, instances: list[dict[str, Any]]) -> str:
+        max_value = 0
+        for item in instances:
+            raw = str(item.get("id") or "")
+            if raw.isdigit():
+                max_value = max(max_value, int(raw))
+                continue
+            if raw.startswith("local-"):
+                suffix = raw.split("local-", 1)[-1]
+                if suffix.isdigit():
+                    max_value = max(max_value, int(suffix))
+        return f"local-{max_value + 1}"
+
+    def _append_instance_to_existing_meta(
+        self,
+        *,
+        model_root: Path,
+        target_file: Path,
+        source_relative_path: str,
+        original_filename: str,
+        move_files: bool,
+        fingerprint: str,
+        preview_paths: list[str],
+        analysis: dict[str, Any],
+    ) -> dict[str, Any]:
+        meta_path = model_root / "meta.json"
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+
+        instances = meta.get("instances")
+        if not isinstance(instances, list):
+            instances = []
+            meta["instances"] = instances
+
+        now_iso = _now_iso()
+        try:
+            publish_iso = datetime.fromtimestamp(target_file.stat().st_mtime).isoformat(timespec="seconds")
+        except OSError:
+            publish_iso = now_iso
+
+        cover_path = preview_paths[0] if preview_paths else ""
+        gallery_items = [{"relPath": item} for item in preview_paths]
+        instance_title = str(
+            analysis.get("profile_title")
+            or analysis.get("model_title")
+            or analysis.get("source_title")
+            or target_file.stem
+        ).strip() or target_file.stem
+
+        instances.append(
+            {
+                "id": self._next_local_instance_id(instances),
+                "profileId": str(analysis.get("design_profile_id") or "").strip(),
+                "title": instance_title,
+                "titleTranslated": "",
+                "publishTime": publish_iso,
+                "downloadCount": 0,
+                "printCount": 0,
+                "prediction": 0,
+                "weight": 0,
+                "materialCnt": 0,
+                "materialColorCnt": 0,
+                "needAms": False,
+                "plates": [],
+                "pictures": gallery_items,
+                "instanceFilaments": [],
+                "summary": "本地补充导入的 3MF 配置。",
+                "summaryTranslated": "",
+                "name": target_file.name,
+                "fileName": target_file.name,
+                "sourceFileName": original_filename,
+                "downloadUrl": "",
+                "apiUrl": "",
+                "thumbnailLocal": cover_path,
+                "localImport": {
+                    "sourcePath": source_relative_path,
+                    "originalFilename": original_filename,
+                    "organizedAt": now_iso,
+                    "moveFiles": move_files,
+                    "fingerprint": fingerprint,
+                    "designProfileId": str(analysis.get("design_profile_id") or "").strip(),
+                    "configFingerprint": str(analysis.get("config_fingerprint") or "").strip(),
+                    "fileHash": str(analysis.get("file_hash") or "").strip(),
+                },
+            }
+        )
+
+        meta["update_time"] = now_iso
+        return meta
+
     def _build_meta(
         self,
         *,
@@ -415,6 +851,7 @@ class LocalOrganizerService:
         move_files: bool,
         fingerprint: str,
         preview_paths: list[str],
+        analysis: dict[str, Any],
     ) -> dict:
         now_iso = _now_iso()
         try:
@@ -424,10 +861,17 @@ class LocalOrganizerService:
 
         cover_path = preview_paths[0] if preview_paths else ""
         gallery_items = [{"relPath": item} for item in preview_paths]
+        author_name = str(analysis.get("designer") or "").strip() or "本地整理"
+        model_title = str(analysis.get("model_title") or title).strip() or title
+        profile_title = str(analysis.get("profile_title") or model_title).strip() or model_title
+        design_model_id = str(analysis.get("design_model_id") or "").strip()
+        design_profile_id = str(analysis.get("design_profile_id") or "").strip()
+        config_fingerprint = str(analysis.get("config_fingerprint") or "").strip()
+        file_hash = str(analysis.get("file_hash") or "").strip()
 
         return {
-            "id": "",
-            "title": title,
+            "id": design_model_id,
+            "title": model_title,
             "source": "local",
             "url": "",
             "baseName": model_root.name,
@@ -442,7 +886,7 @@ class LocalOrganizerService:
                 "html": "<p>从本地目录整理导入的 3MF 文件。</p>",
             },
             "author": {
-                "name": "本地整理",
+                "name": author_name,
                 "url": "",
             },
             "tags": ["本地导入"],
@@ -460,16 +904,30 @@ class LocalOrganizerService:
             "instances": [
                 {
                     "id": "local-default",
-                    "name": title,
+                    "profileId": design_profile_id,
+                    "title": profile_title,
+                    "name": target_file.name,
                     "machine": "本地 3MF",
                     "publishedAt": publish_iso,
+                    "publishTime": publish_iso,
                     "summary": "该文件来自本地整理目录，可直接下载 3MF。",
                     "thumbnailLocal": cover_path,
                     "pictures": gallery_items,
                     "fileName": target_file.name,
+                    "sourceFileName": original_filename,
                     "downloadCount": 0,
                     "printCount": 0,
                     "plateCount": 0,
+                    "localImport": {
+                        "sourcePath": source_relative_path,
+                        "originalFilename": original_filename,
+                        "organizedAt": now_iso,
+                        "moveFiles": move_files,
+                        "fingerprint": fingerprint,
+                        "designProfileId": design_profile_id,
+                        "configFingerprint": config_fingerprint,
+                        "fileHash": file_hash,
+                    },
                 }
             ],
             "localImport": {
@@ -478,8 +936,33 @@ class LocalOrganizerService:
                 "organizedAt": now_iso,
                 "moveFiles": move_files,
                 "fingerprint": fingerprint,
+                "designModelId": design_model_id,
+                "designProfileId": design_profile_id,
+                "modelKey": str(analysis.get("model_key") or "").strip(),
+                "configFingerprint": config_fingerprint,
+                "fileHash": file_hash,
             },
         }
+
+    def _register_library_item(self, library_index: dict[str, dict[str, dict[str, Any]]], result: dict[str, Any]) -> None:
+        model_root = result.get("model_root")
+        meta = result.get("meta")
+        if not isinstance(model_root, Path) or not isinstance(meta, dict):
+            return
+
+        model_info = {
+            "model_root": model_root,
+            "model_dir": self._model_dir_string(model_root),
+            "title": str(meta.get("title") or model_root.name),
+            "author": self._author_name(meta),
+        }
+        model_key = self._model_key_from_meta(meta)
+        if model_key:
+            library_index.setdefault("models", {})[model_key] = model_info
+
+        for config_key, config_info in self._config_entries_from_meta(meta, model_root):
+            if config_key:
+                library_index.setdefault("configs", {})[config_key] = config_info
 
     def _model_dir_string(self, model_root: Optional[Path]) -> str:
         if not model_root:
