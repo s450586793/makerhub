@@ -206,6 +206,15 @@
                 v-if="isProfilePopoverOpen(profile)"
                 :class="['mw-profile-popover', profilePopoverPlacement(profileIndex, detail.instances.length)]"
               >
+                <button
+                  v-if="!hoverPopoverEnabled"
+                  class="mw-profile-popover__close"
+                  type="button"
+                  aria-label="关闭打印配置预览"
+                  @click="closeProfilePopover(profile.instance_key, { force: true })"
+                >
+                  ×
+                </button>
                 <div v-if="profileMedia(profile).length" class="mw-profile-popover__gallery">
                   <button
                     class="mw-profile-popover__stage"
@@ -300,21 +309,6 @@
             </div>
           </div>
           <p v-else class="empty-copy">当前没有可展示的打印配置。</p>
-
-          <div v-if="activeInstance && !hoverPopoverEnabled" class="mw-instance-panels mw-instance-panels--inline">
-            <section class="mw-instance-panel is-active">
-              <div class="mw-instance-panel__meta">
-                <span v-if="activeInstance.publish_date">上传于 {{ activeInstance.publish_date }}</span>
-                <span v-if="activeInstance.plates">{{ activeInstance.plates }} 盘</span>
-                <span v-if="activeInstance.download_count">{{ formatStat(activeInstance.download_count) }} 下载</span>
-              </div>
-              <p v-if="activeInstance.media?.length" class="mw-instance-panel__hint">P1/P2/P3 与配置图集仅在打印配置悬浮窗内查看。</p>
-              <p v-if="activeInstance.summary" class="mw-instance-panel__summary">{{ activeInstance.summary }}</p>
-              <p v-if="!activeInstance.file_available && activeInstance.file_status_message" class="mw-instance-panel__note">
-                {{ activeInstance.file_status_message }}
-              </p>
-            </section>
-          </div>
           </aside>
         </aside>
       </div>
@@ -483,6 +477,14 @@
       </article>
     </section>
 
+    <button
+      v-if="compactPopoverVisible"
+      class="mw-profile-popover-backdrop"
+      type="button"
+      aria-label="关闭打印配置预览"
+      @click="closeProfilePopover('', { force: true })"
+    ></button>
+
     <div v-if="lightboxSrc" class="lightbox" @click="closeLightbox">
       <button class="lightbox__backdrop" type="button" aria-label="关闭预览"></button>
       <div class="lightbox__dialog" @click.stop>
@@ -644,6 +646,10 @@ const heroDownloadStatus = computed(() => {
   return activeInstance.value?.file_status_message || "3MF 还未获取到";
 });
 
+const compactPopoverVisible = computed(() => {
+  return !hoverPopoverEnabled.value && Boolean(previewedInstanceKey.value);
+});
+
 const heroDownloadLabel = computed(() => {
   if (!activeInstance.value) {
     return "选择打印配置";
@@ -659,9 +665,6 @@ const heroDownloadLabel = computed(() => {
 
 function applyHoverPopoverEnabled(matches) {
   hoverPopoverEnabled.value = matches;
-  if (!matches) {
-    previewedInstanceKey.value = "";
-  }
 }
 
 function parseProfileHash() {
@@ -742,9 +745,6 @@ function handleProfileCardClick(profile) {
     return;
   }
   selectInstance(profile);
-  if (!hoverPopoverEnabled.value) {
-    return;
-  }
   if (previewedInstanceKey.value === profile.instance_key) {
     previewedInstanceKey.value = "";
     return;
@@ -756,7 +756,7 @@ function handleProfileCardClick(profile) {
 }
 
 function isProfilePopoverOpen(profile) {
-  return hoverPopoverEnabled.value && previewedInstanceKey.value === profile?.instance_key;
+  return previewedInstanceKey.value === profile?.instance_key;
 }
 
 function openProfilePopover(profile) {
@@ -769,8 +769,9 @@ function openProfilePopover(profile) {
   }
 }
 
-function closeProfilePopover(instanceKey = "") {
-  if (!hoverPopoverEnabled.value) {
+function closeProfilePopover(instanceKey = "", options = {}) {
+  const { force = false } = options;
+  if (!hoverPopoverEnabled.value && !force) {
     return;
   }
   if (!instanceKey || previewedInstanceKey.value === instanceKey) {
@@ -782,7 +783,7 @@ function handleProfileEntryFocusOut(event, profile) {
   if (event.currentTarget?.contains(event.relatedTarget)) {
     return;
   }
-  closeProfilePopover(profile?.instance_key || "");
+  closeProfilePopover(profile?.instance_key || "", { force: !hoverPopoverEnabled.value });
 }
 
 function profilePopoverPlacement(index, total) {
@@ -1035,7 +1036,7 @@ onMounted(() => {
   if (typeof window === "undefined") {
     return;
   }
-  hoverPopoverMediaQuery = window.matchMedia("(min-width: 1080px)");
+  hoverPopoverMediaQuery = window.matchMedia("(min-width: 1241px)");
   applyHoverPopoverEnabled(hoverPopoverMediaQuery.matches);
   hoverPopoverMediaListener = (event) => applyHoverPopoverEnabled(event.matches);
   if (typeof hoverPopoverMediaQuery.addEventListener === "function") {

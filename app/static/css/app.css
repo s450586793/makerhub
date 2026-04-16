@@ -2375,6 +2375,35 @@ select:focus {
   z-index: 24;
 }
 
+.mw-profile-popover__close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #4b5563;
+  font-size: 22px;
+  line-height: 1;
+  background: rgba(243, 244, 246, 0.96);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.12);
+  z-index: 2;
+}
+
+.mw-profile-popover-backdrop {
+  position: fixed;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  background: rgba(15, 23, 42, 0.42);
+  z-index: 110;
+}
+
 .mw-profile-popover::after {
   content: "";
   position: absolute;
@@ -3391,6 +3420,12 @@ html[data-theme="dark"] .detail-page--makerworld .mw-profile-popover {
   box-shadow: 0 28px 56px rgba(0, 0, 0, 0.36);
 }
 
+html[data-theme="dark"] .detail-page--makerworld .mw-profile-popover__close {
+  color: #e5e7eb;
+  background: rgba(31, 41, 55, 0.96);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.32);
+}
+
 html[data-theme="dark"] .detail-page--makerworld .mw-profile-popover__stage,
 html[data-theme="dark"] .detail-page--makerworld .mw-profile-popover__media-thumb-figure,
 html[data-theme="dark"] .detail-page--makerworld .mw-profile-popover__stat {
@@ -3587,7 +3622,30 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
   }
 
   .mw-profile-popover {
+    position: fixed;
+    top: auto;
+    right: 14px;
+    bottom: 14px;
+    left: 14px;
+    width: auto;
+    max-width: none;
+    max-height: min(78vh, 720px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    transform: none;
+    border-radius: 16px;
+    z-index: 120;
+  }
+
+  .mw-profile-popover::after {
     display: none;
+  }
+
+  .mw-profile-popover.is-align-top,
+  .mw-profile-popover.is-align-bottom {
+    top: auto;
+    bottom: 14px;
+    transform: none;
   }
 }
 
