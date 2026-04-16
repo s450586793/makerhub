@@ -291,21 +291,6 @@
                   <button class="button button-secondary button-small" type="button" @click="selectInstance(profile)">
                     查看配置
                   </button>
-                  <a
-                    v-if="profile.file_available && profile.file_url"
-                    class="mw-download-button mw-download-button--compact"
-                    :href="profile.file_url"
-                    download
-                  >
-                    下载 3MF
-                  </a>
-                  <span
-                    v-else
-                    class="mw-download-button mw-download-button--compact is-disabled"
-                    :title="profile.file_status_message || '3MF 还未获取到'"
-                  >
-                    {{ profile.file_name ? "3MF 还未获取到" : "当前没有 3MF" }}
-                  </span>
                 </div>
 
                 <p v-if="profile.file_status_message" class="mw-profile-popover__note">
@@ -325,21 +310,6 @@
               </div>
               <p v-if="activeInstance.media?.length" class="mw-instance-panel__hint">P1/P2/P3 与配置图集仅在打印配置悬浮窗内查看。</p>
               <p v-if="activeInstance.summary" class="mw-instance-panel__summary">{{ activeInstance.summary }}</p>
-              <a
-                v-if="activeInstance.file_available && activeInstance.file_url"
-                class="mw-download-button"
-                :href="activeInstance.file_url"
-                download
-              >
-                下载 3MF
-              </a>
-              <span
-                v-else
-                class="mw-download-button is-disabled"
-                :title="activeInstance.file_status_message || '3MF 还未获取到'"
-              >
-                {{ activeInstanceDownloadLabel }}
-              </span>
               <p v-if="!activeInstance.file_available && activeInstance.file_status_message" class="mw-instance-panel__note">
                 {{ activeInstance.file_status_message }}
               </p>
@@ -662,13 +632,6 @@ const actionStats = computed(() => [
     icon: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M6 7.2V3.8h8v3.4"/><path d="M5.1 15.8h9.8v-4.7H5.1v4.7Z"/><path d="M4.3 7.2h11.4A1.3 1.3 0 0 1 17 8.5v3.1h-2.1"/><path d="M3 11.6V8.5a1.3 1.3 0 0 1 1.3-1.3"/><circle cx="14.3" cy="9.2" r=".7" fill="currentColor" stroke="none"/></svg>',
   },
 ]);
-
-const activeInstanceDownloadLabel = computed(() => {
-  if (activeInstance.value?.file_name) {
-    return "3MF 还未获取到";
-  }
-  return "当前没有 3MF";
-});
 
 const heroDownloadHref = computed(() => {
   if (activeInstance.value?.file_available && activeInstance.value?.file_url) {
