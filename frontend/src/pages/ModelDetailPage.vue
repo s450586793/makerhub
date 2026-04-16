@@ -13,57 +13,8 @@
     <RouterLink class="mw-back-link" to="/models">返回模型库</RouterLink>
 
     <section class="mw-card">
-      <header class="mw-head">
-        <div class="mw-head__top">
-          <div class="mw-head__author">
-            <img
-              v-if="detail.author?.avatar_url"
-              class="mw-head__avatar"
-              :src="authorAvatarSrc"
-              :alt="detail.author.name"
-              @error="onAuthorAvatarError"
-            >
-            <span v-else class="mw-head__avatar avatar-placeholder">{{ detail.author?.name?.slice(0, 1) || "?" }}</span>
-            <div class="mw-head__identity">
-              <h1>{{ detail.title }}</h1>
-              <div class="mw-head__subline">
-                <span>{{ detail.author?.name || "未知作者" }}</span>
-                <span class="mw-follow-pill">已归档</span>
-                <span
-                  v-if="detail.subscription_flags?.deleted_on_source"
-                  class="mw-chip mw-chip--danger"
-                  :title="deletedSourceTitle"
-                >
-                  源已删除
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <div class="mw-head__aside">
-            <a
-              v-if="detail.origin_url"
-              class="mw-origin-link"
-              :href="detail.origin_url"
-              target="_blank"
-              rel="noreferrer"
-            >
-              原始链接
-            </a>
-          </div>
-        </div>
-
-        <div class="mw-head__crumbs">
-          <span class="mw-crumb">{{ detail.source_label }}</span>
-          <template v-for="crumb in headCrumbs" :key="crumb">
-            <span class="mw-crumb__sep">&gt;</span>
-            <span class="mw-crumb">{{ crumb }}</span>
-          </template>
-        </div>
-      </header>
-
       <div class="mw-hero">
-        <div class="mw-hero__main">
+        <div class="mw-hero__gallery-column">
           <div class="mw-gallery">
             <div class="mw-gallery__cover">
               <img
@@ -108,18 +59,45 @@
               </button>
             </div>
           </div>
+        </div>
 
-          <div v-if="activeInstanceMedia.length" class="mw-instance-media-tabs">
-            <button
-              v-for="(media, mediaIndex) in activeInstanceMedia"
-              :key="`${activeInstance?.instance_key}-${media.label}-${mediaIndex}`"
-              :class="['mw-media-pill', currentMedia.key === `instance-media:${activeInstance?.instance_key}:${mediaIndex}` && 'is-active']"
-              type="button"
-              @click="selectInstanceMedia(media, mediaIndex)"
-            >
-              {{ media.label }}
-            </button>
-          </div>
+        <aside class="mw-hero__sidebar">
+          <header class="mw-head">
+            <div class="mw-head__top">
+              <div class="mw-head__author">
+                <img
+                  v-if="detail.author?.avatar_url"
+                  class="mw-head__avatar"
+                  :src="authorAvatarSrc"
+                  :alt="detail.author.name"
+                  @error="onAuthorAvatarError"
+                >
+                <span v-else class="mw-head__avatar avatar-placeholder">{{ detail.author?.name?.slice(0, 1) || "?" }}</span>
+                <div class="mw-head__identity">
+                  <h1>{{ detail.title }}</h1>
+                  <div class="mw-head__subline">
+                    <span>{{ detail.author?.name || "未知作者" }}</span>
+                    <span class="mw-follow-pill">已归档</span>
+                    <span
+                      v-if="detail.subscription_flags?.deleted_on_source"
+                      class="mw-chip mw-chip--danger"
+                      :title="deletedSourceTitle"
+                    >
+                      源已删除
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="mw-head__crumbs">
+              <span class="mw-crumb">{{ detail.source_label }}</span>
+              <template v-for="crumb in headCrumbs" :key="crumb">
+                <span class="mw-crumb__sep">&gt;</span>
+                <span class="mw-crumb">{{ crumb }}</span>
+              </template>
+            </div>
+          </header>
 
           <div class="mw-stat-row">
             <div
@@ -139,9 +117,55 @@
             <span>采集于 {{ detail.collect_date || "未知时间" }}</span>
             <span v-if="activeInstance?.publish_date">实例上传于 {{ activeInstance.publish_date }}</span>
           </div>
-        </div>
 
-        <aside class="mw-config-panel">
+          <div class="mw-action-strip">
+            <a
+              v-if="heroDownloadHref"
+              class="mw-download-button mw-download-button--hero"
+              :href="heroDownloadHref"
+              download
+            >
+              {{ heroDownloadLabel }}
+            </a>
+            <span
+              v-else
+              class="mw-download-button mw-download-button--hero is-disabled"
+              :title="heroDownloadStatus"
+            >
+              {{ heroDownloadLabel }}
+            </span>
+            <a
+              v-if="detail.origin_url"
+              class="mw-inline-link mw-inline-link--ghost"
+              :href="detail.origin_url"
+              target="_blank"
+              rel="noreferrer"
+            >
+              原始链接
+            </a>
+          </div>
+
+          <section v-if="activeInstance" class="mw-active-profile">
+            <div class="mw-active-profile__heading">
+              <strong>{{ activeInstance.title }}</strong>
+              <span>{{ activeInstance.machine || "通用" }}</span>
+            </div>
+            <p v-if="activeInstance.summary" class="mw-active-profile__summary">{{ activeInstance.summary }}</p>
+
+            <div v-if="activeInstanceMedia.length" class="mw-instance-media-tabs">
+              <button
+                v-for="(media, mediaIndex) in activeInstanceMedia"
+                :key="`${activeInstance?.instance_key}-${media.label}-${mediaIndex}`"
+                :class="['mw-media-pill', currentMedia.key === `instance-media:${activeInstance?.instance_key}:${mediaIndex}` && 'is-active']"
+                type="button"
+                @click="selectInstanceMedia(media, mediaIndex)"
+              >
+                {{ media.label }}
+              </button>
+            </div>
+          </section>
+
+          <aside class="mw-config-panel">
           <div class="mw-config-panel__header">
             <h2>打印配置 <span>({{ detail.instances?.length || 0 }})</span></h2>
 
@@ -345,20 +369,35 @@
               </p>
             </section>
           </div>
+          </aside>
         </aside>
       </div>
     </section>
 
+    <nav class="mw-detail-nav" aria-label="详情导航">
+      <a
+        v-for="section in detailSections"
+        :key="section.id"
+        class="mw-detail-nav__link"
+        :href="`#${section.id}`"
+      >
+        {{ section.label }}
+      </a>
+    </nav>
+
     <section class="mw-content-stack">
-      <article class="mw-section-card">
+      <article id="detail-description" class="mw-section-card">
         <div class="mw-section-card__header">
           <h2>描述</h2>
         </div>
         <div v-if="detail.summary_html" class="rich-content" v-html="detail.summary_html"></div>
         <p v-else class="empty-copy">{{ detail.summary_text || "当前没有描述内容。" }}</p>
+        <div v-if="detail.tags?.length" class="mw-tag-wall">
+          <span v-for="tag in detail.tags" :key="tag" class="mw-chip mw-chip--tag">{{ tag }}</span>
+        </div>
       </article>
 
-      <article class="mw-section-card mw-section-card--docs">
+      <article id="detail-docs" class="mw-section-card mw-section-card--docs">
         <div class="mw-section-card__header">
           <div class="mw-section-card__heading">
             <h2>文档 ({{ detail.attachments?.length || 0 }})</h2>
@@ -445,7 +484,7 @@
         </form>
       </article>
 
-      <article class="mw-section-card">
+      <article id="detail-comments" class="mw-section-card">
         <div class="mw-section-card__header">
           <h2>评论 &amp; 评分 ({{ detail.comments?.length || 0 }})</h2>
         </div>
@@ -555,6 +594,12 @@ const attachmentCategories = [
   { value: "other", label: "其他附件" },
 ];
 
+const detailSections = [
+  { id: "detail-description", label: "描述" },
+  { id: "detail-docs", label: "文档" },
+  { id: "detail-comments", label: "评论" },
+];
+
 const modelDir = computed(() => decodeURIComponent(route.path.replace(/^\/models\//, "")));
 
 const activeInstance = computed(() => {
@@ -647,6 +692,30 @@ const actionStats = computed(() => [
 
 const activeInstanceDownloadLabel = computed(() => {
   if (activeInstance.value?.file_name) {
+    return "3MF 还未获取到";
+  }
+  return "当前没有 3MF";
+});
+
+const heroDownloadHref = computed(() => {
+  if (activeInstance.value?.file_available && activeInstance.value?.file_url) {
+    return activeInstance.value.file_url;
+  }
+  return "";
+});
+
+const heroDownloadStatus = computed(() => {
+  return activeInstance.value?.file_status_message || "3MF 还未获取到";
+});
+
+const heroDownloadLabel = computed(() => {
+  if (!activeInstance.value) {
+    return "选择打印配置";
+  }
+  if (activeInstance.value.file_available && activeInstance.value.file_url) {
+    return "下载 3MF";
+  }
+  if (activeInstance.value.file_name) {
     return "3MF 还未获取到";
   }
   return "当前没有 3MF";
