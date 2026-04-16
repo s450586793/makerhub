@@ -170,7 +170,7 @@
                 ]"
                 :aria-expanded="isProfilePopoverOpen(profile) ? 'true' : 'false'"
                 type="button"
-                @click="selectInstance(profile)"
+                @click="handleProfileCardClick(profile)"
               >
                 <div class="mw-profile-card__thumb-wrap">
                   <img
@@ -737,6 +737,24 @@ function selectInstance(instance, options = {}) {
   }
 }
 
+function handleProfileCardClick(profile) {
+  if (!profile) {
+    return;
+  }
+  selectInstance(profile);
+  if (!hoverPopoverEnabled.value) {
+    return;
+  }
+  if (previewedInstanceKey.value === profile.instance_key) {
+    previewedInstanceKey.value = "";
+    return;
+  }
+  previewedInstanceKey.value = profile.instance_key;
+  if (!(profile.instance_key in popoverMediaState.value)) {
+    selectPopoverMedia(profile, 0);
+  }
+}
+
 function isProfilePopoverOpen(profile) {
   return hoverPopoverEnabled.value && previewedInstanceKey.value === profile?.instance_key;
 }
@@ -1017,7 +1035,7 @@ onMounted(() => {
   if (typeof window === "undefined") {
     return;
   }
-  hoverPopoverMediaQuery = window.matchMedia("(min-width: 1241px) and (hover: hover) and (pointer: fine)");
+  hoverPopoverMediaQuery = window.matchMedia("(min-width: 1080px)");
   applyHoverPopoverEnabled(hoverPopoverMediaQuery.matches);
   hoverPopoverMediaListener = (event) => applyHoverPopoverEnabled(event.matches);
   if (typeof hoverPopoverMediaQuery.addEventListener === "function") {
