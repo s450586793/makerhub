@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import time
 from datetime import datetime
@@ -48,6 +49,7 @@ local_organizer = LocalOrganizerService(
     task_store=task_state_store,
 )
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/s450586793/makerhub/main/VERSION"
+GITHUB_VERSION_API_URL = "https://api.github.com/repos/s450586793/makerhub/contents/VERSION?ref=main"
 GITHUB_VERSION_CACHE_TTL_SECONDS = 300
 github_version_cache = {
     "version": "",
@@ -73,9 +75,30 @@ def _read_latest_github_version() -> str:
             "Cache-Control": "no-cache",
         },
     )
-    with urlopen(request, timeout=5) as response:
+    with urlopen(request, timeout=8) as response:
         charset = response.headers.get_content_charset() or "utf-8"
-        return response.read().decode(charset, errors="ignore").strip()
+        value = response.read().decode(charset, errors="ignore").strip()
+        if value:
+            return value
+
+    api_request = UrlRequest(
+        GITHUB_VERSION_API_URL,
+        headers={
+            "User-Agent": "makerhub-version-check",
+            "Accept": "application/vnd.github+json",
+            "Cache-Control": "no-cache",
+        },
+    )
+    with urlopen(api_request, timeout=8) as response:
+        charset = response.headers.get_content_charset() or "utf-8"
+        payload = json.loads(response.read().decode(charset, errors="ignore"))
+        content = str(payload.get("content") or "").strip()
+        encoding = str(payload.get("encoding") or "").strip().lower()
+        if not content:
+            raise ValueError("GitHub API 未返回 VERSION 内容")
+        if encoding == "base64":
+            return base64.b64decode(content).decode("utf-8", errors="ignore").strip()
+        return content.strip()
 
 
 async def _get_github_version_status(force: bool = False) -> dict:
@@ -108,6 +131,7 @@ async def _get_github_version_status(force: bool = False) -> dict:
     except Exception as exc:
         github_version_cache.update(
             {
+                "version": "",
                 "checked_at": now,
                 "checked_at_iso": checked_at_iso,
                 "error": str(exc),

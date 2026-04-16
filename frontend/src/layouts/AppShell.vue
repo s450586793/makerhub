@@ -45,7 +45,7 @@
             <span class="sidebar-version__value">{{ appState.appVersion ? `v${appState.appVersion}` : "读取中" }}</span>
           </span>
           <span class="sidebar-version__line">
-            <span class="sidebar-version__label">GitHub</span>
+            <span class="sidebar-version__label">最新版本</span>
             <span :class="['sidebar-version__value', appState.githubUpdateAvailable && 'is-update']">
               {{ githubVersionText }}
             </span>
@@ -93,11 +93,11 @@ const sidebarVisible = computed(() => (
   isCompact.value ? mobileSidebarOpen.value : !desktopSidebarHidden.value
 ));
 const githubVersionText = computed(() => {
-  if (appState.githubLatestVersion) {
-    return `v${appState.githubLatestVersion}`;
-  }
   if (appState.githubVersionError) {
     return "读取失败";
+  }
+  if (appState.githubLatestVersion) {
+    return `v${appState.githubLatestVersion}`;
   }
   return "读取中";
 });
