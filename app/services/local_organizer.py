@@ -22,6 +22,7 @@ ORGANIZER_POLL_INTERVAL_SECONDS = 5
 ORGANIZER_MIN_FILE_AGE_SECONDS = 2
 ORGANIZER_TASK_LIMIT = 50
 ORGANIZER_MAX_FILES_PER_CYCLE = 1
+ORGANIZER_LIBRARY_INDEX_CACHE_TTL_SECONDS = 300
 ORGANIZER_PREVIEW_LIMIT = 6
 PREVIEW_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 ORGANIZER_IGNORED_DIR_NAMES = {"_duplicates", "_failed", "_skipped"}
@@ -101,6 +102,9 @@ class LocalOrganizerService:
         self.task_store = task_store or TaskStateStore()
         self._thread: Optional[threading.Thread] = None
         self._start_lock = threading.Lock()
+        self._library_index_cache: Optional[dict[str, dict[str, dict[str, Any]]]] = None
+        self._library_index_cache_root = ""
+        self._library_index_cache_at = 0.0
 
     def start(self) -> None:
         with self._start_lock:
@@ -152,15 +156,10 @@ class LocalOrganizerService:
         except OSError:
             pass
 
-        library_index = self._build_library_index(library_root)
-        existing_items = self.task_store.load_organize_tasks().get("items") or []
-        known_by_fingerprint = {
-            str(item.get("fingerprint") or ""): item
-            for item in existing_items
-            if str(item.get("fingerprint") or "")
-        }
-
         candidates = self._iter_candidates(source_dir)
+        if not candidates:
+            return
+
         pending_count = len(candidates)
         if pending_count > ORGANIZER_MAX_FILES_PER_CYCLE:
             _append_organizer_log(
@@ -169,6 +168,14 @@ class LocalOrganizerService:
                 pending_count=pending_count,
                 processing_limit=ORGANIZER_MAX_FILES_PER_CYCLE,
             )
+
+        library_index = self._get_library_index(library_root)
+        existing_items = self.task_store.load_organize_tasks().get("items") or []
+        known_by_fingerprint = {
+            str(item.get("fingerprint") or ""): item
+            for item in existing_items
+            if str(item.get("fingerprint") or "")
+        }
 
         for candidate in candidates[:ORGANIZER_MAX_FILES_PER_CYCLE]:
             fingerprint = self._fingerprint(candidate)
@@ -414,6 +421,29 @@ class LocalOrganizerService:
             models.pop(model_key, None)
 
         return {"models": models, "configs": configs}
+
+    def _get_library_index(self, library_root: Path, *, force: bool = False) -> dict[str, dict[str, dict[str, Any]]]:
+        root_key = library_root.resolve().as_posix()
+        now = time.time()
+        if (
+            not force
+            and self._library_index_cache is not None
+            and self._library_index_cache_root == root_key
+            and now - self._library_index_cache_at < ORGANIZER_LIBRARY_INDEX_CACHE_TTL_SECONDS
+        ):
+            return self._library_index_cache
+
+        library_index = self._build_library_index(library_root)
+        self._library_index_cache = library_index
+        self._library_index_cache_root = root_key
+        self._library_index_cache_at = now
+        _append_organizer_log(
+            "library_index_rebuilt",
+            root=root_key,
+            model_count=len(library_index.get("models") or {}),
+            config_count=len(library_index.get("configs") or {}),
+        )
+        return library_index
 
     def _author_name(self, meta: dict[str, Any]) -> str:
         author = meta.get("author")
