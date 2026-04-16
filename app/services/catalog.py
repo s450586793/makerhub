@@ -213,6 +213,16 @@ def _prune_recent_failures(
     return payload
 
 
+def _count_active_organize_tasks(organize_tasks: dict) -> int:
+    active_statuses = {"pending", "queued", "running"}
+    count = 0
+    for item in organize_tasks.get("items") or []:
+        status = str(item.get("status") or "").strip().lower()
+        if status in active_statuses:
+            count += 1
+    return count
+
+
 def _asset_url_from_item(model_root: Path, item: Any) -> Optional[str]:
     if isinstance(item, str):
         return _local_asset_url(model_root, item) or _remote_asset_url(item)
@@ -1036,6 +1046,8 @@ def build_tasks_payload(missing_fallback: Optional[list[dict]] = None) -> dict:
         missing_3mf.get("items") or [],
     )
     organize_tasks = store.load_organize_tasks()
+    active_organize_count = _count_active_organize_tasks(organize_tasks)
+    organize_tasks["active_count"] = active_organize_count
 
     return {
         "archive_queue": archive_queue,
@@ -1044,7 +1056,7 @@ def build_tasks_payload(missing_fallback: Optional[list[dict]] = None) -> dict:
         "summary": {
             "running_or_queued": archive_queue["running_count"] + archive_queue["queued_count"],
             "missing_3mf_count": missing_3mf["count"],
-            "organize_count": organize_tasks["count"],
+            "organize_count": active_organize_count,
         },
     }
 

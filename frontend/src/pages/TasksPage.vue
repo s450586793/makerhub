@@ -14,7 +14,7 @@
         <strong>{{ payload.summary.missing_3mf_count }}</strong>
       </div>
       <div class="intro-stat">
-        <span>整理任务</span>
+        <span>整理中</span>
         <strong>{{ payload.summary.organize_count }}</strong>
       </div>
     </div>
