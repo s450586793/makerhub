@@ -23,6 +23,7 @@ from app.schemas.models import (
 from app.schemas.models import OrganizeTask
 from app.services.catalog import build_dashboard_payload, build_models_payload, build_tasks_payload, delete_archived_models, get_model_detail
 from app.services.crawler import LegacyCrawlerBridge
+from app.services.local_organizer import LocalOrganizerService
 from app.services.model_attachments import create_manual_attachment, delete_manual_attachment
 from app.services.auth import AuthManager
 from app.services.subscriptions import SubscriptionManager
@@ -39,6 +40,10 @@ subscription_manager = SubscriptionManager(
     store=store,
     task_store=task_state_store,
 )
+local_organizer = LocalOrganizerService(
+    store=store,
+    task_store=task_state_store,
+)
 
 
 def _task_identity(item: dict) -> str:
@@ -47,6 +52,7 @@ def _task_identity(item: dict) -> str:
 
 def _archive_event_snapshot() -> dict:
     queue = task_state_store.load_archive_queue()
+    organize_tasks = task_state_store.load_organize_tasks()
 
     active = {}
     for item in queue.get("active") or []:
@@ -60,6 +66,12 @@ def _archive_event_snapshot() -> dict:
         }
 
     recent_failures = {_task_identity(item) for item in queue.get("recent_failures") or [] if _task_identity(item)}
+    organize_success = {
+        str(item.get("id") or item.get("fingerprint") or item.get("source_path") or "")
+        for item in organize_tasks.get("items") or []
+        if str(item.get("status") or "").lower() == "success"
+        and str(item.get("id") or item.get("fingerprint") or item.get("source_path") or "")
+    }
 
     return {
         "active": active,
@@ -67,6 +79,7 @@ def _archive_event_snapshot() -> dict:
         "running_count": int(queue.get("running_count") or 0),
         "queued_count": int(queue.get("queued_count") or 0),
         "failed_count": int(queue.get("failed_count") or 0),
+        "organize_success": organize_success,
     }
 
 
@@ -377,6 +390,7 @@ async def stream_archive_events(request: Request):
     async def event_stream():
         snapshot = _archive_event_snapshot()
         previous_active = dict(snapshot["active"])
+        previous_organize_success = set(snapshot["organize_success"])
 
         yield (
             "event: ready\n"
@@ -391,6 +405,7 @@ async def stream_archive_events(request: Request):
             snapshot = _archive_event_snapshot()
             current_active = dict(snapshot["active"])
             recent_failures = set(snapshot["recent_failures"])
+            current_organize_success = set(snapshot["organize_success"])
             completed = []
 
             for identity, metadata in previous_active.items():
@@ -414,6 +429,16 @@ async def stream_archive_events(request: Request):
                     }
                 )
 
+            for success_id in sorted(current_organize_success - previous_organize_success):
+                completed.append(
+                    {
+                        "id": success_id,
+                        "url": "",
+                        "title": "本地整理完成",
+                        "kind": "local_organize",
+                    }
+                )
+
             if completed:
                 yield (
                     "event: archive_completed\n"
@@ -421,6 +446,7 @@ async def stream_archive_events(request: Request):
                 )
 
             previous_active = current_active
+            previous_organize_success = current_organize_success
             heartbeat_tick += 1
             if heartbeat_tick >= 15:
                 heartbeat_tick = 0

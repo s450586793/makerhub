@@ -232,18 +232,33 @@
       </div>
       <div v-if="payload.organize_tasks.items.length" class="table-like">
         <div class="table-like__row table-like__row--head">
-          <span>源目录</span>
-          <span>目标目录</span>
+          <span>文件</span>
+          <span>模型目录</span>
           <span>状态</span>
         </div>
         <div
-          v-for="item in payload.organize_tasks.items"
-          :key="`${item.source_dir}-${item.target_dir}`"
+          v-for="(item, index) in payload.organize_tasks.items"
+          :key="item.id || item.fingerprint || item.source_path || `${item.source_dir}-${item.target_dir}-${index}`"
           class="table-like__row"
         >
-          <span>{{ item.source_dir }}</span>
-          <span>{{ item.target_dir }}</span>
-          <span>{{ item.status }}</span>
+          <span>
+            <span class="missing-status">
+              <strong>{{ item.title || item.file_name || "未命名文件" }}</strong>
+              <small>{{ item.source_path || item.source_dir || "-" }}</small>
+            </span>
+          </span>
+          <span>
+            <span class="missing-status">
+              <strong>{{ item.model_dir || "-" }}</strong>
+              <small>{{ item.target_path || item.target_dir || "-" }}</small>
+            </span>
+          </span>
+          <span>
+            <span class="missing-status">
+              <strong>{{ item.status }}</strong>
+              <small>{{ item.message || "-" }}</small>
+            </span>
+          </span>
         </div>
       </div>
       <p v-else class="empty-copy">当前没有本地整理任务。</p>
@@ -297,6 +312,7 @@ const submittingArchive = ref(false);
 const confirmingArchive = ref(false);
 const pendingMissingActionKey = ref("");
 let refreshTimer = null;
+let loadingTasks = false;
 const TASKS_PAGE_SIZE = 5;
 const activeVisibleLimit = ref(TASKS_PAGE_SIZE);
 const queuedVisibleLimit = ref(TASKS_PAGE_SIZE);
@@ -371,20 +387,22 @@ function openArchiveConfirmDialog(preview) {
 }
 
 function syncAutoRefresh() {
-  const hasRunning = payload.value.summary.running_or_queued > 0;
-  if (hasRunning && !refreshTimer) {
+  if (!refreshTimer) {
     refreshTimer = window.setInterval(load, 5000);
-    return;
-  }
-  if (!hasRunning && refreshTimer) {
-    window.clearInterval(refreshTimer);
-    refreshTimer = null;
   }
 }
 
 async function load() {
-  payload.value = await apiRequest("/api/tasks");
-  syncAutoRefresh();
+  if (loadingTasks) {
+    return;
+  }
+  loadingTasks = true;
+  try {
+    payload.value = await apiRequest("/api/tasks");
+    syncAutoRefresh();
+  } finally {
+    loadingTasks = false;
+  }
 }
 
 async function submitArchive() {

@@ -172,11 +172,20 @@ def _normalize_organize_tasks(payload: Any) -> dict:
             continue
         normalized.append(
             {
+                "id": str(item.get("id") or item.get("task_id") or ""),
+                "title": str(item.get("title") or item.get("file_name") or Path(str(item.get("source_path") or "")).name or ""),
+                "file_name": str(item.get("file_name") or Path(str(item.get("source_path") or "")).name or ""),
                 "source_dir": str(item.get("source_dir") or item.get("source") or ""),
                 "target_dir": str(item.get("target_dir") or item.get("target") or ""),
+                "source_path": str(item.get("source_path") or ""),
+                "target_path": str(item.get("target_path") or ""),
+                "model_dir": str(item.get("model_dir") or ""),
                 "status": str(item.get("status") or "pending"),
+                "message": str(item.get("message") or item.get("detail") or ""),
+                "progress": int(item.get("progress") or item.get("percent") or 0),
                 "updated_at": str(item.get("updated_at") or item.get("time") or ""),
                 "move_files": bool(item.get("move_files", item.get("move", True))),
+                "fingerprint": str(item.get("fingerprint") or ""),
             }
         )
 
@@ -377,6 +386,25 @@ class TaskStateStore:
         state["count"] = len(state["items"])
         return state
 
+    def _load_organize_tasks_unlocked(self) -> dict:
+        payload = self._read_json(ORGANIZE_TASKS_PATH, {"items": []})
+        tasks = _normalize_organize_tasks(payload)
+        tasks["count"] = len(tasks["items"])
+        return tasks
+
+    def _save_organize_tasks_unlocked(self, payload: dict) -> dict:
+        normalized = _normalize_organize_tasks(payload)
+        self._write_json(ORGANIZE_TASKS_PATH, normalized)
+        return self._load_organize_tasks_unlocked()
+
+    def _update_organize_tasks(self, updater) -> dict:
+        with _STATE_LOCK:
+            payload = self._load_organize_tasks_unlocked()
+            updated = updater(payload)
+            if updated is None:
+                updated = payload
+            return self._save_organize_tasks_unlocked(updated)
+
     def _save_subscriptions_state_unlocked(self, payload: dict) -> dict:
         normalized = _normalize_subscription_state(payload)
         self._write_json(SUBSCRIPTIONS_STATE_PATH, normalized)
@@ -408,10 +436,11 @@ class TaskStateStore:
 
     def load_organize_tasks(self) -> dict:
         with _STATE_LOCK:
-            payload = self._read_json(ORGANIZE_TASKS_PATH, {"items": []})
-            tasks = _normalize_organize_tasks(payload)
-            tasks["count"] = len(tasks["items"])
-            return tasks
+            return self._load_organize_tasks_unlocked()
+
+    def save_organize_tasks(self, payload: dict) -> dict:
+        with _STATE_LOCK:
+            return self._save_organize_tasks_unlocked(payload)
 
     def save_subscriptions_state(self, payload: dict) -> dict:
         with _STATE_LOCK:
@@ -710,6 +739,39 @@ class TaskStateStore:
             return {"items": remaining}
 
         return self._update_missing_3mf(_mutate)
+
+    def upsert_organize_task(self, item: dict, limit: int = 50) -> dict:
+        normalized_items = _normalize_organize_tasks({"items": [item]}).get("items", [])
+        if not normalized_items:
+            return self.load_organize_tasks()
+
+        target = normalized_items[0]
+        target_id = target.get("id") or target.get("fingerprint") or target.get("source_path")
+        if not target_id:
+            target_id = f"{target.get('source_dir')}::{target.get('target_dir')}::{target.get('title')}"
+            target["id"] = target_id
+
+        def _mutate(payload: dict) -> dict:
+            items = []
+            replaced = False
+            for existing in payload.get("items") or []:
+                normalized = _normalize_organize_tasks({"items": [existing]}).get("items", [])
+                if not normalized:
+                    continue
+                current = normalized[0]
+                current_id = current.get("id") or current.get("fingerprint") or current.get("source_path")
+                if current_id == target_id:
+                    items.append(target)
+                    replaced = True
+                else:
+                    items.append(current)
+
+            if not replaced:
+                items.insert(0, target)
+
+            return {"items": items[: max(int(limit or 0), 1)]}
+
+        return self._update_organize_tasks(_mutate)
 
     def update_missing_3mf_status(
         self,
