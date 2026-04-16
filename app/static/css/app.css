@@ -2376,14 +2376,12 @@ select:focus {
 }
 
 .mw-profile-popover__close {
-  position: absolute;
-  top: 10px;
-  right: 10px;
   width: 32px;
   height: 32px;
   padding: 0;
   border: 0;
   border-radius: 999px;
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2393,6 +2391,50 @@ select:focus {
   background: rgba(243, 244, 246, 0.96);
   box-shadow: 0 6px 16px rgba(15, 23, 42, 0.12);
   z-index: 2;
+}
+
+.mw-profile-popover__compact-chrome {
+  display: grid;
+  gap: 10px;
+}
+
+.mw-profile-popover__sheet-handle {
+  width: 42px;
+  height: 5px;
+  margin: 0 auto;
+  border-radius: 999px;
+  background: rgba(156, 163, 175, 0.88);
+}
+
+.mw-profile-popover__compact-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mw-profile-popover__compact-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.mw-profile-popover__compact-copy strong {
+  display: block;
+  color: #111827;
+  font-size: 15px;
+  line-height: 1.35;
+  font-weight: 700;
+}
+
+.mw-profile-popover__compact-eyebrow {
+  display: block;
+  color: #6b7280;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .mw-profile-popover-backdrop {
@@ -3426,6 +3468,23 @@ html[data-theme="dark"] .detail-page--makerworld .mw-profile-popover__close {
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.32);
 }
 
+html[data-theme="dark"] .detail-page--makerworld .mw-profile-popover__sheet-handle {
+  background: rgba(148, 163, 184, 0.72);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-profile-popover__compact-copy strong {
+  color: var(--mw-text);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-profile-popover__compact-eyebrow {
+  color: var(--mw-text-muted);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-profile-popover.is-compact .mw-profile-popover__compact-chrome {
+  background: rgba(18, 29, 25, 0.98);
+  border-bottom-color: var(--mw-border);
+}
+
 html[data-theme="dark"] .detail-page--makerworld .mw-profile-popover__stage,
 html[data-theme="dark"] .detail-page--makerworld .mw-profile-popover__media-thumb-figure,
 html[data-theme="dark"] .detail-page--makerworld .mw-profile-popover__stat {
@@ -3624,16 +3683,19 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
   .mw-profile-popover {
     position: fixed;
     top: auto;
-    right: 14px;
-    bottom: 14px;
-    left: 14px;
+    right: 0;
+    bottom: 0;
+    left: 0;
     width: auto;
     max-width: none;
-    max-height: min(78vh, 720px);
+    max-height: calc(100vh - 64px);
+    padding: 12px 16px calc(env(safe-area-inset-bottom, 0px) + 18px);
     overflow-y: auto;
     overscroll-behavior: contain;
     transform: none;
-    border-radius: 16px;
+    border-radius: 18px 18px 0 0;
+    border-bottom: 0;
+    box-shadow: 0 -10px 30px rgba(15, 23, 42, 0.12), 0 -2px 8px rgba(15, 23, 42, 0.08);
     z-index: 120;
   }
 
@@ -3644,8 +3706,40 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
   .mw-profile-popover.is-align-top,
   .mw-profile-popover.is-align-bottom {
     top: auto;
-    bottom: 14px;
+    right: 0;
+    bottom: 0;
+    left: 0;
     transform: none;
+  }
+
+  .mw-profile-popover.is-compact {
+    animation: mw-profile-sheet-in 0.22s ease-out;
+  }
+
+  .mw-profile-popover.is-compact .mw-profile-popover__compact-chrome {
+    position: sticky;
+    top: -12px;
+    z-index: 3;
+    margin: -12px -16px 0;
+    padding: 12px 16px 10px;
+    background: rgba(255, 255, 255, 0.98);
+    backdrop-filter: blur(14px);
+    border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+  }
+
+  .mw-profile-popover.is-compact .mw-profile-popover__gallery {
+    margin-top: 2px;
+  }
+}
+
+@keyframes mw-profile-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 

@@ -204,17 +204,29 @@
 
               <section
                 v-if="isProfilePopoverOpen(profile)"
-                :class="['mw-profile-popover', profilePopoverPlacement(profileIndex, detail.instances.length)]"
+                :class="[
+                  'mw-profile-popover',
+                  profilePopoverPlacement(profileIndex, detail.instances.length),
+                  !hoverPopoverEnabled && 'is-compact',
+                ]"
               >
-                <button
-                  v-if="!hoverPopoverEnabled"
-                  class="mw-profile-popover__close"
-                  type="button"
-                  aria-label="关闭打印配置预览"
-                  @click="closeProfilePopover(profile.instance_key, { force: true })"
-                >
-                  ×
-                </button>
+                <div v-if="!hoverPopoverEnabled" class="mw-profile-popover__compact-chrome">
+                  <span class="mw-profile-popover__sheet-handle" aria-hidden="true"></span>
+                  <div class="mw-profile-popover__compact-header">
+                    <div class="mw-profile-popover__compact-copy">
+                      <span class="mw-profile-popover__compact-eyebrow">打印配置预览</span>
+                      <strong>{{ profile.title }}</strong>
+                    </div>
+                    <button
+                      class="mw-profile-popover__close"
+                      type="button"
+                      aria-label="关闭打印配置预览"
+                      @click="closeProfilePopover(profile.instance_key, { force: true })"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
                 <div v-if="profileMedia(profile).length" class="mw-profile-popover__gallery">
                   <button
                     class="mw-profile-popover__stage"
