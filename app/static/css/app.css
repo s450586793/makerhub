@@ -1999,17 +1999,43 @@ select:focus {
   gap: 16px;
 }
 
+.mw-hero__sidebar > .mw-head {
+  order: 1;
+}
+
+.mw-hero__sidebar > .mw-active-profile {
+  order: 2;
+}
+
+.mw-hero__sidebar > .mw-config-panel {
+  order: 3;
+}
+
+.mw-hero__sidebar > .mw-stat-row {
+  order: 4;
+}
+
+.mw-hero__sidebar > .mw-statline {
+  order: 5;
+}
+
+.mw-hero__sidebar > .mw-action-strip {
+  order: 6;
+}
+
+.mw-hero__sidebar > .mw-instance-panels {
+  order: 7;
+}
+
 .mw-gallery {
   min-width: 0;
   display: grid;
-  grid-template-columns: 80px minmax(0, 1fr);
+  grid-template-columns: 1fr;
   gap: 12px;
   align-items: start;
 }
 
 .mw-gallery__cover {
-  grid-column: 2;
-  grid-row: 1 / span 2;
   position: relative;
   aspect-ratio: 4 / 3;
   overflow: hidden;
@@ -2056,19 +2082,18 @@ select:focus {
 }
 
 .mw-gallery__thumbs {
-  grid-column: 1;
-  grid-row: 1;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   gap: 10px;
-  overflow-y: auto;
-  overflow-x: hidden;
-  max-height: 560px;
-  padding-right: 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-height: none;
+  padding-right: 0;
+  padding-bottom: 2px;
 }
 
 .mw-gallery__thumb {
-  width: 100%;
+  width: 96px;
   aspect-ratio: 1 / 1;
   padding: 0;
   border: 2px solid transparent;
@@ -3670,30 +3695,6 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
 
   .mw-statline {
     justify-content: flex-start;
-  }
-
-  .mw-gallery {
-    grid-template-columns: 1fr;
-  }
-
-  .mw-gallery__cover {
-    grid-column: auto;
-    grid-row: auto;
-  }
-
-  .mw-gallery__thumbs {
-    grid-column: auto;
-    grid-row: auto;
-    flex-direction: row;
-    overflow-x: auto;
-    overflow-y: hidden;
-    max-height: none;
-    padding-right: 0;
-    padding-bottom: 2px;
-  }
-
-  .mw-gallery__thumb {
-    width: 96px;
   }
 
   .mw-detail-nav {
