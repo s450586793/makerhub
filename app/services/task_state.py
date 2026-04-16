@@ -189,7 +189,18 @@ def _normalize_organize_tasks(payload: Any) -> dict:
             }
         )
 
+    normalized.sort(key=_organize_task_sort_key, reverse=True)
     return {"items": normalized}
+
+
+def _organize_task_sort_key(item: dict) -> tuple[int, str, str]:
+    raw = str(item.get("updated_at") or "").strip()
+    if raw:
+        try:
+            return (int(datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()), raw, str(item.get("id") or ""))
+        except ValueError:
+            pass
+    return (0, raw, str(item.get("id") or ""))
 
 
 def _normalize_model_flags(payload: Any) -> dict:

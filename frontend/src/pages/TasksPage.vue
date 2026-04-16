@@ -249,7 +249,7 @@
           <span>状态</span>
         </div>
         <div
-          v-for="(item, index) in payload.organize_tasks.items"
+          v-for="(item, index) in visibleOrganizeTasks"
           :key="item.id || item.fingerprint || item.source_path || `${item.source_dir}-${item.target_dir}-${index}`"
           class="table-like__row"
         >
@@ -272,6 +272,11 @@
             </span>
           </span>
         </div>
+      </div>
+      <div v-if="payload.organize_tasks.items.length > organizeVisibleLimit" class="task-list-footer">
+        <button class="button button-secondary button-small" type="button" @click="organizeVisibleLimit += TASKS_PAGE_SIZE">
+          加载更多
+        </button>
       </div>
       <p v-else class="empty-copy">当前没有本地整理任务。</p>
     </article>
@@ -332,11 +337,13 @@ const activeVisibleLimit = ref(TASKS_PAGE_SIZE);
 const queuedVisibleLimit = ref(TASKS_PAGE_SIZE);
 const failureVisibleLimit = ref(TASKS_PAGE_SIZE);
 const missingVisibleLimit = ref(TASKS_PAGE_SIZE);
+const organizeVisibleLimit = ref(TASKS_PAGE_SIZE);
 
 const visibleActiveTasks = computed(() => payload.value.archive_queue.active.slice(0, activeVisibleLimit.value));
 const visibleQueuedTasks = computed(() => payload.value.archive_queue.queued.slice(0, queuedVisibleLimit.value));
 const visibleFailureTasks = computed(() => payload.value.archive_queue.recent_failures.slice(0, failureVisibleLimit.value));
 const visibleMissingItems = computed(() => payload.value.missing_3mf.items.slice(0, missingVisibleLimit.value));
+const visibleOrganizeTasks = computed(() => payload.value.organize_tasks.items.slice(0, organizeVisibleLimit.value));
 
 function getMissingKey(item) {
   return [
