@@ -15,6 +15,31 @@
     <section class="mw-card">
       <div class="mw-hero">
         <div class="mw-hero__gallery-column">
+          <header class="mw-head mw-head--gallery">
+            <div class="mw-head__identity mw-head__identity--gallery">
+              <h1>{{ detail.title }}</h1>
+              <div class="mw-head__subline">
+                <span>{{ detail.author?.name || "未知作者" }}</span>
+                <span class="mw-follow-pill">已归档</span>
+                <span
+                  v-if="detail.subscription_flags?.deleted_on_source"
+                  class="mw-chip mw-chip--danger"
+                  :title="deletedSourceTitle"
+                >
+                  源已删除
+                </span>
+              </div>
+            </div>
+
+            <div class="mw-head__crumbs">
+              <span class="mw-crumb">{{ detail.source_label }}</span>
+              <template v-for="crumb in headCrumbs" :key="crumb">
+                <span class="mw-crumb__sep">&gt;</span>
+                <span class="mw-crumb">{{ crumb }}</span>
+              </template>
+            </div>
+          </header>
+
           <div class="mw-gallery">
             <div class="mw-gallery__cover">
               <img
@@ -62,43 +87,6 @@
         </div>
 
         <aside class="mw-hero__sidebar">
-          <header class="mw-head">
-            <div class="mw-head__top">
-              <div class="mw-head__author">
-                <img
-                  v-if="detail.author?.avatar_url"
-                  class="mw-head__avatar"
-                  :src="authorAvatarSrc"
-                  :alt="detail.author.name"
-                  @error="onAuthorAvatarError"
-                >
-                <span v-else class="mw-head__avatar avatar-placeholder">{{ detail.author?.name?.slice(0, 1) || "?" }}</span>
-                <div class="mw-head__identity">
-                  <h1>{{ detail.title }}</h1>
-                  <div class="mw-head__subline">
-                    <span>{{ detail.author?.name || "未知作者" }}</span>
-                    <span class="mw-follow-pill">已归档</span>
-                    <span
-                      v-if="detail.subscription_flags?.deleted_on_source"
-                      class="mw-chip mw-chip--danger"
-                      :title="deletedSourceTitle"
-                    >
-                      源已删除
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div class="mw-head__crumbs">
-              <span class="mw-crumb">{{ detail.source_label }}</span>
-              <template v-for="crumb in headCrumbs" :key="crumb">
-                <span class="mw-crumb__sep">&gt;</span>
-                <span class="mw-crumb">{{ crumb }}</span>
-              </template>
-            </div>
-          </header>
-
           <div class="mw-stat-row">
             <div
               v-for="item in actionStats"
@@ -554,7 +542,6 @@ const currentMedia = ref({
   alt: "",
 });
 const activeInstanceKey = ref("");
-const authorAvatarSrc = ref("");
 const lightboxSrc = ref("");
 const attachmentFileInput = ref(null);
 const attachmentUploading = ref(false);
@@ -853,12 +840,6 @@ function onMainMediaError() {
   }
 }
 
-function onAuthorAvatarError() {
-  if (detail.value?.author?.avatar_remote_url && authorAvatarSrc.value !== detail.value.author.avatar_remote_url) {
-    authorAvatarSrc.value = detail.value.author.avatar_remote_url;
-  }
-}
-
 function openLightbox(src) {
   lightboxSrc.value = src;
   document.body.classList.add("is-lightbox-open");
@@ -1045,7 +1026,6 @@ async function load() {
   try {
     const payload = await apiRequest(`/api/models/${encodeURI(modelDir.value)}`);
     detail.value = payload;
-    authorAvatarSrc.value = payload.author?.avatar_url || "";
     const initialInstance = findInstanceByHash(payload.instances || []) || payload.instances?.[0] || null;
     activeInstanceKey.value = initialInstance?.instance_key || "";
     if (findInstanceByHash(payload.instances || [])) {

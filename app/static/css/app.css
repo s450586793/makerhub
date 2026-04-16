@@ -1829,6 +1829,14 @@ select:focus {
   gap: 10px;
 }
 
+.mw-head--gallery {
+  gap: 8px;
+}
+
+.mw-head__identity--gallery {
+  gap: 6px;
+}
+
 .mw-head__top {
   display: flex;
   align-items: flex-start;

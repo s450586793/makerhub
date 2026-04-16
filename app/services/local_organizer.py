@@ -1,6 +1,7 @@
 import hashlib
 import html
 import json
+import re
 import shutil
 import threading
 import time
@@ -55,6 +56,26 @@ def _ensure_parent(path: Path) -> None:
 
 def _normalize_identity_text(value: Any) -> str:
     return " ".join(str(value or "").strip().lower().split())
+
+
+def _normalize_loose_identity_text(value: Any) -> str:
+    text = html.unescape(str(value or "")).strip().lower()
+    if not text:
+        return ""
+    text = re.sub(r"[\s\-_:/|\\.,，。;；'\"`~!！?？()\[\]{}<>《》【】（）、+]+", "", text)
+    return text
+
+
+def _unique_non_empty(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
 
 
 def _coerce_dict(value: Any) -> dict[str, Any]:
@@ -149,7 +170,7 @@ class LocalOrganizerService:
 
             analysis = self._inspect_3mf(candidate)
             duplicate_match = library_index["configs"].get(str(analysis.get("config_fingerprint") or "")) if analysis else None
-            model_match = library_index["models"].get(str(analysis.get("model_key") or "")) if analysis else None
+            model_match = self._match_existing_model(library_index["models"], analysis) if analysis else None
 
             if duplicate_match:
                 self._handle_duplicate_file(
@@ -267,6 +288,57 @@ class LocalOrganizerService:
             return f"title_designer:{title}|{designer}"
         return ""
 
+    def _build_model_match_keys(
+        self,
+        *,
+        design_model_id: Any,
+        title_candidates: list[Any],
+        designer_candidates: list[Any],
+    ) -> list[str]:
+        keys: list[str] = []
+        design_model_text = str(design_model_id or "").strip()
+        if design_model_text:
+            keys.append(f"design_model:{design_model_text}")
+
+        normalized_titles = _unique_non_empty([_normalize_identity_text(item) for item in title_candidates])
+        normalized_designers = _unique_non_empty([_normalize_identity_text(item) for item in designer_candidates])
+        loose_titles = _unique_non_empty([_normalize_loose_identity_text(item) for item in title_candidates])
+        loose_designers = _unique_non_empty([_normalize_loose_identity_text(item) for item in designer_candidates])
+
+        for title in normalized_titles:
+            for designer in normalized_designers:
+                keys.append(f"title_designer:{title}|{designer}")
+        for title in loose_titles:
+            for designer in loose_designers:
+                keys.append(f"title_designer_loose:{title}|{designer}")
+
+        # Title-only aliases are only used as a unique fallback when IDs or author
+        # metadata are missing/inconsistent between the local 3MF and the archived model.
+        for title in normalized_titles:
+            if len(title) >= 4:
+                keys.append(f"title_only:{title}")
+        for title in loose_titles:
+            if len(title) >= 4:
+                keys.append(f"title_only_loose:{title}")
+
+        return _unique_non_empty(keys)
+
+    def _model_match_keys_from_analysis(self, analysis: dict[str, Any]) -> list[str]:
+        metadata = _coerce_dict(analysis.get("metadata"))
+        return self._build_model_match_keys(
+            design_model_id=analysis.get("design_model_id"),
+            title_candidates=[
+                analysis.get("model_title"),
+                analysis.get("profile_title"),
+                analysis.get("source_title"),
+            ],
+            designer_candidates=[
+                analysis.get("designer"),
+                metadata.get("Designer"),
+                metadata.get("ProfileUserName"),
+            ],
+        )
+
     def _derive_config_fingerprint(self, analysis: dict[str, Any]) -> str:
         design_profile_id = str(analysis.get("design_profile_id") or "").strip()
         if design_profile_id:
@@ -299,6 +371,7 @@ class LocalOrganizerService:
     def _build_library_index(self, library_root: Path) -> dict[str, dict[str, dict[str, Any]]]:
         models: dict[str, dict[str, Any]] = {}
         configs: dict[str, dict[str, Any]] = {}
+        ambiguous_model_keys: set[str] = set()
 
         for meta_path in sorted(library_root.rglob("meta.json")):
             try:
@@ -316,12 +389,18 @@ class LocalOrganizerService:
                 "author": self._author_name(payload),
             }
 
-            model_key = self._model_key_from_meta(payload)
-            if model_key:
-                models.setdefault(model_key, model_info)
+            for model_key in self._model_match_keys_from_meta(payload):
+                existing_info = models.get(model_key)
+                if existing_info and existing_info.get("model_dir") != model_info["model_dir"]:
+                    ambiguous_model_keys.add(model_key)
+                    continue
+                models[model_key] = model_info
 
             for config_key, config_info in self._config_entries_from_meta(payload, model_root):
                 configs.setdefault(config_key, config_info)
+
+        for model_key in ambiguous_model_keys:
+            models.pop(model_key, None)
 
         return {"models": models, "configs": configs}
 
@@ -344,6 +423,30 @@ class LocalOrganizerService:
         if title:
             return f"title_designer:{title}|{author}"
         return ""
+
+    def _model_match_keys_from_meta(self, meta: dict[str, Any]) -> list[str]:
+        local_import = _coerce_dict(meta.get("localImport"))
+        return self._build_model_match_keys(
+            design_model_id=local_import.get("designModelId") or meta.get("id"),
+            title_candidates=[
+                meta.get("title"),
+                meta.get("baseName"),
+            ],
+            designer_candidates=[
+                self._author_name(meta),
+            ],
+        )
+
+    def _match_existing_model(
+        self,
+        models_index: dict[str, dict[str, Any]],
+        analysis: dict[str, Any],
+    ) -> Optional[dict[str, Any]]:
+        for model_key in self._model_match_keys_from_analysis(analysis):
+            matched = models_index.get(model_key)
+            if matched:
+                return {**matched, "match_key": model_key}
+        return None
 
     def _config_entries_from_meta(self, meta: dict[str, Any], model_root: Path) -> list[tuple[str, dict[str, Any]]]:
         entries: list[tuple[str, dict[str, Any]]] = []
@@ -956,9 +1059,14 @@ class LocalOrganizerService:
             "title": str(meta.get("title") or model_root.name),
             "author": self._author_name(meta),
         }
-        model_key = self._model_key_from_meta(meta)
-        if model_key:
-            library_index.setdefault("models", {})[model_key] = model_info
+        for model_key in self._model_match_keys_from_meta(meta):
+            if not model_key:
+                continue
+            existing_info = library_index.setdefault("models", {}).get(model_key)
+            if existing_info and existing_info.get("model_dir") != model_info["model_dir"]:
+                library_index["models"].pop(model_key, None)
+                continue
+            library_index["models"][model_key] = model_info
 
         for config_key, config_info in self._config_entries_from_meta(meta, model_root):
             if config_key:
