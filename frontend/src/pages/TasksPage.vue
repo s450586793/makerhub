@@ -228,8 +228,20 @@
           <span class="eyebrow">本地整理</span>
           <h2>本地整理任务</h2>
         </div>
-        <span class="count-pill">{{ payload.organize_tasks.count }} 项</span>
+        <div class="filter-actions">
+          <button
+            v-if="payload.organize_tasks.items.length"
+            class="button button-secondary button-small"
+            type="button"
+            :disabled="clearingOrganizeTasks"
+            @click="clearOrganizeTasks"
+          >
+            {{ clearingOrganizeTasks ? "清空中..." : "清空记录" }}
+          </button>
+          <span class="count-pill">{{ payload.organize_tasks.count }} 项</span>
+        </div>
       </div>
+      <span class="form-status">{{ organizeStatus }}</span>
       <div v-if="payload.organize_tasks.items.length" class="table-like">
         <div class="table-like__row table-like__row--head">
           <span>文件</span>
@@ -297,6 +309,7 @@ const payload = ref({
 
 const archiveUrl = ref("");
 const archiveStatus = ref("");
+const organizeStatus = ref("");
 const archiveSubmitDialog = ref({
   visible: false,
   variant: "success",
@@ -310,6 +323,7 @@ const archiveSubmitDialog = ref({
 const missingStatus = ref("");
 const submittingArchive = ref(false);
 const confirmingArchive = ref(false);
+const clearingOrganizeTasks = ref(false);
 const pendingMissingActionKey = ref("");
 let refreshTimer = null;
 let loadingTasks = false;
@@ -530,6 +544,21 @@ async function cancelMissing(item) {
     missingStatus.value = error instanceof Error ? error.message : "取消失败。";
   } finally {
     pendingMissingActionKey.value = "";
+  }
+}
+
+async function clearOrganizeTasks() {
+  clearingOrganizeTasks.value = true;
+  try {
+    const response = await apiRequest("/api/tasks/organize/clear", {
+      method: "POST",
+    });
+    organizeStatus.value = response.message || "已清空本地整理任务记录。";
+    await load();
+  } catch (error) {
+    organizeStatus.value = error instanceof Error ? error.message : "清空本地整理任务记录失败。";
+  } finally {
+    clearingOrganizeTasks.value = false;
   }
 }
 

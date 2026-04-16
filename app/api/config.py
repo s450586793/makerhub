@@ -332,6 +332,17 @@ async def get_tasks_data():
     return build_tasks_payload(missing_fallback=fallback_items)
 
 
+@router.post("/tasks/organize/clear")
+async def clear_organize_tasks(request: Request):
+    _require_session_auth(request)
+    cleared = task_state_store.save_organize_tasks({"items": []})
+    return {
+        "success": True,
+        "message": "已清空本地整理任务记录。",
+        "organize_tasks": cleared,
+    }
+
+
 @router.get("/subscriptions")
 async def get_subscriptions_data():
     return subscription_manager.list_payload()
