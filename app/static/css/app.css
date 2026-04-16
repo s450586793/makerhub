@@ -2015,9 +2015,9 @@ select:focus {
 .mw-hero {
   display: grid;
   grid-template-columns: minmax(0, 499px) minmax(332px, 356px);
-  gap: 24px;
+  gap: 16px;
   align-items: start;
-  justify-content: space-between;
+  justify-content: start;
 }
 
 .mw-hero__gallery-column,
