@@ -54,7 +54,7 @@
           </div>
           <div class="summary-box">
             <strong>待补 3MF</strong>
-            <span>{{ payload.task_summary?.missing_3mf?.length || 0 }} 项</span>
+            <span>{{ payload.task_summary?.missing_3mf_count || 0 }} 项</span>
           </div>
         </div>
 
@@ -89,6 +89,7 @@ const payload = ref({
     running: [],
     queued_count: 0,
     recent_failures: [],
+    missing_3mf_count: 0,
     missing_3mf: [],
   },
 });

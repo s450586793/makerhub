@@ -1099,6 +1099,7 @@ def build_dashboard_payload(config) -> dict:
             "running": tasks_payload["archive_queue"]["active"],
             "queued_count": tasks_payload["archive_queue"]["queued_count"],
             "recent_failures": tasks_payload["archive_queue"]["recent_failures"][:5],
+            "missing_3mf_count": tasks_payload["missing_3mf"]["count"],
             "missing_3mf": tasks_payload["missing_3mf"]["items"][:5],
         },
     }
