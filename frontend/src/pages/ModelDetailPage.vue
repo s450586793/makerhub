@@ -42,6 +42,22 @@
               </button>
             </div>
 
+            <div v-if="activeInstanceMedia.length" class="mw-gallery__instance-strip">
+              <button
+                v-for="(media, mediaIndex) in activeInstanceMedia"
+                :key="`${activeInstance?.instance_key}-${media.label}-${mediaIndex}`"
+                :class="[
+                  'mw-media-pill',
+                  'mw-media-pill--gallery',
+                  currentMedia.key === `instance-media:${activeInstance?.instance_key}:${mediaIndex}` && 'is-active',
+                ]"
+                type="button"
+                @click="selectInstanceMedia(media, mediaIndex)"
+              >
+                {{ media.label }}
+              </button>
+            </div>
+
             <div v-if="detail.gallery?.length" class="mw-gallery__thumbs">
               <button
                 v-for="(image, index) in detail.gallery"
@@ -151,18 +167,6 @@
               <span>{{ activeInstance.machine || "通用" }}</span>
             </div>
             <p v-if="activeInstance.summary" class="mw-active-profile__summary">{{ activeInstance.summary }}</p>
-
-            <div v-if="activeInstanceMedia.length" class="mw-instance-media-tabs">
-              <button
-                v-for="(media, mediaIndex) in activeInstanceMedia"
-                :key="`${activeInstance?.instance_key}-${media.label}-${mediaIndex}`"
-                :class="['mw-media-pill', currentMedia.key === `instance-media:${activeInstance?.instance_key}:${mediaIndex}` && 'is-active']"
-                type="button"
-                @click="selectInstanceMedia(media, mediaIndex)"
-              >
-                {{ media.label }}
-              </button>
-            </div>
           </section>
 
           <aside class="mw-config-panel">
@@ -347,7 +351,7 @@
                 <span v-if="activeInstance.plates">{{ activeInstance.plates }} 盘</span>
                 <span v-if="activeInstance.download_count">{{ formatStat(activeInstance.download_count) }} 下载</span>
               </div>
-              <p v-if="activeInstance.media?.length" class="mw-instance-panel__hint">图集、P1/P2/P3 与打印实例可在左侧切换查看。</p>
+              <p v-if="activeInstance.media?.length" class="mw-instance-panel__hint">图集缩略图在左侧，P1/P2/P3 已移到主图下方。</p>
               <p v-if="activeInstance.summary" class="mw-instance-panel__summary">{{ activeInstance.summary }}</p>
               <a
                 v-if="activeInstance.file_available && activeInstance.file_url"
