@@ -2014,7 +2014,7 @@ select:focus {
 
 .mw-hero {
   display: grid;
-  grid-template-columns: minmax(0, 820px) minmax(332px, 356px);
+  grid-template-columns: minmax(0, 756px) minmax(332px, 356px);
   gap: 24px;
   align-items: start;
   justify-content: space-between;
@@ -2123,7 +2123,7 @@ select:focus {
 }
 
 .mw-gallery__thumb {
-  width: 88px;
+  width: 80px;
   aspect-ratio: 1 / 1;
   padding: 0;
   border: 2px solid transparent;
