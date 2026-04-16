@@ -3,6 +3,8 @@ import html
 import json
 import re
 import shutil
+import subprocess
+import sys
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -101,6 +103,8 @@ class LocalOrganizerService:
         self.store = store or JsonStore()
         self.task_store = task_store or TaskStateStore()
         self._thread: Optional[threading.Thread] = None
+        self._worker_process: Optional[subprocess.Popen[str]] = None
+        self._worker_source_path = ""
         self._start_lock = threading.Lock()
         self._library_index_cache: Optional[dict[str, dict[str, dict[str, Any]]]] = None
         self._library_index_cache_root = ""
@@ -122,6 +126,10 @@ class LocalOrganizerService:
             time.sleep(ORGANIZER_POLL_INTERVAL_SECONDS)
 
     def run_once(self) -> None:
+        self._poll_worker()
+        if self._worker_process and self._worker_process.poll() is None:
+            return
+
         config = self.store.load()
         organizer = config.organizer
 
@@ -169,6 +177,25 @@ class LocalOrganizerService:
                 processing_limit=ORGANIZER_MAX_FILES_PER_CYCLE,
             )
 
+        candidate = candidates[0]
+        self._spawn_worker(
+            source_path=candidate,
+            source_dir=source_dir,
+            library_root=library_root,
+            move_files=bool(organizer.move_files),
+        )
+
+    def process_candidate(
+        self,
+        *,
+        source_path: Path,
+        source_dir: Path,
+        library_root: Path,
+        move_files: bool,
+    ) -> None:
+        if not source_path.exists() or not source_path.is_file():
+            return
+
         library_index = self._get_library_index(library_root)
         existing_items = self.task_store.load_organize_tasks().get("items") or []
         known_by_fingerprint = {
@@ -176,42 +203,91 @@ class LocalOrganizerService:
             for item in existing_items
             if str(item.get("fingerprint") or "")
         }
+        fingerprint = self._fingerprint(source_path)
+        if not fingerprint:
+            return
 
-        for candidate in candidates[:ORGANIZER_MAX_FILES_PER_CYCLE]:
-            fingerprint = self._fingerprint(candidate)
-            if not fingerprint:
-                continue
+        existing = known_by_fingerprint.get(fingerprint) or {}
+        if str(existing.get("status") or "").lower() in {"running", "success", "skipped"}:
+            return
 
-            existing = known_by_fingerprint.get(fingerprint) or {}
-            if str(existing.get("status") or "").lower() in {"running", "success", "skipped"}:
-                continue
+        analysis = self._inspect_3mf(source_path)
+        duplicate_match = library_index["configs"].get(str(analysis.get("config_fingerprint") or "")) if analysis else None
+        model_match = self._match_existing_model(library_index["models"], analysis) if analysis else None
 
-            analysis = self._inspect_3mf(candidate)
-            duplicate_match = library_index["configs"].get(str(analysis.get("config_fingerprint") or "")) if analysis else None
-            model_match = self._match_existing_model(library_index["models"], analysis) if analysis else None
-
-            if duplicate_match:
-                self._handle_duplicate_file(
-                    source_path=candidate,
-                    source_dir=source_dir,
-                    move_files=bool(organizer.move_files),
-                    fingerprint=fingerprint,
-                    duplicate_match=duplicate_match,
-                )
-                continue
-
-            result = self._organize_file(
-                source_path=candidate,
+        if duplicate_match:
+            self._handle_duplicate_file(
+                source_path=source_path,
                 source_dir=source_dir,
-                library_root=library_root,
-                move_files=bool(organizer.move_files),
+                move_files=move_files,
                 fingerprint=fingerprint,
-                existing=existing,
-                analysis=analysis,
-                matched_model=model_match,
+                duplicate_match=duplicate_match,
             )
-            if result:
-                self._register_library_item(library_index, result)
+            return
+
+        result = self._organize_file(
+            source_path=source_path,
+            source_dir=source_dir,
+            library_root=library_root,
+            move_files=move_files,
+            fingerprint=fingerprint,
+            existing=existing,
+            analysis=analysis,
+            matched_model=model_match,
+        )
+        if result:
+            self._register_library_item(library_index, result)
+
+    def _poll_worker(self) -> None:
+        process = self._worker_process
+        if process is None:
+            return
+        return_code = process.poll()
+        if return_code is None:
+            return
+        _append_organizer_log(
+            "worker_exited",
+            source=self._worker_source_path,
+            return_code=return_code,
+        )
+        self._worker_process = None
+        self._worker_source_path = ""
+
+    def _spawn_worker(
+        self,
+        *,
+        source_path: Path,
+        source_dir: Path,
+        library_root: Path,
+        move_files: bool,
+    ) -> None:
+        command = [
+            sys.executable,
+            "-m",
+            "app.services.local_organizer_worker",
+            "--source-path",
+            source_path.as_posix(),
+            "--source-dir",
+            source_dir.as_posix(),
+            "--library-root",
+            library_root.as_posix(),
+        ]
+        if move_files:
+            command.append("--move-files")
+
+        self._worker_process = subprocess.Popen(
+            command,
+            cwd=Path(__file__).resolve().parents[2],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        self._worker_source_path = source_path.as_posix()
+        _append_organizer_log(
+            "worker_started",
+            source=self._worker_source_path,
+            pid=self._worker_process.pid,
+        )
 
     def _iter_candidates(self, source_dir: Path) -> list[Path]:
         now = time.time()
