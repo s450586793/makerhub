@@ -1993,9 +1993,10 @@ select:focus {
 
 .mw-hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.08fr) minmax(300px, 0.7fr);
+  grid-template-columns: minmax(0, 820px) minmax(332px, 356px);
   gap: 24px;
   align-items: start;
+  justify-content: space-between;
 }
 
 .mw-hero__gallery-column,
@@ -2578,8 +2579,9 @@ select:focus {
 
 @media (max-width: 1480px) {
   .mw-hero {
-    grid-template-columns: minmax(0, 1.06fr) minmax(280px, 0.66fr);
-    gap: 20px;
+    grid-template-columns: minmax(0, 820px) minmax(332px, 356px);
+    gap: 24px;
+    justify-content: space-between;
   }
 
   .mw-profile-card {
