@@ -157,9 +157,10 @@
               v-for="(profile, profileIndex) in detail.instances"
               :key="profile.instance_key"
               class="mw-profile-entry"
-              @mouseenter="openProfilePopover(profile)"
+              :ref="(element) => setProfileEntryRef(profile.instance_key, element)"
+              @mouseenter="openProfilePopover(profile, $event.currentTarget)"
               @mouseleave="closeProfilePopover(profile.instance_key)"
-              @focusin="openProfilePopover(profile)"
+              @focusin="openProfilePopover(profile, $event.currentTarget)"
               @focusout="handleProfileEntryFocusOut($event, profile)"
             >
               <button
@@ -206,7 +207,7 @@
                 v-if="isProfilePopoverOpen(profile)"
                 :class="[
                   'mw-profile-popover',
-                  profilePopoverPlacement(profileIndex, detail.instances.length),
+                  profilePopoverPlacement(profile, profileIndex, detail.instances.length),
                 ]"
               >
                 <div v-if="profileMedia(profile).length" class="mw-profile-popover__gallery">
@@ -508,6 +509,8 @@ const attachmentUploadError = ref("");
 const deletingAttachmentId = ref("");
 const hoverPopoverEnabled = ref(false);
 const previewedInstanceKey = ref("");
+const profileEntryRefs = ref({});
+const popoverPlacementState = ref({});
 const popoverMediaState = ref({});
 
 let hoverPopoverMediaQuery = null;
@@ -727,6 +730,7 @@ function handleProfileCardClick(profile) {
     return;
   }
   selectInstance(profile);
+  updateProfilePopoverPlacement(profile);
   if (hoverPopoverEnabled.value) {
     openProfilePopover(profile);
     return;
@@ -745,10 +749,45 @@ function isProfilePopoverOpen(profile) {
   return previewedInstanceKey.value === profile?.instance_key;
 }
 
-function openProfilePopover(profile) {
+function setProfileEntryRef(instanceKey, element) {
+  if (!instanceKey) {
+    return;
+  }
+  const nextRefs = {
+    ...profileEntryRefs.value,
+  };
+  if (element instanceof HTMLElement) {
+    nextRefs[instanceKey] = element;
+  } else {
+    delete nextRefs[instanceKey];
+  }
+  profileEntryRefs.value = nextRefs;
+}
+
+function updateProfilePopoverPlacement(profile, entryElement = null) {
+  if (!profile?.instance_key || typeof window === "undefined") {
+    return;
+  }
+  const host = entryElement instanceof HTMLElement ? entryElement : profileEntryRefs.value[profile.instance_key];
+  if (!(host instanceof HTMLElement)) {
+    return;
+  }
+  const rect = host.getBoundingClientRect();
+  const viewportPadding = 16;
+  const horizontalGap = 18;
+  const estimatedPopoverWidth = Math.min(380, Math.max(window.innerWidth - 140, 260));
+  const canOpenLeft = rect.left >= estimatedPopoverWidth + horizontalGap + viewportPadding;
+  popoverPlacementState.value = {
+    ...popoverPlacementState.value,
+    [profile.instance_key]: canOpenLeft ? "left" : "below",
+  };
+}
+
+function openProfilePopover(profile, entryElement = null) {
   if (!hoverPopoverEnabled.value || !profile) {
     return;
   }
+  updateProfilePopoverPlacement(profile, entryElement);
   previewedInstanceKey.value = profile.instance_key;
   if (!(profile.instance_key in popoverMediaState.value)) {
     selectPopoverMedia(profile, 0);
@@ -772,7 +811,10 @@ function handleProfileEntryFocusOut(event, profile) {
   closeProfilePopover(profile?.instance_key || "", { force: !hoverPopoverEnabled.value });
 }
 
-function profilePopoverPlacement(index, total) {
+function profilePopoverPlacement(profile, index, total) {
+  if (popoverPlacementState.value[profile?.instance_key] === "below") {
+    return "is-below";
+  }
   if (index === 0) {
     return "is-align-top";
   }
@@ -801,6 +843,17 @@ function handleWindowPointerDown(event) {
     return;
   }
   previewedInstanceKey.value = "";
+}
+
+function handleWindowResize() {
+  if (!previewedInstanceKey.value || !detail.value?.instances?.length) {
+    return;
+  }
+  const profile = detail.value.instances.find((item) => item.instance_key === previewedInstanceKey.value);
+  if (!profile) {
+    return;
+  }
+  updateProfilePopoverPlacement(profile);
 }
 
 function swapEventImage(event, fallbackUrl) {
@@ -1001,6 +1054,7 @@ async function load() {
   loading.value = true;
   errorMessage.value = "";
   previewedInstanceKey.value = "";
+  popoverPlacementState.value = {};
   popoverMediaState.value = {};
   try {
     const payload = await apiRequest(`/api/models/${encodeURI(modelDir.value)}`);
@@ -1043,6 +1097,7 @@ onMounted(() => {
   }
   window.addEventListener("hashchange", handleHashChange);
   window.addEventListener("pointerdown", handleWindowPointerDown);
+  window.addEventListener("resize", handleWindowResize);
 });
 onBeforeUnmount(() => {
   document.body.classList.remove("is-lightbox-open");
@@ -1056,6 +1111,7 @@ onBeforeUnmount(() => {
   if (typeof window !== "undefined") {
     window.removeEventListener("hashchange", handleHashChange);
     window.removeEventListener("pointerdown", handleWindowPointerDown);
+    window.removeEventListener("resize", handleWindowResize);
   }
 });
 </script>
