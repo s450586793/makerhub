@@ -2003,15 +2003,13 @@ select:focus {
   min-width: 0;
   display: grid;
   grid-template-columns: 80px minmax(0, 1fr);
-  grid-template-areas:
-    "thumbs cover"
-    "thumbs strip";
   gap: 12px;
   align-items: start;
 }
 
 .mw-gallery__cover {
-  grid-area: cover;
+  grid-column: 2;
+  grid-row: 1 / span 2;
   position: relative;
   aspect-ratio: 4 / 3;
   overflow: hidden;
@@ -2058,7 +2056,8 @@ select:focus {
 }
 
 .mw-gallery__thumbs {
-  grid-area: thumbs;
+  grid-column: 1;
+  grid-row: 1;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -2091,27 +2090,11 @@ select:focus {
   object-fit: cover;
 }
 
-.mw-gallery__instance-strip {
-  grid-area: strip;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
 .mw-instance-media-tabs {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-}
-
-.mw-media-pill--gallery {
-  min-height: 34px;
-  padding: 0 14px;
-  border-radius: 999px;
-  background: #fff;
 }
 
 .mw-action-strip {
@@ -3254,10 +3237,6 @@ html[data-theme="dark"] .detail-page--makerworld .mw-gallery__cover {
   border-color: var(--mw-border);
 }
 
-html[data-theme="dark"] .detail-page--makerworld .mw-media-pill--gallery {
-  background: var(--mw-panel-bg);
-}
-
 html[data-theme="dark"] .detail-page--makerworld .mw-topbar__button,
 html[data-theme="dark"] .detail-page--makerworld .mw-inline-link,
 html[data-theme="dark"] .detail-page--makerworld .mw-origin-link,
@@ -3695,26 +3674,16 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
 
   .mw-gallery {
     grid-template-columns: 1fr;
-    grid-template-areas:
-      "cover"
-      "strip"
-      "thumbs";
   }
 
   .mw-gallery__cover {
-    grid-area: cover;
-  }
-
-  .mw-gallery__instance-strip {
-    grid-area: strip;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    overflow-y: hidden;
-    padding-bottom: 2px;
+    grid-column: auto;
+    grid-row: auto;
   }
 
   .mw-gallery__thumbs {
-    grid-area: thumbs;
+    grid-column: auto;
+    grid-row: auto;
     flex-direction: row;
     overflow-x: auto;
     overflow-y: hidden;

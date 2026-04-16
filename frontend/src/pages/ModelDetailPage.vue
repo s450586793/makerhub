@@ -42,22 +42,6 @@
               </button>
             </div>
 
-            <div v-if="activeInstanceMedia.length" class="mw-gallery__instance-strip">
-              <button
-                v-for="(media, mediaIndex) in activeInstanceMedia"
-                :key="`${activeInstance?.instance_key}-${media.label}-${mediaIndex}`"
-                :class="[
-                  'mw-media-pill',
-                  'mw-media-pill--gallery',
-                  currentMedia.key === `instance-media:${activeInstance?.instance_key}:${mediaIndex}` && 'is-active',
-                ]"
-                type="button"
-                @click="selectInstanceMedia(media, mediaIndex)"
-              >
-                {{ media.label }}
-              </button>
-            </div>
-
             <div v-if="detail.gallery?.length" class="mw-gallery__thumbs">
               <button
                 v-for="(image, index) in detail.gallery"
@@ -351,7 +335,7 @@
                 <span v-if="activeInstance.plates">{{ activeInstance.plates }} 盘</span>
                 <span v-if="activeInstance.download_count">{{ formatStat(activeInstance.download_count) }} 下载</span>
               </div>
-              <p v-if="activeInstance.media?.length" class="mw-instance-panel__hint">图集缩略图在左侧，P1/P2/P3 已移到主图下方。</p>
+              <p v-if="activeInstance.media?.length" class="mw-instance-panel__hint">P1/P2/P3 与配置图集仅在打印配置悬浮窗内查看。</p>
               <p v-if="activeInstance.summary" class="mw-instance-panel__summary">{{ activeInstance.summary }}</p>
               <a
                 v-if="activeInstance.file_available && activeInstance.file_url"
@@ -625,8 +609,6 @@ const headCrumbs = computed(() => {
   return crumbs;
 });
 
-const activeInstanceMedia = computed(() => activeInstance.value?.media || []);
-
 const deletedSourceTitle = computed(() => {
   const items = detail.value?.subscription_flags?.deleted_sources || [];
   if (!items.length) {
@@ -786,25 +768,13 @@ function selectGallery(index) {
   setMainMedia(`gallery:${index}`, image.url, image.fallback_url || "", `${detail.value.title} ${index + 1}`);
 }
 
-function selectInstanceMedia(media, index) {
-  if (!media) return;
-  setMainMedia(
-    `instance-media:${activeInstance.value?.instance_key || "unknown"}:${index}`,
-    media.url || "",
-    media.fallback_url || "",
-    `${activeInstance.value?.title || detail.value?.title || "模型"} ${media.label || ""}`.trim(),
-  );
-}
-
 function selectInstance(instance, options = {}) {
   const { syncHash = true } = options;
   if (!instance) {
     return;
   }
   activeInstanceKey.value = instance.instance_key;
-  if (instance.media?.length) {
-    selectInstanceMedia(instance.media[0], 0);
-  } else if (instance.primary_image_url || instance.primary_image_fallback_url) {
+  if (!detail.value?.gallery?.length && (instance.primary_image_url || instance.primary_image_fallback_url)) {
     setMainMedia(
       `instance:${instance.instance_key}`,
       instance.primary_image_url || "",
