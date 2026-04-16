@@ -46,9 +46,17 @@
           </span>
           <span class="sidebar-version__line">
             <span class="sidebar-version__label">最新版本</span>
-            <span :class="['sidebar-version__value', appState.githubUpdateAvailable && 'is-update']">
-              {{ githubVersionText }}
-            </span>
+            <a
+              class="sidebar-version__link"
+              :href="githubProjectUrl"
+              target="_blank"
+              rel="noreferrer noopener"
+              title="打开 makerhub GitHub 仓库"
+            >
+              <span :class="['sidebar-version__value', appState.githubUpdateAvailable && 'is-update']">
+                {{ githubVersionText }}
+              </span>
+            </a>
           </span>
         </div>
       </div>
@@ -80,6 +88,7 @@ import { appState, currentUser, logoutSession, saveThemePreference } from "../li
 
 const route = useRoute();
 const COMPACT_MEDIA_QUERY = "(max-width: 980px)";
+const githubProjectUrl = "https://github.com/s450586793/makerhub";
 
 const user = computed(() => currentUser());
 const isCompact = ref(false);

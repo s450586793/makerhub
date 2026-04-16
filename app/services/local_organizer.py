@@ -21,6 +21,7 @@ ORGANIZER_LOG_PATH = LOGS_DIR / "organizer.log"
 ORGANIZER_POLL_INTERVAL_SECONDS = 5
 ORGANIZER_MIN_FILE_AGE_SECONDS = 2
 ORGANIZER_TASK_LIMIT = 50
+ORGANIZER_MAX_FILES_PER_CYCLE = 5
 ORGANIZER_PREVIEW_LIMIT = 6
 PREVIEW_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 ORGANIZER_IGNORED_DIR_NAMES = {"_duplicates", "_failed", "_skipped"}
@@ -159,7 +160,17 @@ class LocalOrganizerService:
             if str(item.get("fingerprint") or "")
         }
 
-        for candidate in self._iter_candidates(source_dir):
+        candidates = self._iter_candidates(source_dir)
+        pending_count = len(candidates)
+        if pending_count > ORGANIZER_MAX_FILES_PER_CYCLE:
+            _append_organizer_log(
+                "backlog_limited",
+                source_dir=source_dir.as_posix(),
+                pending_count=pending_count,
+                processing_limit=ORGANIZER_MAX_FILES_PER_CYCLE,
+            )
+
+        for candidate in candidates[:ORGANIZER_MAX_FILES_PER_CYCLE]:
             fingerprint = self._fingerprint(candidate)
             if not fingerprint:
                 continue

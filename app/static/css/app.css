@@ -275,6 +275,19 @@ html[data-theme="dark"] .shell-visibility-toggle {
   gap: 8px;
 }
 
+.sidebar-version__link {
+  display: inline-flex;
+  align-items: center;
+  color: inherit;
+  text-decoration: none;
+}
+
+.sidebar-version__link:hover .sidebar-version__value,
+.sidebar-version__link:focus-visible .sidebar-version__value {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .sidebar-version__label {
   min-width: 42px;
   letter-spacing: 0.08em;
