@@ -1,10 +1,15 @@
 # makerhub
 
 > 此项目由 Codex 生成，并在此基础上继续迭代。
+> makerhub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
 一个从零重建的 MakerWorld 本地归档后台。
 
 ## 更新记录
+
+### 2026-04-16
+- 版本号升级到 `v0.3.25`
+- 在 README 开头补充项目来源说明：明确 makerhub 基于 `mw_archive_py` 的抓取思路二次重构，并向原作者 `sonicmingit` 的开源工作致谢
 
 ### 2026-04-16
 - 版本号升级到 `v0.3.24`
