@@ -143,6 +143,8 @@ class LocalOrganizerService:
         for path in source_dir.rglob("*"):
             if not path.is_file() or path.suffix.lower() != ".3mf":
                 continue
+            if self._is_managed_output(path, source_dir):
+                continue
             try:
                 stat = path.stat()
             except OSError:
@@ -153,11 +155,28 @@ class LocalOrganizerService:
         candidates.sort(key=lambda item: item.as_posix().lower())
         return candidates
 
+    def _is_managed_output(self, path: Path, source_dir: Path) -> bool:
+        try:
+            relative = path.relative_to(source_dir)
+        except ValueError:
+            return False
+
+        # Organizer-generated 3MF files always live under `<model_dir>/instances/`.
+        # When `/app/local` is mounted to the same host path as `/app/archive/local`,
+        # we must skip those files or the organizer will recursively re-import itself.
+        if "instances" in relative.parts[:-1]:
+            return True
+
+        current = path.parent
+        while current != source_dir and current != current.parent:
+            if (current / "meta.json").exists():
+                return True
+            current = current.parent
+
+        return False
+
     def _resolve_library_root(self, target_dir: Path) -> Path:
-        clean = target_dir.expanduser()
-        if clean.name.lower() == "local":
-            return clean
-        return clean / "local"
+        return target_dir.expanduser()
 
     def _fingerprint(self, path: Path) -> str:
         try:
