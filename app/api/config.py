@@ -345,6 +345,7 @@ async def update_subscription(subscription_id: str, payload: SubscriptionUpdateR
     try:
         return subscription_manager.update_subscription(
             subscription_id,
+            url=payload.url,
             name=payload.name,
             cron=payload.cron,
             enabled=payload.enabled,

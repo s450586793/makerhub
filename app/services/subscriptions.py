@@ -306,10 +306,15 @@ class SubscriptionManager:
             "initialized": initialized,
         }
 
-    def update_subscription(self, subscription_id: str, *, name: str, cron: str, enabled: bool) -> dict:
+    def update_subscription(self, subscription_id: str, *, url: str, name: str, cron: str, enabled: bool) -> dict:
         clean_id = str(subscription_id or "").strip()
         if not clean_id:
             raise ValueError("缺少订阅 ID。")
+
+        clean_url = normalize_source_url(url)
+        mode = _detect_subscription_mode(clean_url)
+        if mode not in SUBSCRIPTION_MODES:
+            raise ValueError("仅支持作者上传页或收藏夹模型页订阅。")
 
         normalized_cron = _validate_cron(cron)
         config = self.store.load()
@@ -317,20 +322,58 @@ class SubscriptionManager:
         if target is None:
             raise ValueError("订阅不存在。")
 
+        duplicate = next(
+            (
+                item
+                for item in config.subscriptions
+                if item.id != clean_id and normalize_source_url(item.url) == clean_url
+            ),
+            None,
+        )
+        if duplicate is not None:
+            raise ValueError("该链接已存在订阅。")
+
+        previous = target.model_copy(deep=True)
+        url_changed = normalize_source_url(target.url) != clean_url
+
+        target.url = clean_url
+        target.mode = mode
         target.name = str(name or target.name or _default_subscription_name(target.url, target.mode)).strip()
         target.cron = normalized_cron
         target.enabled = bool(enabled)
         target.updated_at = _now_iso()
         self.store.save(config)
 
-        updates = {
-            "next_run_at": _next_run_at(target.cron) if target.enabled else "",
-            "last_message": "订阅已保存。",
-        }
-        if not target.enabled:
-            updates["running"] = False
-            updates["manual_requested_at"] = ""
-        self.task_store.patch_subscription_state(target.id, **updates)
+        if url_changed:
+            try:
+                self._initialize_subscription_state(target)
+            except Exception:
+                rollback = self.store.load()
+                rollback_target = next((item for item in rollback.subscriptions if item.id == clean_id), None)
+                if rollback_target is not None:
+                    rollback_target.url = previous.url
+                    rollback_target.mode = previous.mode
+                    rollback_target.name = previous.name
+                    rollback_target.cron = previous.cron
+                    rollback_target.enabled = previous.enabled
+                    rollback_target.updated_at = previous.updated_at
+                    self.store.save(rollback)
+                raise
+            self.task_store.patch_subscription_state(
+                target.id,
+                last_message="订阅已更新，并已按新链接重新初始化。",
+            )
+        else:
+            updates = {
+                "next_run_at": _next_run_at(target.cron) if target.enabled else "",
+                "last_message": "订阅已保存。",
+            }
+            if not target.enabled:
+                updates["running"] = False
+                updates["manual_requested_at"] = ""
+            self.task_store.patch_subscription_state(target.id, **updates)
+
+        self.start()
 
         return {
             "success": True,

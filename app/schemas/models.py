@@ -141,6 +141,7 @@ class SubscriptionCreateRequest(BaseModel):
 
 
 class SubscriptionUpdateRequest(BaseModel):
+    url: str
     name: str = ""
     cron: str = "0 */6 * * *"
     enabled: bool = True

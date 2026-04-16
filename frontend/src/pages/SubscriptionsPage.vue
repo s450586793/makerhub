@@ -62,30 +62,33 @@
       <div class="section-card__header subscription-card__header">
         <div>
           <span class="eyebrow">{{ item.mode === "collection_models" ? "收藏夹" : "作者页" }}</span>
-          <h2>{{ item.draft_name || item.name }}</h2>
+          <h2>{{ item.name }}</h2>
         </div>
         <div class="subscription-card__status">
-          <span :class="['count-pill', item.enabled && 'count-pill--ok']">{{ item.enabled ? "已启用" : "已停用" }}</span>
+          <button
+            :class="['subscription-switch', item.enabled && 'is-on']"
+            type="button"
+            :disabled="busyId === item.id || item.running"
+            @click="toggleSubscriptionEnabled(item)"
+          >
+            <span class="subscription-switch__track" aria-hidden="true">
+              <span class="subscription-switch__thumb"></span>
+            </span>
+            <span class="subscription-switch__label">{{ item.enabled ? "启用中" : "已停用" }}</span>
+          </button>
           <span :class="['count-pill', item.running && 'count-pill--warn']">{{ item.running ? "同步中" : item.status || "idle" }}</span>
         </div>
       </div>
 
-      <div class="subscription-card__meta">
-        <strong>链接</strong>
-        <a :href="item.url" target="_blank" rel="noreferrer">{{ item.url }}</a>
-      </div>
-
-      <div class="subscription-card__form">
-        <label class="filter-field">
-          <input v-model.trim="item.draft_name" type="text" placeholder="订阅名称">
-        </label>
-        <label class="filter-field">
-          <input v-model.trim="item.draft_cron" type="text" placeholder="Cron">
-        </label>
-        <label class="subscription-toggle">
-          <input v-model="item.draft_enabled" type="checkbox">
-          <span>启用</span>
-        </label>
+      <div class="subscription-card__meta-grid">
+        <div class="subscription-card__meta">
+          <strong>链接</strong>
+          <a :href="item.url" target="_blank" rel="noreferrer">{{ item.url }}</a>
+        </div>
+        <div class="subscription-card__meta">
+          <strong>Cron</strong>
+          <span>{{ item.cron }}</span>
+        </div>
       </div>
 
       <div class="subscription-stats">
@@ -115,8 +118,8 @@
       <p class="subscription-card__message">{{ item.last_message || "等待首次同步。" }}</p>
 
       <div class="subscription-actions">
-        <button class="button button-secondary button-small" type="button" :disabled="busyId === item.id" @click="saveSubscription(item)">
-          保存
+        <button class="button button-secondary button-small" type="button" :disabled="busyId === item.id" @click="openEditDialog(item)">
+          编辑
         </button>
         <button class="button button-secondary button-small" type="button" :disabled="busyId === item.id || item.running" @click="syncSubscription(item)">
           立即同步
@@ -132,6 +135,39 @@
     <h2>还没有订阅</h2>
     <p>你可以在这里添加作者页或收藏夹订阅，后续会按 Cron 自动同步新模型。</p>
   </section>
+
+  <div
+    v-if="editDialog.visible"
+    class="submit-dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="subscription-edit-dialog-title"
+    @click="closeEditDialog"
+  >
+    <div class="submit-dialog__panel subscription-edit-dialog__panel" @click.stop>
+      <h2 id="subscription-edit-dialog-title">编辑订阅</h2>
+      <p>在这里修改订阅链接、名称和 Cron 表达式。</p>
+      <form class="subscription-edit-dialog__form" @submit.prevent="submitEditDialog">
+        <label class="filter-field filter-field--wide">
+          <input v-model.trim="editDialog.url" type="text" placeholder="作者上传页或收藏夹模型页链接">
+        </label>
+        <label class="filter-field">
+          <input v-model.trim="editDialog.name" type="text" placeholder="订阅名称（可选）">
+        </label>
+        <label class="filter-field">
+          <input v-model.trim="editDialog.cron" type="text" placeholder="Cron，例如 0 */6 * * *">
+        </label>
+        <div class="submit-dialog__actions">
+          <button class="button button-secondary" type="button" :disabled="savingEdit" @click="closeEditDialog">
+            取消
+          </button>
+          <button class="button button-primary" type="submit" :disabled="savingEdit">
+            {{ savingEdit ? "保存中..." : "保存修改" }}
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
 </template>
 
 <script setup>
@@ -158,17 +194,21 @@ const createForm = reactive({
 const status = ref("");
 const creating = ref(false);
 const busyId = ref("");
+const savingEdit = ref(false);
+const editDialog = reactive({
+  visible: false,
+  id: "",
+  url: "",
+  name: "",
+  cron: "0 */6 * * *",
+  enabled: true,
+});
 let refreshTimer = null;
 
 function normalizePayload(response) {
   payload.value = {
     ...response,
-    items: (response.items || []).map((item) => ({
-      ...item,
-      draft_name: item.name,
-      draft_cron: item.cron,
-      draft_enabled: Boolean(item.enabled),
-    })),
+    items: response.items || [],
   };
   syncAutoRefresh();
 }
@@ -216,23 +256,74 @@ async function createSubscription() {
   }
 }
 
-async function saveSubscription(item) {
+async function toggleSubscriptionEnabled(item) {
   busyId.value = item.id;
   status.value = "";
   try {
     const response = await apiRequest(`/api/subscriptions/${item.id}`, {
       method: "PUT",
       body: {
-        name: item.draft_name,
-        cron: item.draft_cron,
-        enabled: item.draft_enabled,
+        url: item.url,
+        name: item.name,
+        cron: item.cron,
+        enabled: !item.enabled,
+      },
+    });
+    status.value = response.message || "订阅状态已更新。";
+    await load();
+  } catch (error) {
+    status.value = error instanceof Error ? error.message : "切换启用状态失败。";
+  } finally {
+    busyId.value = "";
+  }
+}
+
+function openEditDialog(item) {
+  editDialog.visible = true;
+  editDialog.id = item.id;
+  editDialog.url = item.url;
+  editDialog.name = item.name;
+  editDialog.cron = item.cron;
+  editDialog.enabled = Boolean(item.enabled);
+  status.value = "";
+}
+
+function closeEditDialog(force = false) {
+  if (savingEdit.value && !force) {
+    return;
+  }
+  editDialog.visible = false;
+  editDialog.id = "";
+  editDialog.url = "";
+  editDialog.name = "";
+  editDialog.cron = "0 */6 * * *";
+  editDialog.enabled = true;
+}
+
+async function submitEditDialog() {
+  if (!editDialog.id) {
+    return;
+  }
+  savingEdit.value = true;
+  busyId.value = editDialog.id;
+  status.value = "";
+  try {
+    const response = await apiRequest(`/api/subscriptions/${editDialog.id}`, {
+      method: "PUT",
+      body: {
+        url: editDialog.url,
+        name: editDialog.name,
+        cron: editDialog.cron,
+        enabled: editDialog.enabled,
       },
     });
     status.value = response.message || "订阅已更新。";
+    closeEditDialog(true);
     await load();
   } catch (error) {
     status.value = error instanceof Error ? error.message : "保存失败。";
   } finally {
+    savingEdit.value = false;
     busyId.value = "";
   }
 }

@@ -560,9 +560,20 @@
   gap: 4px;
 }
 
+.subscription-card__meta-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1.8fr) minmax(180px, 0.8fr);
+}
+
 .subscription-card__meta a {
   color: var(--brand-strong);
   word-break: break-all;
+}
+
+.subscription-card__meta span {
+  color: var(--muted);
+  word-break: break-word;
 }
 
 .subscription-stats {
@@ -607,6 +618,81 @@
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.subscription-switch {
+  min-height: 36px;
+  padding: 4px 10px 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+}
+
+.subscription-switch[disabled] {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.subscription-switch.is-on {
+  color: var(--brand-strong);
+  border-color: rgba(31, 157, 98, 0.26);
+  background: rgba(31, 157, 98, 0.08);
+}
+
+.subscription-switch__track {
+  width: 42px;
+  height: 24px;
+  padding: 2px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  background: rgba(100, 112, 103, 0.34);
+  transition: background 0.16s ease;
+}
+
+.subscription-switch.is-on .subscription-switch__track {
+  background: rgba(31, 157, 98, 0.92);
+}
+
+.subscription-switch__thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  display: block;
+  background: #fff;
+  box-shadow: 0 3px 8px rgba(15, 23, 42, 0.2);
+  transition: transform 0.16s ease;
+}
+
+.subscription-switch.is-on .subscription-switch__thumb {
+  transform: translateX(18px);
+}
+
+.subscription-switch__label {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.subscription-edit-dialog__panel {
+  width: min(560px, calc(100vw - 32px));
+  display: grid;
+  gap: 14px;
+}
+
+.subscription-edit-dialog__form {
+  display: grid;
+  gap: 12px;
+}
+
+.subscription-edit-dialog__form .submit-dialog__actions {
+  justify-content: flex-end;
 }
 
 .count-pill--ok {
@@ -656,7 +742,8 @@
   }
 
   .subscription-stats,
-  .subscription-times {
+  .subscription-times,
+  .subscription-card__meta-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -714,7 +801,8 @@
   }
 
   .subscription-stats,
-  .subscription-times {
+  .subscription-times,
+  .subscription-card__meta-grid {
     grid-template-columns: 1fr;
   }
 }
