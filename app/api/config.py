@@ -2,7 +2,7 @@ import asyncio
 import json
 import time
 from datetime import datetime
-from urllib.request import Request, urlopen
+from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -66,7 +66,7 @@ def _now_iso() -> str:
 
 
 def _read_latest_github_version() -> str:
-    request = Request(
+    request = UrlRequest(
         GITHUB_VERSION_URL,
         headers={
             "User-Agent": "makerhub-version-check",
