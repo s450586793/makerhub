@@ -727,6 +727,10 @@ function handleProfileCardClick(profile) {
     return;
   }
   selectInstance(profile);
+  if (hoverPopoverEnabled.value) {
+    openProfilePopover(profile);
+    return;
+  }
   if (previewedInstanceKey.value === profile.instance_key) {
     previewedInstanceKey.value = "";
     return;
@@ -1029,7 +1033,7 @@ onMounted(() => {
   if (typeof window === "undefined") {
     return;
   }
-  hoverPopoverMediaQuery = window.matchMedia("(min-width: 1241px)");
+  hoverPopoverMediaQuery = window.matchMedia("(hover: hover) and (pointer: fine)");
   applyHoverPopoverEnabled(hoverPopoverMediaQuery.matches);
   hoverPopoverMediaListener = (event) => applyHoverPopoverEnabled(event.matches);
   if (typeof hoverPopoverMediaQuery.addEventListener === "function") {
