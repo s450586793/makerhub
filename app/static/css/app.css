@@ -3542,11 +3542,6 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
     grid-template-columns: 1fr;
   }
 
-  .mw-hero {
-    grid-template-columns: 1fr;
-    gap: 20px;
-  }
-
   .mw-gallery {
     gap: 10px;
   }
@@ -3586,6 +3581,13 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
 
   .mw-profile-popover {
     display: none;
+  }
+}
+
+@media (max-width: 860px) {
+  .mw-hero {
+    grid-template-columns: 1fr;
+    gap: 20px;
   }
 }
 
