@@ -1,6 +1,7 @@
 import hashlib
 import html
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -13,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from app.core.settings import ARCHIVE_DIR, LOGS_DIR
+from app.core.settings import ARCHIVE_DIR, LOGS_DIR, STATE_DIR
 from app.core.store import JsonStore
 from app.services.legacy_archiver import sanitize_filename
 from app.services.task_state import TaskStateStore
@@ -25,6 +26,10 @@ ORGANIZER_MIN_FILE_AGE_SECONDS = 2
 ORGANIZER_TASK_LIMIT = 50
 ORGANIZER_MAX_FILES_PER_CYCLE = 1
 ORGANIZER_LIBRARY_INDEX_CACHE_TTL_SECONDS = 300
+ORGANIZER_LIBRARY_INDEX_CACHE_PATH = STATE_DIR / "organizer_library_index.json"
+ORGANIZER_HASH_CHUNK_SIZE_BYTES = 512 * 1024
+ORGANIZER_HASH_PAUSE_EVERY_BYTES = 4 * 1024 * 1024
+ORGANIZER_HASH_PAUSE_SECONDS = 0.02
 ORGANIZER_PREVIEW_LIMIT = 6
 PREVIEW_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 ORGANIZER_IGNORED_DIR_NAMES = {"_duplicates", "_failed", "_skipped"}
@@ -237,6 +242,7 @@ class LocalOrganizerService:
         )
         if result:
             self._register_library_item(library_index, result)
+            self._persist_library_index(library_root, library_index)
 
     def _poll_worker(self) -> None:
         process = self._worker_process
@@ -292,20 +298,43 @@ class LocalOrganizerService:
     def _iter_candidates(self, source_dir: Path) -> list[Path]:
         now = time.time()
         candidates: list[Path] = []
-        for path in source_dir.rglob("*"):
-            if not path.is_file() or path.suffix.lower() != ".3mf":
-                continue
-            if self._is_managed_output(path, source_dir):
-                continue
-            try:
-                stat = path.stat()
-            except OSError:
-                continue
-            if now - stat.st_mtime < ORGANIZER_MIN_FILE_AGE_SECONDS:
-                continue
-            candidates.append(path)
+        for root, dirnames, filenames in os.walk(source_dir):
+            current_dir = Path(root)
+            dirnames[:] = [
+                name
+                for name in dirnames
+                if not self._should_skip_scan_directory(current_dir / name, source_dir)
+            ]
+
+            for filename in filenames:
+                path = current_dir / filename
+                if path.suffix.lower() != ".3mf":
+                    continue
+                if self._is_managed_output(path, source_dir):
+                    continue
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                if now - stat.st_mtime < ORGANIZER_MIN_FILE_AGE_SECONDS:
+                    continue
+                candidates.append(path)
         candidates.sort(key=lambda item: item.as_posix().lower())
         return candidates
+
+    def _should_skip_scan_directory(self, path: Path, source_dir: Path) -> bool:
+        try:
+            relative = path.relative_to(source_dir)
+        except ValueError:
+            return False
+
+        if any(part in ORGANIZER_IGNORED_DIR_NAMES for part in relative.parts):
+            return True
+
+        if "instances" in relative.parts:
+            return True
+
+        return (path / "meta.json").exists()
 
     def _is_managed_output(self, path: Path, source_dir: Path) -> bool:
         try:
@@ -342,10 +371,15 @@ class LocalOrganizerService:
 
     def _sha256_file(self, path: Path) -> str:
         digest = hashlib.sha256()
+        bytes_since_pause = 0
         with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            for chunk in iter(lambda: handle.read(ORGANIZER_HASH_CHUNK_SIZE_BYTES), b""):
                 if chunk:
                     digest.update(chunk)
+                    bytes_since_pause += len(chunk)
+                    if bytes_since_pause >= ORGANIZER_HASH_PAUSE_EVERY_BYTES:
+                        time.sleep(ORGANIZER_HASH_PAUSE_SECONDS)
+                        bytes_since_pause = 0
         return digest.hexdigest()
 
     def _parse_3mf_metadata(self, source_path: Path) -> dict[str, str]:
@@ -443,8 +477,12 @@ class LocalOrganizerService:
         return ""
 
     def _inspect_3mf(self, source_path: Path) -> dict[str, Any]:
-        file_hash = self._sha256_file(source_path)
         metadata = self._parse_3mf_metadata(source_path)
+        design_model_id = str(metadata.get("DesignModelId") or "").strip()
+        design_profile_id = str(metadata.get("DesignProfileId") or "").strip()
+        file_hash = ""
+        if not design_profile_id:
+            file_hash = self._sha256_file(source_path)
         model_title = str(metadata.get("Title") or source_path.stem).strip() or source_path.stem
         profile_title = str(metadata.get("ProfileTitle") or model_title).strip() or model_title
         designer = str(metadata.get("Designer") or metadata.get("ProfileUserName") or "").strip()
@@ -453,8 +491,8 @@ class LocalOrganizerService:
             "model_title": model_title,
             "profile_title": profile_title,
             "designer": designer,
-            "design_model_id": str(metadata.get("DesignModelId") or "").strip(),
-            "design_profile_id": str(metadata.get("DesignProfileId") or "").strip(),
+            "design_model_id": design_model_id,
+            "design_profile_id": design_profile_id,
             "file_hash": file_hash,
             "metadata": metadata,
         }
@@ -509,10 +547,22 @@ class LocalOrganizerService:
         ):
             return self._library_index_cache
 
+        if not force:
+            cached_index = self._load_library_index_from_disk(root_key, now)
+            if cached_index is not None:
+                self._set_library_index_cache(root_key, cached_index, cached_at=now)
+                _append_organizer_log(
+                    "library_index_loaded",
+                    root=root_key,
+                    source="disk",
+                    model_count=len(cached_index.get("models") or {}),
+                    config_count=len(cached_index.get("configs") or {}),
+                )
+                return cached_index
+
         library_index = self._build_library_index(library_root)
-        self._library_index_cache = library_index
-        self._library_index_cache_root = root_key
-        self._library_index_cache_at = now
+        self._set_library_index_cache(root_key, library_index, cached_at=now)
+        self._persist_library_index(library_root, library_index, cached_at=now)
         _append_organizer_log(
             "library_index_rebuilt",
             root=root_key,
@@ -520,6 +570,104 @@ class LocalOrganizerService:
             config_count=len(library_index.get("configs") or {}),
         )
         return library_index
+
+    def _set_library_index_cache(
+        self,
+        root_key: str,
+        library_index: dict[str, dict[str, dict[str, Any]]],
+        *,
+        cached_at: Optional[float] = None,
+    ) -> None:
+        self._library_index_cache = library_index
+        self._library_index_cache_root = root_key
+        self._library_index_cache_at = cached_at or time.time()
+
+    def _load_library_index_from_disk(
+        self,
+        root_key: str,
+        now: float,
+    ) -> Optional[dict[str, dict[str, dict[str, Any]]]]:
+        try:
+            payload = json.loads(ORGANIZER_LIBRARY_INDEX_CACHE_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+        if str(payload.get("root") or "") != root_key:
+            return None
+
+        cached_at = payload.get("cached_at")
+        if not isinstance(cached_at, (int, float)):
+            return None
+        if now - float(cached_at) >= ORGANIZER_LIBRARY_INDEX_CACHE_TTL_SECONDS:
+            return None
+
+        models = payload.get("models")
+        configs = payload.get("configs")
+        if not isinstance(models, dict) or not isinstance(configs, dict):
+            return None
+
+        return {
+            "models": {
+                str(key): self._deserialize_library_entry(value)
+                for key, value in models.items()
+                if isinstance(value, dict)
+            },
+            "configs": {
+                str(key): self._deserialize_library_entry(value)
+                for key, value in configs.items()
+                if isinstance(value, dict)
+            },
+        }
+
+    def _persist_library_index(
+        self,
+        library_root: Path,
+        library_index: dict[str, dict[str, dict[str, Any]]],
+        *,
+        cached_at: Optional[float] = None,
+    ) -> None:
+        root_key = library_root.resolve().as_posix()
+        timestamp = cached_at or time.time()
+        self._set_library_index_cache(root_key, library_index, cached_at=timestamp)
+
+        payload = {
+            "root": root_key,
+            "cached_at": timestamp,
+            "models": {
+                key: self._serialize_library_entry(value)
+                for key, value in (library_index.get("models") or {}).items()
+                if isinstance(value, dict)
+            },
+            "configs": {
+                key: self._serialize_library_entry(value)
+                for key, value in (library_index.get("configs") or {}).items()
+                if isinstance(value, dict)
+            },
+        }
+
+        try:
+            ORGANIZER_LIBRARY_INDEX_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = ORGANIZER_LIBRARY_INDEX_CACHE_PATH.with_suffix(".tmp")
+            temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            temp_path.replace(ORGANIZER_LIBRARY_INDEX_CACHE_PATH)
+        except OSError:
+            return
+
+    def _serialize_library_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(entry)
+        model_root = payload.get("model_root")
+        if isinstance(model_root, Path):
+            payload["model_root"] = model_root.as_posix()
+        return payload
+
+    def _deserialize_library_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(entry)
+        model_root = payload.get("model_root")
+        if isinstance(model_root, str) and model_root:
+            payload["model_root"] = Path(model_root)
+        return payload
 
     def _author_name(self, meta: dict[str, Any]) -> str:
         author = meta.get("author")
