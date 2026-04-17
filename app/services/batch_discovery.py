@@ -1562,6 +1562,72 @@ def _extract_page_links(html_text: str, base_url: str) -> list[str]:
     return sorted(url for url in found if url)
 
 
+def _normalize_source_title(title: str, source_url: str) -> str:
+    text = re.sub(r"\s+", " ", str(title or "")).strip()
+    if not text:
+        return ""
+
+    for separator in (" - ", " | ", " — ", " – "):
+        marker = f"{separator}MakerWorld"
+        if text.endswith(marker):
+            text = text[: -len(marker)].strip()
+            break
+
+    path = (urlparse(source_url).path or "").lower()
+    if "/upload" in path:
+        text = re.sub(r"\s*(的)?(上传|作品|模型)(页面|页)?\s*$", "", text, flags=re.I).strip()
+        text = re.sub(r"\s*(uploads?|models?)\s*$", "", text, flags=re.I).strip()
+
+    return text.strip(" -|—–")
+
+
+def resolve_batch_source_name(url: str, raw_cookie: str) -> str:
+    source_url = normalize_source_url(url)
+    session = requests.Session()
+    session.headers.update({"User-Agent": BROWSER_USER_AGENT})
+    session.cookies.update(parse_cookies(raw_cookie))
+
+    try:
+        html_text = _fetch_listing_html(session, source_url, raw_cookie)
+    except Exception:
+        html_text = ""
+
+    if html_text:
+        soup = BeautifulSoup(str(html_text), "html.parser")
+        candidates: list[str] = []
+
+        for node in soup.select("meta[property='og:title'], meta[name='og:title'], meta[name='twitter:title']"):
+            content = str(node.get("content") or "").strip()
+            if content:
+                candidates.append(content)
+
+        for node in soup.select("main h1, h1, [data-testid='page-title'], [class*='title']"):
+            text = node.get_text(" ", strip=True)
+            if text:
+                candidates.append(text)
+
+        title_node = soup.find("title")
+        if title_node:
+            title_text = title_node.get_text(" ", strip=True)
+            if title_text:
+                candidates.append(title_text)
+
+        for candidate in candidates:
+            normalized = _normalize_source_title(candidate, source_url)
+            if normalized and normalized.lower() != "makerworld":
+                return normalized
+
+    if _is_collection_models_url(source_url):
+        handle = _extract_collection_handle(source_url)
+        return f"{handle or 'MakerWorld'} 收藏夹".strip()
+
+    handle_match = AUTHOR_UPLOAD_RE.search(urlparse(source_url).path or "")
+    if handle_match:
+        return handle_match.group(1).strip()
+
+    return ""
+
+
 def _page_variants(base_url: str, page: int, limit: int = HTML_BATCH_PAGE_LIMIT) -> list[str]:
     if page <= 1:
         return [base_url]

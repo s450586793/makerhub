@@ -39,6 +39,7 @@ from app.services.model_attachments import create_manual_attachment, delete_manu
 from app.services.auth import AuthManager
 from app.services.subscriptions import SubscriptionManager
 from app.services.task_state import TaskStateStore
+from app.services.archive_worker import BATCH_TASK_MODES, detect_archive_mode
 
 
 router = APIRouter(prefix="/api")
@@ -635,7 +636,53 @@ async def cancel_missing_3mf(payload: Missing3mfCancelRequest, request: Request)
 
 @router.post("/archive")
 async def archive_model(payload: ArchiveRequest):
+    batch_preview = None
+    archive_mode = detect_archive_mode(payload.url)
+    if payload.create_subscription and archive_mode in BATCH_TASK_MODES:
+        batch_preview = crawler.manager.peek_batch_preview(
+            payload.preview_token,
+            payload.url,
+            mode=archive_mode,
+        )
+        if payload.preview_token and batch_preview is None:
+            raise HTTPException(status_code=400, detail="预扫描结果已失效，请重新扫描后再确认提交。")
+
     response = crawler.manager.submit(payload.url, preview_token=payload.preview_token)
+    if (
+        payload.create_subscription
+        and response.get("accepted") is not False
+        and archive_mode in BATCH_TASK_MODES
+    ):
+        try:
+            subscription_result = subscription_manager.upsert_from_archive(
+                url=payload.url,
+                mode=archive_mode,
+                discovered_items=list((batch_preview or {}).get("discovered_items") or []),
+                name=str(
+                    payload.subscription_name
+                    or (batch_preview or {}).get("source_name")
+                    or ""
+                ).strip(),
+            )
+            subscription = subscription_result.get("subscription") or {}
+            subscription_name = str(subscription.get("name") or "").strip()
+            response["subscription"] = subscription
+            response["subscription_created"] = bool(subscription_result.get("created"))
+            response["subscription_message"] = (
+                f"已自动创建订阅「{subscription_name}」。"
+                if subscription_result.get("created")
+                else f"已自动更新订阅「{subscription_name}」。"
+            )
+            response["message"] = (
+                f"{response.get('message') or '归档任务已加入队列。'} "
+                f"{response['subscription_message']}"
+            ).strip()
+        except Exception as exc:
+            response["subscription_error"] = str(exc)
+            response["message"] = (
+                f"{response.get('message') or '归档任务已加入队列。'} "
+                f"但订阅写入失败：{exc}"
+            ).strip()
     return response
 
 

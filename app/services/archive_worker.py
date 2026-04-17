@@ -10,7 +10,13 @@ from urllib.parse import urlparse
 
 from app.core.settings import ARCHIVE_DIR, LOGS_DIR
 from app.core.store import JsonStore
-from app.services.batch_discovery import discover_batch_model_urls, extract_model_id, normalize_model_url, normalize_source_url
+from app.services.batch_discovery import (
+    discover_batch_model_urls,
+    extract_model_id,
+    normalize_model_url,
+    normalize_source_url,
+    resolve_batch_source_name,
+)
 from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot
 from app.services.legacy_archiver import archive_model as legacy_archive_model
 from app.services.task_state import TaskStateStore
@@ -423,6 +429,7 @@ class ArchiveTaskManager:
             "expected_total": discovered.get("expected_total"),
             "pages_scanned": discovered.get("pages_scanned"),
             "scan_mode": discovered.get("mode") or "",
+            "source_name": str(discovered.get("source_name") or "").strip(),
         }
         with self._preview_lock:
             self._batch_previews[preview_token] = payload
@@ -634,6 +641,7 @@ class ArchiveTaskManager:
 
         with _temporary_proxy_env(config):
             discovered = discover_batch_model_urls(clean_url, cookie)
+            discovered["source_name"] = resolve_batch_source_name(clean_url, cookie)
 
         discovered_items = list(discovered.get("items") or [])
         discovered_count = len(discovered_items)
@@ -676,6 +684,8 @@ class ArchiveTaskManager:
             "queued_count": queued_count,
             "archived_count": archived_count,
             "new_count": new_count,
+            "subscription_supported": mode in BATCH_TASK_MODES,
+            "subscription_name": str(discovered.get("source_name") or "").strip(),
             "message": (
                 f"本次扫描到 {discovered_count} 个模型{total_hint}。"
                 f" 其中新增 {new_count} 个，已在队列 {queued_count} 个，已归档 {archived_count} 个。"

@@ -57,23 +57,46 @@
       <h2 id="archive-submit-dialog-title">{{ archiveSubmitDialog.title }}</h2>
       <p>{{ archiveSubmitDialog.message }}</p>
       <p v-if="archiveSubmitDialog.summary" class="submit-dialog__summary">{{ archiveSubmitDialog.summary }}</p>
+      <p
+        v-if="archiveSubmitDialog.variant === 'confirm' && archiveSubmitDialog.subscriptionSupported && archiveSubmitDialog.subscriptionName"
+        class="submit-dialog__summary"
+      >
+        归档并订阅将自动添加订阅：{{ archiveSubmitDialog.subscriptionName }}
+      </p>
       <div class="submit-dialog__actions">
         <button
           v-if="archiveSubmitDialog.variant === 'confirm'"
           class="button button-secondary"
           type="button"
-          :disabled="confirmingArchive"
+          :disabled="Boolean(confirmingArchiveMode)"
           @click="closeArchiveSubmitDialog"
         >
           取消
         </button>
         <button
+          v-if="archiveSubmitDialog.variant === 'confirm' && archiveSubmitDialog.subscriptionSupported"
+          class="button button-secondary"
+          type="button"
+          :disabled="Boolean(confirmingArchiveMode)"
+          @click="submitArchiveFromDialog(false)"
+        >
+          {{ confirmingArchiveMode === "archive" ? "提交中..." : "仅归档" }}
+        </button>
+        <button
           class="button button-primary"
           type="button"
-          :disabled="confirmingArchive"
+          :disabled="Boolean(confirmingArchiveMode)"
           @click="handleArchiveDialogPrimaryAction"
         >
-          {{ archiveSubmitDialog.variant === "confirm" ? (confirmingArchive ? "提交中..." : "确认提交") : "知道了" }}
+          {{
+            archiveSubmitDialog.variant === "confirm"
+              ? (
+                archiveSubmitDialog.subscriptionSupported
+                  ? (confirmingArchiveMode === "archive_and_subscribe" ? "提交中..." : "归档并订阅")
+                  : (confirmingArchiveMode === "archive" ? "提交中..." : "确认提交")
+              )
+              : "知道了"
+          }}
         </button>
       </div>
     </div>
@@ -324,10 +347,12 @@ const archiveSubmitDialog = ref({
   previewToken: "",
   url: "",
   discoveredCount: 0,
+  subscriptionSupported: false,
+  subscriptionName: "",
 });
 const missingStatus = ref("");
 const submittingArchive = ref(false);
-const confirmingArchive = ref(false);
+const confirmingArchiveMode = ref("");
 const clearingOrganizeTasks = ref(false);
 const pendingMissingActionKey = ref("");
 let refreshTimer = null;
@@ -391,6 +416,8 @@ function openArchiveSuccessDialog(message) {
     previewToken: "",
     url: "",
     discoveredCount: 0,
+    subscriptionSupported: false,
+    subscriptionName: "",
   };
 }
 
@@ -404,6 +431,8 @@ function openArchiveConfirmDialog(preview) {
     previewToken: preview.preview_token || "",
     url: preview.url || archiveUrl.value,
     discoveredCount: preview.discovered_count || 0,
+    subscriptionSupported: Boolean(preview.subscription_supported),
+    subscriptionName: preview.subscription_name || "",
   };
 }
 
@@ -460,12 +489,14 @@ async function submitArchive() {
   }
 }
 
-async function submitArchiveConfirmed({ url, previewToken = "", clearInput = false } = {}) {
+async function submitArchiveConfirmed({ url, previewToken = "", clearInput = false, createSubscription = false, subscriptionName = "" } = {}) {
   const response = await apiRequest("/api/archive", {
     method: "POST",
     body: {
       url: url || archiveUrl.value,
       preview_token: previewToken,
+      create_subscription: createSubscription,
+      subscription_name: subscriptionName,
     },
   });
   if (response.accepted === false) {
@@ -485,18 +516,24 @@ async function handleArchiveDialogPrimaryAction() {
     closeArchiveSubmitDialog();
     return;
   }
-  confirmingArchive.value = true;
+  await submitArchiveFromDialog(Boolean(archiveSubmitDialog.value.subscriptionSupported));
+}
+
+async function submitArchiveFromDialog(createSubscription) {
+  confirmingArchiveMode.value = createSubscription ? "archive_and_subscribe" : "archive";
   try {
     await submitArchiveConfirmed({
       url: archiveSubmitDialog.value.url,
       previewToken: archiveSubmitDialog.value.previewToken,
       clearInput: true,
+      createSubscription,
+      subscriptionName: archiveSubmitDialog.value.subscriptionName,
     });
   } catch (error) {
     archiveStatus.value = error instanceof Error ? error.message : "提交失败。";
     closeArchiveSubmitDialog();
   } finally {
-    confirmingArchive.value = false;
+    confirmingArchiveMode.value = "";
   }
 }
 

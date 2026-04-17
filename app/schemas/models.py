@@ -80,6 +80,8 @@ class ApiTokenCreateRequest(BaseModel):
 class ArchiveRequest(BaseModel):
     url: str
     preview_token: str = ""
+    create_subscription: bool = False
+    subscription_name: str = ""
 
 
 class ModelDeleteRequest(BaseModel):
