@@ -3290,11 +3290,30 @@ select:focus {
   gap: 0;
 }
 
+.comment-list--pending {
+  min-height: 96px;
+  align-items: center;
+}
+
 .comment-gallery {
   margin-top: 12px;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.mw-comments-more {
+  margin-top: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mw-comments-more__meta {
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 18px;
 }
 
 .comment-gallery--1 .comment-gallery__item {
@@ -3634,6 +3653,10 @@ html[data-theme="dark"] .detail-page--makerworld .mw-attachment-upload__status.i
 
 html[data-theme="dark"] .detail-page--makerworld .comment-item {
   border-color: var(--mw-border);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-comments-more__meta {
+  color: var(--mw-muted);
 }
 
 html[data-theme="dark"] .detail-page--makerworld .mw-doc-download {

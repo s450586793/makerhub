@@ -175,12 +175,12 @@
               >
                 <div class="mw-profile-card__thumb-wrap">
                   <img
-                    v-if="profilePreview(profile)"
+                    v-if="profile.preview_url_resolved"
                     class="mw-profile-card__thumb"
-                    :src="profilePreview(profile)"
+                    :src="profile.preview_url_resolved"
                     :alt="profile.title"
                     loading="lazy"
-                    @error="swapEventImage($event, profilePreviewFallback(profile))"
+                    @error="swapEventImage($event, profile.preview_fallback_resolved)"
                   >
                   <span v-else class="mw-profile-card__thumb avatar-placeholder">{{ detail.title.slice(0, 1) }}</span>
                 </div>
@@ -210,7 +210,7 @@
                   profilePopoverPlacement(profile, profileIndex, detail.instances.length),
                 ]"
               >
-                <div v-if="profileMedia(profile).length" class="mw-profile-popover__gallery">
+                <div v-if="profile.media_resolved?.length" class="mw-profile-popover__gallery">
                   <button
                     class="mw-profile-popover__stage"
                     type="button"
@@ -230,12 +230,12 @@
 
                   <div class="mw-profile-popover__gallery-meta">
                     <span>{{ popoverCurrentMedia(profile)?.kind === "plate" ? "分盘预览" : "配置图集" }}</span>
-                    <span>{{ currentPopoverMediaIndex(profile) + 1 }} / {{ profileMedia(profile).length }}</span>
+                    <span>{{ currentPopoverMediaIndex(profile) + 1 }} / {{ profile.media_resolved.length }}</span>
                   </div>
 
-                  <div v-if="profileMedia(profile).length > 1" class="mw-profile-popover__media-strip">
+                  <div v-if="profile.media_resolved.length > 1" class="mw-profile-popover__media-strip">
                     <button
-                      v-for="(media, mediaIndex) in profileMedia(profile)"
+                      v-for="(media, mediaIndex) in profile.media_resolved"
                       :key="`${profile.instance_key}-${media.label}-${mediaIndex}`"
                       :class="['mw-profile-popover__media-thumb', currentPopoverMediaIndex(profile) === mediaIndex && 'is-active']"
                       type="button"
@@ -423,51 +423,64 @@
         <div class="mw-section-card__header">
           <h2>评论 &amp; 评分 ({{ detail.comments?.length || 0 }})</h2>
         </div>
-        <div v-if="detail.comments?.length" class="comment-list">
-          <article
-            v-for="(comment, index) in detail.comments"
-            :key="`${comment.author}-${comment.time}-${index}`"
-            class="comment-item"
-          >
-            <div class="comment-item__avatar">
-              <div class="model-author">
-                <img
-                  v-if="comment.avatar_url"
-                  :src="comment.avatar_url"
-                  :alt="comment.author"
-                  @error="swapEventImage($event, comment.avatar_remote_url)"
-                >
-                <span v-else class="avatar-placeholder">{{ comment.author?.slice(0, 1) || "?" }}</span>
-              </div>
-            </div>
-            <div class="comment-item__content">
-              <div class="comment-item__header">
-                <span class="comment-item__author">{{ comment.author }}</span>
-                <span>{{ comment.time }}</span>
-              </div>
-              <div class="comment-item__body">{{ comment.content }}</div>
-              <div
-                v-if="comment.images?.length"
-                :class="['comment-gallery', commentGalleryClass(comment.images.length)]"
-              >
-                <button
-                  v-for="(image, imageIndex) in comment.images"
-                  :key="`${comment.author}-${imageIndex}`"
-                  class="comment-gallery__item"
-                  type="button"
-                  @click="openLightbox(image.full_url || image.thumb_url)"
-                >
+        <template v-if="detail.comments?.length">
+          <div v-if="commentsReady" class="comment-list">
+            <article
+              v-for="(comment, index) in visibleComments"
+              :key="`${comment.author}-${comment.time}-${index}`"
+              class="comment-item"
+            >
+              <div class="comment-item__avatar">
+                <div class="model-author">
                   <img
-                    :src="image.thumb_url"
-                    :alt="`${comment.author} 评论图片 ${imageIndex + 1}`"
-                    loading="lazy"
-                    @error="swapEventImage($event, image.fallback_url)"
+                    v-if="comment.avatar_url"
+                    :src="comment.avatar_url"
+                    :alt="comment.author"
+                    @error="swapEventImage($event, comment.avatar_remote_url)"
                   >
-                </button>
+                  <span v-else class="avatar-placeholder">{{ comment.author?.slice(0, 1) || "?" }}</span>
+                </div>
               </div>
-            </div>
-          </article>
-        </div>
+              <div class="comment-item__content">
+                <div class="comment-item__header">
+                  <span class="comment-item__author">{{ comment.author }}</span>
+                  <span>{{ comment.time }}</span>
+                </div>
+                <div class="comment-item__body">{{ comment.content }}</div>
+                <div
+                  v-if="comment.images?.length"
+                  :class="['comment-gallery', comment.gallery_class]"
+                >
+                  <button
+                    v-for="(image, imageIndex) in comment.images"
+                    :key="`${comment.author}-${imageIndex}`"
+                    class="comment-gallery__item"
+                    type="button"
+                    @click="openLightbox(image.full_url || image.thumb_url)"
+                  >
+                    <img
+                      :src="image.thumb_url"
+                      :alt="`${comment.author} 评论图片 ${imageIndex + 1}`"
+                      loading="lazy"
+                      @error="swapEventImage($event, image.fallback_url)"
+                    >
+                  </button>
+                </div>
+              </div>
+            </article>
+          </div>
+          <div v-else class="comment-list comment-list--pending">
+            <p class="empty-copy">正在分批加载评论内容…</p>
+          </div>
+          <div v-if="hasMoreComments" class="mw-comments-more">
+            <button class="button button-secondary" type="button" @click="loadMoreComments">
+              加载更多评论
+            </button>
+            <span class="mw-comments-more__meta">
+              已显示 {{ visibleComments.length }} / {{ detail.comments.length }}
+            </span>
+          </div>
+        </template>
         <p v-else class="empty-copy">当前没有同步到评论内容。</p>
       </article>
     </section>
@@ -483,7 +496,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { useRoute } from "vue-router";
 
 import { apiRequest } from "../lib/api";
@@ -493,7 +506,7 @@ const route = useRoute();
 
 const loading = ref(true);
 const errorMessage = ref("");
-const detail = ref(null);
+const detail = shallowRef(null);
 const currentMedia = ref({
   key: "",
   src: "",
@@ -512,9 +525,15 @@ const previewedInstanceKey = ref("");
 const profileEntryRefs = ref({});
 const popoverPlacementState = ref({});
 const popoverMediaState = ref({});
+const commentsReady = ref(false);
+const visibleCommentCount = ref(12);
 
 let hoverPopoverMediaQuery = null;
 let hoverPopoverMediaListener = null;
+let commentsRenderFrame = 0;
+
+const INITIAL_COMMENT_BATCH = 12;
+const STAT_FORMATTER = new Intl.NumberFormat("zh-CN");
 
 const attachmentForm = ref({
   category: "assembly",
@@ -589,6 +608,17 @@ const attachmentGroups = computed(() => {
     groups.get(label).push(item);
   }
   return [...groups.entries()].map(([label, items]) => ({ label, items }));
+});
+
+const visibleComments = computed(() => {
+  if (!commentsReady.value) {
+    return [];
+  }
+  return (detail.value?.comments || []).slice(0, visibleCommentCount.value);
+});
+
+const hasMoreComments = computed(() => {
+  return commentsReady.value && (detail.value?.comments?.length || 0) > visibleCommentCount.value;
 });
 
 const actionStats = computed(() => [
@@ -883,7 +913,7 @@ function closeLightbox() {
 }
 
 function formatStat(value) {
-  return new Intl.NumberFormat("zh-CN").format(Number(value || 0));
+  return STAT_FORMATTER.format(Number(value || 0));
 }
 
 function attachmentDownloadUrl(attachment) {
@@ -909,23 +939,15 @@ function commentGalleryClass(count) {
   return "comment-gallery--more";
 }
 
-function profilePreview(profile) {
-  return profile?.thumbnail_url || profile?.primary_image_url || "";
-}
-
-function profilePreviewFallback(profile) {
-  return profile?.thumbnail_fallback_url || profile?.primary_image_fallback_url || "";
-}
-
-function profileMedia(profile) {
+function buildProfileMedia(profile) {
   const mediaItems = Array.isArray(profile?.media)
     ? profile.media.filter((item) => item && (item.url || item.fallback_url))
     : [];
   if (mediaItems.length) {
     return mediaItems;
   }
-  const previewUrl = profilePreview(profile);
-  const previewFallback = profilePreviewFallback(profile);
+  const previewUrl = profile?.preview_url_resolved || "";
+  const previewFallback = profile?.preview_fallback_resolved || "";
   if (!previewUrl && !previewFallback) {
     return [];
   }
@@ -940,7 +962,7 @@ function profileMedia(profile) {
 }
 
 function currentPopoverMediaIndex(profile) {
-  const mediaItems = profileMedia(profile);
+  const mediaItems = Array.isArray(profile?.media_resolved) ? profile.media_resolved : [];
   if (!mediaItems.length || !profile?.instance_key) {
     return 0;
   }
@@ -952,7 +974,7 @@ function currentPopoverMediaIndex(profile) {
 }
 
 function popoverCurrentMedia(profile) {
-  const mediaItems = profileMedia(profile);
+  const mediaItems = Array.isArray(profile?.media_resolved) ? profile.media_resolved : [];
   return mediaItems[currentPopoverMediaIndex(profile)] || null;
 }
 
@@ -960,7 +982,7 @@ function selectPopoverMedia(profile, index) {
   if (!profile?.instance_key) {
     return;
   }
-  const mediaItems = profileMedia(profile);
+  const mediaItems = Array.isArray(profile?.media_resolved) ? profile.media_resolved : [];
   if (!mediaItems[index]) {
     return;
   }
@@ -984,6 +1006,65 @@ function resetAttachmentUploadState(options = {}) {
   if (attachmentFileInput.value) {
     attachmentFileInput.value.value = "";
   }
+}
+
+function prepareDetailPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return payload;
+  }
+
+  const instances = Array.isArray(payload.instances)
+    ? payload.instances.map((instance) => {
+        const previewUrl = instance?.thumbnail_url || instance?.primary_image_url || "";
+        const previewFallback = instance?.thumbnail_fallback_url || instance?.primary_image_fallback_url || "";
+        const mediaResolved = buildProfileMedia({
+          ...instance,
+          preview_url_resolved: previewUrl,
+          preview_fallback_resolved: previewFallback,
+        });
+        return {
+          ...instance,
+          preview_url_resolved: previewUrl,
+          preview_fallback_resolved: previewFallback,
+          media_resolved: mediaResolved,
+        };
+      })
+    : [];
+
+  const comments = Array.isArray(payload.comments)
+    ? payload.comments.map((comment) => ({
+        ...comment,
+        gallery_class: commentGalleryClass(Array.isArray(comment.images) ? comment.images.length : 0),
+      }))
+    : [];
+
+  return {
+    ...payload,
+    instances,
+    comments,
+  };
+}
+
+function scheduleCommentsRender() {
+  commentsReady.value = false;
+  visibleCommentCount.value = INITIAL_COMMENT_BATCH;
+  if (typeof window === "undefined") {
+    commentsReady.value = true;
+    return;
+  }
+  if (commentsRenderFrame) {
+    window.cancelAnimationFrame(commentsRenderFrame);
+  }
+  commentsRenderFrame = window.requestAnimationFrame(() => {
+    commentsRenderFrame = window.requestAnimationFrame(() => {
+      commentsReady.value = true;
+      commentsRenderFrame = 0;
+    });
+  });
+}
+
+function loadMoreComments() {
+  visibleCommentCount.value += INITIAL_COMMENT_BATCH;
 }
 
 function onAttachmentFileChange(event) {
@@ -1015,7 +1096,8 @@ async function submitAttachmentUpload() {
       method: "POST",
       body: formData,
     });
-    detail.value = payload.detail;
+    detail.value = prepareDetailPayload(payload.detail);
+    scheduleCommentsRender();
     attachmentUploadMessage.value = payload.message || "附件已上传。";
     resetAttachmentUploadState({ clearFeedback: false });
   } catch (error) {
@@ -1041,7 +1123,8 @@ async function removeAttachment(attachment) {
     const payload = await apiRequest(`/api/models/${encodeURI(modelDir.value)}/attachments/${encodeURIComponent(attachment.id)}`, {
       method: "DELETE",
     });
-    detail.value = payload.detail;
+    detail.value = prepareDetailPayload(payload.detail);
+    scheduleCommentsRender();
     attachmentUploadMessage.value = payload.message || "附件已删除。";
   } catch (error) {
     attachmentUploadError.value = error instanceof Error ? error.message : "附件删除失败。";
@@ -1056,8 +1139,10 @@ async function load() {
   previewedInstanceKey.value = "";
   popoverPlacementState.value = {};
   popoverMediaState.value = {};
+  commentsReady.value = false;
+  visibleCommentCount.value = INITIAL_COMMENT_BATCH;
   try {
-    const payload = await apiRequest(`/api/models/${encodeURI(modelDir.value)}`);
+    const payload = prepareDetailPayload(await apiRequest(`/api/models/${encodeURI(modelDir.value)}`));
     detail.value = payload;
     const initialInstance = findInstanceByHash(payload.instances || []) || payload.instances?.[0] || null;
     activeInstanceKey.value = initialInstance?.instance_key || "";
@@ -1070,6 +1155,7 @@ async function load() {
     } else {
       setMainMedia("", payload.cover_url || "", payload.cover_remote_url || "", payload.title);
     }
+    scheduleCommentsRender();
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "读取模型失败。";
   } finally {
@@ -1101,6 +1187,10 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   document.body.classList.remove("is-lightbox-open");
+  commentsReady.value = false;
+  if (commentsRenderFrame && typeof window !== "undefined") {
+    window.cancelAnimationFrame(commentsRenderFrame);
+  }
   if (hoverPopoverMediaQuery && hoverPopoverMediaListener) {
     if (typeof hoverPopoverMediaQuery.removeEventListener === "function") {
       hoverPopoverMediaQuery.removeEventListener("change", hoverPopoverMediaListener);

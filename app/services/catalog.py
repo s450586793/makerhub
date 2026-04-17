@@ -13,7 +13,12 @@ from bs4 import BeautifulSoup
 from app.core.settings import ARCHIVE_DIR
 from app.core.store import JsonStore
 from app.services.batch_discovery import extract_model_id, normalize_source_url
-from app.services.model_attachments import ATTACHMENT_CATEGORY_LABELS, load_manual_attachments
+from app.services.model_attachments import (
+    ATTACHMENT_CATEGORY_LABELS,
+    MANUAL_ATTACHMENTS_RELATIVE_DIR,
+    MANUAL_ATTACHMENTS_SIDECAR,
+    load_manual_attachments,
+)
 from app.services.task_state import TaskStateStore
 
 
@@ -31,6 +36,8 @@ _ARCHIVE_SNAPSHOT_CACHE: dict[str, Any] = {
     "dirty_reason": "startup",
     "built_at": 0.0,
 }
+_MODEL_DETAIL_CACHE_LOCK = threading.RLock()
+_MODEL_DETAIL_CACHE: dict[str, dict[str, Any]] = {}
 
 
 def invalidate_archive_snapshot(reason: str = "") -> None:
@@ -38,6 +45,24 @@ def invalidate_archive_snapshot(reason: str = "") -> None:
         _ARCHIVE_SNAPSHOT_CACHE["dirty"] = True
         if reason:
             _ARCHIVE_SNAPSHOT_CACHE["dirty_reason"] = reason
+
+
+def invalidate_model_detail_cache(model_dir: str = "") -> None:
+    clean_value = str(model_dir or "").strip().strip("/")
+    with _MODEL_DETAIL_CACHE_LOCK:
+        if not clean_value:
+            _MODEL_DETAIL_CACHE.clear()
+            return
+        _MODEL_DETAIL_CACHE.pop(clean_value, None)
+
+
+def _model_detail_signature(model_root: Path, meta_path: Path) -> tuple[int, int, int]:
+    meta_mtime = meta_path.stat().st_mtime_ns if meta_path.exists() else 0
+    sidecar_path = model_root / MANUAL_ATTACHMENTS_SIDECAR
+    manual_dir = model_root / MANUAL_ATTACHMENTS_RELATIVE_DIR
+    sidecar_mtime = sidecar_path.stat().st_mtime_ns if sidecar_path.exists() else 0
+    manual_dir_mtime = manual_dir.stat().st_mtime_ns if manual_dir.exists() else 0
+    return (meta_mtime, sidecar_mtime, manual_dir_mtime)
 
 
 def _clone_model_items(items: list[dict]) -> list[dict]:
@@ -1030,9 +1055,33 @@ def get_model_detail(model_dir: str, include_detail: bool = True) -> Optional[di
 
     meta_path = target / "meta.json"
     if not meta_path.exists():
+        invalidate_model_detail_cache(model_dir)
         return None
-    detail = _normalize_model(meta_path, include_detail=include_detail)
+
+    clean_model_dir = str(model_dir or "").strip().strip("/")
+    detail: Optional[dict]
+    if include_detail:
+        signature = _model_detail_signature(target, meta_path)
+        cached: Optional[dict[str, Any]] = None
+        with _MODEL_DETAIL_CACHE_LOCK:
+            cached = _MODEL_DETAIL_CACHE.get(clean_model_dir)
+        if cached and cached.get("signature") == signature:
+            payload = cached.get("payload")
+            detail = dict(payload) if isinstance(payload, dict) else None
+        else:
+            detail = _normalize_model(meta_path, include_detail=True)
+            if isinstance(detail, dict):
+                with _MODEL_DETAIL_CACHE_LOCK:
+                    _MODEL_DETAIL_CACHE[clean_model_dir] = {
+                        "signature": signature,
+                        "payload": detail,
+                    }
+                detail = dict(detail)
+    else:
+        detail = _normalize_model(meta_path, include_detail=False)
+
     if detail is None:
+        invalidate_model_detail_cache(clean_model_dir)
         return None
     _apply_model_flags([detail])
     _apply_subscription_flags([detail])
@@ -1107,6 +1156,8 @@ def delete_archived_models(model_dirs: list[str]) -> dict:
     }
     if result["removed_count"] > 0:
         invalidate_archive_snapshot("delete_archived_models")
+        for item in removed:
+            invalidate_model_detail_cache(str(item.get("model_dir") or ""))
     return result
 
 
