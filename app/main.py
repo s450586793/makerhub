@@ -89,6 +89,10 @@ async def auth_guard(request: Request, call_next):
         response = await call_next(request)
         return _apply_cache_headers(path, response)
 
+    if path == "/api/bootstrap":
+        response = await call_next(request)
+        return _apply_cache_headers(path, response)
+
     if identity is None:
         if path.startswith("/api") or path.startswith("/archive"):
             return _apply_cache_headers(path, JSONResponse({"detail": "Unauthorized"}, status_code=401))
