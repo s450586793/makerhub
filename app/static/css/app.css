@@ -3685,6 +3685,16 @@ html[data-theme="dark"] .detail-page--makerworld .mw-profile-popover__media-thum
   color: var(--mw-muted);
 }
 
+html[data-theme="dark"] .detail-page--makerworld .mw-config-panel__header h2,
+html[data-theme="dark"] .detail-page--makerworld .mw-profile-card__title {
+  color: var(--mw-text);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-profile-card__badge {
+  color: #9df0bf;
+  background: rgba(65, 199, 132, 0.16);
+}
+
 html[data-theme="dark"] .detail-page--makerworld .mw-download-button.is-disabled {
   color: var(--mw-muted);
   background: rgba(148, 163, 184, 0.12);
