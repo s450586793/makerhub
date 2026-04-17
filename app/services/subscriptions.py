@@ -586,6 +586,8 @@ class SubscriptionManager:
 
         started_at = _now()
         started_at_iso = started_at.isoformat()
+        previous_state = self._state_by_id(subscription.id)
+        manual_requested_at = str(previous_state.get("manual_requested_at") or "").strip()
         self.task_store.patch_subscription_state(
             subscription.id,
             status="running",
@@ -599,11 +601,20 @@ class SubscriptionManager:
         try:
             discovered = self._discover_subscription_items(subscription)
             current_items = _normalize_source_items(discovered.get("items") or [])
-            previous_state = self._state_by_id(subscription.id)
             tracked_items = _merge_source_items(previous_state.get("tracked_items") or [], current_items)
             previous_tracked_keys = {item["task_key"] for item in _normalize_source_items(previous_state.get("tracked_items") or [])}
-            new_items = [item for item in current_items if item["task_key"] not in previous_tracked_keys]
+            source_new_items = [item for item in current_items if item["task_key"] not in previous_tracked_keys]
             deleted_items = _deleted_source_items(current_items, tracked_items)
+
+            candidate_items = current_items if manual_requested_at else source_new_items
+            pending_keys = self.archive_manager._queued_task_keys()
+            archived_keys = self.archive_manager._archived_task_keys()
+            new_items = []
+            for item in candidate_items:
+                task_key = item.get("task_key") or ""
+                if not task_key or task_key in pending_keys or task_key in archived_keys:
+                    continue
+                new_items.append(item)
 
             enqueue_result = {
                 "accepted": True,
