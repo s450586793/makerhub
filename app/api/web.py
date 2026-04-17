@@ -47,6 +47,16 @@ async def settings_page(_: Request):
     return _serve_spa()
 
 
+@router.get("/organizer", response_class=HTMLResponse)
+async def organizer_page(_: Request):
+    return _serve_spa()
+
+
+@router.get("/remote-refresh", response_class=HTMLResponse)
+async def remote_refresh_page(_: Request):
+    return _serve_spa()
+
+
 @router.get("/tasks", response_class=HTMLResponse)
 async def tasks_page(_: Request):
     return _serve_spa()

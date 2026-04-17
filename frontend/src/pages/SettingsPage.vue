@@ -2,8 +2,8 @@
   <section class="page-intro">
     <div>
       <span class="eyebrow">设置</span>
-      <h1>连接、通知、用户与整理配置</h1>
-      <p>国内 Cookie、国际 Cookie 与 HTTP 代理统一收在“连接设置”，其它项按单页内标签管理。</p>
+      <h1>连接、通知与用户配置</h1>
+      <p>国内 Cookie、国际 Cookie 与 HTTP 代理统一收在“连接设置”，整理与远端刷新已拆成独立页面。</p>
     </div>
   </section>
 
@@ -205,80 +205,6 @@
         </div>
       </section>
     </div>
-
-    <div v-show="activeTab === 'organizer'" class="settings-panel is-active">
-      <form class="settings-form token-card" @submit.prevent="saveRemoteRefresh">
-        <div class="section-card__header">
-          <div>
-            <span class="eyebrow">远端刷新</span>
-            <h2>远端刷新</h2>
-          </div>
-        </div>
-        <div class="settings-grid settings-grid--three">
-          <label class="field-card">
-            <span>启用远端刷新</span>
-            <label class="switch">
-              <input v-model="remoteRefreshForm.enabled" type="checkbox">
-              <span>默认开启。仅对模型库内已有远端来源链接的模型做增量刷新。</span>
-            </label>
-          </label>
-          <label class="field-card">
-            <span>Cron</span>
-            <input v-model.trim="remoteRefreshForm.cron" type="text" placeholder="0 */2 * * *">
-          </label>
-          <label class="field-card">
-            <span>单轮数量</span>
-            <input v-model.number="remoteRefreshForm.batch_size" type="number" min="1" max="200" placeholder="12">
-          </label>
-        </div>
-        <p class="archive-form__hint">
-          启用后会按计划分批刷新远端评论、附件与打印配置。已成功下载过的 3MF 不会重复下载。
-          如果模型总数较多，可以缩短 Cron 或增大单轮数量。
-        </p>
-        <div class="settings-grid settings-grid--three">
-          <label class="field-card">
-            <span>当前状态</span>
-            <strong>{{ formatRemoteRefreshStatus(remoteRefreshState.status) }}</strong>
-          </label>
-          <label class="field-card">
-            <span>下次运行</span>
-            <strong>{{ remoteRefreshState.next_run_at || "-" }}</strong>
-          </label>
-          <label class="field-card">
-            <span>上次结果</span>
-            <strong>{{ remoteRefreshState.last_message || "-" }}</strong>
-          </label>
-        </div>
-        <div class="form-footer">
-          <button class="button button-primary" type="submit">保存远端刷新设置</button>
-          <span class="form-status">{{ statuses.remote_refresh }}</span>
-        </div>
-      </form>
-
-      <form class="settings-form" @submit.prevent="saveOrganizer">
-        <div class="settings-grid settings-grid--two">
-          <label class="field-card">
-            <span>本地整理扫描目录</span>
-            <input v-model="organizerForm.source_dir" type="text" placeholder="/app/local">
-          </label>
-          <label class="field-card">
-            <span>整理目标目录</span>
-            <input v-model="organizerForm.target_dir" type="text" placeholder="/app/archive">
-          </label>
-        </div>
-        <label class="field-card">
-          <span>整理模式</span>
-          <label class="switch">
-            <input v-model="organizerForm.move_files" type="checkbox">
-            <span>启用后移动文件，而不是复制文件</span>
-          </label>
-        </label>
-        <div class="form-footer">
-          <button class="button button-primary" type="submit">保存整理配置</button>
-          <span class="form-status">{{ statuses.organizer }}</span>
-        </div>
-      </form>
-    </div>
   </section>
 </template>
 
@@ -299,7 +225,6 @@ const tabs = [
   { key: "connections", label: "连接设置" },
   { key: "notifications", label: "通知" },
   { key: "user", label: "用户" },
-  { key: "organizer", label: "整理" },
 ];
 
 const activeTab = ref("connections");
@@ -332,16 +257,6 @@ const passwordForm = reactive({
   new_password: "",
   confirm_password: "",
 });
-const organizerForm = reactive({
-  source_dir: "",
-  target_dir: "",
-  move_files: true,
-});
-const remoteRefreshForm = reactive({
-  enabled: true,
-  cron: "0 */2 * * *",
-  batch_size: 12,
-});
 const statuses = reactive({
   connections: "",
   cookie_cn: "",
@@ -351,8 +266,6 @@ const statuses = reactive({
   user: "",
   password: "",
   tokens: "",
-  organizer: "",
-  remote_refresh: "",
   theme: "",
 });
 const testing = reactive({
@@ -362,7 +275,6 @@ const testing = reactive({
 });
 
 const config = computed(() => appState.config);
-const remoteRefreshState = computed(() => config.value?.remote_refresh_state || {});
 
 function applyConfigToForms(payload) {
   const cookies = {};
@@ -385,13 +297,6 @@ function applyConfigToForms(payload) {
   userForm.display_name = payload.user?.display_name || "Admin";
   userForm.password_hint = payload.user?.password_hint || "";
   themePreference.value = payload.user?.theme_preference || "auto";
-
-  organizerForm.source_dir = payload.organizer?.source_dir || "";
-  organizerForm.target_dir = payload.organizer?.target_dir || "";
-  organizerForm.move_files = payload.organizer?.move_files !== false;
-  remoteRefreshForm.enabled = payload.remote_refresh?.enabled !== false;
-  remoteRefreshForm.cron = payload.remote_refresh?.cron || "0 */2 * * *";
-  remoteRefreshForm.batch_size = Number(payload.remote_refresh?.batch_size || 12);
   tokenItems.value = payload.api_tokens || [];
 }
 
@@ -400,16 +305,6 @@ function setActiveTab(tab) {
   if (route.query.tab !== activeTab.value) {
     router.replace({ path: "/settings", query: { tab: activeTab.value } });
   }
-}
-
-function formatRemoteRefreshStatus(value) {
-  const mapping = {
-    idle: "空闲",
-    running: "运行中",
-    error: "异常",
-    disabled: "已停用",
-  };
-  return mapping[String(value || "").trim()] || "空闲";
 }
 
 async function load() {
@@ -571,36 +466,6 @@ async function revokeToken(tokenId) {
     statuses.tokens = "Token 已撤销。";
   } catch (error) {
     statuses.tokens = error instanceof Error ? error.message : "撤销失败。";
-  }
-}
-
-async function saveOrganizer() {
-  try {
-    await apiRequest("/api/config/organizer", {
-      method: "POST",
-      body: { ...organizerForm },
-    });
-    await refreshConfig();
-    statuses.organizer = "整理配置已保存。";
-  } catch (error) {
-    statuses.organizer = error instanceof Error ? error.message : "保存失败。";
-  }
-}
-
-async function saveRemoteRefresh() {
-  try {
-    await apiRequest("/api/config/remote-refresh", {
-      method: "POST",
-      body: {
-        enabled: remoteRefreshForm.enabled,
-        cron: remoteRefreshForm.cron,
-        batch_size: Number(remoteRefreshForm.batch_size || 12),
-      },
-    });
-    await refreshConfig();
-    statuses.remote_refresh = "远端刷新设置已保存。";
-  } catch (error) {
-    statuses.remote_refresh = error instanceof Error ? error.message : "保存失败。";
   }
 }
 

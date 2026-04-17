@@ -7,6 +7,8 @@ import LoginPage from "./pages/LoginPage.vue";
 import LogsPage from "./pages/LogsPage.vue";
 import ModelDetailPage from "./pages/ModelDetailPage.vue";
 import ModelsPage from "./pages/ModelsPage.vue";
+import OrganizerPage from "./pages/OrganizerPage.vue";
+import RemoteRefreshPage from "./pages/RemoteRefreshPage.vue";
 import SettingsPage from "./pages/SettingsPage.vue";
 import SubscriptionsPage from "./pages/SubscriptionsPage.vue";
 import TasksPage from "./pages/TasksPage.vue";
@@ -69,6 +71,22 @@ const routes = [
         component: SettingsPage,
         meta: {
           title: "设置 | makerhub",
+        },
+      },
+      {
+        path: "organizer",
+        name: "organizer",
+        component: OrganizerPage,
+        meta: {
+          title: "整理 | makerhub",
+        },
+      },
+      {
+        path: "remote-refresh",
+        name: "remote-refresh",
+        component: RemoteRefreshPage,
+        meta: {
+          title: "远端刷新 | makerhub",
         },
       },
       {
