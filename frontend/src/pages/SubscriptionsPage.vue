@@ -174,6 +174,7 @@
 import { onBeforeUnmount, onMounted, reactive, ref } from "vue";
 
 import { apiRequest } from "../lib/api";
+import { parseServerDate } from "../lib/helpers";
 
 
 const payload = ref({
@@ -367,8 +368,8 @@ function formatDateTime(value) {
   if (!value) {
     return "未安排";
   }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
+  const date = parseServerDate(value);
+  if (!date) {
     return value;
   }
   return new Intl.DateTimeFormat("zh-CN", {

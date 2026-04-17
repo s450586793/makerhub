@@ -3,6 +3,17 @@ export function avatarText(displayName, username = "U") {
   return source.slice(0, 1).toUpperCase();
 }
 
+export function parseServerDate(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return null;
+  }
+
+  const hasTimezone = /(?:Z|[+-]\d{2}:\d{2})$/i.test(raw);
+  const normalized = hasTimezone ? raw : `${raw}Z`;
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
 
 export function safeNextPath(value) {
   const candidate = String(value || "").trim();
