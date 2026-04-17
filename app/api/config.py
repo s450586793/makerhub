@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 from urllib.request import Request as UrlRequest, urlopen
 
+import requests
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
@@ -14,6 +15,7 @@ from app.schemas.models import (
     ArchiveRequest,
     Missing3mfCancelRequest,
     CookiePair,
+    CookieTestRequest,
     Missing3mfRetryRequest,
     ModelDeleteRequest,
     ModelFlagUpdateRequest,
@@ -66,6 +68,29 @@ github_version_cache = {
     "checked_at_iso": "",
     "error": "",
 }
+MW_BROWSER_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "X-BBL-Client-Type": "web",
+    "X-BBL-Client-Version": "00.00.00.01",
+    "X-BBL-App-Source": "makerworld",
+    "X-BBL-Client-Name": "MakerWorld",
+}
+MW_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/135.0.0.0 Safari/537.36"
+)
+PROXY_TEST_TARGETS = (
+    ("MakerWorld CN", "https://makerworld.com.cn/"),
+    ("MakerWorld Global", "https://makerworld.com/"),
+)
+COOKIE_TEST_ENDPOINTS = (
+    ("消息计数", "/api/v1/user-service/my/message/count"),
+    ("个人偏好", "/api/v1/design-user-service/my/preference"),
+)
 
 
 def _task_identity(item: dict) -> str:
@@ -165,6 +190,186 @@ def _with_version_status(payload: dict, version_status: dict) -> dict:
         "github_version_checked_at": str(version_status.get("github_version_checked_at") or ""),
         "github_version_error": str(version_status.get("github_version_error") or ""),
         "github_update_available": bool(version_status.get("github_update_available")),
+    }
+
+
+def _build_proxy_mapping(config: ProxyConfig) -> dict[str, str]:
+    http_proxy = str(config.http_proxy or "").strip()
+    https_proxy = str(config.https_proxy or "").strip()
+    proxies: dict[str, str] = {}
+    if http_proxy:
+        proxies["http"] = http_proxy
+    if https_proxy:
+        proxies["https"] = https_proxy
+    elif http_proxy:
+        proxies["https"] = http_proxy
+    return proxies
+
+
+def _safe_error_message(exc: Exception) -> str:
+    text = str(exc).strip()
+    if not text:
+        return exc.__class__.__name__
+    return text[:400]
+
+
+def _make_test_session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update(
+        {
+            **MW_BROWSER_HEADERS,
+            "User-Agent": MW_BROWSER_USER_AGENT,
+        }
+    )
+    return session
+
+
+def _run_proxy_test(config: ProxyConfig) -> dict:
+    if not bool(config.enabled):
+        raise ValueError("请先启用 HTTP 代理。")
+
+    proxies = _build_proxy_mapping(config)
+    if not proxies:
+        raise ValueError("请先填写 HTTP Proxy 或 HTTPS Proxy。")
+
+    results: list[dict] = []
+    session = _make_test_session()
+    try:
+        for name, url in PROXY_TEST_TARGETS:
+            started = time.perf_counter()
+            try:
+                response = session.get(
+                    url,
+                    proxies=proxies,
+                    timeout=(6, 12),
+                    allow_redirects=True,
+                    stream=True,
+                )
+                elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+                final_url = str(response.url or url)
+                history_codes = [int(item.status_code) for item in response.history]
+                results.append(
+                    {
+                        "target": name,
+                        "url": url,
+                        "ok": True,
+                        "status_code": int(response.status_code),
+                        "elapsed_ms": elapsed_ms,
+                        "final_url": final_url,
+                        "history": history_codes,
+                    }
+                )
+                response.close()
+            except Exception as exc:
+                elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+                results.append(
+                    {
+                        "target": name,
+                        "url": url,
+                        "ok": False,
+                        "elapsed_ms": elapsed_ms,
+                        "error": _safe_error_message(exc),
+                    }
+                )
+    finally:
+        session.close()
+
+    success_count = sum(1 for item in results if item.get("ok"))
+    ok = success_count > 0
+    if success_count == len(results):
+        message = "HTTP 代理测试成功，国内站和国际站都可达。"
+    elif success_count > 0:
+        message = f"HTTP 代理部分成功，{success_count}/{len(results)} 个目标可达。"
+    else:
+        message = "HTTP 代理测试失败，两个目标都无法通过当前代理访问。"
+    return {
+        "ok": ok,
+        "message": message,
+        "results": results,
+        "success_count": success_count,
+        "target_count": len(results),
+    }
+
+
+def _cookie_base_url(platform: str) -> str:
+    return "https://makerworld.com" if str(platform or "").strip() == "global" else "https://makerworld.com.cn"
+
+
+def _run_cookie_test(payload: CookieTestRequest) -> dict:
+    raw_cookie = str(payload.cookie or "").strip()
+    if not raw_cookie:
+        raise ValueError("请先填写 Cookie。")
+
+    base_url = _cookie_base_url(payload.platform)
+    proxies = _build_proxy_mapping(payload.proxy) if bool(payload.proxy.enabled) else {}
+    session = _make_test_session()
+    results: list[dict] = []
+    try:
+        for name, path in COOKIE_TEST_ENDPOINTS:
+            url = f"{base_url}{path}"
+            started = time.perf_counter()
+            try:
+                response = session.get(
+                    url,
+                    headers={
+                        "Referer": f"{base_url}/",
+                        "Origin": base_url,
+                        "Cookie": raw_cookie,
+                    },
+                    proxies=proxies or None,
+                    timeout=(6, 12),
+                )
+                elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+                content_type = str(response.headers.get("content-type") or "").lower()
+                body_preview = (response.text or "")[:160]
+                looks_like_html = "<html" in body_preview.lower() or "<!doctype html" in body_preview.lower()
+                ok = response.status_code < 400 and not looks_like_html
+                result = {
+                    "target": name,
+                    "url": url,
+                    "ok": ok,
+                    "status_code": int(response.status_code),
+                    "elapsed_ms": elapsed_ms,
+                    "content_type": content_type[:80],
+                }
+                if not ok:
+                    result["error"] = (
+                        "返回了 HTML 页面，通常表示 Cookie 失效、风控校验未通过，或代理未生效。"
+                        if looks_like_html
+                        else f"接口返回状态码 {response.status_code}。"
+                    )
+                results.append(result)
+            except Exception as exc:
+                elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+                results.append(
+                    {
+                        "target": name,
+                        "url": url,
+                        "ok": False,
+                        "elapsed_ms": elapsed_ms,
+                        "error": _safe_error_message(exc),
+                    }
+                )
+    finally:
+        session.close()
+
+    success_count = sum(1 for item in results if item.get("ok"))
+    ok = success_count > 0
+    platform_label = "国际" if payload.platform == "global" else "国内"
+    if success_count == len(results):
+        message = f"{platform_label} Cookie 测试成功，认证接口可正常访问。"
+    elif success_count > 0:
+        message = f"{platform_label} Cookie 部分成功，{success_count}/{len(results)} 个接口可访问。"
+    else:
+        message = f"{platform_label} Cookie 测试失败，认证接口未返回有效结果。"
+    return {
+        "ok": ok,
+        "message": message,
+        "platform": payload.platform,
+        "results": results,
+        "success_count": success_count,
+        "target_count": len(results),
+        "used_proxy": bool(payload.proxy.enabled and proxies),
     }
 
 
@@ -291,6 +496,49 @@ async def save_proxy(payload: ProxyConfig, request: Request):
         has_https_proxy=bool(payload.https_proxy),
     )
     return _with_version_status(_public_config_payload(store.save(config)), await _get_github_version_status())
+
+
+@router.post("/config/proxy/test")
+async def test_proxy(payload: ProxyConfig, request: Request):
+    _require_session_auth(request)
+    try:
+        result = await asyncio.to_thread(_run_proxy_test, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    append_business_log(
+        "settings",
+        "proxy_tested",
+        result.get("message") or "HTTP 代理测试已完成。",
+        ok=bool(result.get("ok")),
+        enabled=payload.enabled,
+        has_http_proxy=bool(payload.http_proxy),
+        has_https_proxy=bool(payload.https_proxy),
+        success_count=int(result.get("success_count") or 0),
+        target_count=int(result.get("target_count") or 0),
+        results=result.get("results") or [],
+    )
+    return result
+
+
+@router.post("/config/cookies/test")
+async def test_cookie(payload: CookieTestRequest, request: Request):
+    _require_session_auth(request)
+    try:
+        result = await asyncio.to_thread(_run_cookie_test, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    append_business_log(
+        "settings",
+        "cookie_tested",
+        result.get("message") or "Cookie 测试已完成。",
+        ok=bool(result.get("ok")),
+        platform=payload.platform,
+        used_proxy=bool(result.get("used_proxy")),
+        success_count=int(result.get("success_count") or 0),
+        target_count=int(result.get("target_count") or 0),
+        results=result.get("results") or [],
+    )
+    return result
 
 
 @router.post("/config/notifications")

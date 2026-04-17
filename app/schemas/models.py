@@ -18,6 +18,12 @@ class ProxyConfig(BaseModel):
     no_proxy: str = ""
 
 
+class CookieTestRequest(BaseModel):
+    platform: Literal["cn", "global"] = "cn"
+    cookie: str = ""
+    proxy: ProxyConfig = Field(default_factory=ProxyConfig)
+
+
 class NotificationConfig(BaseModel):
     enabled: bool = False
     telegram_bot_token: str = ""

@@ -8,6 +8,13 @@
 ## 更新记录
 
 ### 2026-04-17
+- 版本号升级到 `v0.4.16`
+- 设置页“连接设置”新增 3 个测试按钮：`国内 Cookie`、`国际 Cookie`、`HTTP 代理`
+- 国内 / 国际 Cookie 测试会直接请求 MakerWorld 的登录态接口，快速判断当前 Cookie 是否还能用
+- Cookie 测试会自动带上当前页面里填写的代理设置，便于一起排查“到底是 Cookie 失效还是代理不通”
+- HTTP 代理测试会分别验证 `makerworld.com.cn` 和 `makerworld.com` 的连通性，并把结果写入 `business.log`
+
+### 2026-04-17
 - 版本号升级到 `v0.4.15`
 - 新增顶层“日志”页面，侧边栏可直接进入查看业务日志
 - 新增 `/api/logs` 日志读取接口，支持切换 `business.log`、`subscriptions.log`、`organizer.log`、`batch_queue.log` 等日志文件，支持搜索、行数限制和自动刷新

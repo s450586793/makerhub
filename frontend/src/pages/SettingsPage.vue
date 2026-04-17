@@ -26,10 +26,22 @@
           <label class="field-card">
             <span>国内 Cookie</span>
             <SecretTextarea v-model="connectionForm.cookie_cn" placeholder="makerworld.com.cn Cookie" />
+            <div class="settings-inline-actions">
+              <button class="button button-secondary button-small" type="button" :disabled="testing.cookie_cn" @click="testCookie('cn')">
+                {{ testing.cookie_cn ? "测试中..." : "测试国内 Cookie" }}
+              </button>
+              <span class="form-status">{{ statuses.cookie_cn }}</span>
+            </div>
           </label>
           <label class="field-card">
             <span>国际 Cookie</span>
             <SecretTextarea v-model="connectionForm.cookie_global" placeholder="makerworld.com Cookie" />
+            <div class="settings-inline-actions">
+              <button class="button button-secondary button-small" type="button" :disabled="testing.cookie_global" @click="testCookie('global')">
+                {{ testing.cookie_global ? "测试中..." : "测试国际 Cookie" }}
+              </button>
+              <span class="form-status">{{ statuses.cookie_global }}</span>
+            </div>
           </label>
         </div>
         <div class="settings-grid settings-grid--three">
@@ -53,6 +65,12 @@
           <span>No Proxy</span>
           <input v-model="connectionForm.no_proxy" type="text" placeholder="localhost,127.0.0.1">
         </label>
+        <div class="settings-inline-actions">
+          <button class="button button-secondary" type="button" :disabled="testing.proxy" @click="testProxy">
+            {{ testing.proxy ? "测试中..." : "测试 HTTP 代理" }}
+          </button>
+          <span class="form-status">{{ statuses.proxy }}</span>
+        </div>
         <div class="form-footer">
           <button class="button button-primary" type="submit">保存连接设置</button>
           <span class="form-status">{{ statuses.connections }}</span>
@@ -273,12 +291,20 @@ const organizerForm = reactive({
 });
 const statuses = reactive({
   connections: "",
+  cookie_cn: "",
+  cookie_global: "",
+  proxy: "",
   notifications: "",
   user: "",
   password: "",
   tokens: "",
   organizer: "",
   theme: "",
+});
+const testing = reactive({
+  cookie_cn: false,
+  cookie_global: false,
+  proxy: false,
 });
 
 const config = computed(() => appState.config);
@@ -346,6 +372,53 @@ async function saveConnections() {
     statuses.connections = "连接设置已保存。";
   } catch (error) {
     statuses.connections = error instanceof Error ? error.message : "保存失败。";
+  }
+}
+
+function buildProxyPayload() {
+  return {
+    enabled: connectionForm.proxy_enabled,
+    http_proxy: connectionForm.http_proxy,
+    https_proxy: connectionForm.https_proxy,
+    no_proxy: connectionForm.no_proxy,
+  };
+}
+
+async function testCookie(platform) {
+  const key = platform === "global" ? "cookie_global" : "cookie_cn";
+  const cookie = platform === "global" ? connectionForm.cookie_global : connectionForm.cookie_cn;
+  testing[key] = true;
+  statuses[key] = "";
+  try {
+    const response = await apiRequest("/api/config/cookies/test", {
+      method: "POST",
+      body: {
+        platform,
+        cookie,
+        proxy: buildProxyPayload(),
+      },
+    });
+    statuses[key] = response.message || "测试完成。";
+  } catch (error) {
+    statuses[key] = error instanceof Error ? error.message : "测试失败。";
+  } finally {
+    testing[key] = false;
+  }
+}
+
+async function testProxy() {
+  testing.proxy = true;
+  statuses.proxy = "";
+  try {
+    const response = await apiRequest("/api/config/proxy/test", {
+      method: "POST",
+      body: buildProxyPayload(),
+    });
+    statuses.proxy = response.message || "测试完成。";
+  } catch (error) {
+    statuses.proxy = error instanceof Error ? error.message : "测试失败。";
+  } finally {
+    testing.proxy = false;
   }
 }
 
