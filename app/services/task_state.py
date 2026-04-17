@@ -72,6 +72,13 @@ def _normalize_archive_queue(payload: Any) -> dict:
     }
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _normalize_missing_3mf(payload: Any, fallback_items: Optional[list[dict]] = None) -> dict:
     if isinstance(payload, list):
         items = payload
@@ -150,10 +157,22 @@ def _matches_missing_3mf_item(
 def _normalize_organize_tasks(payload: Any) -> dict:
     if isinstance(payload, list):
         items = payload
+        raw_detected_total = 0
+        raw_source_dir = ""
+        raw_updated_at = ""
     elif isinstance(payload, dict):
         items = payload.get("items") or payload.get("tasks") or []
+        raw_detected_total = _safe_int(
+            payload.get("detected_total", payload.get("pending_total", payload.get("total", 0))),
+            0,
+        )
+        raw_source_dir = str(payload.get("source_dir") or "")
+        raw_updated_at = str(payload.get("updated_at") or "")
     else:
         items = []
+        raw_detected_total = 0
+        raw_source_dir = ""
+        raw_updated_at = ""
 
     normalized = []
     for item in items:
@@ -190,7 +209,24 @@ def _normalize_organize_tasks(payload: Any) -> dict:
         )
 
     normalized.sort(key=_organize_task_sort_key, reverse=True)
-    return {"items": normalized}
+    queued_count = 0
+    running_count = 0
+    for item in normalized:
+        status = str(item.get("status") or "").strip().lower()
+        if status in {"pending", "queued"}:
+            queued_count += 1
+        elif status == "running":
+            running_count += 1
+
+    detected_total = max(raw_detected_total, queued_count + running_count)
+    return {
+        "items": normalized,
+        "detected_total": detected_total,
+        "queued_count": queued_count,
+        "running_count": running_count,
+        "source_dir": raw_source_dir,
+        "updated_at": raw_updated_at,
+    }
 
 
 def _organize_task_sort_key(item: dict) -> tuple[int, str, str]:
@@ -780,7 +816,10 @@ class TaskStateStore:
             if not replaced:
                 items.insert(0, target)
 
-            return {"items": items[: max(int(limit or 0), 1)]}
+            return {
+                **payload,
+                "items": items[: max(int(limit or 0), 1)],
+            }
 
         return self._update_organize_tasks(_mutate)
 

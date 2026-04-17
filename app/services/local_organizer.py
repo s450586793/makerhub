@@ -36,6 +36,7 @@ ORGANIZER_HASH_PAUSE_SECONDS = 0.02
 ORGANIZER_PREVIEW_LIMIT = 6
 PREVIEW_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 ORGANIZER_IGNORED_DIR_NAMES = {"_duplicates", "_failed", "_skipped"}
+ORGANIZER_VISIBLE_QUEUE_LIMIT = ORGANIZER_TASK_LIMIT
 
 
 def _now_iso() -> str:
@@ -177,6 +178,12 @@ class LocalOrganizerService:
             pass
 
         candidates = self._iter_candidates(source_dir)
+        self._sync_candidate_queue(
+            candidates=candidates,
+            source_dir=source_dir,
+            library_root=library_root,
+            move_files=bool(organizer.move_files),
+        )
         if not candidates:
             return
 
@@ -195,6 +202,108 @@ class LocalOrganizerService:
             source_dir=source_dir,
             library_root=library_root,
             move_files=bool(organizer.move_files),
+        )
+
+    def _sync_candidate_queue(
+        self,
+        *,
+        candidates: list[Path],
+        source_dir: Path,
+        library_root: Path,
+        move_files: bool,
+    ) -> None:
+        existing_payload = self.task_store.load_organize_tasks()
+        existing_items = list(existing_payload.get("items") or [])
+        existing_by_key: dict[str, dict[str, Any]] = {}
+        for item in existing_items:
+            for key in (
+                str(item.get("fingerprint") or ""),
+                str(item.get("id") or ""),
+                str(item.get("source_path") or ""),
+            ):
+                if key and key not in existing_by_key:
+                    existing_by_key[key] = item
+
+        now_iso = _now_iso()
+        visible_candidates = candidates[: max(int(ORGANIZER_VISIBLE_QUEUE_LIMIT or 0), 1)]
+        queued_items: list[dict[str, Any]] = []
+        matched_keys: set[str] = set()
+
+        for source_path in visible_candidates:
+            fingerprint = self._fingerprint(source_path)
+            task_id = _task_id_from_fingerprint(fingerprint) if fingerprint else ""
+            existing = {}
+            for key in (fingerprint, task_id, source_path.as_posix()):
+                if key and key in existing_by_key:
+                    existing = existing_by_key[key]
+                    break
+
+            status = str(existing.get("status") or "").strip().lower()
+            if status in {"running", "success", "skipped"}:
+                entry = dict(existing)
+            else:
+                entry = {
+                    "id": task_id,
+                    "title": source_path.stem.strip() or source_path.name,
+                    "file_name": source_path.name,
+                    "source_dir": source_dir.as_posix(),
+                    "target_dir": library_root.as_posix(),
+                    "source_path": source_path.as_posix(),
+                    "target_path": str(existing.get("target_path") or ""),
+                    "model_dir": str(existing.get("model_dir") or ""),
+                    "status": "queued",
+                    "message": (
+                        "已检测到本地 3MF，等待整理。"
+                        if status != "failed"
+                        else "上次整理失败，等待自动重试。"
+                    ),
+                    "progress": 0,
+                    "updated_at": now_iso,
+                    "move_files": move_files,
+                    "fingerprint": fingerprint,
+                }
+
+            if not entry.get("updated_at"):
+                entry["updated_at"] = now_iso
+            entry["source_dir"] = source_dir.as_posix()
+            entry["target_dir"] = library_root.as_posix()
+            entry["move_files"] = move_files
+            if fingerprint:
+                entry["fingerprint"] = fingerprint
+            if task_id:
+                entry["id"] = task_id
+
+            queued_items.append(entry)
+            for key in (
+                str(entry.get("fingerprint") or ""),
+                str(entry.get("id") or ""),
+                str(entry.get("source_path") or ""),
+            ):
+                if key:
+                    matched_keys.add(key)
+
+        history_items: list[dict[str, Any]] = []
+        for item in existing_items:
+            item_keys = {
+                str(item.get("fingerprint") or ""),
+                str(item.get("id") or ""),
+                str(item.get("source_path") or ""),
+            }
+            if matched_keys.intersection({key for key in item_keys if key}):
+                continue
+            status = str(item.get("status") or "").strip().lower()
+            if status in {"pending", "queued"}:
+                continue
+            history_items.append(item)
+
+        self.task_store.save_organize_tasks(
+            {
+                **existing_payload,
+                "items": (queued_items + history_items)[: max(int(ORGANIZER_TASK_LIMIT or 0), 1)],
+                "detected_total": len(candidates),
+                "source_dir": source_dir.as_posix(),
+                "updated_at": now_iso,
+            }
         )
 
     def process_candidate(

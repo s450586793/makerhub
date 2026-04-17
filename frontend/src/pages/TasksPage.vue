@@ -261,10 +261,16 @@
           >
             {{ clearingOrganizeTasks ? "清空中..." : "清空记录" }}
           </button>
-          <span class="count-pill">{{ payload.organize_tasks.count }} 项</span>
+          <span class="count-pill">{{ payload.organize_tasks.running_count || 0 }} 运行中 / {{ payload.organize_tasks.queued_count || 0 }} 排队中</span>
         </div>
       </div>
       <span class="form-status">{{ organizeStatus }}</span>
+      <p v-if="payload.organize_tasks.detected_total" class="archive-form__hint">
+        当前检测到 {{ payload.organize_tasks.detected_total }} 个候选 3MF
+        <template v-if="payload.organize_tasks.detected_total > payload.organize_tasks.items.length">
+          ，当前仅展示前 {{ payload.organize_tasks.items.length }} 条
+        </template>
+      </p>
       <div v-if="payload.organize_tasks.items.length" class="table-like">
         <div class="table-like__row table-like__row--head">
           <span>文件</span>
@@ -327,6 +333,9 @@ const payload = ref({
   organize_tasks: {
     items: [],
     count: 0,
+    queued_count: 0,
+    running_count: 0,
+    detected_total: 0,
   },
   summary: {
     running_or_queued: 0,

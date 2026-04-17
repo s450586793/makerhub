@@ -1219,6 +1219,9 @@ def build_tasks_payload(
     organize_tasks = store.load_organize_tasks()
     active_organize_count = _count_active_organize_tasks(organize_tasks)
     organize_tasks["active_count"] = active_organize_count
+    organize_tasks["queued_count"] = int(organize_tasks.get("queued_count") or 0)
+    organize_tasks["running_count"] = int(organize_tasks.get("running_count") or 0)
+    organize_tasks["detected_total"] = int(organize_tasks.get("detected_total") or 0)
 
     return {
         "archive_queue": archive_queue,

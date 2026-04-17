@@ -154,8 +154,16 @@
         <span class="eyebrow">本地整理</span>
         <h2>本地整理任务</h2>
       </div>
-      <span class="count-pill">{{ organize_tasks.count }} 项</span>
+      <span class="count-pill">{{ organize_tasks.running_count or 0 }} 运行中 / {{ organize_tasks.queued_count or 0 }} 排队中</span>
     </div>
+    {% if organize_tasks.detected_total %}
+    <p class="archive-form__hint">
+      当前检测到 {{ organize_tasks.detected_total }} 个候选 3MF
+      {% if organize_tasks.detected_total > organize_tasks["items"]|length %}
+      ，当前仅展示前 {{ organize_tasks["items"]|length }} 条
+      {% endif %}
+    </p>
+    {% endif %}
     {% if organize_tasks["items"] %}
     <div class="table-like">
       <div class="table-like__row table-like__row--head">
