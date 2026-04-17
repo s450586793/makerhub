@@ -497,7 +497,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import { computed, onBeforeUnmount, onErrorCaptured, onMounted, ref, shallowRef, watch } from "vue";
 import { useRoute } from "vue-router";
 
 import { apiRequest } from "../lib/api";
@@ -523,7 +523,7 @@ const attachmentUploadError = ref("");
 const deletingAttachmentId = ref("");
 const hoverPopoverEnabled = ref(false);
 const previewedInstanceKey = ref("");
-const profileEntryRefs = ref({});
+const profileEntryRefs = new Map();
 const popoverPlacementState = ref({});
 const popoverMediaState = ref({});
 const commentsReady = ref(false);
@@ -809,22 +809,18 @@ function setProfileEntryRef(instanceKey, element) {
   if (!instanceKey) {
     return;
   }
-  const nextRefs = {
-    ...profileEntryRefs.value,
-  };
   if (element instanceof HTMLElement) {
-    nextRefs[instanceKey] = element;
-  } else {
-    delete nextRefs[instanceKey];
+    profileEntryRefs.set(instanceKey, element);
+    return;
   }
-  profileEntryRefs.value = nextRefs;
+  profileEntryRefs.delete(instanceKey);
 }
 
 function updateProfilePopoverPlacement(profile, entryElement = null) {
   if (!profile?.instance_key || typeof window === "undefined") {
     return;
   }
-  const host = entryElement instanceof HTMLElement ? entryElement : profileEntryRefs.value[profile.instance_key];
+  const host = entryElement instanceof HTMLElement ? entryElement : profileEntryRefs.get(profile.instance_key);
   if (!(host instanceof HTMLElement)) {
     return;
   }
@@ -1185,6 +1181,7 @@ async function removeAttachment(attachment) {
 async function load() {
   loading.value = true;
   errorMessage.value = "";
+  profileEntryRefs.clear();
   previewedInstanceKey.value = "";
   popoverPlacementState.value = {};
   popoverMediaState.value = {};
@@ -1222,6 +1219,7 @@ async function load() {
 watch(modelDir, (value) => {
   resetAttachmentUploadState({ keepCategory: false });
   if (!value) {
+    profileEntryRefs.clear();
     detail.value = null;
     comments.value = [];
     commentsTotal.value = 0;
@@ -1234,6 +1232,13 @@ watch(modelDir, (value) => {
   }
   load();
 }, { immediate: true });
+
+onErrorCaptured((error) => {
+  errorMessage.value = error instanceof Error ? error.message : "模型详情渲染失败。";
+  loading.value = false;
+  return false;
+});
+
 onMounted(() => {
   if (typeof window === "undefined") {
     return;
@@ -1252,6 +1257,7 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   document.body.classList.remove("is-lightbox-open");
+  profileEntryRefs.clear();
   commentsReady.value = false;
   comments.value = [];
   commentsTotal.value = 0;
