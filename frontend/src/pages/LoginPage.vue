@@ -4,14 +4,18 @@
       <section class="login-shell">
         <article class="login-card">
           <div class="login-card__header">
-            <div class="brand-mark">
-              <span class="brand-mark__badge">MH</span>
-              <span>
-                <strong>makerhub</strong>
-                <small>真实归档数据工作台</small>
-              </span>
+            <div class="login-card__brand">
+              <div class="brand-mark">
+                <span class="brand-mark__badge">MH</span>
+                <span class="login-card__brand-copy">
+                  <strong>makerhub</strong>
+                  <small>真实归档数据工作台</small>
+                </span>
+              </div>
+              <p class="login-card__brand-note">用于归档、订阅、整理与查看本地 MakerWorld 模型数据。</p>
             </div>
-            <div>
+            <div class="login-card__intro">
+              <span class="login-card__eyebrow">安全登录</span>
               <h1>登录</h1>
               <p>公网访问默认需要先登录，再进入归档、设置与本地模型页面。</p>
             </div>
@@ -26,11 +30,11 @@
               <span>密码</span>
               <input v-model="password" type="password" autocomplete="current-password" placeholder="请输入密码">
             </label>
-            <div class="form-footer">
-              <button class="button button-primary" type="submit" :disabled="submitting">
+            <div class="form-footer login-form__footer">
+              <button class="button button-primary login-form__submit" type="submit" :disabled="submitting">
                 {{ submitting ? "登录中..." : "登录" }}
               </button>
-              <span class="form-status">{{ status }}</span>
+              <span :class="['form-status', status && 'is-error']">{{ status }}</span>
             </div>
           </form>
         </article>
