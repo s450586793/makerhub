@@ -1656,6 +1656,17 @@ def choose_archive_base_name(design_id: int, title: str, existing_root: Optional
     return desired, "created"
 
 
+def load_existing_meta(work_dir: Path) -> dict:
+    meta_path = work_dir / "meta.json"
+    if not meta_path.exists() or not meta_path.is_file():
+        return {}
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
 STYLE_CSS = """
 body {
   font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -2690,6 +2701,7 @@ def archive_model(
     title = design.get("title") or "model"
     base_name, action = choose_archive_base_name(design_id, title, existing_root=existing_root)
     work_dir = out_root / base_name
+    existing_meta = load_existing_meta(work_dir) if action == "updated" else {}
     images_dir = work_dir / "images"
     ensure_dir(images_dir)
 
@@ -2810,6 +2822,9 @@ def archive_model(
         attachments=attachments,
         comments_bundle=comments_bundle,
     )
+    existing_collect_date = existing_meta.get("collectDate")
+    if existing_collect_date not in (None, "", 0, "0"):
+        meta["collectDate"] = existing_collect_date
     meta_path = work_dir / "meta.json"
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     emit_progress(progress_callback, 78, "元数据已生成，准备落盘")
