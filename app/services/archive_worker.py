@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -25,11 +26,13 @@ BATCH_TASK_MODES = {"author_upload", "collection_models"}
 BATCH_QUEUE_LOG_PATH = LOGS_DIR / "batch_queue.log"
 MAX_BATCH_CHILD_REQUEUE_ATTEMPTS = 3
 ACTIVE_BATCH_IDLE_POLL_SECONDS = 2.0
+COLLECTION_DETAIL_RE = re.compile(r"/(?:[a-z]{2}/)?collections/\d+(?:-[^/?#]+)?(?:[/?#]|$)", re.I)
 
 
 def detect_archive_mode(url: str) -> str:
     lowered = (url or "").lower()
-    if "/collections/models" in lowered:
+    path = urlparse(url or "").path or ""
+    if "/collections/models" in lowered or COLLECTION_DETAIL_RE.search(path):
         return "collection_models"
     if "/upload" in lowered and "/@" in lowered:
         return "author_upload"

@@ -38,7 +38,7 @@
         {{ submittingArchive ? "提交中..." : "开始归档" }}
       </button>
     </form>
-    <p class="archive-form__hint">示例：`/zh/models/...`、`/zh/@xxx/upload`、`/zh/@xxx/collections/models`</p>
+    <p class="archive-form__hint">示例：`/zh/models/...`、`/zh/@xxx/upload`、`/zh/@xxx/collections/models`、`/zh/collections/267246-...`</p>
     <span class="form-status">{{ archiveStatus }}</span>
   </section>
 

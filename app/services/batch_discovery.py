@@ -19,6 +19,7 @@ from app.services.legacy_archiver import (
 
 MODEL_PATH_RE = re.compile(r"/(?:[a-z]{2}/)?models/(\d+)(?:[^\"'\\s<>]*)?", re.I)
 AUTHOR_UPLOAD_RE = re.compile(r"/(?:[a-z]{2}/)?@([^/?#]+)/upload(?:[/?#]|$)", re.I)
+COLLECTION_DETAIL_RE = re.compile(r"/(?:[a-z]{2}/)?collections/(\d+)(?:-[^/?#]+)?(?:[/?#]|$)", re.I)
 
 API_BROWSER_HEADERS = {
     "Accept": "application/json, text/plain, */*",
@@ -531,11 +532,23 @@ def _extract_author_handle(source_url: str) -> str:
 
 
 def _is_collection_models_url(source_url: str) -> bool:
-    return "/collections/models" in (urlparse(source_url).path or "").lower()
+    path = (urlparse(source_url).path or "").lower()
+    return "/collections/models" in path or COLLECTION_DETAIL_RE.search(path) is not None
+
+
+def _is_collection_detail_url(source_url: str) -> bool:
+    return COLLECTION_DETAIL_RE.search(urlparse(source_url).path or "") is not None
+
+
+def _extract_collection_id(source_url: str) -> str:
+    match = COLLECTION_DETAIL_RE.search(urlparse(source_url).path or "")
+    if not match:
+        return ""
+    return match.group(1).strip()
 
 
 def _extract_collection_handle(source_url: str) -> str:
-    if not _is_collection_models_url(source_url):
+    if not _is_collection_models_url(source_url) or _is_collection_detail_url(source_url):
         return ""
     return _extract_handle_from_url(source_url)
 
@@ -1507,6 +1520,195 @@ def _discover_collection_models_api(
     }
 
 
+def _fetch_collection_detail_hits_payload(
+    session: requests.Session,
+    source_url: str,
+    raw_cookie: str,
+    collection_id: str,
+    offset: int,
+    limit: int,
+    seen_links: set[str],
+    search_session_id: str,
+) -> tuple[Optional[dict], Optional[dict], list[str], str]:
+    first_payload: Optional[dict] = None
+    first_hits_payload: Optional[dict] = None
+    first_page_links: list[str] = []
+    path = f"/favorites/{collection_id}/designs"
+
+    for params in _collection_designs_param_candidates(
+        offset,
+        limit,
+        source_url,
+        "",
+        search_session_id=search_session_id,
+    ):
+        payload = _api_get_json(
+            session,
+            source_url=source_url,
+            raw_cookie=raw_cookie,
+            service_name="design-service",
+            path=path,
+            params=params,
+        )
+        if payload is None:
+            continue
+
+        hits_payload = _extract_hits_payload(payload)
+        if hits_payload is None:
+            continue
+
+        page_links = _extract_model_urls_from_hits(hits_payload, source_url)
+        if first_payload is None:
+            first_payload = payload
+            first_hits_payload = hits_payload
+            first_page_links = page_links
+
+        if offset <= 0 and page_links:
+            _append_discovery_debug(
+                "collection_detail_page_selected",
+                collection_id=collection_id,
+                offset=offset,
+                limit=limit,
+                params=params,
+                page_links=len(page_links),
+                new_links=len(page_links),
+            )
+            return payload, hits_payload, page_links, path
+
+        new_links = [link for link in page_links if link not in seen_links]
+        if new_links:
+            _append_discovery_debug(
+                "collection_detail_page_selected",
+                collection_id=collection_id,
+                offset=offset,
+                limit=limit,
+                params=params,
+                page_links=len(page_links),
+                new_links=len(new_links),
+            )
+            return payload, hits_payload, page_links, path
+
+        _append_discovery_debug(
+            "collection_detail_page_duplicate",
+            collection_id=collection_id,
+            offset=offset,
+            limit=limit,
+            params=params,
+            page_links=len(page_links),
+        )
+
+    return first_payload, first_hits_payload, first_page_links, path
+
+
+def _discover_collection_detail_models_api(
+    session: requests.Session,
+    source_url: str,
+    raw_cookie: str,
+    max_pages: int,
+    limit: int = COLLECTION_BATCH_PAGE_LIMIT,
+) -> Optional[dict]:
+    collection_id = _extract_collection_id(source_url)
+    if not collection_id:
+        return None
+
+    _append_discovery_debug("collection_detail_discovery_start", source_url=source_url, collection_id=collection_id)
+
+    discovered: list[str] = []
+    seen: set[str] = set()
+    pages_scanned = 0
+    offset = 0
+    expected_total: Optional[int] = None
+    page_budget = max(max_pages, 1)
+    search_session_id = ""
+    selected_path = ""
+
+    while pages_scanned < page_budget:
+        payload, hits_payload, page_links, selected_path = _fetch_collection_detail_hits_payload(
+            session,
+            source_url=source_url,
+            raw_cookie=raw_cookie,
+            collection_id=collection_id,
+            offset=offset,
+            limit=limit,
+            seen_links=seen,
+            search_session_id=search_session_id,
+        )
+        if payload is None:
+            return None if pages_scanned == 0 else {
+                "source_url": source_url,
+                "pages_scanned": pages_scanned,
+                "items": discovered,
+                "mode": "collection_detail_api_partial",
+                "expected_total": expected_total,
+                "collection_id": collection_id,
+            }
+
+        if hits_payload is None:
+            return None if pages_scanned == 0 else {
+                "source_url": source_url,
+                "pages_scanned": pages_scanned,
+                "items": discovered,
+                "mode": "collection_detail_api_partial",
+                "expected_total": expected_total,
+                "collection_id": collection_id,
+            }
+
+        hits = hits_payload.get("hits") or []
+        pages_scanned += 1
+        discovered_session_id = _extract_search_session_id(hits_payload) or _extract_search_session_id(payload)
+        if discovered_session_id:
+            search_session_id = discovered_session_id
+        expected_total = _extract_total_count(hits_payload, len(hits))
+        page_size = max(len(hits), 1)
+        if expected_total:
+            estimated_pages = max((expected_total + page_size - 1) // page_size, 1) + 1
+            page_budget = min(max(page_budget, estimated_pages), 120)
+
+        new_link_count = 0
+        for link in page_links:
+            if link in seen:
+                continue
+            seen.add(link)
+            discovered.append(link)
+            new_link_count += 1
+
+        if not hits:
+            break
+
+        has_next = _extract_has_next(hits_payload)
+        if has_next is False:
+            break
+        if expected_total is not None and len(discovered) >= expected_total:
+            break
+        if new_link_count == 0 and offset > 0:
+            break
+        if len(hits) < limit and has_next is not True:
+            break
+
+        offset += page_size
+
+    if not discovered:
+        _append_discovery_debug(
+            "collection_detail_api_empty",
+            source_url=source_url,
+            collection_id=collection_id,
+            path=selected_path,
+            pages_scanned=pages_scanned,
+            expected_total=expected_total,
+        )
+        return None
+
+    return {
+        "source_url": source_url,
+        "pages_scanned": pages_scanned,
+        "items": discovered,
+        "mode": "collection_detail_api",
+        "path": selected_path,
+        "expected_total": expected_total,
+        "collection_id": collection_id,
+    }
+
+
 def _collect_model_urls_from_node(node: object, found: set[str], base_url: str) -> None:
     if isinstance(node, str):
         normalized = normalize_model_url(node, fallback_base=base_url)
@@ -1732,6 +1934,16 @@ def discover_batch_model_urls(url: str, raw_cookie: str, max_pages: int = 12) ->
     session.cookies.update(parse_cookies(raw_cookie))
 
     if _is_collection_models_url(source_url):
+        if _is_collection_detail_url(source_url):
+            detail_result = _discover_collection_detail_models_api(
+                session=session,
+                source_url=source_url,
+                raw_cookie=raw_cookie,
+                max_pages=max_pages,
+            )
+            if detail_result is not None:
+                return detail_result
+
         api_result = _discover_collection_models_api(
             session=session,
             source_url=source_url,

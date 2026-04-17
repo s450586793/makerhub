@@ -29,7 +29,7 @@
     </div>
     <form class="subscription-create-form subscription-create-form--compact" @submit.prevent="createSubscription">
       <label class="filter-field filter-field--wide">
-        <input v-model.trim="createForm.url" type="text" placeholder="作者上传页或收藏夹模型页链接">
+        <input v-model.trim="createForm.url" type="text" placeholder="作者上传页、收藏夹模型页或合集详情页链接">
       </label>
       <label class="filter-field">
         <input v-model.trim="createForm.name" type="text" placeholder="订阅名称（可选）">
