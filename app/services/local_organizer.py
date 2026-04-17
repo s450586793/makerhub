@@ -221,6 +221,13 @@ class LocalOrganizerService:
 
         existing = known_by_fingerprint.get(fingerprint) or {}
         if str(existing.get("status") or "").lower() in {"running", "success", "skipped"}:
+            _append_organizer_log(
+                "candidate_ignored_existing",
+                source=source_path.as_posix(),
+                fingerprint=fingerprint,
+                status=str(existing.get("status") or ""),
+                message=str(existing.get("message") or ""),
+            )
             return
 
         analysis = self._inspect_3mf(source_path)
@@ -413,7 +420,9 @@ class LocalOrganizerService:
             stat = path.stat()
         except OSError:
             return ""
-        return f"{path.resolve()}::{stat.st_size}::{stat.st_mtime_ns}"
+        ctime_ns = getattr(stat, "st_ctime_ns", 0)
+        inode = getattr(stat, "st_ino", 0)
+        return f"{path.resolve()}::{stat.st_size}::{stat.st_mtime_ns}::{ctime_ns}::{inode}"
 
     def _sha256_file(self, path: Path) -> str:
         digest = hashlib.sha256()
