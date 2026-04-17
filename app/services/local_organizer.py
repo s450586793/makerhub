@@ -23,9 +23,11 @@ from app.services.task_state import TaskStateStore
 
 ORGANIZER_LOG_PATH = LOGS_DIR / "organizer.log"
 ORGANIZER_POLL_INTERVAL_SECONDS = 5
+ORGANIZER_COOLDOWN_AFTER_WORKER_SECONDS = 8
 ORGANIZER_MIN_FILE_AGE_SECONDS = 2
 ORGANIZER_TASK_LIMIT = 50
 ORGANIZER_MAX_FILES_PER_CYCLE = 1
+ORGANIZER_WORKER_TIMEOUT_SECONDS = 20 * 60
 ORGANIZER_LIBRARY_INDEX_CACHE_TTL_SECONDS = 300
 ORGANIZER_LIBRARY_INDEX_CACHE_PATH = STATE_DIR / "organizer_library_index.json"
 ORGANIZER_HASH_CHUNK_SIZE_BYTES = 512 * 1024
@@ -115,6 +117,8 @@ class LocalOrganizerService:
         self._library_index_cache: Optional[dict[str, dict[str, dict[str, Any]]]] = None
         self._library_index_cache_root = ""
         self._library_index_cache_at = 0.0
+        self._worker_started_at = 0.0
+        self._last_worker_finished_at = 0.0
 
     def start(self) -> None:
         with self._start_lock:
@@ -134,6 +138,8 @@ class LocalOrganizerService:
     def run_once(self) -> None:
         self._poll_worker()
         if self._worker_process and self._worker_process.poll() is None:
+            return
+        if self._last_worker_finished_at and time.time() - self._last_worker_finished_at < ORGANIZER_COOLDOWN_AFTER_WORKER_SECONDS:
             return
 
         config = self.store.load()
@@ -251,6 +257,42 @@ class LocalOrganizerService:
             return
         return_code = process.poll()
         if return_code is None:
+            if (
+                self._worker_started_at
+                and time.time() - self._worker_started_at >= ORGANIZER_WORKER_TIMEOUT_SECONDS
+            ):
+                source_path_text = self._worker_source_path
+                try:
+                    process.kill()
+                    process.wait(timeout=5)
+                except Exception:
+                    pass
+                if source_path_text:
+                    source_path = Path(source_path_text)
+                    timeout_fingerprint = self._fingerprint(source_path) if source_path.exists() else source_path_text
+                    self.task_store.upsert_organize_task(
+                        {
+                            "id": _task_id_from_fingerprint(str(timeout_fingerprint)),
+                            "title": source_path.stem.strip() or source_path.name,
+                            "file_name": source_path.name,
+                            "source_path": source_path_text,
+                            "status": "failed",
+                            "message": f"本地整理超时，已终止该任务（>{ORGANIZER_WORKER_TIMEOUT_SECONDS} 秒）。",
+                            "progress": 0,
+                            "updated_at": _now_iso(),
+                            "fingerprint": str(timeout_fingerprint),
+                        },
+                        limit=ORGANIZER_TASK_LIMIT,
+                    )
+                _append_organizer_log(
+                    "worker_timeout",
+                    source=source_path_text,
+                    timeout_seconds=ORGANIZER_WORKER_TIMEOUT_SECONDS,
+                )
+                self._worker_process = None
+                self._worker_source_path = ""
+                self._worker_started_at = 0.0
+                self._last_worker_finished_at = time.time()
             return
         _append_organizer_log(
             "worker_exited",
@@ -259,6 +301,8 @@ class LocalOrganizerService:
         )
         self._worker_process = None
         self._worker_source_path = ""
+        self._worker_started_at = 0.0
+        self._last_worker_finished_at = time.time()
 
     def _spawn_worker(
         self,
@@ -290,6 +334,7 @@ class LocalOrganizerService:
             text=True,
         )
         self._worker_source_path = source_path.as_posix()
+        self._worker_started_at = time.time()
         _append_organizer_log(
             "worker_started",
             source=self._worker_source_path,
@@ -383,6 +428,31 @@ class LocalOrganizerService:
                         bytes_since_pause = 0
         return digest.hexdigest()
 
+    def _zip_manifest_signature(self, path: Path) -> str:
+        try:
+            with zipfile.ZipFile(path) as archive:
+                parts: list[str] = []
+                for info in archive.infolist():
+                    if info.is_dir():
+                        continue
+                    parts.append(
+                        "|".join(
+                            [
+                                info.filename.lower(),
+                                str(int(info.file_size or 0)),
+                                str(int(info.CRC or 0)),
+                                str(int(getattr(info, "compress_size", 0) or 0)),
+                            ]
+                        )
+                    )
+        except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile):
+            return ""
+
+        if not parts:
+            return ""
+        parts.sort()
+        return f"zipmeta:{hashlib.sha1(chr(10).join(parts).encode('utf-8', errors='ignore')).hexdigest()}"
+
     def _parse_3mf_metadata(self, source_path: Path) -> dict[str, str]:
         metadata: dict[str, str] = {}
         try:
@@ -474,7 +544,7 @@ class LocalOrganizerService:
             return f"design_profile:{design_profile_id}"
         file_hash = str(analysis.get("file_hash") or "").strip()
         if file_hash:
-            return f"sha256:{file_hash}"
+            return file_hash if ":" in file_hash else f"sha256:{file_hash}"
         return ""
 
     def _inspect_3mf(self, source_path: Path) -> dict[str, Any]:
@@ -483,7 +553,7 @@ class LocalOrganizerService:
         design_profile_id = str(metadata.get("DesignProfileId") or "").strip()
         file_hash = ""
         if not design_profile_id:
-            file_hash = self._sha256_file(source_path)
+            file_hash = self._zip_manifest_signature(source_path) or self._sha256_file(source_path)
         model_title = str(metadata.get("Title") or source_path.stem).strip() or source_path.stem
         profile_title = str(metadata.get("ProfileTitle") or model_title).strip() or model_title
         designer = str(metadata.get("Designer") or metadata.get("ProfileUserName") or "").strip()
@@ -731,7 +801,7 @@ class LocalOrganizerService:
             elif config_fingerprint:
                 key = config_fingerprint
             elif file_hash:
-                key = f"sha256:{file_hash}"
+                key = file_hash if ":" in file_hash else f"sha256:{file_hash}"
 
             if not key:
                 continue
@@ -755,7 +825,7 @@ class LocalOrganizerService:
         if not top_key:
             top_hash = str(local_import.get("fileHash") or "").strip()
             if top_hash:
-                top_key = f"sha256:{top_hash}"
+                top_key = top_hash if ":" in top_hash else f"sha256:{top_hash}"
         if top_key:
             entries.append(
                 (
