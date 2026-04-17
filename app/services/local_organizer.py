@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 from app.core.settings import ARCHIVE_DIR, LOGS_DIR, STATE_DIR
 from app.core.store import JsonStore
+from app.services.catalog import invalidate_archive_snapshot
 from app.services.legacy_archiver import sanitize_filename
 from app.services.task_state import TaskStateStore
 
@@ -953,6 +954,7 @@ class LocalOrganizerService:
                 json.dumps(meta, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+            invalidate_archive_snapshot("local_organizer_success")
 
             self.task_store.upsert_organize_task(
                 {

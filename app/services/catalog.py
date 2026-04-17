@@ -1,6 +1,7 @@
 import json
 import mimetypes
 import shutil
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +24,85 @@ SOURCE_LABELS = {
 }
 
 LEGACY_CURL_FAILURE_MARKER = "No such file or directory: 'curl'"
+_ARCHIVE_SNAPSHOT_LOCK = threading.RLock()
+_ARCHIVE_SNAPSHOT_CACHE: dict[str, Any] = {
+    "snapshot": None,
+    "dirty": True,
+    "dirty_reason": "startup",
+    "built_at": 0.0,
+}
+
+
+def invalidate_archive_snapshot(reason: str = "") -> None:
+    with _ARCHIVE_SNAPSHOT_LOCK:
+        _ARCHIVE_SNAPSHOT_CACHE["dirty"] = True
+        if reason:
+            _ARCHIVE_SNAPSHOT_CACHE["dirty_reason"] = reason
+
+
+def _clone_model_items(items: list[dict]) -> list[dict]:
+    return [item.copy() for item in items]
+
+
+def _build_archive_snapshot() -> dict[str, Any]:
+    models: list[dict] = []
+    tags: set[str] = set()
+    source_counts = {
+        "all": 0,
+        "cn": 0,
+        "global": 0,
+        "local": 0,
+    }
+    archived_keys: set[str] = set()
+    archived_model_ids: set[str] = set()
+    archived_urls: set[str] = set()
+
+    for meta_path in sorted(ARCHIVE_DIR.rglob("meta.json")):
+        if not meta_path.is_file():
+            continue
+        model = _normalize_model(meta_path, include_detail=False)
+        if not model:
+            continue
+
+        models.append(model)
+        source_counts["all"] += 1
+        source = str(model.get("source") or "").strip().lower()
+        if source in source_counts:
+            source_counts[source] += 1
+        tags.update(str(tag_value) for tag_value in model.get("tags") or [] if str(tag_value).strip())
+
+        model_id = str(model.get("id") or "").strip()
+        if model_id:
+            archived_model_ids.add(model_id)
+            archived_keys.add(f"model:{model_id}")
+
+        origin_url = normalize_source_url(str(model.get("origin_url") or "").strip())
+        if origin_url:
+            archived_urls.add(origin_url)
+            archived_keys.add(origin_url)
+
+    collect_sorted = _sort_models(models, "collectDate")
+    return {
+        "models": tuple(models),
+        "collect_sorted": tuple(collect_sorted),
+        "tags": tuple(sorted(tags)),
+        "source_counts": source_counts,
+        "archived_keys": frozenset(archived_keys),
+        "archived_model_ids": frozenset(archived_model_ids),
+        "archived_urls": frozenset(archived_urls),
+        "total": len(models),
+    }
+
+
+def get_archive_snapshot(force: bool = False) -> dict[str, Any]:
+    with _ARCHIVE_SNAPSHOT_LOCK:
+        snapshot = _ARCHIVE_SNAPSHOT_CACHE.get("snapshot")
+        if force or snapshot is None or _ARCHIVE_SNAPSHOT_CACHE.get("dirty", False):
+            snapshot = _build_archive_snapshot()
+            _ARCHIVE_SNAPSHOT_CACHE["snapshot"] = snapshot
+            _ARCHIVE_SNAPSHOT_CACHE["dirty"] = False
+            _ARCHIVE_SNAPSHOT_CACHE["built_at"] = time.time()
+        return snapshot
 
 
 def _safe_int(value: Any) -> int:
@@ -160,23 +240,15 @@ def _failure_identity(item: dict) -> tuple[str, str]:
 
 def _prune_recent_failures(
     archive_queue: dict,
-    archive_models: list[dict],
+    archive_snapshot: dict[str, Any],
     missing_items: list[dict],
 ) -> dict:
     recent_failures = list(archive_queue.get("recent_failures") or [])
     if not recent_failures:
         return archive_queue
 
-    archived_model_ids = {
-        str(item.get("id") or "").strip()
-        for item in archive_models
-        if str(item.get("id") or "").strip()
-    }
-    archived_urls = {
-        normalize_source_url(str(item.get("origin_url") or "").strip())
-        for item in archive_models
-        if str(item.get("origin_url") or "").strip()
-    }
+    archived_model_ids = set(archive_snapshot.get("archived_model_ids") or [])
+    archived_urls = set(archive_snapshot.get("archived_urls") or [])
     pending_missing_ids = {
         str(item.get("model_id") or "").strip()
         for item in missing_items
@@ -786,6 +858,10 @@ def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[
 
 
 def load_archive_models(include_detail: bool = False) -> list[dict]:
+    if not include_detail:
+        snapshot = get_archive_snapshot()
+        return _clone_model_items(list(snapshot.get("models") or []))
+
     models = []
     for meta_path in sorted(ARCHIVE_DIR.rglob("meta.json")):
         if not meta_path.is_file():
@@ -886,7 +962,8 @@ def build_models_payload(
     page: int = 1,
     page_size: int = 8,
 ) -> dict:
-    all_models = load_archive_models(include_detail=False)
+    archive_snapshot = get_archive_snapshot()
+    all_models = _clone_model_items(list(archive_snapshot.get("models") or []))
     all_models = _apply_model_flags(all_models)
     all_models = _apply_subscription_flags(all_models)
     normalized_query = q.strip().lower()
@@ -922,13 +999,8 @@ def build_models_payload(
     end = start + safe_page_size
     paged_items = items[start:end]
 
-    all_tags = sorted({tag_value for model in all_models for tag_value in model["tags"]})
-    source_counts = {
-        "all": len(all_models),
-        "cn": len([item for item in all_models if item["source"] == "cn"]),
-        "global": len([item for item in all_models if item["source"] == "global"]),
-        "local": len([item for item in all_models if item["source"] == "local"]),
-    }
+    all_tags = list(archive_snapshot.get("tags") or [])
+    source_counts = dict(archive_snapshot.get("source_counts") or {})
 
     return {
         "items": paged_items,
@@ -1026,23 +1098,29 @@ def delete_archived_models(model_dirs: list[str]) -> dict:
             }
         )
 
-    return {
+    result = {
         "removed": removed,
         "skipped": skipped,
         "removed_count": len(removed),
         "skipped_count": len(skipped),
         "sidecar_removed_count": sum(item.get("sidecar_removed_count", 0) for item in removed),
     }
+    if result["removed_count"] > 0:
+        invalidate_archive_snapshot("delete_archived_models")
+    return result
 
 
-def build_tasks_payload(missing_fallback: Optional[list[dict]] = None) -> dict:
+def build_tasks_payload(
+    missing_fallback: Optional[list[dict]] = None,
+    archive_snapshot: Optional[dict[str, Any]] = None,
+) -> dict:
     store = TaskStateStore()
     archive_queue = store.load_archive_queue()
     missing_3mf = store.load_missing_3mf(fallback_items=missing_fallback)
-    archive_models = load_archive_models(include_detail=False)
+    snapshot = archive_snapshot or get_archive_snapshot()
     archive_queue = _prune_recent_failures(
         archive_queue,
-        archive_models,
+        snapshot,
         missing_3mf.get("items") or [],
     )
     organize_tasks = store.load_organize_tasks()
@@ -1062,12 +1140,14 @@ def build_tasks_payload(missing_fallback: Optional[list[dict]] = None) -> dict:
 
 
 def build_dashboard_payload(config) -> dict:
-    all_models = _sort_models(load_archive_models(include_detail=False), "collectDate")
+    archive_snapshot = get_archive_snapshot()
+    all_models = _clone_model_items(list(archive_snapshot.get("collect_sorted") or []))
     tasks_payload = build_tasks_payload(
         missing_fallback=[
             item.model_dump() if hasattr(item, "model_dump") else item
             for item in getattr(config, "missing_3mf", [])
-        ]
+        ],
+        archive_snapshot=archive_snapshot,
     )
     now = int(time.time())
     seven_days_ago = now - 7 * 24 * 60 * 60
@@ -1091,12 +1171,12 @@ def build_dashboard_payload(config) -> dict:
         },
     ]
 
-    recent_models = sorted(all_models, key=lambda item: item["collect_ts"], reverse=True)[:8]
+    recent_models = _clone_model_items(all_models[:8])
     recent_week_count = len([item for item in all_models if item["collect_ts"] >= seven_days_ago])
 
     return {
         "stats": [
-            {"label": "模型总数", "value": len(all_models), "hint": "来自 /app/archive/**/meta.json"},
+            {"label": "模型总数", "value": int(archive_snapshot.get("total") or len(all_models)), "hint": "来自 /app/archive/**/meta.json"},
             {"label": "最近 7 天新增", "value": recent_week_count, "hint": "按 collectDate 统计"},
             {"label": "缺失 3MF", "value": tasks_payload["missing_3mf"]["count"], "hint": "等待重新下载"},
             {

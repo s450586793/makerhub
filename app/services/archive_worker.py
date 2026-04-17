@@ -11,13 +11,14 @@ from urllib.parse import urlparse
 from app.core.settings import ARCHIVE_DIR, LOGS_DIR
 from app.core.store import JsonStore
 from app.services.batch_discovery import discover_batch_model_urls, extract_model_id, normalize_model_url, normalize_source_url
-from app.services.catalog import load_archive_models
+from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot
 from app.services.legacy_archiver import archive_model as legacy_archive_model
 from app.services.task_state import TaskStateStore
 
 BATCH_TASK_MODES = {"author_upload", "collection_models"}
 BATCH_QUEUE_LOG_PATH = LOGS_DIR / "batch_queue.log"
 MAX_BATCH_CHILD_REQUEUE_ATTEMPTS = 3
+ACTIVE_BATCH_IDLE_POLL_SECONDS = 2.0
 
 
 def detect_archive_mode(url: str) -> str:
@@ -164,16 +165,8 @@ class ArchiveTaskManager:
         return {_queue_item_key(item) for item in items if item.get("url") or item.get("title")}
 
     def _archived_task_keys(self) -> set[str]:
-        keys = set()
-        for item in load_archive_models(include_detail=False):
-            model_id = str(item.get("id") or "").strip()
-            if model_id:
-                keys.add(f"model:{model_id}")
-                continue
-            origin_url = str(item.get("origin_url") or "").strip()
-            if origin_url:
-                keys.add(_task_key(origin_url))
-        return keys
+        snapshot = get_archive_snapshot()
+        return set(snapshot.get("archived_keys") or [])
 
     def _queue_state_snapshot(self) -> dict[str, Any]:
         queue = self.task_store.load_archive_queue()
@@ -266,6 +259,11 @@ class ArchiveTaskManager:
             expected_items = self._normalize_batch_expected_items(meta.get("batch_expected_items"))
             if not expected_items:
                 continue
+            previous_batch_progress = (
+                dict(meta.get("batch_progress") or {})
+                if isinstance(meta.get("batch_progress"), dict)
+                else {}
+            )
 
             completed_count = 0
             running_count = 0
@@ -366,6 +364,7 @@ class ArchiveTaskManager:
                 "queued": queued_count,
                 "remaining": remaining_count,
             }
+            progress_changed = previous_batch_progress != meta["batch_progress"]
 
             if done_count >= total_expected and running_count == 0 and queued_count == 0:
                 summary = (
@@ -392,7 +391,7 @@ class ArchiveTaskManager:
                 f"批量归档执行中：成功 {completed_count}/{total_expected}，"
                 f"运行中 {running_count}，排队中 {queued_count}，失败 {failed_count}。"
             )
-            if updated or str(batch_task.get("message") or "") != message:
+            if updated or progress_changed or str(batch_task.get("message") or "") != message:
                 self.task_store.update_active_task(
                     batch_id,
                     progress=min(progress, 99),
@@ -818,7 +817,7 @@ class ArchiveTaskManager:
             queued = queue.get("queued") or []
             if not queued:
                 if has_active_batch:
-                    time.sleep(0.2)
+                    time.sleep(ACTIVE_BATCH_IDLE_POLL_SECONDS)
                     continue
                 return
 
@@ -1100,6 +1099,7 @@ class ArchiveTaskManager:
             resolved_model_id,
             url=normalize_source_url(url),
         )
+        invalidate_archive_snapshot("archive_worker_single_task_completed")
 
         self.task_store.update_active_task(
             task_id,
