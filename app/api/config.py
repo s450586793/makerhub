@@ -21,6 +21,7 @@ from app.schemas.models import (
     ModelFlagUpdateRequest,
     NotificationConfig,
     ProxyConfig,
+    RemoteRefreshConfig,
     SubscriptionCreateRequest,
     SubscriptionUpdateRequest,
     ThemeSettingsUpdate,
@@ -39,6 +40,7 @@ from app.services.crawler import LegacyCrawlerBridge
 from app.services.business_logs import append_business_log, read_log_entries
 from app.services.local_organizer import LocalOrganizerService
 from app.services.model_attachments import create_manual_attachment, delete_manual_attachment
+from app.services.remote_refresh import RemoteRefreshManager
 from app.services.auth import AuthManager
 from app.services.subscriptions import SubscriptionManager
 from app.services.task_state import TaskStateStore
@@ -56,6 +58,10 @@ subscription_manager = SubscriptionManager(
     task_store=task_state_store,
 )
 local_organizer = LocalOrganizerService(
+    store=store,
+    task_store=task_state_store,
+)
+remote_refresh_manager = RemoteRefreshManager(
     store=store,
     task_store=task_state_store,
 )
@@ -423,6 +429,8 @@ def _public_config_payload(config) -> dict:
         "subscriptions": [item.model_dump() for item in config.subscriptions],
         "missing_3mf": [item.model_dump() for item in config.missing_3mf],
         "organizer": config.organizer.model_dump(),
+        "remote_refresh": config.remote_refresh.model_dump(),
+        "remote_refresh_state": task_state_store.load_remote_refresh_state(),
         "paths": config.paths.model_dump(),
     }
 
@@ -584,6 +592,25 @@ async def save_organizer(payload: OrganizeTask, request: Request):
         move_files=payload.move_files,
     )
     return _with_version_status(_public_config_payload(store.save(config)), await _get_github_version_status())
+
+
+@router.post("/config/remote-refresh")
+async def save_remote_refresh(payload: RemoteRefreshConfig, request: Request):
+    _require_session_auth(request)
+    config = store.load()
+    config.remote_refresh = payload
+    store.save(config)
+    state = remote_refresh_manager.notify_config_updated()
+    append_business_log(
+        "settings",
+        "remote_refresh_saved",
+        "远端刷新设置已保存。",
+        enabled=payload.enabled,
+        cron=payload.cron,
+        batch_size=payload.batch_size,
+        next_run_at=state.get("next_run_at"),
+    )
+    return _with_version_status(_public_config_payload(config), await _get_github_version_status())
 
 
 @router.get("/dashboard")
@@ -775,6 +802,15 @@ async def get_tasks_data():
     config = store.load()
     fallback_items = [item.model_dump() for item in config.missing_3mf]
     return build_tasks_payload(missing_fallback=fallback_items)
+
+
+@router.get("/remote-refresh")
+async def get_remote_refresh_data():
+    config = store.load()
+    return {
+        "config": config.remote_refresh.model_dump(),
+        "state": remote_refresh_manager.state_payload(),
+    }
 
 
 @router.post("/tasks/organize/clear")

@@ -434,6 +434,21 @@ def _normalize_stats(meta: dict) -> dict:
     }
 
 
+def _normalize_remote_sync(meta: dict) -> dict:
+    remote_sync = meta.get("remoteSync") if isinstance(meta.get("remoteSync"), dict) else {}
+    return {
+        "enabled": bool(remote_sync.get("enabled", False)),
+        "last_checked_at": str(remote_sync.get("lastCheckedAt") or ""),
+        "last_success_at": str(remote_sync.get("lastSuccessAt") or ""),
+        "last_error_at": str(remote_sync.get("lastErrorAt") or ""),
+        "last_status": str(remote_sync.get("lastStatus") or ""),
+        "last_message": str(remote_sync.get("lastMessage") or ""),
+        "source_deleted": bool(remote_sync.get("sourceDeleted", False)),
+        "source_deleted_at": str(remote_sync.get("sourceDeletedAt") or ""),
+        "consecutive_errors": _safe_int(remote_sync.get("consecutiveErrors") or 0),
+    }
+
+
 def _format_duration(value: Any) -> str:
     if value in ("", None):
         return ""
@@ -591,6 +606,9 @@ def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
                 "file_name": str(item.get("fileName") or item.get("name") or ""),
                 "file_available": bool(file_url),
                 "file_status_message": file_status_message,
+                "source_deleted": bool(item.get("sourceDeleted", False)),
+                "source_deleted_at": _format_datetime(item.get("sourceDeletedAt")),
+                "source_deleted_message": str(item.get("sourceDeletedMessage") or ""),
             }
         )
     return normalized
@@ -868,6 +886,7 @@ def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[
         "collect_date": _format_date(meta.get("collectDate") or meta.get("update_time")),
         "publish_ts": publish_ts,
         "publish_date": _format_date(publish_value),
+        "remote_sync": _normalize_remote_sync(meta),
     }
     if not include_detail:
         return payload
@@ -980,6 +999,17 @@ def _apply_subscription_flags(items: list[dict]) -> list[dict]:
                     continue
                 seen_source_ids.add(source_id)
                 deleted_sources.append(source)
+
+        remote_sync = item.get("remote_sync") if isinstance(item.get("remote_sync"), dict) else {}
+        if remote_sync.get("source_deleted"):
+            deleted_sources.append(
+                {
+                    "id": "remote_refresh",
+                    "name": "远端刷新",
+                    "mode": "remote_refresh",
+                    "url": origin_url or "",
+                }
+            )
 
         item["subscription_flags"] = {
             "deleted_on_source": bool(deleted_sources),
@@ -1217,6 +1247,7 @@ def build_tasks_payload(
         missing_3mf.get("items") or [],
     )
     organize_tasks = store.load_organize_tasks()
+    remote_refresh = store.load_remote_refresh_state()
     active_organize_count = _count_active_organize_tasks(organize_tasks)
     organize_tasks["active_count"] = active_organize_count
     organize_tasks["queued_count"] = int(organize_tasks.get("queued_count") or 0)
@@ -1227,6 +1258,7 @@ def build_tasks_payload(
         "archive_queue": archive_queue,
         "missing_3mf": missing_3mf,
         "organize_tasks": organize_tasks,
+        "remote_refresh": remote_refresh,
         "summary": {
             "running_or_queued": archive_queue["running_count"] + archive_queue["queued_count"],
             "missing_3mf_count": missing_3mf["count"],

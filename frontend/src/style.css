@@ -673,6 +673,11 @@
   background: rgba(239, 68, 68, 0.1);
 }
 
+.mw-profile-card__meta-item--danger {
+  color: var(--danger);
+  font-weight: 700;
+}
+
 .gallery-card__stats {
   padding: 12px 14px;
   border: 1px solid var(--border);

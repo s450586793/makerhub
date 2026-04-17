@@ -12,6 +12,7 @@ MISSING_3MF_PATH = STATE_DIR / "missing_3mf.json"
 ORGANIZE_TASKS_PATH = STATE_DIR / "organize_tasks.json"
 MODEL_FLAGS_PATH = STATE_DIR / "model_flags.json"
 SUBSCRIPTIONS_STATE_PATH = STATE_DIR / "subscriptions_state.json"
+REMOTE_REFRESH_STATE_PATH = STATE_DIR / "remote_refresh_state.json"
 _STATE_LOCK = threading.RLock()
 
 
@@ -355,6 +356,30 @@ def _normalize_subscription_state(payload: Any) -> dict:
     return {"items": normalized}
 
 
+def _normalize_remote_refresh_state(payload: Any) -> dict:
+    if not isinstance(payload, dict):
+        payload = {}
+
+    current_item = payload.get("current_item") if isinstance(payload.get("current_item"), dict) else {}
+    recent_items = payload.get("recent_items") if isinstance(payload.get("recent_items"), list) else []
+    normalized_recent = [_normalize_task_item(item, "idle") for item in recent_items if isinstance(item, (dict, str))]
+
+    return {
+        "status": str(payload.get("status") or "idle"),
+        "running": bool(payload.get("running", False)),
+        "next_run_at": str(payload.get("next_run_at") or ""),
+        "last_run_at": str(payload.get("last_run_at") or ""),
+        "last_success_at": str(payload.get("last_success_at") or ""),
+        "last_error_at": str(payload.get("last_error_at") or ""),
+        "last_message": str(payload.get("last_message") or ""),
+        "last_batch_total": _safe_int(payload.get("last_batch_total") or 0),
+        "last_batch_succeeded": _safe_int(payload.get("last_batch_succeeded") or 0),
+        "last_batch_failed": _safe_int(payload.get("last_batch_failed") or 0),
+        "current_item": _normalize_task_item(current_item, "running") if current_item else {},
+        "recent_items": normalized_recent[:20],
+    }
+
+
 class TaskStateStore:
     def __init__(self) -> None:
         ensure_app_dirs()
@@ -433,6 +458,26 @@ class TaskStateStore:
         state["count"] = len(state["items"])
         return state
 
+    def _load_remote_refresh_state_unlocked(self) -> dict:
+        payload = self._read_json(
+            REMOTE_REFRESH_STATE_PATH,
+            {
+                "status": "idle",
+                "running": False,
+                "next_run_at": "",
+                "last_run_at": "",
+                "last_success_at": "",
+                "last_error_at": "",
+                "last_message": "",
+                "last_batch_total": 0,
+                "last_batch_succeeded": 0,
+                "last_batch_failed": 0,
+                "current_item": {},
+                "recent_items": [],
+            },
+        )
+        return _normalize_remote_refresh_state(payload)
+
     def _load_organize_tasks_unlocked(self) -> dict:
         payload = self._read_json(ORGANIZE_TASKS_PATH, {"items": []})
         tasks = _normalize_organize_tasks(payload)
@@ -457,6 +502,11 @@ class TaskStateStore:
         self._write_json(SUBSCRIPTIONS_STATE_PATH, normalized)
         return self._load_subscriptions_state_unlocked()
 
+    def _save_remote_refresh_state_unlocked(self, payload: dict) -> dict:
+        normalized = _normalize_remote_refresh_state(payload)
+        self._write_json(REMOTE_REFRESH_STATE_PATH, normalized)
+        return self._load_remote_refresh_state_unlocked()
+
     def _update_subscriptions_state(self, updater) -> dict:
         with _STATE_LOCK:
             payload = self._load_subscriptions_state_unlocked()
@@ -464,6 +514,14 @@ class TaskStateStore:
             if updated is None:
                 updated = payload
             return self._save_subscriptions_state_unlocked(updated)
+
+    def _update_remote_refresh_state(self, updater) -> dict:
+        with _STATE_LOCK:
+            payload = self._load_remote_refresh_state_unlocked()
+            updated = updater(payload)
+            if updated is None:
+                updated = payload
+            return self._save_remote_refresh_state_unlocked(updated)
 
     def save_archive_queue(self, payload: dict) -> dict:
         with _STATE_LOCK:
@@ -496,6 +554,14 @@ class TaskStateStore:
     def load_subscriptions_state(self) -> dict:
         with _STATE_LOCK:
             return self._load_subscriptions_state_unlocked()
+
+    def save_remote_refresh_state(self, payload: dict) -> dict:
+        with _STATE_LOCK:
+            return self._save_remote_refresh_state_unlocked(payload)
+
+    def load_remote_refresh_state(self) -> dict:
+        with _STATE_LOCK:
+            return self._load_remote_refresh_state_unlocked()
 
     def save_model_flags(self, payload: dict) -> dict:
         with _STATE_LOCK:
@@ -942,3 +1008,39 @@ class TaskStateStore:
             return {"items": remaining}
 
         return self._update_subscriptions_state(_mutate)
+
+    def patch_remote_refresh_state(self, **changes: Any) -> dict:
+        def _mutate(payload: dict) -> dict:
+            merged = dict(_normalize_remote_refresh_state(payload))
+            for key, value in changes.items():
+                if value is None:
+                    continue
+                if key == "current_item":
+                    if isinstance(value, dict) and value:
+                        merged[key] = _normalize_task_item(value, "running")
+                    elif not value:
+                        merged[key] = {}
+                    continue
+                merged[key] = value
+            return merged
+
+        return self._update_remote_refresh_state(_mutate)
+
+    def append_remote_refresh_history(self, item: dict, limit: int = 20) -> dict:
+        normalized_list = _normalize_remote_refresh_state({"recent_items": [item]}).get("recent_items", [])
+        if not normalized_list:
+            return self.load_remote_refresh_state()
+        target = normalized_list[0]
+
+        def _mutate(payload: dict) -> dict:
+            recent_items = [target]
+            for existing in payload.get("recent_items") or []:
+                normalized = _normalize_task_item(existing, "idle")
+                if normalized["id"] and normalized["id"] == target["id"]:
+                    continue
+                recent_items.append(normalized)
+            normalized_payload = dict(payload)
+            normalized_payload["recent_items"] = recent_items[: max(int(limit or 0), 1)]
+            return normalized_payload
+
+        return self._update_remote_refresh_state(_mutate)

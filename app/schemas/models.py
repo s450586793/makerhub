@@ -129,6 +129,12 @@ class OrganizeTask(BaseModel):
     move_files: bool = True
 
 
+class RemoteRefreshConfig(BaseModel):
+    enabled: bool = True
+    cron: str = "0 */2 * * *"
+    batch_size: int = Field(default=12, ge=1, le=200)
+
+
 class SubscriptionRecord(BaseModel):
     id: str
     name: str = ""
@@ -199,4 +205,5 @@ class AppConfig(BaseModel):
     subscriptions: List[SubscriptionRecord] = Field(default_factory=list)
     missing_3mf: List[Missing3mfItem] = Field(default_factory=list)
     organizer: OrganizeTask = Field(default_factory=OrganizeTask)
+    remote_refresh: RemoteRefreshConfig = Field(default_factory=RemoteRefreshConfig)
     paths: RuntimePaths = Field(default_factory=RuntimePaths)

@@ -123,9 +123,9 @@ const authorInitial = computed(() => String(props.model.author?.name || "作").t
 const deletedSourceTitle = computed(() => {
   const items = props.model.subscription_flags?.deleted_sources || [];
   if (!items.length) {
-    return "订阅源已删除该模型";
+    return "源端已删除该模型";
   }
-  return `订阅源已删除该模型：${items.map((item) => item.name || item.url || "未命名订阅").join("、")}`;
+  return `源端已删除该模型：${items.map((item) => item.name || item.url || "未命名来源").join("、")}`;
 });
 
 function goDetail() {

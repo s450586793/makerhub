@@ -189,6 +189,9 @@
                   <div class="mw-profile-card__title">{{ profile.title }}</div>
                   <div class="mw-profile-card__meta">
                     <span class="mw-profile-card__badge">{{ profile.machine || "通用" }}</span>
+                    <span v-if="profile.source_deleted" class="mw-profile-card__meta-item mw-profile-card__meta-item--danger">
+                      已删除
+                    </span>
                     <span v-if="profile.time" class="mw-profile-card__meta-item">
                       <svg class="mw-profile-card__meta-icon" viewBox="0 0 16 17" fill="none">
                         <path d="M15 8.52342C15 4.64449 11.866 1.5 8 1.5V8.52342L12.9395 13.5C14.2123 12.2282 15 10.4681 15 8.52342Z" fill="currentColor" opacity=".24"></path>
@@ -261,12 +264,13 @@
                 <div class="mw-profile-popover__hero-body">
                   <div class="mw-profile-popover__eyebrow">打印配置</div>
                   <h3>{{ profile.title }}</h3>
-                  <div class="mw-profile-popover__meta">
-                    <span>{{ profile.machine || "通用" }}</span>
-                    <span v-if="profile.time">{{ profile.time }}</span>
-                    <span v-if="profile.publish_date">上传于 {{ profile.publish_date }}</span>
-                  </div>
+                <div class="mw-profile-popover__meta">
+                  <span>{{ profile.machine || "通用" }}</span>
+                  <span v-if="profile.time">{{ profile.time }}</span>
+                  <span v-if="profile.publish_date">上传于 {{ profile.publish_date }}</span>
+                  <span v-if="profile.source_deleted">源端已删除</span>
                 </div>
+              </div>
 
                 <div class="mw-profile-popover__stats">
                   <span class="mw-profile-popover__stat">
@@ -299,6 +303,9 @@
 
                 <p v-if="profile.file_status_message" class="mw-profile-popover__note">
                   {{ profile.file_status_message }}
+                </p>
+                <p v-if="profile.source_deleted_message" class="mw-profile-popover__note">
+                  {{ profile.source_deleted_message }}
                 </p>
               </section>
             </div>
@@ -605,9 +612,9 @@ const headCrumbs = computed(() => {
 const deletedSourceTitle = computed(() => {
   const items = detail.value?.subscription_flags?.deleted_sources || [];
   if (!items.length) {
-    return "订阅源已删除该模型";
+    return "源端已删除该模型";
   }
-  return `订阅源已删除该模型：${items.map((item) => item.name || item.url || "未命名订阅").join("、")}`;
+  return `源端已删除该模型：${items.map((item) => item.name || item.url || "未命名来源").join("、")}`;
 });
 
 const machineFilters = computed(() => {

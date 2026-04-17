@@ -207,6 +207,54 @@
     </div>
 
     <div v-show="activeTab === 'organizer'" class="settings-panel is-active">
+      <form class="settings-form token-card" @submit.prevent="saveRemoteRefresh">
+        <div class="section-card__header">
+          <div>
+            <span class="eyebrow">远端刷新</span>
+            <h2>远端刷新</h2>
+          </div>
+        </div>
+        <div class="settings-grid settings-grid--three">
+          <label class="field-card">
+            <span>启用远端刷新</span>
+            <label class="switch">
+              <input v-model="remoteRefreshForm.enabled" type="checkbox">
+              <span>默认开启。仅对模型库内已有远端来源链接的模型做增量刷新。</span>
+            </label>
+          </label>
+          <label class="field-card">
+            <span>Cron</span>
+            <input v-model.trim="remoteRefreshForm.cron" type="text" placeholder="0 */2 * * *">
+          </label>
+          <label class="field-card">
+            <span>单轮数量</span>
+            <input v-model.number="remoteRefreshForm.batch_size" type="number" min="1" max="200" placeholder="12">
+          </label>
+        </div>
+        <p class="archive-form__hint">
+          启用后会按计划分批刷新远端评论、附件与打印配置。已成功下载过的 3MF 不会重复下载。
+          如果模型总数较多，可以缩短 Cron 或增大单轮数量。
+        </p>
+        <div class="settings-grid settings-grid--three">
+          <label class="field-card">
+            <span>当前状态</span>
+            <strong>{{ formatRemoteRefreshStatus(remoteRefreshState.status) }}</strong>
+          </label>
+          <label class="field-card">
+            <span>下次运行</span>
+            <strong>{{ remoteRefreshState.next_run_at || "-" }}</strong>
+          </label>
+          <label class="field-card">
+            <span>上次结果</span>
+            <strong>{{ remoteRefreshState.last_message || "-" }}</strong>
+          </label>
+        </div>
+        <div class="form-footer">
+          <button class="button button-primary" type="submit">保存远端刷新设置</button>
+          <span class="form-status">{{ statuses.remote_refresh }}</span>
+        </div>
+      </form>
+
       <form class="settings-form" @submit.prevent="saveOrganizer">
         <div class="settings-grid settings-grid--two">
           <label class="field-card">
@@ -289,6 +337,11 @@ const organizerForm = reactive({
   target_dir: "",
   move_files: true,
 });
+const remoteRefreshForm = reactive({
+  enabled: true,
+  cron: "0 */2 * * *",
+  batch_size: 12,
+});
 const statuses = reactive({
   connections: "",
   cookie_cn: "",
@@ -299,6 +352,7 @@ const statuses = reactive({
   password: "",
   tokens: "",
   organizer: "",
+  remote_refresh: "",
   theme: "",
 });
 const testing = reactive({
@@ -308,6 +362,7 @@ const testing = reactive({
 });
 
 const config = computed(() => appState.config);
+const remoteRefreshState = computed(() => config.value?.remote_refresh_state || {});
 
 function applyConfigToForms(payload) {
   const cookies = {};
@@ -334,6 +389,9 @@ function applyConfigToForms(payload) {
   organizerForm.source_dir = payload.organizer?.source_dir || "";
   organizerForm.target_dir = payload.organizer?.target_dir || "";
   organizerForm.move_files = payload.organizer?.move_files !== false;
+  remoteRefreshForm.enabled = payload.remote_refresh?.enabled !== false;
+  remoteRefreshForm.cron = payload.remote_refresh?.cron || "0 */2 * * *";
+  remoteRefreshForm.batch_size = Number(payload.remote_refresh?.batch_size || 12);
   tokenItems.value = payload.api_tokens || [];
 }
 
@@ -342,6 +400,16 @@ function setActiveTab(tab) {
   if (route.query.tab !== activeTab.value) {
     router.replace({ path: "/settings", query: { tab: activeTab.value } });
   }
+}
+
+function formatRemoteRefreshStatus(value) {
+  const mapping = {
+    idle: "空闲",
+    running: "运行中",
+    error: "异常",
+    disabled: "已停用",
+  };
+  return mapping[String(value || "").trim()] || "空闲";
 }
 
 async function load() {
@@ -516,6 +584,23 @@ async function saveOrganizer() {
     statuses.organizer = "整理配置已保存。";
   } catch (error) {
     statuses.organizer = error instanceof Error ? error.message : "保存失败。";
+  }
+}
+
+async function saveRemoteRefresh() {
+  try {
+    await apiRequest("/api/config/remote-refresh", {
+      method: "POST",
+      body: {
+        enabled: remoteRefreshForm.enabled,
+        cron: remoteRefreshForm.cron,
+        batch_size: Number(remoteRefreshForm.batch_size || 12),
+      },
+    });
+    await refreshConfig();
+    statuses.remote_refresh = "远端刷新设置已保存。";
+  } catch (error) {
+    statuses.remote_refresh = error instanceof Error ? error.message : "保存失败。";
   }
 }
 
