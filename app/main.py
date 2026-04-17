@@ -12,6 +12,7 @@ from app.api.config import router as config_router
 from app.api.web import router as web_router
 from app.core.settings import APP_VERSION, ARCHIVE_DIR, FRONTEND_DIST_DIR, ROOT_DIR, ensure_app_dirs
 from app.services.auth import AuthManager
+from app.services.business_logs import append_business_log
 
 
 ensure_app_dirs()
@@ -26,6 +27,7 @@ SPA_SHELL_PATHS = {
     "/subscriptions",
     "/settings",
     "/tasks",
+    "/logs",
     "/detail-preview",
 }
 
@@ -64,6 +66,14 @@ async def resume_archive_queue() -> None:
     local_organizer.start()
     recovered_count = int(queue.get("recovered_count") or 0)
     queued_count = int(queue.get("queued_count") or 0)
+    append_business_log(
+        "system",
+        "app_started",
+        "makerhub 已启动。",
+        app_version=APP_VERSION,
+        queued_count=queued_count,
+        recovered_active=recovered_count,
+    )
     if queued_count:
         print(f"[makerhub] archive queue resumed queued={queued_count} recovered_active={recovered_count}", flush=True)
 

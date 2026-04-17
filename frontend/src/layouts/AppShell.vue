@@ -28,6 +28,7 @@
           <RouterLink :class="navClass('/subscriptions')" to="/subscriptions" @click="closeSidebar">订阅</RouterLink>
           <RouterLink :class="navClass('/settings')" to="/settings" @click="closeSidebar">设置</RouterLink>
           <RouterLink :class="navClass('/tasks')" to="/tasks" @click="closeSidebar">任务</RouterLink>
+          <RouterLink :class="navClass('/logs')" to="/logs" @click="closeSidebar">日志</RouterLink>
         </nav>
 
         <UserMenu

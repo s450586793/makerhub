@@ -15,6 +15,7 @@ from app.core.store import JsonStore
 from app.schemas.models import SubscriptionRecord
 from app.services.archive_worker import ArchiveTaskManager, detect_archive_mode
 from app.services.batch_discovery import discover_batch_model_urls, extract_model_id, normalize_source_url
+from app.services.business_logs import append_business_log
 from app.services.task_state import TaskStateStore
 
 
@@ -59,6 +60,15 @@ def _append_subscription_log(event: str, **payload: Any) -> None:
             )
     except Exception:
         return
+    if event in {"sync_start", "sync_done", "sync_error", "scheduler_error"}:
+        level = "error" if event in {"sync_error", "scheduler_error"} else "info"
+        message_map = {
+            "sync_start": "订阅同步开始。",
+            "sync_done": "订阅同步完成。",
+            "sync_error": "订阅同步失败。",
+            "scheduler_error": "订阅调度器异常。",
+        }
+        append_business_log("subscription", event, message_map.get(event, event), level=level, **payload)
 
 
 def _validate_cron(cron_expr: str) -> str:

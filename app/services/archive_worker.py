@@ -18,6 +18,7 @@ from app.services.batch_discovery import (
     normalize_source_url,
     resolve_batch_source_name,
 )
+from app.services.business_logs import append_business_log
 from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot
 from app.services.legacy_archiver import archive_model as legacy_archive_model
 from app.services.task_state import TaskStateStore
@@ -76,6 +77,10 @@ def _append_batch_queue_log(event: str, **payload: Any) -> None:
             )
     except Exception:
         return
+
+
+def _log_archive(event: str, message: str = "", level: str = "info", **payload: Any) -> None:
+    append_business_log("archive", event, message, level=level, **payload)
 
 
 @contextmanager
@@ -484,6 +489,7 @@ class ArchiveTaskManager:
     def _submit_single(self, clean_url: str, force: bool = False) -> dict:
         task_key = _task_key(clean_url)
         if task_key in self._queued_task_keys():
+            _log_archive("single_submit_skipped", "单模型已在归档队列中。", url=clean_url, task_key=task_key)
             return {
                 "accepted": False,
                 "message": "该模型已经在归档队列中。",
@@ -491,6 +497,7 @@ class ArchiveTaskManager:
                 "url": clean_url,
             }
         if not force and task_key in self._archived_task_keys():
+            _log_archive("single_submit_skipped", "单模型已归档，跳过重复提交。", url=clean_url, task_key=task_key)
             return {
                 "accepted": False,
                 "message": "该模型已归档，无需重复加入。",
@@ -501,6 +508,14 @@ class ArchiveTaskManager:
         queue_message = "等待归档" if not force else "等待重新下载缺失 3MF"
         task_id = self._enqueue_single_task(clean_url, message=queue_message, mode="single_model")
         self._ensure_worker()
+        _log_archive(
+            "single_submitted",
+            "单模型归档任务已入队。" if not force else "缺失 3MF 重新下载任务已入队。",
+            url=clean_url,
+            task_id=task_id,
+            task_key=task_key,
+            force=force,
+        )
         return {
             "accepted": True,
             "task_id": task_id,
@@ -515,6 +530,7 @@ class ArchiveTaskManager:
         if not clean_url and clean_model_id:
             clean_url = normalize_model_url(f"/zh/models/{clean_model_id}")
         if not clean_url:
+            _log_archive("missing_retry_rejected", "缺少可用模型链接，无法重新下载 3MF。", level="warning")
             return {
                 "accepted": False,
                 "message": "缺少可用模型链接，无法重新下载 3MF。",
@@ -523,6 +539,14 @@ class ArchiveTaskManager:
         config = self.store.load()
         if not _select_cookie(clean_url, config):
             message = "未找到可用 Cookie，请先到设置页配置对应站点 Cookie。"
+            _log_archive(
+                "missing_retry_rejected",
+                message,
+                level="warning",
+                model_id=clean_model_id,
+                model_url=clean_url,
+                instance_id=instance_id,
+            )
             self.task_store.update_missing_3mf_status(
                 model_id=clean_model_id,
                 title="" if clean_model_id else title,
@@ -580,6 +604,15 @@ class ArchiveTaskManager:
             model_url=clean_url,
         )
         removed = max(int(before.get("count") or 0) - int(after.get("count") or 0), 0)
+        append_business_log(
+            "missing_3mf",
+            "cancelled",
+            "缺失 3MF 任务已取消。" if removed else "没有找到可取消的缺失 3MF 任务。",
+            model_id=clean_model_id,
+            model_url=clean_url,
+            instance_id=clean_instance_id,
+            removed_count=removed,
+        )
         return {
             "success": removed > 0,
             "removed_count": removed,
@@ -610,6 +643,15 @@ class ArchiveTaskManager:
             else:
                 failed += 1
 
+        append_business_log(
+            "missing_3mf",
+            "retry_all_completed",
+            "缺失 3MF 全部重试处理完成。",
+            total=len(items),
+            accepted=accepted,
+            queued=queued,
+            failed=failed,
+        )
         return {
             "accepted": accepted > 0 or queued > 0,
             "accepted_count": accepted,
@@ -626,6 +668,7 @@ class ArchiveTaskManager:
         config = self.store.load()
         cookie = _select_cookie(clean_url, config)
         if not cookie:
+            _log_archive("batch_preview_rejected", "批量预扫描缺少 Cookie。", level="warning", url=clean_url, mode=mode)
             return {
                 "accepted": False,
                 "message": "未找到可用 Cookie，请先到设置页配置对应站点 Cookie。",
@@ -635,6 +678,7 @@ class ArchiveTaskManager:
 
         batch_task_key = _task_key(clean_url)
         if batch_task_key in self._queued_task_keys():
+            _log_archive("batch_preview_skipped", "批量归档任务已在队列中。", url=clean_url, mode=mode)
             return {
                 "accepted": False,
                 "mode": mode,
@@ -643,12 +687,14 @@ class ArchiveTaskManager:
             }
 
         with _temporary_proxy_env(config):
+            _log_archive("batch_preview_started", "开始批量预扫描。", url=clean_url, mode=mode)
             discovered = discover_batch_model_urls(clean_url, cookie)
             discovered["source_name"] = resolve_batch_source_name(clean_url, cookie)
 
         discovered_items = list(discovered.get("items") or [])
         discovered_count = len(discovered_items)
         if discovered_count <= 0:
+            _log_archive("batch_preview_empty", "批量预扫描没有发现可归档模型。", level="warning", url=clean_url, mode=mode)
             return {
                 "accepted": False,
                 "mode": mode,
@@ -676,6 +722,19 @@ class ArchiveTaskManager:
         if isinstance(expected_total, int) and expected_total > discovered_count:
             total_hint = f"，站点标记总数 {expected_total}"
 
+        _log_archive(
+            "batch_preview_done",
+            f"批量预扫描完成，发现 {discovered_count} 个模型。",
+            url=clean_url,
+            mode=mode,
+            discovered_count=discovered_count,
+            expected_total=expected_total,
+            new_count=new_count,
+            queued_count=queued_count,
+            archived_count=archived_count,
+            pages_scanned=discovered.get("pages_scanned"),
+            scan_mode=discovered.get("mode") or "",
+        )
         return {
             "accepted": True,
             "mode": mode,
@@ -699,6 +758,7 @@ class ArchiveTaskManager:
         config = self.store.load()
         cookie = _select_cookie(clean_url, config)
         if not cookie:
+            _log_archive("batch_submit_rejected", "批量提交缺少 Cookie。", level="warning", url=clean_url, mode=mode)
             return {
                 "accepted": False,
                 "message": "未找到可用 Cookie，请先到设置页配置对应站点 Cookie。",
@@ -708,6 +768,7 @@ class ArchiveTaskManager:
 
         batch_task_key = _task_key(clean_url)
         if batch_task_key in self._queued_task_keys():
+            _log_archive("batch_submit_skipped", "批量归档任务已在队列中。", url=clean_url, mode=mode)
             return {
                 "accepted": False,
                 "mode": mode,
@@ -717,6 +778,7 @@ class ArchiveTaskManager:
 
         preview = self._consume_batch_preview(preview_token, clean_url, mode)
         if preview_token and preview is None:
+            _log_archive("batch_submit_rejected", "批量预扫描结果已失效。", level="warning", url=clean_url, mode=mode)
             return {
                 "accepted": False,
                 "mode": mode,
@@ -742,6 +804,15 @@ class ArchiveTaskManager:
             },
         )
         self._ensure_worker()
+        _log_archive(
+            "batch_submitted",
+            "批量归档任务已入队。",
+            url=clean_url,
+            mode=mode,
+            task_id=task_id,
+            preview_count=preview_count,
+            expected_total=(preview or {}).get("expected_total"),
+        )
         return {
             "accepted": True,
             "task_id": task_id,
@@ -770,6 +841,7 @@ class ArchiveTaskManager:
         clean_url = normalize_source_url(source_url)
         clean_mode = mode if mode in BATCH_TASK_MODES else detect_archive_mode(clean_url)
         if clean_mode not in BATCH_TASK_MODES:
+            _log_archive("discovered_batch_rejected", "订阅批量入队只支持作者页或收藏夹。", level="warning", url=clean_url, mode=clean_mode)
             return {
                 "accepted": False,
                 "message": "仅作者上传页或收藏夹页面支持批量归档。",
@@ -779,6 +851,7 @@ class ArchiveTaskManager:
 
         normalized_items = [normalize_source_url(item) for item in discovered_items or [] if normalize_source_url(item)]
         if not normalized_items:
+            _log_archive("discovered_batch_empty", "订阅同步没有新增模型需要入队。", url=clean_url, mode=clean_mode)
             return {
                 "accepted": False,
                 "message": "本次同步没有新增模型需要入队。",
@@ -801,6 +874,17 @@ class ArchiveTaskManager:
             },
         )
         self._ensure_worker()
+        _log_archive(
+            "discovered_batch_submitted",
+            f"订阅同步发现 {len(normalized_items)} 个新增模型，已创建批量任务。",
+            url=clean_url,
+            mode=clean_mode,
+            task_id=task_id,
+            queued_count=len(normalized_items),
+            expected_total=expected_total,
+            pages_scanned=pages_scanned,
+            scan_mode=scan_mode,
+        )
         return {
             "accepted": True,
             "task_id": task_id,
@@ -839,6 +923,13 @@ class ArchiveTaskManager:
             task_url = str(task.get("url") or "")
             self.task_store.start_archive_task(task_id)
             self.task_store.update_active_task(task_id, message="正在准备归档", progress=1)
+            _log_archive(
+                "task_started",
+                "归档任务开始执行。",
+                task_id=task_id,
+                url=task_url,
+                mode=str(task.get("mode") or "") or detect_archive_mode(task_url),
+            )
 
             try:
                 task_mode = str(task.get("mode") or "") or detect_archive_mode(task_url)
@@ -855,6 +946,14 @@ class ArchiveTaskManager:
                         message=str(exc),
                     )
                 self.task_store.fail_archive_task(task_id, str(exc))
+                _log_archive(
+                    "task_failed",
+                    str(exc),
+                    level="error",
+                    task_id=task_id,
+                    url=task_url,
+                    mode=str(task.get("mode") or "") or detect_archive_mode(task_url),
+                )
             finally:
                 self._refresh_batch_tasks()
 
@@ -884,11 +983,13 @@ class ArchiveTaskManager:
                 batch_url=url,
                 total=len(existing_expected_items),
             )
+            _log_archive("batch_resumed", "批量任务已恢复，继续等待子任务完成。", task_id=task_id, url=url, total=len(existing_expected_items))
             return
 
         preview_items = list(meta.get("discovered_items") or [])
         if preview_items:
             print(f"[makerhub] batch_discovery reuse_preview mode={mode} url={url} items={len(preview_items)}", flush=True)
+            _log_archive("batch_scan_reuse_preview", "使用预扫描结果执行批量归档。", task_id=task_id, url=url, mode=mode, items=len(preview_items))
             discovered = {
                 "items": preview_items,
                 "expected_total": meta.get("expected_total"),
@@ -902,6 +1003,7 @@ class ArchiveTaskManager:
             )
         else:
             print(f"[makerhub] batch_discovery start mode={mode} url={url}", flush=True)
+            _log_archive("batch_scan_started", "开始扫描批量归档链接。", task_id=task_id, url=url, mode=mode)
             self.task_store.update_active_task(
                 task_id,
                 progress=5,
@@ -1043,6 +1145,20 @@ class ArchiveTaskManager:
             skipped_pending=skipped_pending,
             skipped_archived=skipped_archived,
         )
+        _log_archive(
+            "batch_enqueued",
+            summary_message,
+            task_id=task_id,
+            url=url,
+            mode=mode,
+            discovered=total_items,
+            expected_total=expected_total,
+            queued=queued_count,
+            skipped_pending=skipped_pending,
+            skipped_archived=skipped_archived,
+            pages_scanned=discovered.get("pages_scanned") or 0,
+            scan_mode=discovered.get("mode") or "",
+        )
         if queued_count <= 0:
             self.task_store.update_active_task(
                 task_id,
@@ -1051,6 +1167,7 @@ class ArchiveTaskManager:
                 meta=meta,
             )
             self.task_store.complete_archive_task(task_id)
+            _log_archive("batch_completed_no_new", summary_message, task_id=task_id, url=url, mode=mode)
             return
 
         self.task_store.update_active_task(
@@ -1120,3 +1237,13 @@ class ArchiveTaskManager:
             message=f"归档完成：{result.get('base_name') or result.get('work_dir') or ''}",
         )
         self.task_store.complete_archive_task(task_id)
+        _log_archive(
+            "single_completed",
+            f"归档完成：{result.get('base_name') or result.get('work_dir') or ''}",
+            task_id=task_id,
+            url=url,
+            model_id=resolved_model_id,
+            base_name=result.get("base_name"),
+            work_dir=result.get("work_dir"),
+            missing_3mf_count=len(missing_items),
+        )

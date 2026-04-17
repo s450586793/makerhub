@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 from app.core.settings import ARCHIVE_DIR, LOGS_DIR, STATE_DIR
 from app.core.store import JsonStore
+from app.services.business_logs import append_business_log
 from app.services.catalog import invalidate_archive_snapshot
 from app.services.legacy_archiver import sanitize_filename
 from app.services.task_state import TaskStateStore
@@ -50,6 +51,30 @@ def _append_organizer_log(event: str, **payload) -> None:
             handle.write(json.dumps({"time": _now_iso(), "event": event, **payload}, ensure_ascii=False) + "\n")
     except OSError:
         return
+    if event in {
+        "worker_started",
+        "worker_timeout",
+        "worker_exited",
+        "duplicate_skipped",
+        "duplicate_skip_failed",
+        "organized",
+        "organize_failed",
+        "invalid_config",
+        "backlog_limited",
+    }:
+        level = "error" if event in {"worker_timeout", "duplicate_skip_failed", "organize_failed", "invalid_config"} else "info"
+        message_map = {
+            "worker_started": "本地整理 worker 已启动。",
+            "worker_timeout": "本地整理 worker 超时，已终止。",
+            "worker_exited": "本地整理 worker 已退出。",
+            "duplicate_skipped": "本地 3MF 与模型库现有配置重复，已跳过。",
+            "duplicate_skip_failed": "重复 3MF 处理失败。",
+            "organized": "本地 3MF 已整理入库。",
+            "organize_failed": "本地 3MF 整理失败。",
+            "invalid_config": "本地整理配置无效。",
+            "backlog_limited": "本地整理检测到积压，按单任务限流处理。",
+        }
+        append_business_log("organizer", event, message_map.get(event, event), level=level, **payload)
 
 
 def _task_id_from_fingerprint(fingerprint: str) -> str:

@@ -4,6 +4,7 @@ import AppShell from "./layouts/AppShell.vue";
 import DashboardPage from "./pages/DashboardPage.vue";
 import DetailPreviewPage from "./pages/DetailPreviewPage.vue";
 import LoginPage from "./pages/LoginPage.vue";
+import LogsPage from "./pages/LogsPage.vue";
 import ModelDetailPage from "./pages/ModelDetailPage.vue";
 import ModelsPage from "./pages/ModelsPage.vue";
 import SettingsPage from "./pages/SettingsPage.vue";
@@ -76,6 +77,14 @@ const routes = [
         component: TasksPage,
         meta: {
           title: "任务 | makerhub",
+        },
+      },
+      {
+        path: "logs",
+        name: "logs",
+        component: LogsPage,
+        meta: {
+          title: "日志 | makerhub",
         },
       },
       {

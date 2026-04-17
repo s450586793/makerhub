@@ -52,6 +52,11 @@ async def tasks_page(_: Request):
     return _serve_spa()
 
 
+@router.get("/logs", response_class=HTMLResponse)
+async def logs_page(_: Request):
+    return _serve_spa()
+
+
 @router.get("/detail-preview", response_class=HTMLResponse)
 async def detail_preview(_: Request):
     return _serve_spa()

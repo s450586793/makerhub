@@ -34,6 +34,7 @@ from app.services.catalog import (
     get_model_detail,
 )
 from app.services.crawler import LegacyCrawlerBridge
+from app.services.business_logs import append_business_log, read_log_entries
 from app.services.local_organizer import LocalOrganizerService
 from app.services.model_attachments import create_manual_attachment, delete_manual_attachment
 from app.services.auth import AuthManager
@@ -266,6 +267,13 @@ async def save_cookies(payload: list[CookiePair], request: Request):
     _require_session_auth(request)
     config = store.load()
     config.cookies = payload
+    append_business_log(
+        "settings",
+        "cookies_saved",
+        "Cookie 配置已保存。",
+        count=len(payload),
+        platforms=[item.platform for item in payload],
+    )
     return _with_version_status(_public_config_payload(store.save(config)), await _get_github_version_status())
 
 
@@ -274,6 +282,14 @@ async def save_proxy(payload: ProxyConfig, request: Request):
     _require_session_auth(request)
     config = store.load()
     config.proxy = payload
+    append_business_log(
+        "settings",
+        "proxy_saved",
+        "HTTP 代理配置已保存。",
+        enabled=payload.enabled,
+        has_http_proxy=bool(payload.http_proxy),
+        has_https_proxy=bool(payload.https_proxy),
+    )
     return _with_version_status(_public_config_payload(store.save(config)), await _get_github_version_status())
 
 
@@ -282,6 +298,7 @@ async def save_notifications(payload: NotificationConfig, request: Request):
     _require_session_auth(request)
     config = store.load()
     config.notifications = payload
+    append_business_log("settings", "notifications_saved", "通知配置已保存。", enabled=payload.enabled)
     return _with_version_status(_public_config_payload(store.save(config)), await _get_github_version_status())
 
 
@@ -292,6 +309,7 @@ async def save_user(payload: UserSettingsUpdate, request: Request):
     config.user.username = payload.username.strip() or "admin"
     config.user.display_name = payload.display_name.strip() or "Admin"
     config.user.password_hint = payload.password_hint.strip()
+    append_business_log("settings", "user_saved", "用户信息已保存。", username=config.user.username)
     return _with_version_status(_public_config_payload(store.save(config)), await _get_github_version_status())
 
 
@@ -300,6 +318,7 @@ async def save_theme(payload: ThemeSettingsUpdate, request: Request):
     _require_session_auth(request)
     config = store.load()
     config.user.theme_preference = payload.theme_preference
+    append_business_log("settings", "theme_saved", "主题设置已保存。", theme_preference=payload.theme_preference)
     return _with_version_status(_public_config_payload(store.save(config)), await _get_github_version_status())
 
 
@@ -308,6 +327,14 @@ async def save_organizer(payload: OrganizeTask, request: Request):
     _require_session_auth(request)
     config = store.load()
     config.organizer = payload
+    append_business_log(
+        "settings",
+        "organizer_saved",
+        "本地整理配置已保存。",
+        source_dir=payload.source_dir,
+        target_dir=payload.target_dir,
+        move_files=payload.move_files,
+    )
     return _with_version_status(_public_config_payload(store.save(config)), await _get_github_version_status())
 
 
@@ -376,6 +403,15 @@ async def upload_model_attachment(
     if detail is None:
         raise HTTPException(status_code=404, detail="模型不存在。")
 
+    append_business_log(
+        "model",
+        "attachment_uploaded",
+        "模型附件已上传。",
+        model_dir=model_dir,
+        attachment_id=attachment.get("id"),
+        attachment_name=attachment.get("name"),
+        category=category,
+    )
     return {
         "success": True,
         "attachment": attachment,
@@ -396,6 +432,14 @@ async def remove_model_attachment(model_dir: str, attachment_id: str, request: R
     if detail is None:
         raise HTTPException(status_code=404, detail="模型不存在。")
 
+    append_business_log(
+        "model",
+        "attachment_deleted",
+        "模型附件已删除。",
+        model_dir=model_dir,
+        attachment_id=attachment_id,
+        removed=removed,
+    )
     return {
         "success": True,
         "removed": removed,
@@ -423,6 +467,15 @@ async def delete_models(payload: ModelDeleteRequest, request: Request):
         if result.get("removed_count", 0)
         else "没有删除任何模型。"
     )
+    append_business_log(
+        "model",
+        "models_deleted",
+        result["message"],
+        requested_count=len(payload.model_dirs),
+        removed_count=result.get("removed_count", 0),
+        sidecar_removed_count=sidecar_count,
+        model_dirs=payload.model_dirs,
+    )
     return result
 
 
@@ -435,6 +488,13 @@ async def get_model_flags():
 async def update_model_favorite(payload: ModelFlagUpdateRequest, request: Request):
     _require_session_auth(request)
     flags = task_state_store.update_model_flag(payload.model_dir, "favorites", payload.value)
+    append_business_log(
+        "model",
+        "favorite_flag_updated",
+        "本地收藏标记已更新。",
+        model_dir=payload.model_dir,
+        value=payload.value,
+    )
     return {
         "success": True,
         "model_dir": payload.model_dir,
@@ -447,6 +507,13 @@ async def update_model_favorite(payload: ModelFlagUpdateRequest, request: Reques
 async def update_model_printed(payload: ModelFlagUpdateRequest, request: Request):
     _require_session_auth(request)
     flags = task_state_store.update_model_flag(payload.model_dir, "printed", payload.value)
+    append_business_log(
+        "model",
+        "printed_flag_updated",
+        "已打印标记已更新。",
+        model_dir=payload.model_dir,
+        value=payload.value,
+    )
     return {
         "success": True,
         "model_dir": payload.model_dir,
@@ -466,6 +533,7 @@ async def get_tasks_data():
 async def clear_organize_tasks(request: Request):
     _require_session_auth(request)
     cleared = task_state_store.save_organize_tasks({"items": []})
+    append_business_log("organizer", "tasks_cleared", "本地整理任务记录已清空。")
     return {
         "success": True,
         "message": "已清空本地整理任务记录。",
@@ -478,18 +546,38 @@ async def get_subscriptions_data():
     return subscription_manager.list_payload()
 
 
+@router.get("/logs")
+async def get_logs_data(
+    file: str = Query("business.log", description="日志文件名"),
+    limit: int = Query(300, ge=1, le=2000, description="最多返回行数"),
+    q: str = Query("", description="日志内容搜索"),
+):
+    return read_log_entries(file_name=file, limit=limit, query=q)
+
+
 @router.post("/subscriptions")
 async def create_subscription(payload: SubscriptionCreateRequest, request: Request):
     _require_session_auth(request)
     try:
-        return subscription_manager.create_subscription(
+        result = subscription_manager.create_subscription(
             url=payload.url,
             cron=payload.cron,
             name=payload.name,
             enabled=payload.enabled,
             initialize_from_source=payload.initialize_from_source,
         )
+        append_business_log(
+            "subscription",
+            "created",
+            result.get("message") or "订阅已创建。",
+            url=payload.url,
+            name=payload.name,
+            enabled=payload.enabled,
+            initialize_from_source=payload.initialize_from_source,
+        )
+        return result
     except (ValueError, RuntimeError) as exc:
+        append_business_log("subscription", "create_failed", str(exc), level="error", url=payload.url, name=payload.name)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -497,14 +585,32 @@ async def create_subscription(payload: SubscriptionCreateRequest, request: Reque
 async def update_subscription(subscription_id: str, payload: SubscriptionUpdateRequest, request: Request):
     _require_session_auth(request)
     try:
-        return subscription_manager.update_subscription(
+        result = subscription_manager.update_subscription(
             subscription_id,
             url=payload.url,
             name=payload.name,
             cron=payload.cron,
             enabled=payload.enabled,
         )
+        append_business_log(
+            "subscription",
+            "updated",
+            result.get("message") or "订阅已更新。",
+            subscription_id=subscription_id,
+            url=payload.url,
+            name=payload.name,
+            enabled=payload.enabled,
+        )
+        return result
     except (ValueError, RuntimeError) as exc:
+        append_business_log(
+            "subscription",
+            "update_failed",
+            str(exc),
+            level="error",
+            subscription_id=subscription_id,
+            url=payload.url,
+        )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -512,8 +618,16 @@ async def update_subscription(subscription_id: str, payload: SubscriptionUpdateR
 async def delete_subscription(subscription_id: str, request: Request):
     _require_session_auth(request)
     try:
-        return subscription_manager.delete_subscription(subscription_id)
+        result = subscription_manager.delete_subscription(subscription_id)
+        append_business_log(
+            "subscription",
+            "deleted",
+            result.get("message") or "订阅已删除。",
+            subscription_id=subscription_id,
+        )
+        return result
     except (ValueError, RuntimeError) as exc:
+        append_business_log("subscription", "delete_failed", str(exc), level="error", subscription_id=subscription_id)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -521,8 +635,16 @@ async def delete_subscription(subscription_id: str, request: Request):
 async def sync_subscription(subscription_id: str, request: Request):
     _require_session_auth(request)
     try:
-        return subscription_manager.request_sync(subscription_id)
+        result = subscription_manager.request_sync(subscription_id)
+        append_business_log(
+            "subscription",
+            "sync_requested",
+            result.get("message") or "订阅同步已触发。",
+            subscription_id=subscription_id,
+        )
+        return result
     except (ValueError, RuntimeError) as exc:
+        append_business_log("subscription", "sync_request_failed", str(exc), level="error", subscription_id=subscription_id)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -609,29 +731,59 @@ async def stream_archive_events(request: Request):
 @router.post("/tasks/missing-3mf/retry")
 async def retry_missing_3mf(payload: Missing3mfRetryRequest, request: Request):
     _require_session_auth(request)
-    return crawler.retry_missing_3mf(
+    result = crawler.retry_missing_3mf(
         model_url=payload.model_url,
         model_id=payload.model_id,
         title=payload.title,
         instance_id=payload.instance_id,
     )
+    append_business_log(
+        "missing_3mf",
+        "retry_requested",
+        result.get("message") or "缺失 3MF 重试已请求。",
+        accepted=bool(result.get("accepted")),
+        model_id=payload.model_id,
+        model_url=payload.model_url,
+        instance_id=payload.instance_id,
+    )
+    return result
 
 
 @router.post("/tasks/missing-3mf/retry-all")
 async def retry_all_missing_3mf(request: Request):
     _require_session_auth(request)
-    return crawler.retry_all_missing_3mf()
+    result = crawler.retry_all_missing_3mf()
+    append_business_log(
+        "missing_3mf",
+        "retry_all_requested",
+        result.get("message") or "缺失 3MF 全部重试已请求。",
+        accepted_count=result.get("accepted_count"),
+        queued_count=result.get("queued_count"),
+        failed_count=result.get("failed_count"),
+    )
+    return result
 
 
 @router.post("/tasks/missing-3mf/cancel")
 async def cancel_missing_3mf(payload: Missing3mfCancelRequest, request: Request):
     _require_session_auth(request)
-    return crawler.cancel_missing_3mf(
+    result = crawler.cancel_missing_3mf(
         model_url=payload.model_url,
         model_id=payload.model_id,
         title=payload.title,
         instance_id=payload.instance_id,
     )
+    append_business_log(
+        "missing_3mf",
+        "cancel_requested",
+        result.get("message") or "缺失 3MF 取消已请求。",
+        success=bool(result.get("success")),
+        removed_count=result.get("removed_count"),
+        model_id=payload.model_id,
+        model_url=payload.model_url,
+        instance_id=payload.instance_id,
+    )
+    return result
 
 
 @router.post("/archive")
@@ -683,9 +835,42 @@ async def archive_model(payload: ArchiveRequest):
                 f"{response.get('message') or '归档任务已加入队列。'} "
                 f"但订阅写入失败：{exc}"
             ).strip()
+            append_business_log(
+                "archive",
+                "archive_subscribe_failed",
+                str(exc),
+                level="error",
+                url=payload.url,
+                mode=archive_mode,
+            )
+    append_business_log(
+        "archive",
+        "archive_submitted",
+        response.get("message") or "归档提交完成。",
+        accepted=bool(response.get("accepted")),
+        url=payload.url,
+        mode=response.get("mode") or archive_mode,
+        task_id=response.get("task_id"),
+        create_subscription=payload.create_subscription,
+        subscription_created=response.get("subscription_created"),
+    )
     return response
 
 
 @router.post("/archive/preview")
 async def preview_archive_model(payload: ArchiveRequest):
-    return crawler.preview_archive(payload.url)
+    response = crawler.preview_archive(payload.url)
+    append_business_log(
+        "archive",
+        "archive_preview",
+        response.get("message") or "归档预扫描完成。",
+        accepted=bool(response.get("accepted")),
+        url=payload.url,
+        mode=response.get("mode"),
+        discovered_count=response.get("discovered_count"),
+        expected_total=response.get("expected_total"),
+        queued_count=response.get("queued_count"),
+        archived_count=response.get("archived_count"),
+        new_count=response.get("new_count"),
+    )
+    return response
