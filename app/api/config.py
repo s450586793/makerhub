@@ -25,7 +25,14 @@ from app.schemas.models import (
     UserSettingsUpdate,
 )
 from app.schemas.models import OrganizeTask
-from app.services.catalog import build_dashboard_payload, build_models_payload, build_tasks_payload, delete_archived_models, get_model_detail
+from app.services.catalog import (
+    build_dashboard_payload,
+    build_models_payload,
+    build_tasks_payload,
+    delete_archived_models,
+    get_model_comments_page,
+    get_model_detail,
+)
 from app.services.crawler import LegacyCrawlerBridge
 from app.services.local_organizer import LocalOrganizerService
 from app.services.model_attachments import create_manual_attachment, delete_manual_attachment
@@ -326,6 +333,18 @@ async def get_models_data(
         page=page,
         page_size=page_size,
     )
+
+
+@router.get("/models/{model_dir:path}/comments")
+async def get_model_detail_comments(
+    model_dir: str,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+):
+    payload = get_model_comments_page(model_dir, offset=offset, limit=limit)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="模型不存在。")
+    return payload
 
 
 @router.get("/models/{model_dir:path}")

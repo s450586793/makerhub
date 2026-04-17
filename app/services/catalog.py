@@ -29,6 +29,7 @@ SOURCE_LABELS = {
 }
 
 LEGACY_CURL_FAILURE_MARKER = "No such file or directory: 'curl'"
+DETAIL_COMMENTS_PAGE_SIZE = 20
 _ARCHIVE_SNAPSHOT_LOCK = threading.RLock()
 _ARCHIVE_SNAPSHOT_CACHE: dict[str, Any] = {
     "snapshot": None,
@@ -629,9 +630,12 @@ def _extract_publish_value(meta: dict) -> Any:
     return ""
 
 
-def _normalize_comments(meta: dict, model_root: Path) -> list[dict]:
+def _normalize_comments(meta: dict, model_root: Path, offset: int = 0, limit: Optional[int] = None) -> list[dict]:
     normalized = []
-    for item in meta.get("comments") or []:
+    comment_items = meta.get("comments") if isinstance(meta.get("comments"), list) else []
+    start = max(int(offset or 0), 0)
+    selected = comment_items[start:] if limit is None else comment_items[start : start + max(int(limit or 0), 0)]
+    for item in selected:
         if not isinstance(item, dict):
             continue
 
@@ -869,12 +873,17 @@ def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[
         return payload
 
     summary = meta.get("summary") if isinstance(meta.get("summary"), dict) else {}
+    raw_comments = meta.get("comments") if isinstance(meta.get("comments"), list) else []
+    initial_comments = _normalize_comments(meta, model_root, offset=0, limit=DETAIL_COMMENTS_PAGE_SIZE)
+    total_comments = max(len(raw_comments), _safe_int(stats.get("comments")))
     payload.update(
         {
             "gallery": gallery,
             "summary_html": _rewrite_summary_html(model_root, str(summary.get("html") or "")),
             "summary_text": str(summary.get("text") or summary.get("raw") or ""),
-            "comments": _normalize_comments(meta, model_root),
+            "comments": initial_comments,
+            "comments_total": total_comments,
+            "comments_next_offset": len(initial_comments) if len(raw_comments) > len(initial_comments) else None,
             "instances": _normalize_instances(meta, model_root),
             "attachments": _normalize_attachments(meta, model_root),
         }
@@ -1086,6 +1095,39 @@ def get_model_detail(model_dir: str, include_detail: bool = True) -> Optional[di
     _apply_model_flags([detail])
     _apply_subscription_flags([detail])
     return detail
+
+
+def get_model_comments_page(model_dir: str, offset: int = 0, limit: int = DETAIL_COMMENTS_PAGE_SIZE) -> Optional[dict]:
+    target = (ARCHIVE_DIR / model_dir).resolve()
+    try:
+        target.relative_to(ARCHIVE_DIR.resolve())
+    except ValueError:
+        return None
+
+    meta_path = target / "meta.json"
+    if not meta_path.exists():
+        return None
+
+    try:
+        meta = _read_json(meta_path)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    raw_comments = meta.get("comments") if isinstance(meta.get("comments"), list) else []
+    safe_offset = max(int(offset or 0), 0)
+    safe_limit = max(int(limit or 0), 1)
+    items = _normalize_comments(meta, target, offset=safe_offset, limit=safe_limit)
+    next_offset = safe_offset + len(items)
+    if next_offset >= len(raw_comments):
+        next_offset = None
+
+    return {
+        "items": items,
+        "offset": safe_offset,
+        "limit": safe_limit,
+        "next_offset": next_offset,
+        "total": max(len(raw_comments), _safe_int((_normalize_stats(meta) or {}).get("comments"))),
+    }
 
 
 def _delete_root_sidecar_files(archive_root: Path, model_dir: str) -> list[str]:

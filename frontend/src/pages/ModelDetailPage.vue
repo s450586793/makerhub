@@ -421,9 +421,9 @@
 
       <article id="detail-comments" class="mw-section-card">
         <div class="mw-section-card__header">
-          <h2>评论 &amp; 评分 ({{ detail.comments?.length || 0 }})</h2>
+          <h2>评论 &amp; 评分 ({{ commentsTotal }})</h2>
         </div>
-        <template v-if="detail.comments?.length">
+        <template v-if="commentsTotal > 0">
           <div v-if="commentsReady" class="comment-list">
             <article
               v-for="(comment, index) in visibleComments"
@@ -473,13 +473,14 @@
             <p class="empty-copy">正在分批加载评论内容…</p>
           </div>
           <div v-if="hasMoreComments" class="mw-comments-more">
-            <button class="button button-secondary" type="button" @click="loadMoreComments">
-              加载更多评论
+            <button class="button button-secondary" type="button" @click="loadMoreComments" :disabled="commentsLoadingMore">
+              {{ commentsLoadingMore ? "加载中..." : "加载更多评论" }}
             </button>
             <span class="mw-comments-more__meta">
-              已显示 {{ visibleComments.length }} / {{ detail.comments.length }}
+              已显示 {{ visibleComments.length }} / {{ commentsTotal }}
             </span>
           </div>
+          <p v-if="commentsLoadError" class="mw-comments-more__error">{{ commentsLoadError }}</p>
         </template>
         <p v-else class="empty-copy">当前没有同步到评论内容。</p>
       </article>
@@ -526,13 +527,17 @@ const profileEntryRefs = ref({});
 const popoverPlacementState = ref({});
 const popoverMediaState = ref({});
 const commentsReady = ref(false);
-const visibleCommentCount = ref(12);
+const comments = shallowRef([]);
+const commentsTotal = ref(0);
+const commentsNextOffset = ref(null);
+const commentsLoadingMore = ref(false);
+const commentsLoadError = ref("");
 
 let hoverPopoverMediaQuery = null;
 let hoverPopoverMediaListener = null;
 let commentsRenderFrame = 0;
 
-const INITIAL_COMMENT_BATCH = 12;
+const INITIAL_COMMENT_BATCH = 20;
 const STAT_FORMATTER = new Intl.NumberFormat("zh-CN");
 
 const attachmentForm = ref({
@@ -614,11 +619,11 @@ const visibleComments = computed(() => {
   if (!commentsReady.value) {
     return [];
   }
-  return (detail.value?.comments || []).slice(0, visibleCommentCount.value);
+  return comments.value;
 });
 
 const hasMoreComments = computed(() => {
-  return commentsReady.value && (detail.value?.comments?.length || 0) > visibleCommentCount.value;
+  return commentsReady.value && commentsNextOffset.value !== null;
 });
 
 const actionStats = computed(() => [
@@ -1031,23 +1036,24 @@ function prepareDetailPayload(payload) {
       })
     : [];
 
-  const comments = Array.isArray(payload.comments)
-    ? payload.comments.map((comment) => ({
-        ...comment,
-        gallery_class: commentGalleryClass(Array.isArray(comment.images) ? comment.images.length : 0),
-      }))
-    : [];
-
   return {
     ...payload,
     instances,
-    comments,
   };
+}
+
+function prepareComments(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items.map((comment) => ({
+    ...comment,
+    gallery_class: commentGalleryClass(Array.isArray(comment.images) ? comment.images.length : 0),
+  }));
 }
 
 function scheduleCommentsRender() {
   commentsReady.value = false;
-  visibleCommentCount.value = INITIAL_COMMENT_BATCH;
   if (typeof window === "undefined") {
     commentsReady.value = true;
     return;
@@ -1063,8 +1069,24 @@ function scheduleCommentsRender() {
   });
 }
 
-function loadMoreComments() {
-  visibleCommentCount.value += INITIAL_COMMENT_BATCH;
+async function loadMoreComments() {
+  if (commentsLoadingMore.value || commentsNextOffset.value === null) {
+    return;
+  }
+  commentsLoadingMore.value = true;
+  commentsLoadError.value = "";
+  try {
+    const payload = await apiRequest(
+      `/api/models/${encodeURI(modelDir.value)}/comments?offset=${commentsNextOffset.value}&limit=${INITIAL_COMMENT_BATCH}`,
+    );
+    comments.value = [...comments.value, ...prepareComments(payload.items || [])];
+    commentsTotal.value = Number(payload.total || commentsTotal.value || comments.value.length);
+    commentsNextOffset.value = payload.next_offset ?? null;
+  } catch (error) {
+    commentsLoadError.value = error instanceof Error ? error.message : "评论加载失败。";
+  } finally {
+    commentsLoadingMore.value = false;
+  }
 }
 
 function onAttachmentFileChange(event) {
@@ -1097,6 +1119,9 @@ async function submitAttachmentUpload() {
       body: formData,
     });
     detail.value = prepareDetailPayload(payload.detail);
+    comments.value = prepareComments(payload.detail?.comments || []);
+    commentsTotal.value = Number(payload.detail?.comments_total || comments.value.length);
+    commentsNextOffset.value = payload.detail?.comments_next_offset ?? null;
     scheduleCommentsRender();
     attachmentUploadMessage.value = payload.message || "附件已上传。";
     resetAttachmentUploadState({ clearFeedback: false });
@@ -1124,6 +1149,9 @@ async function removeAttachment(attachment) {
       method: "DELETE",
     });
     detail.value = prepareDetailPayload(payload.detail);
+    comments.value = prepareComments(payload.detail?.comments || []);
+    commentsTotal.value = Number(payload.detail?.comments_total || comments.value.length);
+    commentsNextOffset.value = payload.detail?.comments_next_offset ?? null;
     scheduleCommentsRender();
     attachmentUploadMessage.value = payload.message || "附件已删除。";
   } catch (error) {
@@ -1140,10 +1168,17 @@ async function load() {
   popoverPlacementState.value = {};
   popoverMediaState.value = {};
   commentsReady.value = false;
-  visibleCommentCount.value = INITIAL_COMMENT_BATCH;
+  comments.value = [];
+  commentsTotal.value = 0;
+  commentsNextOffset.value = null;
+  commentsLoadingMore.value = false;
+  commentsLoadError.value = "";
   try {
     const payload = prepareDetailPayload(await apiRequest(`/api/models/${encodeURI(modelDir.value)}`));
     detail.value = payload;
+    comments.value = prepareComments(payload.comments || []);
+    commentsTotal.value = Number(payload.comments_total || comments.value.length);
+    commentsNextOffset.value = payload.comments_next_offset ?? null;
     const initialInstance = findInstanceByHash(payload.instances || []) || payload.instances?.[0] || null;
     activeInstanceKey.value = initialInstance?.instance_key || "";
     if (findInstanceByHash(payload.instances || [])) {
@@ -1188,6 +1223,11 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.body.classList.remove("is-lightbox-open");
   commentsReady.value = false;
+  comments.value = [];
+  commentsTotal.value = 0;
+  commentsNextOffset.value = null;
+  commentsLoadingMore.value = false;
+  commentsLoadError.value = "";
   if (commentsRenderFrame && typeof window !== "undefined") {
     window.cancelAnimationFrame(commentsRenderFrame);
   }
