@@ -553,7 +553,7 @@ class SubscriptionManager:
 
                 next_run_at = _parse_iso(str(state.get("next_run_at") or ""))
                 if next_run_at is None or next_run_at <= now:
-                    due.append((((next_run_at or now).timestamp())), item)
+                    due.append(((next_run_at or now).timestamp(), item))
 
             if not due:
                 return
