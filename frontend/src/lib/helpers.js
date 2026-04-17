@@ -16,5 +16,11 @@ export function formatDate(value) {
 
 
 export function encodeModelPath(modelDir) {
-  return `/models/${encodeURI(String(modelDir || "").replace(/^\/+/, ""))}`;
+  const value = String(modelDir || "").replace(/^\/+/, "");
+  const encoded = value
+    .split("/")
+    .filter((segment) => segment.length > 0)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return `/models/${encoded}`;
 }

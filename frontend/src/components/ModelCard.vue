@@ -91,8 +91,6 @@
 import { computed, ref } from "vue";
 import { useRouter } from "vue-router";
 
-import { encodeModelPath } from "../lib/helpers";
-
 
 const props = defineProps({
   model: {
@@ -119,7 +117,6 @@ const icons = {
 const coverSrc = ref(props.model.cover_url || "");
 const authorAvatarSrc = ref(props.model.author?.avatar_url || "");
 
-const detailPath = computed(() => props.model.detail_path || encodeModelPath(props.model.model_dir));
 const titleInitial = computed(() => String(props.model.title || "M").trim().slice(0, 1) || "M");
 const authorName = computed(() => String(props.model.author?.name || "未知作者").trim() || "未知作者");
 const authorInitial = computed(() => String(props.model.author?.name || "作").trim().slice(0, 1) || "作");
@@ -132,7 +129,12 @@ const deletedSourceTitle = computed(() => {
 });
 
 function goDetail() {
-  router.push(detailPath.value);
+  router.push({
+    name: "model-detail",
+    params: {
+      modelDir: String(props.model.model_dir || ""),
+    },
+  });
 }
 
 function onCoverError() {

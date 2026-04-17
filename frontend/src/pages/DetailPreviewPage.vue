@@ -20,8 +20,13 @@ onMounted(async () => {
   try {
     const payload = await apiRequest("/api/models");
     const first = payload.items?.[0];
-    if (first?.detail_path) {
-      router.replace(first.detail_path);
+    if (first?.model_dir) {
+      router.replace({
+        name: "model-detail",
+        params: {
+          modelDir: String(first.model_dir || ""),
+        },
+      });
       return;
     }
     status.value = "当前还没有归档模型，无法生成详情预览。";
