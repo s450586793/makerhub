@@ -560,7 +560,28 @@ const detailSections = [
   { id: "detail-comments", label: "评论" },
 ];
 
-const modelDir = computed(() => decodeURIComponent(route.path.replace(/^\/models\//, "")));
+function decodeRouteValue(value) {
+  const raw = String(value ?? "");
+  if (!raw) {
+    return "";
+  }
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+const modelDir = computed(() => {
+  const raw = route.params.modelDir;
+  if (Array.isArray(raw)) {
+    return raw
+      .map((item) => decodeRouteValue(item))
+      .filter(Boolean)
+      .join("/");
+  }
+  return decodeRouteValue(raw);
+});
 
 const activeInstance = computed(() => {
   return detail.value?.instances?.find((item) => item.instance_key === activeInstanceKey.value) || null;
@@ -700,9 +721,9 @@ function parseProfileHash() {
     return "";
   }
   if (/^profileId-/i.test(normalized)) {
-    return decodeURIComponent(normalized.replace(/^profileId-/i, ""));
+    return decodeRouteValue(normalized.replace(/^profileId-/i, ""));
   }
-  return decodeURIComponent(normalized);
+  return decodeRouteValue(normalized);
 }
 
 function findInstanceByHash(items = []) {
@@ -1077,7 +1098,7 @@ async function loadMoreComments() {
   commentsLoadError.value = "";
   try {
     const payload = await apiRequest(
-      `/api/models/${encodeURI(modelDir.value)}/comments?offset=${commentsNextOffset.value}&limit=${INITIAL_COMMENT_BATCH}`,
+      `/api/models/${encodeURIComponent(modelDir.value)}/comments?offset=${commentsNextOffset.value}&limit=${INITIAL_COMMENT_BATCH}`,
     );
     comments.value = [...comments.value, ...prepareComments(payload.items || [])];
     commentsTotal.value = Number(payload.total || commentsTotal.value || comments.value.length);
@@ -1114,7 +1135,7 @@ async function submitAttachmentUpload() {
   }
 
   try {
-    const payload = await apiRequest(`/api/models/${encodeURI(modelDir.value)}/attachments`, {
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/attachments`, {
       method: "POST",
       body: formData,
     });
@@ -1145,7 +1166,7 @@ async function removeAttachment(attachment) {
   attachmentUploadError.value = "";
 
   try {
-    const payload = await apiRequest(`/api/models/${encodeURI(modelDir.value)}/attachments/${encodeURIComponent(attachment.id)}`, {
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/attachments/${encodeURIComponent(attachment.id)}`, {
       method: "DELETE",
     });
     detail.value = prepareDetailPayload(payload.detail);
@@ -1174,7 +1195,7 @@ async function load() {
   commentsLoadingMore.value = false;
   commentsLoadError.value = "";
   try {
-    const payload = prepareDetailPayload(await apiRequest(`/api/models/${encodeURI(modelDir.value)}`));
+    const payload = prepareDetailPayload(await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}`));
     detail.value = payload;
     comments.value = prepareComments(payload.comments || []);
     commentsTotal.value = Number(payload.comments_total || comments.value.length);
@@ -1198,12 +1219,21 @@ async function load() {
   }
 }
 
-watch(modelDir, () => {
+watch(modelDir, (value) => {
   resetAttachmentUploadState({ keepCategory: false });
+  if (!value) {
+    detail.value = null;
+    comments.value = [];
+    commentsTotal.value = 0;
+    commentsNextOffset.value = null;
+    commentsLoadingMore.value = false;
+    commentsLoadError.value = "";
+    loading.value = false;
+    errorMessage.value = "模型不存在。";
+    return;
+  }
   load();
-});
-
-onMounted(load);
+}, { immediate: true });
 onMounted(() => {
   if (typeof window === "undefined") {
     return;
