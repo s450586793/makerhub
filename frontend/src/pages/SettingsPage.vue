@@ -47,10 +47,18 @@
         <div class="settings-grid settings-grid--three">
           <label class="field-card">
             <span>启用 HTTP 代理</span>
-            <label class="switch">
-              <input v-model="connectionForm.proxy_enabled" type="checkbox">
-              <span>开启后归档请求将带上代理设置</span>
-            </label>
+            <button
+              :class="['subscription-switch', connectionForm.proxy_enabled && 'is-on']"
+              type="button"
+              :disabled="testing.proxy"
+              @click="connectionForm.proxy_enabled = !connectionForm.proxy_enabled"
+            >
+              <span class="subscription-switch__track" aria-hidden="true">
+                <span class="subscription-switch__thumb"></span>
+              </span>
+              <span class="subscription-switch__label">{{ connectionForm.proxy_enabled ? "启用中" : "已停用" }}</span>
+            </button>
+            <small class="archive-form__hint">开启后归档、订阅与远端刷新请求会带上当前代理设置。</small>
           </label>
           <label class="field-card">
             <span>HTTP Proxy</span>
