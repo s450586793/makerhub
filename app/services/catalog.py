@@ -321,6 +321,88 @@ def _count_active_organize_tasks(organize_tasks: dict) -> int:
     return count
 
 
+def _subscription_deleted_count(state: dict) -> int:
+    current_items = state.get("current_items") if isinstance(state.get("current_items"), list) else []
+    tracked_items = state.get("tracked_items") if isinstance(state.get("tracked_items"), list) else []
+    current_keys = {
+        str(item.get("task_key") or item.get("url") or item.get("model_id") or "").strip()
+        for item in current_items
+        if isinstance(item, dict)
+    }
+    tracked_keys = {
+        str(item.get("task_key") or item.get("url") or item.get("model_id") or "").strip()
+        for item in tracked_items
+        if isinstance(item, dict)
+    }
+    current_keys.discard("")
+    tracked_keys.discard("")
+    return max(len(tracked_keys - current_keys), 0)
+
+
+def _build_dashboard_subscriptions(config, task_store: TaskStateStore) -> dict[str, Any]:
+    records = list(getattr(config, "subscriptions", []) or [])
+    state_items = task_store.load_subscriptions_state().get("items") or []
+    state_map = {
+        str(item.get("id") or "").strip(): item
+        for item in state_items
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    }
+
+    merged_items: list[dict[str, Any]] = []
+    for record in records:
+        record_id = str(getattr(record, "id", "") or "").strip()
+        if not record_id:
+            continue
+        state = state_map.get(record_id, {})
+        merged_items.append(
+            {
+                "id": record_id,
+                "name": str(getattr(record, "name", "") or "").strip() or str(getattr(record, "url", "") or "").strip(),
+                "url": str(getattr(record, "url", "") or "").strip(),
+                "mode": str(getattr(record, "mode", "") or "").strip(),
+                "enabled": bool(getattr(record, "enabled", False)),
+                "running": bool(state.get("running", False)),
+                "status": str(state.get("status") or "idle"),
+                "next_run_at": str(state.get("next_run_at") or ""),
+                "last_run_at": str(state.get("last_run_at") or ""),
+                "last_success_at": str(state.get("last_success_at") or ""),
+                "last_error_at": str(state.get("last_error_at") or ""),
+                "last_message": str(state.get("last_message") or ""),
+                "last_discovered_count": int(state.get("last_discovered_count") or 0),
+                "last_new_count": int(state.get("last_new_count") or 0),
+                "last_enqueued_count": int(state.get("last_enqueued_count") or 0),
+                "last_deleted_count": int(state.get("last_deleted_count") or 0),
+                "current_count": len(state.get("current_items") or []),
+                "tracked_count": len(state.get("tracked_items") or []),
+                "deleted_count": _subscription_deleted_count(state),
+            }
+        )
+
+    running_items = [item for item in merged_items if item.get("running")]
+    enabled_items = [item for item in merged_items if item.get("enabled")]
+    last_results = sorted(
+        [item for item in merged_items if str(item.get("last_run_at") or "").strip()],
+        key=lambda item: str(item.get("last_run_at") or ""),
+        reverse=True,
+    )
+    next_runs = sorted(
+        [
+            item for item in merged_items
+            if item.get("enabled") and str(item.get("next_run_at") or "").strip()
+        ],
+        key=lambda item: str(item.get("next_run_at") or ""),
+    )
+
+    return {
+        "count": len(merged_items),
+        "enabled_count": len(enabled_items),
+        "running_count": len(running_items),
+        "deleted_marked_count": sum(int(item.get("deleted_count") or 0) for item in merged_items),
+        "recent_items": last_results[:3],
+        "next_items": next_runs[:3],
+    }
+
+
 def _asset_url_from_item(model_root: Path, item: Any) -> Optional[str]:
     if isinstance(item, str):
         return _local_asset_url(model_root, item) or _remote_asset_url(item)
@@ -1270,6 +1352,7 @@ def build_tasks_payload(
 def build_dashboard_payload(config) -> dict:
     archive_snapshot = get_archive_snapshot()
     all_models = _clone_model_items(list(archive_snapshot.get("collect_sorted") or []))
+    task_store = TaskStateStore()
     tasks_payload = build_tasks_payload(
         missing_fallback=[
             item.model_dump() if hasattr(item, "model_dump") else item
@@ -1277,6 +1360,7 @@ def build_dashboard_payload(config) -> dict:
         ],
         archive_snapshot=archive_snapshot,
     )
+    subscriptions_summary = _build_dashboard_subscriptions(config, task_store)
     now = int(time.time())
     seven_days_ago = now - 7 * 24 * 60 * 60
 
@@ -1301,6 +1385,8 @@ def build_dashboard_payload(config) -> dict:
 
     recent_models = _clone_model_items(all_models[:8])
     recent_week_count = len([item for item in all_models if item["collect_ts"] >= seven_days_ago])
+    organize_tasks = tasks_payload["organize_tasks"]
+    remote_refresh = tasks_payload["remote_refresh"]
 
     return {
         "stats": [
@@ -1315,6 +1401,43 @@ def build_dashboard_payload(config) -> dict:
         ],
         "recent_models": recent_models,
         "system_status": status_cards,
+        "automation_overview": {
+            "subscriptions": {
+                "count": subscriptions_summary["count"],
+                "enabled_count": subscriptions_summary["enabled_count"],
+                "running_count": subscriptions_summary["running_count"],
+                "deleted_marked_count": subscriptions_summary["deleted_marked_count"],
+                "recent_items": subscriptions_summary["recent_items"],
+                "next_items": subscriptions_summary["next_items"],
+            },
+            "remote_refresh": {
+                "enabled": bool(getattr(config.remote_refresh, "enabled", False)),
+                "status": str(remote_refresh.get("status") or "idle"),
+                "running": bool(remote_refresh.get("running", False)),
+                "batch_size": int(getattr(config.remote_refresh, "batch_size", 0) or 0),
+                "last_batch_total": int(remote_refresh.get("last_batch_total") or 0),
+                "last_batch_succeeded": int(remote_refresh.get("last_batch_succeeded") or 0),
+                "last_batch_failed": int(remote_refresh.get("last_batch_failed") or 0),
+                "last_eligible_total": int(remote_refresh.get("last_eligible_total") or 0),
+                "last_remaining_total": int(remote_refresh.get("last_remaining_total") or 0),
+                "last_skipped_missing_cookie": int(remote_refresh.get("last_skipped_missing_cookie") or 0),
+                "next_run_at": str(remote_refresh.get("next_run_at") or ""),
+                "last_run_at": str(remote_refresh.get("last_run_at") or ""),
+                "last_success_at": str(remote_refresh.get("last_success_at") or ""),
+                "last_message": str(remote_refresh.get("last_message") or ""),
+            },
+            "organizer": {
+                "source_dir": str(getattr(config.organizer, "source_dir", "") or ""),
+                "target_dir": str(getattr(config.organizer, "target_dir", "") or ""),
+                "move_files": bool(getattr(config.organizer, "move_files", False)),
+                "detected_total": int(organize_tasks.get("detected_total") or 0),
+                "running_count": int(organize_tasks.get("running_count") or 0),
+                "queued_count": int(organize_tasks.get("queued_count") or 0),
+                "active_count": int(organize_tasks.get("active_count") or 0),
+                "recent_items": _clone_model_items([]),
+                "items": list(organize_tasks.get("items") or [])[:3],
+            },
+        },
         "task_summary": {
             "running": tasks_payload["archive_queue"]["active"],
             "queued_count": tasks_payload["archive_queue"]["queued_count"],

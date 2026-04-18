@@ -191,6 +191,193 @@
   min-height: 20px;
 }
 
+.count-pill--danger {
+  color: #9d2020;
+  background: rgba(223, 86, 86, 0.14);
+}
+
+.dashboard-hero {
+  align-items: flex-start;
+  background:
+    radial-gradient(circle at top left, rgba(63, 124, 255, 0.1), transparent 30%),
+    radial-gradient(circle at right center, rgba(31, 157, 98, 0.12), transparent 34%),
+    var(--surface);
+}
+
+.dashboard-hero__copy {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.dashboard-hero__copy p {
+  max-width: 56ch;
+  line-height: 1.75;
+}
+
+.dashboard-hero__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.dashboard-automation-grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+}
+
+.automation-card {
+  height: 100%;
+  align-content: start;
+}
+
+.automation-card__header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.automation-card__stats,
+.automation-card__split,
+.automation-card__timeline,
+.dashboard-summary-columns {
+  display: grid;
+  gap: 12px;
+}
+
+.automation-card__stats--four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.automation-card__stats--three,
+.automation-card__timeline--three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.automation-card__timeline--two,
+.dashboard-summary-columns {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.automation-card__split {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.automation-card__block,
+.dashboard-summary-group {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.automation-card__block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.automation-card__block-head strong,
+.dashboard-summary-group h3 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+}
+
+.automation-card__list {
+  display: grid;
+  gap: 10px;
+}
+
+.automation-card__item,
+.automation-card__timeline span,
+.automation-card__message {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--surface-soft);
+}
+
+.automation-card__item {
+  display: grid;
+  gap: 8px;
+}
+
+.automation-card__item-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.automation-card__item-head strong {
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.automation-card__item p,
+.automation-card__message p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.automation-card__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.automation-card__meta span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.automation-card__timeline span {
+  display: grid;
+  gap: 6px;
+}
+
+.automation-card__timeline strong {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.automation-card__timeline em {
+  font-style: normal;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.automation-card__message {
+  display: grid;
+  gap: 8px;
+}
+
+.automation-card__message strong {
+  font-size: 15px;
+}
+
+.dashboard-summary-columns {
+  padding-top: 4px;
+}
+
 .organizer-intro-stats {
   width: 100%;
   display: grid;
@@ -1300,6 +1487,19 @@
 }
 
 @media (max-width: 960px) {
+  .dashboard-hero {
+    flex-direction: column;
+  }
+
+  .dashboard-hero__actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .dashboard-automation-grid {
+    grid-template-columns: 1fr;
+  }
+
   .logs-layout {
     grid-template-columns: 1fr;
   }
@@ -1346,6 +1546,12 @@
   .subscription-stats,
   .subscription-times,
   .subscription-card__meta-grid,
+  .automation-card__stats--four,
+  .automation-card__stats--three,
+  .automation-card__timeline--three,
+  .automation-card__timeline--two,
+  .automation-card__split,
+  .dashboard-summary-columns,
   .organizer-intro-stats,
   .remote-refresh-intro-stats,
   .remote-refresh-stats,
@@ -1355,6 +1561,15 @@
 }
 
 @media (max-width: 640px) {
+  .dashboard-hero__actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-hero__actions .button {
+    width: 100%;
+  }
+
   .gallery-card__body {
     padding: 13px;
     gap: 10px;
@@ -1409,6 +1624,12 @@
   .subscription-stats,
   .subscription-times,
   .subscription-card__meta-grid,
+  .automation-card__stats--four,
+  .automation-card__stats--three,
+  .automation-card__timeline--three,
+  .automation-card__timeline--two,
+  .automation-card__split,
+  .dashboard-summary-columns,
   .organizer-intro-stats,
   .remote-refresh-intro-stats,
   .remote-refresh-stats,
@@ -1422,6 +1643,12 @@
   .logs-sidebar,
   .logs-stream {
     padding: 18px;
+  }
+
+  .automation-card__header-actions,
+  .automation-card__item-head {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .logs-sidebar__controls {
@@ -1440,6 +1667,10 @@
 @media (max-width: 640px) {
   .logs-hero__title {
     flex-direction: column;
+  }
+
+  .dashboard-hero__actions {
+    grid-template-columns: 1fr;
   }
 
   .logs-hero__icon {
