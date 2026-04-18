@@ -3,7 +3,6 @@ import base64
 import json
 import time
 from datetime import datetime
-from urllib.request import Request as UrlRequest, urlopen
 
 import requests
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
@@ -66,13 +65,17 @@ remote_refresh_manager = RemoteRefreshManager(
     task_store=task_state_store,
 )
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/s450586793/makerhub/main/VERSION"
+GITHUB_VERSION_CDN_URL = "https://cdn.jsdelivr.net/gh/s450586793/makerhub@main/VERSION"
 GITHUB_VERSION_API_URL = "https://api.github.com/repos/s450586793/makerhub/contents/VERSION?ref=main"
 GITHUB_VERSION_CACHE_TTL_SECONDS = 300
+GITHUB_VERSION_FAILURE_TTL_SECONDS = 60
 github_version_cache = {
     "version": "",
     "checked_at": 0.0,
     "checked_at_iso": "",
     "error": "",
+    "source": "",
+    "last_success_at": "",
 }
 MW_BROWSER_HEADERS = {
     "Accept": "application/json, text/plain, */*",
@@ -107,48 +110,86 @@ def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def _read_latest_github_version() -> str:
-    request = UrlRequest(
-        GITHUB_VERSION_URL,
-        headers={
+def _make_github_version_session() -> requests.Session:
+    session = requests.Session()
+    session.trust_env = False
+    session.headers.update(
+        {
             "User-Agent": "makerhub-version-check",
             "Cache-Control": "no-cache",
-        },
+            "Pragma": "no-cache",
+            "Accept": "text/plain, application/vnd.github+json;q=0.9, application/json;q=0.8, */*;q=0.1",
+        }
     )
-    with urlopen(request, timeout=8) as response:
-        charset = response.headers.get_content_charset() or "utf-8"
-        value = response.read().decode(charset, errors="ignore").strip()
-        if value:
-            return value
-
-    api_request = UrlRequest(
-        GITHUB_VERSION_API_URL,
-        headers={
-            "User-Agent": "makerhub-version-check",
-            "Accept": "application/vnd.github+json",
-            "Cache-Control": "no-cache",
-        },
-    )
-    with urlopen(api_request, timeout=8) as response:
-        charset = response.headers.get_content_charset() or "utf-8"
-        payload = json.loads(response.read().decode(charset, errors="ignore"))
-        content = str(payload.get("content") or "").strip()
-        encoding = str(payload.get("encoding") or "").strip().lower()
-        if not content:
-            raise ValueError("GitHub API 未返回 VERSION 内容")
-        if encoding == "base64":
-            return base64.b64decode(content).decode("utf-8", errors="ignore").strip()
-        return content.strip()
+    return session
 
 
-async def _get_github_version_status(force: bool = False) -> dict:
+def _extract_version_from_response(response: requests.Response, source_kind: str) -> str:
+    if source_kind in {"raw", "cdn"}:
+        return str(response.text or "").strip()
+
+    payload = response.json()
+    content = str(payload.get("content") or "").strip()
+    encoding = str(payload.get("encoding") or "").strip().lower()
+    if not content:
+        raise ValueError("GitHub API 未返回 VERSION 内容")
+    if encoding == "base64":
+        return base64.b64decode(content).decode("utf-8", errors="ignore").strip()
+    return content.strip()
+
+
+def _read_latest_github_version(proxy_config: ProxyConfig | None = None) -> dict[str, str]:
+    proxies = _build_proxy_mapping(proxy_config) if proxy_config and bool(proxy_config.enabled) else {}
+    targets = [
+        ("raw", GITHUB_VERSION_URL),
+        ("cdn", GITHUB_VERSION_CDN_URL),
+        ("api", GITHUB_VERSION_API_URL),
+    ]
+    errors: list[str] = []
+    session = _make_github_version_session()
+    try:
+        for source_kind, url in targets:
+            headers = dict(session.headers)
+            if source_kind == "api":
+                headers["Accept"] = "application/vnd.github+json"
+            started = time.perf_counter()
+            try:
+                response = session.get(
+                    url,
+                    headers=headers,
+                    proxies=proxies or None,
+                    timeout=(6, 15),
+                    allow_redirects=True,
+                )
+                response.raise_for_status()
+                version = _extract_version_from_response(response, source_kind)
+                if not version:
+                    raise ValueError("VERSION 为空")
+                return {
+                    "version": version,
+                    "source": source_kind,
+                    "elapsed_ms": str(round((time.perf_counter() - started) * 1000, 1)),
+                    "used_proxy": "true" if bool(proxies) else "false",
+                }
+            except Exception as exc:
+                errors.append(f"{source_kind}:{_safe_error_message(exc)}")
+    finally:
+        session.close()
+
+    raise RuntimeError(" | ".join(errors) or "GitHub 版本读取失败")
+
+
+async def _get_github_version_status(force: bool = False, proxy_config: ProxyConfig | None = None) -> dict:
     now = time.time()
     checked_at = float(github_version_cache.get("checked_at") or 0)
-    if not force and checked_at and now - checked_at < GITHUB_VERSION_CACHE_TTL_SECONDS:
+    cache_error = str(github_version_cache.get("error") or "")
+    cache_ttl = GITHUB_VERSION_FAILURE_TTL_SECONDS if cache_error else GITHUB_VERSION_CACHE_TTL_SECONDS
+    if not force and checked_at and now - checked_at < cache_ttl:
         return {
             "github_latest_version": str(github_version_cache.get("version") or ""),
             "github_version_checked_at": str(github_version_cache.get("checked_at_iso") or ""),
             "github_version_error": str(github_version_cache.get("error") or ""),
+            "github_version_source": str(github_version_cache.get("source") or ""),
             "github_update_available": bool(
                 str(github_version_cache.get("version") or "").strip()
                 and str(github_version_cache.get("version") or "").strip() != APP_VERSION
@@ -157,7 +198,8 @@ async def _get_github_version_status(force: bool = False) -> dict:
 
     checked_at_iso = _now_iso()
     try:
-        version = await asyncio.to_thread(_read_latest_github_version)
+        result = await asyncio.to_thread(_read_latest_github_version, proxy_config)
+        version = str(result.get("version") or "").strip()
         if not version:
             raise ValueError("GitHub VERSION 为空")
         github_version_cache.update(
@@ -166,15 +208,16 @@ async def _get_github_version_status(force: bool = False) -> dict:
                 "checked_at": now,
                 "checked_at_iso": checked_at_iso,
                 "error": "",
+                "source": str(result.get("source") or ""),
+                "last_success_at": checked_at_iso,
             }
         )
     except Exception as exc:
         github_version_cache.update(
             {
-                "version": "",
                 "checked_at": now,
                 "checked_at_iso": checked_at_iso,
-                "error": str(exc),
+                "error": _safe_error_message(exc),
             }
         )
 
@@ -182,6 +225,7 @@ async def _get_github_version_status(force: bool = False) -> dict:
         "github_latest_version": str(github_version_cache.get("version") or ""),
         "github_version_checked_at": str(github_version_cache.get("checked_at_iso") or ""),
         "github_version_error": str(github_version_cache.get("error") or ""),
+        "github_version_source": str(github_version_cache.get("source") or ""),
         "github_update_available": bool(
             str(github_version_cache.get("version") or "").strip()
             and str(github_version_cache.get("version") or "").strip() != APP_VERSION
@@ -195,6 +239,7 @@ def _with_version_status(payload: dict, version_status: dict) -> dict:
         "github_latest_version": str(version_status.get("github_latest_version") or ""),
         "github_version_checked_at": str(version_status.get("github_version_checked_at") or ""),
         "github_version_error": str(version_status.get("github_version_error") or ""),
+        "github_version_source": str(version_status.get("github_version_source") or ""),
         "github_update_available": bool(version_status.get("github_update_available")),
     }
 
@@ -461,18 +506,19 @@ def _require_session_auth(request: Request) -> None:
 @router.get("/bootstrap")
 async def get_bootstrap(request: Request):
     identity = getattr(request.state, "auth_identity", None) or {}
-    config = store.load() if identity else None
+    config = store.load()
     payload = {
         "app_version": APP_VERSION,
-        "session": _session_payload(identity, config=config),
-        "theme_preference": config.user.theme_preference if config else "",
+        "session": _session_payload(identity, config=config if identity else None),
+        "theme_preference": config.user.theme_preference if identity else "",
     }
-    return _with_version_status(payload, await _get_github_version_status())
+    return _with_version_status(payload, await _get_github_version_status(proxy_config=config.proxy))
 
 
 @router.get("/config")
 async def get_config():
-    return _with_version_status(_public_config_payload(store.load()), await _get_github_version_status())
+    config = store.load()
+    return _with_version_status(_public_config_payload(config), await _get_github_version_status(proxy_config=config.proxy))
 
 
 @router.post("/config/cookies")
@@ -487,7 +533,8 @@ async def save_cookies(payload: list[CookiePair], request: Request):
         count=len(payload),
         platforms=[item.platform for item in payload],
     )
-    return _with_version_status(_public_config_payload(store.save(config)), await _get_github_version_status())
+    saved = store.save(config)
+    return _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
 
 
 @router.post("/config/proxy")
@@ -503,7 +550,8 @@ async def save_proxy(payload: ProxyConfig, request: Request):
         has_http_proxy=bool(payload.http_proxy),
         has_https_proxy=bool(payload.https_proxy),
     )
-    return _with_version_status(_public_config_payload(store.save(config)), await _get_github_version_status())
+    saved = store.save(config)
+    return _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
 
 
 @router.post("/config/proxy/test")
@@ -555,7 +603,8 @@ async def save_notifications(payload: NotificationConfig, request: Request):
     config = store.load()
     config.notifications = payload
     append_business_log("settings", "notifications_saved", "通知配置已保存。", enabled=payload.enabled)
-    return _with_version_status(_public_config_payload(store.save(config)), await _get_github_version_status())
+    saved = store.save(config)
+    return _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
 
 
 @router.post("/config/user")
@@ -566,7 +615,8 @@ async def save_user(payload: UserSettingsUpdate, request: Request):
     config.user.display_name = payload.display_name.strip() or "Admin"
     config.user.password_hint = payload.password_hint.strip()
     append_business_log("settings", "user_saved", "用户信息已保存。", username=config.user.username)
-    return _with_version_status(_public_config_payload(store.save(config)), await _get_github_version_status())
+    saved = store.save(config)
+    return _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
 
 
 @router.post("/config/theme")
@@ -575,7 +625,8 @@ async def save_theme(payload: ThemeSettingsUpdate, request: Request):
     config = store.load()
     config.user.theme_preference = payload.theme_preference
     append_business_log("settings", "theme_saved", "主题设置已保存。", theme_preference=payload.theme_preference)
-    return _with_version_status(_public_config_payload(store.save(config)), await _get_github_version_status())
+    saved = store.save(config)
+    return _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
 
 
 @router.post("/config/organizer")
@@ -591,7 +642,8 @@ async def save_organizer(payload: OrganizeTask, request: Request):
         target_dir=payload.target_dir,
         move_files=payload.move_files,
     )
-    return _with_version_status(_public_config_payload(store.save(config)), await _get_github_version_status())
+    saved = store.save(config)
+    return _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
 
 
 @router.post("/config/remote-refresh")
@@ -610,7 +662,7 @@ async def save_remote_refresh(payload: RemoteRefreshConfig, request: Request):
         batch_size=payload.batch_size,
         next_run_at=state.get("next_run_at"),
     )
-    return _with_version_status(_public_config_payload(config), await _get_github_version_status())
+    return _with_version_status(_public_config_payload(config), await _get_github_version_status(proxy_config=config.proxy))
 
 
 @router.get("/dashboard")

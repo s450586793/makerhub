@@ -105,11 +105,11 @@ const sidebarVisible = computed(() => (
   isCompact.value ? mobileSidebarOpen.value : !desktopSidebarHidden.value
 ));
 const githubVersionText = computed(() => {
-  if (appState.githubVersionError) {
-    return "读取失败";
-  }
   if (appState.githubLatestVersion) {
     return `v${appState.githubLatestVersion}`;
+  }
+  if (appState.githubVersionError) {
+    return "读取失败";
   }
   return "读取中";
 });
