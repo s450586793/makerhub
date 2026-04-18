@@ -34,9 +34,12 @@
       <label class="filter-field">
         <input v-model.trim="createForm.name" type="text" placeholder="订阅名称（可选）">
       </label>
-      <label class="filter-field">
-        <input v-model.trim="createForm.cron" type="text" placeholder="Cron，例如 0 */6 * * *">
-      </label>
+      <CronField
+        v-model="createForm.cron"
+        class="filter-field"
+        placeholder="Cron，例如 0 */6 * * *"
+        dialog-title="设置新增订阅 Cron"
+      />
       <label class="subscription-toggle subscription-toggle--compact">
         <input v-model="createForm.enabled" type="checkbox">
         <span>启用</span>
@@ -154,9 +157,12 @@
         <label class="filter-field">
           <input v-model.trim="editDialog.name" type="text" placeholder="订阅名称（可选）">
         </label>
-        <label class="filter-field">
-          <input v-model.trim="editDialog.cron" type="text" placeholder="Cron，例如 0 */6 * * *">
-        </label>
+        <CronField
+          v-model="editDialog.cron"
+          class="filter-field"
+          placeholder="Cron，例如 0 */6 * * *"
+          dialog-title="设置订阅编辑 Cron"
+        />
         <div class="submit-dialog__actions">
           <button class="button button-secondary" type="button" :disabled="savingEdit" @click="closeEditDialog">
             取消
@@ -173,6 +179,7 @@
 <script setup>
 import { onBeforeUnmount, onMounted, reactive, ref } from "vue";
 
+import CronField from "../components/CronField.vue";
 import { apiRequest } from "../lib/api";
 import { parseServerDate } from "../lib/helpers";
 

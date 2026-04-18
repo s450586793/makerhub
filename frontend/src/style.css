@@ -410,6 +410,122 @@
   justify-content: flex-end;
 }
 
+.cron-field {
+  display: grid;
+  gap: 8px;
+}
+
+.cron-field__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.cron-field__summary {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.cron-dialog__panel {
+  width: min(760px, calc(100vw - 32px));
+  padding: 28px;
+  text-align: left;
+}
+
+.cron-dialog__header {
+  margin-bottom: 16px;
+}
+
+.cron-dialog__header h2 {
+  margin: 8px 0 0;
+}
+
+.cron-dialog__modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.cron-dialog__mode {
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+}
+
+.cron-dialog__mode.is-active {
+  color: var(--brand-strong);
+  border-color: rgba(63, 124, 255, 0.24);
+  background: rgba(63, 124, 255, 0.12);
+}
+
+.cron-dialog__content {
+  margin-top: 18px;
+  display: grid;
+  gap: 16px;
+}
+
+.cron-dialog__grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+}
+
+.cron-dialog__grid--two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.cron-dialog__grid--three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.cron-dialog__grid--four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.cron-dialog__block {
+  display: grid;
+  gap: 12px;
+}
+
+.cron-dialog__note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.cron-dialog__preview {
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  display: grid;
+  gap: 8px;
+  background: var(--surface-soft);
+}
+
+.cron-dialog__preview strong {
+  font-size: 18px;
+  line-height: 1.25;
+  font-family: "SFMono-Regular", "Consolas", "Liberation Mono", monospace;
+}
+
+.cron-dialog__preview p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
 .dashboard-automation-grid {
   display: grid;
   gap: 18px;
@@ -1695,6 +1811,10 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .cron-dialog__grid--four {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .dashboard-automation-grid {
     grid-template-columns: 1fr;
   }
@@ -1774,6 +1894,13 @@
 
   .dashboard-panel .summary-stack,
   .dashboard-mini-card__stats {
+    grid-template-columns: 1fr;
+  }
+
+  .cron-field__row,
+  .cron-dialog__grid--two,
+  .cron-dialog__grid--three,
+  .cron-dialog__grid--four {
     grid-template-columns: 1fr;
   }
 

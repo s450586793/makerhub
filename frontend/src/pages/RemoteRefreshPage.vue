@@ -45,7 +45,11 @@
         </label>
         <label class="field-card">
           <span>Cron</span>
-          <input v-model.trim="remoteRefreshForm.cron" type="text" placeholder="0 */2 * * *">
+          <CronField
+            v-model="remoteRefreshForm.cron"
+            placeholder="0 */2 * * *"
+            dialog-title="设置远端刷新 Cron"
+          />
         </label>
         <label class="field-card">
           <span>单轮数量</span>
@@ -228,6 +232,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { RouterLink } from "vue-router";
 
+import CronField from "../components/CronField.vue";
 import { refreshConfig } from "../lib/appState";
 import { apiRequest } from "../lib/api";
 import { encodeModelPath, parseServerDate } from "../lib/helpers";
