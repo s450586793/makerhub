@@ -268,7 +268,6 @@ async function submitSettingsForm(form) {
       enabled: formData.get("proxy_enabled") === "on",
       http_proxy: String(formData.get("http_proxy") || ""),
       https_proxy: String(formData.get("https_proxy") || ""),
-      no_proxy: String(formData.get("no_proxy") || ""),
     });
     return "连接设置已保存";
   }

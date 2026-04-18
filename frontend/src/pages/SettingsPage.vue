@@ -69,10 +69,6 @@
             <input v-model="connectionForm.https_proxy" type="text" placeholder="http://127.0.0.1:7890">
           </label>
         </div>
-        <label class="field-card">
-          <span>No Proxy</span>
-          <input v-model="connectionForm.no_proxy" type="text" placeholder="localhost,127.0.0.1">
-        </label>
         <div class="settings-inline-actions">
           <button class="button button-secondary" type="button" :disabled="testing.proxy" @click="testProxy">
             {{ testing.proxy ? "测试中..." : "测试 HTTP 代理" }}
@@ -247,7 +243,6 @@ const connectionForm = reactive({
   proxy_enabled: false,
   http_proxy: "",
   https_proxy: "",
-  no_proxy: "",
 });
 const notificationsForm = reactive({
   enabled: false,
@@ -294,7 +289,6 @@ function applyConfigToForms(payload) {
   connectionForm.proxy_enabled = Boolean(payload.proxy?.enabled);
   connectionForm.http_proxy = payload.proxy?.http_proxy || "";
   connectionForm.https_proxy = payload.proxy?.https_proxy || "";
-  connectionForm.no_proxy = payload.proxy?.no_proxy || "";
 
   notificationsForm.enabled = Boolean(payload.notifications?.enabled);
   notificationsForm.telegram_bot_token = payload.notifications?.telegram_bot_token || "";
@@ -336,7 +330,6 @@ async function saveConnections() {
         enabled: connectionForm.proxy_enabled,
         http_proxy: connectionForm.http_proxy,
         https_proxy: connectionForm.https_proxy,
-        no_proxy: connectionForm.no_proxy,
       },
     });
     await refreshConfig();
@@ -351,7 +344,6 @@ function buildProxyPayload() {
     enabled: connectionForm.proxy_enabled,
     http_proxy: connectionForm.http_proxy,
     https_proxy: connectionForm.https_proxy,
-    no_proxy: connectionForm.no_proxy,
   };
 }
 
