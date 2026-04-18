@@ -102,7 +102,7 @@
 
 .subscription-create-form.subscription-create-form--compact {
   display: grid;
-  grid-template-columns: minmax(0, 2.2fr) minmax(180px, 1.1fr) minmax(180px, 1.1fr) auto;
+  grid-template-columns: minmax(0, 2.4fr) minmax(200px, 1.1fr) auto;
   gap: 10px;
   align-items: center;
 }
@@ -141,13 +141,9 @@
 }
 
 .subscription-create-form__actions {
-  grid-column: 1 / -1;
-  width: 100%;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) max-content;
-  justify-content: stretch;
+  display: flex;
+  justify-content: flex-end;
   align-items: stretch;
-  gap: 12px;
 }
 
 .subscription-create-form__actions > * {
@@ -163,6 +159,49 @@
 .subscription-create-form__submit .button {
   min-width: 120px;
   white-space: nowrap;
+}
+
+.subscription-advanced {
+  grid-column: 1 / -1;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface-soft);
+}
+
+.subscription-advanced[open] {
+  padding-bottom: 14px;
+}
+
+.subscription-advanced__summary {
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.subscription-advanced__summary::-webkit-details-marker {
+  display: none;
+}
+
+.subscription-advanced__summary small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: right;
+}
+
+.subscription-advanced__content {
+  padding: 0 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) auto minmax(0, 1.1fr);
+  gap: 10px;
+  align-items: center;
 }
 
 .subscriptions-create-card .archive-form__hint,
@@ -1930,9 +1969,7 @@
   }
 
   .subscription-create-form__actions {
-    grid-column: auto;
-    grid-template-columns: 1fr;
-    align-items: stretch;
+    justify-content: stretch;
   }
 
   .subscription-create-form__submit {
@@ -1953,6 +1990,17 @@
 
   .subscription-toggle {
     justify-content: flex-start;
+  }
+
+  .subscription-advanced__summary,
+  .subscription-advanced__content,
+  .subscription-advanced__summary small {
+    text-align: left;
+  }
+
+  .subscription-advanced__summary,
+  .subscription-advanced__content {
+    grid-template-columns: 1fr;
   }
 
   .subscription-stats,
@@ -1990,7 +2038,7 @@
   }
 
   .subscription-create-form__actions {
-    grid-template-columns: 1fr;
+    width: 100%;
   }
 
   .subscription-create-form__submit {
