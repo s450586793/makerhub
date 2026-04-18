@@ -375,8 +375,12 @@ def _normalize_remote_refresh_state(payload: Any) -> dict:
         "last_batch_total": _safe_int(payload.get("last_batch_total") or 0),
         "last_batch_succeeded": _safe_int(payload.get("last_batch_succeeded") or 0),
         "last_batch_failed": _safe_int(payload.get("last_batch_failed") or 0),
+        "last_eligible_total": _safe_int(payload.get("last_eligible_total") or 0),
+        "last_remaining_total": _safe_int(payload.get("last_remaining_total") or 0),
+        "last_skipped_missing_cookie": _safe_int(payload.get("last_skipped_missing_cookie") or 0),
+        "last_skipped_local_or_invalid": _safe_int(payload.get("last_skipped_local_or_invalid") or 0),
         "current_item": _normalize_task_item(current_item, "running") if current_item else {},
-        "recent_items": normalized_recent[:20],
+        "recent_items": normalized_recent[:50],
     }
 
 
@@ -472,6 +476,10 @@ class TaskStateStore:
                 "last_batch_total": 0,
                 "last_batch_succeeded": 0,
                 "last_batch_failed": 0,
+                "last_eligible_total": 0,
+                "last_remaining_total": 0,
+                "last_skipped_missing_cookie": 0,
+                "last_skipped_local_or_invalid": 0,
                 "current_item": {},
                 "recent_items": [],
             },
@@ -1026,7 +1034,7 @@ class TaskStateStore:
 
         return self._update_remote_refresh_state(_mutate)
 
-    def append_remote_refresh_history(self, item: dict, limit: int = 20) -> dict:
+    def append_remote_refresh_history(self, item: dict, limit: int = 50) -> dict:
         normalized_list = _normalize_remote_refresh_state({"recent_items": [item]}).get("recent_items", [])
         if not normalized_list:
             return self.load_remote_refresh_state()

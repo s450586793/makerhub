@@ -239,25 +239,131 @@ def _remote_sync_payload(previous: Any) -> dict[str, Any]:
     return {}
 
 
+def _remote_sync_value(remote_sync: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = remote_sync.get(key)
+        if value not in ("", None):
+            return value
+    return ""
+
+
+def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [copy.deepcopy(item) for item in value if isinstance(item, dict)]
+
+
+def _attachment_key(item: Any) -> str:
+    if isinstance(item, str):
+        return item.strip()
+    if not isinstance(item, dict):
+        return ""
+    for field in ("id", "attachmentId", "fileName", "localName", "name", "title", "downloadUrl", "url"):
+        value = str(item.get(field) or "").strip()
+        if value:
+            return value
+    return hashlib.sha1(json.dumps(item, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+
+def _count_added_items(existing_items: list[Any], fresh_items: list[Any], key_builder) -> int:
+    existing_keys = {key_builder(item) for item in existing_items or []}
+    fresh_keys = {key_builder(item) for item in fresh_items or []}
+    existing_keys.discard("")
+    fresh_keys.discard("")
+    if not fresh_keys:
+        return 0
+    return max(len(fresh_keys - existing_keys), 0)
+
+
+def _summary_signature(value: Any) -> str:
+    if isinstance(value, dict):
+        parts = []
+        for key in ("text", "raw", "html"):
+            content = str(value.get(key) or "").strip()
+            if content:
+                parts.append(content)
+        return "\n".join(parts)
+    return str(value or "").strip()
+
+
+def _build_change_labels(
+    *,
+    added_comments: int = 0,
+    added_instances: int = 0,
+    deleted_instances: int = 0,
+    attachments_added: int = 0,
+    summary_changed: bool = False,
+) -> list[str]:
+    labels: list[str] = []
+    if added_comments > 0:
+        labels.append(f"评论 +{added_comments}")
+    if added_instances > 0:
+        labels.append(f"打印配置 +{added_instances}")
+    if deleted_instances > 0:
+        labels.append(f"配置源删标记 {deleted_instances}")
+    if attachments_added > 0:
+        labels.append(f"附件 +{attachments_added}")
+    if summary_changed:
+        labels.append("简介已更新")
+    if not labels:
+        labels.append("已检查，无远端变化")
+    return labels
+
+
+def _build_success_message(change_labels: list[str]) -> str:
+    effective_labels = [label for label in change_labels if label != "已检查，无远端变化"]
+    if not effective_labels:
+        return "远端刷新完成，已检查，未发现远端内容变化。"
+    return f"远端刷新完成：{'，'.join(effective_labels)}。"
+
+
+def _history_id(model_dir: str, status: str) -> str:
+    return f"{model_dir}:{status}:{time.time_ns()}"
+
+
+def _batch_scope_message(*, eligible_total: int, batch_size: int, remaining_total: int) -> str:
+    if eligible_total <= 0:
+        return "当前没有可刷新的远端模型。"
+    return (
+        f"当前可刷新 {eligible_total} 个模型，单轮上限 {max(int(batch_size or 0), 1)} 个，"
+        f"剩余 {max(int(remaining_total or 0), 0)} 个待下一轮。"
+    )
+
+
 def _finalize_refreshed_meta(meta_path: Path, existing_meta: dict[str, Any]) -> dict[str, Any]:
     fresh_meta = _load_json(meta_path)
     checked_at = _now_iso()
     previous_remote_sync = _remote_sync_payload(existing_meta.get("remoteSync"))
+    existing_instances = _list_of_dicts(existing_meta.get("instances"))
+    fresh_instances = _list_of_dicts(fresh_meta.get("instances"))
+    existing_attachments = _list_of_dicts(existing_meta.get("attachments"))
+    fresh_attachments = _list_of_dicts(fresh_meta.get("attachments"))
     merged_comments, preserved_comment_count = _merge_comments(
         existing_meta.get("comments") if isinstance(existing_meta.get("comments"), list) else [],
         fresh_meta.get("comments") if isinstance(fresh_meta.get("comments"), list) else [],
     )
     merged_instances, deleted_instance_count = _merge_instances(
-        existing_meta.get("instances") if isinstance(existing_meta.get("instances"), list) else [],
-        fresh_meta.get("instances") if isinstance(fresh_meta.get("instances"), list) else [],
+        existing_instances,
+        fresh_instances,
         checked_at,
     )
+    added_instance_count = _count_added_items(existing_instances, fresh_instances, _instance_key)
+    attachments_added = _count_added_items(existing_attachments, fresh_attachments, _attachment_key)
+    summary_changed = _summary_signature(existing_meta.get("summary")) != _summary_signature(fresh_meta.get("summary"))
 
     added_comments = max(
         len(merged_comments)
         - len(existing_meta.get("comments") if isinstance(existing_meta.get("comments"), list) else []),
         0,
     )
+    change_labels = _build_change_labels(
+        added_comments=added_comments,
+        added_instances=added_instance_count,
+        deleted_instances=deleted_instance_count,
+        attachments_added=attachments_added,
+        summary_changed=summary_changed,
+    )
+    success_message = _build_success_message(change_labels)
 
     fresh_meta["comments"] = merged_comments
     fresh_meta["commentCount"] = max(
@@ -273,10 +379,7 @@ def _finalize_refreshed_meta(meta_path: Path, existing_meta: dict[str, Any]) -> 
         "lastSuccessAt": checked_at,
         "lastErrorAt": "",
         "lastStatus": "success",
-        "lastMessage": (
-            f"远端刷新完成，新增评论 {added_comments} 条，保留旧评论 {preserved_comment_count} 条，"
-            f"源端删除配置 {deleted_instance_count} 个。"
-        ),
+        "lastMessage": success_message,
         "sourceDeleted": False,
         "sourceDeletedAt": "",
         "consecutiveErrors": 0,
@@ -285,7 +388,14 @@ def _finalize_refreshed_meta(meta_path: Path, existing_meta: dict[str, Any]) -> 
     return {
         "meta": fresh_meta,
         "added_comments": added_comments,
+        "preserved_comments": preserved_comment_count,
+        "added_instances": added_instance_count,
         "deleted_instances": deleted_instance_count,
+        "attachments_added": attachments_added,
+        "summary_changed": summary_changed,
+        "change_labels": change_labels,
+        "change_summary": "，".join(change_labels),
+        "checked_at": checked_at,
     }
 
 
@@ -344,7 +454,15 @@ def _supports_remote_refresh(item: dict[str, Any]) -> bool:
 
 def _refresh_priority(item: dict[str, Any]) -> tuple[int, int, str]:
     remote_sync = item.get("remote_sync") if isinstance(item.get("remote_sync"), dict) else {}
-    last_checked_ts = _parse_ts(remote_sync.get("lastCheckedAt") or remote_sync.get("lastSuccessAt"))
+    last_checked_ts = _parse_ts(
+        _remote_sync_value(
+            remote_sync,
+            "last_checked_at",
+            "lastCheckedAt",
+            "last_success_at",
+            "lastSuccessAt",
+        )
+    )
     collect_ts = int(item.get("collect_ts") or 0)
     return (last_checked_ts, collect_ts, str(item.get("model_dir") or ""))
 
@@ -463,30 +581,37 @@ class RemoteRefreshManager:
         snapshot = get_archive_snapshot()
         models = list(snapshot.get("models") or [])
         eligible: list[dict[str, Any]] = []
-        skipped = {
+        stats = {
             "local_or_invalid": 0,
             "missing_cookie": 0,
+            "eligible_total": 0,
+            "selected_total": 0,
+            "remaining_total": 0,
         }
         config = self.store.load()
 
         for item in models:
             if not _supports_remote_refresh(item):
-                skipped["local_or_invalid"] += 1
+                stats["local_or_invalid"] += 1
                 continue
             if not _select_cookie(str(item.get("origin_url") or ""), config):
-                skipped["missing_cookie"] += 1
+                stats["missing_cookie"] += 1
                 continue
             eligible.append(item)
 
         eligible.sort(key=_refresh_priority)
-        return eligible[: max(int(batch_size or 0), 1)], skipped
+        selected = eligible[: max(int(batch_size or 0), 1)]
+        stats["eligible_total"] = len(eligible)
+        stats["selected_total"] = len(selected)
+        stats["remaining_total"] = max(len(eligible) - len(selected), 0)
+        return selected, stats
 
     def _run_batch(self, config) -> None:
         refresh_config = config.remote_refresh
         batch_size = max(int(refresh_config.batch_size or DEFAULT_REMOTE_REFRESH_BATCH_SIZE), 1)
         normalized_cron = _validate_cron(refresh_config.cron)
         started_at = _now_iso()
-        candidates, skipped = self._pick_candidates(batch_size)
+        candidates, stats = self._pick_candidates(batch_size)
 
         self.task_store.patch_remote_refresh_state(
             status="running",
@@ -495,9 +620,13 @@ class RemoteRefreshManager:
             last_batch_total=len(candidates),
             last_batch_succeeded=0,
             last_batch_failed=0,
+            last_eligible_total=int(stats.get("eligible_total") or 0),
+            last_remaining_total=int(stats.get("remaining_total") or 0),
+            last_skipped_missing_cookie=int(stats.get("missing_cookie") or 0),
+            last_skipped_local_or_invalid=int(stats.get("local_or_invalid") or 0),
             current_item={},
             last_message=(
-                f"远端刷新开始，本轮计划处理 {len(candidates)} 个模型。"
+                f"远端刷新开始，本轮计划处理 {len(candidates)} 个模型。{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), batch_size=batch_size, remaining_total=int(stats.get('remaining_total') or 0))}"
                 if candidates
                 else "当前没有可执行远端刷新的模型。"
             ),
@@ -506,22 +635,25 @@ class RemoteRefreshManager:
             "batch_started",
             batch_size=batch_size,
             selected=len(candidates),
-            skipped=skipped,
+            stats=stats,
         )
         append_business_log(
             "remote_refresh",
             "batch_started",
-            f"远端刷新开始，本轮计划处理 {len(candidates)} 个模型。",
+            (
+                f"远端刷新开始，本轮计划处理 {len(candidates)} 个模型。"
+                f"{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), batch_size=batch_size, remaining_total=int(stats.get('remaining_total') or 0))}"
+            ),
             batch_size=batch_size,
             selected=len(candidates),
-            skipped=skipped,
+            stats=stats,
         )
 
         if not candidates:
             no_candidate_message = "没有可刷新的远端模型，等待下一轮。"
-            if skipped.get("missing_cookie"):
+            if stats.get("missing_cookie"):
                 no_candidate_message = (
-                    f"当前没有可执行远端刷新的模型，另有 {int(skipped.get('missing_cookie') or 0)} 个模型因缺少对应站点 Cookie 被跳过。"
+                    f"当前没有可执行远端刷新的模型，另有 {int(stats.get('missing_cookie') or 0)} 个模型因缺少对应站点 Cookie 被跳过。"
                 )
             self.task_store.patch_remote_refresh_state(
                 status="idle",
@@ -529,6 +661,13 @@ class RemoteRefreshManager:
                 next_run_at=_next_run_at(normalized_cron),
                 last_success_at=started_at,
                 last_message=no_candidate_message,
+                last_batch_total=0,
+                last_batch_succeeded=0,
+                last_batch_failed=0,
+                last_eligible_total=int(stats.get("eligible_total") or 0),
+                last_remaining_total=0,
+                last_skipped_missing_cookie=int(stats.get("missing_cookie") or 0),
+                last_skipped_local_or_invalid=int(stats.get("local_or_invalid") or 0),
                 current_item={},
             )
             return
@@ -547,17 +686,24 @@ class RemoteRefreshManager:
                 succeeded += 1
             else:
                 failed += 1
+            processed_total = succeeded + failed
             self.task_store.patch_remote_refresh_state(
                 last_batch_succeeded=succeeded,
                 last_batch_failed=failed,
+                last_remaining_total=max(int(stats.get("eligible_total") or 0) - processed_total, 0),
             )
 
         finished_at = _now_iso()
         previous_state = self.task_store.load_remote_refresh_state()
+        processed_total = succeeded + failed
+        remaining_total = max(int(stats.get("eligible_total") or 0) - processed_total, 0)
         message = (
-            f"远端刷新完成，成功 {succeeded} 个，失败 {failed} 个。"
+            f"远端刷新完成，成功 {succeeded} 个，失败 {failed} 个。{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), batch_size=batch_size, remaining_total=remaining_total)}"
             if not interrupted
-            else f"远端刷新部分完成，成功 {succeeded} 个，失败 {failed} 个，剩余任务延后到下一轮。"
+            else (
+                f"远端刷新部分完成，成功 {succeeded} 个，失败 {failed} 个，剩余任务延后到下一轮。"
+                f"{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), batch_size=batch_size, remaining_total=remaining_total)}"
+            )
         )
         self.task_store.patch_remote_refresh_state(
             status="idle" if failed == 0 else "error",
@@ -569,12 +715,18 @@ class RemoteRefreshManager:
             last_message=message,
             last_batch_succeeded=succeeded,
             last_batch_failed=failed,
+            last_eligible_total=int(stats.get("eligible_total") or 0),
+            last_remaining_total=remaining_total,
+            last_skipped_missing_cookie=int(stats.get("missing_cookie") or 0),
+            last_skipped_local_or_invalid=int(stats.get("local_or_invalid") or 0),
         )
         _append_remote_refresh_log(
             "batch_finished",
             succeeded=succeeded,
             failed=failed,
             interrupted=interrupted,
+            stats=stats,
+            remaining_total=remaining_total,
         )
         append_business_log(
             "remote_refresh",
@@ -583,6 +735,8 @@ class RemoteRefreshManager:
             succeeded=succeeded,
             failed=failed,
             interrupted=interrupted,
+            stats=stats,
+            remaining_total=remaining_total,
         )
 
     def _refresh_one(self, item: dict[str, Any], *, index: int, total: int, config) -> dict[str, Any]:
@@ -611,13 +765,19 @@ class RemoteRefreshManager:
             message = "缺少对应站点 Cookie，已跳过远端刷新。"
             self.task_store.append_remote_refresh_history(
                 {
-                    "id": model_dir,
+                    "id": _history_id(model_dir, "skipped"),
                     "title": title,
                     "url": origin_url,
                     "status": "skipped",
                     "progress": 0,
                     "message": message,
                     "updated_at": _now_iso(),
+                    "meta": {
+                        "model_dir": model_dir,
+                        "checked_at": _now_iso(),
+                        "change_labels": ["缺少 Cookie"],
+                        "change_summary": "缺少 Cookie",
+                    },
                 }
             )
             _append_remote_refresh_log("model_skipped", model_dir=model_dir, reason="missing_cookie")
@@ -654,7 +814,7 @@ class RemoteRefreshManager:
             invalidate_model_detail_cache(model_dir)
             message = str(finalized["meta"].get("remoteSync", {}).get("lastMessage") or "远端刷新完成。")
             history_item = {
-                "id": model_dir,
+                "id": _history_id(model_dir, "success"),
                 "title": title,
                 "url": origin_url,
                 "status": "success",
@@ -663,8 +823,15 @@ class RemoteRefreshManager:
                 "updated_at": _now_iso(),
                 "meta": {
                     "model_dir": model_dir,
+                    "checked_at": finalized.get("checked_at"),
                     "added_comments": finalized.get("added_comments"),
+                    "preserved_comments": finalized.get("preserved_comments"),
+                    "added_instances": finalized.get("added_instances"),
                     "deleted_instances": finalized.get("deleted_instances"),
+                    "attachments_added": finalized.get("attachments_added"),
+                    "summary_changed": finalized.get("summary_changed"),
+                    "change_labels": finalized.get("change_labels"),
+                    "change_summary": finalized.get("change_summary"),
                 },
             }
             self.task_store.append_remote_refresh_history(history_item)
@@ -672,7 +839,11 @@ class RemoteRefreshManager:
                 "model_succeeded",
                 model_dir=model_dir,
                 added_comments=finalized.get("added_comments"),
+                added_instances=finalized.get("added_instances"),
                 deleted_instances=finalized.get("deleted_instances"),
+                attachments_added=finalized.get("attachments_added"),
+                summary_changed=finalized.get("summary_changed"),
+                change_labels=finalized.get("change_labels"),
             )
             append_business_log(
                 "remote_refresh",
@@ -681,7 +852,12 @@ class RemoteRefreshManager:
                 model_dir=model_dir,
                 url=origin_url,
                 added_comments=finalized.get("added_comments"),
+                preserved_comments=finalized.get("preserved_comments"),
+                added_instances=finalized.get("added_instances"),
                 deleted_instances=finalized.get("deleted_instances"),
+                attachments_added=finalized.get("attachments_added"),
+                summary_changed=finalized.get("summary_changed"),
+                change_labels=finalized.get("change_labels"),
             )
             return {"ok": True}
         except Exception as exc:
@@ -693,7 +869,7 @@ class RemoteRefreshManager:
                 invalidate_archive_snapshot("remote_refresh_mark_deleted")
                 invalidate_model_detail_cache(model_dir)
                 history_item = {
-                    "id": model_dir,
+                    "id": _history_id(model_dir, "source_deleted"),
                     "title": title,
                     "url": origin_url,
                     "status": "source_deleted",
@@ -702,6 +878,9 @@ class RemoteRefreshManager:
                     "updated_at": _now_iso(),
                     "meta": {
                         "model_dir": model_dir,
+                        "checked_at": _now_iso(),
+                        "change_labels": ["模型源端已删除"],
+                        "change_summary": "模型源端已删除",
                     },
                 }
                 self.task_store.append_remote_refresh_history(history_item)
@@ -721,7 +900,7 @@ class RemoteRefreshManager:
                 invalidate_archive_snapshot("remote_refresh_error")
                 invalidate_model_detail_cache(model_dir)
             history_item = {
-                "id": model_dir,
+                "id": _history_id(model_dir, "failed"),
                 "title": title,
                 "url": origin_url,
                 "status": "failed",
@@ -730,6 +909,9 @@ class RemoteRefreshManager:
                 "updated_at": _now_iso(),
                 "meta": {
                     "model_dir": model_dir,
+                    "checked_at": _now_iso(),
+                    "change_labels": ["刷新失败"],
+                    "change_summary": "刷新失败",
                 },
             }
             self.task_store.append_remote_refresh_history(history_item)

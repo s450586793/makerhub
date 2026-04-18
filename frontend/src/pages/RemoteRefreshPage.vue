@@ -5,6 +5,24 @@
       <h1>远端刷新配置</h1>
       <p>控制远端评论、附件、打印配置与源端删除标记的分批同步节奏。</p>
     </div>
+    <div class="intro-stats">
+      <div class="intro-stat">
+        <span>当前状态</span>
+        <strong>{{ formatRemoteRefreshStatus(remoteRefreshState.status) }}</strong>
+      </div>
+      <div class="intro-stat">
+        <span>单轮数量</span>
+        <strong>{{ remoteRefreshForm.batch_size || 12 }}</strong>
+      </div>
+      <div class="intro-stat">
+        <span>可刷新总数</span>
+        <strong>{{ remoteRefreshState.last_eligible_total || 0 }}</strong>
+      </div>
+      <div class="intro-stat">
+        <span>剩余待刷</span>
+        <strong>{{ remoteRefreshState.last_remaining_total || 0 }}</strong>
+      </div>
+    </div>
   </section>
 
   <section class="surface">
@@ -32,12 +50,12 @@
       </p>
       <div class="settings-grid settings-grid--three">
         <label class="field-card">
-          <span>当前状态</span>
-          <strong>{{ formatRemoteRefreshStatus(remoteRefreshState.status) }}</strong>
+          <span>下次运行</span>
+          <strong>{{ formatDateTime(remoteRefreshState.next_run_at) }}</strong>
         </label>
         <label class="field-card">
-          <span>下次运行</span>
-          <strong>{{ remoteRefreshState.next_run_at || "-" }}</strong>
+          <span>上次运行</span>
+          <strong>{{ formatDateTime(remoteRefreshState.last_run_at) }}</strong>
         </label>
         <label class="field-card">
           <span>上次结果</span>
@@ -45,33 +63,215 @@
         </label>
       </div>
       <div class="form-footer">
-        <button class="button button-primary" type="submit">保存远端刷新设置</button>
+        <div class="settings-inline-actions">
+          <button class="button button-primary" type="submit" :disabled="saving">
+            {{ saving ? "保存中..." : "保存远端刷新设置" }}
+          </button>
+          <button class="button button-secondary" type="button" :disabled="loading" @click="refreshStateManually">
+            刷新状态
+          </button>
+        </div>
         <span class="form-status">{{ status }}</span>
       </div>
     </form>
   </section>
+
+  <section class="remote-refresh-layout">
+    <article class="surface section-card remote-refresh-card">
+      <div class="section-card__header">
+        <div>
+          <span class="eyebrow">批次摘要</span>
+          <h2>最近一轮远端刷新</h2>
+        </div>
+        <span :class="['count-pill', remoteRefreshState.running ? 'count-pill--warn' : 'count-pill--ok']">
+          {{ remoteRefreshState.last_batch_succeeded || 0 }} 成功 / {{ remoteRefreshState.last_batch_failed || 0 }} 失败
+        </span>
+      </div>
+
+      <div class="remote-refresh-stats">
+        <div class="remote-refresh-stat">
+          <span>本轮处理</span>
+          <strong>{{ remoteRefreshState.last_batch_total || 0 }}</strong>
+        </div>
+        <div class="remote-refresh-stat">
+          <span>可刷新总数</span>
+          <strong>{{ remoteRefreshState.last_eligible_total || 0 }}</strong>
+        </div>
+        <div class="remote-refresh-stat">
+          <span>缺 Cookie 跳过</span>
+          <strong>{{ remoteRefreshState.last_skipped_missing_cookie || 0 }}</strong>
+        </div>
+        <div class="remote-refresh-stat">
+          <span>本地/非单模型跳过</span>
+          <strong>{{ remoteRefreshState.last_skipped_local_or_invalid || 0 }}</strong>
+        </div>
+      </div>
+
+      <div class="remote-refresh-times">
+        <div class="remote-refresh-time">
+          <span>上次成功</span>
+          <strong>{{ formatDateTime(remoteRefreshState.last_success_at) }}</strong>
+        </div>
+        <div class="remote-refresh-time">
+          <span>上次异常</span>
+          <strong>{{ formatDateTime(remoteRefreshState.last_error_at) }}</strong>
+        </div>
+        <div class="remote-refresh-time">
+          <span>当前任务</span>
+          <strong>{{ hasCurrentItem ? (remoteRefreshState.current_item.title || "刷新中") : "空闲" }}</strong>
+        </div>
+      </div>
+
+      <p class="archive-form__hint remote-refresh-note">{{ batchExplanation }}</p>
+
+      <div v-if="hasCurrentItem" class="remote-refresh-current">
+        <div class="remote-refresh-current__head">
+          <strong>{{ remoteRefreshState.current_item.title || "未命名模型" }}</strong>
+          <span>{{ remoteRefreshState.current_item.progress || 0 }}%</span>
+        </div>
+        <div class="progress-bar"><span :style="{ width: `${remoteRefreshState.current_item.progress || 0}%` }"></span></div>
+        <p>{{ remoteRefreshState.current_item.message || "远端刷新进行中" }}</p>
+      </div>
+    </article>
+
+    <article class="surface section-card remote-refresh-card">
+      <div class="section-card__header">
+        <div>
+          <span class="eyebrow">刷新记录</span>
+          <h2>最近远端刷新历史</h2>
+        </div>
+        <span class="count-pill">{{ recentHistory.length }} 条</span>
+      </div>
+
+      <div v-if="visibleHistory.length" class="remote-refresh-history">
+        <article
+          v-for="item in visibleHistory"
+          :key="item.id || `${item.title}-${item.updated_at}`"
+          class="remote-refresh-history__item"
+        >
+          <div class="remote-refresh-history__head">
+            <div class="remote-refresh-history__title">
+              <strong>{{ item.title || item.url || "未命名模型" }}</strong>
+              <span class="remote-refresh-history__time">{{ formatDateTime(item.updated_at) }}</span>
+            </div>
+            <span :class="['remote-refresh-history__status', `is-${historyStatusClass(item.status)}`]">
+              {{ historyStatusLabel(item.status) }}
+            </span>
+          </div>
+
+          <div v-if="historyChangeLabels(item).length" class="remote-refresh-history__chips">
+            <span
+              v-for="label in historyChangeLabels(item)"
+              :key="`${item.id}-${label}`"
+              class="remote-refresh-history__chip"
+            >
+              {{ label }}
+            </span>
+          </div>
+
+          <p class="remote-refresh-history__message">{{ item.message || "未记录变化摘要。" }}</p>
+
+          <div class="remote-refresh-history__links">
+            <RouterLink
+              v-if="historyModelDir(item)"
+              class="section-link"
+              :to="encodeModelPath(historyModelDir(item))"
+            >
+              查看本地详情
+            </RouterLink>
+            <a
+              v-if="item.url"
+              class="section-link"
+              :href="item.url"
+              target="_blank"
+              rel="noreferrer"
+            >
+              打开源链接
+            </a>
+          </div>
+        </article>
+
+        <div v-if="recentHistory.length > historyVisibleLimit" class="task-list-footer">
+          <button class="button button-secondary button-small" type="button" @click="historyVisibleLimit += HISTORY_PAGE_SIZE">
+            加载更多
+          </button>
+        </div>
+      </div>
+
+      <p v-else class="empty-copy">还没有远端刷新记录。</p>
+    </article>
+  </section>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { RouterLink } from "vue-router";
 
-import { appState, refreshConfig } from "../lib/appState";
+import { refreshConfig } from "../lib/appState";
 import { apiRequest } from "../lib/api";
+import { encodeModelPath, parseServerDate } from "../lib/helpers";
 
 
-const config = computed(() => appState.config);
-const remoteRefreshState = computed(() => config.value?.remote_refresh_state || {});
+const HISTORY_PAGE_SIZE = 12;
 const status = ref("");
+const loading = ref(true);
+const saving = ref(false);
+const historyVisibleLimit = ref(HISTORY_PAGE_SIZE);
+const remoteRefreshState = ref({});
 const remoteRefreshForm = reactive({
   enabled: true,
   cron: "0 */2 * * *",
   batch_size: 12,
 });
+let refreshTimer = null;
 
-function applyConfig(payload) {
-  remoteRefreshForm.enabled = payload?.remote_refresh?.enabled !== false;
-  remoteRefreshForm.cron = payload?.remote_refresh?.cron || "0 */2 * * *";
-  remoteRefreshForm.batch_size = Number(payload?.remote_refresh?.batch_size || 12);
+const recentHistory = computed(() => {
+  const items = remoteRefreshState.value?.recent_items;
+  return Array.isArray(items) ? items : [];
+});
+
+const visibleHistory = computed(() => recentHistory.value.slice(0, historyVisibleLimit.value));
+
+const hasCurrentItem = computed(() => Boolean(remoteRefreshState.value?.current_item?.title || remoteRefreshState.value?.current_item?.id));
+
+const batchExplanation = computed(() => {
+  const eligibleTotal = Number(remoteRefreshState.value?.last_eligible_total || 0);
+  const remainingTotal = Number(remoteRefreshState.value?.last_remaining_total || 0);
+  const batchTotal = Number(remoteRefreshState.value?.last_batch_total || 0);
+  const successTotal = Number(remoteRefreshState.value?.last_batch_succeeded || 0);
+  const batchSize = Number(remoteRefreshForm.batch_size || 12);
+  const skippedMissingCookie = Number(remoteRefreshState.value?.last_skipped_missing_cookie || 0);
+  const skippedLocal = Number(remoteRefreshState.value?.last_skipped_local_or_invalid || 0);
+
+  if (!eligibleTotal) {
+    if (skippedMissingCookie > 0) {
+      return `当前没有可刷新的模型。已有 ${skippedMissingCookie} 个模型因为缺少对应站点 Cookie 被跳过。`;
+    }
+    return "当前没有可刷新的远端单模型。只有模型库里已经归档、且带原始 MakerWorld 单模型链接的模型才会参与远端刷新。";
+  }
+
+  if (eligibleTotal > batchSize) {
+    return `当前可刷新 ${eligibleTotal} 个模型，单轮上限 ${batchSize} 个，所以每轮看到“成功 ${successTotal} 个”通常只是批次上限，不代表全库只有这些模型；本轮后还剩 ${remainingTotal} 个待下一轮。`;
+  }
+
+  const skipParts = [];
+  if (skippedMissingCookie > 0) {
+    skipParts.push(`${skippedMissingCookie} 个缺 Cookie`);
+  }
+  if (skippedLocal > 0) {
+    skipParts.push(`${skippedLocal} 个本地或非单模型来源`);
+  }
+  const suffix = skipParts.length ? ` 另外还有 ${skipParts.join("，")} 被跳过。` : "";
+  return `当前可刷新 ${eligibleTotal} 个模型，最近一轮处理了 ${batchTotal} 个，剩余 ${remainingTotal} 个。${suffix}`.trim();
+});
+
+function applyPayload(payload) {
+  const config = payload?.config || {};
+  const state = payload?.state || {};
+  remoteRefreshForm.enabled = config.enabled !== false;
+  remoteRefreshForm.cron = config.cron || "0 */2 * * *";
+  remoteRefreshForm.batch_size = Number(config.batch_size || 12);
+  remoteRefreshState.value = state;
 }
 
 function formatRemoteRefreshStatus(value) {
@@ -84,12 +284,97 @@ function formatRemoteRefreshStatus(value) {
   return mapping[String(value || "").trim()] || "空闲";
 }
 
-async function load() {
-  const payload = config.value || await refreshConfig();
-  applyConfig(payload);
+function formatDateTime(value) {
+  const date = parseServerDate(value);
+  if (!date) {
+    return "-";
+  }
+  return date.toLocaleString("zh-CN", {
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function historyStatusLabel(value) {
+  const mapping = {
+    success: "成功",
+    failed: "失败",
+    skipped: "跳过",
+    source_deleted: "源端已删",
+  };
+  return mapping[String(value || "").trim()] || "记录";
+}
+
+function historyStatusClass(value) {
+  const normalized = String(value || "").trim();
+  if (normalized === "source_deleted") {
+    return "source-deleted";
+  }
+  if (normalized === "failed") {
+    return "failed";
+  }
+  if (normalized === "skipped") {
+    return "skipped";
+  }
+  return "success";
+}
+
+function historyChangeLabels(item) {
+  const labels = item?.meta?.change_labels;
+  if (!Array.isArray(labels)) {
+    return [];
+  }
+  return labels.filter((label) => String(label || "").trim());
+}
+
+function historyModelDir(item) {
+  return String(item?.meta?.model_dir || "").trim().replace(/^\/+/, "");
+}
+
+function clearRefreshTimer() {
+  if (refreshTimer) {
+    window.clearTimeout(refreshTimer);
+    refreshTimer = null;
+  }
+}
+
+function scheduleRefresh() {
+  clearRefreshTimer();
+  const interval = remoteRefreshState.value?.running ? 5000 : 15000;
+  refreshTimer = window.setTimeout(() => {
+    void load({ silent: true });
+  }, interval);
+}
+
+async function load({ silent = false } = {}) {
+  let ok = true;
+  if (!silent) {
+    loading.value = true;
+  }
+  try {
+    const payload = await apiRequest("/api/remote-refresh");
+    applyPayload(payload);
+  } catch (error) {
+    ok = false;
+    if (!silent) {
+      status.value = error instanceof Error ? error.message : "远端刷新状态加载失败。";
+    } else {
+      console.error("远端刷新状态刷新失败", error);
+    }
+  } finally {
+    loading.value = false;
+    scheduleRefresh();
+  }
+  return ok;
 }
 
 async function saveRemoteRefresh() {
+  saving.value = true;
   try {
     await apiRequest("/api/config/remote-refresh", {
       method: "POST",
@@ -99,12 +384,28 @@ async function saveRemoteRefresh() {
         batch_size: Number(remoteRefreshForm.batch_size || 12),
       },
     });
-    await refreshConfig();
+    await Promise.all([refreshConfig(), load({ silent: true })]);
     status.value = "远端刷新设置已保存。";
   } catch (error) {
     status.value = error instanceof Error ? error.message : "保存失败。";
+  } finally {
+    saving.value = false;
   }
 }
 
-onMounted(load);
+async function refreshStateManually() {
+  status.value = "";
+  const ok = await load();
+  if (ok) {
+    status.value = "远端刷新状态已刷新。";
+  }
+}
+
+onMounted(async () => {
+  await load();
+});
+
+onBeforeUnmount(() => {
+  clearRefreshTimer();
+});
 </script>
