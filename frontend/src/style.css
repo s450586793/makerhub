@@ -191,6 +191,18 @@
   min-height: 20px;
 }
 
+.organizer-intro-stats {
+  width: 100%;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.organizer-layout {
+  display: grid;
+  gap: 16px;
+}
+
 .logs-workbench {
   display: grid;
   gap: 18px;
@@ -1334,6 +1346,7 @@
   .subscription-stats,
   .subscription-times,
   .subscription-card__meta-grid,
+  .organizer-intro-stats,
   .remote-refresh-intro-stats,
   .remote-refresh-stats,
   .remote-refresh-times {
@@ -1396,6 +1409,7 @@
   .subscription-stats,
   .subscription-times,
   .subscription-card__meta-grid,
+  .organizer-intro-stats,
   .remote-refresh-intro-stats,
   .remote-refresh-stats,
   .remote-refresh-times {

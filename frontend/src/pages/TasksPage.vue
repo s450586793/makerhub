@@ -245,70 +245,6 @@
       <p v-else class="empty-copy">当前没有缺失 3MF 任务。</p>
     </article>
 
-    <article class="surface section-card">
-      <div class="section-card__header">
-        <div>
-          <span class="eyebrow">本地整理</span>
-          <h2>本地整理任务</h2>
-        </div>
-        <div class="filter-actions">
-          <button
-            v-if="payload.organize_tasks.items.length"
-            class="button button-secondary button-small"
-            type="button"
-            :disabled="clearingOrganizeTasks"
-            @click="clearOrganizeTasks"
-          >
-            {{ clearingOrganizeTasks ? "清空中..." : "清空记录" }}
-          </button>
-          <span class="count-pill">{{ payload.organize_tasks.running_count || 0 }} 运行中 / {{ payload.organize_tasks.queued_count || 0 }} 排队中</span>
-        </div>
-      </div>
-      <span class="form-status">{{ organizeStatus }}</span>
-      <p v-if="payload.organize_tasks.detected_total" class="archive-form__hint">
-        当前检测到 {{ payload.organize_tasks.detected_total }} 个候选 3MF
-        <template v-if="payload.organize_tasks.detected_total > payload.organize_tasks.items.length">
-          ，当前仅展示前 {{ payload.organize_tasks.items.length }} 条
-        </template>
-      </p>
-      <div v-if="payload.organize_tasks.items.length" class="table-like">
-        <div class="table-like__row table-like__row--head">
-          <span>文件</span>
-          <span>模型目录</span>
-          <span>状态</span>
-        </div>
-        <div
-          v-for="(item, index) in visibleOrganizeTasks"
-          :key="item.id || item.fingerprint || item.source_path || `${item.source_dir}-${item.target_dir}-${index}`"
-          class="table-like__row"
-        >
-          <span>
-            <span class="missing-status">
-              <strong>{{ item.title || item.file_name || "未命名文件" }}</strong>
-              <small>{{ item.source_path || item.source_dir || "-" }}</small>
-            </span>
-          </span>
-          <span>
-            <span class="missing-status">
-              <strong>{{ item.model_dir || "-" }}</strong>
-              <small>{{ item.target_path || item.target_dir || "-" }}</small>
-            </span>
-          </span>
-          <span>
-            <span class="missing-status">
-              <strong>{{ item.status }}</strong>
-              <small>{{ item.message || "-" }}</small>
-            </span>
-          </span>
-        </div>
-      </div>
-      <div v-if="payload.organize_tasks.items.length > organizeVisibleLimit" class="task-list-footer">
-        <button class="button button-secondary button-small" type="button" @click="organizeVisibleLimit += TASKS_PAGE_SIZE">
-          加载更多
-        </button>
-      </div>
-      <p v-else class="empty-copy">当前没有本地整理任务。</p>
-    </article>
   </section>
 </template>
 
@@ -346,7 +282,6 @@ const payload = ref({
 
 const archiveUrl = ref("");
 const archiveStatus = ref("");
-const organizeStatus = ref("");
 const archiveSubmitDialog = ref({
   visible: false,
   variant: "success",
@@ -362,7 +297,6 @@ const archiveSubmitDialog = ref({
 const missingStatus = ref("");
 const submittingArchive = ref(false);
 const confirmingArchiveMode = ref("");
-const clearingOrganizeTasks = ref(false);
 const pendingMissingActionKey = ref("");
 let refreshTimer = null;
 let loadingTasks = false;
@@ -371,13 +305,10 @@ const activeVisibleLimit = ref(TASKS_PAGE_SIZE);
 const queuedVisibleLimit = ref(TASKS_PAGE_SIZE);
 const failureVisibleLimit = ref(TASKS_PAGE_SIZE);
 const missingVisibleLimit = ref(TASKS_PAGE_SIZE);
-const organizeVisibleLimit = ref(TASKS_PAGE_SIZE);
-
 const visibleActiveTasks = computed(() => payload.value.archive_queue.active.slice(0, activeVisibleLimit.value));
 const visibleQueuedTasks = computed(() => payload.value.archive_queue.queued.slice(0, queuedVisibleLimit.value));
 const visibleFailureTasks = computed(() => payload.value.archive_queue.recent_failures.slice(0, failureVisibleLimit.value));
 const visibleMissingItems = computed(() => payload.value.missing_3mf.items.slice(0, missingVisibleLimit.value));
-const visibleOrganizeTasks = computed(() => payload.value.organize_tasks.items.slice(0, organizeVisibleLimit.value));
 
 function getMissingKey(item) {
   return [
@@ -597,21 +528,6 @@ async function cancelMissing(item) {
     missingStatus.value = error instanceof Error ? error.message : "取消失败。";
   } finally {
     pendingMissingActionKey.value = "";
-  }
-}
-
-async function clearOrganizeTasks() {
-  clearingOrganizeTasks.value = true;
-  try {
-    const response = await apiRequest("/api/tasks/organize/clear", {
-      method: "POST",
-    });
-    organizeStatus.value = response.message || "已清空本地整理任务记录。";
-    await load();
-  } catch (error) {
-    organizeStatus.value = error instanceof Error ? error.message : "清空本地整理任务记录失败。";
-  } finally {
-    clearingOrganizeTasks.value = false;
   }
 }
 
