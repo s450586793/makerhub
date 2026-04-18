@@ -30,10 +30,18 @@
       <div class="settings-grid settings-grid--three">
         <label class="field-card">
           <span>启用远端刷新</span>
-          <label class="switch">
-            <input v-model="remoteRefreshForm.enabled" type="checkbox">
-            <span>默认开启。仅对模型库内已有远端来源链接的模型做增量刷新。</span>
-          </label>
+          <button
+            :class="['subscription-switch', remoteRefreshForm.enabled && 'is-on']"
+            type="button"
+            :disabled="saving"
+            @click="remoteRefreshForm.enabled = !remoteRefreshForm.enabled"
+          >
+            <span class="subscription-switch__track" aria-hidden="true">
+              <span class="subscription-switch__thumb"></span>
+            </span>
+            <span class="subscription-switch__label">{{ remoteRefreshForm.enabled ? "启用中" : "已停用" }}</span>
+          </button>
+          <small class="archive-form__hint">默认开启。仅对模型库内已有远端来源链接的模型做增量刷新。</small>
         </label>
         <label class="field-card">
           <span>Cron</span>
