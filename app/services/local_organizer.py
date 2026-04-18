@@ -264,7 +264,15 @@ class LocalOrganizerService:
                     break
 
             status = str(existing.get("status") or "").strip().lower()
-            if status in {"running", "success", "skipped"}:
+            if status == "running":
+                entry = {
+                    **existing,
+                    "status": "queued",
+                    "message": "检测到上次本地整理中断，已重新加入队列。",
+                    "progress": 0,
+                    "updated_at": now_iso,
+                }
+            elif status in {"success", "skipped"}:
                 entry = dict(existing)
             else:
                 entry = {
@@ -354,7 +362,7 @@ class LocalOrganizerService:
             return
 
         existing = known_by_fingerprint.get(fingerprint) or {}
-        if str(existing.get("status") or "").lower() in {"running", "success", "skipped"}:
+        if str(existing.get("status") or "").lower() in {"success", "skipped"}:
             _append_organizer_log(
                 "candidate_ignored_existing",
                 source=source_path.as_posix(),
@@ -440,10 +448,68 @@ class LocalOrganizerService:
             source=self._worker_source_path,
             return_code=return_code,
         )
+        self._recover_stale_running_task(source_path_text=self._worker_source_path, return_code=return_code)
         self._worker_process = None
         self._worker_source_path = ""
         self._worker_started_at = 0.0
         self._last_worker_finished_at = time.time()
+
+    def _recover_stale_running_task(self, *, source_path_text: str, return_code: int) -> None:
+        source_path_text = str(source_path_text or "").strip()
+        if not source_path_text:
+            return
+
+        payload = self.task_store.load_organize_tasks()
+        items = list(payload.get("items") or [])
+        matched: Optional[dict[str, Any]] = None
+        for item in items:
+            if str(item.get("source_path") or "").strip() == source_path_text:
+                matched = item
+                break
+
+        if not matched:
+            return
+        if str(matched.get("status") or "").strip().lower() != "running":
+            return
+
+        source_path = Path(source_path_text)
+        if source_path.exists() and source_path.is_file():
+            self.task_store.upsert_organize_task(
+                {
+                    **matched,
+                    "status": "queued",
+                    "message": (
+                        "检测到本地整理 worker 已退出，但任务未完成，已自动重新排队。"
+                        if return_code == 0
+                        else f"本地整理 worker 异常退出（exit={return_code}），已自动重新排队。"
+                    ),
+                    "progress": 0,
+                    "updated_at": _now_iso(),
+                },
+                limit=ORGANIZER_TASK_LIMIT,
+            )
+            _append_organizer_log(
+                "worker_state_requeued",
+                source=source_path_text,
+                return_code=return_code,
+            )
+            return
+
+        self.task_store.upsert_organize_task(
+            {
+                **matched,
+                "status": "failed",
+                "message": "本地整理 worker 已退出，但源文件不存在，任务已标记失败。",
+                "progress": 0,
+                "updated_at": _now_iso(),
+            },
+            limit=ORGANIZER_TASK_LIMIT,
+        )
+        _append_organizer_log(
+            "worker_state_missing_source",
+            source=source_path_text,
+            return_code=return_code,
+        )
 
     def _spawn_worker(
         self,
