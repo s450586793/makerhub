@@ -5,7 +5,7 @@
       <h1>远端刷新配置</h1>
       <p>控制远端评论、附件、打印配置与源端删除标记的分批同步节奏。</p>
     </div>
-    <div class="intro-stats">
+    <div class="intro-stats remote-refresh-intro-stats">
       <div class="intro-stat">
         <span>当前状态</span>
         <strong>{{ formatRemoteRefreshStatus(remoteRefreshState.status) }}</strong>
@@ -140,7 +140,20 @@
           <span class="eyebrow">刷新记录</span>
           <h2>最近远端刷新历史</h2>
         </div>
-        <span class="count-pill">{{ recentHistory.length }} 条</span>
+        <div class="remote-refresh-history__toolbar">
+          <div class="remote-refresh-history__filters">
+            <button
+              v-for="option in historyFilterOptions"
+              :key="option.value"
+              :class="['remote-refresh-history__filter', historyFilter === option.value && 'is-active']"
+              type="button"
+              @click="applyHistoryFilter(option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+          <span class="count-pill">{{ filteredHistory.length }} / {{ recentHistory.length }} 条</span>
+        </div>
       </div>
 
       <div v-if="visibleHistory.length" class="remote-refresh-history">
@@ -191,14 +204,14 @@
           </div>
         </article>
 
-        <div v-if="recentHistory.length > historyVisibleLimit" class="task-list-footer">
+        <div v-if="filteredHistory.length > historyVisibleLimit" class="task-list-footer">
           <button class="button button-secondary button-small" type="button" @click="historyVisibleLimit += HISTORY_PAGE_SIZE">
             加载更多
           </button>
         </div>
       </div>
 
-      <p v-else class="empty-copy">还没有远端刷新记录。</p>
+      <p v-else class="empty-copy">{{ emptyHistoryText }}</p>
     </article>
   </section>
 </template>
@@ -216,6 +229,7 @@ const HISTORY_PAGE_SIZE = 12;
 const status = ref("");
 const loading = ref(true);
 const saving = ref(false);
+const historyFilter = ref("changed");
 const historyVisibleLimit = ref(HISTORY_PAGE_SIZE);
 const remoteRefreshState = ref({});
 const remoteRefreshForm = reactive({
@@ -223,6 +237,11 @@ const remoteRefreshForm = reactive({
   cron: "0 */2 * * *",
   batch_size: 12,
 });
+const historyFilterOptions = [
+  { value: "changed", label: "有远端更新" },
+  { value: "all", label: "全部" },
+  { value: "issues", label: "异常与跳过" },
+];
 let refreshTimer = null;
 
 const recentHistory = computed(() => {
@@ -230,9 +249,31 @@ const recentHistory = computed(() => {
   return Array.isArray(items) ? items : [];
 });
 
-const visibleHistory = computed(() => recentHistory.value.slice(0, historyVisibleLimit.value));
+const filteredHistory = computed(() => {
+  if (historyFilter.value === "all") {
+    return recentHistory.value;
+  }
+  if (historyFilter.value === "issues") {
+    return recentHistory.value.filter((item) => historyIsIssue(item));
+  }
+  return recentHistory.value.filter((item) => historyHasRemoteChange(item));
+});
+
+const visibleHistory = computed(() => filteredHistory.value.slice(0, historyVisibleLimit.value));
 
 const hasCurrentItem = computed(() => Boolean(remoteRefreshState.value?.current_item?.title || remoteRefreshState.value?.current_item?.id));
+const emptyHistoryText = computed(() => {
+  if (!recentHistory.value.length) {
+    return "还没有远端刷新记录。";
+  }
+  if (historyFilter.value === "changed") {
+    return "当前筛选下没有远端更新记录。";
+  }
+  if (historyFilter.value === "issues") {
+    return "当前筛选下没有异常或跳过记录。";
+  }
+  return "当前筛选下没有刷新记录。";
+});
 
 const batchExplanation = computed(() => {
   const eligibleTotal = Number(remoteRefreshState.value?.last_eligible_total || 0);
@@ -332,8 +373,29 @@ function historyChangeLabels(item) {
   return labels.filter((label) => String(label || "").trim());
 }
 
+function historyHasRemoteChange(item) {
+  const statusValue = String(item?.status || "").trim();
+  if (statusValue === "source_deleted") {
+    return true;
+  }
+  if (statusValue !== "success") {
+    return false;
+  }
+  const labels = historyChangeLabels(item);
+  return labels.some((label) => label !== "已检查，无远端变化");
+}
+
+function historyIsIssue(item) {
+  return ["failed", "skipped"].includes(String(item?.status || "").trim());
+}
+
 function historyModelDir(item) {
   return String(item?.meta?.model_dir || "").trim().replace(/^\/+/, "");
+}
+
+function applyHistoryFilter(value) {
+  historyFilter.value = value;
+  historyVisibleLimit.value = HISTORY_PAGE_SIZE;
 }
 
 function clearRefreshTimer() {
