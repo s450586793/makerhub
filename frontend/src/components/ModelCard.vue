@@ -29,6 +29,13 @@
         <div class="gallery-card__badges">
           <span class="gallery-card__source">{{ model.source_label }}</span>
           <span
+            v-if="model.local_flags?.deleted"
+            class="gallery-card__source gallery-card__source--local-deleted"
+            title="该模型已在 MakerHub 端删除，默认不会出现在模型库中。"
+          >
+            本地已删
+          </span>
+          <span
             v-if="model.subscription_flags?.deleted_on_source"
             class="gallery-card__source gallery-card__source--danger"
             :title="deletedSourceTitle"

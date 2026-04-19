@@ -1208,6 +1208,12 @@
   background: rgba(239, 68, 68, 0.1);
 }
 
+.gallery-card__source--local-deleted {
+  border-color: rgba(89, 103, 120, 0.2);
+  color: #4c5868;
+  background: rgba(148, 163, 184, 0.12);
+}
+
 .mw-chip--danger {
   border-color: rgba(191, 74, 74, 0.18);
   color: #a53030;
