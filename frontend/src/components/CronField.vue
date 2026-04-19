@@ -15,7 +15,9 @@
 
     <div
       v-if="popoverVisible"
-      class="cron-popover"
+      ref="popoverRef"
+      :class="['cron-popover', popoverPlacement === 'above' && 'is-above']"
+      :style="popoverStyle"
       role="dialog"
       aria-modal="false"
       :aria-label="dialogTitle"
@@ -152,7 +154,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 
 
 const props = defineProps({
@@ -173,7 +175,10 @@ const props = defineProps({
 const emit = defineEmits(["update:modelValue"]);
 
 const rootRef = ref(null);
+const popoverRef = ref(null);
 const popoverVisible = ref(false);
+const popoverPlacement = ref("below");
+const popoverMaxHeight = ref(420);
 const customCron = ref("");
 const modeOptions = [
   { value: "every_minute", label: "每分钟" },
@@ -209,6 +214,9 @@ const previewCron = computed(() => {
   return buildCronExpression(draft, customCron.value);
 });
 const previewDescription = computed(() => describeCron(previewCron.value));
+const popoverStyle = computed(() => ({
+  maxHeight: `${popoverMaxHeight.value}px`,
+}));
 
 function createDraftState() {
   return {
@@ -433,6 +441,7 @@ function handleTextInput(event) {
 
 function openPopover() {
   popoverVisible.value = true;
+  syncPopoverLayout();
 }
 
 function closePopover() {
@@ -448,6 +457,7 @@ function selectMode(value) {
   if (value !== "custom") {
     applyPresetCron();
   }
+  syncPopoverLayout();
 }
 
 function applyPresetCron() {
@@ -475,21 +485,72 @@ function handleDocumentKeydown(event) {
   }
 }
 
+function updatePopoverLayout() {
+  if (!popoverVisible.value) {
+    return;
+  }
+  const root = rootRef.value;
+  const popover = popoverRef.value;
+  const anchor = root?.querySelector?.(".cron-field__input");
+  if (!anchor || !popover) {
+    return;
+  }
+
+  const anchorRect = anchor.getBoundingClientRect();
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  const viewportMargin = 16;
+  const gap = 8;
+  const availableBelow = Math.max(0, viewportHeight - anchorRect.bottom - viewportMargin - gap);
+  const availableAbove = Math.max(0, anchorRect.top - viewportMargin - gap);
+  const desiredHeight = Math.max(popover.scrollHeight, 220);
+
+  if (availableBelow >= Math.min(desiredHeight, 320) || availableBelow >= availableAbove) {
+    popoverPlacement.value = "below";
+    popoverMaxHeight.value = Math.max(140, availableBelow);
+    return;
+  }
+
+  popoverPlacement.value = "above";
+  popoverMaxHeight.value = Math.max(140, availableAbove);
+}
+
+function syncPopoverLayout() {
+  nextTick(() => {
+    updatePopoverLayout();
+  });
+}
+
 watch(
   () => props.modelValue,
   (value) => {
     syncDraftFromValue(value);
+    if (popoverVisible.value) {
+      syncPopoverLayout();
+    }
   },
   { immediate: true },
+);
+
+watch(
+  () => draft.mode,
+  () => {
+    if (popoverVisible.value) {
+      syncPopoverLayout();
+    }
+  },
 );
 
 onMounted(() => {
   document.addEventListener("pointerdown", handleDocumentPointerDown);
   document.addEventListener("keydown", handleDocumentKeydown);
+  window.addEventListener("resize", updatePopoverLayout);
+  window.addEventListener("scroll", updatePopoverLayout, true);
 });
 
 onBeforeUnmount(() => {
   document.removeEventListener("pointerdown", handleDocumentPointerDown);
   document.removeEventListener("keydown", handleDocumentKeydown);
+  window.removeEventListener("resize", updatePopoverLayout);
+  window.removeEventListener("scroll", updatePopoverLayout, true);
 });
 </script>

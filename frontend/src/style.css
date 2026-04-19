@@ -482,6 +482,13 @@
   background: var(--surface);
   box-shadow: 0 24px 60px rgba(15, 23, 42, 0.18);
   text-align: left;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.cron-popover.is-above {
+  top: auto;
+  bottom: calc(100% + 8px);
 }
 
 .cron-dialog__header {
