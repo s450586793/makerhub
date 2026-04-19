@@ -1461,7 +1461,6 @@ def build_dashboard_payload(config) -> dict:
                 "enabled": bool(getattr(config.remote_refresh, "enabled", False)),
                 "status": str(remote_refresh.get("status") or "idle"),
                 "running": bool(remote_refresh.get("running", False)),
-                "batch_size": int(getattr(config.remote_refresh, "batch_size", 0) or 0),
                 "last_batch_total": int(remote_refresh.get("last_batch_total") or 0),
                 "last_batch_succeeded": int(remote_refresh.get("last_batch_succeeded") or 0),
                 "last_batch_failed": int(remote_refresh.get("last_batch_failed") or 0),

@@ -1263,6 +1263,64 @@ def _looks_like_html(text: str) -> bool:
     return head.startswith("<!doctype html") or "<html" in head
 
 
+def _stringify_3mf_failure_payload(payload) -> str:
+    if payload in ("", None):
+        return ""
+    if isinstance(payload, str):
+        return payload
+    try:
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception:
+        return str(payload)
+
+
+def _classify_3mf_fetch_failure(
+    *,
+    status_code: int = 0,
+    text: str = "",
+    payload=None,
+    cloudflare: bool = False,
+) -> dict:
+    raw_text = str(text or "").strip()
+    payload_text = _stringify_3mf_failure_payload(payload)
+    combined = " ".join(part for part in (raw_text, payload_text) if part).lower()
+
+    if cloudflare or _is_cloudflare_challenge(raw_text) or _looks_like_html(raw_text):
+        return {
+            "state": "cloudflare",
+            "message": "下载 3MF 时触发了 Cloudflare 校验，请更新 Cookie 或调整代理。",
+        }
+    if "每日下载上限" in combined or ("download" in combined and "limit" in combined and "daily" in combined):
+        return {
+            "state": "download_limited",
+            "message": "已达到 MakerWorld 每日下载上限，今日暂停自动重试。",
+        }
+    if "please log in to download models" in combined or "log in to download models" in combined:
+        return {
+            "state": "auth_required",
+            "message": "下载 3MF 需要有效登录 Cookie，请检查 Cookie 是否过期。",
+        }
+    if status_code in {401, 403}:
+        return {
+            "state": "auth_required",
+            "message": "下载 3MF 需要有效登录 Cookie，请检查 Cookie 是否过期。",
+        }
+    if status_code == 404 or "route not found" in combined or "\"detail\":\"not found\"" in combined or "not found" in combined:
+        return {
+            "state": "not_found",
+            "message": "源端没有返回该打印配置的 3MF 下载地址。",
+        }
+    if status_code >= 400:
+        return {
+            "state": "http_error",
+            "message": f"下载 3MF 失败：上游返回 HTTP {status_code}。",
+        }
+    return {
+        "state": "missing",
+        "message": "未获取到 3MF 下载地址。",
+    }
+
+
 def fetch_instance_3mf(
     session: requests.Session,
     inst_id: int,
@@ -1273,11 +1331,12 @@ def fetch_instance_3mf(
 ):
     """
     获取实例的 3MF 下载地址，允许外部传入 api_url，并自动回退不同 API Host。
-    返回: (name, url, used_api_url)
+    返回: (name, url, used_api_url, failure_info)
     """
     candidates = _build_instance_api_candidates(inst_id, api_url, origin, api_host_hint)
     auth_token = _extract_auth_token(raw_cookie)
     last_error = None
+    last_failure = {"state": "missing", "message": "未获取到 3MF 下载地址。"}
     for candidate in candidates:
         try:
             headers = {
@@ -1302,19 +1361,32 @@ def fetch_instance_3mf(
             log("[3MF] 响应前 200 字符:", text_preview)
             if r.status_code >= 400:
                 if _is_cloudflare_challenge(text_preview) or _looks_like_html(text_preview):
+                    last_failure = _classify_3mf_fetch_failure(
+                        status_code=r.status_code,
+                        text=text_preview,
+                        cloudflare=True,
+                    )
                     continue
                 last_error = RuntimeError(f"status={r.status_code}")
+                last_failure = _classify_3mf_fetch_failure(status_code=r.status_code, text=text_preview)
                 continue
             try:
                 data = r.json()
             except Exception as je:
                 if _is_cloudflare_challenge(text_preview) or _looks_like_html(text_preview):
+                    last_failure = _classify_3mf_fetch_failure(
+                        status_code=r.status_code,
+                        text=text_preview,
+                        cloudflare=True,
+                    )
                     continue
                 last_error = je
+                last_failure = _classify_3mf_fetch_failure(status_code=r.status_code, text=text_preview)
                 continue
             name, url = _extract_instance_download(data)
             if url:
-                return name, url, candidate
+                return name, url, candidate, {"state": "available", "message": ""}
+            last_failure = _classify_3mf_fetch_failure(status_code=r.status_code, text=text_preview, payload=data)
         except Exception as e:
             last_error = e
             continue
@@ -1351,22 +1423,30 @@ def fetch_instance_3mf(
             if res.returncode != 0:
                 err_msg = res.stderr.decode(errors="ignore") if res.stderr else ""
                 log("3MF curl 失败 code=", res.returncode, "stderr:", err_msg[:200])
+                last_failure = _classify_3mf_fetch_failure(text=err_msg)
                 continue
             body = res.stdout or b""
             preview = body[:200]
             log("3MF curl 返回长度:", len(body), "前 200 字符:", preview)
+            preview_text = body.decode("utf-8", errors="ignore")
             try:
-                data = json.loads(body.decode("utf-8", errors="ignore"))
+                data = json.loads(preview_text)
             except Exception as je:
                 log("3MF curl JSON 解析失败:", je)
+                last_failure = _classify_3mf_fetch_failure(
+                    text=preview_text[:400],
+                    cloudflare=_is_cloudflare_challenge(preview_text) or _looks_like_html(preview_text),
+                )
                 continue
             name, url = _extract_instance_download(data)
             if url:
-                return name, url, candidate
+                return name, url, candidate, {"state": "available", "message": ""}
+            last_failure = _classify_3mf_fetch_failure(text=preview_text[:400], payload=data)
         except Exception as ce:
             log("3MF curl 调用异常:", ce)
+            last_failure = _classify_3mf_fetch_failure(text=str(ce))
             continue
-    return "", "", api_url or ""
+    return "", "", api_url or "", last_failure
 
 
 def collect_instance_media(inst: dict, session: requests.Session, out_dir: Path, base_name: str):
@@ -2771,7 +2851,7 @@ def archive_model(
         )
         plates, pics = collect_instance_media(inst, sess, images_dir, base_name)
         api_url = inst.get("apiUrl") or f"{origin}/api/v1/design-service/instance/{inst_id}/f3mf?type=download&fileType="
-        name3mf, url3mf, used_api_url = fetch_instance_3mf(
+        name3mf, url3mf, used_api_url, failure_info = fetch_instance_3mf(
             sess,
             inst_id,
             raw_cookie_header,
@@ -2779,6 +2859,8 @@ def archive_model(
             api_host_hint=api_host_hint,
             origin=origin,
         )
+        failure_state = str((failure_info or {}).get("state") or "").strip()
+        failure_message = str((failure_info or {}).get("message") or "").strip()
         inst_record = {
             "id": inst_id,
             "profileId": inst.get("profileId") or inst.get("profile_id") or inst.get("profileID"),
@@ -2800,6 +2882,8 @@ def archive_model(
             "name": name3mf,
             "downloadUrl": url3mf,
             "apiUrl": used_api_url or api_url,
+            "downloadState": "" if url3mf else failure_state,
+            "downloadMessage": "" if url3mf else failure_message,
         }
         # 在构建 meta 阶段就写入 fileName，保证后续语义清晰：
         # title=展示名，name=来源名，fileName=本地真实文件名。
@@ -2845,7 +2929,10 @@ def archive_model(
         missing_log = logs_dir / "missing_3mf.log"
         with missing_log.open("a", encoding="utf-8") as f:
             for m in missing_3mf:
-                f.write(f"{datetime.now().isoformat()}\t{base_name}\t{m['id']}\t{m.get('title','')}\tcookie失效\n")
+                f.write(
+                    f"{datetime.now().isoformat()}\t{base_name}\t{m['id']}\t{m.get('title','')}\t"
+                    f"{m.get('downloadMessage') or m.get('downloadState') or '未获取到 3MF 下载地址'}\n"
+                )
         log(logger, "缺失 3MF 已记录:", missing_log)
 
     work_dir = meta_path.parent

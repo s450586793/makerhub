@@ -128,7 +128,7 @@ def _normalize_missing_3mf(payload: Any, fallback_items: Optional[list[dict]] = 
                 "status": str(item.get("status") or "missing"),
                 "model_url": str(item.get("model_url") or item.get("url") or ""),
                 "instance_id": str(item.get("instance_id") or item.get("profileId") or item.get("instanceId") or ""),
-                "message": str(item.get("message") or ""),
+                "message": _sanitize_message_text(item.get("message") or ""),
                 "updated_at": str(item.get("updated_at") or item.get("time") or ""),
             }
         )

@@ -140,8 +140,8 @@
 
             <div class="dashboard-mini-card__stats">
               <div class="dashboard-mini-card__stat">
-                <span>单轮</span>
-                <strong>{{ automation.remote_refresh.batch_size || 0 }}</strong>
+                <span>本轮</span>
+                <strong>{{ automation.remote_refresh.last_batch_total || 0 }}</strong>
               </div>
               <div class="dashboard-mini-card__stat">
                 <span>可刷</span>
@@ -238,7 +238,6 @@ const defaultAutomationOverview = {
     enabled: false,
     status: "idle",
     running: false,
-    batch_size: 0,
     last_batch_total: 0,
     last_batch_succeeded: 0,
     last_batch_failed: 0,

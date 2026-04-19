@@ -5,11 +5,11 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-from app.core.settings import ARCHIVE_DIR, LOGS_DIR
+from app.core.settings import ARCHIVE_DIR, LOGS_DIR, STATE_DIR, ensure_app_dirs
 from app.core.store import JsonStore
 from app.services.batch_discovery import (
     discover_batch_model_urls,
@@ -28,6 +28,8 @@ BATCH_QUEUE_LOG_PATH = LOGS_DIR / "batch_queue.log"
 MAX_BATCH_CHILD_REQUEUE_ATTEMPTS = 3
 ACTIVE_BATCH_IDLE_POLL_SECONDS = 2.0
 COLLECTION_DETAIL_RE = re.compile(r"/(?:[a-z]{2}/)?collections/\d+(?:-[^/?#]+)?(?:[/?#]|$)", re.I)
+THREE_MF_LIMIT_GUARD_PATH = STATE_DIR / "three_mf_limit_guard.json"
+THREE_MF_LIMIT_DEFAULT_MESSAGE = "已达到 MakerWorld 每日下载上限，今日暂停自动重试。"
 
 
 def detect_archive_mode(url: str) -> str:
@@ -83,6 +85,131 @@ def _log_archive(event: str, message: str = "", level: str = "info", **payload: 
     append_business_log("archive", event, message, level=level, **payload)
 
 
+def _base_three_mf_limit_guard() -> dict[str, Any]:
+    return {
+        "active": False,
+        "limited_until": "",
+        "last_hit_at": "",
+        "message": "",
+        "reason": "",
+        "model_id": "",
+        "model_url": "",
+        "instance_id": "",
+    }
+
+
+def _write_three_mf_limit_guard(payload: dict[str, Any]) -> dict[str, Any]:
+    ensure_app_dirs()
+    current = _base_three_mf_limit_guard()
+    if THREE_MF_LIMIT_GUARD_PATH.exists():
+        try:
+            existing = json.loads(THREE_MF_LIMIT_GUARD_PATH.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                current.update(existing)
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    current.update(
+        {
+            "active": bool(payload.get("active", current.get("active"))),
+            "limited_until": str(payload.get("limited_until", current.get("limited_until")) or ""),
+            "last_hit_at": str(payload.get("last_hit_at", current.get("last_hit_at")) or ""),
+            "message": str(payload.get("message", current.get("message")) or ""),
+            "reason": str(payload.get("reason", current.get("reason")) or ""),
+            "model_id": str(payload.get("model_id", current.get("model_id")) or ""),
+            "model_url": str(payload.get("model_url", current.get("model_url")) or ""),
+            "instance_id": str(payload.get("instance_id", current.get("instance_id")) or ""),
+        }
+    )
+    THREE_MF_LIMIT_GUARD_PATH.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+    return current
+
+
+def _read_three_mf_limit_guard() -> dict[str, Any]:
+    ensure_app_dirs()
+    if not THREE_MF_LIMIT_GUARD_PATH.exists():
+        return _base_three_mf_limit_guard()
+
+    try:
+        payload = json.loads(THREE_MF_LIMIT_GUARD_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return _base_three_mf_limit_guard()
+
+    state = _base_three_mf_limit_guard()
+    if isinstance(payload, dict):
+        state.update(payload)
+
+    if bool(state.get("active")):
+        limited_until = str(state.get("limited_until") or "").strip()
+        if limited_until:
+            try:
+                if datetime.fromisoformat(limited_until) <= datetime.now():
+                    return _write_three_mf_limit_guard({"active": False, "message": "", "reason": ""})
+            except ValueError:
+                return _write_three_mf_limit_guard({"active": False, "message": "", "reason": ""})
+    return state
+
+
+def _is_three_mf_limit_guard_active(state: Optional[dict[str, Any]] = None) -> bool:
+    current = state or _read_three_mf_limit_guard()
+    return bool(current.get("active"))
+
+
+def _three_mf_limit_until() -> str:
+    now = datetime.now()
+    return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).isoformat(timespec="seconds")
+
+
+def _three_mf_limit_message(state: Optional[dict[str, Any]] = None) -> str:
+    current = state or _read_three_mf_limit_guard()
+    base_message = str(current.get("message") or "").strip() or THREE_MF_LIMIT_DEFAULT_MESSAGE
+    limited_until = str(current.get("limited_until") or "").strip()
+    if not limited_until:
+        return base_message
+    try:
+        until_text = datetime.fromisoformat(limited_until).strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return base_message
+    return f"{base_message.rstrip('。')}，自动重试暂停至 {until_text}。"
+
+
+def _activate_three_mf_limit_guard(
+    *,
+    message: str = "",
+    model_id: str = "",
+    model_url: str = "",
+    instance_id: str = "",
+) -> dict[str, Any]:
+    return _write_three_mf_limit_guard(
+        {
+            "active": True,
+            "limited_until": _three_mf_limit_until(),
+            "last_hit_at": datetime.now().isoformat(timespec="seconds"),
+            "message": str(message or "").strip() or THREE_MF_LIMIT_DEFAULT_MESSAGE,
+            "reason": "download_limited",
+            "model_id": str(model_id or "").strip(),
+            "model_url": str(model_url or "").strip(),
+            "instance_id": str(instance_id or "").strip(),
+        }
+    )
+
+
+def _missing_3mf_message_from_result(item: dict[str, Any], limit_guard: Optional[dict[str, Any]] = None) -> str:
+    download_state = str(item.get("downloadState") or "").strip()
+    download_message = str(item.get("downloadMessage") or "").strip()
+    if download_state == "download_limited":
+        return _three_mf_limit_message(limit_guard)
+    if download_state == "auth_required":
+        return download_message or "下载 3MF 需要有效登录 Cookie，请检查 Cookie 是否过期。"
+    if download_state == "cloudflare":
+        return download_message or "下载 3MF 时触发了 Cloudflare 校验，请更新 Cookie 或调整代理。"
+    if download_state == "not_found":
+        return download_message or "源端没有返回该打印配置的 3MF 下载地址。"
+    if download_message:
+        return download_message
+    return "等待重新下载"
+
+
 @contextmanager
 def _temporary_proxy_env(config):
     if not getattr(config.proxy, "enabled", False):
@@ -127,7 +254,7 @@ class ArchiveTaskManager:
         self._preview_lock = threading.Lock()
         self._batch_previews: dict[str, dict] = {}
 
-    def submit(self, url: str, force: bool = False, preview_token: str = "") -> dict:
+    def submit(self, url: str, force: bool = False, preview_token: str = "", meta: Optional[dict] = None) -> dict:
         clean_url = normalize_source_url(url)
         if not clean_url:
             return {
@@ -137,7 +264,7 @@ class ArchiveTaskManager:
 
         mode = detect_archive_mode(clean_url)
         if mode == "single_model":
-            return self._submit_single(clean_url, force=force)
+            return self._submit_single(clean_url, force=force, meta=meta)
         if mode in {"author_upload", "collection_models"}:
             return self._submit_batch(clean_url, mode, preview_token=preview_token)
         return {
@@ -509,7 +636,7 @@ class ArchiveTaskManager:
         )
         return task_id
 
-    def _submit_single(self, clean_url: str, force: bool = False) -> dict:
+    def _submit_single(self, clean_url: str, force: bool = False, meta: Optional[dict] = None) -> dict:
         task_key = _task_key(clean_url)
         deleted_item = self._deleted_task_lookup().get(task_key)
         if deleted_item is not None:
@@ -524,6 +651,13 @@ class ArchiveTaskManager:
             return {
                 "accepted": False,
                 "message": message,
+                "mode": "single_model",
+                "url": clean_url,
+            }
+        if force and _is_three_mf_limit_guard_active():
+            return {
+                "accepted": False,
+                "message": _three_mf_limit_message(),
                 "mode": "single_model",
                 "url": clean_url,
             }
@@ -545,7 +679,10 @@ class ArchiveTaskManager:
             }
 
         queue_message = "等待归档" if not force else "等待重新下载缺失 3MF"
-        task_id = self._enqueue_single_task(clean_url, message=queue_message, mode="single_model")
+        task_meta = dict(meta or {})
+        if force:
+            task_meta.setdefault("missing_3mf_retry", True)
+        task_id = self._enqueue_single_task(clean_url, message=queue_message, mode="single_model", meta=task_meta)
         self._ensure_worker()
         _log_archive(
             "single_submitted",
@@ -562,6 +699,60 @@ class ArchiveTaskManager:
             "url": clean_url,
             "message": "归档任务已加入队列。" if not force else "缺失 3MF 重新下载任务已加入队列。",
         }
+
+    def _is_missing_3mf_retry_task(self, item: dict) -> bool:
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        if meta.get("missing_3mf_retry"):
+            return True
+        message = str(item.get("message") or "")
+        return "缺失 3MF" in message
+
+    def _pause_missing_3mf_retry_tasks_for_limit(self, state: Optional[dict[str, Any]] = None) -> int:
+        guard_state = state or _read_three_mf_limit_guard()
+        if not _is_three_mf_limit_guard_active(guard_state):
+            return 0
+
+        message = _three_mf_limit_message(guard_state)
+        queue = self.task_store.load_archive_queue()
+        queued_items = list(queue.get("queued") or [])
+        kept_items: list[dict] = []
+        paused_items: list[dict] = []
+
+        for item in queued_items:
+            if self._is_missing_3mf_retry_task(item):
+                paused_items.append(item)
+            else:
+                kept_items.append(item)
+
+        if not paused_items:
+            return 0
+
+        queue["queued"] = kept_items
+        self.task_store.save_archive_queue(queue)
+
+        for item in paused_items:
+            meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+            model_url = normalize_source_url(
+                str(meta.get("model_url") or item.get("url") or "")
+            )
+            model_id = str(meta.get("model_id") or extract_model_id(model_url) or "").strip()
+            self.task_store.update_missing_3mf_status(
+                model_id=model_id,
+                title=str(meta.get("title") or ""),
+                instance_id=str(meta.get("instance_id") or ""),
+                model_url=model_url,
+                status="missing",
+                message=message,
+            )
+
+        append_business_log(
+            "missing_3mf",
+            "retry_queue_paused_daily_limit",
+            message,
+            paused_count=len(paused_items),
+            limited_until=guard_state.get("limited_until") or "",
+        )
+        return len(paused_items)
 
     def retry_missing_3mf(self, model_url: str, model_id: str = "", title: str = "", instance_id: str = "") -> dict:
         clean_url = normalize_source_url(model_url)
@@ -599,7 +790,33 @@ class ArchiveTaskManager:
                 "message": message,
             }
 
-        result = self.submit(clean_url, force=True)
+        limit_guard = _read_three_mf_limit_guard()
+        if _is_three_mf_limit_guard_active(limit_guard):
+            message = _three_mf_limit_message(limit_guard)
+            self.task_store.update_missing_3mf_status(
+                model_id=clean_model_id,
+                title="" if clean_model_id else title,
+                instance_id="" if clean_model_id else instance_id,
+                model_url="" if clean_model_id else clean_url,
+                status="missing",
+                message=message,
+            )
+            return {
+                "accepted": False,
+                "message": message,
+            }
+
+        result = self.submit(
+            clean_url,
+            force=True,
+            meta={
+                "missing_3mf_retry": True,
+                "model_id": clean_model_id or extract_model_id(clean_url),
+                "model_url": clean_url,
+                "title": title,
+                "instance_id": instance_id,
+            },
+        )
         if result.get("accepted"):
             self.task_store.update_missing_3mf_status(
                 model_id=clean_model_id,
@@ -661,6 +878,24 @@ class ArchiveTaskManager:
     def retry_all_missing_3mf(self) -> dict:
         missing_payload = self.task_store.load_missing_3mf()
         items = missing_payload.get("items") or []
+        limit_guard = _read_three_mf_limit_guard()
+        if _is_three_mf_limit_guard_active(limit_guard):
+            message = _three_mf_limit_message(limit_guard)
+            paused_count = self._pause_missing_3mf_retry_tasks_for_limit(limit_guard)
+            append_business_log(
+                "missing_3mf",
+                "retry_all_paused_daily_limit",
+                message,
+                total=len(items),
+                paused_queue_count=paused_count,
+            )
+            return {
+                "accepted": False,
+                "accepted_count": 0,
+                "queued_count": 0,
+                "failed_count": len(items),
+                "message": message,
+            }
         accepted = 0
         queued = 0
         failed = 0
@@ -951,6 +1186,12 @@ class ArchiveTaskManager:
             has_active_batch = self._refresh_batch_tasks()
             queue = self.task_store.load_archive_queue()
             queued = queue.get("queued") or []
+            limit_guard = _read_three_mf_limit_guard()
+            if _is_three_mf_limit_guard_active(limit_guard):
+                paused_count = self._pause_missing_3mf_retry_tasks_for_limit(limit_guard)
+                if paused_count:
+                    queue = self.task_store.load_archive_queue()
+                    queued = queue.get("queued") or []
             if not queued:
                 if has_active_batch:
                     time.sleep(ACTIVE_BATCH_IDLE_POLL_SECONDS)
@@ -1250,7 +1491,15 @@ class ArchiveTaskManager:
             )
 
         missing_items = []
+        limit_guard_state: Optional[dict[str, Any]] = None
         for item in result.get("missing_3mf") or []:
+            if str(item.get("downloadState") or "").strip() == "download_limited":
+                limit_guard_state = _activate_three_mf_limit_guard(
+                    message=str(item.get("downloadMessage") or ""),
+                    model_id=str(result.get("model_id") or ""),
+                    model_url=normalize_source_url(url),
+                    instance_id=str(item.get("id") or item.get("profileId") or item.get("instanceId") or ""),
+                )
             missing_items.append(
                 {
                     "model_id": str(result.get("model_id") or ""),
@@ -1258,12 +1507,14 @@ class ArchiveTaskManager:
                     "title": str(item.get("title") or item.get("name") or result.get("base_name") or ""),
                     "instance_id": str(item.get("id") or item.get("profileId") or item.get("instanceId") or ""),
                     "status": "missing",
-                    "message": "等待重新下载",
+                    "message": _missing_3mf_message_from_result(item, limit_guard_state),
                     "updated_at": datetime.now().isoformat(),
                 }
             )
         resolved_model_id = str(result.get("model_id") or "")
         self.task_store.replace_missing_3mf_for_model(resolved_model_id, missing_items)
+        if limit_guard_state is not None:
+            self._pause_missing_3mf_retry_tasks_for_limit(limit_guard_state)
         self.task_store.remove_recent_failures_for_model(
             resolved_model_id,
             url=normalize_source_url(url),

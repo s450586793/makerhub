@@ -27,7 +27,6 @@ from app.services.three_mf import resolve_model_instance_files
 REMOTE_REFRESH_LOG_PATH = LOGS_DIR / "remote_refresh.log"
 REMOTE_REFRESH_POLL_SECONDS = 20
 DEFAULT_REMOTE_REFRESH_CRON = "0 */2 * * *"
-DEFAULT_REMOTE_REFRESH_BATCH_SIZE = 12
 
 
 def _now() -> datetime:
@@ -226,7 +225,7 @@ def _merge_instance_record(existing_item: dict[str, Any], fresh_item: dict[str, 
     # 远端刷新有时能拿到实例卡片信息，但拿不到 3MF 下载地址。
     # 这种情况下不能把本地已经存在的 3MF 元信息冲掉。
     if not str(merged.get("downloadUrl") or "").strip():
-        for field in ("downloadUrl", "fileName", "name", "apiUrl"):
+        for field in ("downloadUrl", "fileName", "name", "apiUrl", "downloadState", "downloadMessage"):
             value = existing_item.get(field)
             if value not in ("", None):
                 merged[field] = copy.deepcopy(value)
@@ -236,6 +235,23 @@ def _merge_instance_record(existing_item: dict[str, Any], fresh_item: dict[str, 
             merged[field] = copy.deepcopy(existing_item.get(field))
 
     return merged
+
+
+def _missing_3mf_message_from_instance(instance: dict[str, Any]) -> tuple[str, str]:
+    download_state = str(instance.get("downloadState") or "").strip()
+    download_message = str(instance.get("downloadMessage") or "").strip()
+
+    if download_state == "download_limited":
+        return "missing", download_message or "已达到 MakerWorld 每日下载上限，今日暂停自动重试。"
+    if download_state == "auth_required":
+        return "missing", download_message or "下载 3MF 需要有效登录 Cookie，请检查 Cookie 是否过期。"
+    if download_state == "cloudflare":
+        return "missing", download_message or "下载 3MF 时触发了 Cloudflare 校验，请更新 Cookie 或调整代理。"
+    if download_state == "not_found":
+        return "missing", download_message or "源端没有返回该打印配置的 3MF 下载地址。"
+    if download_message:
+        return "missing", download_message
+    return "missing", "等待重新下载"
 
 
 def _build_missing_3mf_items(meta_path: Path, meta: dict[str, Any]) -> list[dict[str, Any]]:
@@ -262,14 +278,15 @@ def _build_missing_3mf_items(meta_path: Path, meta: dict[str, Any]) -> list[dict
         if key in seen:
             continue
         seen.add(key)
+        item_status, item_message = _missing_3mf_message_from_instance(instance)
         items.append(
             {
                 "model_id": model_id,
                 "model_url": model_url,
                 "title": title,
                 "instance_id": instance_id,
-                "status": "missing",
-                "message": "等待重新下载",
+                "status": item_status,
+                "message": item_message,
                 "updated_at": _now_iso(),
             }
         )
@@ -413,12 +430,12 @@ def _history_id(model_dir: str, status: str) -> str:
     return f"{model_dir}:{status}:{time.time_ns()}"
 
 
-def _batch_scope_message(*, eligible_total: int, batch_size: int, remaining_total: int) -> str:
+def _batch_scope_message(*, eligible_total: int, remaining_total: int) -> str:
     if eligible_total <= 0:
         return "当前没有可刷新的远端模型。"
     return (
-        f"当前可刷新 {eligible_total} 个模型，单轮上限 {max(int(batch_size or 0), 1)} 个，"
-        f"剩余 {max(int(remaining_total or 0), 0)} 个待下一轮。"
+        f"当前可刷新 {eligible_total} 个模型，"
+        f"剩余 {max(int(remaining_total or 0), 0)} 个待补跑。"
     )
 
 
@@ -674,7 +691,7 @@ class RemoteRefreshManager:
                 return True
         return False
 
-    def _pick_candidates(self, batch_size: int) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    def _pick_candidates(self) -> tuple[list[dict[str, Any]], dict[str, int]]:
         snapshot = get_archive_snapshot()
         models = list(snapshot.get("models") or [])
         deleted_model_dirs = set(self.task_store.load_model_flags().get("deleted") or [])
@@ -703,7 +720,7 @@ class RemoteRefreshManager:
             eligible.append(item)
 
         eligible.sort(key=_refresh_priority)
-        selected = eligible[: max(int(batch_size or 0), 1)]
+        selected = list(eligible)
         stats["eligible_total"] = len(eligible)
         stats["selected_total"] = len(selected)
         stats["remaining_total"] = max(len(eligible) - len(selected), 0)
@@ -711,10 +728,9 @@ class RemoteRefreshManager:
 
     def _run_batch(self, config) -> None:
         refresh_config = config.remote_refresh
-        batch_size = max(int(refresh_config.batch_size or DEFAULT_REMOTE_REFRESH_BATCH_SIZE), 1)
         normalized_cron = _validate_cron(refresh_config.cron)
         started_at = _now_iso()
-        candidates, stats = self._pick_candidates(batch_size)
+        candidates, stats = self._pick_candidates()
 
         self.task_store.patch_remote_refresh_state(
             status="running",
@@ -729,14 +745,13 @@ class RemoteRefreshManager:
             last_skipped_local_or_invalid=int(stats.get("local_or_invalid") or 0),
             current_item={},
             last_message=(
-                f"远端刷新开始，本轮计划处理 {len(candidates)} 个模型。{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), batch_size=batch_size, remaining_total=int(stats.get('remaining_total') or 0))}"
+                f"远端刷新开始，本轮计划处理 {len(candidates)} 个模型。{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=int(stats.get('remaining_total') or 0))}"
                 if candidates
                 else "当前没有可执行远端刷新的模型。"
             ),
         )
         _append_remote_refresh_log(
             "batch_started",
-            batch_size=batch_size,
             selected=len(candidates),
             stats=stats,
         )
@@ -745,9 +760,8 @@ class RemoteRefreshManager:
             "batch_started",
             (
                 f"远端刷新开始，本轮计划处理 {len(candidates)} 个模型。"
-                f"{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), batch_size=batch_size, remaining_total=int(stats.get('remaining_total') or 0))}"
+                f"{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=int(stats.get('remaining_total') or 0))}"
             ),
-            batch_size=batch_size,
             selected=len(candidates),
             stats=stats,
         )
@@ -801,11 +815,11 @@ class RemoteRefreshManager:
         processed_total = succeeded + failed
         remaining_total = max(int(stats.get("eligible_total") or 0) - processed_total, 0)
         message = (
-            f"远端刷新完成，成功 {succeeded} 个，失败 {failed} 个。{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), batch_size=batch_size, remaining_total=remaining_total)}"
+            f"远端刷新完成，成功 {succeeded} 个，失败 {failed} 个。{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=remaining_total)}"
             if not interrupted
             else (
                 f"远端刷新部分完成，成功 {succeeded} 个，失败 {failed} 个，剩余任务延后到下一轮。"
-                f"{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), batch_size=batch_size, remaining_total=remaining_total)}"
+                f"{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=remaining_total)}"
             )
         )
         self.task_store.patch_remote_refresh_state(

@@ -132,7 +132,6 @@ class OrganizeTask(BaseModel):
 class RemoteRefreshConfig(BaseModel):
     enabled: bool = True
     cron: str = "0 */2 * * *"
-    batch_size: int = Field(default=12, ge=1, le=200)
 
 
 class SubscriptionRecord(BaseModel):

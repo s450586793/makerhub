@@ -73,6 +73,8 @@ remote_refresh_manager = RemoteRefreshManager(
 )
 archive_repair_process: Process | None = None
 archive_repair_start_lock = asyncio.Lock()
+github_version_refresh_task: asyncio.Task | None = None
+github_version_refresh_lock = asyncio.Lock()
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/s450586793/makerhub/main/VERSION"
 GITHUB_VERSION_CDN_URL = "https://cdn.jsdelivr.net/gh/s450586793/makerhub@main/VERSION"
 GITHUB_VERSION_API_URL = "https://api.github.com/repos/s450586793/makerhub/contents/VERSION?ref=main"
@@ -191,11 +193,7 @@ def _read_latest_github_version(proxy_config: ProxyConfig | None = None) -> dict
 
 
 async def _get_github_version_status(force: bool = False, proxy_config: ProxyConfig | None = None) -> dict:
-    now = time.time()
-    checked_at = float(github_version_cache.get("checked_at") or 0)
-    cache_error = str(github_version_cache.get("error") or "")
-    cache_ttl = GITHUB_VERSION_FAILURE_TTL_SECONDS if cache_error else GITHUB_VERSION_CACHE_TTL_SECONDS
-    if not force and checked_at and now - checked_at < cache_ttl:
+    def _cache_payload() -> dict:
         return {
             "github_latest_version": str(github_version_cache.get("version") or ""),
             "github_version_checked_at": str(github_version_cache.get("checked_at_iso") or ""),
@@ -207,41 +205,55 @@ async def _get_github_version_status(force: bool = False, proxy_config: ProxyCon
             ),
         }
 
-    checked_at_iso = _now_iso()
-    try:
-        result = await asyncio.to_thread(_read_latest_github_version, proxy_config)
-        version = str(result.get("version") or "").strip()
-        if not version:
-            raise ValueError("GitHub VERSION 为空")
-        github_version_cache.update(
-            {
-                "version": version,
-                "checked_at": now,
-                "checked_at_iso": checked_at_iso,
-                "error": "",
-                "source": str(result.get("source") or ""),
-                "last_success_at": checked_at_iso,
-            }
-        )
-    except Exception as exc:
-        github_version_cache.update(
-            {
-                "checked_at": now,
-                "checked_at_iso": checked_at_iso,
-                "error": _safe_error_message(exc),
-            }
-        )
+    async def _refresh_cache() -> None:
+        now_inner = time.time()
+        checked_at_iso_inner = _now_iso()
+        try:
+            result = await asyncio.to_thread(_read_latest_github_version, proxy_config)
+            version = str(result.get("version") or "").strip()
+            if not version:
+                raise ValueError("GitHub VERSION 为空")
+            github_version_cache.update(
+                {
+                    "version": version,
+                    "checked_at": now_inner,
+                    "checked_at_iso": checked_at_iso_inner,
+                    "error": "",
+                    "source": str(result.get("source") or ""),
+                    "last_success_at": checked_at_iso_inner,
+                }
+            )
+        except Exception as exc:
+            github_version_cache.update(
+                {
+                    "checked_at": now_inner,
+                    "checked_at_iso": checked_at_iso_inner,
+                    "error": _safe_error_message(exc),
+                }
+            )
 
-    return {
-        "github_latest_version": str(github_version_cache.get("version") or ""),
-        "github_version_checked_at": str(github_version_cache.get("checked_at_iso") or ""),
-        "github_version_error": str(github_version_cache.get("error") or ""),
-        "github_version_source": str(github_version_cache.get("source") or ""),
-        "github_update_available": bool(
-            str(github_version_cache.get("version") or "").strip()
-            and str(github_version_cache.get("version") or "").strip() != APP_VERSION
-        ),
-    }
+    async def _schedule_background_refresh() -> None:
+        global github_version_refresh_task
+        if github_version_refresh_task and not github_version_refresh_task.done():
+            return
+        async with github_version_refresh_lock:
+            if github_version_refresh_task and not github_version_refresh_task.done():
+                return
+            github_version_refresh_task = asyncio.create_task(_refresh_cache())
+
+    now = time.time()
+    checked_at = float(github_version_cache.get("checked_at") or 0)
+    cache_error = str(github_version_cache.get("error") or "")
+    cache_ttl = GITHUB_VERSION_FAILURE_TTL_SECONDS if cache_error else GITHUB_VERSION_CACHE_TTL_SECONDS
+    if not force and checked_at and now - checked_at < cache_ttl:
+        return _cache_payload()
+
+    if not force:
+        await _schedule_background_refresh()
+        return _cache_payload()
+
+    await _refresh_cache()
+    return _cache_payload()
 
 
 def _with_version_status(payload: dict, version_status: dict) -> dict:
@@ -670,7 +682,6 @@ async def save_remote_refresh(payload: RemoteRefreshConfig, request: Request):
         "远端刷新设置已保存。",
         enabled=payload.enabled,
         cron=payload.cron,
-        batch_size=payload.batch_size,
         next_run_at=state.get("next_run_at"),
     )
     return _with_version_status(_public_config_payload(config), await _get_github_version_status(proxy_config=config.proxy))

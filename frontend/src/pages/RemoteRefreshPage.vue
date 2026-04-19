@@ -11,8 +11,8 @@
         <strong>{{ formatRemoteRefreshStatus(remoteRefreshState.status) }}</strong>
       </div>
       <div class="intro-stat">
-        <span>单轮数量</span>
-        <strong>{{ remoteRefreshForm.batch_size || 12 }}</strong>
+        <span>本轮处理</span>
+        <strong>{{ remoteRefreshState.last_batch_total || 0 }}</strong>
       </div>
       <div class="intro-stat">
         <span>可刷新总数</span>
@@ -51,14 +51,10 @@
             dialog-title="设置远端刷新 Cron"
           />
         </label>
-        <label class="field-card">
-          <span>单轮数量</span>
-          <input v-model.number="remoteRefreshForm.batch_size" type="number" min="1" max="200" placeholder="12">
-        </label>
       </div>
       <p class="archive-form__hint">
-        启用后会按计划分批刷新远端评论、附件与打印配置。已成功下载过的 3MF 不会重复下载。
-        如果模型总数较多，可以缩短 Cron 或增大单轮数量。
+        启用后会按计划刷新库内全部可刷新的远端模型，自动增量同步评论、附件与打印配置。
+        已成功下载过的 3MF 不会重复下载。
       </p>
       <div class="settings-grid settings-grid--three">
         <label class="field-card">
@@ -248,7 +244,6 @@ const remoteRefreshState = ref({});
 const remoteRefreshForm = reactive({
   enabled: true,
   cron: "0 */2 * * *",
-  batch_size: 12,
 });
 const historyFilterOptions = [
   { value: "changed", label: "有远端更新" },
@@ -293,7 +288,6 @@ const batchExplanation = computed(() => {
   const remainingTotal = Number(remoteRefreshState.value?.last_remaining_total || 0);
   const batchTotal = Number(remoteRefreshState.value?.last_batch_total || 0);
   const successTotal = Number(remoteRefreshState.value?.last_batch_succeeded || 0);
-  const batchSize = Number(remoteRefreshForm.batch_size || 12);
   const skippedMissingCookie = Number(remoteRefreshState.value?.last_skipped_missing_cookie || 0);
   const skippedLocal = Number(remoteRefreshState.value?.last_skipped_local_or_invalid || 0);
 
@@ -304,8 +298,8 @@ const batchExplanation = computed(() => {
     return "当前没有可刷新的远端单模型。只有模型库里已经归档、且带原始 MakerWorld 单模型链接的模型才会参与远端刷新。";
   }
 
-  if (eligibleTotal > batchSize) {
-    return `当前可刷新 ${eligibleTotal} 个模型，单轮上限 ${batchSize} 个，所以每轮看到“成功 ${successTotal} 个”通常只是批次上限，不代表全库只有这些模型；本轮后还剩 ${remainingTotal} 个待下一轮。`;
+  if (remainingTotal > 0) {
+    return `当前可刷新 ${eligibleTotal} 个模型，本轮已处理 ${batchTotal} 个、成功 ${successTotal} 个，仍有 ${remainingTotal} 个因为中途被更高优先级任务打断而留到下一轮。`;
   }
 
   const skipParts = [];
@@ -324,7 +318,6 @@ function applyPayload(payload) {
   const state = payload?.state || {};
   remoteRefreshForm.enabled = config.enabled !== false;
   remoteRefreshForm.cron = config.cron || "0 */2 * * *";
-  remoteRefreshForm.batch_size = Number(config.batch_size || 12);
   remoteRefreshState.value = state;
 }
 
@@ -456,7 +449,6 @@ async function saveRemoteRefresh() {
       body: {
         enabled: remoteRefreshForm.enabled,
         cron: remoteRefreshForm.cron,
-        batch_size: Number(remoteRefreshForm.batch_size || 12),
       },
     });
     await Promise.all([refreshConfig(), load({ silent: true })]);
