@@ -1019,16 +1019,18 @@ def _sort_models(items: list[dict], sort_key: str) -> list[dict]:
     return sorted(items, key=lambda item: (item["collect_ts"], item["title"]), reverse=True)
 
 
-def _apply_model_flags(items: list[dict]) -> list[dict]:
-    flags_store = TaskStateStore().load_model_flags()
+def _apply_model_flags(items: list[dict], flags_store: Optional[dict] = None) -> list[dict]:
+    flags_store = flags_store or TaskStateStore().load_model_flags()
     favorite_set = set(flags_store.get("favorites") or [])
     printed_set = set(flags_store.get("printed") or [])
+    deleted_set = set(flags_store.get("deleted") or [])
 
     for item in items:
         model_dir = str(item.get("model_dir") or "").strip().strip("/")
         item["local_flags"] = {
             "favorite": model_dir in favorite_set,
             "printed": model_dir in printed_set,
+            "deleted": model_dir in deleted_set,
         }
     return items
 
@@ -1100,6 +1102,27 @@ def _apply_subscription_flags(items: list[dict]) -> list[dict]:
     return items
 
 
+def _visible_models(items: list[dict]) -> list[dict]:
+    return [item for item in items if not item.get("local_flags", {}).get("deleted")]
+
+
+def _source_counts_from_items(items: list[dict]) -> dict[str, int]:
+    counts = {"all": 0, "cn": 0, "global": 0, "local": 0}
+    for item in items:
+        counts["all"] += 1
+        source = str(item.get("source") or "").strip().lower()
+        if source in counts:
+            counts[source] += 1
+    return counts
+
+
+def _tags_from_items(items: list[dict]) -> list[str]:
+    tags: set[str] = set()
+    for item in items:
+        tags.update(str(tag_value) for tag_value in item.get("tags") or [] if str(tag_value).strip())
+    return sorted(tags)
+
+
 def build_models_payload(
     q: str = "",
     source: str = "all",
@@ -1110,12 +1133,14 @@ def build_models_payload(
 ) -> dict:
     archive_snapshot = get_archive_snapshot()
     all_models = _clone_model_items(list(archive_snapshot.get("models") or []))
-    all_models = _apply_model_flags(all_models)
+    flags_store = TaskStateStore().load_model_flags()
+    all_models = _apply_model_flags(all_models, flags_store=flags_store)
     all_models = _apply_subscription_flags(all_models)
+    visible_models = _visible_models(all_models)
     normalized_query = q.strip().lower()
     normalized_tag = tag.strip().lower()
     normalized_source = source.strip().lower() or "all"
-    items = all_models
+    items = visible_models
 
     if normalized_query:
         items = [
@@ -1145,14 +1170,14 @@ def build_models_payload(
     end = start + safe_page_size
     paged_items = items[start:end]
 
-    all_tags = list(archive_snapshot.get("tags") or [])
-    source_counts = dict(archive_snapshot.get("source_counts") or {})
+    all_tags = _tags_from_items(visible_models)
+    source_counts = _source_counts_from_items(visible_models)
 
     return {
         "items": paged_items,
         "count": len(paged_items),
         "filtered_total": total_filtered,
-        "total": len(all_models),
+        "total": len(visible_models),
         "page": safe_page,
         "page_size": safe_page_size,
         "has_more": end < total_filtered,
@@ -1352,6 +1377,10 @@ def build_tasks_payload(
 def build_dashboard_payload(config) -> dict:
     archive_snapshot = get_archive_snapshot()
     all_models = _clone_model_items(list(archive_snapshot.get("collect_sorted") or []))
+    flags_store = TaskStateStore().load_model_flags()
+    all_models = _apply_model_flags(all_models, flags_store=flags_store)
+    all_models = _apply_subscription_flags(all_models)
+    visible_models = _visible_models(all_models)
     task_store = TaskStateStore()
     tasks_payload = build_tasks_payload(
         missing_fallback=[
@@ -1383,14 +1412,14 @@ def build_dashboard_payload(config) -> dict:
         },
     ]
 
-    recent_models = _clone_model_items(all_models[:8])
-    recent_week_count = len([item for item in all_models if item["collect_ts"] >= seven_days_ago])
+    recent_models = _clone_model_items(visible_models[:8])
+    recent_week_count = len([item for item in visible_models if item["collect_ts"] >= seven_days_ago])
     organize_tasks = tasks_payload["organize_tasks"]
     remote_refresh = tasks_payload["remote_refresh"]
 
     return {
         "stats": [
-            {"label": "模型总数", "value": int(archive_snapshot.get("total") or len(all_models)), "hint": "来自 /app/archive/**/meta.json"},
+            {"label": "模型总数", "value": len(visible_models), "hint": "默认不含 MakerHub 本地删除项"},
             {"label": "最近 7 天新增", "value": recent_week_count, "hint": "按 collectDate 统计"},
             {"label": "缺失 3MF", "value": tasks_payload["missing_3mf"]["count"], "hint": "等待重新下载"},
             {

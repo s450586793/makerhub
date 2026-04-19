@@ -260,6 +260,7 @@ def _normalize_model_flags(payload: Any) -> dict:
     return {
         "favorites": _normalize_list(payload.get("favorites")),
         "printed": _normalize_list(payload.get("printed")),
+        "deleted": _normalize_list(payload.get("deleted")),
     }
 
 
@@ -579,10 +580,11 @@ class TaskStateStore:
 
     def load_model_flags(self) -> dict:
         with _STATE_LOCK:
-            payload = self._read_json(MODEL_FLAGS_PATH, {"favorites": [], "printed": []})
+            payload = self._read_json(MODEL_FLAGS_PATH, {"favorites": [], "printed": [], "deleted": []})
             flags = _normalize_model_flags(payload)
             flags["favorite_count"] = len(flags["favorites"])
             flags["printed_count"] = len(flags["printed"])
+            flags["deleted_count"] = len(flags["deleted"])
             return flags
 
     def update_model_flag(self, model_dir: str, flag_name: str, active: bool) -> dict:
@@ -590,11 +592,11 @@ class TaskStateStore:
         if not clean_model_dir:
             return self.load_model_flags()
 
-        if flag_name not in {"favorites", "printed"}:
+        if flag_name not in {"favorites", "printed", "deleted"}:
             return self.load_model_flags()
 
         with _STATE_LOCK:
-            payload = self._read_json(MODEL_FLAGS_PATH, {"favorites": [], "printed": []})
+            payload = self._read_json(MODEL_FLAGS_PATH, {"favorites": [], "printed": [], "deleted": []})
             flags = _normalize_model_flags(payload)
             items = list(flags.get(flag_name) or [])
             item_set = set(items)
@@ -618,10 +620,11 @@ class TaskStateStore:
             return self.load_model_flags()
 
         with _STATE_LOCK:
-            payload = self._read_json(MODEL_FLAGS_PATH, {"favorites": [], "printed": []})
+            payload = self._read_json(MODEL_FLAGS_PATH, {"favorites": [], "printed": [], "deleted": []})
             flags = _normalize_model_flags(payload)
             flags["favorites"] = [item for item in flags.get("favorites") or [] if item not in clean_model_dirs]
             flags["printed"] = [item for item in flags.get("printed") or [] if item not in clean_model_dirs]
+            flags["deleted"] = [item for item in flags.get("deleted") or [] if item not in clean_model_dirs]
             return self.save_model_flags(flags)
 
     def enqueue_archive_task(self, item: dict) -> dict:

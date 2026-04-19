@@ -22,6 +22,13 @@
                 <span>{{ detail.author?.name || "未知作者" }}</span>
                 <span class="mw-follow-pill">已归档</span>
                 <span
+                  v-if="detail.local_flags?.deleted"
+                  class="mw-chip"
+                  title="该模型已在 MakerHub 端删除，默认不会出现在模型库中。"
+                >
+                  本地已删
+                </span>
+                <span
                   v-if="detail.subscription_flags?.deleted_on_source"
                   class="mw-chip mw-chip--danger"
                   :title="deletedSourceTitle"

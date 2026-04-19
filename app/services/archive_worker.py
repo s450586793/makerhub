@@ -182,6 +182,29 @@ class ArchiveTaskManager:
         snapshot = get_archive_snapshot()
         return set(snapshot.get("archived_keys") or [])
 
+    def _deleted_task_lookup(self) -> dict[str, dict[str, str]]:
+        deleted_dirs = set(self.task_store.load_model_flags().get("deleted") or [])
+        if not deleted_dirs:
+            return {}
+
+        snapshot = get_archive_snapshot()
+        lookup: dict[str, dict[str, str]] = {}
+        for item in snapshot.get("models") or []:
+            model_dir = str(item.get("model_dir") or "").strip().strip("/")
+            if not model_dir or model_dir not in deleted_dirs:
+                continue
+            payload = {
+                "model_dir": model_dir,
+                "title": str(item.get("title") or model_dir),
+            }
+            model_id = str(item.get("id") or "").strip()
+            if model_id:
+                lookup[f"model:{model_id}"] = payload
+            origin_url = normalize_source_url(str(item.get("origin_url") or ""))
+            if origin_url:
+                lookup[origin_url] = payload
+        return lookup
+
     def _queue_state_snapshot(self) -> dict[str, Any]:
         queue = self.task_store.load_archive_queue()
         active = list(queue.get("active") or [])
@@ -488,6 +511,22 @@ class ArchiveTaskManager:
 
     def _submit_single(self, clean_url: str, force: bool = False) -> dict:
         task_key = _task_key(clean_url)
+        deleted_item = self._deleted_task_lookup().get(task_key)
+        if deleted_item is not None:
+            message = f"该模型已在 MakerHub 端删除，默认不会再次归档：{deleted_item.get('title') or clean_url}"
+            _log_archive(
+                "single_submit_skipped",
+                message,
+                url=clean_url,
+                task_key=task_key,
+                model_dir=deleted_item.get("model_dir") or "",
+            )
+            return {
+                "accepted": False,
+                "message": message,
+                "mode": "single_model",
+                "url": clean_url,
+            }
         if task_key in self._queued_task_keys():
             _log_archive("single_submit_skipped", "单模型已在归档队列中。", url=clean_url, task_key=task_key)
             return {

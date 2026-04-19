@@ -336,7 +336,7 @@ async function togglePrinted(modelDir) {
 async function deleteOne(modelDir) {
   const model = findModel(modelDir);
   if (!model) return;
-  if (!window.confirm(`确认删除「${model.title || modelDir}」吗？`)) return;
+  if (!window.confirm(`确认在 MakerHub 中删除并隐藏「${model.title || modelDir}」吗？`)) return;
 
   deleting.value = true;
   status.value = "";
@@ -345,10 +345,10 @@ async function deleteOne(modelDir) {
       method: "POST",
       body: { model_dirs: [modelDir] },
     });
-    status.value = response.message || "删除完成。";
+    status.value = response.message || "模型已在 MakerHub 中删除并隐藏。";
     await reloadVisiblePages();
   } catch (error) {
-    status.value = error instanceof Error ? error.message : "删除失败。";
+    status.value = error instanceof Error ? error.message : "本地删除失败。";
   } finally {
     deleting.value = false;
   }

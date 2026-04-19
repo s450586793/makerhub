@@ -56,6 +56,7 @@ def _append_organizer_log(event: str, **payload) -> None:
         "worker_timeout",
         "worker_exited",
         "duplicate_skipped",
+        "deleted_model_skipped",
         "duplicate_skip_failed",
         "organized",
         "organize_failed",
@@ -68,6 +69,7 @@ def _append_organizer_log(event: str, **payload) -> None:
             "worker_timeout": "本地整理 worker 超时，已终止。",
             "worker_exited": "本地整理 worker 已退出。",
             "duplicate_skipped": "本地 3MF 与模型库现有配置重复，已跳过。",
+            "deleted_model_skipped": "命中 MakerHub 本地删除标记，已阻止重新入库。",
             "duplicate_skip_failed": "重复 3MF 处理失败。",
             "organized": "本地 3MF 已整理入库。",
             "organize_failed": "本地 3MF 整理失败。",
@@ -375,6 +377,29 @@ class LocalOrganizerService:
         analysis = self._inspect_3mf(source_path)
         duplicate_match = library_index["configs"].get(str(analysis.get("config_fingerprint") or "")) if analysis else None
         model_match = self._match_existing_model(library_index["models"], analysis) if analysis else None
+        deleted_model_dirs = set(self.task_store.load_model_flags().get("deleted") or [])
+
+        if duplicate_match and str(duplicate_match.get("model_dir") or "") in deleted_model_dirs:
+            self._handle_deleted_model_file(
+                source_path=source_path,
+                source_dir=source_dir,
+                move_files=move_files,
+                fingerprint=fingerprint,
+                matched_model=duplicate_match,
+                reason="该 3MF 命中 MakerHub 本地删除标记，已跳过重新入库。",
+            )
+            return
+
+        if model_match and str(model_match.get("model_dir") or "") in deleted_model_dirs:
+            self._handle_deleted_model_file(
+                source_path=source_path,
+                source_dir=source_dir,
+                move_files=move_files,
+                fingerprint=fingerprint,
+                matched_model=model_match,
+                reason="该模型已在 MakerHub 端删除，已阻止把新的打印配置重新入库。",
+            )
+            return
 
         if duplicate_match:
             self._handle_duplicate_file(
@@ -1120,6 +1145,79 @@ class LocalOrganizerService:
                     "move_files": move_files,
                     "fingerprint": fingerprint,
                     "model_dir": str(duplicate_match.get("model_dir") or ""),
+                },
+                limit=ORGANIZER_TASK_LIMIT,
+            )
+            _append_organizer_log("duplicate_skip_failed", source=source_path_text, error=str(exc))
+
+    def _handle_deleted_model_file(
+        self,
+        *,
+        source_path: Path,
+        source_dir: Path,
+        move_files: bool,
+        fingerprint: str,
+        matched_model: dict[str, Any],
+        reason: str,
+    ) -> None:
+        task_id = _task_id_from_fingerprint(fingerprint)
+        source_path_text = source_path.as_posix()
+        target_path = ""
+        status_message = f"{reason} 命中模型：{matched_model.get('model_title') or matched_model.get('model_dir') or '未知模型'}"
+
+        if matched_model.get("instance_title"):
+            status_message += f" / 配置：{matched_model.get('instance_title')}"
+
+        try:
+            if move_files:
+                skipped_dir = source_dir / "_skipped"
+                skipped_dir.mkdir(parents=True, exist_ok=True)
+                target = self._ensure_unique_filename(skipped_dir, source_path.name)
+                shutil.move(str(source_path), str(target))
+                target_path = target.as_posix()
+
+            self.task_store.upsert_organize_task(
+                {
+                    "id": task_id,
+                    "title": source_path.stem.strip() or source_path.name,
+                    "file_name": source_path.name,
+                    "source_dir": source_dir.as_posix(),
+                    "target_dir": str(matched_model.get("model_dir") or ""),
+                    "source_path": source_path_text,
+                    "target_path": target_path,
+                    "status": "skipped",
+                    "message": status_message,
+                    "progress": 100,
+                    "updated_at": _now_iso(),
+                    "move_files": move_files,
+                    "fingerprint": fingerprint,
+                    "model_dir": str(matched_model.get("model_dir") or ""),
+                },
+                limit=ORGANIZER_TASK_LIMIT,
+            )
+            _append_organizer_log(
+                "deleted_model_skipped",
+                source=source_path_text,
+                model_dir=str(matched_model.get("model_dir") or ""),
+                moved_to=target_path,
+            )
+        except Exception as exc:
+            self.task_store.upsert_organize_task(
+                {
+                    "id": task_id,
+                    "title": source_path.stem.strip() or source_path.name,
+                    "file_name": source_path.name,
+                    "source_dir": source_dir.as_posix(),
+                    "target_dir": str(matched_model.get("model_dir") or ""),
+                    "source_path": source_path_text,
+                    "target_path": target_path,
+                    "status": "failed",
+                    "message": f"本地删除标记处理失败：{exc}",
+                    "progress": 0,
+                    "updated_at": _now_iso(),
+                    "move_files": move_files,
+                    "fingerprint": fingerprint,
+                    "model_dir": str(matched_model.get("model_dir") or ""),
                 },
                 limit=ORGANIZER_TASK_LIMIT,
             )

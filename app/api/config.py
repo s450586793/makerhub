@@ -31,9 +31,10 @@ from app.services.catalog import (
     build_dashboard_payload,
     build_models_payload,
     build_tasks_payload,
-    delete_archived_models,
     get_model_comments_page,
     get_model_detail,
+    invalidate_archive_snapshot,
+    invalidate_model_detail_cache,
 )
 from app.services.crawler import LegacyCrawlerBridge
 from app.services.business_logs import append_business_log, read_log_entries
@@ -778,29 +779,60 @@ async def remove_model_attachment(model_dir: str, attachment_id: str, request: R
 @router.post("/models/delete")
 async def delete_models(payload: ModelDeleteRequest, request: Request):
     _require_session_auth(request)
-    result = delete_archived_models(payload.model_dirs)
+    marked: list[dict] = []
+    skipped: list[dict] = []
 
-    for item in result.get("removed") or []:
-        model_id = str(item.get("id") or "").strip()
+    for raw_value in payload.model_dirs:
+        clean_model_dir = str(raw_value or "").strip().strip("/")
+        if not clean_model_dir:
+            continue
+
+        detail = get_model_detail(clean_model_dir, include_detail=False)
+        if not detail:
+            skipped.append({"model_dir": clean_model_dir, "reason": "模型不存在"})
+            continue
+        if detail.get("local_flags", {}).get("deleted"):
+            skipped.append({"model_dir": clean_model_dir, "reason": "已在 MakerHub 端删除"})
+            continue
+
+        task_state_store.update_model_flag(clean_model_dir, "deleted", True)
+        model_id = str(detail.get("id") or "").strip()
+        origin_url = str(detail.get("origin_url") or "").strip()
         if model_id:
             task_state_store.remove_missing_3mf_for_model(model_id)
+        task_state_store.remove_recent_failures_for_model(model_id, url=origin_url)
+        invalidate_model_detail_cache(clean_model_dir)
+        marked.append(
+            {
+                "model_dir": clean_model_dir,
+                "id": model_id,
+                "title": str(detail.get("title") or clean_model_dir),
+            }
+        )
 
-    task_state_store.remove_model_flags(payload.model_dirs)
+    if marked:
+        invalidate_archive_snapshot("models_soft_deleted")
 
-    result["success"] = result.get("removed_count", 0) > 0
-    sidecar_count = int(result.get("sidecar_removed_count") or 0)
-    result["message"] = (
-        f"已删除 {result.get('removed_count', 0)} 个模型，清理 {sidecar_count} 个遗留资源。"
-        if result.get("removed_count", 0)
-        else "没有删除任何模型。"
-    )
+    result = {
+        "success": bool(marked),
+        "soft_deleted": marked,
+        "skipped": skipped,
+        "soft_deleted_count": len(marked),
+        "skipped_count": len(skipped),
+        "flags": task_state_store.load_model_flags(),
+        "message": (
+            f"已在 MakerHub 端删除 {len(marked)} 个模型，默认已从模型库隐藏。"
+            if marked
+            else "没有标记任何模型。"
+        ),
+    }
     append_business_log(
         "model",
-        "models_deleted",
+        "models_soft_deleted",
         result["message"],
         requested_count=len(payload.model_dirs),
-        removed_count=result.get("removed_count", 0),
-        sidecar_removed_count=sidecar_count,
+        soft_deleted_count=result.get("soft_deleted_count", 0),
+        skipped_count=result.get("skipped_count", 0),
         model_dirs=payload.model_dirs,
     )
     return result

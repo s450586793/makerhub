@@ -79,7 +79,7 @@
             <span aria-hidden="true" v-html="model.local_flags?.printed ? icons.printedFilled : icons.printedOutline"></span>
           </button>
         </div>
-        <button class="gallery-delete" type="button" title="删除模型" aria-label="删除模型" @click.stop="$emit('delete', model.model_dir)">
+        <button class="gallery-delete" type="button" title="在 MakerHub 中删除" aria-label="在 MakerHub 中删除" @click.stop="$emit('delete', model.model_dir)">
           <span aria-hidden="true" v-html="icons.delete"></span>
         </button>
       </div>

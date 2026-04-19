@@ -580,9 +580,11 @@ class RemoteRefreshManager:
     def _pick_candidates(self, batch_size: int) -> tuple[list[dict[str, Any]], dict[str, int]]:
         snapshot = get_archive_snapshot()
         models = list(snapshot.get("models") or [])
+        deleted_model_dirs = set(self.task_store.load_model_flags().get("deleted") or [])
         eligible: list[dict[str, Any]] = []
         stats = {
             "local_or_invalid": 0,
+            "local_deleted": 0,
             "missing_cookie": 0,
             "eligible_total": 0,
             "selected_total": 0,
@@ -591,6 +593,10 @@ class RemoteRefreshManager:
         config = self.store.load()
 
         for item in models:
+            model_dir = str(item.get("model_dir") or "").strip().strip("/")
+            if model_dir and model_dir in deleted_model_dirs:
+                stats["local_deleted"] += 1
+                continue
             if not _supports_remote_refresh(item):
                 stats["local_or_invalid"] += 1
                 continue
