@@ -254,12 +254,17 @@ def _missing_3mf_message_from_instance(instance: dict[str, Any]) -> tuple[str, s
     return "missing", "等待重新下载"
 
 
-def _build_missing_3mf_items(meta_path: Path, meta: dict[str, Any]) -> list[dict[str, Any]]:
+def _build_missing_3mf_items(
+    meta_path: Path,
+    meta: dict[str, Any],
+    resolved_files: Optional[dict[str, Any]] = None,
+) -> list[dict[str, Any]]:
     model_root = meta_path.parent
     model_id = str(meta.get("id") or "").strip()
     model_url = normalize_source_url(str(meta.get("url") or ""))
     model_title = str(meta.get("title") or meta.get("baseName") or "").strip()
-    resolved_files = resolve_model_instance_files(meta, model_root)
+    if not isinstance(resolved_files, dict):
+        resolved_files = resolve_model_instance_files(meta, model_root)
     resolved_matches = resolved_files.get("matches") if isinstance(resolved_files, dict) else {}
     seen: set[tuple[str, str]] = set()
     items: list[dict[str, Any]] = []

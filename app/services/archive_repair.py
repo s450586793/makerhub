@@ -182,7 +182,7 @@ def repair_model_instance_files(meta_path: Path) -> dict[str, Any]:
         _write_json(meta_path, meta)
 
     model_id = str(meta.get("id") or "").strip()
-    missing_items = _build_missing_3mf_items(meta_path, meta)
+    missing_items = _build_missing_3mf_items(meta_path, meta, resolved_files=resolved)
     result = {
         "ok": True,
         "model_dir": model_root.relative_to(ARCHIVE_DIR).as_posix(),
