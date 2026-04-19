@@ -1,13 +1,18 @@
 import json
+import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from app.core.settings import ARCHIVE_DIR
+from app.core.settings import ARCHIVE_DIR, STATE_DIR, ensure_app_dirs
 from app.services.business_logs import append_business_log
 from app.services.catalog import invalidate_archive_snapshot, invalidate_model_detail_cache
 from app.services.remote_refresh import _build_missing_3mf_items
 from app.services.task_state import TaskStateStore
 from app.services.three_mf import resolve_model_instance_files
+
+
+ARCHIVE_REPAIR_STATUS_PATH = STATE_DIR / "archive_repair_status.json"
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -16,6 +21,92 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _base_archive_repair_status() -> dict[str, Any]:
+    return {
+        "running": False,
+        "started_at": "",
+        "finished_at": "",
+        "last_error": "",
+        "run_id": "",
+        "pid": 0,
+        "last_result": {},
+    }
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def write_archive_repair_status(payload: dict[str, Any]) -> dict[str, Any]:
+    ensure_app_dirs()
+    current = _base_archive_repair_status()
+    if ARCHIVE_REPAIR_STATUS_PATH.exists():
+        try:
+            existing = _read_json(ARCHIVE_REPAIR_STATUS_PATH)
+            if isinstance(existing, dict):
+                current.update(existing)
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    current.update(
+        {
+            "running": bool(payload.get("running", current.get("running"))),
+            "started_at": str(payload.get("started_at", current.get("started_at")) or ""),
+            "finished_at": str(payload.get("finished_at", current.get("finished_at")) or ""),
+            "last_error": str(payload.get("last_error", current.get("last_error")) or ""),
+            "run_id": str(payload.get("run_id", current.get("run_id")) or ""),
+            "pid": int(payload.get("pid", current.get("pid")) or 0),
+            "last_result": payload.get("last_result", current.get("last_result")) if isinstance(payload.get("last_result", current.get("last_result")), dict) else {},
+        }
+    )
+    _write_json(ARCHIVE_REPAIR_STATUS_PATH, current)
+    return current
+
+
+def read_archive_repair_status() -> dict[str, Any]:
+    ensure_app_dirs()
+    if not ARCHIVE_REPAIR_STATUS_PATH.exists():
+        return _base_archive_repair_status()
+
+    try:
+        payload = _read_json(ARCHIVE_REPAIR_STATUS_PATH)
+    except (OSError, json.JSONDecodeError):
+        return _base_archive_repair_status()
+
+    status = _base_archive_repair_status()
+    if isinstance(payload, dict):
+        status.update(
+            {
+                "running": bool(payload.get("running")),
+                "started_at": str(payload.get("started_at") or ""),
+                "finished_at": str(payload.get("finished_at") or ""),
+                "last_error": str(payload.get("last_error") or ""),
+                "run_id": str(payload.get("run_id") or ""),
+                "pid": int(payload.get("pid") or 0),
+                "last_result": payload.get("last_result") if isinstance(payload.get("last_result"), dict) else {},
+            }
+        )
+
+    if status.get("running") and status.get("pid") and not _pid_alive(int(status.get("pid") or 0)):
+        status["running"] = False
+        status["finished_at"] = status.get("finished_at") or _now_iso()
+        if not status.get("last_error") and not status.get("last_result"):
+            status["last_error"] = "修复进程已退出，状态未正常回写。"
+        write_archive_repair_status(status)
+
+    return status
 
 
 def repair_model_instance_files(meta_path: Path) -> dict[str, Any]:
@@ -169,3 +260,53 @@ def repair_archive_3mf_mappings(
         failed_models=stats["failed_models"],
     )
     return stats
+
+
+def run_archive_repair_job(run_id: str, started_at: str = "") -> None:
+    effective_started_at = str(started_at or "").strip() or _now_iso()
+    write_archive_repair_status(
+        {
+            "running": True,
+            "started_at": effective_started_at,
+            "finished_at": "",
+            "last_error": "",
+            "run_id": run_id,
+            "pid": os.getpid(),
+            "last_result": {},
+        }
+    )
+
+    try:
+        result = repair_archive_3mf_mappings(task_store=TaskStateStore())
+    except Exception as exc:
+        write_archive_repair_status(
+            {
+                "running": False,
+                "started_at": effective_started_at,
+                "finished_at": _now_iso(),
+                "last_error": str(exc),
+                "run_id": run_id,
+                "pid": os.getpid(),
+                "last_result": {},
+            }
+        )
+        append_business_log(
+            "archive_repair",
+            "repair_failed",
+            f"全库 3MF 映射修复失败：{exc}",
+            level="error",
+            run_id=run_id,
+        )
+        raise
+
+    write_archive_repair_status(
+        {
+            "running": False,
+            "started_at": effective_started_at,
+            "finished_at": _now_iso(),
+            "last_error": "",
+            "run_id": run_id,
+            "pid": os.getpid(),
+            "last_result": result,
+        }
+    )

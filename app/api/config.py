@@ -3,6 +3,7 @@ import base64
 import json
 import time
 from datetime import datetime
+from multiprocessing import Process
 
 import requests
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
@@ -42,7 +43,11 @@ from app.services.local_organizer import LocalOrganizerService
 from app.services.model_attachments import create_manual_attachment, delete_manual_attachment
 from app.services.remote_refresh import RemoteRefreshManager
 from app.services.auth import AuthManager
-from app.services.archive_repair import repair_archive_3mf_mappings
+from app.services.archive_repair import (
+    read_archive_repair_status,
+    run_archive_repair_job,
+    write_archive_repair_status,
+)
 from app.services.subscriptions import SubscriptionManager
 from app.services.task_state import TaskStateStore
 from app.services.archive_worker import BATCH_TASK_MODES, detect_archive_mode
@@ -66,16 +71,8 @@ remote_refresh_manager = RemoteRefreshManager(
     store=store,
     task_store=task_state_store,
 )
-archive_repair_runtime = {
-    "running": False,
-    "started_at": "",
-    "finished_at": "",
-    "last_error": "",
-    "last_result": {},
-    "run_id": "",
-    "task": None,
-}
-archive_repair_runtime_lock = asyncio.Lock()
+archive_repair_process: Process | None = None
+archive_repair_start_lock = asyncio.Lock()
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/s450586793/makerhub/main/VERSION"
 GITHUB_VERSION_CDN_URL = "https://cdn.jsdelivr.net/gh/s450586793/makerhub@main/VERSION"
 GITHUB_VERSION_API_URL = "https://api.github.com/repos/s450586793/makerhub/contents/VERSION?ref=main"
@@ -122,61 +119,6 @@ def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def _archive_repair_public_state() -> dict:
-    last_result = archive_repair_runtime.get("last_result")
-    return {
-        "running": bool(archive_repair_runtime.get("running")),
-        "started_at": str(archive_repair_runtime.get("started_at") or ""),
-        "finished_at": str(archive_repair_runtime.get("finished_at") or ""),
-        "last_error": str(archive_repair_runtime.get("last_error") or ""),
-        "run_id": str(archive_repair_runtime.get("run_id") or ""),
-        "last_result": last_result if isinstance(last_result, dict) else {},
-    }
-
-
-async def _run_archive_repair_background(run_id: str) -> None:
-    try:
-        result = await asyncio.to_thread(
-            repair_archive_3mf_mappings,
-            task_store=task_state_store,
-        )
-    except Exception as exc:
-        async with archive_repair_runtime_lock:
-            if archive_repair_runtime.get("run_id") == run_id:
-                archive_repair_runtime["running"] = False
-                archive_repair_runtime["finished_at"] = _now_iso()
-                archive_repair_runtime["last_error"] = _safe_error_message(exc)
-                archive_repair_runtime["task"] = None
-        append_business_log(
-            "archive_repair",
-            "repair_failed",
-            f"全库 3MF 映射修复失败：{_safe_error_message(exc)}",
-            level="error",
-            run_id=run_id,
-        )
-        return
-
-    async with archive_repair_runtime_lock:
-        if archive_repair_runtime.get("run_id") == run_id:
-            archive_repair_runtime["running"] = False
-            archive_repair_runtime["finished_at"] = _now_iso()
-            archive_repair_runtime["last_error"] = ""
-            archive_repair_runtime["last_result"] = result
-            archive_repair_runtime["task"] = None
-
-    append_business_log(
-        "archive_repair",
-        "repair_triggered",
-        "已执行全库 3MF 映射修复。",
-        run_id=run_id,
-        scanned_models=result.get("scanned_models"),
-        repaired_models=result.get("repaired_models"),
-        repaired_instances=result.get("repaired_instances"),
-        repaired_instances_strong=result.get("repaired_instances_strong"),
-        repaired_instances_weak=result.get("repaired_instances_weak"),
-        missing_after_repair=result.get("missing_after_repair"),
-        failed_models=result.get("failed_models"),
-    )
 
 
 def _make_github_version_session() -> requests.Session:
@@ -1296,16 +1238,17 @@ async def archive_model(payload: ArchiveRequest):
 @router.get("/admin/archive/repair-3mf")
 async def get_archive_3mf_repair_status(request: Request):
     _require_session_auth(request)
-    async with archive_repair_runtime_lock:
-        return _archive_repair_public_state()
+    return read_archive_repair_status()
 
 
 @router.post("/admin/archive/repair-3mf")
 async def repair_archive_3mf(request: Request):
+    global archive_repair_process
+
     _require_session_auth(request)
-    async with archive_repair_runtime_lock:
-        if archive_repair_runtime.get("running"):
-            state = _archive_repair_public_state()
+    async with archive_repair_start_lock:
+        state = read_archive_repair_status()
+        if state.get("running"):
             state.update(
                 {
                     "accepted": False,
@@ -1315,20 +1258,25 @@ async def repair_archive_3mf(request: Request):
             return state
 
         run_id = f"repair-{int(time.time() * 1000)}"
-        archive_repair_runtime.update(
+        started_at = _now_iso()
+        process = Process(
+            target=run_archive_repair_job,
+            args=(run_id, started_at),
+            daemon=True,
+        )
+        process.start()
+        archive_repair_process = process
+        state = write_archive_repair_status(
             {
                 "running": True,
-                "started_at": _now_iso(),
+                "started_at": started_at,
                 "finished_at": "",
                 "last_error": "",
-                "last_result": {},
                 "run_id": run_id,
-                "task": None,
+                "pid": int(process.pid or 0),
+                "last_result": {},
             }
         )
-        task = asyncio.create_task(_run_archive_repair_background(run_id))
-        archive_repair_runtime["task"] = task
-        state = _archive_repair_public_state()
 
     append_business_log(
         "archive_repair",
