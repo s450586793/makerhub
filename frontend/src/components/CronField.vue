@@ -1,165 +1,150 @@
 <template>
-  <div class="cron-field">
+  <div ref="rootRef" class="cron-field">
     <div class="cron-field__row">
       <input
+        class="cron-field__input"
         :value="modelValue"
         type="text"
         :placeholder="placeholder"
-        @input="$emit('update:modelValue', $event.target.value)"
+        @focus="openPopover"
+        @click="openPopover"
+        @input="handleTextInput"
       >
-      <button class="button button-secondary button-small" type="button" @click="openDialog">
-        可视化
-      </button>
     </div>
     <small class="cron-field__summary">{{ cronDescription }}</small>
 
     <div
-      v-if="dialogVisible"
-      class="submit-dialog cron-dialog"
+      v-if="popoverVisible"
+      class="cron-popover"
       role="dialog"
-      aria-modal="true"
-      :aria-labelledby="dialogTitleId"
-      @click="closeDialog"
+      aria-modal="false"
+      :aria-label="dialogTitle"
     >
-      <div class="submit-dialog__panel cron-dialog__panel" @click.stop>
-        <div class="cron-dialog__header">
-          <div>
-            <span class="eyebrow">Cron</span>
-            <h2 :id="dialogTitleId">{{ dialogTitle }}</h2>
-          </div>
+      <div class="cron-dialog__header">
+        <div>
+          <span class="eyebrow">Cron</span>
+          <h2>{{ dialogTitle }}</h2>
+        </div>
+        <small class="cron-dialog__hint">点击外部区域即可收起</small>
+      </div>
+
+      <div class="cron-dialog__modes">
+        <button
+          v-for="option in modeOptions"
+          :key="option.value"
+          :class="['cron-dialog__mode', draft.mode === option.value && 'is-active']"
+          type="button"
+          @click="selectMode(option.value)"
+        >
+          {{ option.label }}
+        </button>
+      </div>
+
+      <div class="cron-dialog__content">
+        <div v-if="draft.mode === 'every_minute'" class="cron-dialog__block">
+          <p class="cron-dialog__note">每分钟执行一次，不限制小时、日期或星期。</p>
         </div>
 
-        <div class="cron-dialog__modes">
-          <button
-            v-for="option in modeOptions"
-            :key="option.value"
-            :class="['cron-dialog__mode', draft.mode === option.value && 'is-active']"
-            type="button"
-            @click="draft.mode = option.value"
-          >
-            {{ option.label }}
-          </button>
+        <div v-else-if="draft.mode === 'every_minutes'" class="cron-dialog__grid">
+          <label class="field-card">
+            <span>间隔分钟</span>
+            <input v-model.number="draft.minuteInterval" type="number" min="1" max="59" @input="applyPresetCron">
+          </label>
         </div>
 
-        <div class="cron-dialog__content">
-          <div v-if="draft.mode === 'every_minute'" class="cron-dialog__block">
-            <p class="cron-dialog__note">每分钟执行一次，不限制小时、日期或星期。</p>
-          </div>
-
-          <div v-else-if="draft.mode === 'every_minutes'" class="cron-dialog__grid">
-            <label class="field-card">
-              <span>间隔分钟</span>
-              <input v-model.number="draft.minuteInterval" type="number" min="1" max="59">
-            </label>
-          </div>
-
-          <div v-else-if="draft.mode === 'hourly'" class="cron-dialog__grid">
-            <label class="field-card">
-              <span>分钟</span>
-              <input v-model.number="draft.minute" type="number" min="0" max="59">
-            </label>
-          </div>
-
-          <div v-else-if="draft.mode === 'every_hours'" class="cron-dialog__grid cron-dialog__grid--two">
-            <label class="field-card">
-              <span>分钟</span>
-              <input v-model.number="draft.minute" type="number" min="0" max="59">
-            </label>
-            <label class="field-card">
-              <span>间隔小时</span>
-              <input v-model.number="draft.hourInterval" type="number" min="1" max="23">
-            </label>
-          </div>
-
-          <div v-else-if="draft.mode === 'daily'" class="cron-dialog__grid cron-dialog__grid--two">
-            <label class="field-card">
-              <span>小时</span>
-              <input v-model.number="draft.hour" type="number" min="0" max="23">
-            </label>
-            <label class="field-card">
-              <span>分钟</span>
-              <input v-model.number="draft.minute" type="number" min="0" max="59">
-            </label>
-          </div>
-
-          <div v-else-if="draft.mode === 'weekly'" class="cron-dialog__grid cron-dialog__grid--three">
-            <label class="field-card">
-              <span>星期</span>
-              <select v-model="draft.weekday">
-                <option v-for="item in weekdayOptions" :key="item.value" :value="item.value">
-                  {{ item.label }}
-                </option>
-              </select>
-            </label>
-            <label class="field-card">
-              <span>小时</span>
-              <input v-model.number="draft.hour" type="number" min="0" max="23">
-            </label>
-            <label class="field-card">
-              <span>分钟</span>
-              <input v-model.number="draft.minute" type="number" min="0" max="59">
-            </label>
-          </div>
-
-          <div v-else-if="draft.mode === 'monthly'" class="cron-dialog__grid cron-dialog__grid--three">
-            <label class="field-card">
-              <span>每月日期</span>
-              <input v-model.number="draft.day" type="number" min="1" max="31">
-            </label>
-            <label class="field-card">
-              <span>小时</span>
-              <input v-model.number="draft.hour" type="number" min="0" max="23">
-            </label>
-            <label class="field-card">
-              <span>分钟</span>
-              <input v-model.number="draft.minute" type="number" min="0" max="59">
-            </label>
-          </div>
-
-          <div v-else-if="draft.mode === 'yearly'" class="cron-dialog__grid cron-dialog__grid--four">
-            <label class="field-card">
-              <span>月份</span>
-              <select v-model="draft.month">
-                <option v-for="item in monthOptions" :key="item.value" :value="item.value">
-                  {{ item.label }}
-                </option>
-              </select>
-            </label>
-            <label class="field-card">
-              <span>日期</span>
-              <input v-model.number="draft.day" type="number" min="1" max="31">
-            </label>
-            <label class="field-card">
-              <span>小时</span>
-              <input v-model.number="draft.hour" type="number" min="0" max="23">
-            </label>
-            <label class="field-card">
-              <span>分钟</span>
-              <input v-model.number="draft.minute" type="number" min="0" max="59">
-            </label>
-          </div>
-
-          <div v-else class="cron-dialog__block">
-            <label class="field-card">
-              <span>原始 Cron</span>
-              <input v-model.trim="customCron" type="text" :placeholder="placeholder">
-            </label>
-            <p class="cron-dialog__note">如果你的场景超出常见的“每分钟 / 每小时 / 每天 / 每周 / 每月 / 每年”，可以直接输入原始 Cron。</p>
-          </div>
-
-          <div class="cron-dialog__preview">
-            <strong>{{ draftCron }}</strong>
-            <p>{{ draftDescription }}</p>
-          </div>
+        <div v-else-if="draft.mode === 'hourly'" class="cron-dialog__grid">
+          <label class="field-card">
+            <span>分钟</span>
+            <input v-model.number="draft.minute" type="number" min="0" max="59" @input="applyPresetCron">
+          </label>
         </div>
 
-        <div class="submit-dialog__actions">
-          <button class="button button-secondary" type="button" @click="closeDialog">
-            取消
-          </button>
-          <button class="button button-primary" type="button" @click="applyDialog">
-            应用 Cron
-          </button>
+        <div v-else-if="draft.mode === 'every_hours'" class="cron-dialog__grid cron-dialog__grid--two">
+          <label class="field-card">
+            <span>分钟</span>
+            <input v-model.number="draft.minute" type="number" min="0" max="59" @input="applyPresetCron">
+          </label>
+          <label class="field-card">
+            <span>间隔小时</span>
+            <input v-model.number="draft.hourInterval" type="number" min="1" max="23" @input="applyPresetCron">
+          </label>
+        </div>
+
+        <div v-else-if="draft.mode === 'daily'" class="cron-dialog__grid cron-dialog__grid--two">
+          <label class="field-card">
+            <span>小时</span>
+            <input v-model.number="draft.hour" type="number" min="0" max="23" @input="applyPresetCron">
+          </label>
+          <label class="field-card">
+            <span>分钟</span>
+            <input v-model.number="draft.minute" type="number" min="0" max="59" @input="applyPresetCron">
+          </label>
+        </div>
+
+        <div v-else-if="draft.mode === 'weekly'" class="cron-dialog__grid cron-dialog__grid--three">
+          <label class="field-card">
+            <span>星期</span>
+            <select v-model="draft.weekday" @change="applyPresetCron">
+              <option v-for="item in weekdayOptions" :key="item.value" :value="item.value">
+                {{ item.label }}
+              </option>
+            </select>
+          </label>
+          <label class="field-card">
+            <span>小时</span>
+            <input v-model.number="draft.hour" type="number" min="0" max="23" @input="applyPresetCron">
+          </label>
+          <label class="field-card">
+            <span>分钟</span>
+            <input v-model.number="draft.minute" type="number" min="0" max="59" @input="applyPresetCron">
+          </label>
+        </div>
+
+        <div v-else-if="draft.mode === 'monthly'" class="cron-dialog__grid cron-dialog__grid--three">
+          <label class="field-card">
+            <span>每月日期</span>
+            <input v-model.number="draft.day" type="number" min="1" max="31" @input="applyPresetCron">
+          </label>
+          <label class="field-card">
+            <span>小时</span>
+            <input v-model.number="draft.hour" type="number" min="0" max="23" @input="applyPresetCron">
+          </label>
+          <label class="field-card">
+            <span>分钟</span>
+            <input v-model.number="draft.minute" type="number" min="0" max="59" @input="applyPresetCron">
+          </label>
+        </div>
+
+        <div v-else-if="draft.mode === 'yearly'" class="cron-dialog__grid cron-dialog__grid--four">
+          <label class="field-card">
+            <span>月份</span>
+            <select v-model="draft.month" @change="applyPresetCron">
+              <option v-for="item in monthOptions" :key="item.value" :value="item.value">
+                {{ item.label }}
+              </option>
+            </select>
+          </label>
+          <label class="field-card">
+            <span>日期</span>
+            <input v-model.number="draft.day" type="number" min="1" max="31" @input="applyPresetCron">
+          </label>
+          <label class="field-card">
+            <span>小时</span>
+            <input v-model.number="draft.hour" type="number" min="0" max="23" @input="applyPresetCron">
+          </label>
+          <label class="field-card">
+            <span>分钟</span>
+            <input v-model.number="draft.minute" type="number" min="0" max="59" @input="applyPresetCron">
+          </label>
+        </div>
+
+        <div v-else class="cron-dialog__block">
+          <p class="cron-dialog__note">直接在上方输入框里编辑原始 Cron 表达式，下面会实时显示解析结果。</p>
+        </div>
+
+        <div class="cron-dialog__preview">
+          <strong>{{ previewCron || "未设置" }}</strong>
+          <p>{{ previewDescription }}</p>
         </div>
       </div>
     </div>
@@ -167,7 +152,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 
 
 const props = defineProps({
@@ -187,9 +172,9 @@ const props = defineProps({
 
 const emit = defineEmits(["update:modelValue"]);
 
-const dialogVisible = ref(false);
+const rootRef = ref(null);
+const popoverVisible = ref(false);
 const customCron = ref("");
-const dialogTitleId = `cron-dialog-${Math.random().toString(36).slice(2, 10)}`;
 const modeOptions = [
   { value: "every_minute", label: "每分钟" },
   { value: "every_minutes", label: "每隔 N 分钟" },
@@ -217,8 +202,13 @@ const monthOptions = Array.from({ length: 12 }, (_, index) => ({
 const draft = reactive(createDraftState());
 
 const cronDescription = computed(() => describeCron(props.modelValue));
-const draftCron = computed(() => buildCronExpression(draft, customCron.value));
-const draftDescription = computed(() => describeCron(draftCron.value));
+const previewCron = computed(() => {
+  if (draft.mode === "custom") {
+    return normalizeExpression(props.modelValue);
+  }
+  return buildCronExpression(draft, customCron.value);
+});
+const previewDescription = computed(() => describeCron(previewCron.value));
 
 function createDraftState() {
   return {
@@ -420,7 +410,7 @@ function weekdayLabel(value) {
   return mapping[String(value)] || "每周";
 }
 
-function applyParsedState(value) {
+function syncDraftFromValue(value) {
   const { parsed, custom } = parseCronExpression(value);
   draft.mode = parsed.mode;
   draft.minute = parsed.minute;
@@ -430,29 +420,76 @@ function applyParsedState(value) {
   draft.weekday = parsed.weekday;
   draft.minuteInterval = parsed.minuteInterval;
   draft.hourInterval = parsed.hourInterval;
-  customCron.value = custom || "";
+  customCron.value = custom || normalizeExpression(value);
 }
 
-function openDialog() {
-  applyParsedState(props.modelValue);
-  dialogVisible.value = true;
+function emitCron(value) {
+  emit("update:modelValue", value);
 }
 
-function closeDialog() {
-  dialogVisible.value = false;
+function handleTextInput(event) {
+  emitCron(event.target.value);
 }
 
-function applyDialog() {
-  emit("update:modelValue", draftCron.value);
-  dialogVisible.value = false;
+function openPopover() {
+  popoverVisible.value = true;
+}
+
+function closePopover() {
+  popoverVisible.value = false;
+}
+
+function selectMode(value) {
+  const previousMode = draft.mode;
+  if (value === "custom" && previousMode !== "custom") {
+    customCron.value = buildCronExpression({ ...draft, mode: previousMode }, customCron.value);
+  }
+  draft.mode = value;
+  if (value !== "custom") {
+    applyPresetCron();
+  }
+}
+
+function applyPresetCron() {
+  if (draft.mode === "custom") {
+    return;
+  }
+  const expression = buildCronExpression(draft, customCron.value);
+  customCron.value = expression;
+  emitCron(expression);
+}
+
+function handleDocumentPointerDown(event) {
+  if (!popoverVisible.value) {
+    return;
+  }
+  const root = rootRef.value;
+  if (root && event.target instanceof Node && !root.contains(event.target)) {
+    closePopover();
+  }
+}
+
+function handleDocumentKeydown(event) {
+  if (event.key === "Escape") {
+    closePopover();
+  }
 }
 
 watch(
-  () => draft.mode,
-  (value, previousValue) => {
-    if (value === "custom" && previousValue && previousValue !== "custom") {
-      customCron.value = buildCronExpression({ ...draft, mode: previousValue }, customCron.value);
-    }
+  () => props.modelValue,
+  (value) => {
+    syncDraftFromValue(value);
   },
+  { immediate: true },
 );
+
+onMounted(() => {
+  document.addEventListener("pointerdown", handleDocumentPointerDown);
+  document.addEventListener("keydown", handleDocumentKeydown);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("pointerdown", handleDocumentPointerDown);
+  document.removeEventListener("keydown", handleDocumentKeydown);
+});
 </script>

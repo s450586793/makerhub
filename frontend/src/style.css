@@ -450,15 +450,17 @@
 }
 
 .cron-field {
+  position: relative;
   display: grid;
   gap: 8px;
 }
 
 .cron-field__row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
+  display: block;
+}
+
+.cron-field__input {
+  width: 100%;
 }
 
 .cron-field__summary {
@@ -467,18 +469,38 @@
   line-height: 1.5;
 }
 
-.cron-dialog__panel {
-  width: min(760px, calc(100vw - 32px));
-  padding: 28px;
+.cron-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 40;
+  width: max(360px, 100%);
+  max-width: min(760px, calc(100vw - 32px));
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  background: var(--surface);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.18);
   text-align: left;
 }
 
 .cron-dialog__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
   margin-bottom: 16px;
 }
 
 .cron-dialog__header h2 {
   margin: 8px 0 0;
+  font-size: 18px;
+}
+
+.cron-dialog__hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .cron-dialog__modes {
@@ -1947,6 +1969,10 @@
   .cron-dialog__grid--three,
   .cron-dialog__grid--four {
     grid-template-columns: 1fr;
+  }
+
+  .cron-popover {
+    width: min(calc(100vw - 32px), 100%);
   }
 
   .gallery-card__body {
