@@ -29,7 +29,7 @@
           <RouterLink :class="navClass('/settings')" to="/settings" @click="closeSidebar">设置</RouterLink>
           <RouterLink :class="navClass('/organizer')" to="/organizer" @click="closeSidebar">本地整理</RouterLink>
           <RouterLink :class="navClass('/remote-refresh')" to="/remote-refresh" @click="closeSidebar">远端刷新</RouterLink>
-          <RouterLink :class="navClass('/tasks')" to="/tasks" @click="closeSidebar">任务</RouterLink>
+          <RouterLink :class="navClass('/tasks')" to="/tasks" @click="closeSidebar">归档任务</RouterLink>
           <RouterLink :class="navClass('/logs')" to="/logs" @click="closeSidebar">日志</RouterLink>
         </nav>
 
