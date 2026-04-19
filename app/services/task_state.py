@@ -860,6 +860,72 @@ class TaskStateStore:
 
         return self._update_missing_3mf(_mutate)
 
+    def replace_missing_3mf_for_models(self, items_by_model: dict[str, list[dict]]) -> dict:
+        normalized_groups: dict[str, list[dict]] = {}
+        for raw_model_id, raw_items in (items_by_model or {}).items():
+            model_key = str(raw_model_id or "").strip()
+            if not model_key:
+                continue
+
+            merged: list[dict] = []
+            seen = set()
+            for item in raw_items or []:
+                normalized_list = _normalize_missing_3mf([item]).get("items", [])
+                if not normalized_list:
+                    continue
+                normalized = normalized_list[0]
+                if not str(normalized.get("model_id") or "").strip():
+                    normalized["model_id"] = model_key
+                key = _missing_3mf_key(normalized)
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(normalized)
+
+            normalized_groups[model_key] = merged
+
+        if not normalized_groups:
+            return self.load_missing_3mf()
+
+        def _mutate(payload: dict) -> dict:
+            existing = _normalize_missing_3mf(payload).get("items", [])
+            remaining = [
+                item
+                for item in existing
+                if str(item.get("model_id") or "").strip() not in normalized_groups
+            ]
+
+            merged: list[dict] = []
+            seen = set()
+            for item in remaining:
+                normalized_list = _normalize_missing_3mf([item]).get("items", [])
+                if not normalized_list:
+                    continue
+                normalized = normalized_list[0]
+                key = _missing_3mf_key(normalized)
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(normalized)
+
+            for model_key in normalized_groups:
+                for item in normalized_groups.get(model_key) or []:
+                    normalized_list = _normalize_missing_3mf([item]).get("items", [])
+                    if not normalized_list:
+                        continue
+                    normalized = normalized_list[0]
+                    if not str(normalized.get("model_id") or "").strip():
+                        normalized["model_id"] = model_key
+                    key = _missing_3mf_key(normalized)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    merged.append(normalized)
+
+            return {"items": merged}
+
+        return self._update_missing_3mf(_mutate)
+
     def remove_missing_3mf_for_model(self, model_id: str) -> dict:
         return self.replace_missing_3mf_for_model(model_id, [])
 

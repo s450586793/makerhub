@@ -36,6 +36,7 @@ def _base_archive_repair_status() -> dict[str, Any]:
         "run_id": "",
         "pid": 0,
         "last_result": {},
+        "progress": {},
     }
 
 
@@ -69,6 +70,7 @@ def write_archive_repair_status(payload: dict[str, Any]) -> dict[str, Any]:
             "run_id": str(payload.get("run_id", current.get("run_id")) or ""),
             "pid": int(payload.get("pid", current.get("pid")) or 0),
             "last_result": payload.get("last_result", current.get("last_result")) if isinstance(payload.get("last_result", current.get("last_result")), dict) else {},
+            "progress": payload.get("progress", current.get("progress")) if isinstance(payload.get("progress", current.get("progress")), dict) else {},
         }
     )
     _write_json(ARCHIVE_REPAIR_STATUS_PATH, current)
@@ -96,6 +98,7 @@ def read_archive_repair_status() -> dict[str, Any]:
                 "run_id": str(payload.get("run_id") or ""),
                 "pid": int(payload.get("pid") or 0),
                 "last_result": payload.get("last_result") if isinstance(payload.get("last_result"), dict) else {},
+                "progress": payload.get("progress") if isinstance(payload.get("progress"), dict) else {},
             }
         )
 
@@ -200,9 +203,12 @@ def repair_archive_3mf_mappings(
     *,
     archive_root: Path = ARCHIVE_DIR,
     task_store: Optional[TaskStateStore] = None,
+    status_updater=None,
 ) -> dict[str, Any]:
     store = task_store or TaskStateStore()
+    meta_paths = [path for path in sorted(archive_root.rglob("meta.json")) if path.is_file()]
     stats = {
+        "total_models": len(meta_paths),
         "scanned_models": 0,
         "repaired_models": 0,
         "repaired_instances": 0,
@@ -212,12 +218,34 @@ def repair_archive_3mf_mappings(
         "failed_models": 0,
         "changed_model_dirs": [],
     }
+    pending_missing_updates: dict[str, list[dict]] = {}
+
+    def _flush_missing_updates() -> None:
+        if pending_missing_updates:
+            store.replace_missing_3mf_for_models(dict(pending_missing_updates))
+            pending_missing_updates.clear()
+
+    def _emit_progress(current_model_dir: str = "") -> None:
+        if not status_updater:
+            return
+        status_updater(
+            {
+                "progress": {
+                    "total_models": stats["total_models"],
+                    "scanned_models": stats["scanned_models"],
+                    "repaired_models": stats["repaired_models"],
+                    "repaired_instances": stats["repaired_instances"],
+                    "failed_models": stats["failed_models"],
+                    "current_model_dir": current_model_dir,
+                }
+            }
+        )
 
     append_business_log("archive_repair", "repair_started", "开始扫描全库 3MF 映射。", archive_root=archive_root)
-    for meta_path in sorted(archive_root.rglob("meta.json")):
-        if not meta_path.is_file():
-            continue
+    _emit_progress()
+    for meta_path in meta_paths:
         stats["scanned_models"] += 1
+        current_model_dir = meta_path.parent.relative_to(ARCHIVE_DIR).as_posix()
         result = repair_model_instance_files(meta_path)
         if not result.get("ok"):
             stats["failed_models"] += 1
@@ -228,6 +256,8 @@ def repair_archive_3mf_mappings(
                 level="error",
                 model_dir=result.get("model_dir") or meta_path.parent.name,
             )
+            if stats["scanned_models"] % 10 == 0 or stats["scanned_models"] == stats["total_models"]:
+                _emit_progress(current_model_dir)
             continue
 
         if result.get("changed"):
@@ -242,7 +272,15 @@ def repair_archive_3mf_mappings(
 
         model_id = str(result.get("model_id") or "").strip()
         if model_id:
-            store.replace_missing_3mf_for_model(model_id, result.get("missing_items") or [])
+            pending_missing_updates[model_id] = list(result.get("missing_items") or [])
+
+        if len(pending_missing_updates) >= 25:
+            _flush_missing_updates()
+
+        if stats["scanned_models"] % 10 == 0 or stats["scanned_models"] == stats["total_models"]:
+            _emit_progress(current_model_dir)
+
+    _flush_missing_updates()
 
     if stats["repaired_models"] or stats["repaired_instances"]:
         invalidate_archive_snapshot("archive_repair_completed")
@@ -273,11 +311,29 @@ def run_archive_repair_job(run_id: str, started_at: str = "") -> None:
             "run_id": run_id,
             "pid": os.getpid(),
             "last_result": {},
+            "progress": {},
         }
     )
 
     try:
-        result = repair_archive_3mf_mappings(task_store=TaskStateStore())
+        def _status_updater(payload: dict[str, Any]) -> None:
+            write_archive_repair_status(
+                {
+                    "running": True,
+                    "started_at": effective_started_at,
+                    "finished_at": "",
+                    "last_error": "",
+                    "run_id": run_id,
+                    "pid": os.getpid(),
+                    "last_result": {},
+                    "progress": payload.get("progress") if isinstance(payload.get("progress"), dict) else {},
+                }
+            )
+
+        result = repair_archive_3mf_mappings(
+            task_store=TaskStateStore(),
+            status_updater=_status_updater,
+        )
     except Exception as exc:
         write_archive_repair_status(
             {
@@ -288,6 +344,7 @@ def run_archive_repair_job(run_id: str, started_at: str = "") -> None:
                 "run_id": run_id,
                 "pid": os.getpid(),
                 "last_result": {},
+                "progress": {},
             }
         )
         append_business_log(
@@ -308,5 +365,6 @@ def run_archive_repair_job(run_id: str, started_at: str = "") -> None:
             "run_id": run_id,
             "pid": os.getpid(),
             "last_result": result,
+            "progress": {},
         }
     )
