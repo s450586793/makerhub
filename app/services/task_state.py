@@ -1,4 +1,5 @@
 import json
+import re
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,28 @@ MODEL_FLAGS_PATH = STATE_DIR / "model_flags.json"
 SUBSCRIPTIONS_STATE_PATH = STATE_DIR / "subscriptions_state.json"
 REMOTE_REFRESH_STATE_PATH = STATE_DIR / "remote_refresh_state.json"
 _STATE_LOCK = threading.RLock()
+
+
+def _looks_like_html_message(text: str) -> bool:
+    head = str(text or "").strip().lower()[:1200]
+    if not head:
+        return False
+    if head.startswith("<!doctype html") or "<html" in head:
+        return True
+    return bool(re.search(r"<(html|head|body|script|title|div|meta|style)\b", head))
+
+
+def _sanitize_message_text(value: Any, fallback: str = "") -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    if _looks_like_html_message(text):
+        lowered = text.lower()
+        if any(token in lowered for token in ("cloudflare", "cf-browser-verification", "cf-chl", "__cf_bm", "cf_clearance")):
+            return "返回了风控校验页，通常是 Cookie 失效、代理异常或站点触发了 Cloudflare 校验。"
+        return "返回了 HTML 页面，通常是 Cookie 失效、代理错误或站点风控页。"
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:400]
 
 
 def _normalize_task_item(item: Any, default_status: str) -> dict:
@@ -46,7 +69,7 @@ def _normalize_task_item(item: Any, default_status: str) -> dict:
         "title": str(item.get("title") or item.get("name") or item.get("url") or item.get("model_dir") or ""),
         "status": str(item.get("status") or default_status),
         "progress": int(progress or 0),
-        "message": str(item.get("message") or item.get("detail") or ""),
+        "message": _sanitize_message_text(item.get("message") or item.get("detail") or ""),
         "updated_at": str(item.get("updated_at") or item.get("time") or item.get("created_at") or ""),
         "url": str(item.get("url") or ""),
         "mode": str(item.get("mode") or ""),
@@ -372,7 +395,7 @@ def _normalize_remote_refresh_state(payload: Any) -> dict:
         "last_run_at": str(payload.get("last_run_at") or ""),
         "last_success_at": str(payload.get("last_success_at") or ""),
         "last_error_at": str(payload.get("last_error_at") or ""),
-        "last_message": str(payload.get("last_message") or ""),
+        "last_message": _sanitize_message_text(payload.get("last_message") or ""),
         "last_batch_total": _safe_int(payload.get("last_batch_total") or 0),
         "last_batch_succeeded": _safe_int(payload.get("last_batch_succeeded") or 0),
         "last_batch_failed": _safe_int(payload.get("last_batch_failed") or 0),

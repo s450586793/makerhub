@@ -2,6 +2,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -54,6 +55,28 @@ def _parse_ts(value: Any) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _looks_like_html_error(text: str) -> bool:
+    head = str(text or "").strip().lower()[:1200]
+    if not head:
+        return False
+    if head.startswith("<!doctype html") or "<html" in head:
+        return True
+    return bool(re.search(r"<(html|head|body|script|title|div|meta|style)\b", head))
+
+
+def _sanitize_remote_refresh_message(value: Any, fallback: str = "") -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    if _looks_like_html_error(text):
+        lowered = text.lower()
+        if any(token in lowered for token in ("cloudflare", "cf-browser-verification", "cf-chl", "__cf_bm", "cf_clearance")):
+            return "远端刷新返回了风控校验页，通常是 Cookie 失效、代理异常或站点触发了 Cloudflare 校验。"
+        return "远端刷新返回了 HTML 页面，通常是 Cookie 失效、代理错误或站点风控页。"
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:400]
 
 
 def _validate_cron(value: str) -> str:
@@ -529,11 +552,16 @@ class RemoteRefreshManager:
                     status="error",
                     running=False,
                     last_error_at=_now_iso(),
-                    last_message=message,
+                    last_message=_sanitize_remote_refresh_message(message, "远端刷新调度器异常。"),
                     current_item={},
                 )
-                _append_remote_refresh_log("scheduler_error", error=str(exc))
-                append_business_log("remote_refresh", "scheduler_error", message, level="error")
+                _append_remote_refresh_log("scheduler_error", error=_sanitize_remote_refresh_message(exc, exc.__class__.__name__))
+                append_business_log(
+                    "remote_refresh",
+                    "scheduler_error",
+                    _sanitize_remote_refresh_message(message, "远端刷新调度器异常。"),
+                    level="error",
+                )
             time.sleep(REMOTE_REFRESH_POLL_SECONDS)
 
     def _tick(self) -> None:
@@ -797,7 +825,10 @@ class RemoteRefreshManager:
                     "url": origin_url,
                     "status": "running",
                     "progress": int(payload.get("percent") or 0),
-                    "message": str(payload.get("message") or f"远端刷新中 {index}/{total}"),
+                    "message": _sanitize_remote_refresh_message(
+                        payload.get("message") or f"远端刷新中 {index}/{total}",
+                        f"远端刷新中 {index}/{total}",
+                    ),
                     "updated_at": _now_iso(),
                     "meta": {
                         "model_dir": model_dir,
@@ -818,7 +849,10 @@ class RemoteRefreshManager:
             finalized = _finalize_refreshed_meta(meta_path, existing_meta)
             invalidate_archive_snapshot("remote_refresh_completed")
             invalidate_model_detail_cache(model_dir)
-            message = str(finalized["meta"].get("remoteSync", {}).get("lastMessage") or "远端刷新完成。")
+            message = _sanitize_remote_refresh_message(
+                finalized["meta"].get("remoteSync", {}).get("lastMessage") or "远端刷新完成。",
+                "远端刷新完成。",
+            )
             history_item = {
                 "id": _history_id(model_dir, "success"),
                 "title": title,
@@ -900,7 +934,7 @@ class RemoteRefreshManager:
                 )
                 return {"ok": True, "source_deleted": True}
 
-            message = str(exc).strip() or exc.__class__.__name__
+            message = _sanitize_remote_refresh_message(exc, exc.__class__.__name__)
             if meta_path.exists():
                 _update_meta_refresh_error(meta_path, message, source_deleted=False)
                 invalidate_archive_snapshot("remote_refresh_error")
