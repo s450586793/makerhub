@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from bs4 import BeautifulSoup
 
-from app.core.settings import ARCHIVE_DIR
+from app.core.settings import ARCHIVE_DIR, STATE_DIR
 from app.core.store import JsonStore
 from app.services.batch_discovery import extract_model_id, normalize_source_url
 from app.services.model_attachments import (
@@ -32,17 +32,36 @@ SOURCE_LABELS = {
 LEGACY_CURL_FAILURE_MARKER = "No such file or directory: 'curl'"
 DETAIL_COMMENTS_PAGE_SIZE = 20
 _ARCHIVE_SNAPSHOT_LOCK = threading.RLock()
+_ARCHIVE_SNAPSHOT_MARKER_PATH = STATE_DIR / "archive_snapshot.marker"
 _ARCHIVE_SNAPSHOT_CACHE: dict[str, Any] = {
     "snapshot": None,
     "dirty": True,
     "dirty_reason": "startup",
     "built_at": 0.0,
+    "marker_token": "",
 }
 _MODEL_DETAIL_CACHE_LOCK = threading.RLock()
 _MODEL_DETAIL_CACHE: dict[str, dict[str, Any]] = {}
 
 
+def _read_archive_snapshot_marker() -> str:
+    try:
+        return _ARCHIVE_SNAPSHOT_MARKER_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _write_archive_snapshot_marker(reason: str = "") -> None:
+    token = f"{time.time_ns()}:{str(reason or '').strip()}"
+    try:
+        _ARCHIVE_SNAPSHOT_MARKER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _ARCHIVE_SNAPSHOT_MARKER_PATH.write_text(token, encoding="utf-8")
+    except OSError:
+        return
+
+
 def invalidate_archive_snapshot(reason: str = "") -> None:
+    _write_archive_snapshot_marker(reason)
     with _ARCHIVE_SNAPSHOT_LOCK:
         _ARCHIVE_SNAPSHOT_CACHE["dirty"] = True
         if reason:
@@ -122,13 +141,17 @@ def _build_archive_snapshot() -> dict[str, Any]:
 
 
 def get_archive_snapshot(force: bool = False) -> dict[str, Any]:
+    marker_token = _read_archive_snapshot_marker()
     with _ARCHIVE_SNAPSHOT_LOCK:
         snapshot = _ARCHIVE_SNAPSHOT_CACHE.get("snapshot")
-        if force or snapshot is None or _ARCHIVE_SNAPSHOT_CACHE.get("dirty", False):
+        cached_marker_token = str(_ARCHIVE_SNAPSHOT_CACHE.get("marker_token") or "")
+        marker_changed = marker_token != cached_marker_token
+        if force or snapshot is None or _ARCHIVE_SNAPSHOT_CACHE.get("dirty", False) or marker_changed:
             snapshot = _build_archive_snapshot()
             _ARCHIVE_SNAPSHOT_CACHE["snapshot"] = snapshot
             _ARCHIVE_SNAPSHOT_CACHE["dirty"] = False
             _ARCHIVE_SNAPSHOT_CACHE["built_at"] = time.time()
+            _ARCHIVE_SNAPSHOT_CACHE["marker_token"] = marker_token
         return snapshot
 
 
