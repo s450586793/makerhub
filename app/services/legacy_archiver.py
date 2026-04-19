@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 from html import escape
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 
 """
@@ -1256,6 +1256,174 @@ def _extract_instance_download(data: object) -> tuple[str, str]:
     return name or "", url or ""
 
 
+def _normalize_url_value(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    raw = value.strip()
+    if not raw:
+        return ""
+    if raw.startswith("//"):
+        return f"https:{raw}"
+    return raw
+
+
+def _looks_like_instance_api_url(url: object) -> bool:
+    raw = _normalize_url_value(url).lower()
+    if not raw:
+        return False
+    return "/f3mf" in raw or ("design-service/instance/" in raw and "download" in raw)
+
+
+def _looks_like_3mf_file_url(url: object) -> bool:
+    raw = _normalize_url_value(url).lower()
+    if not raw:
+        return False
+    markers = (
+        ".3mf",
+        "filetype=3mf",
+        "/f3mf/download",
+        "content-disposition=",
+        "application%2fvnd.ms-package.3dmanufacturing",
+        "application/vnd.ms-package.3dmanufacturing",
+    )
+    return any(marker in raw for marker in markers)
+
+
+def _instance_identity_keys(inst: object) -> List[str]:
+    if not isinstance(inst, dict):
+        return []
+    keys: List[str] = []
+    field_names = (
+        "id",
+        "profileId",
+        "profile_id",
+        "profileID",
+        "instanceId",
+        "instance_id",
+        "instanceID",
+    )
+    for field in field_names:
+        value = str(inst.get(field) or "").strip()
+        if value:
+            token = f"{field}:{value}"
+            if token not in keys:
+                keys.append(token)
+    for field in ("fileName", "name", "title"):
+        value = sanitize_filename(str(inst.get(field) or "").strip()).lower()
+        if value:
+            token = f"{field}:{value}"
+            if token not in keys:
+                keys.append(token)
+    return keys
+
+
+def _build_existing_instance_index(instances: object) -> Dict[str, dict]:
+    index: Dict[str, dict] = {}
+    if not isinstance(instances, list):
+        return index
+    for item in instances:
+        if not isinstance(item, dict):
+            continue
+        for key in _instance_identity_keys(item):
+            index.setdefault(key, item)
+    return index
+
+
+def _find_existing_instance(inst: object, instance_index: Dict[str, dict]) -> dict:
+    if not isinstance(inst, dict) or not instance_index:
+        return {}
+    for key in _instance_identity_keys(inst):
+        matched = instance_index.get(key)
+        if matched:
+            return matched
+    return {}
+
+
+def _extract_instance_download_hint(payload: object) -> tuple[str, str, str]:
+    best_name = ""
+    best_url = ""
+    best_api_url = ""
+    best_score = -1
+    stack: list[tuple[object, int]] = [(payload, 0)]
+    seen: set[int] = set()
+
+    while stack:
+        current, depth = stack.pop()
+        if depth > 8:
+            continue
+        if isinstance(current, (dict, list)):
+            marker = id(current)
+            if marker in seen:
+                continue
+            seen.add(marker)
+
+        if isinstance(current, dict):
+            name = str(
+                current.get("name")
+                or current.get("fileName")
+                or current.get("filename")
+                or current.get("file_name")
+                or current.get("title")
+                or ""
+            ).strip()
+            file_type = str(current.get("fileType") or current.get("type") or current.get("ext") or "").strip().lower()
+            api_url = _normalize_url_value(
+                current.get("apiUrl")
+                or current.get("api_url")
+                or current.get("downloadApiUrl")
+                or current.get("download_api_url")
+            )
+            explicit_url = _normalize_url_value(
+                current.get("downloadUrl")
+                or current.get("download_url")
+                or current.get("downloadURL")
+            )
+            loose_url = _normalize_url_value(current.get("url") or current.get("src") or current.get("href"))
+
+            candidate_url = ""
+            if explicit_url:
+                if _looks_like_instance_api_url(explicit_url):
+                    api_url = api_url or explicit_url
+                else:
+                    candidate_url = explicit_url
+            elif loose_url:
+                if _looks_like_instance_api_url(loose_url):
+                    api_url = api_url or loose_url
+                elif _looks_like_3mf_file_url(loose_url) or file_type == "3mf" or name.lower().endswith(".3mf"):
+                    candidate_url = loose_url
+
+            score = 0
+            if explicit_url and candidate_url:
+                score += 60
+            elif candidate_url:
+                score += 35
+            if _looks_like_3mf_file_url(candidate_url):
+                score += 30
+            if file_type == "3mf":
+                score += 20
+            if name.lower().endswith(".3mf"):
+                score += 20
+            score -= depth
+
+            if candidate_url and score > best_score:
+                best_name = name
+                best_url = candidate_url
+                best_api_url = api_url
+                best_score = score
+            elif api_url and not best_api_url:
+                best_api_url = api_url
+
+            for value in current.values():
+                if isinstance(value, (dict, list)):
+                    stack.append((value, depth + 1))
+        elif isinstance(current, list):
+            for value in current:
+                if isinstance(value, (dict, list)):
+                    stack.append((value, depth + 1))
+
+    return best_name, best_url, best_api_url
+
+
 def _looks_like_html(text: str) -> bool:
     if not text:
         return False
@@ -1449,7 +1617,32 @@ def fetch_instance_3mf(
     return "", "", api_url or "", last_failure
 
 
-def collect_instance_media(inst: dict, session: requests.Session, out_dir: Path, base_name: str):
+def _match_existing_media_item(items: object, *, url: str = "", index: object = None, url_fields: tuple[str, ...] = ("url",)) -> dict:
+    if not isinstance(items, list):
+        return {}
+    normalized_url = _normalize_url_value(url)
+    normalized_index = str(index if index is not None else "").strip()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        for field in url_fields:
+            candidate = _normalize_url_value(item.get(field))
+            if normalized_url and candidate and candidate == normalized_url:
+                return item
+        if normalized_index and str(item.get("index") if item.get("index") is not None else "").strip() == normalized_index:
+            return item
+    return {}
+
+
+def collect_instance_media(
+    inst: dict,
+    session: requests.Session,
+    out_dir: Path,
+    base_name: str,
+    *,
+    download_assets: bool = True,
+    existing_instance: Optional[dict] = None,
+):
     model_info = (
         inst.get("extention", {}).get("modelInfo")
         or inst.get("extension", {}).get("modelInfo")
@@ -1458,6 +1651,8 @@ def collect_instance_media(inst: dict, session: requests.Session, out_dir: Path,
     )
     plates = model_info.get("plates") or model_info.get("plateList") or []
     aux_pics = model_info.get("auxiliaryPictures") or model_info.get("pictures") or inst.get("pictures") or inst.get("auxiliaryPictures") or []
+    existing_plates = existing_instance.get("plates") if isinstance(existing_instance, dict) else []
+    existing_pics = existing_instance.get("pictures") if isinstance(existing_instance, dict) else []
     plate_out = []
     pics_out = []
     # plates thumbs
@@ -1465,27 +1660,41 @@ def collect_instance_media(inst: dict, session: requests.Session, out_dir: Path,
         thumb = p.get("thumbnail", {}).get("url") or p.get("thumbnailUrl") or p.get("url")
         if not thumb:
             continue
-        ext = pick_ext_from_url(thumb)
-        fname = f"{base_name}_inst{inst.get('id')}_plate_{int(p.get('index',0)):02d}.{ext}"
-        try:
-            download_file(
-                session,
-                thumb,
-                out_dir / fname,
-                max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
-            )
-        except Exception as exc:
-            log("实例分盘缩略图下载失败，保留原始链接：", thumb, exc)
-            continue
-        plate_out.append({
+        plate_index = int(p.get("index", 0))
+        existing_plate = _match_existing_media_item(
+            existing_plates,
+            url=thumb,
+            index=plate_index,
+            url_fields=("thumbnailUrl", "url"),
+        )
+        record = {
             "index": p.get("index", 0),
             "prediction": p.get("prediction"),
             "weight": p.get("weight"),
             "filaments": p.get("filaments") or [],
             "thumbnailUrl": thumb,
-            "thumbnailRelPath": f"images/{fname}",
-            "thumbnailFile": fname,
-        })
+        }
+        if str(existing_plate.get("thumbnailRelPath") or "").strip():
+            record["thumbnailRelPath"] = str(existing_plate.get("thumbnailRelPath") or "").strip()
+        if str(existing_plate.get("thumbnailFile") or "").strip():
+            record["thumbnailFile"] = str(existing_plate.get("thumbnailFile") or "").strip()
+        if download_assets:
+            ext = pick_ext_from_url(thumb)
+            fname = sanitize_filename(
+                str(existing_plate.get("thumbnailFile") or f"{base_name}_inst{inst.get('id')}_plate_{plate_index:02d}.{ext}")
+            ) or f"{base_name}_inst{inst.get('id')}_plate_{plate_index:02d}.{ext}"
+            try:
+                download_file(
+                    session,
+                    thumb,
+                    out_dir / fname,
+                    max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+                )
+                record["thumbnailRelPath"] = f"images/{fname}"
+                record["thumbnailFile"] = fname
+            except Exception as exc:
+                log("实例分盘缩略图下载失败，保留原始链接：", thumb, exc)
+        plate_out.append(record)
     # auxiliary pictures
     pic_idx = 1
     for pic in aux_pics:
@@ -1498,48 +1707,74 @@ def collect_instance_media(inst: dict, session: requests.Session, out_dir: Path,
             is_real = pic.get("isRealLifePhoto", 0)
         if not url:
             continue
-        ext = pick_ext_from_url(url)
-        fname = f"{base_name}_inst{inst.get('id')}_pic_{pic_idx:02d}.{ext}"
-        try:
-            download_file(
-                session,
-                url,
-                out_dir / fname,
-                max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
-            )
-        except Exception as exc:
-            log("实例图片下载失败，保留原始链接：", url, exc)
-            continue
-        pics_out.append({
+        existing_pic = _match_existing_media_item(
+            existing_pics,
+            url=url,
+            index=pic_idx,
+            url_fields=("url", "originalUrl"),
+        )
+        record = {
             "index": pic_idx,
             "url": url,
-            "relPath": f"images/{fname}",
-            "fileName": fname,
             "isRealLifePhoto": is_real,
-        })
+        }
+        if str(existing_pic.get("relPath") or "").strip():
+            record["relPath"] = str(existing_pic.get("relPath") or "").strip()
+        if str(existing_pic.get("fileName") or "").strip():
+            record["fileName"] = str(existing_pic.get("fileName") or "").strip()
+        if download_assets:
+            ext = pick_ext_from_url(url)
+            fname = sanitize_filename(
+                str(existing_pic.get("fileName") or f"{base_name}_inst{inst.get('id')}_pic_{pic_idx:02d}.{ext}")
+            ) or f"{base_name}_inst{inst.get('id')}_pic_{pic_idx:02d}.{ext}"
+            try:
+                download_file(
+                    session,
+                    url,
+                    out_dir / fname,
+                    max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+                )
+                record["relPath"] = f"images/{fname}"
+                record["fileName"] = fname
+            except Exception as exc:
+                log("实例图片下载失败，保留原始链接：", url, exc)
+        pics_out.append(record)
         pic_idx += 1
     if not pics_out:
         cover = inst.get("cover") or inst.get("coverUrl")
         if cover:
-            ext = pick_ext_from_url(cover)
-            fname = f"{base_name}_inst{inst.get('id')}_pic_{pic_idx:02d}.{ext}"
-            try:
-                download_file(
-                    session,
-                    cover,
-                    out_dir / fname,
-                    max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
-                )
-            except Exception as exc:
-                log("实例封面下载失败，保留原始链接：", cover, exc)
-            else:
-                pics_out.append({
-                    "index": pic_idx,
-                    "url": cover,
-                    "relPath": f"images/{fname}",
-                    "fileName": fname,
-                    "isRealLifePhoto": 0,
-                })
+            existing_pic = _match_existing_media_item(
+                existing_pics,
+                url=cover,
+                index=pic_idx,
+                url_fields=("url", "originalUrl"),
+            )
+            record = {
+                "index": pic_idx,
+                "url": cover,
+                "isRealLifePhoto": 0,
+            }
+            if str(existing_pic.get("relPath") or "").strip():
+                record["relPath"] = str(existing_pic.get("relPath") or "").strip()
+            if str(existing_pic.get("fileName") or "").strip():
+                record["fileName"] = str(existing_pic.get("fileName") or "").strip()
+            if download_assets:
+                ext = pick_ext_from_url(cover)
+                fname = sanitize_filename(
+                    str(existing_pic.get("fileName") or f"{base_name}_inst{inst.get('id')}_pic_{pic_idx:02d}.{ext}")
+                ) or f"{base_name}_inst{inst.get('id')}_pic_{pic_idx:02d}.{ext}"
+                try:
+                    download_file(
+                        session,
+                        cover,
+                        out_dir / fname,
+                        max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+                    )
+                    record["relPath"] = f"images/{fname}"
+                    record["fileName"] = fname
+                except Exception as exc:
+                    log("实例封面下载失败，保留原始链接：", cover, exc)
+            pics_out.append(record)
     return plate_out, pics_out
 
 
@@ -2837,53 +3072,93 @@ def archive_model(
 
     inst_list = []
     planned_instances_dir = work_dir / "instances"
+    existing_instance_index = _build_existing_instance_index(existing_meta.get("instances"))
     extracted_instances = extract_instances(design)
     total_instances = max(len(extracted_instances), 1)
+    payload_hint_hits = 0
+    existing_hint_hits = 0
+    fetched_hint_hits = 0
     for idx, inst in enumerate(extracted_instances, start=1):
         inst_id = inst.get("id") or inst.get("instanceId")
         if inst_id is None:
             continue
+        existing_inst = _find_existing_instance(inst, existing_instance_index)
         emit_progress(
             progress_callback,
             55 + min(int(idx * 20 / total_instances), 20),
             f"正在处理实例信息（{idx}/{len(extracted_instances)}）",
             {"current": idx, "total": len(extracted_instances)},
         )
-        plates, pics = collect_instance_media(inst, sess, images_dir, base_name)
-        api_url = inst.get("apiUrl") or f"{origin}/api/v1/design-service/instance/{inst_id}/f3mf?type=download&fileType="
-        name3mf, url3mf, used_api_url, failure_info = fetch_instance_3mf(
+        plates, pics = collect_instance_media(
+            inst,
             sess,
-            inst_id,
-            raw_cookie_header,
-            api_url,
-            api_host_hint=api_host_hint,
-            origin=origin,
+            images_dir,
+            base_name,
+            download_assets=False,
+            existing_instance=existing_inst,
         )
+        hinted_name, hinted_url, hinted_api_url = _extract_instance_download_hint(inst)
+        api_url = (
+            hinted_api_url
+            or inst.get("apiUrl")
+            or existing_inst.get("apiUrl")
+            or f"{origin}/api/v1/design-service/instance/{inst_id}/f3mf?type=download&fileType="
+        )
+        name3mf = hinted_name or str(existing_inst.get("name") or "").strip()
+        url3mf = hinted_url or str(existing_inst.get("downloadUrl") or "").strip()
+        used_api_url = api_url
+        failure_info = {"state": "available", "message": ""} if url3mf else {"state": "missing", "message": "未获取到 3MF 下载地址。"}
+        if hinted_url:
+            payload_hint_hits += 1
+        elif url3mf:
+            existing_hint_hits += 1
+        else:
+            name3mf, url3mf, used_api_url, failure_info = fetch_instance_3mf(
+                sess,
+                inst_id,
+                raw_cookie_header,
+                api_url,
+                api_host_hint=api_host_hint,
+                origin=origin,
+            )
+            if url3mf:
+                fetched_hint_hits += 1
         failure_state = str((failure_info or {}).get("state") or "").strip()
         failure_message = str((failure_info or {}).get("message") or "").strip()
         inst_record = {
             "id": inst_id,
-            "profileId": inst.get("profileId") or inst.get("profile_id") or inst.get("profileID"),
-            "title": inst.get("title") or inst.get("name"),
-            "titleTranslated": inst.get("titleTranslated") or "",
-            "publishTime": inst.get("publishTime") or inst.get("publishedAt") or "",
-            "downloadCount": inst.get("downloadCount") or 0,
-            "printCount": inst.get("printCount") or 0,
+            "profileId": inst.get("profileId") or inst.get("profile_id") or inst.get("profileID") or existing_inst.get("profileId") or existing_inst.get("profile_id") or existing_inst.get("profileID"),
+            "title": inst.get("title") or inst.get("name") or existing_inst.get("title") or existing_inst.get("name"),
+            "titleTranslated": inst.get("titleTranslated") or existing_inst.get("titleTranslated") or "",
+            "publishTime": inst.get("publishTime") or inst.get("publishedAt") or existing_inst.get("publishTime") or existing_inst.get("publishedAt") or "",
+            "machine": inst.get("machine") or inst.get("machineName") or inst.get("printerModel") or inst.get("printer") or inst.get("device") or existing_inst.get("machine") or existing_inst.get("machineName") or existing_inst.get("printerModel") or existing_inst.get("printer") or existing_inst.get("device") or "",
+            "time": inst.get("time") or inst.get("timeText") or inst.get("durationText") or existing_inst.get("time") or existing_inst.get("timeText") or existing_inst.get("durationText") or "",
+            "timeText": inst.get("timeText") or existing_inst.get("timeText") or "",
+            "durationText": inst.get("durationText") or existing_inst.get("durationText") or "",
+            "printTimeSeconds": inst.get("printTimeSeconds") or inst.get("duration") or existing_inst.get("printTimeSeconds") or existing_inst.get("duration") or 0,
+            "rating": inst.get("rating") or inst.get("score") or inst.get("stars") or existing_inst.get("rating") or existing_inst.get("score") or existing_inst.get("stars") or "",
+            "downloadCount": inst.get("downloadCount") or existing_inst.get("downloadCount") or 0,
+            "printCount": inst.get("printCount") or existing_inst.get("printCount") or 0,
             "prediction": inst.get("prediction"),
             "weight": inst.get("weight"),
             "materialCnt": inst.get("materialCnt"),
             "materialColorCnt": inst.get("materialColorCnt"),
             "needAms": inst.get("needAms"),
+            "cover": inst.get("cover") or inst.get("coverUrl") or existing_inst.get("cover") or existing_inst.get("coverUrl") or "",
+            "previewImage": inst.get("previewImage") or existing_inst.get("previewImage") or "",
+            "thumbnail": inst.get("thumbnail") or existing_inst.get("thumbnail") or "",
+            "thumbnailUrl": inst.get("thumbnailUrl") or existing_inst.get("thumbnailUrl") or "",
             "plates": plates,
             "pictures": pics,
-            "instanceFilaments": inst.get("instanceFilaments") or [],
-            "summary": inst.get("summary") or "",
-            "summaryTranslated": inst.get("summaryTranslated") or "",
+            "instanceFilaments": inst.get("instanceFilaments") or existing_inst.get("instanceFilaments") or [],
+            "summary": inst.get("summary") or existing_inst.get("summary") or "",
+            "summaryTranslated": inst.get("summaryTranslated") or existing_inst.get("summaryTranslated") or "",
             "name": name3mf,
             "downloadUrl": url3mf,
             "apiUrl": used_api_url or api_url,
             "downloadState": "" if url3mf else failure_state,
             "downloadMessage": "" if url3mf else failure_message,
+            "fileName": str(existing_inst.get("fileName") or "").strip(),
         }
         # 在构建 meta 阶段就写入 fileName，保证后续语义清晰：
         # title=展示名，name=来源名，fileName=本地真实文件名。
@@ -2894,6 +3169,14 @@ def archive_model(
             planned_instances_dir,
             inst_record.get("name") or "",
         )
+    log(
+        logger,
+        "实例处理完成:",
+        f"payload_hint={payload_hint_hits}",
+        f"existing_hint={existing_hint_hits}",
+        f"api_fetch={fetched_hint_hits}",
+        f"total={len(inst_list)}",
+    )
 
     meta = build_meta(
         design,
