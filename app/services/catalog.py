@@ -1140,7 +1140,12 @@ def build_models_payload(
     normalized_query = q.strip().lower()
     normalized_tag = tag.strip().lower()
     normalized_source = source.strip().lower() or "all"
-    items = visible_models
+    if normalized_tag == "__local_deleted__":
+        items = [item for item in all_models if item.get("local_flags", {}).get("deleted")]
+    elif normalized_tag == "__source_deleted__":
+        items = [item for item in all_models if item.get("subscription_flags", {}).get("deleted_on_source")]
+    else:
+        items = visible_models
 
     if normalized_query:
         items = [
@@ -1159,6 +1164,10 @@ def build_models_payload(
             items = [item for item in items if item.get("local_flags", {}).get("favorite")]
         elif normalized_tag == "__printed__":
             items = [item for item in items if item.get("local_flags", {}).get("printed")]
+        elif normalized_tag == "__source_deleted__":
+            items = [item for item in items if item.get("subscription_flags", {}).get("deleted_on_source")]
+        elif normalized_tag == "__local_deleted__":
+            items = [item for item in items if item.get("local_flags", {}).get("deleted")]
         else:
             items = [item for item in items if any(tag_value.lower() == normalized_tag for tag_value in item["tags"])]
 

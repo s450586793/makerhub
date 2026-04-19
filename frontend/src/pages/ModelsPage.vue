@@ -24,6 +24,8 @@
           <option value="">全部</option>
           <option value="__favorite__">收藏</option>
           <option value="__printed__">已打印</option>
+          <option value="__source_deleted__">源端删除</option>
+          <option value="__local_deleted__">本地删除</option>
           <option v-for="tag in payload.tags" :key="tag" :value="tag">{{ tag }}</option>
         </select>
       </label>
