@@ -679,7 +679,7 @@ async def save_remote_refresh(payload: RemoteRefreshConfig, request: Request):
     append_business_log(
         "settings",
         "remote_refresh_saved",
-        "远端刷新设置已保存。",
+        "源端刷新设置已保存。",
         enabled=payload.enabled,
         cron=payload.cron,
         next_run_at=state.get("next_run_at"),

@@ -86,7 +86,7 @@ const routes = [
         name: "remote-refresh",
         component: RemoteRefreshPage,
         meta: {
-          title: "远端刷新 | makerhub",
+          title: "源端刷新 | makerhub",
         },
       },
       {

@@ -11,7 +11,6 @@
       <div class="dashboard-hero__copy">
         <span class="eyebrow">首页</span>
         <h1>工作台</h1>
-        <p>首页只保留总览。需要处理细节时，再进入任务、订阅、本地整理或远端刷新页面。</p>
       </div>
 
       <div class="dashboard-hero__status-grid">
@@ -35,13 +34,6 @@
     </section>
 
     <section class="surface section-card dashboard-panel">
-      <div class="section-card__header">
-        <div>
-          <span class="eyebrow">任务与自动化</span>
-          <h2>归档任务 / 订阅 / 远端刷新 / 本地整理</h2>
-        </div>
-      </div>
-
       <div class="dashboard-automation-cards">
         <article class="dashboard-mini-card">
           <div class="dashboard-mini-card__head">
@@ -130,7 +122,7 @@
         <article class="dashboard-mini-card">
             <div class="dashboard-mini-card__head">
               <div>
-                <span class="dashboard-mini-card__eyebrow">远端刷新</span>
+                <span class="dashboard-mini-card__eyebrow">源端刷新</span>
                 <h3>增量同步</h3>
               </div>
               <span :class="['count-pill', remoteRefreshPillClass(automation.remote_refresh)]">
@@ -160,12 +152,12 @@
               </span>
               <span>
                 <strong>最近状态</strong>
-                {{ automation.remote_refresh.last_message || "当前没有远端刷新记录。" }}
+                {{ automation.remote_refresh.last_message || "当前没有源端刷新记录。" }}
               </span>
             </div>
 
             <div class="dashboard-mini-card__footer">
-              <RouterLink class="section-link" to="/remote-refresh">进入远端刷新页</RouterLink>
+              <RouterLink class="section-link" to="/remote-refresh">进入源端刷新页</RouterLink>
             </div>
         </article>
 

@@ -1121,7 +1121,7 @@ def _apply_subscription_flags(items: list[dict]) -> list[dict]:
             deleted_sources.append(
                 {
                     "id": "remote_refresh",
-                    "name": "远端刷新",
+                    "name": "源端刷新",
                     "mode": "remote_refresh",
                     "url": origin_url or "",
                 }

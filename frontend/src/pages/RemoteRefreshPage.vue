@@ -1,8 +1,8 @@
 <template>
   <section class="page-intro">
     <div>
-      <span class="eyebrow">远端刷新</span>
-      <h1>远端刷新配置</h1>
+      <span class="eyebrow">源端刷新</span>
+      <h1>源端刷新配置</h1>
       <p>控制远端评论、附件、打印配置与源端删除标记的分批同步节奏。</p>
     </div>
     <div class="intro-stats remote-refresh-intro-stats">
@@ -29,7 +29,7 @@
     <form class="settings-form token-card" @submit.prevent="saveRemoteRefresh">
       <div class="settings-grid settings-grid--three">
         <label class="field-card">
-          <span>启用远端刷新</span>
+          <span>启用源端刷新</span>
           <button
             :class="['subscription-switch', remoteRefreshForm.enabled && 'is-on']"
             type="button"
@@ -48,7 +48,7 @@
           <CronField
             v-model="remoteRefreshForm.cron"
             placeholder="0 */2 * * *"
-            dialog-title="设置远端刷新 Cron"
+            dialog-title="设置源端刷新 Cron"
           />
         </label>
       </div>
@@ -73,7 +73,7 @@
       <div class="form-footer">
         <div class="settings-inline-actions">
           <button class="button button-primary" type="submit" :disabled="saving">
-            {{ saving ? "保存中..." : "保存远端刷新设置" }}
+            {{ saving ? "保存中..." : "保存源端刷新设置" }}
           </button>
           <button class="button button-secondary" type="button" :disabled="loading" @click="refreshStateManually">
             刷新状态
@@ -89,7 +89,7 @@
       <div class="section-card__header">
         <div>
           <span class="eyebrow">批次摘要</span>
-          <h2>最近一轮远端刷新</h2>
+          <h2>最近一轮源端刷新</h2>
         </div>
         <span :class="['count-pill', remoteRefreshState.running ? 'count-pill--warn' : 'count-pill--ok']">
           {{ remoteRefreshState.last_batch_succeeded || 0 }} 成功 / {{ remoteRefreshState.last_batch_failed || 0 }} 失败
@@ -138,7 +138,7 @@
           <span>{{ remoteRefreshState.current_item.progress || 0 }}%</span>
         </div>
         <div class="progress-bar"><span :style="{ width: `${remoteRefreshState.current_item.progress || 0}%` }"></span></div>
-        <p>{{ remoteRefreshState.current_item.message || "远端刷新进行中" }}</p>
+        <p>{{ remoteRefreshState.current_item.message || "源端刷新进行中" }}</p>
       </div>
     </article>
 
@@ -146,7 +146,7 @@
       <div class="section-card__header">
         <div>
           <span class="eyebrow">刷新记录</span>
-          <h2>最近远端刷新历史</h2>
+          <h2>最近源端刷新历史</h2>
         </div>
         <div class="remote-refresh-history__toolbar">
           <div class="remote-refresh-history__filters">
@@ -272,7 +272,7 @@ const visibleHistory = computed(() => filteredHistory.value.slice(0, historyVisi
 const hasCurrentItem = computed(() => Boolean(remoteRefreshState.value?.current_item?.title || remoteRefreshState.value?.current_item?.id));
 const emptyHistoryText = computed(() => {
   if (!recentHistory.value.length) {
-    return "还没有远端刷新记录。";
+    return "还没有源端刷新记录。";
   }
   if (historyFilter.value === "changed") {
     return "当前筛选下没有远端更新记录。";
@@ -297,7 +297,7 @@ const batchExplanation = computed(() => {
     if (skippedMissingCookie > 0) {
       return `当前没有可刷新的模型。已有 ${skippedMissingCookie} 个模型因为缺少对应站点 Cookie 被跳过。`;
     }
-    return "当前没有可刷新的远端单模型。只有模型库里已经归档、且带原始 MakerWorld 单模型链接的模型才会参与远端刷新。";
+    return "当前没有可刷新的远端单模型。只有模型库里已经归档、且带原始 MakerWorld 单模型链接的模型才会参与源端刷新。";
   }
 
   if (remainingTotal > 0) {
@@ -432,9 +432,9 @@ async function load({ silent = false } = {}) {
   } catch (error) {
     ok = false;
     if (!silent) {
-      status.value = error instanceof Error ? error.message : "远端刷新状态加载失败。";
+      status.value = error instanceof Error ? error.message : "源端刷新状态加载失败。";
     } else {
-      console.error("远端刷新状态刷新失败", error);
+      console.error("源端刷新状态刷新失败", error);
     }
   } finally {
     loading.value = false;
@@ -454,7 +454,7 @@ async function saveRemoteRefresh() {
       },
     });
     await Promise.all([refreshConfig(), load({ silent: true })]);
-    status.value = "远端刷新设置已保存。";
+    status.value = "源端刷新设置已保存。";
   } catch (error) {
     status.value = error instanceof Error ? error.message : "保存失败。";
   } finally {
@@ -466,7 +466,7 @@ async function refreshStateManually() {
   status.value = "";
   const ok = await load();
   if (ok) {
-    status.value = "远端刷新状态已刷新。";
+    status.value = "源端刷新状态已刷新。";
   }
 }
 

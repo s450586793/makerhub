@@ -3,7 +3,7 @@
     <div>
       <span class="eyebrow">设置</span>
       <h1>连接、通知与用户配置</h1>
-      <p>国内 Cookie、国际 Cookie 与 HTTP 代理统一收在“连接设置”，整理与远端刷新已拆成独立页面。</p>
+      <p>国内 Cookie、国际 Cookie 与 HTTP 代理统一收在“连接设置”，整理与源端刷新已拆成独立页面。</p>
     </div>
   </section>
 
@@ -58,7 +58,7 @@
               </span>
               <span class="subscription-switch__label">{{ connectionForm.proxy_enabled ? "启用中" : "已停用" }}</span>
             </button>
-            <small class="archive-form__hint">开启后归档、订阅与远端刷新请求会带上当前代理设置。</small>
+            <small class="archive-form__hint">开启后归档、订阅与源端刷新请求会带上当前代理设置。</small>
           </label>
           <label class="field-card">
             <span>HTTP Proxy</span>

@@ -39,6 +39,16 @@ def _sanitize_message_text(value: Any, fallback: str = "") -> str:
     return text[:400]
 
 
+def _normalize_source_refresh_text(value: Any) -> str:
+    return str(value or "").replace("远端刷新", "源端刷新")
+
+
+def _normalize_source_refresh_item(item: dict) -> dict:
+    normalized = dict(item or {})
+    normalized["message"] = _normalize_source_refresh_text(normalized.get("message") or "")
+    return normalized
+
+
 def _normalize_task_item(item: Any, default_status: str) -> dict:
     if isinstance(item, str):
         return {
@@ -386,7 +396,11 @@ def _normalize_remote_refresh_state(payload: Any) -> dict:
 
     current_item = payload.get("current_item") if isinstance(payload.get("current_item"), dict) else {}
     recent_items = payload.get("recent_items") if isinstance(payload.get("recent_items"), list) else []
-    normalized_recent = [_normalize_task_item(item, "idle") for item in recent_items if isinstance(item, (dict, str))]
+    normalized_recent = [
+        _normalize_source_refresh_item(_normalize_task_item(item, "idle"))
+        for item in recent_items
+        if isinstance(item, (dict, str))
+    ]
 
     return {
         "status": str(payload.get("status") or "idle"),
@@ -395,7 +409,7 @@ def _normalize_remote_refresh_state(payload: Any) -> dict:
         "last_run_at": str(payload.get("last_run_at") or ""),
         "last_success_at": str(payload.get("last_success_at") or ""),
         "last_error_at": str(payload.get("last_error_at") or ""),
-        "last_message": _sanitize_message_text(payload.get("last_message") or ""),
+        "last_message": _normalize_source_refresh_text(_sanitize_message_text(payload.get("last_message") or "")),
         "last_batch_total": _safe_int(payload.get("last_batch_total") or 0),
         "last_batch_succeeded": _safe_int(payload.get("last_batch_succeeded") or 0),
         "last_batch_failed": _safe_int(payload.get("last_batch_failed") or 0),
@@ -403,7 +417,7 @@ def _normalize_remote_refresh_state(payload: Any) -> dict:
         "last_remaining_total": _safe_int(payload.get("last_remaining_total") or 0),
         "last_skipped_missing_cookie": _safe_int(payload.get("last_skipped_missing_cookie") or 0),
         "last_skipped_local_or_invalid": _safe_int(payload.get("last_skipped_local_or_invalid") or 0),
-        "current_item": _normalize_task_item(current_item, "running") if current_item else {},
+        "current_item": _normalize_source_refresh_item(_normalize_task_item(current_item, "running")) if current_item else {},
         "recent_items": normalized_recent[:50],
     }
 

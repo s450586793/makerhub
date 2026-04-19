@@ -73,8 +73,8 @@ def _sanitize_remote_refresh_message(value: Any, fallback: str = "") -> str:
     if _looks_like_html_error(text):
         lowered = text.lower()
         if any(token in lowered for token in ("cloudflare", "cf-browser-verification", "cf-chl", "__cf_bm", "cf_clearance")):
-            return "远端刷新返回了风控校验页，通常是 Cookie 失效、代理异常或站点触发了 Cloudflare 校验。"
-        return "远端刷新返回了 HTML 页面，通常是 Cookie 失效、代理错误或站点风控页。"
+            return "源端刷新返回了风控校验页，通常是 Cookie 失效、代理异常或站点触发了 Cloudflare 校验。"
+        return "源端刷新返回了 HTML 页面，通常是 Cookie 失效、代理错误或站点风控页。"
     text = re.sub(r"\s+", " ", text).strip()
     return text[:400]
 
@@ -222,7 +222,7 @@ def _instance_key(instance: Any) -> str:
 def _merge_instance_record(existing_item: dict[str, Any], fresh_item: dict[str, Any]) -> dict[str, Any]:
     merged = copy.deepcopy(fresh_item)
 
-    # 远端刷新有时能拿到实例卡片信息，但拿不到 3MF 下载地址。
+    # 源端刷新有时能拿到实例卡片信息，但拿不到 3MF 下载地址。
     # 这种情况下不能把本地已经存在的 3MF 元信息冲掉。
     if not str(merged.get("downloadUrl") or "").strip():
         for field in ("downloadUrl", "fileName", "name", "apiUrl", "downloadState", "downloadMessage"):
@@ -427,8 +427,8 @@ def _build_change_labels(
 def _build_success_message(change_labels: list[str]) -> str:
     effective_labels = [label for label in change_labels if label != "已检查，无远端变化"]
     if not effective_labels:
-        return "远端刷新完成，已检查，未发现远端内容变化。"
-    return f"远端刷新完成：{'，'.join(effective_labels)}。"
+        return "源端刷新完成，已检查，未发现远端内容变化。"
+    return f"源端刷新完成：{'，'.join(effective_labels)}。"
 
 
 def _history_id(model_dir: str, status: str) -> str:
@@ -613,7 +613,7 @@ class RemoteRefreshManager:
                 status="disabled",
                 running=False,
                 next_run_at="",
-                last_message="远端刷新已停用。",
+                last_message="源端刷新已停用。",
                 current_item={},
             )
 
@@ -630,7 +630,7 @@ class RemoteRefreshManager:
         return self.task_store.patch_remote_refresh_state(
             status="running" if current.get("running") else "idle",
             next_run_at=next_run_at,
-            last_message=str(current.get("last_message") or "等待下一轮远端刷新。"),
+            last_message=str(current.get("last_message") or "等待下一轮源端刷新。"),
         )
 
     def _run_loop(self) -> None:
@@ -638,19 +638,19 @@ class RemoteRefreshManager:
             try:
                 self._tick()
             except Exception as exc:
-                message = f"远端刷新调度器异常：{exc}"
+                message = f"源端刷新调度器异常：{exc}"
                 self.task_store.patch_remote_refresh_state(
                     status="error",
                     running=False,
                     last_error_at=_now_iso(),
-                    last_message=_sanitize_remote_refresh_message(message, "远端刷新调度器异常。"),
+                    last_message=_sanitize_remote_refresh_message(message, "源端刷新调度器异常。"),
                     current_item={},
                 )
                 _append_remote_refresh_log("scheduler_error", error=_sanitize_remote_refresh_message(exc, exc.__class__.__name__))
                 append_business_log(
                     "remote_refresh",
                     "scheduler_error",
-                    _sanitize_remote_refresh_message(message, "远端刷新调度器异常。"),
+                    _sanitize_remote_refresh_message(message, "源端刷新调度器异常。"),
                     level="error",
                 )
             time.sleep(REMOTE_REFRESH_POLL_SECONDS)
@@ -663,7 +663,7 @@ class RemoteRefreshManager:
                 status="disabled",
                 running=False,
                 next_run_at="",
-                last_message="远端刷新已停用。",
+                last_message="源端刷新已停用。",
                 current_item={},
             )
             return
@@ -679,7 +679,7 @@ class RemoteRefreshManager:
                 status="idle",
                 running=False,
                 next_run_at=datetime.fromtimestamp(retry_at).isoformat(),
-                last_message="当前有归档队列或本地整理任务在运行，远端刷新延后 60 秒。",
+                last_message="当前有归档队列或本地整理任务在运行，源端刷新延后 60 秒。",
                 current_item={},
             )
             return
@@ -750,9 +750,9 @@ class RemoteRefreshManager:
             last_skipped_local_or_invalid=int(stats.get("local_or_invalid") or 0),
             current_item={},
             last_message=(
-                f"远端刷新开始，本轮计划处理 {len(candidates)} 个模型。{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=int(stats.get('remaining_total') or 0))}"
+                f"源端刷新开始，本轮计划处理 {len(candidates)} 个模型。{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=int(stats.get('remaining_total') or 0))}"
                 if candidates
-                else "当前没有可执行远端刷新的模型。"
+                else "当前没有可执行源端刷新的模型。"
             ),
         )
         _append_remote_refresh_log(
@@ -764,7 +764,7 @@ class RemoteRefreshManager:
             "remote_refresh",
             "batch_started",
             (
-                f"远端刷新开始，本轮计划处理 {len(candidates)} 个模型。"
+                f"源端刷新开始，本轮计划处理 {len(candidates)} 个模型。"
                 f"{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=int(stats.get('remaining_total') or 0))}"
             ),
             selected=len(candidates),
@@ -775,7 +775,7 @@ class RemoteRefreshManager:
             no_candidate_message = "没有可刷新的远端模型，等待下一轮。"
             if stats.get("missing_cookie"):
                 no_candidate_message = (
-                    f"当前没有可执行远端刷新的模型，另有 {int(stats.get('missing_cookie') or 0)} 个模型因缺少对应站点 Cookie 被跳过。"
+                    f"当前没有可执行源端刷新的模型，另有 {int(stats.get('missing_cookie') or 0)} 个模型因缺少对应站点 Cookie 被跳过。"
                 )
             self.task_store.patch_remote_refresh_state(
                 status="idle",
@@ -815,7 +815,7 @@ class RemoteRefreshManager:
         processed_total = succeeded + failed
         remaining_total = max(int(stats.get("eligible_total") or 0) - processed_total, 0)
         message = (
-            f"远端刷新完成，成功 {succeeded} 个，失败 {failed} 个。"
+            f"源端刷新完成，成功 {succeeded} 个，失败 {failed} 个。"
             f"{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=remaining_total)}"
         )
         self.task_store.patch_remote_refresh_state(
@@ -864,7 +864,7 @@ class RemoteRefreshManager:
             "url": origin_url,
             "status": "running",
             "progress": 0,
-            "message": f"远端刷新中 {index}/{total}",
+            "message": f"源端刷新中 {index}/{total}",
             "updated_at": _now_iso(),
             "meta": {
                 "model_dir": model_dir,
@@ -875,7 +875,7 @@ class RemoteRefreshManager:
 
         existing_meta = _load_json(meta_path)
         if not cookie:
-            message = "缺少对应站点 Cookie，已跳过远端刷新。"
+            message = "缺少对应站点 Cookie，已跳过源端刷新。"
             self.task_store.append_remote_refresh_history(
                 {
                     "id": _history_id(model_dir, "skipped"),
@@ -905,8 +905,8 @@ class RemoteRefreshManager:
                     "status": "running",
                     "progress": int(payload.get("percent") or 0),
                     "message": _sanitize_remote_refresh_message(
-                        payload.get("message") or f"远端刷新中 {index}/{total}",
-                        f"远端刷新中 {index}/{total}",
+                        payload.get("message") or f"源端刷新中 {index}/{total}",
+                        f"源端刷新中 {index}/{total}",
                     ),
                     "updated_at": _now_iso(),
                     "meta": {
@@ -935,8 +935,8 @@ class RemoteRefreshManager:
                     _build_missing_3mf_items(meta_path, finalized["meta"]),
                 )
             message = _sanitize_remote_refresh_message(
-                finalized["meta"].get("remoteSync", {}).get("lastMessage") or "远端刷新完成。",
-                "远端刷新完成。",
+                finalized["meta"].get("remoteSync", {}).get("lastMessage") or "源端刷新完成。",
+                "源端刷新完成。",
             )
             history_item = {
                 "id": _history_id(model_dir, "success"),
