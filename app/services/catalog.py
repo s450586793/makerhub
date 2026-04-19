@@ -1389,6 +1389,18 @@ def build_tasks_payload(
     archive_queue = store.load_archive_queue()
     missing_3mf = store.load_missing_3mf(fallback_items=missing_fallback)
     snapshot = archive_snapshot or get_archive_snapshot()
+    model_dir_by_id = {
+        str(item.get("id") or "").strip(): str(item.get("model_dir") or "").strip().strip("/")
+        for item in snapshot.get("models") or []
+        if str(item.get("id") or "").strip() and str(item.get("model_dir") or "").strip()
+    }
+    missing_items: list[dict[str, Any]] = []
+    for raw_item in missing_3mf.get("items") or []:
+        item = dict(raw_item or {})
+        model_id = str(item.get("model_id") or "").strip()
+        item["model_dir"] = str(item.get("model_dir") or model_dir_by_id.get(model_id, "")).strip().strip("/")
+        missing_items.append(item)
+    missing_3mf["items"] = missing_items
     archive_queue = _prune_recent_failures(
         archive_queue,
         snapshot,

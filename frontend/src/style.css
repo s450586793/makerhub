@@ -364,7 +364,9 @@
 
 .dashboard-automation-cards {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+  align-items: stretch;
 }
 
 .dashboard-mini-card {
@@ -1394,6 +1396,16 @@
   gap: 2px;
 }
 
+.task-model-link {
+  color: var(--text);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.task-model-link:hover {
+  text-decoration: underline;
+}
+
 .missing-status small {
   color: var(--muted);
   line-height: 1.25;
@@ -1936,6 +1948,10 @@
   .dashboard-hero--compact {
     padding: 20px;
     gap: 16px;
+  }
+
+  .dashboard-automation-cards {
+    grid-template-columns: 1fr;
   }
 
   .dashboard-panel .section-card__header,

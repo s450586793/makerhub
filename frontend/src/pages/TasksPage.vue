@@ -207,7 +207,16 @@
           :key="`${item.model_id}-${item.instance_id}-${item.title}`"
           class="table-like__row table-like__row--missing"
         >
-          <span>{{ item.model_id || "-" }}</span>
+          <span>
+            <RouterLink
+              v-if="item.model_dir"
+              class="task-model-link"
+              :to="missingDetailPath(item)"
+            >
+              {{ item.model_id || "-" }}
+            </RouterLink>
+            <template v-else>{{ item.model_id || "-" }}</template>
+          </span>
           <span>{{ item.title || "未命名模型" }}</span>
           <span>
             <span class="missing-status">
@@ -250,8 +259,10 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { RouterLink } from "vue-router";
 
 import { apiRequest } from "../lib/api";
+import { encodeModelPath } from "../lib/helpers";
 
 
 const payload = ref({
@@ -332,6 +343,10 @@ function retryLabel(item) {
   if (status === "queued") return "已入队";
   if (status === "running") return "处理中";
   return "重新下载";
+}
+
+function missingDetailPath(item) {
+  return encodeModelPath(item?.model_dir || "");
 }
 
 function formatMissingStatus(status) {

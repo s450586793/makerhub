@@ -34,58 +34,58 @@
       </article>
     </section>
 
-    <section class="dashboard-focus-grid">
-      <article class="surface section-card dashboard-panel">
-        <div class="section-card__header">
-          <div>
-            <span class="eyebrow">任务摘要</span>
-            <h2>当前任务</h2>
-          </div>
-          <RouterLink class="section-link" to="/tasks">进入任务页</RouterLink>
+    <section class="surface section-card dashboard-panel">
+      <div class="section-card__header">
+        <div>
+          <span class="eyebrow">任务与自动化</span>
+          <h2>归档任务 / 订阅 / 远端刷新 / 本地整理</h2>
         </div>
+      </div>
 
-        <div class="summary-stack">
-          <div class="summary-box">
-            <strong>运行中</strong>
-            <span>{{ payload.task_summary?.running?.length || 0 }} 个</span>
+      <div class="dashboard-automation-cards">
+        <article class="dashboard-mini-card">
+          <div class="dashboard-mini-card__head">
+            <div>
+              <span class="dashboard-mini-card__eyebrow">归档任务</span>
+              <h3>当前队列</h3>
+            </div>
+            <span :class="['count-pill', (payload.task_summary?.running?.length || 0) || (payload.task_summary?.queued_count || 0) ? 'count-pill--warn' : 'count-pill--ok']">
+              {{ (payload.task_summary?.running?.length || 0) + (payload.task_summary?.queued_count || 0) }} 活跃
+            </span>
           </div>
-          <div class="summary-box">
-            <strong>排队中</strong>
-            <span>{{ payload.task_summary?.queued_count || 0 }} 个</span>
+
+          <div class="dashboard-mini-card__stats">
+            <div class="dashboard-mini-card__stat">
+              <span>运行中</span>
+              <strong>{{ payload.task_summary?.running?.length || 0 }}</strong>
+            </div>
+            <div class="dashboard-mini-card__stat">
+              <span>排队中</span>
+              <strong>{{ payload.task_summary?.queued_count || 0 }}</strong>
+            </div>
+            <div class="dashboard-mini-card__stat">
+              <span>待补 3MF</span>
+              <strong>{{ payload.task_summary?.missing_3mf_count || 0 }}</strong>
+            </div>
           </div>
-          <div class="summary-box">
-            <strong>待补 3MF</strong>
-            <span>{{ payload.task_summary?.missing_3mf_count || 0 }} 项</span>
+
+          <div class="dashboard-mini-card__meta">
+            <span>
+              <strong>最近失败</strong>
+              {{ taskFailureText }}
+            </span>
+            <span>
+              <strong>待补 3MF</strong>
+              {{ taskMissingText }}
+            </span>
           </div>
-        </div>
 
-        <div class="dashboard-notices">
-          <article v-if="latestFailureItem" class="dashboard-notice dashboard-notice--error">
-            <span class="dashboard-notice__label">最近失败</span>
-            <strong>{{ latestFailureItem.title || latestFailureItem.url || "未命名任务" }}</strong>
-            <p>{{ latestFailureItem.message || "失败原因未记录" }}</p>
-          </article>
-
-          <article v-if="latestMissingItem" class="dashboard-notice">
-            <span class="dashboard-notice__label">待补 3MF</span>
-            <strong>{{ latestMissingItem.title || latestMissingItem.model_id || "未命名模型" }}</strong>
-            <p>{{ latestMissingItem.message || "等待重新下载 3MF" }}</p>
-          </article>
-
-          <p v-if="!latestFailureItem && !latestMissingItem" class="empty-copy">当前没有需要优先处理的异常项。</p>
-        </div>
-      </article>
-
-      <article class="surface section-card dashboard-panel">
-        <div class="section-card__header">
-          <div>
-            <span class="eyebrow">自动化概览</span>
-            <h2>订阅 / 刷新 / 整理</h2>
+          <div class="dashboard-mini-card__footer">
+            <RouterLink class="section-link" to="/tasks">进入任务页</RouterLink>
           </div>
-        </div>
+        </article>
 
-        <div class="dashboard-automation-cards">
-          <article class="dashboard-mini-card">
+        <article class="dashboard-mini-card">
             <div class="dashboard-mini-card__head">
               <div>
                 <span class="dashboard-mini-card__eyebrow">订阅</span>
@@ -125,9 +125,9 @@
             <div class="dashboard-mini-card__footer">
               <RouterLink class="section-link" to="/subscriptions">进入订阅页</RouterLink>
             </div>
-          </article>
+        </article>
 
-          <article class="dashboard-mini-card">
+        <article class="dashboard-mini-card">
             <div class="dashboard-mini-card__head">
               <div>
                 <span class="dashboard-mini-card__eyebrow">远端刷新</span>
@@ -140,7 +140,7 @@
 
             <div class="dashboard-mini-card__stats">
               <div class="dashboard-mini-card__stat">
-                <span>本轮</span>
+                <span>本轮计划</span>
                 <strong>{{ automation.remote_refresh.last_batch_total || 0 }}</strong>
               </div>
               <div class="dashboard-mini-card__stat">
@@ -167,9 +167,9 @@
             <div class="dashboard-mini-card__footer">
               <RouterLink class="section-link" to="/remote-refresh">进入远端刷新页</RouterLink>
             </div>
-          </article>
+        </article>
 
-          <article class="dashboard-mini-card">
+        <article class="dashboard-mini-card">
             <div class="dashboard-mini-card__head">
               <div>
                 <span class="dashboard-mini-card__eyebrow">本地整理</span>
@@ -209,9 +209,8 @@
             <div class="dashboard-mini-card__footer">
               <RouterLink class="section-link" to="/organizer">进入本地整理页</RouterLink>
             </div>
-          </article>
-        </div>
-      </article>
+        </article>
+      </div>
     </section>
   </template>
 </template>
@@ -281,6 +280,24 @@ const latestMissingItem = computed(() => payload.value?.task_summary?.missing_3m
 const latestSubscriptionItem = computed(() => automation.value?.subscriptions?.recent_items?.[0] || null);
 const nextSubscriptionItem = computed(() => automation.value?.subscriptions?.next_items?.[0] || null);
 const latestOrganizerItem = computed(() => automation.value?.organizer?.items?.[0] || null);
+const taskFailureText = computed(() => {
+  const item = latestFailureItem.value;
+  if (!item) {
+    return "当前没有失败记录。";
+  }
+  const title = item.title || item.url || "未命名任务";
+  const message = item.message || "失败原因未记录";
+  return `${title} · ${message}`;
+});
+const taskMissingText = computed(() => {
+  const item = latestMissingItem.value;
+  if (!item) {
+    return "当前没有待补 3MF。";
+  }
+  const title = item.title || item.model_id || "未命名模型";
+  const message = item.message || "等待重新下载 3MF";
+  return `${title} · ${message}`;
+});
 const subscriptionRecentText = computed(() => {
   const item = latestSubscriptionItem.value;
   if (!item) {
