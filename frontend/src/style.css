@@ -476,9 +476,9 @@
   z-index: 40;
   width: max(360px, 100%);
   max-width: min(760px, calc(100vw - 32px));
-  padding: 22px;
+  padding: 16px;
   border: 1px solid var(--border);
-  border-radius: 24px;
+  border-radius: 18px;
   background: var(--surface);
   box-shadow: 0 24px 60px rgba(15, 23, 42, 0.18);
   text-align: left;
@@ -495,13 +495,13 @@
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 16px;
-  margin-bottom: 16px;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 
 .cron-dialog__header h2 {
-  margin: 8px 0 0;
-  font-size: 18px;
+  margin: 6px 0 0;
+  font-size: 16px;
 }
 
 .cron-dialog__hint {
@@ -513,12 +513,12 @@
 .cron-dialog__modes {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
 }
 
 .cron-dialog__mode {
-  min-height: 38px;
-  padding: 0 14px;
+  min-height: 34px;
+  padding: 0 12px;
   border: 1px solid var(--border);
   border-radius: 999px;
   display: inline-flex;
@@ -538,14 +538,14 @@
 }
 
 .cron-dialog__content {
-  margin-top: 18px;
+  margin-top: 12px;
   display: grid;
-  gap: 16px;
+  gap: 12px;
 }
 
 .cron-dialog__grid {
   display: grid;
-  gap: 12px;
+  gap: 10px;
   grid-template-columns: repeat(1, minmax(0, 1fr));
 }
 
@@ -563,35 +563,14 @@
 
 .cron-dialog__block {
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .cron-dialog__note {
   margin: 0;
   color: var(--muted);
   font-size: 13px;
-  line-height: 1.6;
-}
-
-.cron-dialog__preview {
-  padding: 16px 18px;
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  display: grid;
-  gap: 8px;
-  background: var(--surface-soft);
-}
-
-.cron-dialog__preview strong {
-  font-size: 18px;
-  line-height: 1.25;
-  font-family: "SFMono-Regular", "Consolas", "Liberation Mono", monospace;
-}
-
-.cron-dialog__preview p {
-  margin: 0;
-  color: var(--muted);
-  line-height: 1.6;
+  line-height: 1.45;
 }
 
 .dashboard-automation-grid {

@@ -141,12 +141,7 @@
         </div>
 
         <div v-else class="cron-dialog__block">
-          <p class="cron-dialog__note">直接在上方输入框里编辑原始 Cron 表达式，下面会实时显示解析结果。</p>
-        </div>
-
-        <div class="cron-dialog__preview">
-          <strong>{{ previewCron || "未设置" }}</strong>
-          <p>{{ previewDescription }}</p>
+          <p class="cron-dialog__note">直接在上方输入框里编辑原始 Cron 表达式。</p>
         </div>
       </div>
     </div>
@@ -207,13 +202,6 @@ const monthOptions = Array.from({ length: 12 }, (_, index) => ({
 const draft = reactive(createDraftState());
 
 const cronDescription = computed(() => describeCron(props.modelValue));
-const previewCron = computed(() => {
-  if (draft.mode === "custom") {
-    return normalizeExpression(props.modelValue);
-  }
-  return buildCronExpression(draft, customCron.value);
-});
-const previewDescription = computed(() => describeCron(previewCron.value));
 const popoverStyle = computed(() => ({
   maxHeight: `${popoverMaxHeight.value}px`,
 }));
