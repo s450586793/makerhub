@@ -8,6 +8,12 @@
 ## 更新记录
 
 ### 2026-04-19
+- 版本号升级到 `v0.5.21`
+- 将 `POST /api/admin/archive/repair-3mf` 改为后台任务模式：接口现在会立即返回，不再因为 `test.ace-station.top:1111` 的反代超时而中断全库修复
+- 新增 `GET /api/admin/archive/repair-3mf` 状态接口，可查看当前是否仍在修复、开始/结束时间、最近一次修复结果与错误信息
+- 修复完成后仍会写入业务日志，便于在公网部署场景下确认全库 `3MF` 映射修复是否已经真正落盘
+
+### 2026-04-19
 - 版本号升级到 `v0.5.20`
 - 新增全库 `3MF` 映射修复能力：会读取每个模型目录下现有的 `.3mf` 文件，优先用 `DesignProfileId / configFingerprint / 文件名 ID / 标题` 反向匹配实例，并把被远端刷新冲掉的 `fileName` 批量修回 `meta.json`
 - 新增受保护接口 `POST /api/admin/archive/repair-3mf`，登录后可以直接触发一次全库修复，同时重建缺失 `3MF` 队列

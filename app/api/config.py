@@ -66,6 +66,16 @@ remote_refresh_manager = RemoteRefreshManager(
     store=store,
     task_store=task_state_store,
 )
+archive_repair_runtime = {
+    "running": False,
+    "started_at": "",
+    "finished_at": "",
+    "last_error": "",
+    "last_result": {},
+    "run_id": "",
+    "task": None,
+}
+archive_repair_runtime_lock = asyncio.Lock()
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/s450586793/makerhub/main/VERSION"
 GITHUB_VERSION_CDN_URL = "https://cdn.jsdelivr.net/gh/s450586793/makerhub@main/VERSION"
 GITHUB_VERSION_API_URL = "https://api.github.com/repos/s450586793/makerhub/contents/VERSION?ref=main"
@@ -110,6 +120,63 @@ def _task_identity(item: dict) -> str:
 
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _archive_repair_public_state() -> dict:
+    last_result = archive_repair_runtime.get("last_result")
+    return {
+        "running": bool(archive_repair_runtime.get("running")),
+        "started_at": str(archive_repair_runtime.get("started_at") or ""),
+        "finished_at": str(archive_repair_runtime.get("finished_at") or ""),
+        "last_error": str(archive_repair_runtime.get("last_error") or ""),
+        "run_id": str(archive_repair_runtime.get("run_id") or ""),
+        "last_result": last_result if isinstance(last_result, dict) else {},
+    }
+
+
+async def _run_archive_repair_background(run_id: str) -> None:
+    try:
+        result = await asyncio.to_thread(
+            repair_archive_3mf_mappings,
+            task_store=task_state_store,
+        )
+    except Exception as exc:
+        async with archive_repair_runtime_lock:
+            if archive_repair_runtime.get("run_id") == run_id:
+                archive_repair_runtime["running"] = False
+                archive_repair_runtime["finished_at"] = _now_iso()
+                archive_repair_runtime["last_error"] = _safe_error_message(exc)
+                archive_repair_runtime["task"] = None
+        append_business_log(
+            "archive_repair",
+            "repair_failed",
+            f"全库 3MF 映射修复失败：{_safe_error_message(exc)}",
+            level="error",
+            run_id=run_id,
+        )
+        return
+
+    async with archive_repair_runtime_lock:
+        if archive_repair_runtime.get("run_id") == run_id:
+            archive_repair_runtime["running"] = False
+            archive_repair_runtime["finished_at"] = _now_iso()
+            archive_repair_runtime["last_error"] = ""
+            archive_repair_runtime["last_result"] = result
+            archive_repair_runtime["task"] = None
+
+    append_business_log(
+        "archive_repair",
+        "repair_triggered",
+        "已执行全库 3MF 映射修复。",
+        run_id=run_id,
+        scanned_models=result.get("scanned_models"),
+        repaired_models=result.get("repaired_models"),
+        repaired_instances=result.get("repaired_instances"),
+        repaired_instances_strong=result.get("repaired_instances_strong"),
+        repaired_instances_weak=result.get("repaired_instances_weak"),
+        missing_after_repair=result.get("missing_after_repair"),
+        failed_models=result.get("failed_models"),
+    )
 
 
 def _make_github_version_session() -> requests.Session:
@@ -1226,26 +1293,56 @@ async def archive_model(payload: ArchiveRequest):
     return response
 
 
+@router.get("/admin/archive/repair-3mf")
+async def get_archive_3mf_repair_status(request: Request):
+    _require_session_auth(request)
+    async with archive_repair_runtime_lock:
+        return _archive_repair_public_state()
+
+
 @router.post("/admin/archive/repair-3mf")
 async def repair_archive_3mf(request: Request):
     _require_session_auth(request)
-    result = await asyncio.to_thread(
-        repair_archive_3mf_mappings,
-        task_store=task_state_store,
-    )
+    async with archive_repair_runtime_lock:
+        if archive_repair_runtime.get("running"):
+            state = _archive_repair_public_state()
+            state.update(
+                {
+                    "accepted": False,
+                    "message": "全库 3MF 映射修复正在后台执行，请稍后查看状态或日志。",
+                }
+            )
+            return state
+
+        run_id = f"repair-{int(time.time() * 1000)}"
+        archive_repair_runtime.update(
+            {
+                "running": True,
+                "started_at": _now_iso(),
+                "finished_at": "",
+                "last_error": "",
+                "last_result": {},
+                "run_id": run_id,
+                "task": None,
+            }
+        )
+        task = asyncio.create_task(_run_archive_repair_background(run_id))
+        archive_repair_runtime["task"] = task
+        state = _archive_repair_public_state()
+
     append_business_log(
         "archive_repair",
-        "repair_triggered",
-        "已执行全库 3MF 映射修复。",
-        scanned_models=result.get("scanned_models"),
-        repaired_models=result.get("repaired_models"),
-        repaired_instances=result.get("repaired_instances"),
-        repaired_instances_strong=result.get("repaired_instances_strong"),
-        repaired_instances_weak=result.get("repaired_instances_weak"),
-        missing_after_repair=result.get("missing_after_repair"),
-        failed_models=result.get("failed_models"),
+        "repair_requested",
+        "已提交全库 3MF 映射修复，后台开始执行。",
+        run_id=run_id,
     )
-    return result
+    state.update(
+        {
+            "accepted": True,
+            "message": "修复任务已提交到后台，请稍后查看日志或状态接口。",
+        }
+    )
+    return state
 
 
 @router.post("/archive/preview")
