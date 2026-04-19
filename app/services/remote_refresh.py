@@ -219,9 +219,74 @@ def _instance_key(instance: Any) -> str:
     return ""
 
 
+def _merge_instance_record(existing_item: dict[str, Any], fresh_item: dict[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(fresh_item)
+
+    # 远端刷新有时能拿到实例卡片信息，但拿不到 3MF 下载地址。
+    # 这种情况下不能把本地已经存在的 3MF 元信息冲掉。
+    if not str(merged.get("downloadUrl") or "").strip():
+        for field in ("downloadUrl", "fileName", "name", "apiUrl"):
+            value = existing_item.get(field)
+            if value not in ("", None):
+                merged[field] = copy.deepcopy(value)
+
+    for field in ("profileId", "instanceId", "title", "titleTranslated", "publishTime"):
+        if merged.get(field) in ("", None) and existing_item.get(field) not in ("", None):
+            merged[field] = copy.deepcopy(existing_item.get(field))
+
+    return merged
+
+
+def _instance_file_exists(model_root: Path, instance: dict[str, Any]) -> bool:
+    file_name = Path(str(instance.get("fileName") or "")).name
+    if not file_name:
+        return False
+    return (model_root / "instances" / file_name).exists()
+
+
+def _build_missing_3mf_items(meta_path: Path, meta: dict[str, Any]) -> list[dict[str, Any]]:
+    model_root = meta_path.parent
+    model_id = str(meta.get("id") or "").strip()
+    model_url = normalize_source_url(str(meta.get("url") or ""))
+    model_title = str(meta.get("title") or meta.get("baseName") or "").strip()
+    seen: set[tuple[str, str]] = set()
+    items: list[dict[str, Any]] = []
+
+    for instance in _list_of_dicts(meta.get("instances")):
+        if _instance_file_exists(model_root, instance):
+            continue
+        instance_id = str(instance.get("id") or instance.get("profileId") or instance.get("instanceId") or "").strip()
+        title = str(instance.get("title") or instance.get("name") or model_title).strip()
+        key = (instance_id, title)
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(
+            {
+                "model_id": model_id,
+                "model_url": model_url,
+                "title": title,
+                "instance_id": instance_id,
+                "status": "missing",
+                "message": "等待重新下载",
+                "updated_at": _now_iso(),
+            }
+        )
+
+    return items
+
+
 def _merge_instances(existing_instances: list[Any], fresh_instances: list[Any], checked_at: str) -> tuple[list[dict[str, Any]], int]:
     merged: list[dict[str, Any]] = []
     seen: set[str] = set()
+    existing_by_key: dict[str, dict[str, Any]] = {}
+
+    for raw in existing_instances or []:
+        if not isinstance(raw, dict):
+            continue
+        key = _instance_key(raw)
+        if key and key not in existing_by_key:
+            existing_by_key[key] = copy.deepcopy(raw)
 
     for raw in fresh_instances or []:
         if not isinstance(raw, dict):
@@ -232,6 +297,9 @@ def _merge_instances(existing_instances: list[Any], fresh_instances: list[Any], 
             key = hashlib.sha1(json.dumps(item, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="ignore")).hexdigest()[:16]
         if key in seen:
             continue
+        existing_item = existing_by_key.get(key)
+        if existing_item:
+            item = _merge_instance_record(existing_item, item)
         item["sourceDeleted"] = False
         item["sourceDeletedAt"] = ""
         item["sourceDeletedMessage"] = ""
@@ -849,6 +917,12 @@ class RemoteRefreshManager:
             finalized = _finalize_refreshed_meta(meta_path, existing_meta)
             invalidate_archive_snapshot("remote_refresh_completed")
             invalidate_model_detail_cache(model_dir)
+            model_id = str(finalized["meta"].get("id") or existing_meta.get("id") or "").strip()
+            if model_id:
+                self.task_store.replace_missing_3mf_for_model(
+                    model_id,
+                    _build_missing_3mf_items(meta_path, finalized["meta"]),
+                )
             message = _sanitize_remote_refresh_message(
                 finalized["meta"].get("remoteSync", {}).get("lastMessage") or "远端刷新完成。",
                 "远端刷新完成。",
