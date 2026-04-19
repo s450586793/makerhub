@@ -299,7 +299,7 @@ const batchExplanation = computed(() => {
   }
 
   if (remainingTotal > 0) {
-    return `当前可刷新 ${eligibleTotal} 个模型，本轮已处理 ${batchTotal} 个、成功 ${successTotal} 个，仍有 ${remainingTotal} 个因为中途被更高优先级任务打断而留到下一轮。`;
+    return `当前可刷新 ${eligibleTotal} 个模型，最近一轮已处理 ${batchTotal} 个、成功 ${successTotal} 个，仍有 ${remainingTotal} 个待继续刷新。`;
   }
 
   const skipParts = [];

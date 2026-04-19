@@ -796,13 +796,8 @@ class RemoteRefreshManager:
 
         succeeded = 0
         failed = 0
-        interrupted = False
 
         for index, item in enumerate(candidates, start=1):
-            if index > 1 and self._service_busy():
-                interrupted = True
-                break
-
             result = self._refresh_one(item, index=index, total=len(candidates), config=config)
             if result.get("ok"):
                 succeeded += 1
@@ -820,12 +815,8 @@ class RemoteRefreshManager:
         processed_total = succeeded + failed
         remaining_total = max(int(stats.get("eligible_total") or 0) - processed_total, 0)
         message = (
-            f"远端刷新完成，成功 {succeeded} 个，失败 {failed} 个。{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=remaining_total)}"
-            if not interrupted
-            else (
-                f"远端刷新部分完成，成功 {succeeded} 个，失败 {failed} 个，剩余任务延后到下一轮。"
-                f"{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=remaining_total)}"
-            )
+            f"远端刷新完成，成功 {succeeded} 个，失败 {failed} 个。"
+            f"{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=remaining_total)}"
         )
         self.task_store.patch_remote_refresh_state(
             status="idle" if failed == 0 else "error",
@@ -846,7 +837,7 @@ class RemoteRefreshManager:
             "batch_finished",
             succeeded=succeeded,
             failed=failed,
-            interrupted=interrupted,
+            interrupted=False,
             stats=stats,
             remaining_total=remaining_total,
         )
@@ -856,7 +847,7 @@ class RemoteRefreshManager:
             message,
             succeeded=succeeded,
             failed=failed,
-            interrupted=interrupted,
+            interrupted=False,
             stats=stats,
             remaining_total=remaining_total,
         )
