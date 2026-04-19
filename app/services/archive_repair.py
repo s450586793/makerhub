@@ -199,6 +199,31 @@ def repair_model_instance_files(meta_path: Path) -> dict[str, Any]:
     return result
 
 
+def _meta_needs_3mf_repair(meta_path: Path, meta: dict[str, Any], flagged_model_ids: set[str]) -> bool:
+    model_id = str(meta.get("id") or "").strip()
+    if model_id and model_id in flagged_model_ids:
+        return True
+
+    instances = meta.get("instances") if isinstance(meta.get("instances"), list) else []
+    if not instances:
+        return False
+
+    instances_dir = meta_path.parent / "instances"
+    if not instances_dir.exists():
+        return True
+
+    for instance in instances:
+        if not isinstance(instance, dict):
+            continue
+        file_name = Path(str(instance.get("fileName") or "")).name
+        if not file_name:
+            return True
+        if not (instances_dir / file_name).exists():
+            return True
+
+    return False
+
+
 def repair_archive_3mf_mappings(
     *,
     archive_root: Path = ARCHIVE_DIR,
@@ -206,9 +231,31 @@ def repair_archive_3mf_mappings(
     status_updater=None,
 ) -> dict[str, Any]:
     store = task_store or TaskStateStore()
-    meta_paths = [path for path in sorted(archive_root.rglob("meta.json")) if path.is_file()]
+    flagged_model_ids = {
+        str(item.get("model_id") or "").strip()
+        for item in (store.load_missing_3mf().get("items") or [])
+        if isinstance(item, dict) and str(item.get("model_id") or "").strip()
+    }
+    meta_paths: list[Path] = []
+    skipped_models = 0
+    for path in sorted(archive_root.rglob("meta.json")):
+        if not path.is_file():
+            continue
+        try:
+            meta = _read_json(path)
+        except (OSError, json.JSONDecodeError):
+            meta_paths.append(path)
+            continue
+        if not isinstance(meta, dict):
+            meta_paths.append(path)
+            continue
+        if _meta_needs_3mf_repair(path, meta, flagged_model_ids):
+            meta_paths.append(path)
+        else:
+            skipped_models += 1
     stats = {
         "total_models": len(meta_paths),
+        "skipped_models": skipped_models,
         "scanned_models": 0,
         "repaired_models": 0,
         "repaired_instances": 0,
@@ -236,6 +283,7 @@ def repair_archive_3mf_mappings(
                     "repaired_models": stats["repaired_models"],
                     "repaired_instances": stats["repaired_instances"],
                     "failed_models": stats["failed_models"],
+                    "skipped_models": stats["skipped_models"],
                     "current_model_dir": current_model_dir,
                 }
             }
@@ -296,6 +344,7 @@ def repair_archive_3mf_mappings(
         repaired_instances_weak=stats["repaired_instances_weak"],
         missing_after_repair=stats["missing_after_repair"],
         failed_models=stats["failed_models"],
+        skipped_models=stats["skipped_models"],
     )
     return stats
 
