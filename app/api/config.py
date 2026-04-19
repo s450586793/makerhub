@@ -42,6 +42,7 @@ from app.services.local_organizer import LocalOrganizerService
 from app.services.model_attachments import create_manual_attachment, delete_manual_attachment
 from app.services.remote_refresh import RemoteRefreshManager
 from app.services.auth import AuthManager
+from app.services.archive_repair import repair_archive_3mf_mappings
 from app.services.subscriptions import SubscriptionManager
 from app.services.task_state import TaskStateStore
 from app.services.archive_worker import BATCH_TASK_MODES, detect_archive_mode
@@ -1223,6 +1224,28 @@ async def archive_model(payload: ArchiveRequest):
         subscription_created=response.get("subscription_created"),
     )
     return response
+
+
+@router.post("/admin/archive/repair-3mf")
+async def repair_archive_3mf(request: Request):
+    _require_session_auth(request)
+    result = await asyncio.to_thread(
+        repair_archive_3mf_mappings,
+        task_store=task_state_store,
+    )
+    append_business_log(
+        "archive_repair",
+        "repair_triggered",
+        "已执行全库 3MF 映射修复。",
+        scanned_models=result.get("scanned_models"),
+        repaired_models=result.get("repaired_models"),
+        repaired_instances=result.get("repaired_instances"),
+        repaired_instances_strong=result.get("repaired_instances_strong"),
+        repaired_instances_weak=result.get("repaired_instances_weak"),
+        missing_after_repair=result.get("missing_after_repair"),
+        failed_models=result.get("failed_models"),
+    )
+    return result
 
 
 @router.post("/archive/preview")

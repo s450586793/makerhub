@@ -21,6 +21,7 @@ from app.services.business_logs import append_business_log
 from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot, invalidate_model_detail_cache
 from app.services.legacy_archiver import archive_model as legacy_archive_model
 from app.services.task_state import TaskStateStore
+from app.services.three_mf import resolve_model_instance_files
 
 
 REMOTE_REFRESH_LOG_PATH = LOGS_DIR / "remote_refresh.log"
@@ -237,23 +238,23 @@ def _merge_instance_record(existing_item: dict[str, Any], fresh_item: dict[str, 
     return merged
 
 
-def _instance_file_exists(model_root: Path, instance: dict[str, Any]) -> bool:
-    file_name = Path(str(instance.get("fileName") or "")).name
-    if not file_name:
-        return False
-    return (model_root / "instances" / file_name).exists()
-
-
 def _build_missing_3mf_items(meta_path: Path, meta: dict[str, Any]) -> list[dict[str, Any]]:
     model_root = meta_path.parent
     model_id = str(meta.get("id") or "").strip()
     model_url = normalize_source_url(str(meta.get("url") or ""))
     model_title = str(meta.get("title") or meta.get("baseName") or "").strip()
+    resolved_files = resolve_model_instance_files(meta, model_root)
+    resolved_matches = resolved_files.get("matches") if isinstance(resolved_files, dict) else {}
     seen: set[tuple[str, str]] = set()
     items: list[dict[str, Any]] = []
 
-    for instance in _list_of_dicts(meta.get("instances")):
-        if _instance_file_exists(model_root, instance):
+    raw_instances = meta.get("instances") if isinstance(meta.get("instances"), list) else []
+    for index, instance in enumerate(raw_instances):
+        if not isinstance(instance, dict):
+            continue
+        resolved_match = resolved_matches.get(index) if isinstance(resolved_matches, dict) else None
+        resolved_path = resolved_match.get("path") if isinstance(resolved_match, dict) else None
+        if isinstance(resolved_path, Path) and resolved_path.exists():
             continue
         instance_id = str(instance.get("id") or instance.get("profileId") or instance.get("instanceId") or "").strip()
         title = str(instance.get("title") or instance.get("name") or model_title).strip()

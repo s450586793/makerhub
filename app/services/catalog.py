@@ -20,6 +20,7 @@ from app.services.model_attachments import (
     load_manual_attachments,
 )
 from app.services.task_state import TaskStateStore
+from app.services.three_mf import resolve_model_instance_files
 
 
 SOURCE_LABELS = {
@@ -552,7 +553,9 @@ def _format_duration(value: Any) -> str:
 
 def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
     normalized = []
-    for item in meta.get("instances") or []:
+    resolved_files = resolve_model_instance_files(meta, model_root)
+    resolved_matches = resolved_files.get("matches") if isinstance(resolved_files, dict) else {}
+    for index, item in enumerate(meta.get("instances") or []):
         if not isinstance(item, dict):
             continue
 
@@ -644,7 +647,13 @@ def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
             or ""
         )
         primary_media = media_items[0] if media_items else None
-        file_name = Path(str(item.get("fileName") or "")).name
+        resolved_match = resolved_matches.get(index) if isinstance(resolved_matches, dict) else None
+        resolved_path = resolved_match.get("path") if isinstance(resolved_match, dict) else None
+        file_name = (
+            resolved_path.name
+            if isinstance(resolved_path, Path)
+            else Path(str(item.get("fileName") or "")).name
+        )
         file_ref = f"instances/{file_name}" if file_name else ""
         file_url = _existing_local_asset_url(model_root, file_ref) if file_ref else None
         if file_url:
@@ -685,7 +694,7 @@ def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
                 "primary_image_fallback_url": (primary_media or {}).get("fallback_url") or thumbnail_fallback_url,
                 "media": media_items,
                 "file_url": file_url,
-                "file_name": str(item.get("fileName") or item.get("name") or ""),
+                "file_name": file_name or str(item.get("name") or ""),
                 "file_available": bool(file_url),
                 "file_status_message": file_status_message,
                 "source_deleted": bool(item.get("sourceDeleted", False)),
