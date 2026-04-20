@@ -13,6 +13,7 @@ from croniter import CroniterBadCronError, croniter
 from app.core.settings import LOGS_DIR
 from app.core.store import JsonStore
 from app.schemas.models import SubscriptionRecord
+from app.services.cookie_utils import sanitize_cookie_header
 from app.services.archive_worker import ArchiveTaskManager, detect_archive_mode
 from app.services.batch_discovery import discover_batch_model_urls, extract_model_id, normalize_source_url
 from app.services.business_logs import append_business_log
@@ -89,7 +90,7 @@ def _select_cookie(url: str, config) -> str:
     netloc = urlparse(url).netloc.lower()
     platform = "global" if "makerworld.com" in netloc and "makerworld.com.cn" not in netloc else "cn"
     cookie_map = {item.platform: item.cookie for item in config.cookies}
-    return str(cookie_map.get(platform) or "").strip()
+    return sanitize_cookie_header(cookie_map.get(platform) or "")
 
 
 @contextmanager

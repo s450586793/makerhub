@@ -21,6 +21,7 @@ archiver.py (app2)
 
 import requests
 from bs4 import BeautifulSoup
+from app.services.cookie_utils import extract_auth_token, parse_cookie_values, sanitize_cookie_header
 from app.services.three_mf import describe_three_mf_failure, merge_three_mf_failure, normalize_makerworld_source
 
 
@@ -59,26 +60,11 @@ def pick_ext_from_url(url: str, fallback: str = "jpg") -> str:
 
 
 def parse_cookies(cookie_str: str) -> Dict[str, str]:
-    cookie_str = cookie_str.strip()
-    # 兼容带前缀 "Cookie:" 的整行
-    if cookie_str.lower().startswith("cookie:"):
-        cookie_str = cookie_str.split(":", 1)[1].strip()
-    cookies = {}
-    for part in cookie_str.split(";"):
-        if "=" in part:
-            k, v = part.split("=", 1)
-            cookies[k.strip()] = v.strip()
-    return cookies
+    return parse_cookie_values(cookie_str)
 
 
 def _extract_auth_token(raw_cookie: str) -> str:
-    cookies = parse_cookies(raw_cookie or "")
-    return (
-        cookies.get("token")
-        or cookies.get("access_token")
-        or cookies.get("accessToken")
-        or ""
-    )
+    return extract_auth_token(raw_cookie or "")
 
 
 IMAGE_TRANSFER_TIMEOUT_SECONDS = 45
@@ -240,6 +226,7 @@ def choose_unique_instance_filename(
 
 
 def fetch_html_with_requests(session: requests.Session, url: str, raw_cookie: str) -> Optional[str]:
+    cookie_header = sanitize_cookie_header(raw_cookie)
     headers = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
@@ -252,8 +239,8 @@ def fetch_html_with_requests(session: requests.Session, url: str, raw_cookie: st
         "Sec-Fetch-User": "?1",
         "User-Agent": session.headers.get("User-Agent", "Mozilla/5.0 (MW-Fetcher)"),
     }
-    if raw_cookie:
-        headers["Cookie"] = raw_cookie
+    if cookie_header:
+        headers["Cookie"] = cookie_header
     try:
         resp = session.get(url, timeout=30, headers=headers)
     except Exception as e:
@@ -269,6 +256,7 @@ def fetch_html_with_curl(url: str, raw_cookie: str) -> str:
     """
     备用：使用 curl 拉取页面，尽量复刻浏览器最小头。
     """
+    cookie_header = sanitize_cookie_header(raw_cookie)
     cmd = [
         "curl",
         "-sSL",
@@ -281,8 +269,6 @@ def fetch_html_with_curl(url: str, raw_cookie: str) -> str:
         "Cache-Control: no-cache",
         "-H",
         "Connection: keep-alive",
-        "-H",
-        f"Cookie: {raw_cookie}",
         "-H",
         "Pragma: no-cache",
         "-H",
@@ -297,8 +283,10 @@ def fetch_html_with_curl(url: str, raw_cookie: str) -> str:
         "Sec-Fetch-User: ?1",
         "-H",
         "User-Agent: Mozilla/5.0 (MW-Fetcher-curl)",
-        url,
     ]
+    if cookie_header:
+        cmd.extend(["-H", f"Cookie: {cookie_header}"])
+    cmd.append(url)
     log("尝试 curl 获取页面:", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=False)
     if result.returncode != 0:
@@ -542,13 +530,14 @@ def fetch_design_from_api(
         for prefix in prefixes:
             for path in path_templates:
                 endpoints.append(f"{base.rstrip('/')}{prefix}{path.format(id=design_id)}")
+    cookie_header = sanitize_cookie_header(raw_cookie)
     headers = {
         "Accept": "application/json, text/plain, */*",
         "Referer": url,
         "User-Agent": session.headers.get("User-Agent", "Mozilla/5.0 (MW-Fetcher)"),
     }
-    if raw_cookie:
-        headers["Cookie"] = raw_cookie
+    if cookie_header:
+        headers["Cookie"] = cookie_header
     for api_url in endpoints:
         try:
             resp = session.get(api_url, timeout=30, headers=headers)
@@ -1530,13 +1519,14 @@ def fetch_instance_3mf(
     for candidate in candidates:
         candidate_source = source_hint or normalize_makerworld_source(url=candidate)
         try:
+            cookie_header = sanitize_cookie_header(raw_cookie)
             headers = {
                 "Accept": "application/json, text/plain, */*",
                 "Referer": origin or "https://makerworld.com.cn/",
                 "User-Agent": session.headers.get("User-Agent", "Mozilla/5.0 (MW-Fetcher)"),
             }
-            if raw_cookie:
-                headers["Cookie"] = raw_cookie
+            if cookie_header:
+                headers["Cookie"] = cookie_header
             if auth_token:
                 headers["Authorization"] = f"Bearer {auth_token}"
                 headers["token"] = auth_token
@@ -1607,6 +1597,7 @@ def fetch_instance_3mf(
     log("3MF 获取失败(尝试 curl)", inst_id, last_error)
     for candidate in candidates:
         candidate_source = source_hint or normalize_makerworld_source(url=candidate)
+        cookie_header = sanitize_cookie_header(raw_cookie)
         cmd = [
             "curl",
             "-sSL",
@@ -1614,12 +1605,15 @@ def fetch_instance_3mf(
             "-H",
             "Accept: application/json, text/plain, */*",
             "-H",
-            f"Cookie: {raw_cookie}",
-            "-H",
             f"Referer: {origin or 'https://makerworld.com.cn/'}",
             "-H",
             f"User-Agent: {session.headers.get('User-Agent', 'Mozilla/5.0 (MW-Fetcher-curl)')}",
         ]
+        if cookie_header:
+            cmd.extend([
+                "-H",
+                f"Cookie: {cookie_header}",
+            ])
         if auth_token:
             cmd.extend([
                 "-H",

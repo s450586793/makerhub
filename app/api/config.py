@@ -39,6 +39,7 @@ from app.services.catalog import (
 )
 from app.services.crawler import LegacyCrawlerBridge
 from app.services.business_logs import append_business_log, read_log_entries
+from app.services.cookie_utils import sanitize_cookie_header
 from app.services.local_organizer import LocalOrganizerService
 from app.services.model_attachments import create_manual_attachment, delete_manual_attachment
 from app.services.remote_refresh import RemoteRefreshManager
@@ -370,7 +371,7 @@ def _cookie_base_url(platform: str) -> str:
 
 
 def _run_cookie_test(payload: CookieTestRequest) -> dict:
-    raw_cookie = str(payload.cookie or "").strip()
+    raw_cookie = sanitize_cookie_header(payload.cookie)
     if not raw_cookie:
         raise ValueError("请先填写 Cookie。")
 
@@ -548,7 +549,10 @@ async def get_config():
 async def save_cookies(payload: list[CookiePair], request: Request):
     _require_session_auth(request)
     config = store.load()
-    config.cookies = payload
+    config.cookies = [
+        CookiePair(platform=item.platform, cookie=sanitize_cookie_header(item.cookie))
+        for item in payload
+    ]
     append_business_log(
         "settings",
         "cookies_saved",

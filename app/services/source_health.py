@@ -8,6 +8,7 @@ from typing import Any
 import requests
 
 from app.core.settings import STATE_DIR, ensure_app_dirs
+from app.services.cookie_utils import extract_auth_token, sanitize_cookie_header
 from app.services.three_mf import normalize_makerworld_source
 
 
@@ -80,28 +81,6 @@ def _build_proxy_mapping(proxy_config: Any) -> dict[str, str]:
     elif http_proxy:
         proxies["https"] = http_proxy
     return proxies
-
-
-def _parse_cookie_values(raw_cookie: str) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for part in str(raw_cookie or "").split(";"):
-        if "=" not in part:
-            continue
-        key, value = part.split("=", 1)
-        clean_key = key.strip()
-        if clean_key:
-            values[clean_key] = value.strip()
-    return values
-
-
-def _extract_auth_token(raw_cookie: str) -> str:
-    cookies = _parse_cookie_values(raw_cookie)
-    return (
-        cookies.get("token")
-        or cookies.get("access_token")
-        or cookies.get("accessToken")
-        or ""
-    )
 
 
 def _looks_like_html(text: str) -> bool:
@@ -199,12 +178,14 @@ def _limit_guard_for_platform(platform: str) -> dict[str, Any]:
 
 
 def _build_request_headers(origin: str, raw_cookie: str) -> dict[str, str]:
+    cookie_header = sanitize_cookie_header(raw_cookie)
     headers = {
         "Referer": f"{origin}/",
         "Origin": origin,
-        "Cookie": raw_cookie,
     }
-    token = _extract_auth_token(raw_cookie)
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+    token = extract_auth_token(cookie_header)
     if token:
         headers.update(
             {
@@ -370,7 +351,8 @@ def _cache_key(platform: str, raw_cookie: str, proxy_config: Any) -> str:
 
 
 def _probe_platform_status(platform: str, raw_cookie: str, proxy_config: Any) -> dict[str, str]:
-    if not raw_cookie.strip():
+    normalized_cookie = sanitize_cookie_header(raw_cookie)
+    if not normalized_cookie:
         return {
             "state": "missing_cookie",
             "status": "未配置 Cookie",
@@ -385,16 +367,16 @@ def _probe_platform_status(platform: str, raw_cookie: str, proxy_config: Any) ->
             "detail": "",
         }
 
-    cache_key = _cache_key(platform, raw_cookie, proxy_config)
+    cache_key = _cache_key(platform, normalized_cookie, proxy_config)
     now = time.time()
     with SOURCE_HEALTH_CACHE_LOCK:
         cached = SOURCE_HEALTH_CACHE.get(cache_key)
         if cached and now - float(cached.get("checked_at") or 0) < SOURCE_HEALTH_CACHE_TTL_SECONDS:
             return dict(cached.get("payload") or {})
 
-    payload = _probe_3mf_endpoint(platform, raw_cookie, proxy_config)
+    payload = _probe_3mf_endpoint(platform, normalized_cookie, proxy_config)
     if payload.get("state") == "http_error":
-        fallback = _probe_auth_endpoints(platform, raw_cookie, proxy_config)
+        fallback = _probe_auth_endpoints(platform, normalized_cookie, proxy_config)
         if fallback.get("state") in {"ok", "verification_required", "auth_required"}:
             payload = fallback
 

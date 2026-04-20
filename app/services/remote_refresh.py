@@ -15,6 +15,7 @@ from croniter import CroniterBadCronError, croniter
 
 from app.core.settings import ARCHIVE_DIR, LOGS_DIR
 from app.core.store import JsonStore
+from app.services.cookie_utils import sanitize_cookie_header
 from app.services.archive_worker import detect_archive_mode
 from app.services.batch_discovery import normalize_source_url
 from app.services.business_logs import append_business_log
@@ -107,8 +108,8 @@ def _select_cookie(url: str, config) -> str:
     normalized_url = normalize_source_url(url)
     lowered = normalized_url.lower()
     if "makerworld.com/" in lowered and "makerworld.com.cn" not in lowered:
-        return str(cookie_map.get("global") or "").strip()
-    return str(cookie_map.get("cn") or "").strip()
+        return sanitize_cookie_header(cookie_map.get("global") or "")
+    return sanitize_cookie_header(cookie_map.get("cn") or "")
 
 
 @contextmanager
@@ -528,12 +529,13 @@ def _update_meta_refresh_error(meta_path: Path, message: str, *, source_deleted:
 
 
 def _source_looks_deleted(url: str, cookie: str) -> bool:
+    cookie_header = sanitize_cookie_header(cookie)
     headers = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "User-Agent": "Mozilla/5.0 (Makerhub Remote Refresh)",
     }
-    if cookie:
-        headers["Cookie"] = cookie
+    if cookie_header:
+        headers["Cookie"] = cookie_header
     try:
         response = requests.get(
             normalize_source_url(url),

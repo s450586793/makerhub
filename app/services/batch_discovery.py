@@ -8,6 +8,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from app.core.settings import LOGS_DIR
+from app.services.cookie_utils import extract_auth_token, sanitize_cookie_header
 from app.services.legacy_archiver import (
     extract_next_data,
     fetch_design_from_api,
@@ -92,13 +93,7 @@ def _fetch_listing_html(session: requests.Session, page_url: str, raw_cookie: st
 
 
 def _extract_auth_token(raw_cookie: str) -> str:
-    cookies = parse_cookies(raw_cookie or "")
-    return (
-        cookies.get("token")
-        or cookies.get("access_token")
-        or cookies.get("accessToken")
-        or ""
-    )
+    return extract_auth_token(raw_cookie or "")
 
 
 def _looks_like_html_response(text: str) -> bool:
@@ -153,12 +148,13 @@ def _service_endpoint_candidates(source_url: str, service_name: str, path: str) 
 
 
 def _build_api_headers(session: requests.Session, raw_cookie: str, referer: str) -> dict[str, str]:
+    cookie_header = sanitize_cookie_header(raw_cookie)
     headers = dict(API_BROWSER_HEADERS)
     headers["Referer"] = referer or "https://makerworld.com.cn/"
     headers["User-Agent"] = session.headers.get("User-Agent", BROWSER_USER_AGENT)
     headers["Origin"] = _origin_from_url(referer or "https://makerworld.com.cn/")
-    if raw_cookie:
-        headers["Cookie"] = raw_cookie
+    if cookie_header:
+        headers["Cookie"] = cookie_header
     return headers
 
 
