@@ -489,8 +489,7 @@ function setActiveTab(tab) {
     router.replace({ path: "/settings", query: { tab: activeTab.value } });
   }
   if (activeTab.value === "system" && !systemUpdateLoading.value && !systemUpdateSubmitting.value) {
-    const shouldForce = !changelogEntries.value.length || !appState.githubLatestVersion;
-    loadSystemUpdateStatus({ force: shouldForce });
+    loadSystemUpdateStatus({ force: true });
   }
 }
 
