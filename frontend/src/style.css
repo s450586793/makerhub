@@ -2343,23 +2343,23 @@
 
 .source-library-card {
   overflow: hidden;
-  border: 1px solid rgba(204, 214, 228, 0.78);
+  border: 1px solid var(--border-strong);
   border-radius: 28px;
   background:
-    linear-gradient(180deg, rgba(245, 249, 255, 0.96) 0%, rgba(255, 255, 255, 0.98) 36%, rgba(255, 255, 255, 1) 100%);
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-soft) 74%, transparent) 0%, var(--surface-strong) 44%, var(--surface) 100%);
   box-shadow:
-    0 28px 52px rgba(135, 156, 194, 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    var(--shadow),
+    inset 0 1px 0 color-mix(in srgb, var(--surface-strong) 76%, transparent);
   cursor: pointer;
   transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
 }
 
 .source-library-card:hover {
   transform: translateY(-4px);
-  border-color: rgba(143, 176, 228, 0.9);
+  border-color: color-mix(in srgb, var(--brand) 42%, var(--border-strong));
   box-shadow:
-    0 34px 60px rgba(135, 156, 194, 0.24),
-    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+    0 34px 60px rgba(26, 45, 36, 0.12),
+    inset 0 1px 0 color-mix(in srgb, var(--surface-strong) 86%, transparent);
 }
 
 .source-library-card--author {
@@ -2371,8 +2371,8 @@
 .source-library-card__author-shell {
   padding: 18px 18px 12px;
   border-radius: 22px;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  background: var(--surface-floating);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-strong) 82%, transparent);
   display: grid;
   gap: 18px;
 }
@@ -2398,8 +2398,8 @@
   display: grid;
   place-items: center;
   object-fit: cover;
-  background: linear-gradient(135deg, #e9f2ff 0%, #cfdfff 100%);
-  color: #2d466f;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--brand-soft) 72%, var(--surface-soft)) 0%, color-mix(in srgb, var(--brand) 20%, var(--surface-soft)) 100%);
+  color: var(--brand-strong);
   font-size: 24px;
   font-weight: 800;
 }
@@ -2465,7 +2465,7 @@
 
 .source-library-card__stats--author {
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  border-top: 1px solid rgba(213, 221, 235, 0.9);
+  border-top: 1px solid var(--border);
 }
 
 .source-library-card__stats--collection {
@@ -2482,11 +2482,11 @@
 
 .source-library-card__stats--author .source-library-card__stat + .source-library-card__stat,
 .source-library-card__stats--collection .source-library-card__stat + .source-library-card__stat {
-  border-left: 1px solid rgba(213, 221, 235, 0.9);
+  border-left: 1px solid var(--border);
 }
 
 .source-library-card__stats strong {
-  color: #2f3746;
+  color: var(--text);
   font-size: 18px;
   line-height: 1.1;
   font-weight: 800;
@@ -2513,7 +2513,7 @@
   aspect-ratio: 1.1;
   overflow: hidden;
   border-radius: 10px;
-  background: linear-gradient(145deg, #eef4ff 0%, #d9e7ff 100%);
+  background: var(--cover-bg);
 }
 
 .source-library-card__preview-tile img,
@@ -2526,7 +2526,7 @@
 }
 
 .source-library-card__preview-placeholder {
-  color: #5b6f93;
+  color: var(--muted);
   font-size: 32px;
   font-weight: 800;
 }
@@ -2617,9 +2617,47 @@
   padding: 14px 16px;
   border: 1px solid var(--border);
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.82);
+  background: var(--surface-floating);
   display: grid;
   gap: 4px;
+}
+
+html[data-theme="dark"] .source-library-card {
+  background:
+    linear-gradient(180deg, rgba(24, 39, 34, 0.96) 0%, rgba(18, 29, 25, 0.98) 52%, rgba(14, 22, 20, 0.98) 100%);
+  box-shadow:
+    0 28px 52px rgba(0, 0, 0, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+html[data-theme="dark"] .source-library-card:hover {
+  border-color: rgba(65, 199, 132, 0.36);
+  box-shadow:
+    0 34px 60px rgba(0, 0, 0, 0.42),
+    0 0 0 1px rgba(65, 199, 132, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+html[data-theme="dark"] .source-library-card__author-shell,
+html[data-theme="dark"] .library-group-hero__stats span {
+  background: rgba(20, 32, 28, 0.88);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+html[data-theme="dark"] .source-library-card__avatar-placeholder {
+  background: linear-gradient(135deg, rgba(65, 199, 132, 0.22) 0%, rgba(122, 226, 173, 0.14) 100%);
+  color: #7ae2ad;
+}
+
+html[data-theme="dark"] .source-library-card__preview-tile {
+  background: linear-gradient(145deg, #1d2b26 0%, #101a17 100%);
+}
+
+html[data-theme="dark"] .library-group-hero {
+  background:
+    radial-gradient(circle at left top, rgba(65, 199, 132, 0.14), transparent 30%),
+    radial-gradient(circle at right bottom, rgba(255, 194, 81, 0.1), transparent 36%),
+    var(--surface);
 }
 
 .library-group-hero__stats strong {
