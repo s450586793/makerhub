@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from app.core.settings import STATE_DIR, ensure_app_dirs
+from app.core.settings import LOGS_DIR, STATE_DIR, ensure_app_dirs
 
 
 ARCHIVE_QUEUE_PATH = STATE_DIR / "archive_queue.json"
@@ -14,7 +14,22 @@ ORGANIZE_TASKS_PATH = STATE_DIR / "organize_tasks.json"
 MODEL_FLAGS_PATH = STATE_DIR / "model_flags.json"
 SUBSCRIPTIONS_STATE_PATH = STATE_DIR / "subscriptions_state.json"
 REMOTE_REFRESH_STATE_PATH = STATE_DIR / "remote_refresh_state.json"
+ORGANIZER_LOG_PATH = LOGS_DIR / "organizer.log"
+ORGANIZE_TASK_VISIBLE_LIMIT = 50
+ORGANIZER_TERMINAL_EVENTS = {
+    "organized",
+    "duplicate_skipped",
+    "deleted_model_skipped",
+    "duplicate_skip_failed",
+    "organize_failed",
+    "worker_timeout",
+}
 _STATE_LOCK = threading.RLock()
+_ORGANIZER_HISTORY_COUNT_CACHE = {
+    "mtime_ns": 0,
+    "size": 0,
+    "count": 0,
+}
 
 
 def _looks_like_html_message(text: str) -> bool:
@@ -193,6 +208,7 @@ def _normalize_organize_tasks(payload: Any) -> dict:
         items = payload
         raw_detected_total = 0
         raw_count = len(items)
+        raw_count_trusted = False
         raw_source_dir = ""
         raw_updated_at = ""
     elif isinstance(payload, dict):
@@ -205,12 +221,14 @@ def _normalize_organize_tasks(payload: Any) -> dict:
             payload.get("count", payload.get("total_count", len(items))),
             len(items),
         )
+        raw_count_trusted = bool(payload.get("count_trusted"))
         raw_source_dir = str(payload.get("source_dir") or "")
         raw_updated_at = str(payload.get("updated_at") or "")
     else:
         items = []
         raw_detected_total = 0
         raw_count = 0
+        raw_count_trusted = False
         raw_source_dir = ""
         raw_updated_at = ""
 
@@ -260,15 +278,55 @@ def _normalize_organize_tasks(payload: Any) -> dict:
 
     detected_total = max(raw_detected_total, queued_count + running_count)
     total_count = max(raw_count, len(normalized))
+    if not raw_count_trusted and len(normalized) >= ORGANIZE_TASK_VISIBLE_LIMIT and total_count <= len(normalized):
+        total_count = max(total_count, _organizer_history_count_from_log())
     return {
         "items": normalized,
         "count": total_count,
+        "count_trusted": bool(raw_count_trusted),
         "detected_total": detected_total,
         "queued_count": queued_count,
         "running_count": running_count,
         "source_dir": raw_source_dir,
         "updated_at": raw_updated_at,
     }
+
+
+def _organizer_history_count_from_log() -> int:
+    try:
+        stat = ORGANIZER_LOG_PATH.stat()
+    except OSError:
+        return 0
+
+    cache_mtime_ns = int(_ORGANIZER_HISTORY_COUNT_CACHE.get("mtime_ns") or 0)
+    cache_size = int(_ORGANIZER_HISTORY_COUNT_CACHE.get("size") or 0)
+    if cache_mtime_ns == int(stat.st_mtime_ns) and cache_size == int(stat.st_size):
+        return int(_ORGANIZER_HISTORY_COUNT_CACHE.get("count") or 0)
+
+    count = 0
+    try:
+        with ORGANIZER_LOG_PATH.open("r", encoding="utf-8", errors="ignore") as handle:
+            for raw_line in handle:
+                line = str(raw_line or "").strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if str(payload.get("event") or "").strip() in ORGANIZER_TERMINAL_EVENTS:
+                    count += 1
+    except OSError:
+        return 0
+
+    _ORGANIZER_HISTORY_COUNT_CACHE.update(
+        {
+            "mtime_ns": int(stat.st_mtime_ns),
+            "size": int(stat.st_size),
+            "count": count,
+        }
+    )
+    return count
 
 
 def _organize_task_sort_key(item: dict) -> tuple[int, str, str]:
@@ -534,10 +592,19 @@ class TaskStateStore:
 
     def _load_organize_tasks_unlocked(self) -> dict:
         payload = self._read_json(ORGANIZE_TASKS_PATH, {"items": []})
-        return _normalize_organize_tasks(payload)
+        tasks = _normalize_organize_tasks(payload)
+        raw_payload = payload if isinstance(payload, dict) else {}
+        if not bool(raw_payload.get("count_trusted")) and int(tasks.get("count") or 0) > _safe_int(raw_payload.get("count"), 0):
+            persisted = dict(tasks)
+            persisted["count_trusted"] = True
+            self._write_json(ORGANIZE_TASKS_PATH, persisted)
+            tasks["count_trusted"] = True
+        return tasks
 
     def _save_organize_tasks_unlocked(self, payload: dict) -> dict:
-        normalized = _normalize_organize_tasks(payload)
+        base_payload = dict(payload or {}) if isinstance(payload, dict) else {"items": payload if isinstance(payload, list) else []}
+        normalized = _normalize_organize_tasks({**base_payload, "count_trusted": True})
+        normalized["count_trusted"] = True
         self._write_json(ORGANIZE_TASKS_PATH, normalized)
         return self._load_organize_tasks_unlocked()
 
