@@ -20,6 +20,7 @@ from app.services.legacy_archiver import (
 
 MODEL_PATH_RE = re.compile(r"/(?:[a-z]{2}/)?models/(\d+)(?:[^\"'\\s<>]*)?", re.I)
 AUTHOR_UPLOAD_RE = re.compile(r"/(?:[a-z]{2}/)?@([^/?#]+)/upload(?:[/?#]|$)", re.I)
+AUTHOR_ROOT_RE = re.compile(r"^/(?:[a-z]{2}/)?@[^/?#]+/?$", re.I)
 COLLECTION_DETAIL_RE = re.compile(r"/(?:[a-z]{2}/)?collections/(\d+)(?:-[^/?#]+)?(?:[/?#]|$)", re.I)
 
 API_BROWSER_HEADERS = {
@@ -50,10 +51,19 @@ def normalize_source_url(url: str) -> str:
     if not raw:
         return ""
     if raw.startswith("/"):
-        return urljoin("https://makerworld.com.cn", raw)
-    if not raw.startswith("http://") and not raw.startswith("https://"):
-        return f"https://{raw.lstrip('/')}"
-    return raw
+        absolute = urljoin("https://makerworld.com.cn", raw)
+    elif not raw.startswith("http://") and not raw.startswith("https://"):
+        absolute = f"https://{raw.lstrip('/')}"
+    else:
+        absolute = raw
+
+    parsed = urlparse(absolute)
+    path = parsed.path or ""
+    if AUTHOR_ROOT_RE.fullmatch(path):
+        normalized_path = f"{path.rstrip('/')}/upload"
+        return urlunparse(parsed._replace(path=normalized_path))
+
+    return absolute
 
 
 def _append_discovery_debug(event: str, **payload: Any) -> None:
