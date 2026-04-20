@@ -128,6 +128,10 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _organize_count_needs_backfill(*, item_count: int, total_count: int) -> bool:
+    return item_count >= ORGANIZE_TASK_VISIBLE_LIMIT and total_count <= item_count
+
+
 def _normalize_missing_3mf(payload: Any, fallback_items: Optional[list[dict]] = None) -> dict:
     if isinstance(payload, list):
         items = payload
@@ -278,12 +282,12 @@ def _normalize_organize_tasks(payload: Any) -> dict:
 
     detected_total = max(raw_detected_total, queued_count + running_count)
     total_count = max(raw_count, len(normalized))
-    if not raw_count_trusted and len(normalized) >= ORGANIZE_TASK_VISIBLE_LIMIT and total_count <= len(normalized):
+    if _organize_count_needs_backfill(item_count=len(normalized), total_count=total_count):
         total_count = max(total_count, _organizer_history_count_from_log())
     return {
         "items": normalized,
         "count": total_count,
-        "count_trusted": bool(raw_count_trusted),
+        "count_trusted": bool(raw_count_trusted or not _organize_count_needs_backfill(item_count=len(normalized), total_count=total_count)),
         "detected_total": detected_total,
         "queued_count": queued_count,
         "running_count": running_count,
@@ -594,11 +598,11 @@ class TaskStateStore:
         payload = self._read_json(ORGANIZE_TASKS_PATH, {"items": []})
         tasks = _normalize_organize_tasks(payload)
         raw_payload = payload if isinstance(payload, dict) else {}
-        if not bool(raw_payload.get("count_trusted")) and int(tasks.get("count") or 0) > _safe_int(raw_payload.get("count"), 0):
+        raw_count = _safe_int(raw_payload.get("count"), 0)
+        raw_count_trusted = bool(raw_payload.get("count_trusted"))
+        if int(tasks.get("count") or 0) != raw_count or bool(tasks.get("count_trusted")) != raw_count_trusted:
             persisted = dict(tasks)
-            persisted["count_trusted"] = True
             self._write_json(ORGANIZE_TASKS_PATH, persisted)
-            tasks["count_trusted"] = True
         return tasks
 
     def _save_organize_tasks_unlocked(self, payload: dict) -> dict:
