@@ -52,6 +52,12 @@ from app.services.archive_repair import (
     write_archive_repair_status,
 )
 from app.services.subscriptions import SubscriptionManager
+from app.services.source_library import (
+    SourceLibraryManager,
+    build_source_group_models_payload,
+    build_source_library_payload,
+    build_state_group_models_payload,
+)
 from app.services.task_state import TaskStateStore
 from app.services.archive_worker import BATCH_TASK_MODES, detect_archive_mode
 from app.services.self_update import get_update_status, request_system_update
@@ -72,6 +78,10 @@ local_organizer = LocalOrganizerService(
     task_store=task_state_store,
 )
 remote_refresh_manager = RemoteRefreshManager(
+    store=store,
+    task_store=task_state_store,
+)
+source_library_manager = SourceLibraryManager(
     store=store,
     task_store=task_state_store,
 )
@@ -923,6 +933,71 @@ async def get_models_data(
         page=page,
         page_size=page_size,
     )
+
+
+@router.get("/source-library")
+async def get_source_library_data(
+    q: str = Query("", description="搜索来源卡标题"),
+):
+    return build_source_library_payload(
+        q=q,
+        store=store,
+        task_store=task_state_store,
+    )
+
+
+@router.get("/source-library/sources/{source_type}/{source_key}")
+async def get_source_group_models(
+    source_type: str,
+    source_key: str,
+    q: str = Query("", description="搜索标题、作者、标签"),
+    source: str = Query("all", description="全部 / 国内 / 国际 / 本地"),
+    tag: str = Query("", description="按标签过滤"),
+    sort: str = Query("collectDate", description="collectDate / downloads / likes / prints"),
+    page: int = Query(1, ge=1, description="分页页码"),
+    page_size: int = Query(8, ge=1, le=120, description="每页数量"),
+):
+    payload = build_source_group_models_payload(
+        source_type=source_type,
+        source_key=source_key,
+        q=q,
+        source=source,
+        tag=tag,
+        sort_key=sort,
+        page=page,
+        page_size=page_size,
+        store=store,
+        task_store=task_state_store,
+    )
+    if payload is None:
+        raise HTTPException(status_code=404, detail="来源不存在。")
+    return payload
+
+
+@router.get("/source-library/states/{state_key}")
+async def get_state_group_models(
+    state_key: str,
+    q: str = Query("", description="搜索标题、作者、标签"),
+    source: str = Query("all", description="全部 / 国内 / 国际 / 本地"),
+    tag: str = Query("", description="按标签过滤"),
+    sort: str = Query("collectDate", description="collectDate / downloads / likes / prints"),
+    page: int = Query(1, ge=1, description="分页页码"),
+    page_size: int = Query(8, ge=1, le=120, description="每页数量"),
+):
+    payload = build_state_group_models_payload(
+        state_key=state_key,
+        q=q,
+        source=source,
+        tag=tag,
+        sort_key=sort,
+        page=page,
+        page_size=page_size,
+        store=store,
+        task_store=task_state_store,
+    )
+    if payload is None:
+        raise HTTPException(status_code=404, detail="状态卡不存在。")
+    return payload
 
 
 @router.get("/models/{model_dir:path}/comments")

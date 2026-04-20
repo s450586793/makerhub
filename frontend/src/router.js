@@ -9,6 +9,7 @@ const DashboardPage = () => import("./pages/DashboardPage.vue");
 const DetailPreviewPage = () => import("./pages/DetailPreviewPage.vue");
 const LoginPage = () => import("./pages/LoginPage.vue");
 const LogsPage = () => import("./pages/LogsPage.vue");
+const ModelLibraryGroupPage = () => import("./pages/ModelLibraryGroupPage.vue");
 const ModelDetailPage = () => import("./pages/ModelDetailPage.vue");
 const ModelsPage = () => import("./pages/ModelsPage.vue");
 const OrganizerPage = () => import("./pages/OrganizerPage.vue");
@@ -46,6 +47,22 @@ const routes = [
         component: ModelsPage,
         meta: {
           title: "模型库 | makerhub",
+        },
+      },
+      {
+        path: "models/source/:sourceType/:sourceKey",
+        name: "model-library-source",
+        component: ModelLibraryGroupPage,
+        meta: {
+          title: "来源模型 | makerhub",
+        },
+      },
+      {
+        path: "models/state/:stateKey",
+        name: "model-library-state",
+        component: ModelLibraryGroupPage,
+        meta: {
+          title: "状态模型 | makerhub",
         },
       },
       {
