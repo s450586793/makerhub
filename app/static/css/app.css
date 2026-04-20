@@ -2335,6 +2335,49 @@ select:focus {
   line-height: 18px;
 }
 
+.mw-active-profile__facts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mw-active-profile__fact {
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #39515c;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 700;
+  background: linear-gradient(180deg, rgba(238, 246, 247, 0.95), rgba(232, 240, 242, 0.98));
+  border: 1px solid rgba(126, 154, 165, 0.18);
+}
+
+.mw-active-profile__fact--rating {
+  color: #9b6600;
+  background: linear-gradient(180deg, rgba(255, 246, 207, 0.98), rgba(255, 238, 176, 0.98));
+  border-color: rgba(214, 159, 24, 0.2);
+}
+
+.mw-active-profile__fact-icon {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.mw-active-profile__fact-icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
 .mw-active-profile__summary {
   margin: 0;
 }
@@ -2784,7 +2827,7 @@ select:focus {
 
 .mw-profile-popover__stats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -3693,6 +3736,18 @@ html[data-theme="dark"] .detail-page--makerworld .mw-profile-card__title {
 html[data-theme="dark"] .detail-page--makerworld .mw-profile-card__badge {
   color: #9df0bf;
   background: rgba(65, 199, 132, 0.16);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-active-profile__fact {
+  color: #d6ecf2;
+  background: rgba(71, 109, 122, 0.26);
+  border-color: rgba(122, 157, 170, 0.26);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-active-profile__fact--rating {
+  color: #ffd671;
+  background: rgba(128, 92, 6, 0.26);
+  border-color: rgba(214, 159, 24, 0.28);
 }
 
 html[data-theme="dark"] .detail-page--makerworld .mw-download-button.is-disabled {

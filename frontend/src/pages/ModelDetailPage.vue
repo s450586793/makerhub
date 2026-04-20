@@ -145,6 +145,16 @@
               <strong>{{ activeInstance.title }}</strong>
               <span>{{ activeInstance.machine || "通用" }}</span>
             </div>
+            <div v-if="activeProfileFacts.length" class="mw-active-profile__facts">
+              <span
+                v-for="item in activeProfileFacts"
+                :key="item.key"
+                :class="['mw-active-profile__fact', item.key === 'rating' && 'mw-active-profile__fact--rating']"
+              >
+                <span class="mw-active-profile__fact-icon" aria-hidden="true" v-html="item.icon"></span>
+                <span>{{ item.value }}</span>
+              </span>
+            </div>
             <p v-if="activeInstance.summary" class="mw-active-profile__summary">{{ activeInstance.summary }}</p>
           </section>
 
@@ -280,6 +290,10 @@
               </div>
 
                 <div class="mw-profile-popover__stats">
+                  <span class="mw-profile-popover__stat">
+                    <strong>时长</strong>
+                    <em>{{ profile.time || "-" }}</em>
+                  </span>
                   <span class="mw-profile-popover__stat">
                     <strong>盘数</strong>
                     <em>{{ profile.plates || 0 }}</em>
@@ -553,6 +567,11 @@ let commentsRenderFrame = 0;
 
 const INITIAL_COMMENT_BATCH = 20;
 const STAT_FORMATTER = new Intl.NumberFormat("zh-CN");
+const PROFILE_FACT_ICONS = {
+  clock: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7.1"/><path d="M10 5.9v4.2l2.8 1.9"/></svg>',
+  plates: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4.2 6.1 10 3.4l5.8 2.7L10 8.8 4.2 6.1Z"/><path d="M4.2 10 10 12.7 15.8 10"/><path d="M4.2 13.9 10 16.6l5.8-2.7"/></svg>',
+  rating: '<svg viewBox="0 0 20 20" fill="currentColor"><path d="m10 2.5 2.3 4.65 5.14.75-3.72 3.62.88 5.12L10 14.19l-4.6 2.45.88-5.12L2.56 7.9l5.14-.75L10 2.5Z"/></svg>',
+};
 
 const attachmentForm = ref({
   category: "assembly",
@@ -599,6 +618,25 @@ const modelDir = computed(() => {
 
 const activeInstance = computed(() => {
   return detail.value?.instances?.find((item) => item.instance_key === activeInstanceKey.value) || null;
+});
+
+const activeProfileFacts = computed(() => {
+  const source = activeInstance.value || detail.value?.profile_summary || null;
+  if (!source) {
+    return [];
+  }
+
+  const items = [];
+  if (source.time) {
+    items.push({ key: "time", icon: PROFILE_FACT_ICONS.clock, value: String(source.time) });
+  }
+  if (Number(source.plates || 0) > 0) {
+    items.push({ key: "plates", icon: PROFILE_FACT_ICONS.plates, value: `${source.plates} 盘` });
+  }
+  if (String(source.rating ?? "").trim()) {
+    items.push({ key: "rating", icon: PROFILE_FACT_ICONS.rating, value: formatRating(source.rating) });
+  }
+  return items;
 });
 
 const headCrumbs = computed(() => {
@@ -950,6 +988,14 @@ function closeLightbox() {
 
 function formatStat(value) {
   return STAT_FORMATTER.format(Number(value || 0));
+}
+
+function formatRating(value) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    return numeric.toFixed(1);
+  }
+  return String(value || "");
 }
 
 function attachmentDownloadUrl(attachment) {

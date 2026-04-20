@@ -575,6 +575,85 @@ def _format_duration(value: Any) -> str:
     return f"{seconds / 60:.1f} min"
 
 
+def _normalize_instance_overview(item: dict) -> dict:
+    duration = (
+        item.get("time")
+        or item.get("timeText")
+        or item.get("durationText")
+        or _format_duration(item.get("printTimeSeconds") or item.get("duration"))
+    )
+    plate_items = item.get("plates") if isinstance(item.get("plates"), list) else []
+    plates = _safe_int(item.get("plateCount") or item.get("plateNum")) or len(plate_items)
+    rating_value = item.get("rating") or item.get("score") or item.get("stars")
+    rating = str(rating_value).strip() if rating_value not in ("", None) else ""
+    return {
+        "title": str(
+            item.get("name")
+            or item.get("title")
+            or item.get("profileName")
+            or item.get("fileName")
+            or "未命名打印配置"
+        ),
+        "machine": str(
+            item.get("machine")
+            or item.get("machineName")
+            or item.get("printerModel")
+            or item.get("printer")
+            or item.get("device")
+            or "通用"
+        ),
+        "time": str(duration),
+        "plates": plates,
+        "rating": rating,
+        "download_count": _safe_int(item.get("downloadCount")),
+        "print_count": _safe_int(item.get("printCount")),
+        "summary": str(item.get("summary") or item.get("summaryTranslated") or ""),
+    }
+
+
+def _instance_overview_score(item: dict) -> int:
+    return (
+        (4 if str(item.get("time") or "").strip() else 0)
+        + (3 if _safe_int(item.get("plates")) > 0 else 0)
+        + (3 if str(item.get("rating") or "").strip() else 0)
+        + (1 if _safe_int(item.get("download_count")) > 0 else 0)
+        + (1 if _safe_int(item.get("print_count")) > 0 else 0)
+    )
+
+
+def _normalize_model_profile_summary(meta: dict) -> dict:
+    overviews: list[dict] = []
+    for item in meta.get("instances") or []:
+        if not isinstance(item, dict):
+            continue
+        overviews.append(_normalize_instance_overview(item))
+
+    if not overviews:
+        return {
+            "title": "",
+            "machine": "",
+            "time": "",
+            "plates": 0,
+            "rating": "",
+            "download_count": 0,
+            "print_count": 0,
+            "profile_count": 0,
+        }
+
+    selected = overviews[0]
+    selected_score = _instance_overview_score(selected)
+    for item in overviews[1:]:
+        score = _instance_overview_score(item)
+        if score > selected_score:
+            selected = item
+            selected_score = score
+
+    return {
+        **selected,
+        "profile_count": len(overviews),
+    }
+
+
 def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
     normalized = []
     resolved_files = resolve_model_instance_files(meta, model_root)
@@ -585,16 +664,8 @@ def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
             continue
 
         instance_key = str(item.get("id") or item.get("profileId") or len(normalized) + 1)
-        duration = (
-            item.get("time")
-            or item.get("timeText")
-            or item.get("durationText")
-            or _format_duration(item.get("printTimeSeconds") or item.get("duration"))
-        )
+        overview = _normalize_instance_overview(item)
         plate_items = item.get("plates") if isinstance(item.get("plates"), list) else []
-        plates = _safe_int(item.get("plateCount") or item.get("plateNum")) or len(plate_items)
-        rating_value = item.get("rating") or item.get("score") or item.get("stars")
-        rating = str(rating_value).strip() if rating_value not in ("", None) else ""
         publish_value = (
             item.get("publishTime")
             or item.get("publishedAt")
@@ -698,28 +769,15 @@ def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
         normalized.append(
             {
                 "instance_key": instance_key,
-                "title": str(
-                    item.get("name")
-                    or item.get("title")
-                    or item.get("profileName")
-                    or item.get("fileName")
-                    or "未命名打印配置"
-                ),
-                "machine": str(
-                    item.get("machine")
-                    or item.get("machineName")
-                    or item.get("printerModel")
-                    or item.get("printer")
-                    or item.get("device")
-                    or "通用"
-                ),
-                "time": str(duration),
-                "plates": plates,
-                "rating": rating,
+                "title": overview["title"],
+                "machine": overview["machine"],
+                "time": overview["time"],
+                "plates": overview["plates"],
+                "rating": overview["rating"],
                 "publish_date": _format_date(publish_value),
-                "download_count": _safe_int(item.get("downloadCount")),
-                "print_count": _safe_int(item.get("printCount")),
-                "summary": str(item.get("summary") or item.get("summaryTranslated") or ""),
+                "download_count": overview["download_count"],
+                "print_count": overview["print_count"],
+                "summary": overview["summary"],
                 "thumbnail_url": thumbnail_url,
                 "thumbnail_fallback_url": thumbnail_fallback_url,
                 "primary_image_url": (primary_media or {}).get("url") or thumbnail_url,
@@ -1005,6 +1063,7 @@ def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[
         "gallery": gallery,
         "tags": tags,
         "stats": stats,
+        "profile_summary": _normalize_model_profile_summary(meta),
         "collect_ts": collect_ts,
         "collect_date": _format_date(meta.get("collectDate") or meta.get("update_time")),
         "publish_ts": publish_ts,
