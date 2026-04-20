@@ -45,6 +45,10 @@ def _apply_cache_headers(path: str, response):
         response.headers.setdefault("Cache-Control", "public, max-age=3600")
         return response
 
+    if path.startswith("/static/css/") or path.startswith("/static/js/"):
+        response.headers["Cache-Control"] = "public, no-cache, must-revalidate"
+        return response
+
     if (
         path.startswith("/api/")
         or path.startswith("/static/")

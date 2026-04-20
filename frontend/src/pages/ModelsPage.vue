@@ -166,10 +166,9 @@ async function reloadVisiblePages() {
   const currentToken = ++requestToken;
   syncFiltersFromRoute();
 
-  const responses = [];
-  for (let page = 1; page <= pagesToLoad; page += 1) {
-    responses.push(await fetchPage(page));
-  }
+  const responses = await Promise.all(
+    Array.from({ length: pagesToLoad }, (_, index) => fetchPage(index + 1)),
+  );
 
   if (!responses.length || currentToken !== requestToken) {
     return;

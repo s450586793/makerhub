@@ -229,12 +229,14 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { RouterLink } from "vue-router";
 
 import CronField from "../components/CronField.vue";
-import { refreshConfig } from "../lib/appState";
+import { applyConfigPayload, refreshConfig } from "../lib/appState";
 import { apiRequest } from "../lib/api";
 import { encodeModelPath, parseServerDate } from "../lib/helpers";
 
 
 const HISTORY_PAGE_SIZE = 12;
+const ACTIVE_REFRESH_INTERVAL_MS = 5000;
+const IDLE_REFRESH_INTERVAL_MS = 60000;
 const status = ref("");
 const loading = ref(true);
 const saving = ref(false);
@@ -251,6 +253,7 @@ const historyFilterOptions = [
   { value: "issues", label: "异常与跳过" },
 ];
 let refreshTimer = null;
+let disposed = false;
 
 const recentHistory = computed(() => {
   const items = remoteRefreshState.value?.recent_items;
@@ -415,7 +418,10 @@ function clearRefreshTimer() {
 
 function scheduleRefresh() {
   clearRefreshTimer();
-  const interval = remoteRefreshState.value?.running ? 5000 : 15000;
+  if (disposed || typeof window === "undefined" || document.hidden) {
+    return;
+  }
+  const interval = remoteRefreshState.value?.running ? ACTIVE_REFRESH_INTERVAL_MS : IDLE_REFRESH_INTERVAL_MS;
   refreshTimer = window.setTimeout(() => {
     void load({ silent: true });
   }, interval);
@@ -446,14 +452,15 @@ async function load({ silent = false } = {}) {
 async function saveRemoteRefresh() {
   saving.value = true;
   try {
-    await apiRequest("/api/config/remote-refresh", {
+    const payload = await apiRequest("/api/config/remote-refresh", {
       method: "POST",
       body: {
         enabled: remoteRefreshForm.enabled,
         cron: remoteRefreshForm.cron,
       },
     });
-    await Promise.all([refreshConfig(), load({ silent: true })]);
+    applyConfigPayload(payload);
+    await load({ silent: true });
     status.value = "源端刷新设置已保存。";
   } catch (error) {
     status.value = error instanceof Error ? error.message : "保存失败。";
@@ -470,11 +477,23 @@ async function refreshStateManually() {
   }
 }
 
+function handleVisibilityChange() {
+  if (document.hidden) {
+    clearRefreshTimer();
+    return;
+  }
+  void load({ silent: true });
+}
+
 onMounted(async () => {
+  disposed = false;
+  document.addEventListener("visibilitychange", handleVisibilityChange);
   await load();
 });
 
 onBeforeUnmount(() => {
+  disposed = true;
   clearRefreshTimer();
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
 });
 </script>

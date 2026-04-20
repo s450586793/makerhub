@@ -6,6 +6,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
 
@@ -20,7 +21,12 @@ from app.services.batch_discovery import (
     resolve_batch_source_name,
 )
 from app.services.business_logs import append_business_log
-from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot
+from app.services.catalog import (
+    get_archive_snapshot,
+    invalidate_archive_snapshot,
+    invalidate_model_detail_cache,
+    upsert_archive_snapshot_model,
+)
 from app.services.legacy_archiver import archive_model as legacy_archive_model
 from app.services.task_state import TaskStateStore
 from app.services.three_mf import describe_three_mf_failure
@@ -58,6 +64,16 @@ def _task_key(url: str) -> str:
     if model_id:
         return f"model:{model_id}"
     return normalize_source_url(url)
+
+
+def _resolve_archive_result_model_dir(result: dict[str, Any]) -> str:
+    work_dir = str(result.get("work_dir") or "").strip()
+    if not work_dir:
+        return ""
+    try:
+        return Path(work_dir).resolve().relative_to(ARCHIVE_DIR.resolve()).as_posix()
+    except ValueError:
+        return ""
 
 
 def _queue_item_key(item: dict) -> str:
@@ -1523,7 +1539,14 @@ class ArchiveTaskManager:
             resolved_model_id,
             url=normalize_source_url(url),
         )
-        invalidate_archive_snapshot("archive_worker_single_task_completed")
+        archived_model_dir = _resolve_archive_result_model_dir(result)
+        if archived_model_dir:
+            invalidate_model_detail_cache(archived_model_dir)
+        if not archived_model_dir or not upsert_archive_snapshot_model(
+            archived_model_dir,
+            reason="archive_worker_single_task_completed",
+        ):
+            invalidate_archive_snapshot("archive_worker_single_task_completed")
 
         self.task_store.update_active_task(
             task_id,

@@ -1,21 +1,21 @@
 import { createRouter, createWebHistory } from "vue-router";
 
 import AppShell from "./layouts/AppShell.vue";
-import DashboardPage from "./pages/DashboardPage.vue";
-import DetailPreviewPage from "./pages/DetailPreviewPage.vue";
-import LoginPage from "./pages/LoginPage.vue";
-import LogsPage from "./pages/LogsPage.vue";
-import ModelDetailPage from "./pages/ModelDetailPage.vue";
-import ModelsPage from "./pages/ModelsPage.vue";
-import OrganizerPage from "./pages/OrganizerPage.vue";
-import RemoteRefreshPage from "./pages/RemoteRefreshPage.vue";
-import SettingsPage from "./pages/SettingsPage.vue";
-import SubscriptionsPage from "./pages/SubscriptionsPage.vue";
-import TasksPage from "./pages/TasksPage.vue";
 import { appState, bootstrapApp } from "./lib/appState";
 
 
 const BODY_CLASSES = ["login-page", "detail-page", "detail-page--makerworld"];
+const DashboardPage = () => import("./pages/DashboardPage.vue");
+const DetailPreviewPage = () => import("./pages/DetailPreviewPage.vue");
+const LoginPage = () => import("./pages/LoginPage.vue");
+const LogsPage = () => import("./pages/LogsPage.vue");
+const ModelDetailPage = () => import("./pages/ModelDetailPage.vue");
+const ModelsPage = () => import("./pages/ModelsPage.vue");
+const OrganizerPage = () => import("./pages/OrganizerPage.vue");
+const RemoteRefreshPage = () => import("./pages/RemoteRefreshPage.vue");
+const SettingsPage = () => import("./pages/SettingsPage.vue");
+const SubscriptionsPage = () => import("./pages/SubscriptionsPage.vue");
+const TasksPage = () => import("./pages/TasksPage.vue");
 
 const routes = [
   {

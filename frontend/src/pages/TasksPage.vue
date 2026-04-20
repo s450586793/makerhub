@@ -311,7 +311,10 @@ const confirmingArchiveMode = ref("");
 const pendingMissingActionKey = ref("");
 let refreshTimer = null;
 let loadingTasks = false;
+let disposed = false;
 const TASKS_PAGE_SIZE = 5;
+const ACTIVE_REFRESH_INTERVAL_MS = 5000;
+const IDLE_REFRESH_INTERVAL_MS = 30000;
 const activeVisibleLimit = ref(TASKS_PAGE_SIZE);
 const queuedVisibleLimit = ref(TASKS_PAGE_SIZE);
 const failureVisibleLimit = ref(TASKS_PAGE_SIZE);
@@ -391,10 +394,33 @@ function openArchiveConfirmDialog(preview) {
   };
 }
 
-function syncAutoRefresh() {
-  if (!refreshTimer) {
-    refreshTimer = window.setInterval(load, 5000);
+function clearRefreshTimer() {
+  if (refreshTimer) {
+    window.clearTimeout(refreshTimer);
+    refreshTimer = null;
   }
+}
+
+function hasTrackedWork() {
+  const current = payload.value;
+  const missingItems = current.missing_3mf?.items || [];
+  return Boolean(
+    Number(current.summary?.running_or_queued || 0)
+      || Number(current.organize_tasks?.running_count || 0)
+      || Number(current.organize_tasks?.queued_count || 0)
+      || missingItems.some((item) => ["queued", "running"].includes(String(item?.status || "").toLowerCase())),
+  );
+}
+
+function syncAutoRefresh() {
+  clearRefreshTimer();
+  if (disposed || typeof window === "undefined" || document.hidden) {
+    return;
+  }
+  const delay = hasTrackedWork() ? ACTIVE_REFRESH_INTERVAL_MS : IDLE_REFRESH_INTERVAL_MS;
+  refreshTimer = window.setTimeout(() => {
+    void load();
+  }, delay);
 }
 
 async function load() {
@@ -404,10 +430,18 @@ async function load() {
   loadingTasks = true;
   try {
     payload.value = await apiRequest("/api/tasks");
-    syncAutoRefresh();
   } finally {
     loadingTasks = false;
+    syncAutoRefresh();
   }
+}
+
+function handleVisibilityChange() {
+  if (document.hidden) {
+    clearRefreshTimer();
+    return;
+  }
+  void load();
 }
 
 async function submitArchive() {
@@ -546,11 +580,15 @@ async function cancelMissing(item) {
   }
 }
 
-onMounted(load);
+onMounted(() => {
+  disposed = false;
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+  void load();
+});
 
 onBeforeUnmount(() => {
-  if (refreshTimer) {
-    window.clearInterval(refreshTimer);
-  }
+  disposed = true;
+  clearRefreshTimer();
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
 });
 </script>

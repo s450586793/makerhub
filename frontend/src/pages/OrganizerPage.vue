@@ -131,12 +131,14 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 
-import { appState, refreshConfig } from "../lib/appState";
+import { appState, applyConfigPayload, refreshConfig } from "../lib/appState";
 import { apiRequest } from "../lib/api";
 
 
 const config = computed(() => appState.config);
 const TASKS_PAGE_SIZE = 5;
+const ACTIVE_REFRESH_INTERVAL_MS = 5000;
+const IDLE_REFRESH_INTERVAL_MS = 30000;
 const status = ref("");
 const organizeStatus = ref("");
 const loadingTasks = ref(false);
@@ -155,6 +157,7 @@ const organizerForm = reactive({
   move_files: true,
 });
 let refreshTimer = null;
+let disposed = false;
 
 const visibleOrganizeTasks = computed(() => organizerTasks.value.items.slice(0, organizeVisibleLimit.value));
 
@@ -164,11 +167,29 @@ function applyConfig(payload) {
   organizerForm.move_files = payload?.organizer?.move_files !== false;
 }
 
-function syncTaskTimer() {
+function clearTaskTimer() {
   if (refreshTimer) {
+    window.clearTimeout(refreshTimer);
+    refreshTimer = null;
+  }
+}
+
+function hasActiveOrganizeTasks() {
+  return Boolean(
+    Number(organizerTasks.value.running_count || 0)
+      || Number(organizerTasks.value.queued_count || 0),
+  );
+}
+
+function syncTaskTimer() {
+  clearTaskTimer();
+  if (disposed || typeof window === "undefined" || document.hidden) {
     return;
   }
-  refreshTimer = window.setInterval(loadTasks, 5000);
+  const delay = hasActiveOrganizeTasks() ? ACTIVE_REFRESH_INTERVAL_MS : IDLE_REFRESH_INTERVAL_MS;
+  refreshTimer = window.setTimeout(() => {
+    void loadTasks();
+  }, delay);
 }
 
 async function loadTasks() {
@@ -179,9 +200,9 @@ async function loadTasks() {
   try {
     const payload = await apiRequest("/api/tasks");
     organizerTasks.value = payload?.organize_tasks || organizerTasks.value;
-    syncTaskTimer();
   } finally {
     loadingTasks.value = false;
+    syncTaskTimer();
   }
 }
 
@@ -193,11 +214,11 @@ async function load() {
 
 async function saveOrganizer() {
   try {
-    await apiRequest("/api/config/organizer", {
+    const payload = await apiRequest("/api/config/organizer", {
       method: "POST",
       body: { ...organizerForm },
     });
-    await refreshConfig();
+    applyConfigPayload(payload);
     status.value = "整理配置已保存。";
   } catch (error) {
     status.value = error instanceof Error ? error.message : "保存失败。";
@@ -220,11 +241,23 @@ async function clearOrganizeTasks() {
   }
 }
 
-onMounted(load);
+function handleVisibilityChange() {
+  if (document.hidden) {
+    clearTaskTimer();
+    return;
+  }
+  void loadTasks();
+}
+
+onMounted(() => {
+  disposed = false;
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+  void load();
+});
 
 onBeforeUnmount(() => {
-  if (refreshTimer) {
-    window.clearInterval(refreshTimer);
-  }
+  disposed = true;
+  clearTaskTimer();
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
 });
 </script>

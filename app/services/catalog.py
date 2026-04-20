@@ -52,13 +52,14 @@ def _read_archive_snapshot_marker() -> str:
         return ""
 
 
-def _write_archive_snapshot_marker(reason: str = "") -> None:
+def _write_archive_snapshot_marker(reason: str = "") -> str:
     token = f"{time.time_ns()}:{str(reason or '').strip()}"
     try:
         _ARCHIVE_SNAPSHOT_MARKER_PATH.parent.mkdir(parents=True, exist_ok=True)
         _ARCHIVE_SNAPSHOT_MARKER_PATH.write_text(token, encoding="utf-8")
     except OSError:
-        return
+        return ""
+    return token
 
 
 def invalidate_archive_snapshot(reason: str = "") -> None:
@@ -91,33 +92,13 @@ def _clone_model_items(items: list[dict]) -> list[dict]:
     return [item.copy() for item in items]
 
 
-def _build_archive_snapshot() -> dict[str, Any]:
-    models: list[dict] = []
-    tags: set[str] = set()
-    source_counts = {
-        "all": 0,
-        "cn": 0,
-        "global": 0,
-        "local": 0,
-    }
+def _compose_archive_snapshot(models: list[dict]) -> dict[str, Any]:
+    ordered_models = sorted(models, key=lambda item: str(item.get("model_dir") or ""))
     archived_keys: set[str] = set()
     archived_model_ids: set[str] = set()
     archived_urls: set[str] = set()
 
-    for meta_path in sorted(ARCHIVE_DIR.rglob("meta.json")):
-        if not meta_path.is_file():
-            continue
-        model = _normalize_model(meta_path, include_detail=False)
-        if not model:
-            continue
-
-        models.append(model)
-        source_counts["all"] += 1
-        source = str(model.get("source") or "").strip().lower()
-        if source in source_counts:
-            source_counts[source] += 1
-        tags.update(str(tag_value) for tag_value in model.get("tags") or [] if str(tag_value).strip())
-
+    for model in ordered_models:
         model_id = str(model.get("id") or "").strip()
         if model_id:
             archived_model_ids.add(model_id)
@@ -128,17 +109,30 @@ def _build_archive_snapshot() -> dict[str, Any]:
             archived_urls.add(origin_url)
             archived_keys.add(origin_url)
 
-    collect_sorted = _sort_models(models, "collectDate")
     return {
-        "models": tuple(models),
-        "collect_sorted": tuple(collect_sorted),
-        "tags": tuple(sorted(tags)),
-        "source_counts": source_counts,
+        "models": tuple(ordered_models),
+        "collect_sorted": tuple(_sort_models(ordered_models, "collectDate")),
+        "tags": tuple(_tags_from_items(ordered_models)),
+        "source_counts": _source_counts_from_items(ordered_models),
         "archived_keys": frozenset(archived_keys),
         "archived_model_ids": frozenset(archived_model_ids),
         "archived_urls": frozenset(archived_urls),
-        "total": len(models),
+        "total": len(ordered_models),
     }
+
+
+def _build_archive_snapshot() -> dict[str, Any]:
+    models: list[dict] = []
+
+    for meta_path in sorted(ARCHIVE_DIR.rglob("meta.json")):
+        if not meta_path.is_file():
+            continue
+        model = _normalize_model(meta_path, include_detail=False)
+        if not model:
+            continue
+
+        models.append(model)
+    return _compose_archive_snapshot(models)
 
 
 def get_archive_snapshot(force: bool = False) -> dict[str, Any]:
@@ -154,6 +148,52 @@ def get_archive_snapshot(force: bool = False) -> dict[str, Any]:
             _ARCHIVE_SNAPSHOT_CACHE["built_at"] = time.time()
             _ARCHIVE_SNAPSHOT_CACHE["marker_token"] = marker_token
         return snapshot
+
+
+def upsert_archive_snapshot_model(model_dir: str, reason: str = "") -> bool:
+    clean_model_dir = str(model_dir or "").strip().strip("/")
+    if not clean_model_dir:
+        return False
+
+    archive_root = ARCHIVE_DIR.resolve()
+    target = (archive_root / clean_model_dir).resolve()
+    try:
+        relative_dir = target.relative_to(archive_root)
+    except ValueError:
+        return False
+
+    meta_path = target / "meta.json"
+    if not meta_path.is_file():
+        return False
+
+    model = _normalize_model(meta_path, include_detail=False)
+    if not model:
+        return False
+
+    marker_token = _read_archive_snapshot_marker()
+    normalized_model_dir = relative_dir.as_posix()
+    with _ARCHIVE_SNAPSHOT_LOCK:
+        snapshot = _ARCHIVE_SNAPSHOT_CACHE.get("snapshot")
+        cached_marker_token = str(_ARCHIVE_SNAPSHOT_CACHE.get("marker_token") or "")
+        if snapshot is None or _ARCHIVE_SNAPSHOT_CACHE.get("dirty", False) or marker_token != cached_marker_token:
+            return False
+
+        models = list(snapshot.get("models") or ())
+        for index, item in enumerate(models):
+            if str(item.get("model_dir") or "").strip().strip("/") == normalized_model_dir:
+                models[index] = model
+                break
+        else:
+            models.append(model)
+
+        _ARCHIVE_SNAPSHOT_CACHE["snapshot"] = _compose_archive_snapshot(models)
+        _ARCHIVE_SNAPSHOT_CACHE["dirty"] = False
+        _ARCHIVE_SNAPSHOT_CACHE["dirty_reason"] = ""
+        _ARCHIVE_SNAPSHOT_CACHE["built_at"] = time.time()
+        _ARCHIVE_SNAPSHOT_CACHE["marker_token"] = (
+            _write_archive_snapshot_marker(reason) or cached_marker_token
+        )
+    return True
 
 
 def _safe_int(value: Any) -> int:

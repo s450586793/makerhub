@@ -310,7 +310,7 @@ import { useRoute, useRouter } from "vue-router";
 
 import SecretTextarea from "../components/SecretTextarea.vue";
 import ThemeSegment from "../components/ThemeSegment.vue";
-import { appState, refreshConfig, saveThemePreference } from "../lib/appState";
+import { appState, applyConfigPayload, refreshConfig, saveThemePreference } from "../lib/appState";
 import { apiRequest } from "../lib/api";
 
 
@@ -592,7 +592,7 @@ async function saveConnections() {
         { platform: "global", cookie: connectionForm.cookie_global },
       ],
     });
-    await apiRequest("/api/config/proxy", {
+    const payload = await apiRequest("/api/config/proxy", {
       method: "POST",
       body: {
         enabled: connectionForm.proxy_enabled,
@@ -600,7 +600,7 @@ async function saveConnections() {
         https_proxy: connectionForm.https_proxy,
       },
     });
-    await refreshConfig();
+    applyConfigPayload(payload);
     statuses.connections = "连接设置已保存。";
   } catch (error) {
     statuses.connections = error instanceof Error ? error.message : "保存失败。";
@@ -655,11 +655,11 @@ async function testProxy() {
 
 async function saveNotifications() {
   try {
-    await apiRequest("/api/config/notifications", {
+    const payload = await apiRequest("/api/config/notifications", {
       method: "POST",
       body: { ...notificationsForm },
     });
-    await refreshConfig();
+    applyConfigPayload(payload);
     statuses.notifications = "通知设置已保存。";
   } catch (error) {
     statuses.notifications = error instanceof Error ? error.message : "保存失败。";
@@ -668,11 +668,11 @@ async function saveNotifications() {
 
 async function saveUser() {
   try {
-    await apiRequest("/api/config/user", {
+    const payload = await apiRequest("/api/config/user", {
       method: "POST",
       body: { ...userForm },
     });
-    await refreshConfig();
+    applyConfigPayload(payload);
     statuses.user = "用户信息已保存。";
   } catch (error) {
     statuses.user = error instanceof Error ? error.message : "保存失败。";

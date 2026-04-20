@@ -4,9 +4,11 @@ import re
 import shutil
 import sys
 import subprocess
+import threading
 import time
 from datetime import datetime
-from html import escape
+from fnmatch import fnmatchcase
+from html import escape, unescape
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
@@ -32,6 +34,22 @@ def log(*args):
 def log_section(title: str):
     log("")
     log("=" * 10, title, "=" * 10)
+
+
+def _log_perf(label: str, started_at: float, logger=None, **extra) -> float:
+    elapsed_ms = round((time.perf_counter() - started_at) * 1000, 1)
+    extra_parts = []
+    for key, value in extra.items():
+        if value in ("", None, [], {}, ()):
+            continue
+        extra_parts.append(f"{key}={value}")
+    suffix = f" ({', '.join(extra_parts)})" if extra_parts else ""
+    message = f"[perf] {label}: {elapsed_ms} ms{suffix}"
+    if logger is None:
+        log(message)
+    else:
+        log(logger, message)
+    return elapsed_ms
 
 
 def emit_progress(progress_callback, percent: int, message: str, extra: Optional[dict] = None):
@@ -71,6 +89,40 @@ IMAGE_TRANSFER_TIMEOUT_SECONDS = 45
 BINARY_TRANSFER_TIMEOUT_SECONDS = 300
 CONNECT_TIMEOUT_SECONDS = 15
 READ_TIMEOUT_SECONDS = 30
+_OFFLINE_TEMPLATE_CACHE_LOCK = threading.RLock()
+_OFFLINE_TEMPLATE_CACHE: dict[str, Any] = {
+    "signature": (),
+    "bundle": None,
+}
+_OFFLINE_TEMPLATE_VARS_TOKEN = "<!--OFFLINE_INLINE_VARIABLES-->"
+_OFFLINE_TEMPLATE_MODEL_TOKEN = "<!--OFFLINE_INLINE_MODEL-->"
+_OFFLINE_TEMPLATE_SCRIPT_TOKEN = "<!--OFFLINE_INLINE_SCRIPT-->"
+_OFFLINE_MODEL_CSS_IMPORT_RE = re.compile(
+    r"@import\s+url\(['\"]?/static/css/(?:variables|components)\.css[^)]*\)\s*;?",
+    flags=re.I,
+)
+_OFFLINE_ICON_LINK_RE = re.compile(
+    r'<link[^>]*rel=["\']icon["\'][^>]*>\s*',
+    flags=re.I,
+)
+_OFFLINE_FONT_AWESOME_RE = re.compile(
+    r'<link[^>]*href=["\']https?://[^"\']*font-awesome[^"\']*["\'][^>]*>\s*',
+    flags=re.I,
+)
+_OFFLINE_VARIABLES_LINK_RE = re.compile(
+    r'<link[^>]*href=["\']/static/css/variables\.css[^"\']*["\'][^>]*>',
+    flags=re.I,
+)
+_OFFLINE_MODEL_LINK_RE = re.compile(
+    r'<link[^>]*href=["\']/static/css/model\.css[^"\']*["\'][^>]*>',
+    flags=re.I,
+)
+_OFFLINE_MODEL_SCRIPT_RE = re.compile(
+    r'<script[^>]*src=["\']/static/js/model\.js[^"\']*["\'][^>]*>\s*</script>',
+    flags=re.I,
+)
+_OFFLINE_HEAD_CLOSE_RE = re.compile(r"</head>", flags=re.I)
+_OFFLINE_BODY_CLOSE_RE = re.compile(r"</body>", flags=re.I)
 
 
 def _stage_percent(start: int, end: int, current: int, total: int) -> int:
@@ -158,6 +210,8 @@ def choose_unique_instance_filename(
     all_instances: List[dict],
     instances_dir: Path,
     name_hint: str = "",
+    reserved_names: Optional[set[str]] = None,
+    existing_files: Optional[set[str]] = None,
 ) -> str:
     """
     为实例选择“不会与其它实例冲突”的 3MF 文件名。
@@ -178,19 +232,31 @@ def choose_unique_instance_filename(
     if not preferred:
         preferred = f"{inst.get('id') or 'model'}.3mf"
 
-    # 收集“其它实例”已声明的 fileName，避免多个实例指向同一文件
-    used_by_others = set()
-    for other in all_instances or []:
-        if other is inst or not isinstance(other, dict):
-            continue
-        raw = str(other.get("fileName") or "").strip()
-        if not raw:
-            continue
-        nm = sanitize_filename(Path(raw).name)
-        if nm and not nm.lower().endswith(".3mf"):
-            nm += ".3mf"
-        if nm:
-            used_by_others.add(nm)
+    used_by_others = reserved_names
+    if used_by_others is None:
+        used_by_others = set()
+        for other in all_instances or []:
+            if other is inst or not isinstance(other, dict):
+                continue
+            raw = str(other.get("fileName") or "").strip()
+            if not raw:
+                continue
+            nm = sanitize_filename(Path(raw).name)
+            if nm and not nm.lower().endswith(".3mf"):
+                nm += ".3mf"
+            if nm:
+                used_by_others.add(nm)
+
+    existing_names = existing_files
+    if existing_names is None:
+        try:
+            existing_names = {
+                path.name
+                for path in instances_dir.iterdir()
+                if path.is_file()
+            }
+        except OSError:
+            existing_names = set()
 
     def _can_use(name: str) -> bool:
         if not name:
@@ -201,7 +267,7 @@ def choose_unique_instance_filename(
         if explicit_name and name == explicit_name:
             return True
         # 否则磁盘存在同名文件时视为冲突，避免覆盖/误复用
-        if (instances_dir / name).exists():
+        if name in existing_names:
             return False
         return True
 
@@ -317,7 +383,95 @@ def _json_loads_maybe(raw: str) -> Optional[object]:
         return None
 
 
+def _skip_js_whitespace(text: str, start: int) -> int:
+    idx = max(start, 0)
+    while idx < len(text) and text[idx] in " \t\r\n":
+        idx += 1
+    return idx
+
+
+def _extract_script_tag_payload(html_text: str, script_id: str) -> str:
+    if not html_text or not script_id:
+        return ""
+    markers = (f'id="{script_id}"', f"id='{script_id}'")
+    for marker in markers:
+        search_from = 0
+        while True:
+            marker_idx = html_text.find(marker, search_from)
+            if marker_idx < 0:
+                break
+            script_start = html_text.rfind("<script", 0, marker_idx)
+            if script_start >= 0:
+                tag_end = html_text.find(">", marker_idx + len(marker))
+                if tag_end >= 0:
+                    close_tag = html_text.find("</script>", tag_end + 1)
+                    if close_tag >= 0:
+                        return html_text[tag_end + 1:close_tag].strip().rstrip(";")
+            search_from = marker_idx + len(marker)
+    return ""
+
+
+def _extract_balanced_json_object(text: str, start: int) -> str:
+    if start < 0 or start >= len(text) or text[start] != "{":
+        return ""
+    depth = 0
+    quote = ""
+    escaped = False
+    for idx in range(start, len(text)):
+        char = text[idx]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            continue
+        if char == "{":
+            depth += 1
+            continue
+        if char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:idx + 1].strip().rstrip(";")
+    return ""
+
+
+def _extract_json_object_assignment(html_text: str, token: str) -> Optional[object]:
+    if not html_text or not token:
+        return None
+    search_from = 0
+    while True:
+        token_idx = html_text.find(token, search_from)
+        if token_idx < 0:
+            return None
+        eq_idx = html_text.find("=", token_idx + len(token))
+        if eq_idx < 0:
+            return None
+        value_idx = _skip_js_whitespace(html_text, eq_idx + 1)
+        if value_idx < len(html_text) and html_text[value_idx] == "{":
+            raw = _extract_balanced_json_object(html_text, value_idx)
+            data = _json_loads_maybe(raw)
+            if data is not None:
+                return data
+        search_from = token_idx + len(token)
+
+
 def extract_next_data(html_text: str) -> dict:
+    for script_id in ("__NEXT_DATA__", "__NUXT__"):
+        payload = _extract_script_tag_payload(html_text, script_id)
+        data = _json_loads_maybe(payload)
+        if isinstance(data, dict):
+            return data
+
+    for token in ("window.__NEXT_DATA__", "__NEXT_DATA__", "window.__NUXT__", "__NUXT__"):
+        data = _extract_json_object_assignment(html_text, token)
+        if isinstance(data, dict):
+            return data
+
     patterns = [
         r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>',
         r'__NEXT_DATA__\s*=\s*({.*?})\s*;',
@@ -769,6 +923,106 @@ def _extract_comment_count_from_payload(node: object, depth: int = 0, found: Opt
     return found
 
 
+_COMMENT_SECTION_KEYWORDS = (
+    "comment",
+    "comments",
+    "review",
+    "reviews",
+    "reply",
+    "replies",
+    "thread",
+    "threads",
+    "feedback",
+)
+_COMMENT_SEARCH_ROOT_KEYS = {
+    "props",
+    "pageprops",
+    "data",
+    "pagedata",
+    "payload",
+    "result",
+    "detail",
+    "model",
+    "design",
+    "designextension",
+    "query",
+    "queries",
+    "apollo",
+    "state",
+}
+_COMMENT_LIST_CONTAINER_KEYS = {
+    "items",
+    "list",
+    "rows",
+    "records",
+    "results",
+    "edges",
+    "nodes",
+    "data",
+}
+
+
+def _normalize_payload_key(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+def _payload_key_has_comment_hint(value: str) -> bool:
+    return any(token in value for token in _COMMENT_SECTION_KEYWORDS)
+
+
+def _collect_comment_candidate_sections(
+    node: object,
+    out: List[object],
+    seen: set[int],
+    depth: int = 0,
+    parent_key: str = "",
+):
+    if depth > 10 or node is None:
+        return
+    if isinstance(node, list):
+        if depth <= 2 or _payload_key_has_comment_hint(parent_key) or parent_key in _COMMENT_LIST_CONTAINER_KEYS:
+            for item in node:
+                _collect_comment_candidate_sections(item, out, seen, depth + 1, parent_key)
+        return
+    if not isinstance(node, dict):
+        return
+
+    for key, value in node.items():
+        normalized_key = _normalize_payload_key(key)
+        if _payload_key_has_comment_hint(normalized_key):
+            if isinstance(value, (dict, list)):
+                marker = id(value)
+                if marker not in seen:
+                    seen.add(marker)
+                    out.append(value)
+                _collect_comment_candidate_sections(value, out, seen, depth + 1, normalized_key)
+            continue
+
+        should_descend = (
+            depth <= 1
+            or normalized_key in _COMMENT_SEARCH_ROOT_KEYS
+            or (
+                _payload_key_has_comment_hint(parent_key)
+                and normalized_key in _COMMENT_LIST_CONTAINER_KEYS
+            )
+        )
+        if should_descend:
+            _collect_comment_candidate_sections(value, out, seen, depth + 1, normalized_key)
+
+
+def _extract_comment_candidate_sections(node: object) -> List[object]:
+    sections: List[object] = []
+    _collect_comment_candidate_sections(node, sections, set())
+    return sections
+
+
+def _extract_comment_count_from_sections(sections: List[object]) -> List[int]:
+    found: List[int] = []
+    for section in sections:
+        _extract_comment_count_from_payload(section, found=found)
+    return found
+
+
 def collect_comments(
     next_data: dict,
     design: dict,
@@ -779,13 +1033,48 @@ def collect_comments(
     progress_end: int = 55,
 ) -> dict:
     emit_progress(progress_callback, progress_start, "正在整理评论数据")
+    total_started_at = time.perf_counter()
     comments: List[dict] = []
     seen: set[str] = set()
-    _collect_comments_from_payload(next_data, comments, seen)
-    _collect_comments_from_payload(design, comments, seen)
+
+    section_lookup_started_at = time.perf_counter()
+    candidate_sections = _extract_comment_candidate_sections(next_data)
+    candidate_sections.extend(_extract_comment_candidate_sections(design))
+    unique_sections: List[object] = []
+    seen_sections: set[int] = set()
+    for section in candidate_sections:
+        marker = id(section)
+        if marker in seen_sections:
+            continue
+        seen_sections.add(marker)
+        unique_sections.append(section)
+    _log_perf(
+        "comments.find_sections",
+        section_lookup_started_at,
+        sections=len(unique_sections),
+    )
+
+    extract_started_at = time.perf_counter()
+    search_mode = "candidate_sections" if unique_sections else "full_scan"
+    if unique_sections:
+        for section in unique_sections:
+            _collect_comments_from_payload(section, comments, seen)
+    if not comments:
+        search_mode = "full_scan"
+        _collect_comments_from_payload(next_data, comments, seen)
+        _collect_comments_from_payload(design, comments, seen)
+    _log_perf(
+        "comments.extract",
+        extract_started_at,
+        mode=search_mode,
+        comments=len(comments),
+        sections=len(unique_sections),
+    )
 
     comment_count = 0
-    hints = _extract_comment_count_from_payload(next_data)
+    hints = _extract_comment_count_from_sections(unique_sections) if unique_sections else []
+    if not hints:
+        hints = _extract_comment_count_from_payload(next_data)
     if hints:
         comment_count = max(hints)
     if comment_count <= 0:
@@ -863,6 +1152,13 @@ def collect_comments(
                 log("评论图片下载失败，保留原始链接：", url, exc)
 
     emit_progress(progress_callback, progress_end, "评论整理完成")
+    _log_perf(
+        "comments.total",
+        total_started_at,
+        mode=search_mode,
+        comments=len(comments),
+        assets=asset_total,
+    )
 
     return {
         "count": max(comment_count, len(comments)),
@@ -890,6 +1186,23 @@ def parse_summary(
     )
     if isinstance(raw_html, dict):
         raw_html = raw_html.get("html") or raw_html.get("raw") or raw_html.get("text") or ""
+    raw_html = str(raw_html or "")
+    stripped_html = raw_html.strip()
+    if not stripped_html:
+        return {
+            "raw": raw_html,
+            "html": "",
+            "text": "",
+            "summaryImages": [],
+        }
+    if "<" not in stripped_html and "&" not in stripped_html:
+        return {
+            "raw": raw_html,
+            "html": stripped_html,
+            "text": " ".join(stripped_html.split()),
+            "summaryImages": [],
+        }
+
     soup = BeautifulSoup(raw_html, "html.parser")
     summary_images = []
     image_nodes = []
@@ -934,7 +1247,7 @@ def parse_summary(
         emit_progress(progress_callback, progress_end, "摘要图片整理完成")
 
     html_local = str(soup)
-    text_plain = " ".join(soup.get_text().split())
+    text_plain = " ".join(unescape(soup.get_text()).split())
 
     return {
         "raw": raw_html,
@@ -1671,19 +1984,46 @@ def fetch_instance_3mf(
 
 
 def _match_existing_media_item(items: object, *, url: str = "", index: object = None, url_fields: tuple[str, ...] = ("url",)) -> dict:
+    lookup = _build_existing_media_lookup(items, url_fields=url_fields)
+    return _match_existing_media_item_from_lookup(lookup, url=url, index=index)
+
+
+def _build_existing_media_lookup(items: object, *, url_fields: tuple[str, ...] = ("url",)) -> dict[str, dict[str, dict]]:
+    by_url: dict[str, dict] = {}
+    by_index: dict[str, dict] = {}
     if not isinstance(items, list):
-        return {}
-    normalized_url = _normalize_url_value(url)
-    normalized_index = str(index if index is not None else "").strip()
+        return {"by_url": by_url, "by_index": by_index}
     for item in items:
         if not isinstance(item, dict):
             continue
         for field in url_fields:
             candidate = _normalize_url_value(item.get(field))
-            if normalized_url and candidate and candidate == normalized_url:
-                return item
-        if normalized_index and str(item.get("index") if item.get("index") is not None else "").strip() == normalized_index:
-            return item
+            if candidate and candidate not in by_url:
+                by_url[candidate] = item
+        item_index = str(item.get("index") if item.get("index") is not None else "").strip()
+        if item_index and item_index not in by_index:
+            by_index[item_index] = item
+    return {"by_url": by_url, "by_index": by_index}
+
+
+def _match_existing_media_item_from_lookup(
+    lookup: Optional[dict[str, dict[str, dict]]],
+    *,
+    url: str = "",
+    index: object = None,
+) -> dict:
+    if not isinstance(lookup, dict):
+        return {}
+    normalized_url = _normalize_url_value(url)
+    normalized_index = str(index if index is not None else "").strip()
+    if normalized_url:
+        matched = (lookup.get("by_url") or {}).get(normalized_url)
+        if matched:
+            return matched
+    if normalized_index:
+        matched = (lookup.get("by_index") or {}).get(normalized_index)
+        if matched:
+            return matched
     return {}
 
 
@@ -1706,6 +2046,14 @@ def collect_instance_media(
     aux_pics = model_info.get("auxiliaryPictures") or model_info.get("pictures") or inst.get("pictures") or inst.get("auxiliaryPictures") or []
     existing_plates = existing_instance.get("plates") if isinstance(existing_instance, dict) else []
     existing_pics = existing_instance.get("pictures") if isinstance(existing_instance, dict) else []
+    existing_plate_lookup = _build_existing_media_lookup(
+        existing_plates,
+        url_fields=("thumbnailUrl", "url"),
+    )
+    existing_pic_lookup = _build_existing_media_lookup(
+        existing_pics,
+        url_fields=("url", "originalUrl"),
+    )
     plate_out = []
     pics_out = []
     # plates thumbs
@@ -1714,11 +2062,10 @@ def collect_instance_media(
         if not thumb:
             continue
         plate_index = int(p.get("index", 0))
-        existing_plate = _match_existing_media_item(
-            existing_plates,
+        existing_plate = _match_existing_media_item_from_lookup(
+            existing_plate_lookup,
             url=thumb,
             index=plate_index,
-            url_fields=("thumbnailUrl", "url"),
         )
         record = {
             "index": p.get("index", 0),
@@ -1760,11 +2107,10 @@ def collect_instance_media(
             is_real = pic.get("isRealLifePhoto", 0)
         if not url:
             continue
-        existing_pic = _match_existing_media_item(
-            existing_pics,
+        existing_pic = _match_existing_media_item_from_lookup(
+            existing_pic_lookup,
             url=url,
             index=pic_idx,
-            url_fields=("url", "originalUrl"),
         )
         record = {
             "index": pic_idx,
@@ -1796,11 +2142,10 @@ def collect_instance_media(
     if not pics_out:
         cover = inst.get("cover") or inst.get("coverUrl")
         if cover:
-            existing_pic = _match_existing_media_item(
-                existing_pics,
+            existing_pic = _match_existing_media_item_from_lookup(
+                existing_pic_lookup,
                 url=cover,
                 index=pic_idx,
-                url_fields=("url", "originalUrl"),
             )
             record = {
                 "index": pic_idx,
@@ -1944,6 +2289,13 @@ def ensure_dir(path: Path):
     path.mkdir(parents=True, exist_ok=True)
 
 
+def _list_directory_entries(root: Path) -> list[Path]:
+    try:
+        return sorted(root.iterdir(), key=lambda item: item.name)
+    except OSError:
+        return []
+
+
 def possible_prefixes(base_name: str):
     prefixes = {base_name}
     if base_name.endswith("_"):
@@ -1959,21 +2311,39 @@ def iter_patterns(root: Path, base_name: str, middles):
             yield from root.glob(prefix + mid)
 
 
-def glob_with_prefix_or_plain(root: Path, base_name: str, middles):
+def _iter_matching_entries(entries: list[Path], pattern: str):
+    for entry in entries:
+        if fnmatchcase(entry.name, pattern):
+            yield entry
+
+
+def glob_with_prefix_or_plain(root: Path, base_name: str, middles, entries: Optional[list[Path]] = None):
     seen = set()
+    matcher = _iter_matching_entries if entries is not None else None
+
     # 先匹配无前缀
     for mid in middles:
-        for p in root.glob(mid):
+        candidates = matcher(entries, mid) if matcher else root.glob(mid)
+        for p in candidates:
             if p in seen:
                 continue
             seen.add(p)
             yield p
     # 再匹配带前缀
-    for p in iter_patterns(root, base_name, middles):
-        if p in seen:
-            continue
-        seen.add(p)
-        yield p
+    if matcher:
+        for prefix in possible_prefixes(base_name):
+            for mid in middles:
+                for p in matcher(entries, prefix + mid):
+                    if p in seen:
+                        continue
+                    seen.add(p)
+                    yield p
+    else:
+        for p in iter_patterns(root, base_name, middles):
+            if p in seen:
+                continue
+            seen.add(p)
+            yield p
 
 
 def strip_prefix(name: str, base_name: str) -> str:
@@ -2693,15 +3063,13 @@ def build_fallback_index_html(meta: dict, assets: dict = None) -> str:
 """
 
 
-def build_index_html(meta: dict, assets: dict = None) -> str:
-    """基于 CSR 架构的离线 HTML 生成器，读取 model.html 骨架并注入数据和源码。"""
+def _load_offline_template_bundle() -> tuple[Optional[dict[str, str]], list[Path]]:
     app_dir = Path(__file__).parent
     template_path = app_dir / "templates" / "model.html"
     variables_css_path = app_dir / "static" / "css" / "variables.css"
     components_css_path = app_dir / "static" / "css" / "components.css"
     model_css_path = app_dir / "static" / "css" / "model.css"
     model_js_path = app_dir / "static" / "js" / "model.js"
-
     required_paths = [
         template_path,
         variables_css_path,
@@ -2711,98 +3079,113 @@ def build_index_html(meta: dict, assets: dict = None) -> str:
     ]
     missing_paths = [path for path in required_paths if not path.exists()]
     if missing_paths:
-        log("离线模板缺失，使用回退 HTML：", ", ".join(str(path) for path in missing_paths))
+        return None, missing_paths
+
+    try:
+        signature_parts = []
+        for path in required_paths:
+            stat = path.stat()
+            signature_parts.append((path.as_posix(), stat.st_mtime_ns, stat.st_size))
+        signature = tuple(signature_parts)
+    except OSError:
+        return None, []
+
+    with _OFFLINE_TEMPLATE_CACHE_LOCK:
+        cached_bundle = _OFFLINE_TEMPLATE_CACHE.get("bundle")
+        if _OFFLINE_TEMPLATE_CACHE.get("signature") == signature and isinstance(cached_bundle, dict):
+            return cached_bundle, []
+
+    try:
+        html = template_path.read_text(encoding="utf-8")
+        variables_css = variables_css_path.read_text(encoding="utf-8")
+        components_css = components_css_path.read_text(encoding="utf-8")
+        model_css = _OFFLINE_MODEL_CSS_IMPORT_RE.sub("", model_css_path.read_text(encoding="utf-8"))
+        model_js = model_js_path.read_text(encoding="utf-8")
+    except OSError:
+        return None, []
+
+    html = _OFFLINE_ICON_LINK_RE.sub("", html)
+    html = _OFFLINE_FONT_AWESOME_RE.sub("", html)
+
+    html, var_count = _OFFLINE_VARIABLES_LINK_RE.subn(_OFFLINE_TEMPLATE_VARS_TOKEN, html, count=1)
+    if var_count == 0:
+        html, head_count = _OFFLINE_HEAD_CLOSE_RE.subn(
+            f"{_OFFLINE_TEMPLATE_VARS_TOKEN}\n</head>",
+            html,
+            count=1,
+        )
+        if head_count == 0:
+            html = f"{_OFFLINE_TEMPLATE_VARS_TOKEN}\n{html}"
+
+    html, model_count = _OFFLINE_MODEL_LINK_RE.subn(_OFFLINE_TEMPLATE_MODEL_TOKEN, html, count=1)
+    if model_count == 0:
+        html, head_count = _OFFLINE_HEAD_CLOSE_RE.subn(
+            f"{_OFFLINE_TEMPLATE_MODEL_TOKEN}\n</head>",
+            html,
+            count=1,
+        )
+        if head_count == 0:
+            html = f"{_OFFLINE_TEMPLATE_MODEL_TOKEN}\n{html}"
+
+    html, script_count = _OFFLINE_MODEL_SCRIPT_RE.subn(_OFFLINE_TEMPLATE_SCRIPT_TOKEN, html, count=1)
+    if script_count == 0:
+        html, body_count = _OFFLINE_BODY_CLOSE_RE.subn(
+            f"{_OFFLINE_TEMPLATE_SCRIPT_TOKEN}\n</body>",
+            html,
+            count=1,
+        )
+        if body_count == 0:
+            html += f"\n{_OFFLINE_TEMPLATE_SCRIPT_TOKEN}"
+
+    bundle = {
+        "html_template": html,
+        "variables_inline": f"<style>\n{variables_css}\n</style>",
+        "model_inline": f"<style>\n{components_css}\n{model_css}\n</style>",
+        "model_js": model_js,
+    }
+    with _OFFLINE_TEMPLATE_CACHE_LOCK:
+        _OFFLINE_TEMPLATE_CACHE["signature"] = signature
+        _OFFLINE_TEMPLATE_CACHE["bundle"] = bundle
+    return bundle, []
+
+
+def build_index_html(meta: dict, assets: dict = None) -> str:
+    """基于 CSR 架构的离线 HTML 生成器，读取 model.html 骨架并注入数据和源码。"""
+    template_bundle, missing_paths = _load_offline_template_bundle()
+    if template_bundle is None:
+        if missing_paths:
+            log("离线模板缺失，使用回退 HTML：", ", ".join(str(path) for path in missing_paths))
+        else:
+            log("离线模板读取失败，使用回退 HTML。")
         return build_fallback_index_html(meta, assets)
 
-    with template_path.open("r", encoding="utf-8") as f:
-        html = f.read()
-
-    with variables_css_path.open("r", encoding="utf-8") as f:
-        variables_css = f.read()
-
-    with components_css_path.open("r", encoding="utf-8") as f:
-        components_css = f.read()
-
-    import re
-    with model_css_path.open("r", encoding="utf-8") as f:
-        model_css = f.read()
-        model_css = re.sub(
-            r"@import\s+url\(['\"]?/static/css/(?:variables|components)\.css[^)]*\)\s*;?",
-            "",
-            model_css,
-            flags=re.I,
-        )
-
-    with model_js_path.open("r", encoding="utf-8") as f:
-        model_js = f.read()
-
-    # 离线归档页移除外部依赖（favicon/static、FontAwesome CDN）
-    html = re.sub(
-        r'<link[^>]*rel=["\']icon["\'][^>]*>\s*',
-        "",
-        html,
-        flags=re.I,
+    html = str(template_bundle.get("html_template") or "")
+    html = html.replace(
+        _OFFLINE_TEMPLATE_VARS_TOKEN,
+        str(template_bundle.get("variables_inline") or ""),
+        1,
     )
-    html = re.sub(
-        r'<link[^>]*href=["\']https?://[^"\']*font-awesome[^"\']*["\'][^>]*>\s*',
-        "",
-        html,
-        flags=re.I,
+    html = html.replace(
+        _OFFLINE_TEMPLATE_MODEL_TOKEN,
+        str(template_bundle.get("model_inline") or ""),
+        1,
     )
-
-    # 内联 CSS（宽松匹配属性顺序/单双引号）
-    variables_inline = f"<style>\n{variables_css}\n</style>"
-    model_inline = f"<style>\n{components_css}\n{model_css}\n</style>"
-
-    html, var_count = re.subn(
-        r'<link[^>]*href=["\']/static/css/variables\.css[^"\']*["\'][^>]*>',
-        lambda _: variables_inline,
-        html,
-        count=1,
-        flags=re.I,
-    )
-    if var_count == 0:
-        html, _ = re.subn(r"</head>", lambda _: variables_inline + "\n</head>", html, count=1, flags=re.I)
-
-    html, model_count = re.subn(
-        r'<link[^>]*href=["\']/static/css/model\.css[^"\']*["\'][^>]*>',
-        lambda _: model_inline,
-        html,
-        count=1,
-        flags=re.I,
-    )
-    if model_count == 0:
-        html, _ = re.subn(r"</head>", lambda _: model_inline + "\n</head>", html, count=1, flags=re.I)
 
     # 注入离线 Meta 和 JS (使用 JSON 安全的直接注入)
-    import json
     meta_json_str = json.dumps(meta, ensure_ascii=False)
     meta_json_str = _escape_json_for_inline_script(meta_json_str)
     injection_script = f"\n<script>\nwindow.__OFFLINE_META__ = {meta_json_str};\n</script>\n"
-    js_replacement = f"{injection_script}<script>\n{model_js}\n</script>"
-
-    html, count = re.subn(
-        r'<script[^>]*src=["\']/static/js/model\.js[^"\']*["\'][^>]*>\s*</script>',
-        lambda _: js_replacement,
-        html,
-        count=1,
-        flags=re.I,
-    )
-    if count == 0:
-        html, body_count = re.subn(
-            r"</body>",
-            lambda _: f"{js_replacement}\n</body>",
-            html,
-            count=1,
-            flags=re.I,
-        )
-        if body_count == 0:
-            html += js_replacement
+    js_replacement = f"{injection_script}<script>\n{template_bundle.get('model_js') or ''}\n</script>"
+    if _OFFLINE_TEMPLATE_SCRIPT_TOKEN in html:
+        html = html.replace(_OFFLINE_TEMPLATE_SCRIPT_TOKEN, js_replacement, 1)
+    else:
+        html += js_replacement
 
     return html
 
 
-def rebuild_once(meta_path: Path, progress_callback=None):
+def rebuild_once(meta_path: Path, progress_callback=None, logger=None):
+    rebuild_started_at = time.perf_counter()
     with meta_path.open("r", encoding="utf-8") as f:
         meta = json.load(f)
 
@@ -2834,10 +3217,12 @@ def rebuild_once(meta_path: Path, progress_callback=None):
     ensure_dir(images_dir)
     ensure_dir(instances_dir)
     ensure_dir(files_dir)
+    source_root = meta_path.parent
+    source_entries = _list_directory_entries(source_root)
 
     # 3. 移动 screenshot
     screenshot_file = None
-    for p in glob_with_prefix_or_plain(meta_path.parent, base_name, ["_screenshot.*", "screenshot.*"]):
+    for p in glob_with_prefix_or_plain(source_root, base_name, ["_screenshot.*", "screenshot.*"], entries=source_entries):
         dst = work_dir / f"screenshot{p.suffix.lower()}"
         if move_or_replace(p, dst, "screenshot"):
             screenshot_file = dst
@@ -2848,47 +3233,64 @@ def rebuild_once(meta_path: Path, progress_callback=None):
             screenshot_file = existing
 
     # 4. 封面图 & 作者头像 & design & summary images
-    for p in glob_with_prefix_or_plain(meta_path.parent, base_name, ["_cover.*", "cover.*"]):
+    relocate_assets_started_at = time.perf_counter()
+    for p in glob_with_prefix_or_plain(source_root, base_name, ["_cover.*", "cover.*"], entries=source_entries):
         dst = images_dir / f"cover{p.suffix.lower()}"
         move_or_replace(p, dst, "cover")
         break
 
-    for p in glob_with_prefix_or_plain(meta_path.parent, base_name, ["_author_avatar.*", "author_avatar.*"]):
+    for p in glob_with_prefix_or_plain(source_root, base_name, ["_author_avatar.*", "author_avatar.*"], entries=source_entries):
         dst = images_dir / f"author_avatar{p.suffix.lower()}"
         move_or_replace(p, dst, "author_avatar")
         break
 
-    for p in glob_with_prefix_or_plain(meta_path.parent, base_name, ["_design_*", "design_*"]):
+    for p in glob_with_prefix_or_plain(source_root, base_name, ["_design_*", "design_*"], entries=source_entries):
         new_name = strip_prefix(p.name, base_name)
         dst = images_dir / new_name
         move_or_replace(p, dst, "design 图片")
 
-    for p in glob_with_prefix_or_plain(meta_path.parent, base_name, ["_summary_img_*", "summary_img_*"]):
+    for p in glob_with_prefix_or_plain(source_root, base_name, ["_summary_img_*", "summary_img_*"], entries=source_entries):
         new_name = strip_prefix(p.name, base_name)
         dst = images_dir / new_name
         move_or_replace(p, dst, "summary 图片")
 
-    for p in glob_with_prefix_or_plain(meta_path.parent, base_name, ["_comment_*", "comment_*"]):
+    for p in glob_with_prefix_or_plain(source_root, base_name, ["_comment_*", "comment_*"], entries=source_entries):
         new_name = strip_prefix(p.name, base_name)
         dst = images_dir / new_name
         move_or_replace(p, dst, "comment 资源")
 
     # 5. 实例配图/plate 缩略图
-    for p in glob_with_prefix_or_plain(meta_path.parent, base_name, ["_inst*_*"]):
+    for p in glob_with_prefix_or_plain(source_root, base_name, ["_inst*_*"], entries=source_entries):
         new_name = p.name
         dst = images_dir / new_name
         move_or_replace(p, dst, "实例图片")
+    _log_perf("rebuild.relocate_assets", relocate_assets_started_at, logger=logger)
 
     # 6. 下载 3MF 到 instances 目录
     instances = meta.get("instances", []) or []
     inst_files = []
     meta_changed = False
     total_instance_steps = max(len(instances), 1)
+    instance_download_started_at = time.perf_counter()
+    existing_instance_files = {
+        path.name
+        for path in _list_directory_entries(instances_dir)
+        if path.is_file()
+    }
+    reserved_instance_names: set[str] = set()
     for inst in instances:
         url = inst.get("downloadUrl")
         if not url:
             continue
-        fn = choose_unique_instance_filename(inst, instances, instances_dir, inst.get("name") or "")
+        fn = choose_unique_instance_filename(
+            inst,
+            instances,
+            instances_dir,
+            inst.get("name") or "",
+            reserved_names=reserved_instance_names,
+            existing_files=existing_instance_files,
+        )
+        reserved_instance_names.add(fn)
         if str(inst.get("fileName") or "").strip() != fn:
             inst["fileName"] = fn
             meta_changed = True
@@ -2912,10 +3314,18 @@ def rebuild_once(meta_path: Path, progress_callback=None):
             f"正在下载实例文件（{processed_instances}/{len(instances)}）",
             {"current": processed_instances, "total": len(instances)},
         )
+    _log_perf(
+        "rebuild.download_instances",
+        instance_download_started_at,
+        logger=logger,
+        total=len(instances),
+        downloaded=len(inst_files),
+    )
 
     attachments = meta.get("attachments") or []
     attachment_files = []
     if isinstance(attachments, list):
+        attachment_download_started_at = time.perf_counter()
         used_names = set()
         for idx, att in enumerate(attachments, start=1):
             if not isinstance(att, dict):
@@ -2948,6 +3358,13 @@ def rebuild_once(meta_path: Path, progress_callback=None):
                 f"正在下载附件（{len(attachment_files)}/{len(attachments)}）",
                 {"current": len(attachment_files), "total": len(attachments)},
             )
+        _log_perf(
+            "rebuild.download_attachments",
+            attachment_download_started_at,
+            logger=logger,
+            total=len(attachments),
+            downloaded=len(attachment_files),
+        )
 
     offline = meta.get("offlineFiles")
     if not isinstance(offline, dict):
@@ -2985,11 +3402,14 @@ def rebuild_once(meta_path: Path, progress_callback=None):
         "base_name": base_name,
     }
 
+    offline_page_started_at = time.perf_counter()
     index_html = build_index_html(meta, assets)
     (work_dir / "index.html").write_text(index_html, encoding="utf-8")
+    _log_perf("rebuild.build_offline_page", offline_page_started_at, logger=logger)
 
     emit_progress(progress_callback, 98, "正在生成离线页面")
     log("完成归档:", work_dir)
+    _log_perf("rebuild.total", rebuild_started_at, logger=logger, base_name=base_name)
 
 
 def archive_model(
@@ -3005,6 +3425,7 @@ def archive_model(
     对外主入口：采集 + 下载文件 + 生成 meta/index.html/style.css
     返回: {base_name, work_dir, missing_3mf, action}
     """
+    archive_started_at = time.perf_counter()
     # 采集阶段
     out_root = download_dir.resolve()
     out_root.mkdir(parents=True, exist_ok=True)
@@ -3027,13 +3448,24 @@ def archive_model(
     log(logger, "请求 Cookie 头(前 300 字符):", raw_cookie_header[:300])
 
     # 优先用 requests 拉取页面，失败再回退 curl
+    fetch_started_at = time.perf_counter()
+    fetch_used_curl = False
     emit_progress(progress_callback, 12, "正在获取模型页面")
     html_text = fetch_html_with_requests(sess, fetch_url, raw_cookie_header)
     if not html_text:
+        fetch_used_curl = True
         html_text = fetch_html_with_curl(fetch_url, raw_cookie_header)
     elif "__NEXT_DATA__" not in html_text and "__NUXT__" not in html_text:
         log(logger, "requests 页面未包含 __NEXT_DATA__，尝试 curl 回退")
+        fetch_used_curl = True
         html_text = fetch_html_with_curl(fetch_url, raw_cookie_header)
+    _log_perf(
+        "archive.fetch_html",
+        fetch_started_at,
+        logger=logger,
+        used_curl=fetch_used_curl,
+        html_bytes=len(html_text or ""),
+    )
 
     if "__NEXT_DATA__" not in html_text and "__NUXT__" not in html_text:
         log(logger, "页面未包含 __NEXT_DATA__，前 300 字符:", (html_text or "")[:300])
@@ -3042,6 +3474,7 @@ def archive_model(
 
     design = None
     next_data = {}
+    next_data_started_at = time.perf_counter()
     try:
         next_data = extract_next_data(html_text)
         design = extract_design_from_next_data(next_data)
@@ -3049,11 +3482,25 @@ def archive_model(
             log(logger, "未能从 __NEXT_DATA__ 定位 design，尝试 API 获取")
     except Exception as e:
         log(logger, "解析 __NEXT_DATA__ 失败，尝试 API 获取:", e)
+    _log_perf(
+        "archive.extract_next_data",
+        next_data_started_at,
+        logger=logger,
+        found=bool(next_data),
+        design_found=bool(design),
+    )
 
     api_host_hint = _extract_api_host(html_text)
     if design is None:
         emit_progress(progress_callback, 22, "页面数据不足，正在回退接口抓取")
+        api_fallback_started_at = time.perf_counter()
         design = fetch_design_from_api(sess, raw_cookie_header, fetch_url, api_host_hint=api_host_hint)
+        _log_perf(
+            "archive.fetch_design_api",
+            api_fallback_started_at,
+            logger=logger,
+            success=bool(design),
+        )
 
     if design is None:
         if _is_cloudflare_challenge(html_text):
@@ -3090,6 +3537,7 @@ def archive_model(
             log(logger, "作者头像下载失败，保留原始链接：", author["avatarUrl"], exc)
 
     emit_progress(progress_callback, 40, "正在整理摘要与设计图片")
+    summary_started_at = time.perf_counter()
     summary = parse_summary(
         design,
         base_name,
@@ -3099,6 +3547,13 @@ def archive_model(
         progress_start=40,
         progress_end=45,
     )
+    _log_perf(
+        "archive.parse_summary",
+        summary_started_at,
+        logger=logger,
+        summary_images=len(summary.get("summaryImages") or []),
+    )
+    design_images_started_at = time.perf_counter()
     design_images, cover_meta = collect_design_images(
         design,
         sess,
@@ -3108,7 +3563,21 @@ def archive_model(
         progress_start=45,
         progress_end=50,
     )
+    _log_perf(
+        "archive.collect_design_images",
+        design_images_started_at,
+        logger=logger,
+        design_images=len(design_images),
+    )
+    attachments_started_at = time.perf_counter()
     attachments = extract_design_attachments(design)
+    _log_perf(
+        "archive.extract_attachments",
+        attachments_started_at,
+        logger=logger,
+        attachments=len(attachments),
+    )
+    comments_started_at = time.perf_counter()
     comments_bundle = collect_comments(
         next_data,
         design,
@@ -3117,6 +3586,13 @@ def archive_model(
         progress_callback=progress_callback,
         progress_start=50,
         progress_end=55,
+    )
+    _log_perf(
+        "archive.collect_comments",
+        comments_started_at,
+        logger=logger,
+        comments=len(comments_bundle.get("items") or []),
+        comment_count=comments_bundle.get("count") or 0,
     )
     emit_progress(progress_callback, 55, "摘要、图片与评论整理完成")
 
@@ -3128,9 +3604,16 @@ def archive_model(
     existing_instance_index = _build_existing_instance_index(existing_meta.get("instances"))
     extracted_instances = extract_instances(design)
     total_instances = max(len(extracted_instances), 1)
+    instance_stage_started_at = time.perf_counter()
     payload_hint_hits = 0
     existing_hint_hits = 0
     fetched_hint_hits = 0
+    existing_planned_instance_files = {
+        path.name
+        for path in _list_directory_entries(planned_instances_dir)
+        if path.is_file()
+    }
+    reserved_planned_instance_names: set[str] = set()
     for idx, inst in enumerate(extracted_instances, start=1):
         inst_id = inst.get("id") or inst.get("instanceId")
         if inst_id is None:
@@ -3221,7 +3704,10 @@ def archive_model(
             inst_list,
             planned_instances_dir,
             inst_record.get("name") or "",
+            reserved_names=reserved_planned_instance_names,
+            existing_files=existing_planned_instance_files,
         )
+        reserved_planned_instance_names.add(inst_record["fileName"])
     log(
         logger,
         "实例处理完成:",
@@ -3229,6 +3715,15 @@ def archive_model(
         f"existing_hint={existing_hint_hits}",
         f"api_fetch={fetched_hint_hits}",
         f"total={len(inst_list)}",
+    )
+    _log_perf(
+        "archive.process_instances",
+        instance_stage_started_at,
+        logger=logger,
+        total=len(inst_list),
+        payload_hint=payload_hint_hits,
+        existing_hint=existing_hint_hits,
+        api_fetch=fetched_hint_hits,
     )
 
     meta = build_meta(
@@ -3246,7 +3741,9 @@ def archive_model(
     if existing_collect_date not in (None, "", 0, "0"):
         meta["collectDate"] = existing_collect_date
     meta_path = work_dir / "meta.json"
+    meta_write_started_at = time.perf_counter()
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    _log_perf("archive.write_meta", meta_write_started_at, logger=logger)
     emit_progress(progress_callback, 78, "元数据已生成，准备落盘")
     log(logger, "已保存 meta:", meta_path)
 
@@ -3254,7 +3751,9 @@ def archive_model(
     log_section("归档整理阶段")
     work_dir.mkdir(parents=True, exist_ok=True)
     try:
-        rebuild_once(meta_path, progress_callback=progress_callback)
+        rebuild_started_at = time.perf_counter()
+        rebuild_once(meta_path, progress_callback=progress_callback, logger=logger)
+        _log_perf("archive.rebuild_once", rebuild_started_at, logger=logger)
     except Exception as e:
         log(logger, "归档/生成本地页面失败:", e)
 
@@ -3273,6 +3772,14 @@ def archive_model(
 
     work_dir = meta_path.parent
     emit_progress(progress_callback, 100, "归档完成")
+    _log_perf(
+        "archive.total",
+        archive_started_at,
+        logger=logger,
+        model_id=design_id,
+        instances=len(inst_list),
+        missing_3mf=len(missing_3mf),
+    )
     return {
         "base_name": base_name,
         "work_dir": str(work_dir.resolve()),

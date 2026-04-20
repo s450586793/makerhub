@@ -19,7 +19,12 @@ from app.services.cookie_utils import sanitize_cookie_header
 from app.services.archive_worker import detect_archive_mode
 from app.services.batch_discovery import normalize_source_url
 from app.services.business_logs import append_business_log
-from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot, invalidate_model_detail_cache
+from app.services.catalog import (
+    get_archive_snapshot,
+    invalidate_archive_snapshot,
+    invalidate_model_detail_cache,
+    upsert_archive_snapshot_model,
+)
 from app.services.legacy_archiver import archive_model as legacy_archive_model
 from app.services.task_state import TaskStateStore
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, resolve_model_instance_files
@@ -921,7 +926,8 @@ class RemoteRefreshManager:
                     progress_callback=progress_callback,
                 )
             finalized = _finalize_refreshed_meta(meta_path, existing_meta)
-            invalidate_archive_snapshot("remote_refresh_completed")
+            if not upsert_archive_snapshot_model(model_dir, reason="remote_refresh_completed"):
+                invalidate_archive_snapshot("remote_refresh_completed")
             invalidate_model_detail_cache(model_dir)
             model_id = str(finalized["meta"].get("id") or existing_meta.get("id") or "").strip()
             if model_id:

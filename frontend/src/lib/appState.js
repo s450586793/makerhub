@@ -74,9 +74,7 @@ export async function refreshSession() {
   return payload.session;
 }
 
-
-export async function refreshConfig() {
-  const payload = await apiRequest("/api/config");
+export function applyConfigPayload(payload) {
   appState.config = payload;
   appState.appVersion = String(payload?.app_version || appState.appVersion);
   appState.githubLatestVersion = String(payload?.github_latest_version ?? "");
@@ -89,6 +87,11 @@ export async function refreshConfig() {
   }
   applyConfigTheme(payload);
   return payload;
+}
+
+
+export async function refreshConfig() {
+  return applyConfigPayload(await apiRequest("/api/config"));
 }
 
 
@@ -128,22 +131,13 @@ export function currentUser() {
 
 export async function saveThemePreference(preference) {
   const normalized = normalizeThemePreference(preference);
-  const payload = await apiRequest("/api/config/theme", {
+  const payload = applyConfigPayload(await apiRequest("/api/config/theme", {
     method: "POST",
     body: { theme_preference: normalized },
-  });
-  appState.config = payload;
-  appState.appVersion = String(payload?.app_version || appState.appVersion);
-  appState.githubLatestVersion = String(payload?.github_latest_version ?? "");
-  appState.githubVersionCheckedAt = String(payload?.github_version_checked_at ?? "");
-  appState.githubVersionError = String(payload?.github_version_error || "");
-  appState.githubUpdateAvailable = Boolean(payload?.github_update_available);
-  if (appState.session.authenticated) {
-    appState.session.username = String(payload?.user?.username || appState.session.username || "");
-    appState.session.display_name = String(payload?.user?.display_name || appState.session.display_name || "");
-  }
+  }));
   appState.themePreference = normalized;
   applyTheme(normalized);
+  return payload;
 }
 
 
