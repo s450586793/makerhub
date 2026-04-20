@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import re
 import time
 from datetime import datetime
 from multiprocessing import Process
@@ -24,6 +25,7 @@ from app.schemas.models import (
     RemoteRefreshConfig,
     SubscriptionCreateRequest,
     SubscriptionUpdateRequest,
+    SystemUpdateRequest,
     ThemeSettingsUpdate,
     UserSettingsUpdate,
 )
@@ -52,6 +54,7 @@ from app.services.archive_repair import (
 from app.services.subscriptions import SubscriptionManager
 from app.services.task_state import TaskStateStore
 from app.services.archive_worker import BATCH_TASK_MODES, detect_archive_mode
+from app.services.self_update import get_update_status, request_system_update
 
 
 router = APIRouter(prefix="/api")
@@ -79,10 +82,25 @@ github_version_refresh_lock = asyncio.Lock()
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/s450586793/makerhub/main/VERSION"
 GITHUB_VERSION_CDN_URL = "https://cdn.jsdelivr.net/gh/s450586793/makerhub@main/VERSION"
 GITHUB_VERSION_API_URL = "https://api.github.com/repos/s450586793/makerhub/contents/VERSION?ref=main"
+GITHUB_README_URL = "https://raw.githubusercontent.com/s450586793/makerhub/main/README.md"
+GITHUB_README_CDN_URL = "https://cdn.jsdelivr.net/gh/s450586793/makerhub@main/README.md"
+GITHUB_README_API_URL = "https://api.github.com/repos/s450586793/makerhub/contents/README.md?ref=main"
 GITHUB_VERSION_CACHE_TTL_SECONDS = 300
 GITHUB_VERSION_FAILURE_TTL_SECONDS = 60
+GITHUB_CHANGELOG_CACHE_TTL_SECONDS = 300
+GITHUB_CHANGELOG_FAILURE_TTL_SECONDS = 60
 github_version_cache = {
     "version": "",
+    "checked_at": 0.0,
+    "checked_at_iso": "",
+    "error": "",
+    "source": "",
+    "last_success_at": "",
+}
+github_changelog_refresh_task: asyncio.Task | None = None
+github_changelog_refresh_lock = asyncio.Lock()
+github_changelog_cache = {
+    "items": [],
     "checked_at": 0.0,
     "checked_at_iso": "",
     "error": "",
@@ -138,18 +156,71 @@ def _make_github_version_session() -> requests.Session:
     return session
 
 
-def _extract_version_from_response(response: requests.Response, source_kind: str) -> str:
+def _extract_github_text_from_response(response: requests.Response, source_kind: str) -> str:
     if source_kind in {"raw", "cdn"}:
-        return str(response.text or "").strip()
+        return str(response.text or "")
 
     payload = response.json()
     content = str(payload.get("content") or "").strip()
     encoding = str(payload.get("encoding") or "").strip().lower()
     if not content:
-        raise ValueError("GitHub API 未返回 VERSION 内容")
+        raise ValueError("GitHub API 未返回文件内容")
     if encoding == "base64":
-        return base64.b64decode(content).decode("utf-8", errors="ignore").strip()
-    return content.strip()
+        return base64.b64decode(content).decode("utf-8", errors="ignore")
+    return content
+
+
+def _extract_version_from_response(response: requests.Response, source_kind: str) -> str:
+    return _extract_github_text_from_response(response, source_kind).strip()
+
+
+def _parse_github_changelog(markdown: str, *, limit: int = 4) -> list[dict]:
+    section_text = str(markdown or "")
+    marker = "## 更新记录"
+    marker_index = section_text.find(marker)
+    if marker_index < 0:
+        return []
+
+    section_text = section_text[marker_index + len(marker):]
+    next_section_match = re.search(r"^##\s+", section_text, flags=re.MULTILINE)
+    if next_section_match:
+        section_text = section_text[:next_section_match.start()]
+
+    entries: list[dict] = []
+    current_entry: dict | None = None
+    version_pattern = re.compile(r"`v?([^`]+)`")
+
+    for raw_line in section_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        if line.startswith("### "):
+            if current_entry and (current_entry.get("version") or current_entry.get("items")):
+                entries.append(current_entry)
+                if len(entries) >= limit:
+                    break
+            current_entry = {
+                "date": line[4:].strip(),
+                "version": "",
+                "items": [],
+            }
+            continue
+
+        if not current_entry or not line.startswith("- "):
+            continue
+
+        item_text = line[2:].strip()
+        if not current_entry.get("version") and "版本号升级到" in item_text:
+            version_match = version_pattern.search(item_text)
+            if version_match:
+                current_entry["version"] = str(version_match.group(1) or "").strip()
+        current_entry["items"].append(item_text)
+
+    if current_entry and len(entries) < limit and (current_entry.get("version") or current_entry.get("items")):
+        entries.append(current_entry)
+
+    return entries[:limit]
 
 
 def _read_latest_github_version(proxy_config: ProxyConfig | None = None) -> dict[str, str]:
@@ -191,6 +262,48 @@ def _read_latest_github_version(proxy_config: ProxyConfig | None = None) -> dict
         session.close()
 
     raise RuntimeError(" | ".join(errors) or "GitHub 版本读取失败")
+
+
+def _read_latest_github_changelog(proxy_config: ProxyConfig | None = None) -> dict:
+    proxies = _build_proxy_mapping(proxy_config) if proxy_config and bool(proxy_config.enabled) else {}
+    targets = [
+        ("raw", GITHUB_README_URL),
+        ("cdn", GITHUB_README_CDN_URL),
+        ("api", GITHUB_README_API_URL),
+    ]
+    errors: list[str] = []
+    session = _make_github_version_session()
+    try:
+        for source_kind, url in targets:
+            headers = dict(session.headers)
+            if source_kind == "api":
+                headers["Accept"] = "application/vnd.github+json"
+            started = time.perf_counter()
+            try:
+                response = session.get(
+                    url,
+                    headers=headers,
+                    proxies=proxies or None,
+                    timeout=(6, 15),
+                    allow_redirects=True,
+                )
+                response.raise_for_status()
+                markdown = _extract_github_text_from_response(response, source_kind)
+                items = _parse_github_changelog(markdown, limit=4)
+                if not items:
+                    raise ValueError("README 中未解析到更新记录")
+                return {
+                    "items": items,
+                    "source": source_kind,
+                    "elapsed_ms": str(round((time.perf_counter() - started) * 1000, 1)),
+                    "used_proxy": "true" if bool(proxies) else "false",
+                }
+            except Exception as exc:
+                errors.append(f"{source_kind}:{_safe_error_message(exc)}")
+    finally:
+        session.close()
+
+    raise RuntimeError(" | ".join(errors) or "GitHub 更新日志读取失败")
 
 
 async def _get_github_version_status(force: bool = False, proxy_config: ProxyConfig | None = None) -> dict:
@@ -257,6 +370,66 @@ async def _get_github_version_status(force: bool = False, proxy_config: ProxyCon
     return _cache_payload()
 
 
+async def _get_github_changelog_status(force: bool = False, proxy_config: ProxyConfig | None = None) -> dict:
+    def _cache_payload() -> dict:
+        return {
+            "github_changelog": list(github_changelog_cache.get("items") or []),
+            "github_changelog_checked_at": str(github_changelog_cache.get("checked_at_iso") or ""),
+            "github_changelog_error": str(github_changelog_cache.get("error") or ""),
+            "github_changelog_source": str(github_changelog_cache.get("source") or ""),
+        }
+
+    async def _refresh_cache() -> None:
+        now_inner = time.time()
+        checked_at_iso_inner = _now_iso()
+        try:
+            result = await asyncio.to_thread(_read_latest_github_changelog, proxy_config)
+            items = list(result.get("items") or [])
+            if not items:
+                raise ValueError("GitHub 更新日志为空")
+            github_changelog_cache.update(
+                {
+                    "items": items,
+                    "checked_at": now_inner,
+                    "checked_at_iso": checked_at_iso_inner,
+                    "error": "",
+                    "source": str(result.get("source") or ""),
+                    "last_success_at": checked_at_iso_inner,
+                }
+            )
+        except Exception as exc:
+            github_changelog_cache.update(
+                {
+                    "checked_at": now_inner,
+                    "checked_at_iso": checked_at_iso_inner,
+                    "error": _safe_error_message(exc),
+                }
+            )
+
+    async def _schedule_background_refresh() -> None:
+        global github_changelog_refresh_task
+        if github_changelog_refresh_task and not github_changelog_refresh_task.done():
+            return
+        async with github_changelog_refresh_lock:
+            if github_changelog_refresh_task and not github_changelog_refresh_task.done():
+                return
+            github_changelog_refresh_task = asyncio.create_task(_refresh_cache())
+
+    now = time.time()
+    checked_at = float(github_changelog_cache.get("checked_at") or 0)
+    cache_error = str(github_changelog_cache.get("error") or "")
+    cache_ttl = GITHUB_CHANGELOG_FAILURE_TTL_SECONDS if cache_error else GITHUB_CHANGELOG_CACHE_TTL_SECONDS
+    if not force and checked_at and now - checked_at < cache_ttl:
+        return _cache_payload()
+
+    if not force:
+        await _schedule_background_refresh()
+        return _cache_payload()
+
+    await _refresh_cache()
+    return _cache_payload()
+
+
 def _with_version_status(payload: dict, version_status: dict) -> dict:
     return {
         **payload,
@@ -265,6 +438,16 @@ def _with_version_status(payload: dict, version_status: dict) -> dict:
         "github_version_error": str(version_status.get("github_version_error") or ""),
         "github_version_source": str(version_status.get("github_version_source") or ""),
         "github_update_available": bool(version_status.get("github_update_available")),
+    }
+
+
+def _with_changelog_status(payload: dict, changelog_status: dict) -> dict:
+    return {
+        **payload,
+        "github_changelog": list(changelog_status.get("github_changelog") or []),
+        "github_changelog_checked_at": str(changelog_status.get("github_changelog_checked_at") or ""),
+        "github_changelog_error": str(changelog_status.get("github_changelog_error") or ""),
+        "github_changelog_source": str(changelog_status.get("github_changelog_source") or ""),
     }
 
 
@@ -543,6 +726,32 @@ async def get_bootstrap(request: Request):
 async def get_config():
     config = store.load()
     return _with_version_status(_public_config_payload(config), await _get_github_version_status(proxy_config=config.proxy))
+
+
+@router.get("/system/update")
+async def get_system_update(force: bool = Query(False)):
+    config = store.load()
+    payload = get_update_status()
+    payload = _with_version_status(payload, await _get_github_version_status(force=force, proxy_config=config.proxy))
+    return _with_changelog_status(payload, await _get_github_changelog_status(force=force, proxy_config=config.proxy))
+
+
+@router.post("/system/update")
+async def start_system_update(payload: SystemUpdateRequest, request: Request):
+    _require_session_auth(request)
+    identity = getattr(request.state, "auth_identity", None) or {}
+    requested_by = str(identity.get("username") or "").strip()
+    config = store.load()
+    try:
+        response = request_system_update(
+            requested_by=requested_by,
+            target_version=str(payload.target_version or ""),
+            force=bool(payload.force),
+        )
+        response = _with_version_status(response, await _get_github_version_status(proxy_config=config.proxy))
+        return _with_changelog_status(response, await _get_github_changelog_status(proxy_config=config.proxy))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/config/cookies")

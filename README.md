@@ -9,7 +9,7 @@
 
 makerhub 是一个面向个人 NAS / DSM 部署的 MakerWorld 模型归档与管理系统。它通过用户配置的 Cookie 和代理能力抓取 MakerWorld 模型信息、图片、评论、打印配置和 `3MF` 文件，并把这些内容长期保存到本地目录中，方便在内网或公网统一浏览、搜索、补档和维护自己的模型库。
 
-它的定位不是公开模型站，而是“个人 MakerWorld 本地资料库”。你可以归档单个模型，也可以批量归档作者页、收藏夹、合集页；可以为这些来源创建订阅并定时同步；也可以把本地已有的 `3MF` 文件导入并自动整理入库。
+它的定位不是公开模型站，而是“个人 MakerWorld 本地资料库”。你可以归档单个模型，也可以批量归档作者页、收藏夹、合集页；可以为这些来源创建订阅并定时同步；也可以把本地已有的 `3MF` 文件导入并自动整理入库。现在设置页还内置了系统更新中心，可直接查看当前版本、线上版本、最近更新日志，并在 Docker Compose 部署下触发网页一键更新。
 
 ## 功能概览
 
@@ -27,10 +27,18 @@ makerhub 是一个面向个人 NAS / DSM 部署的 MakerWorld 模型归档与管
 - 软删除与源端删除标记：本地删除采用软删除机制；源端删除只做标记，不会自动删除本地归档内容。
 - 连接设置：提供国内 Cookie、国际 Cookie 和 HTTP 代理配置，适配不同 MakerWorld 访问环境。
 - 用户与安全：支持单用户登录、Token 管理和公网部署场景下的基础访问控制。
+- 系统更新中心：在设置页集中查看当前版本、GitHub 最新版本、最近更新日志和更新状态；Compose 部署挂载 `docker.sock` 后，可直接拉取最新镜像并重建当前容器。
 - 日志：集中查看归档、订阅、源端刷新、本地整理、缺失 `3MF` 和系统错误等业务日志。
-- Docker / DSM 部署：适合通过 Docker Compose 或 Synology DSM Container Manager 部署，配置、日志、状态和归档目录分离挂载。
+- Docker / DSM 部署：适合通过 Docker Compose 或 Synology DSM Container Manager 部署，配置、日志、状态和归档目录分离挂载；仓库内的 `compose.yaml` 已默认打开网页更新所需的 `docker.sock` 挂载。
 
 ## 更新记录
+
+### 2026-04-20
+- 版本号升级到 `v0.5.43`
+- 新增设置页“系统更新中心”：集中显示当前版本、线上版本、最近更新日志与更新状态，并支持在页面中直接触发更新
+- Docker Compose 部署现在默认挂载 `/var/run/docker.sock`，设置页可直接调用 Docker API 拉取最新镜像并重建当前容器
+- 网页一键更新的容器替换流程改为“先创建临时新容器，再切换，再清理旧容器”；如果新容器启动失败，更新 helper 会尽量自动回滚到旧容器
+- README 与部署说明同步补充系统更新能力介绍、Compose 默认配置和手动更新命令
 
 ### 2026-04-20
 - 版本号升级到 `v0.5.42`
@@ -1002,7 +1010,15 @@ docker run -d \
   makerhub
 ```
 
+如果希望启用设置页里的“一键更新”按钮，可额外加上：
+
+```bash
+-v /var/run/docker.sock:/var/run/docker.sock
+```
+
 Compose：
+
+当前仓库根目录的 `compose.yaml` 已默认启用设置页网页更新能力，容器会额外挂载 Docker socket，便于直接在“设置 -> 系统”里拉取新镜像并重建自己。
 
 ```bash
 version: "3.8"
@@ -1020,6 +1036,8 @@ services:
       - /volume4/docker/docker/makerhub/state:/app/state
       - /volume2/entertainment/3D打印/makerhub:/app/archive
       - /volume2/entertainment/3D打印/makerhub/local:/app/local
+      # 允许设置页直接触发 Docker 网页更新
+      - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
 ```
 
@@ -1027,4 +1045,10 @@ services:
 
 ```bash
 docker compose -f compose.yaml up -d
+```
+
+如果没有挂载 `docker.sock`，设置页仍会显示版本信息，但“一键更新”按钮会保持不可用，并提示你继续在宿主机执行：
+
+```bash
+docker compose pull makerhub && docker compose up -d makerhub
 ```

@@ -112,6 +112,98 @@
       </form>
     </div>
 
+    <div v-show="activeTab === 'system'" class="settings-panel is-active">
+      <section class="token-card system-update-card">
+        <div class="section-card__header">
+          <div>
+            <span class="eyebrow">系统</span>
+            <h2>容器更新</h2>
+          </div>
+          <div class="settings-inline-actions">
+            <button class="button button-secondary" type="button" :disabled="systemUpdateLoading || systemUpdateSubmitting" @click="loadSystemUpdateStatus({ force: true })">
+              {{ systemUpdateLoading ? "读取中..." : "刷新状态" }}
+            </button>
+            <button class="button button-primary" type="button" :disabled="!canTriggerSystemUpdate" @click="triggerSystemUpdate">
+              {{ systemUpdateButtonText }}
+            </button>
+          </div>
+        </div>
+
+        <p class="archive-form__hint">
+          网页更新会拉取当前镜像标签的最新内容并重建 MakerHub 容器。执行期间页面会短暂不可用，但挂载的配置、状态和归档目录会保留。
+        </p>
+
+        <div class="settings-grid settings-grid--three system-update-grid">
+          <article class="field-card system-update-stat">
+            <span>当前版本</span>
+            <strong>{{ appState.appVersion ? `v${appState.appVersion}` : "读取中" }}</strong>
+            <small>{{ systemUpdate.current_version ? `运行中：v${systemUpdate.current_version}` : "等待应用状态" }}</small>
+          </article>
+          <article class="field-card system-update-stat">
+            <span>最新版本</span>
+            <strong>{{ githubVersionText }}</strong>
+            <small>{{ appState.githubUpdateAvailable ? "检测到可更新版本" : "已是最新或尚未确认" }}</small>
+          </article>
+          <article class="field-card system-update-stat">
+            <span>更新状态</span>
+            <strong>{{ systemUpdateStatusLabel }}</strong>
+            <small>{{ systemUpdate.message || "当前还没有进行中的网页更新任务。" }}</small>
+          </article>
+        </div>
+
+        <div class="settings-grid settings-grid--two system-update-grid">
+          <article class="field-card system-update-detail">
+            <span>运行容器</span>
+            <strong>{{ systemUpdate.container_name || "-" }}</strong>
+            <small>{{ systemUpdate.image_ref || "未检测到镜像引用" }}</small>
+          </article>
+          <article class="field-card system-update-detail">
+            <span>一键更新支持</span>
+            <strong>{{ systemUpdate.supported ? "已启用" : "未启用" }}</strong>
+            <small>{{ systemUpdateSupportText }}</small>
+          </article>
+        </div>
+
+        <div class="field-card system-update-manual">
+          <span>{{ systemUpdate.supported ? "执行说明" : "如何启用一键更新" }}</span>
+          <p v-if="systemUpdate.supported">
+            更新会复用当前容器名称、挂载、端口和重启策略。如果页面短暂报错，通常只是容器正在重启；恢复后可在日志页查看 <code>system</code> 分类结果。
+          </p>
+          <p v-else>
+            首次仍需要手动在部署里挂载 <code>/var/run/docker.sock:/var/run/docker.sock</code>。启用后，这个页面才能直接拉取新镜像并重建容器。
+          </p>
+          <code class="system-update-code">{{ manualUpdateCommand }}</code>
+        </div>
+
+        <section class="system-update-changelog">
+          <div class="section-card__header">
+            <div>
+              <span class="eyebrow">更新日志</span>
+              <h2>最近版本记录</h2>
+            </div>
+            <span class="count-pill">{{ changelogEntries.length }} 条</span>
+          </div>
+          <p class="archive-form__hint">{{ changelogSummaryText }}</p>
+          <div v-if="changelogEntries.length" class="system-update-changelog__list">
+            <article v-for="entry in changelogEntries" :key="`${entry.date}-${entry.version}`" class="field-card system-update-changelog__entry">
+              <div class="system-update-changelog__head">
+                <strong>{{ entry.version ? `v${entry.version}` : "更新记录" }}</strong>
+                <span>{{ entry.date || "-" }}</span>
+              </div>
+              <ul class="system-update-changelog__items">
+                <li v-for="item in entry.items || []" :key="item">{{ item }}</li>
+              </ul>
+            </article>
+          </div>
+          <p v-else class="empty-copy">暂时还没有读取到线上更新日志。</p>
+        </section>
+
+        <div class="form-footer">
+          <span class="form-status">{{ statuses.system_update || systemUpdate.message || "当前还没有进行中的网页更新任务。" }}</span>
+        </div>
+      </section>
+    </div>
+
     <div v-show="activeTab === 'user'" class="settings-panel is-active">
       <form class="settings-form token-card" @submit.prevent="saveTheme">
         <div class="section-card__header">
@@ -213,7 +305,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import SecretTextarea from "../components/SecretTextarea.vue";
@@ -228,6 +320,7 @@ const router = useRouter();
 const tabs = [
   { key: "connections", label: "连接设置" },
   { key: "notifications", label: "通知" },
+  { key: "system", label: "系统" },
   { key: "user", label: "用户" },
 ];
 
@@ -236,6 +329,9 @@ const themePreference = ref("auto");
 const tokenName = ref("");
 const newToken = ref("");
 const tokenItems = ref([]);
+const systemUpdate = ref(defaultSystemUpdateState());
+const systemUpdateLoading = ref(false);
+const systemUpdateSubmitting = ref(false);
 
 const connectionForm = reactive({
   cookie_cn: "",
@@ -270,14 +366,99 @@ const statuses = reactive({
   password: "",
   tokens: "",
   theme: "",
+  system_update: "",
 });
 const testing = reactive({
   cookie_cn: false,
   cookie_global: false,
   proxy: false,
 });
+let systemUpdateTimer = null;
 
 const config = computed(() => appState.config);
+const systemUpdateActive = computed(() => ["queued", "launching_helper", "running", "pending_startup"].includes(systemUpdate.value.status));
+const canTriggerSystemUpdate = computed(() => (
+  systemUpdate.value.supported
+  && !systemUpdateActive.value
+  && !systemUpdateLoading.value
+  && !systemUpdateSubmitting.value
+));
+const systemUpdateButtonText = computed(() => (
+  appState.githubUpdateAvailable ? "更新到最新版本" : "重新拉取 latest"
+));
+const githubVersionText = computed(() => {
+  if (appState.githubLatestVersion) {
+    return `v${appState.githubLatestVersion}`;
+  }
+  if (appState.githubVersionError) {
+    return "读取失败";
+  }
+  return "读取中";
+});
+const systemUpdateStatusLabel = computed(() => {
+  const labelMap = {
+    idle: "空闲",
+    queued: "已提交",
+    launching_helper: "启动中",
+    running: "执行中",
+    pending_startup: "重启中",
+    succeeded: "已完成",
+    failed: "失败",
+  };
+  return labelMap[systemUpdate.value.status] || "未知";
+});
+const systemUpdateSupportText = computed(() => {
+  if (systemUpdate.value.supported) {
+    return "已检测到 docker.sock，可从网页直接触发容器重建。";
+  }
+  return systemUpdate.value.support_reason || "当前部署未开启网页更新能力。";
+});
+const manualUpdateCommand = computed(() => "docker compose pull makerhub && docker compose up -d makerhub");
+const changelogEntries = computed(() => (
+  Array.isArray(systemUpdate.value.github_changelog) ? systemUpdate.value.github_changelog : []
+));
+const changelogSummaryText = computed(() => {
+  if (systemUpdate.value.github_changelog_error) {
+    return `更新日志读取失败：${systemUpdate.value.github_changelog_error}`;
+  }
+  if (systemUpdate.value.github_changelog_checked_at) {
+    return `线上 README 更新记录，最近检查时间 ${systemUpdate.value.github_changelog_checked_at}`;
+  }
+  return "会优先读取 GitHub 仓库 README 中的最新更新记录。";
+});
+
+function defaultSystemUpdateState() {
+  return {
+    status: "idle",
+    phase: "idle",
+    message: "",
+    request_id: "",
+    requested_at: "",
+    started_at: "",
+    finished_at: "",
+    requested_by: "",
+    helper_container_id: "",
+    replacement_container_id: "",
+    container_name: "",
+    image_ref: "",
+    target_version: "",
+    current_version: "",
+    supported: false,
+    support_reason: "",
+    docker_socket_mounted: false,
+    github_changelog: [],
+    github_changelog_checked_at: "",
+    github_changelog_error: "",
+    github_changelog_source: "",
+  };
+}
+
+function applySystemUpdateStatus(payload) {
+  systemUpdate.value = {
+    ...defaultSystemUpdateState(),
+    ...(payload || {}),
+  };
+}
 
 function applyConfigToForms(payload) {
   const cookies = {};
@@ -307,12 +488,99 @@ function setActiveTab(tab) {
   if (route.query.tab !== activeTab.value) {
     router.replace({ path: "/settings", query: { tab: activeTab.value } });
   }
+  if (activeTab.value === "system" && !systemUpdateLoading.value && !systemUpdateSubmitting.value) {
+    const shouldForce = !changelogEntries.value.length || !appState.githubLatestVersion;
+    loadSystemUpdateStatus({ force: shouldForce });
+  }
 }
 
 async function load() {
   const payload = config.value || await refreshConfig();
   applyConfigToForms(payload);
   setActiveTab(typeof route.query.tab === "string" ? route.query.tab : "connections");
+}
+
+function clearSystemUpdateTimer() {
+  if (systemUpdateTimer) {
+    window.clearTimeout(systemUpdateTimer);
+    systemUpdateTimer = null;
+  }
+}
+
+function scheduleSystemUpdatePolling() {
+  clearSystemUpdateTimer();
+  if (!systemUpdateActive.value) {
+    return;
+  }
+  systemUpdateTimer = window.setTimeout(() => {
+    loadSystemUpdateStatus({ silent: true });
+  }, 3000);
+}
+
+async function loadSystemUpdateStatus(options = {}) {
+  const { silent = false, force = false } = options;
+  const wasActive = systemUpdateActive.value;
+  if (!silent) {
+    systemUpdateLoading.value = true;
+    statuses.system_update = "";
+  }
+  try {
+    const query = force ? "?force=true" : "";
+    const payload = await apiRequest(`/api/system/update${query}`);
+    applySystemUpdateStatus(payload);
+    if (typeof payload.github_latest_version === "string") {
+      appState.githubLatestVersion = payload.github_latest_version;
+    }
+    if (typeof payload.github_version_checked_at === "string") {
+      appState.githubVersionCheckedAt = payload.github_version_checked_at;
+    }
+    if (typeof payload.github_version_error === "string") {
+      appState.githubVersionError = payload.github_version_error;
+    }
+    if (typeof payload.github_update_available === "boolean") {
+      appState.githubUpdateAvailable = payload.github_update_available;
+    }
+    statuses.system_update = "";
+    if (systemUpdate.value.status === "succeeded" && appState.appVersion !== systemUpdate.value.current_version) {
+      await refreshConfig();
+    }
+  } catch (error) {
+    if (wasActive) {
+      statuses.system_update = "正在等待服务重启完成，页面恢复后会自动继续读取状态。";
+    } else if (!silent) {
+      statuses.system_update = error instanceof Error ? error.message : "读取更新状态失败。";
+    }
+  } finally {
+    if (!silent) {
+      systemUpdateLoading.value = false;
+    }
+    scheduleSystemUpdatePolling();
+  }
+}
+
+async function triggerSystemUpdate() {
+  const shouldProceed = window.confirm("这会拉取最新镜像并重建当前 MakerHub 容器，页面会短暂不可用。确定继续吗？");
+  if (!shouldProceed) {
+    return;
+  }
+  systemUpdateSubmitting.value = true;
+  statuses.system_update = "";
+  try {
+    const payload = await apiRequest("/api/system/update", {
+      method: "POST",
+      body: {
+        target_version: appState.githubLatestVersion || "",
+        force: !appState.githubUpdateAvailable,
+      },
+    });
+    applySystemUpdateStatus(payload);
+    statuses.system_update = payload.message || "更新任务已提交，服务即将短暂重启。";
+  } catch (error) {
+    statuses.system_update = error instanceof Error ? error.message : "提交更新任务失败。";
+  } finally {
+    systemUpdateSubmitting.value = false;
+    scheduleSystemUpdatePolling();
+  }
 }
 
 async function saveConnections() {
@@ -474,4 +742,5 @@ watch(() => route.query.tab, (value) => {
 });
 
 onMounted(load);
+onBeforeUnmount(clearSystemUpdateTimer);
 </script>

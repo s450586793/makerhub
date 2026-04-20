@@ -13,4 +13,6 @@ services:
       - /volume4/docker/docker/makerhub/state:/app/state
       - /volume2/entertainment/3D打印/makerhub:/app/archive
       - /volume2/entertainment/3D打印/makerhub/local:/app/local
+      # 允许设置页里的“系统更新”直接通过 Docker API 重建当前容器
+      - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped

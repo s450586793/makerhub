@@ -14,6 +14,7 @@ from app.api.web import router as web_router
 from app.core.settings import APP_VERSION, ARCHIVE_DIR, FRONTEND_DIST_DIR, ROOT_DIR, ensure_app_dirs
 from app.services.auth import AuthManager
 from app.services.business_logs import append_business_log
+from app.services.self_update import mark_update_started_after_restart
 
 
 ensure_app_dirs()
@@ -64,6 +65,7 @@ async def favicon() -> Response:
 
 @app.on_event("startup")
 async def resume_archive_queue() -> None:
+    mark_update_started_after_restart()
     queue = config_crawler.manager.resume_pending_tasks()
     subscription_manager.start()
     local_organizer.start()

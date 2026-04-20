@@ -50,6 +50,11 @@ class ThemeSettingsUpdate(BaseModel):
     theme_preference: Literal["light", "dark", "auto"] = "auto"
 
 
+class SystemUpdateRequest(BaseModel):
+    target_version: str = ""
+    force: bool = False
+
+
 class ApiTokenRecord(BaseModel):
     id: str
     name: str
