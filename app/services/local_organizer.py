@@ -335,6 +335,7 @@ class LocalOrganizerService:
             {
                 **existing_payload,
                 "items": (queued_items + history_items)[: max(int(ORGANIZER_TASK_LIMIT or 0), 1)],
+                "count": len(queued_items) + len(history_items),
                 "detected_total": len(candidates),
                 "source_dir": source_dir.as_posix(),
                 "updated_at": now_iso,

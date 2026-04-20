@@ -20,7 +20,7 @@
       </div>
       <div class="intro-stat">
         <span>记录数</span>
-        <strong>{{ organizerTasks.items.length || 0 }}</strong>
+        <strong>{{ organizerTasks.count || 0 }}</strong>
       </div>
     </div>
   </section>
@@ -84,6 +84,9 @@
       <template v-if="organizerTasks.detected_total > organizerTasks.items.length">
         ，当前仅展示前 {{ organizerTasks.items.length }} 条
       </template>
+    </p>
+    <p v-if="organizerTasks.count > organizerTasks.items.length" class="archive-form__hint">
+      当前共 {{ organizerTasks.count }} 条整理记录，仅展示最近 {{ organizerTasks.items.length }} 条。
     </p>
     <div v-if="visibleOrganizeTasks.length" class="table-like">
       <div class="table-like__row table-like__row--head">

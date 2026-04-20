@@ -192,6 +192,7 @@ def _normalize_organize_tasks(payload: Any) -> dict:
     if isinstance(payload, list):
         items = payload
         raw_detected_total = 0
+        raw_count = len(items)
         raw_source_dir = ""
         raw_updated_at = ""
     elif isinstance(payload, dict):
@@ -200,11 +201,16 @@ def _normalize_organize_tasks(payload: Any) -> dict:
             payload.get("detected_total", payload.get("pending_total", payload.get("total", 0))),
             0,
         )
+        raw_count = _safe_int(
+            payload.get("count", payload.get("total_count", len(items))),
+            len(items),
+        )
         raw_source_dir = str(payload.get("source_dir") or "")
         raw_updated_at = str(payload.get("updated_at") or "")
     else:
         items = []
         raw_detected_total = 0
+        raw_count = 0
         raw_source_dir = ""
         raw_updated_at = ""
 
@@ -253,8 +259,10 @@ def _normalize_organize_tasks(payload: Any) -> dict:
             running_count += 1
 
     detected_total = max(raw_detected_total, queued_count + running_count)
+    total_count = max(raw_count, len(normalized))
     return {
         "items": normalized,
+        "count": total_count,
         "detected_total": detected_total,
         "queued_count": queued_count,
         "running_count": running_count,
@@ -526,9 +534,7 @@ class TaskStateStore:
 
     def _load_organize_tasks_unlocked(self) -> dict:
         payload = self._read_json(ORGANIZE_TASKS_PATH, {"items": []})
-        tasks = _normalize_organize_tasks(payload)
-        tasks["count"] = len(tasks["items"])
-        return tasks
+        return _normalize_organize_tasks(payload)
 
     def _save_organize_tasks_unlocked(self, payload: dict) -> dict:
         normalized = _normalize_organize_tasks(payload)
@@ -979,6 +985,8 @@ class TaskStateStore:
             target["id"] = target_id
 
         def _mutate(payload: dict) -> dict:
+            raw_items = payload.get("items") or []
+            total_count = _safe_int(payload.get("count"), len(raw_items))
             items = []
             replaced = False
             for existing in payload.get("items") or []:
@@ -995,10 +1003,12 @@ class TaskStateStore:
 
             if not replaced:
                 items.insert(0, target)
+                total_count += 1
 
             return {
                 **payload,
                 "items": items[: max(int(limit or 0), 1)],
+                "count": total_count,
             }
 
         return self._update_organize_tasks(_mutate)
