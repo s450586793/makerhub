@@ -22,6 +22,7 @@ from app.services.business_logs import append_business_log
 from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot
 from app.services.legacy_archiver import archive_model as legacy_archive_model
 from app.services.task_state import TaskStateStore
+from app.services.three_mf import describe_three_mf_failure
 
 BATCH_TASK_MODES = {"author_upload", "collection_models"}
 BATCH_QUEUE_LOG_PATH = LOGS_DIR / "batch_queue.log"
@@ -194,19 +195,21 @@ def _activate_three_mf_limit_guard(
     )
 
 
-def _missing_3mf_message_from_result(item: dict[str, Any], limit_guard: Optional[dict[str, Any]] = None) -> str:
+def _missing_3mf_message_from_result(
+    item: dict[str, Any],
+    limit_guard: Optional[dict[str, Any]] = None,
+    *,
+    url: str = "",
+) -> str:
     download_state = str(item.get("downloadState") or "").strip()
     download_message = str(item.get("downloadMessage") or "").strip()
-    if download_state == "download_limited":
-        return _three_mf_limit_message(limit_guard)
-    if download_state == "auth_required":
-        return download_message or "下载 3MF 需要有效登录 Cookie，请检查 Cookie 是否过期。"
-    if download_state == "cloudflare":
-        return download_message or "下载 3MF 时触发了 Cloudflare 校验，请更新 Cookie 或调整代理。"
-    if download_state == "not_found":
-        return download_message or "源端没有返回该打印配置的 3MF 下载地址。"
-    if download_message:
-        return download_message
+    if download_state or download_message:
+        return describe_three_mf_failure(
+            download_state,
+            download_message,
+            url=url,
+            limit_message=_three_mf_limit_message(limit_guard) if download_state == "download_limited" else "",
+        )
     return "等待重新下载"
 
 
@@ -1507,7 +1510,7 @@ class ArchiveTaskManager:
                     "title": str(item.get("title") or item.get("name") or result.get("base_name") or ""),
                     "instance_id": str(item.get("id") or item.get("profileId") or item.get("instanceId") or ""),
                     "status": "missing",
-                    "message": _missing_3mf_message_from_result(item, limit_guard_state),
+                    "message": _missing_3mf_message_from_result(item, limit_guard_state, url=url),
                     "updated_at": datetime.now().isoformat(),
                 }
             )

@@ -21,7 +21,7 @@ from app.services.business_logs import append_business_log
 from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot, invalidate_model_detail_cache
 from app.services.legacy_archiver import archive_model as legacy_archive_model
 from app.services.task_state import TaskStateStore
-from app.services.three_mf import resolve_model_instance_files
+from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, resolve_model_instance_files
 
 
 REMOTE_REFRESH_LOG_PATH = LOGS_DIR / "remote_refresh.log"
@@ -237,20 +237,12 @@ def _merge_instance_record(existing_item: dict[str, Any], fresh_item: dict[str, 
     return merged
 
 
-def _missing_3mf_message_from_instance(instance: dict[str, Any]) -> tuple[str, str]:
+def _missing_3mf_message_from_instance(instance: dict[str, Any], *, source: str = "", url: str = "") -> tuple[str, str]:
     download_state = str(instance.get("downloadState") or "").strip()
     download_message = str(instance.get("downloadMessage") or "").strip()
 
-    if download_state == "download_limited":
-        return "missing", download_message or "已达到 MakerWorld 每日下载上限，今日暂停自动重试。"
-    if download_state == "auth_required":
-        return "missing", download_message or "下载 3MF 需要有效登录 Cookie，请检查 Cookie 是否过期。"
-    if download_state == "cloudflare":
-        return "missing", download_message or "下载 3MF 时触发了 Cloudflare 校验，请更新 Cookie 或调整代理。"
-    if download_state == "not_found":
-        return "missing", download_message or "源端没有返回该打印配置的 3MF 下载地址。"
-    if download_message:
-        return "missing", download_message
+    if download_state or download_message:
+        return "missing", describe_three_mf_failure(download_state, download_message, source=source, url=url)
     return "missing", "等待重新下载"
 
 
@@ -262,6 +254,7 @@ def _build_missing_3mf_items(
     model_root = meta_path.parent
     model_id = str(meta.get("id") or "").strip()
     model_url = normalize_source_url(str(meta.get("url") or ""))
+    model_source = normalize_makerworld_source(meta.get("source"), model_url)
     model_title = str(meta.get("title") or meta.get("baseName") or "").strip()
     if not isinstance(resolved_files, dict):
         resolved_files = resolve_model_instance_files(meta, model_root)
@@ -283,7 +276,7 @@ def _build_missing_3mf_items(
         if key in seen:
             continue
         seen.add(key)
-        item_status, item_message = _missing_3mf_message_from_instance(instance)
+        item_status, item_message = _missing_3mf_message_from_instance(instance, source=model_source, url=model_url)
         items.append(
             {
                 "model_id": model_id,

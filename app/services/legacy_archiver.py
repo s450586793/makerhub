@@ -21,6 +21,7 @@ archiver.py (app2)
 
 import requests
 from bs4 import BeautifulSoup
+from app.services.three_mf import describe_three_mf_failure, merge_three_mf_failure, normalize_makerworld_source
 
 
 def log(*args):
@@ -1448,35 +1449,51 @@ def _classify_3mf_fetch_failure(
     text: str = "",
     payload=None,
     cloudflare: bool = False,
+    source: str = "",
 ) -> dict:
     raw_text = str(text or "").strip()
     payload_text = _stringify_3mf_failure_payload(payload)
     combined = " ".join(part for part in (raw_text, payload_text) if part).lower()
+    normalized_source = normalize_makerworld_source(source=source)
 
     if cloudflare or _is_cloudflare_challenge(raw_text) or _looks_like_html(raw_text):
         return {
             "state": "cloudflare",
-            "message": "下载 3MF 时触发了 Cloudflare 校验，请更新 Cookie 或调整代理。",
+            "message": describe_three_mf_failure("cloudflare", source=normalized_source),
+        }
+    if status_code == 418 or any(
+        keyword in combined
+        for keyword in (
+            "captcha",
+            "verification required",
+            "verify you are human",
+            "security check",
+            "challenge",
+        )
+    ):
+        return {
+            "state": "verification_required",
+            "message": describe_three_mf_failure("verification_required", source=normalized_source),
         }
     if "每日下载上限" in combined or ("download" in combined and "limit" in combined and "daily" in combined):
         return {
             "state": "download_limited",
-            "message": "已达到 MakerWorld 每日下载上限，今日暂停自动重试。",
+            "message": describe_three_mf_failure("download_limited", source=normalized_source),
         }
     if "please log in to download models" in combined or "log in to download models" in combined:
         return {
             "state": "auth_required",
-            "message": "下载 3MF 需要有效登录 Cookie，请检查 Cookie 是否过期。",
+            "message": describe_three_mf_failure("auth_required", source=normalized_source),
         }
     if status_code in {401, 403}:
         return {
             "state": "auth_required",
-            "message": "下载 3MF 需要有效登录 Cookie，请检查 Cookie 是否过期。",
+            "message": describe_three_mf_failure("auth_required", source=normalized_source),
         }
     if status_code == 404 or "route not found" in combined or "\"detail\":\"not found\"" in combined or "not found" in combined:
         return {
             "state": "not_found",
-            "message": "源端没有返回该打印配置的 3MF 下载地址。",
+            "message": describe_three_mf_failure("not_found", source=normalized_source),
         }
     if status_code >= 400:
         return {
@@ -1505,7 +1522,13 @@ def fetch_instance_3mf(
     auth_token = _extract_auth_token(raw_cookie)
     last_error = None
     last_failure = {"state": "missing", "message": "未获取到 3MF 下载地址。"}
+    source_hint = (
+        normalize_makerworld_source(url=origin)
+        or normalize_makerworld_source(url=api_url)
+        or normalize_makerworld_source(url=api_host_hint)
+    )
     for candidate in candidates:
+        candidate_source = source_hint or normalize_makerworld_source(url=candidate)
         try:
             headers = {
                 "Accept": "application/json, text/plain, */*",
@@ -1529,38 +1552,61 @@ def fetch_instance_3mf(
             log("[3MF] 响应前 200 字符:", text_preview)
             if r.status_code >= 400:
                 if _is_cloudflare_challenge(text_preview) or _looks_like_html(text_preview):
-                    last_failure = _classify_3mf_fetch_failure(
-                        status_code=r.status_code,
-                        text=text_preview,
-                        cloudflare=True,
+                    last_failure = merge_three_mf_failure(
+                        last_failure,
+                        _classify_3mf_fetch_failure(
+                            status_code=r.status_code,
+                            text=text_preview,
+                            cloudflare=True,
+                            source=candidate_source,
+                        ),
                     )
                     continue
                 last_error = RuntimeError(f"status={r.status_code}")
-                last_failure = _classify_3mf_fetch_failure(status_code=r.status_code, text=text_preview)
+                last_failure = merge_three_mf_failure(
+                    last_failure,
+                    _classify_3mf_fetch_failure(status_code=r.status_code, text=text_preview, source=candidate_source),
+                )
                 continue
             try:
                 data = r.json()
             except Exception as je:
                 if _is_cloudflare_challenge(text_preview) or _looks_like_html(text_preview):
-                    last_failure = _classify_3mf_fetch_failure(
-                        status_code=r.status_code,
-                        text=text_preview,
-                        cloudflare=True,
+                    last_failure = merge_three_mf_failure(
+                        last_failure,
+                        _classify_3mf_fetch_failure(
+                            status_code=r.status_code,
+                            text=text_preview,
+                            cloudflare=True,
+                            source=candidate_source,
+                        ),
                     )
                     continue
                 last_error = je
-                last_failure = _classify_3mf_fetch_failure(status_code=r.status_code, text=text_preview)
+                last_failure = merge_three_mf_failure(
+                    last_failure,
+                    _classify_3mf_fetch_failure(status_code=r.status_code, text=text_preview, source=candidate_source),
+                )
                 continue
             name, url = _extract_instance_download(data)
             if url:
                 return name, url, candidate, {"state": "available", "message": ""}
-            last_failure = _classify_3mf_fetch_failure(status_code=r.status_code, text=text_preview, payload=data)
+            last_failure = merge_three_mf_failure(
+                last_failure,
+                _classify_3mf_fetch_failure(
+                    status_code=r.status_code,
+                    text=text_preview,
+                    payload=data,
+                    source=candidate_source,
+                ),
+            )
         except Exception as e:
             last_error = e
             continue
 
     log("3MF 获取失败(尝试 curl)", inst_id, last_error)
     for candidate in candidates:
+        candidate_source = source_hint or normalize_makerworld_source(url=candidate)
         cmd = [
             "curl",
             "-sSL",
@@ -1591,7 +1637,10 @@ def fetch_instance_3mf(
             if res.returncode != 0:
                 err_msg = res.stderr.decode(errors="ignore") if res.stderr else ""
                 log("3MF curl 失败 code=", res.returncode, "stderr:", err_msg[:200])
-                last_failure = _classify_3mf_fetch_failure(text=err_msg)
+                last_failure = merge_three_mf_failure(
+                    last_failure,
+                    _classify_3mf_fetch_failure(text=err_msg, source=candidate_source),
+                )
                 continue
             body = res.stdout or b""
             preview = body[:200]
@@ -1601,18 +1650,28 @@ def fetch_instance_3mf(
                 data = json.loads(preview_text)
             except Exception as je:
                 log("3MF curl JSON 解析失败:", je)
-                last_failure = _classify_3mf_fetch_failure(
-                    text=preview_text[:400],
-                    cloudflare=_is_cloudflare_challenge(preview_text) or _looks_like_html(preview_text),
+                last_failure = merge_three_mf_failure(
+                    last_failure,
+                    _classify_3mf_fetch_failure(
+                        text=preview_text[:400],
+                        cloudflare=_is_cloudflare_challenge(preview_text) or _looks_like_html(preview_text),
+                        source=candidate_source,
+                    ),
                 )
                 continue
             name, url = _extract_instance_download(data)
             if url:
                 return name, url, candidate, {"state": "available", "message": ""}
-            last_failure = _classify_3mf_fetch_failure(text=preview_text[:400], payload=data)
+            last_failure = merge_three_mf_failure(
+                last_failure,
+                _classify_3mf_fetch_failure(text=preview_text[:400], payload=data, source=candidate_source),
+            )
         except Exception as ce:
             log("3MF curl 调用异常:", ce)
-            last_failure = _classify_3mf_fetch_failure(text=str(ce))
+            last_failure = merge_three_mf_failure(
+                last_failure,
+                _classify_3mf_fetch_failure(text=str(ce), source=candidate_source),
+            )
             continue
     return "", "", api_url or "", last_failure
 

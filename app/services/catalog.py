@@ -20,7 +20,7 @@ from app.services.model_attachments import (
     load_manual_attachments,
 )
 from app.services.task_state import TaskStateStore
-from app.services.three_mf import resolve_model_instance_files
+from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, resolve_model_instance_files
 
 
 SOURCE_LABELS = {
@@ -578,6 +578,7 @@ def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
     normalized = []
     resolved_files = resolve_model_instance_files(meta, model_root)
     resolved_matches = resolved_files.get("matches") if isinstance(resolved_files, dict) else {}
+    model_source = normalize_makerworld_source(meta.get("source"), meta.get("url"))
     for index, item in enumerate(meta.get("instances") or []):
         if not isinstance(item, dict):
             continue
@@ -681,6 +682,13 @@ def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
         file_url = _existing_local_asset_url(model_root, file_ref) if file_ref else None
         if file_url:
             file_status_message = "3MF 已获取完成，可直接下载。"
+        elif item.get("downloadState") or item.get("downloadMessage"):
+            file_status_message = describe_three_mf_failure(
+                item.get("downloadState"),
+                item.get("downloadMessage"),
+                source=model_source,
+                url=meta.get("url"),
+            )
         elif file_name:
             file_status_message = "3MF 还未获取到，可能仍在归档中，或需要到任务页执行缺失 3MF 重新下载。"
         else:

@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 
 _INSPECT_CACHE_LOCK = threading.RLock()
@@ -14,6 +15,36 @@ _INSPECT_CACHE: dict[str, dict[str, Any]] = {}
 _THREE_MF_SUFFIX = ".3mf"
 _HASH_CHUNK_SIZE_BYTES = 512 * 1024
 _HASH_PAUSE_EVERY_BYTES = 4 * 1024 * 1024
+_THREE_MF_FAILURE_PRIORITY = {
+    "download_limited": 60,
+    "verification_required": 50,
+    "cloudflare": 45,
+    "auth_required": 40,
+    "http_error": 30,
+    "not_found": 20,
+    "missing": 10,
+    "available": 0,
+}
+_THREE_MF_LEGACY_MESSAGES = {
+    "download_limited": {
+        "已达到 MakerWorld 每日下载上限，今日暂停自动重试。",
+        "You've reached your daily download limit.",
+    },
+    "auth_required": {
+        "下载 3MF 需要有效登录 Cookie，请检查 Cookie 是否过期。",
+        "下载 3MF 需要有效登录态，请检查 Cookie / token 是否过期。",
+        "Please log in to download models.",
+    },
+    "cloudflare": {
+        "下载 3MF 时触发了 Cloudflare 校验，请更新 Cookie 或调整代理。",
+    },
+    "not_found": {
+        "源端没有返回该打印配置的 3MF 下载地址。",
+    },
+    "missing": {
+        "未获取到 3MF 下载地址。",
+    },
+}
 
 
 def _normalize_loose_identity_text(value: Any) -> str:
@@ -40,6 +71,111 @@ def _safe_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def normalize_makerworld_source(source: Any = "", url: Any = "") -> str:
+    source_raw = str(source or "").strip().lower()
+    if source_raw in {"mw_global", "global", "makerworld_global"}:
+        return "global"
+    if source_raw in {"mw_cn", "cn", "makerworld_cn"}:
+        return "cn"
+
+    host = urlparse(str(url or "")).netloc.lower()
+    if not host:
+        return ""
+    if "makerworld.com.cn" in host or "api.bambulab.cn" in host:
+        return "cn"
+    if ("makerworld.com" in host and "makerworld.com.cn" not in host) or "api.bambulab.com" in host:
+        return "global"
+    return ""
+
+
+def _default_three_mf_failure_message(state: str, source: str) -> str:
+    if state == "download_limited":
+        if source == "cn":
+            return "国区返回了每日下载上限，今日暂停自动重试。"
+        if source == "global":
+            return "国际区返回了每日下载上限，今日暂停自动重试。"
+        return "已达到 MakerWorld 每日下载上限，今日暂停自动重试。"
+    if state == "verification_required":
+        if source == "global":
+            return "国际区下载 3MF 时触发站点验证；请先在浏览器完成验证，再更新 global Cookie / token，必要时补充 cf_clearance。"
+        if source == "cn":
+            return "国区下载 3MF 时触发站点验证；请先在浏览器完成验证，再更新国内站 Cookie / token。"
+        return "下载 3MF 时触发站点验证；请更新 Cookie / token，必要时调整代理。"
+    if state == "cloudflare":
+        if source == "global":
+            return "国际区下载 3MF 时触发站点验证或 Cloudflare 校验；请先在浏览器完成验证，再更新 global Cookie / token，必要时补充 cf_clearance。"
+        if source == "cn":
+            return "国区下载 3MF 时触发站点验证；请先在浏览器完成验证，再更新国内站 Cookie / token。"
+        return "下载 3MF 时触发站点验证或 Cloudflare 校验；请更新 Cookie / token，必要时调整代理。"
+    if state == "auth_required":
+        if source == "global":
+            return "国际区下载 3MF 需要有效登录态；如果最近出现验证页，请更新 global Cookie / token，必要时补充 cf_clearance。"
+        if source == "cn":
+            return "国区下载 3MF 需要有效登录态；请更新国内站 Cookie / token。"
+        return "下载 3MF 需要有效登录态，请检查 Cookie / token 是否过期。"
+    if state == "not_found":
+        return "源端没有返回该打印配置的 3MF 下载地址。"
+    if state == "http_error":
+        return "下载 3MF 失败，请稍后重试。"
+    if state == "missing":
+        return "未获取到 3MF 下载地址。"
+    return ""
+
+
+def describe_three_mf_failure(
+    state: Any,
+    message: Any = "",
+    *,
+    source: Any = "",
+    url: Any = "",
+    limit_message: str = "",
+) -> str:
+    normalized_state = str(state or "").strip()
+    normalized_source = normalize_makerworld_source(source=source, url=url)
+    normalized_message = str(message or "").strip()
+    normalized_limit = str(limit_message or "").strip()
+
+    if normalized_state == "download_limited" and normalized_limit:
+        return normalized_limit
+
+    legacy_messages = _THREE_MF_LEGACY_MESSAGES.get(normalized_state, set())
+    if normalized_message and normalized_message not in legacy_messages:
+        return normalized_message
+
+    default_message = _default_three_mf_failure_message(normalized_state, normalized_source)
+    if default_message:
+        return default_message
+    if normalized_message:
+        return normalized_message
+    return "等待重新下载"
+
+
+def three_mf_failure_priority(state: Any) -> int:
+    return _THREE_MF_FAILURE_PRIORITY.get(str(state or "").strip(), 0)
+
+
+def merge_three_mf_failure(current: Optional[dict[str, Any]], candidate: Optional[dict[str, Any]]) -> dict[str, Any]:
+    current_item = dict(current or {})
+    candidate_item = dict(candidate or {})
+    if not candidate_item:
+        return current_item
+    if not current_item:
+        return candidate_item
+
+    current_score = three_mf_failure_priority(current_item.get("state"))
+    candidate_score = three_mf_failure_priority(candidate_item.get("state"))
+    if candidate_score > current_score:
+        return candidate_item
+    if candidate_score < current_score:
+        return current_item
+
+    current_message = str(current_item.get("message") or "").strip()
+    candidate_message = str(candidate_item.get("message") or "").strip()
+    if len(candidate_message) > len(current_message):
+        return candidate_item
+    return current_item
 
 
 def parse_3mf_metadata(source_path: Path) -> dict[str, str]:
