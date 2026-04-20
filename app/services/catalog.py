@@ -19,6 +19,7 @@ from app.services.model_attachments import (
     MANUAL_ATTACHMENTS_SIDECAR,
     load_manual_attachments,
 )
+from app.services.source_health import build_source_health_cards
 from app.services.task_state import TaskStateStore
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, resolve_model_instance_files
 
@@ -1454,22 +1455,14 @@ def build_dashboard_payload(config) -> dict:
     now = int(time.time())
     seven_days_ago = now - 7 * 24 * 60 * 60
 
-    cookie_map = {item.platform: item.cookie for item in config.cookies}
     status_cards = [
+        *build_source_health_cards(config),
         {
-            "title": "国内 Cookie",
-            "status": "已配置" if cookie_map.get("cn", "").strip() else "未配置",
-            "enabled": bool(cookie_map.get("cn", "").strip()),
-        },
-        {
-            "title": "国际 Cookie",
-            "status": "已配置" if cookie_map.get("global", "").strip() else "未配置",
-            "enabled": bool(cookie_map.get("global", "").strip()),
-        },
-        {
+            "key": "proxy",
             "title": "HTTP 代理",
-            "status": "启用" if config.proxy.enabled else "停用",
-            "enabled": bool(config.proxy.enabled and (config.proxy.http_proxy or config.proxy.https_proxy)),
+            "status": "已启用" if config.proxy.enabled else "未启用",
+            "detail": "当前已配置代理地址。" if config.proxy.enabled and (config.proxy.http_proxy or config.proxy.https_proxy) else "当前未启用代理。",
+            "tone": "ok" if config.proxy.enabled and (config.proxy.http_proxy or config.proxy.https_proxy) else "neutral",
         },
     ]
 

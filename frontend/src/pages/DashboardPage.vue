@@ -16,11 +16,15 @@
       <div class="dashboard-hero__status-grid">
         <div
           v-for="item in payload.system_status"
-          :key="item.title"
-          :class="['dashboard-hero__status', item.enabled && 'is-ok']"
+          :key="item.key || item.title"
+          :class="['dashboard-hero__status', item.tone && `is-${item.tone}`]"
         >
           <strong>{{ item.title }}</strong>
-          <span>{{ item.status }}</span>
+          <div class="dashboard-hero__status-line">
+            <span :class="['dashboard-hero__status-dot', item.tone && `is-${item.tone}`]" />
+            <span class="dashboard-hero__status-text">{{ item.status }}</span>
+          </div>
+          <span v-if="item.detail" class="dashboard-hero__status-detail">{{ item.detail }}</span>
         </div>
       </div>
     </section>
