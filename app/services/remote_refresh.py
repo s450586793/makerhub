@@ -38,7 +38,7 @@ from app.services.three_mf import describe_three_mf_failure, normalize_makerworl
 
 REMOTE_REFRESH_LOG_PATH = LOGS_DIR / "remote_refresh.log"
 REMOTE_REFRESH_POLL_SECONDS = 20
-DEFAULT_REMOTE_REFRESH_CRON = "0 */2 * * *"
+DEFAULT_REMOTE_REFRESH_CRON = "0 0 * * *"
 
 
 def _now() -> datetime:
@@ -625,13 +625,9 @@ class RemoteRefreshManager:
 
         next_run_at = str(current.get("next_run_at") or "")
         if force_reschedule:
-            next_run_at = _now().isoformat()
+            next_run_at = _next_run_at(normalized_cron)
         elif not next_run_at:
-            base = _now()
-            if not str(current.get("last_run_at") or "").strip():
-                next_run_at = base.isoformat()
-            else:
-                next_run_at = _next_run_at(normalized_cron, base)
+            next_run_at = _next_run_at(normalized_cron)
 
         return self.task_store.patch_remote_refresh_state(
             status="running" if current.get("running") else "idle",

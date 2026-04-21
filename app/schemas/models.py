@@ -136,7 +136,7 @@ class OrganizeTask(BaseModel):
 
 class RemoteRefreshConfig(BaseModel):
     enabled: bool = True
-    cron: str = "0 */2 * * *"
+    cron: str = "0 0 * * *"
 
 
 class SubscriptionSettingsConfig(BaseModel):

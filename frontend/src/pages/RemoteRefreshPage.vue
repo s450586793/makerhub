@@ -47,7 +47,7 @@
           <span>Cron</span>
           <CronField
             v-model="remoteRefreshForm.cron"
-            placeholder="0 */2 * * *"
+            placeholder="0 0 * * *"
             dialog-title="设置源端刷新 Cron"
           />
         </label>
@@ -245,7 +245,7 @@ const historyVisibleLimit = ref(HISTORY_PAGE_SIZE);
 const remoteRefreshState = ref({});
 const remoteRefreshForm = reactive({
   enabled: true,
-  cron: "0 */2 * * *",
+  cron: "0 0 * * *",
 });
 const historyFilterOptions = [
   { value: "changed", label: "有远端更新" },
@@ -322,7 +322,7 @@ function applyPayload(payload) {
   const config = payload?.config || {};
   const state = payload?.state || {};
   remoteRefreshForm.enabled = config.enabled !== false;
-  remoteRefreshForm.cron = config.cron || "0 */2 * * *";
+  remoteRefreshForm.cron = config.cron || "0 0 * * *";
   remoteRefreshState.value = state;
 }
 
