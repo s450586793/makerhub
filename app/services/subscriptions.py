@@ -17,6 +17,7 @@ from app.services.cookie_utils import sanitize_cookie_header
 from app.services.archive_worker import ArchiveTaskManager, detect_archive_mode
 from app.services.batch_discovery import discover_batch_model_urls, extract_model_id, normalize_source_url
 from app.services.business_logs import append_business_log
+from app.services.source_library import build_subscription_overview_payload
 from app.services.task_state import TaskStateStore
 
 
@@ -236,6 +237,7 @@ class SubscriptionManager:
         state_payload = self.task_store.load_subscriptions_state()
         state_map = {str(item.get("id") or ""): item for item in state_payload.get("items") or []}
         items = [self._merge_subscription_record(item, state_map.get(item.id)) for item in config.subscriptions]
+        overview = build_subscription_overview_payload(store=self.store, task_store=self.task_store)
         return {
             "items": items,
             "count": len(items),
@@ -244,6 +246,8 @@ class SubscriptionManager:
                 "running": len([item for item in items if item["running"]]),
                 "deleted_marked": sum(int(item.get("deleted_count") or 0) for item in items),
             },
+            "sections": overview.get("sections") or [],
+            "settings": overview.get("settings") or config.subscription_settings.model_dump(),
         }
 
     def create_subscription(

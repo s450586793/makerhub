@@ -24,6 +24,7 @@ from app.schemas.models import (
     ProxyConfig,
     RemoteRefreshConfig,
     SubscriptionCreateRequest,
+    SubscriptionSettingsUpdate,
     SubscriptionUpdateRequest,
     SystemUpdateRequest,
     ThemeSettingsUpdate,
@@ -53,7 +54,6 @@ from app.services.archive_repair import (
 )
 from app.services.subscriptions import SubscriptionManager
 from app.services.source_library import (
-    SourceLibraryManager,
     build_source_group_models_payload,
     build_source_library_payload,
     build_state_group_models_payload,
@@ -78,10 +78,6 @@ local_organizer = LocalOrganizerService(
     task_store=task_state_store,
 )
 remote_refresh_manager = RemoteRefreshManager(
-    store=store,
-    task_store=task_state_store,
-)
-source_library_manager = SourceLibraryManager(
     store=store,
     task_store=task_state_store,
 )
@@ -689,6 +685,7 @@ def _public_config_payload(config) -> dict:
         },
         "api_tokens": [item.model_dump() for item in auth_manager.list_api_tokens()],
         "subscriptions": [item.model_dump() for item in config.subscriptions],
+        "subscription_settings": config.subscription_settings.model_dump(),
         "missing_3mf": [item.model_dump() for item in config.missing_3mf],
         "organizer": config.organizer.model_dump(),
         "remote_refresh": config.remote_refresh.model_dump(),
@@ -906,6 +903,25 @@ async def save_remote_refresh(payload: RemoteRefreshConfig, request: Request):
         enabled=payload.enabled,
         cron=payload.cron,
         next_run_at=state.get("next_run_at"),
+    )
+    return _with_version_status(_public_config_payload(config), await _get_github_version_status(proxy_config=config.proxy))
+
+
+@router.post("/config/subscriptions")
+async def save_subscription_settings(payload: SubscriptionSettingsUpdate, request: Request):
+    _require_session_auth(request)
+    config = store.load()
+    config.subscription_settings = payload
+    store.save(config)
+    append_business_log(
+        "settings",
+        "subscription_settings_saved",
+        "订阅设置已保存。",
+        default_cron=payload.default_cron,
+        default_enabled=payload.default_enabled,
+        default_initialize_from_source=payload.default_initialize_from_source,
+        card_sort=payload.card_sort,
+        hide_disabled_from_cards=payload.hide_disabled_from_cards,
     )
     return _with_version_status(_public_config_payload(config), await _get_github_version_status(proxy_config=config.proxy))
 

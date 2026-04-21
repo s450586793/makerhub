@@ -124,6 +124,17 @@ def _extract_handle_from_url(url: str) -> str:
     return _normalize_handle(match.group(1))
 
 
+def _author_profile_url(url: str) -> str:
+    normalized = normalize_source_url(url)
+    if not normalized:
+        return ""
+    parsed = urlparse(normalized)
+    path = re.sub(r"/upload/?$", "", parsed.path or "", flags=re.I).rstrip("/")
+    if not path:
+        return normalized
+    return parsed._replace(path=path).geturl()
+
+
 def _extract_collection_id_from_url(url: str) -> str:
     match = re.search(r"/collections/(\d+)", urlparse(str(url or "")).path or "", re.I)
     if not match:
@@ -655,34 +666,54 @@ def _group_subscription_sources(
     visible_models: list[dict],
     store: JsonStore,
     task_store: TaskStateStore,
-) -> tuple[list[dict], list[dict]]:
+) -> tuple[list[dict], list[dict], list[dict]]:
     config = store.load()
     state_map = _subscription_state_map(task_store)
     lookup = _task_key_lookup(visible_models)
+    authors: list[dict] = []
     collections: list[dict] = []
     favorites: list[dict] = []
 
     for subscription in getattr(config, "subscriptions", []):
-        if str(subscription.mode or "") != "collection_models":
-            continue
         source_url = normalize_source_url(subscription.url)
         if not source_url:
             continue
-        kind = _subscription_kind(source_url)
         site = _site_from_url(source_url)
-        key = _source_key(kind, site, source_url)
-        title = _normalize_text(subscription.name)
-        if not title:
-            title = "合集" if kind == "collection" else "收藏夹"
-        group = _base_group(
-            key=key,
-            kind=kind,
-            card_kind="collection",
-            title=title,
-            subtitle="MakerWorld 来源",
-            site=site,
-            canonical_url=source_url,
-        )
+        mode = str(subscription.mode or "").strip()
+        if mode == "author_upload":
+            author_url = _author_profile_url(source_url) or source_url
+            handle = _extract_handle_from_url(author_url or source_url)
+            title = _normalize_text(subscription.name) or (f"@{handle}" if handle else "作者订阅")
+            group = _base_group(
+                key=_source_key("author", site, author_url or source_url),
+                kind="author",
+                card_kind="author",
+                title=title,
+                subtitle=f"@{handle}" if handle else "MakerWorld 作者",
+                site=site,
+                canonical_url=source_url,
+            )
+        elif mode == "collection_models":
+            kind = _subscription_kind(source_url)
+            title = _normalize_text(subscription.name)
+            if not title:
+                title = "合集" if kind == "collection" else "收藏夹"
+            group = _base_group(
+                key=_source_key(kind, site, source_url),
+                kind=kind,
+                card_kind="collection",
+                title=title,
+                subtitle="MakerWorld 来源",
+                site=site,
+                canonical_url=source_url,
+            )
+        else:
+            continue
+        group["subscription_id"] = str(subscription.id or "")
+        group["subscription_mode"] = mode
+        group["subscription_enabled"] = bool(subscription.enabled)
+        group["subscription_updated_at"] = str(subscription.updated_at or "")
+        group["subscription_created_at"] = str(subscription.created_at or "")
         state_item = state_map.get(subscription.id) or {}
         current_items = state_item.get("current_items") or []
         tracked_items = state_item.get("tracked_items") or []
@@ -693,11 +724,61 @@ def _group_subscription_sources(
             matched = lookup.get(task_key) or lookup.get(url_key)
             if matched:
                 _append_group_model(group, matched)
-        if kind == "collection":
+        if mode == "author_upload":
+            if not group.get("model_dirs"):
+                author_profile_url = _author_profile_url(source_url)
+                for model in visible_models:
+                    _, _, model_ref = _author_reference(model)
+                    if _author_profile_url(model_ref) == author_profile_url:
+                        _append_group_model(group, model)
+            authors.append(group)
+        elif group.get("kind") == "collection":
             collections.append(group)
-        else:
+        elif group.get("kind") == "favorite":
             favorites.append(group)
-    return collections, favorites
+    return authors, collections, favorites
+
+
+def _group_sort_timestamp(group: dict[str, Any]) -> int:
+    for key in ("subscription_updated_at", "subscription_created_at"):
+        raw = str(group.get(key) or "").strip()
+        if not raw:
+            continue
+        try:
+            return int(datetime.fromisoformat(raw).timestamp())
+        except ValueError:
+            continue
+    return 0
+
+
+def _sort_source_groups(groups: list[dict], sort_key: str) -> list[dict]:
+    clean_sort = str(sort_key or "").strip().lower()
+    if clean_sort == "followers":
+        return sorted(
+            groups,
+            key=lambda item: (
+                -_safe_int(item.get("followers_count")),
+                -int(item.get("model_count") or 0),
+                str(item.get("title") or ""),
+            ),
+        )
+    if clean_sort == "models":
+        return sorted(
+            groups,
+            key=lambda item: (
+                -int(item.get("model_count") or 0),
+                -_safe_int(item.get("followers_count")),
+                str(item.get("title") or ""),
+            ),
+        )
+    return sorted(
+        groups,
+        key=lambda item: (
+            -_group_sort_timestamp(item),
+            -int(item.get("model_count") or 0),
+            str(item.get("title") or ""),
+        ),
+    )
 
 
 def _group_models(store: Optional[JsonStore] = None, task_store: Optional[TaskStateStore] = None) -> tuple[dict[str, dict[str, Any]], list[dict], list[dict]]:
@@ -708,8 +789,8 @@ def _group_models(store: Optional[JsonStore] = None, task_store: Optional[TaskSt
     visible_by_dir = {str(item.get("model_dir") or ""): item for item in visible_models}
     metadata_cache = load_source_metadata_cache().get("items") or {}
 
-    author_groups = [_finalize_group(group, visible_by_dir, metadata_cache.get(group["key"]) or {}) for group in _group_author_sources(visible_models)]
-    collection_groups_raw, favorite_groups_raw = _group_subscription_sources(visible_models, store=store, task_store=task_store)
+    author_groups_raw, collection_groups_raw, favorite_groups_raw = _group_subscription_sources(visible_models, store=store, task_store=task_store)
+    author_groups = [_finalize_group(group, visible_by_dir, metadata_cache.get(group["key"]) or {}) for group in author_groups_raw]
     collection_groups = [_finalize_group(group, visible_by_dir, metadata_cache.get(group["key"]) or {}) for group in collection_groups_raw]
     favorite_groups = [_finalize_group(group, visible_by_dir, metadata_cache.get(group["key"]) or {}) for group in favorite_groups_raw]
     local_groups = [_finalize_group(group, visible_by_dir, {}) for group in _group_local_sources(visible_models)]
@@ -720,9 +801,9 @@ def _group_models(store: Optional[JsonStore] = None, task_store: Optional[TaskSt
         for group in [*author_groups, *collection_groups, *favorite_groups, *local_groups, *state_groups]
     }
     sections = [
-        {"key": "authors", "label": "作者", "items": sorted(author_groups, key=lambda item: (-int(item.get("sort_score") or 0), -int(item.get("model_count") or 0), item.get("title") or ""))},
-        {"key": "collections", "label": "合集", "items": sorted(collection_groups, key=lambda item: (-int(item.get("sort_score") or 0), -int(item.get("model_count") or 0), item.get("title") or ""))},
-        {"key": "favorites", "label": "收藏夹", "items": sorted(favorite_groups, key=lambda item: (-int(item.get("sort_score") or 0), -int(item.get("model_count") or 0), item.get("title") or ""))},
+        {"key": "authors", "label": "作者", "items": _sort_source_groups(author_groups, "recent")},
+        {"key": "collections", "label": "合集", "items": _sort_source_groups(collection_groups, "recent")},
+        {"key": "favorites", "label": "收藏夹", "items": _sort_source_groups(favorite_groups, "recent")},
         {"key": "locals", "label": "本地整理", "items": local_groups},
         {"key": "states", "label": "状态", "items": sorted(state_groups, key=lambda item: DEFAULT_STATE_SORT_ORDER.get(str(item.get("key") or ""), 99))},
     ]
@@ -761,6 +842,51 @@ def build_source_library_payload(q: str = "", store: Optional[JsonStore] = None,
             "card_count": total_cards,
             "model_count": len(_visible_models(all_models)),
         },
+    }
+
+
+def build_subscription_overview_payload(
+    *,
+    store: Optional[JsonStore] = None,
+    task_store: Optional[TaskStateStore] = None,
+) -> dict[str, Any]:
+    store = store or JsonStore()
+    task_store = task_store or TaskStateStore()
+    config = store.load()
+    settings = config.subscription_settings.model_dump()
+    all_models, visible_models = _load_models(task_store=task_store)
+    models_by_dir = {str(item.get("model_dir") or ""): item for item in all_models}
+    visible_by_dir = {str(item.get("model_dir") or ""): item for item in visible_models}
+    metadata_cache = load_source_metadata_cache().get("items") or {}
+    authors_raw, collection_groups_raw, favorite_groups_raw = _group_subscription_sources(visible_models, store=store, task_store=task_store)
+    source_groups = [
+        *[_finalize_group(group, visible_by_dir, metadata_cache.get(group["key"]) or {}) for group in authors_raw],
+        *[_finalize_group(group, visible_by_dir, metadata_cache.get(group["key"]) or {}) for group in collection_groups_raw],
+        *[_finalize_group(group, visible_by_dir, metadata_cache.get(group["key"]) or {}) for group in favorite_groups_raw],
+    ]
+    if settings.get("hide_disabled_from_cards"):
+        source_groups = [item for item in source_groups if item.get("subscription_enabled")]
+    source_groups = _sort_source_groups(source_groups, str(settings.get("card_sort") or "recent"))
+    state_groups = sorted(
+        [_finalize_group(group, models_by_dir, {}) for group in _group_state_cards(all_models, visible_models)],
+        key=lambda item: DEFAULT_STATE_SORT_ORDER.get(str(item.get("key") or ""), 99),
+    )
+    return {
+        "sections": [
+            {
+                "key": "subscription_sources",
+                "label": "订阅来源",
+                "count": len(source_groups),
+                "items": source_groups,
+            },
+            {
+                "key": "subscription_states",
+                "label": "本地状态",
+                "count": len(state_groups),
+                "items": state_groups,
+            },
+        ],
+        "settings": settings,
     }
 
 

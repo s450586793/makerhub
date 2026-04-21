@@ -139,6 +139,14 @@ class RemoteRefreshConfig(BaseModel):
     cron: str = "0 */2 * * *"
 
 
+class SubscriptionSettingsConfig(BaseModel):
+    default_cron: str = "0 */6 * * *"
+    default_enabled: bool = True
+    default_initialize_from_source: bool = True
+    card_sort: Literal["recent", "models", "followers"] = "recent"
+    hide_disabled_from_cards: bool = False
+
+
 class SubscriptionRecord(BaseModel):
     id: str
     name: str = ""
@@ -189,6 +197,14 @@ class SubscriptionStateItem(BaseModel):
     tracked_items: List[SubscriptionSourceItem] = Field(default_factory=list)
 
 
+class SubscriptionSettingsUpdate(BaseModel):
+    default_cron: str = "0 */6 * * *"
+    default_enabled: bool = True
+    default_initialize_from_source: bool = True
+    card_sort: Literal["recent", "models", "followers"] = "recent"
+    hide_disabled_from_cards: bool = False
+
+
 class RuntimePaths(BaseModel):
     config_dir: str = str(CONFIG_DIR)
     logs_dir: str = str(LOGS_DIR)
@@ -207,6 +223,7 @@ class AppConfig(BaseModel):
     user: UserProfile = Field(default_factory=UserProfile)
     api_tokens: List[ApiTokenRecord] = Field(default_factory=list)
     subscriptions: List[SubscriptionRecord] = Field(default_factory=list)
+    subscription_settings: SubscriptionSettingsConfig = Field(default_factory=SubscriptionSettingsConfig)
     missing_3mf: List[Missing3mfItem] = Field(default_factory=list)
     organizer: OrganizeTask = Field(default_factory=OrganizeTask)
     remote_refresh: RemoteRefreshConfig = Field(default_factory=RemoteRefreshConfig)

@@ -163,6 +163,12 @@
   white-space: nowrap;
 }
 
+.subscription-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
 .subscription-advanced {
   grid-column: 1 / -1;
   border: 1px solid var(--border);
@@ -1761,6 +1767,20 @@
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.subscription-inline-empty {
+  margin: 0;
+}
+
+.subscription-settings-dialog__panel {
+  width: min(560px, 100%);
+  text-align: left;
+}
+
+.subscription-settings-form {
+  display: grid;
+  gap: 12px;
 }
 
 .subscription-switch {

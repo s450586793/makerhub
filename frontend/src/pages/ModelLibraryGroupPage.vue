@@ -1,7 +1,7 @@
 <template>
   <section v-if="view" class="surface library-group-hero">
     <div class="library-group-hero__head">
-      <button class="button button-secondary" type="button" @click="goBack">返回模型库</button>
+      <button class="button button-secondary" type="button" @click="goBack">返回订阅</button>
       <span class="library-group-hero__eyebrow">{{ groupLabel }}</span>
     </div>
     <div class="library-group-hero__body">
@@ -300,7 +300,7 @@ function resetFilters() {
 }
 
 function goBack() {
-  router.push("/models");
+  router.push("/subscriptions");
 }
 
 function findModel(modelDir) {

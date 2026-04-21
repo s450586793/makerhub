@@ -8,7 +8,6 @@ from app.api.auth import router as auth_router
 from app.api.config import crawler as config_crawler
 from app.api.config import local_organizer
 from app.api.config import remote_refresh_manager
-from app.api.config import source_library_manager
 from app.api.config import subscription_manager
 from app.api.config import router as config_router
 from app.api.web import router as web_router
@@ -75,7 +74,6 @@ async def resume_archive_queue() -> None:
     subscription_manager.start()
     local_organizer.start()
     remote_refresh_manager.start()
-    source_library_manager.start()
     recovered_count = int(queue.get("recovered_count") or 0)
     queued_count = int(queue.get("queued_count") or 0)
     append_business_log(
