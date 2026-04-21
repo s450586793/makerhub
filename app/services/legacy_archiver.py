@@ -1855,54 +1855,54 @@ def fetch_instance_3mf(
             log("[3MF] 响应前 200 字符:", text_preview)
             if r.status_code >= 400:
                 if _is_cloudflare_challenge(text_preview) or _looks_like_html(text_preview):
-                    last_failure = merge_three_mf_failure(
-                        last_failure,
-                        _classify_3mf_fetch_failure(
-                            status_code=r.status_code,
-                            text=text_preview,
-                            cloudflare=True,
-                            source=candidate_source,
-                        ),
+                    failure = _classify_3mf_fetch_failure(
+                        status_code=r.status_code,
+                        text=text_preview,
+                        cloudflare=True,
+                        source=candidate_source,
                     )
+                    last_failure = merge_three_mf_failure(last_failure, failure)
+                    if str(failure.get("state") or "") == "download_limited":
+                        return "", "", candidate, last_failure
                     continue
                 last_error = RuntimeError(f"status={r.status_code}")
-                last_failure = merge_three_mf_failure(
-                    last_failure,
-                    _classify_3mf_fetch_failure(status_code=r.status_code, text=text_preview, source=candidate_source),
-                )
+                failure = _classify_3mf_fetch_failure(status_code=r.status_code, text=text_preview, source=candidate_source)
+                last_failure = merge_three_mf_failure(last_failure, failure)
+                if str(failure.get("state") or "") == "download_limited":
+                    return "", "", candidate, last_failure
                 continue
             try:
                 data = r.json()
             except Exception as je:
                 if _is_cloudflare_challenge(text_preview) or _looks_like_html(text_preview):
-                    last_failure = merge_three_mf_failure(
-                        last_failure,
-                        _classify_3mf_fetch_failure(
-                            status_code=r.status_code,
-                            text=text_preview,
-                            cloudflare=True,
-                            source=candidate_source,
-                        ),
+                    failure = _classify_3mf_fetch_failure(
+                        status_code=r.status_code,
+                        text=text_preview,
+                        cloudflare=True,
+                        source=candidate_source,
                     )
+                    last_failure = merge_three_mf_failure(last_failure, failure)
+                    if str(failure.get("state") or "") == "download_limited":
+                        return "", "", candidate, last_failure
                     continue
                 last_error = je
-                last_failure = merge_three_mf_failure(
-                    last_failure,
-                    _classify_3mf_fetch_failure(status_code=r.status_code, text=text_preview, source=candidate_source),
-                )
+                failure = _classify_3mf_fetch_failure(status_code=r.status_code, text=text_preview, source=candidate_source)
+                last_failure = merge_three_mf_failure(last_failure, failure)
+                if str(failure.get("state") or "") == "download_limited":
+                    return "", "", candidate, last_failure
                 continue
             name, url = _extract_instance_download(data)
             if url:
                 return name, url, candidate, {"state": "available", "message": ""}
-            last_failure = merge_three_mf_failure(
-                last_failure,
-                _classify_3mf_fetch_failure(
-                    status_code=r.status_code,
-                    text=text_preview,
-                    payload=data,
-                    source=candidate_source,
-                ),
+            failure = _classify_3mf_fetch_failure(
+                status_code=r.status_code,
+                text=text_preview,
+                payload=data,
+                source=candidate_source,
             )
+            last_failure = merge_three_mf_failure(last_failure, failure)
+            if str(failure.get("state") or "") == "download_limited":
+                return "", "", candidate, last_failure
         except Exception as e:
             last_error = e
             continue
@@ -1944,10 +1944,10 @@ def fetch_instance_3mf(
             if res.returncode != 0:
                 err_msg = res.stderr.decode(errors="ignore") if res.stderr else ""
                 log("3MF curl 失败 code=", res.returncode, "stderr:", err_msg[:200])
-                last_failure = merge_three_mf_failure(
-                    last_failure,
-                    _classify_3mf_fetch_failure(text=err_msg, source=candidate_source),
-                )
+                failure = _classify_3mf_fetch_failure(text=err_msg, source=candidate_source)
+                last_failure = merge_three_mf_failure(last_failure, failure)
+                if str(failure.get("state") or "") == "download_limited":
+                    return "", "", candidate, last_failure
                 continue
             body = res.stdout or b""
             preview = body[:200]
@@ -1957,28 +1957,28 @@ def fetch_instance_3mf(
                 data = json.loads(preview_text)
             except Exception as je:
                 log("3MF curl JSON 解析失败:", je)
-                last_failure = merge_three_mf_failure(
-                    last_failure,
-                    _classify_3mf_fetch_failure(
-                        text=preview_text[:400],
-                        cloudflare=_is_cloudflare_challenge(preview_text) or _looks_like_html(preview_text),
-                        source=candidate_source,
-                    ),
+                failure = _classify_3mf_fetch_failure(
+                    text=preview_text[:400],
+                    cloudflare=_is_cloudflare_challenge(preview_text) or _looks_like_html(preview_text),
+                    source=candidate_source,
                 )
+                last_failure = merge_three_mf_failure(last_failure, failure)
+                if str(failure.get("state") or "") == "download_limited":
+                    return "", "", candidate, last_failure
                 continue
             name, url = _extract_instance_download(data)
             if url:
                 return name, url, candidate, {"state": "available", "message": ""}
-            last_failure = merge_three_mf_failure(
-                last_failure,
-                _classify_3mf_fetch_failure(text=preview_text[:400], payload=data, source=candidate_source),
-            )
+            failure = _classify_3mf_fetch_failure(text=preview_text[:400], payload=data, source=candidate_source)
+            last_failure = merge_three_mf_failure(last_failure, failure)
+            if str(failure.get("state") or "") == "download_limited":
+                return "", "", candidate, last_failure
         except Exception as ce:
             log("3MF curl 调用异常:", ce)
-            last_failure = merge_three_mf_failure(
-                last_failure,
-                _classify_3mf_fetch_failure(text=str(ce), source=candidate_source),
-            )
+            failure = _classify_3mf_fetch_failure(text=str(ce), source=candidate_source)
+            last_failure = merge_three_mf_failure(last_failure, failure)
+            if str(failure.get("state") or "") == "download_limited":
+                return "", "", candidate, last_failure
             continue
     return "", "", api_url or "", last_failure
 
@@ -3420,6 +3420,8 @@ def archive_model(
     logger=None,
     existing_root: Optional[Path] = None,
     progress_callback=None,
+    skip_three_mf_fetch: bool = False,
+    three_mf_skip_message: str = "",
 ):
     """
     对外主入口：采集 + 下载文件 + 生成 meta/index.html/style.css
@@ -3614,6 +3616,12 @@ def archive_model(
         if path.is_file()
     }
     reserved_planned_instance_names: set[str] = set()
+    three_mf_fetch_paused = bool(skip_three_mf_fetch)
+    three_mf_paused_failure = {
+        "state": "download_limited",
+        "message": str(three_mf_skip_message or "").strip() or describe_three_mf_failure("download_limited", url=fetch_url),
+    }
+    skipped_due_limit = 0
     for idx, inst in enumerate(extracted_instances, start=1):
         inst_id = inst.get("id") or inst.get("instanceId")
         if inst_id is None:
@@ -3644,10 +3652,19 @@ def archive_model(
         url3mf = hinted_url or str(existing_inst.get("downloadUrl") or "").strip()
         used_api_url = api_url
         failure_info = {"state": "available", "message": ""} if url3mf else {"state": "missing", "message": "未获取到 3MF 下载地址。"}
-        if hinted_url:
+        existing_file_name = str(existing_inst.get("fileName") or "").strip()
+        existing_file_available = bool(existing_file_name and (planned_instances_dir / existing_file_name).exists())
+        if three_mf_fetch_paused and url3mf and not existing_file_available:
+            url3mf = ""
+            skipped_due_limit += 1
+            failure_info = dict(three_mf_paused_failure)
+        elif hinted_url:
             payload_hint_hits += 1
         elif url3mf:
             existing_hint_hits += 1
+        elif three_mf_fetch_paused:
+            skipped_due_limit += 1
+            failure_info = dict(three_mf_paused_failure)
         else:
             name3mf, url3mf, used_api_url, failure_info = fetch_instance_3mf(
                 sess,
@@ -3659,6 +3676,9 @@ def archive_model(
             )
             if url3mf:
                 fetched_hint_hits += 1
+            elif str((failure_info or {}).get("state") or "").strip() == "download_limited":
+                three_mf_fetch_paused = True
+                three_mf_paused_failure = dict(failure_info or three_mf_paused_failure)
         failure_state = str((failure_info or {}).get("state") or "").strip()
         failure_message = str((failure_info or {}).get("message") or "").strip()
         inst_record = {
@@ -3714,6 +3734,7 @@ def archive_model(
         f"payload_hint={payload_hint_hits}",
         f"existing_hint={existing_hint_hits}",
         f"api_fetch={fetched_hint_hits}",
+        f"skipped_due_limit={skipped_due_limit}",
         f"total={len(inst_list)}",
     )
     _log_perf(
@@ -3724,6 +3745,7 @@ def archive_model(
         payload_hint=payload_hint_hits,
         existing_hint=existing_hint_hits,
         api_fetch=fetched_hint_hits,
+        skipped_due_limit=skipped_due_limit,
     )
 
     meta = build_meta(

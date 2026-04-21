@@ -30,7 +30,7 @@ from app.services.catalog import (
 )
 from app.services.legacy_archiver import archive_model as legacy_archive_model
 from app.services.task_state import TaskStateStore
-from app.services.three_mf import describe_three_mf_failure
+from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source
 
 BATCH_TASK_MODES = {"author_upload", "collection_models"}
 BATCH_QUEUE_LOG_PATH = LOGS_DIR / "batch_queue.log"
@@ -196,6 +196,17 @@ def _read_three_mf_limit_guard() -> dict[str, Any]:
 def _is_three_mf_limit_guard_active(state: Optional[dict[str, Any]] = None) -> bool:
     current = state or _read_three_mf_limit_guard()
     return bool(current.get("active"))
+
+
+def _is_three_mf_limit_guard_active_for_url(url: str, state: Optional[dict[str, Any]] = None) -> bool:
+    current = state or _read_three_mf_limit_guard()
+    if not _is_three_mf_limit_guard_active(current):
+        return False
+    guard_source = normalize_makerworld_source(url=current.get("model_url"))
+    target_source = normalize_makerworld_source(url=url)
+    if not guard_source or not target_source:
+        return True
+    return guard_source == target_source
 
 
 def _three_mf_limit_until() -> str:
@@ -702,10 +713,11 @@ class ArchiveTaskManager:
                 "mode": "single_model",
                 "url": clean_url,
             }
-        if force and _is_three_mf_limit_guard_active():
+        limit_guard = _read_three_mf_limit_guard()
+        if force and _is_three_mf_limit_guard_active_for_url(clean_url, limit_guard):
             return {
                 "accepted": False,
-                "message": _three_mf_limit_message(),
+                "message": _three_mf_limit_message(limit_guard),
                 "mode": "single_model",
                 "url": clean_url,
             }
@@ -767,7 +779,14 @@ class ArchiveTaskManager:
         paused_items: list[dict] = []
 
         for item in queued_items:
-            if self._is_missing_3mf_retry_task(item):
+            meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+            model_url = normalize_source_url(
+                str(meta.get("model_url") or item.get("url") or "")
+            )
+            if (
+                self._is_missing_3mf_retry_task(item)
+                and _is_three_mf_limit_guard_active_for_url(model_url, guard_state)
+            ):
                 paused_items.append(item)
             else:
                 kept_items.append(item)
@@ -839,7 +858,7 @@ class ArchiveTaskManager:
             }
 
         limit_guard = _read_three_mf_limit_guard()
-        if _is_three_mf_limit_guard_active(limit_guard):
+        if _is_three_mf_limit_guard_active_for_url(clean_url, limit_guard):
             message = _three_mf_limit_message(limit_guard)
             self.task_store.update_missing_3mf_status(
                 model_id=clean_model_id,
@@ -1514,11 +1533,18 @@ class ArchiveTaskManager:
             raise RuntimeError("未找到可用 Cookie，请先到设置页配置对应站点 Cookie。")
 
         model_id = extract_model_id(url)
+        limit_guard = _read_three_mf_limit_guard()
+        skip_three_mf_fetch = _is_three_mf_limit_guard_active_for_url(url, limit_guard)
+        skip_three_mf_message = _three_mf_limit_message(limit_guard) if skip_three_mf_fetch else ""
         if model_id:
             self.task_store.update_missing_3mf_status(
                 model_id=model_id,
                 status="running",
-                message="正在尝试重新下载 3MF",
+                message=(
+                    "每日上限未恢复，正在刷新模型元数据并跳过 3MF 下载。"
+                    if skip_three_mf_fetch
+                    else "正在尝试重新下载 3MF"
+                ),
             )
 
         def progress_callback(payload: dict) -> None:
@@ -1536,18 +1562,21 @@ class ArchiveTaskManager:
                 logs_dir=LOGS_DIR,
                 existing_root=ARCHIVE_DIR,
                 progress_callback=progress_callback,
+                skip_three_mf_fetch=skip_three_mf_fetch,
+                three_mf_skip_message=skip_three_mf_message,
             )
 
         missing_items = []
-        limit_guard_state: Optional[dict[str, Any]] = None
+        limit_guard_state: Optional[dict[str, Any]] = limit_guard if skip_three_mf_fetch else None
         for item in result.get("missing_3mf") or []:
             if str(item.get("downloadState") or "").strip() == "download_limited":
-                limit_guard_state = _activate_three_mf_limit_guard(
-                    message=str(item.get("downloadMessage") or ""),
-                    model_id=str(result.get("model_id") or ""),
-                    model_url=normalize_source_url(url),
-                    instance_id=str(item.get("id") or item.get("profileId") or item.get("instanceId") or ""),
-                )
+                if not _is_three_mf_limit_guard_active_for_url(url, limit_guard_state):
+                    limit_guard_state = _activate_three_mf_limit_guard(
+                        message=str(item.get("downloadMessage") or ""),
+                        model_id=str(result.get("model_id") or ""),
+                        model_url=normalize_source_url(url),
+                        instance_id=str(item.get("id") or item.get("profileId") or item.get("instanceId") or ""),
+                    )
             missing_items.append(
                 {
                     "model_id": str(result.get("model_id") or ""),

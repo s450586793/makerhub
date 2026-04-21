@@ -16,7 +16,13 @@ from croniter import CroniterBadCronError, croniter
 from app.core.settings import ARCHIVE_DIR, LOGS_DIR
 from app.core.store import JsonStore
 from app.services.cookie_utils import sanitize_cookie_header
-from app.services.archive_worker import detect_archive_mode
+from app.services.archive_worker import (
+    _activate_three_mf_limit_guard,
+    _is_three_mf_limit_guard_active_for_url,
+    _read_three_mf_limit_guard,
+    _three_mf_limit_message,
+    detect_archive_mode,
+)
 from app.services.batch_discovery import normalize_source_url
 from app.services.business_logs import append_business_log
 from app.services.catalog import (
@@ -916,14 +922,36 @@ class RemoteRefreshManager:
             )
 
         try:
+            limit_guard = _read_three_mf_limit_guard()
+            skip_three_mf_fetch = _is_three_mf_limit_guard_active_for_url(origin_url, limit_guard)
+            skip_three_mf_message = _three_mf_limit_message(limit_guard) if skip_three_mf_fetch else ""
             with _temporary_proxy_env(config):
-                legacy_archive_model(
+                archive_result = legacy_archive_model(
                     url=origin_url,
                     cookie=cookie,
                     download_dir=ARCHIVE_DIR,
                     logs_dir=LOGS_DIR,
                     existing_root=ARCHIVE_DIR,
                     progress_callback=progress_callback,
+                    skip_three_mf_fetch=skip_three_mf_fetch,
+                    three_mf_skip_message=skip_three_mf_message,
+                )
+            limit_guard_state = limit_guard if skip_three_mf_fetch else None
+            for missing_item in archive_result.get("missing_3mf") or []:
+                if str(missing_item.get("downloadState") or "").strip() != "download_limited":
+                    continue
+                if _is_three_mf_limit_guard_active_for_url(origin_url, limit_guard_state):
+                    continue
+                limit_guard_state = _activate_three_mf_limit_guard(
+                    message=str(missing_item.get("downloadMessage") or ""),
+                    model_id=str(archive_result.get("model_id") or existing_meta.get("id") or ""),
+                    model_url=origin_url,
+                    instance_id=str(
+                        missing_item.get("id")
+                        or missing_item.get("profileId")
+                        or missing_item.get("instanceId")
+                        or ""
+                    ),
                 )
             finalized = _finalize_refreshed_meta(meta_path, existing_meta)
             if not upsert_archive_snapshot_model(model_dir, reason="remote_refresh_completed"):
