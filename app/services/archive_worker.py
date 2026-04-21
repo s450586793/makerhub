@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.core.settings import ARCHIVE_DIR, LOGS_DIR, STATE_DIR, ensure_app_dirs
 from app.core.store import JsonStore
@@ -38,6 +39,10 @@ ACTIVE_BATCH_IDLE_POLL_SECONDS = 2.0
 COLLECTION_DETAIL_RE = re.compile(r"/(?:[a-z]{2}/)?collections/\d+(?:-[^/?#]+)?(?:[/?#]|$)", re.I)
 THREE_MF_LIMIT_GUARD_PATH = STATE_DIR / "three_mf_limit_guard.json"
 THREE_MF_LIMIT_DEFAULT_MESSAGE = "已达到 MakerWorld 每日下载上限，今日暂停自动重试。"
+try:
+    THREE_MF_LIMIT_RESET_TZ = ZoneInfo("Asia/Shanghai")
+except ZoneInfoNotFoundError:
+    THREE_MF_LIMIT_RESET_TZ = None
 
 
 def detect_archive_mode(url: str) -> str:
@@ -116,6 +121,27 @@ def _base_three_mf_limit_guard() -> dict[str, Any]:
     }
 
 
+def _three_mf_limit_now(reference: Optional[datetime] = None) -> datetime:
+    if reference is not None and reference.tzinfo is not None:
+        return datetime.now(reference.tzinfo)
+    if THREE_MF_LIMIT_RESET_TZ is None:
+        return datetime.now()
+    return datetime.now(THREE_MF_LIMIT_RESET_TZ)
+
+
+def _parse_three_mf_limit_time(value: str) -> Optional[datetime]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None and THREE_MF_LIMIT_RESET_TZ is not None:
+        return parsed.replace(tzinfo=THREE_MF_LIMIT_RESET_TZ)
+    return parsed
+
+
 def _write_three_mf_limit_guard(payload: dict[str, Any]) -> dict[str, Any]:
     ensure_app_dirs()
     current = _base_three_mf_limit_guard()
@@ -159,12 +185,11 @@ def _read_three_mf_limit_guard() -> dict[str, Any]:
 
     if bool(state.get("active")):
         limited_until = str(state.get("limited_until") or "").strip()
-        if limited_until:
-            try:
-                if datetime.fromisoformat(limited_until) <= datetime.now():
-                    return _write_three_mf_limit_guard({"active": False, "message": "", "reason": ""})
-            except ValueError:
-                return _write_three_mf_limit_guard({"active": False, "message": "", "reason": ""})
+        parsed_until = _parse_three_mf_limit_time(limited_until)
+        if parsed_until is None:
+            return _write_three_mf_limit_guard({"active": False, "limited_until": "", "message": "", "reason": ""})
+        if parsed_until <= _three_mf_limit_now(parsed_until):
+            return _write_three_mf_limit_guard({"active": False, "limited_until": "", "message": "", "reason": ""})
     return state
 
 
@@ -174,7 +199,7 @@ def _is_three_mf_limit_guard_active(state: Optional[dict[str, Any]] = None) -> b
 
 
 def _three_mf_limit_until() -> str:
-    now = datetime.now()
+    now = _three_mf_limit_now()
     return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).isoformat(timespec="seconds")
 
 
@@ -185,7 +210,10 @@ def _three_mf_limit_message(state: Optional[dict[str, Any]] = None) -> str:
     if not limited_until:
         return base_message
     try:
-        until_text = datetime.fromisoformat(limited_until).strftime("%Y-%m-%d %H:%M")
+        parsed_until = _parse_three_mf_limit_time(limited_until)
+        if parsed_until is None:
+            return base_message
+        until_text = parsed_until.strftime("%Y-%m-%d %H:%M")
     except ValueError:
         return base_message
     return f"{base_message.rstrip('。')}，自动重试暂停至 {until_text}。"
@@ -202,7 +230,7 @@ def _activate_three_mf_limit_guard(
         {
             "active": True,
             "limited_until": _three_mf_limit_until(),
-            "last_hit_at": datetime.now().isoformat(timespec="seconds"),
+            "last_hit_at": _three_mf_limit_now().isoformat(timespec="seconds"),
             "message": str(message or "").strip() or THREE_MF_LIMIT_DEFAULT_MESSAGE,
             "reason": "download_limited",
             "model_id": str(model_id or "").strip(),

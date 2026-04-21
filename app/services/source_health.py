@@ -4,6 +4,7 @@ import threading
 import time
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 
@@ -14,6 +15,10 @@ from app.services.three_mf import normalize_makerworld_source
 
 THREE_MF_LIMIT_GUARD_PATH = STATE_DIR / "three_mf_limit_guard.json"
 SOURCE_HEALTH_CACHE_TTL_SECONDS = 60
+try:
+    THREE_MF_LIMIT_RESET_TZ = ZoneInfo("Asia/Shanghai")
+except ZoneInfoNotFoundError:
+    THREE_MF_LIMIT_RESET_TZ = None
 MW_BROWSER_HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
@@ -142,6 +147,53 @@ def _base_limit_guard() -> dict[str, Any]:
     }
 
 
+def _limit_guard_now(reference: datetime | None = None) -> datetime:
+    if reference is not None and reference.tzinfo is not None:
+        return datetime.now(reference.tzinfo)
+    if THREE_MF_LIMIT_RESET_TZ is None:
+        return datetime.now()
+    return datetime.now(THREE_MF_LIMIT_RESET_TZ)
+
+
+def _parse_limit_guard_time(value: str) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None and THREE_MF_LIMIT_RESET_TZ is not None:
+        return parsed.replace(tzinfo=THREE_MF_LIMIT_RESET_TZ)
+    return parsed
+
+
+def _write_limit_guard(payload: dict[str, Any]) -> dict[str, Any]:
+    ensure_app_dirs()
+    current = _base_limit_guard()
+    if THREE_MF_LIMIT_GUARD_PATH.exists():
+        try:
+            existing = json.loads(THREE_MF_LIMIT_GUARD_PATH.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                current.update(existing)
+        except (OSError, json.JSONDecodeError):
+            pass
+    current.update(
+        {
+            "active": bool(payload.get("active", current.get("active"))),
+            "limited_until": str(payload.get("limited_until", current.get("limited_until")) or ""),
+            "last_hit_at": str(payload.get("last_hit_at", current.get("last_hit_at")) or ""),
+            "message": str(payload.get("message", current.get("message")) or ""),
+            "reason": str(payload.get("reason", current.get("reason")) or ""),
+            "model_id": str(payload.get("model_id", current.get("model_id")) or ""),
+            "model_url": str(payload.get("model_url", current.get("model_url")) or ""),
+            "instance_id": str(payload.get("instance_id", current.get("instance_id")) or ""),
+        }
+    )
+    THREE_MF_LIMIT_GUARD_PATH.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+    return current
+
+
 def _read_limit_guard() -> dict[str, Any]:
     ensure_app_dirs()
     if not THREE_MF_LIMIT_GUARD_PATH.exists():
@@ -158,12 +210,11 @@ def _read_limit_guard() -> dict[str, Any]:
 
     if bool(state.get("active")):
         limited_until = str(state.get("limited_until") or "").strip()
-        if limited_until:
-            try:
-                if datetime.fromisoformat(limited_until) <= datetime.now():
-                    state["active"] = False
-            except ValueError:
-                state["active"] = False
+        parsed_until = _parse_limit_guard_time(limited_until)
+        if parsed_until is None:
+            return _write_limit_guard({"active": False, "limited_until": "", "message": "", "reason": ""})
+        if parsed_until <= _limit_guard_now(parsed_until):
+            return _write_limit_guard({"active": False, "limited_until": "", "message": "", "reason": ""})
     return state
 
 
