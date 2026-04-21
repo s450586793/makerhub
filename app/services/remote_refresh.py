@@ -15,6 +15,7 @@ from croniter import CroniterBadCronError, croniter
 
 from app.core.settings import ARCHIVE_DIR, LOGS_DIR
 from app.core.store import JsonStore
+from app.core.timezone import ensure_timezone, from_timestamp as china_from_timestamp, now as china_now, now_iso as china_now_iso, parse_datetime
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.archive_worker import (
     _activate_three_mf_limit_guard,
@@ -42,21 +43,18 @@ DEFAULT_REMOTE_REFRESH_CRON = "0 0 * * *"
 
 
 def _now() -> datetime:
-    return datetime.now()
+    return china_now()
 
 
 def _now_iso() -> str:
-    return _now().isoformat()
+    return china_now_iso()
 
 
 def _parse_iso(value: Any) -> Optional[datetime]:
     raw = str(value or "").strip()
     if not raw:
         return None
-    try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+    return parse_datetime(raw)
 
 
 def _parse_ts(value: Any) -> int:
@@ -102,7 +100,7 @@ def _validate_cron(value: str) -> str:
 
 def _next_run_at(cron_expr: str, base: Optional[datetime] = None) -> str:
     normalized = _validate_cron(cron_expr)
-    return croniter(normalized, base or _now()).get_next(datetime).isoformat()
+    return ensure_timezone(croniter(normalized, base or _now()).get_next(datetime)).isoformat()
 
 
 def _append_remote_refresh_log(event: str, **payload: Any) -> None:
@@ -698,7 +696,7 @@ class RemoteRefreshManager:
             self.task_store.patch_remote_refresh_state(
                 status="idle",
                 running=False,
-                next_run_at=datetime.fromtimestamp(retry_at).isoformat(),
+                next_run_at=china_from_timestamp(retry_at).isoformat(),
                 last_message="当前有归档队列或本地整理任务在运行，源端刷新延后 60 秒。",
                 current_item={},
             )

@@ -3,7 +3,6 @@ import mimetypes
 import shutil
 import threading
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
@@ -12,6 +11,7 @@ from bs4 import BeautifulSoup
 
 from app.core.settings import ARCHIVE_DIR, CONFIG_PATH, STATE_DIR
 from app.core.store import JsonStore
+from app.core.timezone import from_timestamp as china_from_timestamp, parse_timestamp as china_parse_timestamp
 from app.services.batch_discovery import extract_model_id, normalize_source_url
 from app.services.model_attachments import (
     ATTACHMENT_CATEGORY_LABELS,
@@ -221,44 +221,21 @@ def _safe_int(value: Any) -> int:
 
 
 def _parse_timestamp(value: Any) -> int:
-    if isinstance(value, (int, float)):
-        raw = int(value)
-        if raw > 10_000_000_000:
-            return raw // 1000
-        return raw
-
-    if not isinstance(value, str):
-        return 0
-
-    raw = value.strip()
-    if not raw:
-        return 0
-
-    if raw.isdigit():
-        digits = int(raw)
-        if digits > 10_000_000_000:
-            return digits // 1000
-        return digits
-
-    try:
-        clean = raw.replace("Z", "+00:00")
-        return int(datetime.fromisoformat(clean).timestamp())
-    except ValueError:
-        return 0
+    return china_parse_timestamp(value)
 
 
 def _format_date(value: Any) -> str:
     ts = _parse_timestamp(value)
     if not ts:
         return ""
-    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+    return china_from_timestamp(ts).strftime("%Y-%m-%d")
 
 
 def _format_datetime(value: Any) -> str:
     ts = _parse_timestamp(value)
     if not ts:
         return ""
-    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+    return china_from_timestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 
 def _read_json(path: Path) -> dict:

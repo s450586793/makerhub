@@ -10,12 +10,12 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 import zipfile
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 from app.core.settings import ARCHIVE_DIR, LOGS_DIR, STATE_DIR
 from app.core.store import JsonStore
+from app.core.timezone import from_timestamp as china_from_timestamp, now_iso as china_now_iso
 from app.services.business_logs import append_business_log
 from app.services.catalog import invalidate_archive_snapshot
 from app.services.legacy_archiver import sanitize_filename
@@ -41,7 +41,7 @@ ORGANIZER_VISIBLE_QUEUE_LIMIT = ORGANIZER_TASK_LIMIT
 
 
 def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return china_now_iso()
 
 
 def _append_organizer_log(event: str, **payload) -> None:
@@ -1534,7 +1534,7 @@ class LocalOrganizerService:
 
         now_iso = _now_iso()
         try:
-            publish_iso = datetime.fromtimestamp(target_file.stat().st_mtime).isoformat(timespec="seconds")
+            publish_iso = china_from_timestamp(target_file.stat().st_mtime).isoformat(timespec="seconds")
         except OSError:
             publish_iso = now_iso
 
@@ -1603,7 +1603,7 @@ class LocalOrganizerService:
     ) -> dict:
         now_iso = _now_iso()
         try:
-            publish_iso = datetime.fromtimestamp(target_file.stat().st_mtime).isoformat(timespec="seconds")
+            publish_iso = china_from_timestamp(target_file.stat().st_mtime).isoformat(timespec="seconds")
         except OSError:
             publish_iso = now_iso
 

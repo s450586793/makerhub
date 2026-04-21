@@ -3,7 +3,6 @@ import base64
 import json
 import re
 import time
-from datetime import datetime
 from multiprocessing import Process
 
 import requests
@@ -12,6 +11,7 @@ from fastapi.responses import StreamingResponse
 
 from app.core.store import JsonStore
 from app.core.settings import APP_VERSION
+from app.core.timezone import now_iso as china_now_iso
 from app.schemas.models import (
     ArchiveRequest,
     Missing3mfCancelRequest,
@@ -138,7 +138,7 @@ def _task_identity(item: dict) -> str:
 
 
 def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return china_now_iso()
 
 
 

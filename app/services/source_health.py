@@ -7,21 +7,17 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 
 from app.core.settings import STATE_DIR, ensure_app_dirs
+from app.core.timezone import now as china_now, parse_datetime
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.three_mf import normalize_makerworld_source
 
 
 THREE_MF_LIMIT_GUARD_PATH = STATE_DIR / "three_mf_limit_guard.json"
 SOURCE_HEALTH_CACHE_TTL_SECONDS = 60
-try:
-    THREE_MF_LIMIT_RESET_TZ = ZoneInfo("Asia/Shanghai")
-except ZoneInfoNotFoundError:
-    THREE_MF_LIMIT_RESET_TZ = None
 MW_BROWSER_HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
@@ -130,24 +126,14 @@ def _base_limit_guard() -> dict[str, Any]:
 
 
 def _limit_guard_now(reference: datetime | None = None) -> datetime:
-    if reference is not None and reference.tzinfo is not None:
-        return datetime.now(reference.tzinfo)
-    if THREE_MF_LIMIT_RESET_TZ is None:
-        return datetime.now()
-    return datetime.now(THREE_MF_LIMIT_RESET_TZ)
+    return china_now()
 
 
 def _parse_limit_guard_time(value: str) -> datetime | None:
     raw = str(value or "").strip()
     if not raw:
         return None
-    try:
-        parsed = datetime.fromisoformat(raw)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None and THREE_MF_LIMIT_RESET_TZ is not None:
-        return parsed.replace(tzinfo=THREE_MF_LIMIT_RESET_TZ)
-    return parsed
+    return parse_datetime(raw)
 
 
 def _write_limit_guard(payload: dict[str, Any]) -> dict[str, Any]:

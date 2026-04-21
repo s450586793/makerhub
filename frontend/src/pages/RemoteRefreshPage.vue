@@ -231,7 +231,7 @@ import { RouterLink } from "vue-router";
 import CronField from "../components/CronField.vue";
 import { applyConfigPayload, refreshConfig } from "../lib/appState";
 import { apiRequest } from "../lib/api";
-import { encodeModelPath, parseServerDate } from "../lib/helpers";
+import { encodeModelPath, formatServerDateTime } from "../lib/helpers";
 
 
 const HISTORY_PAGE_SIZE = 12;
@@ -337,18 +337,9 @@ function formatRemoteRefreshStatus(value) {
 }
 
 function formatDateTime(value) {
-  const date = parseServerDate(value);
-  if (!date) {
-    return "-";
-  }
-  return date.toLocaleString("zh-CN", {
-    hour12: false,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
+  return formatServerDateTime(value, {
+    fallback: "-",
+    second: true,
   });
 }
 

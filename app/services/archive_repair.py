@@ -1,10 +1,10 @@
 import json
 import os
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 from app.core.settings import ARCHIVE_DIR, STATE_DIR, ensure_app_dirs
+from app.core.timezone import now_iso as china_now_iso
 from app.services.business_logs import append_business_log
 from app.services.catalog import invalidate_archive_snapshot, invalidate_model_detail_cache
 from app.services.remote_refresh import _build_missing_3mf_items
@@ -24,7 +24,7 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return china_now_iso()
 
 
 def _base_archive_repair_status() -> dict[str, Any]:

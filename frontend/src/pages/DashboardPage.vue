@@ -217,7 +217,7 @@ import { RouterLink } from "vue-router";
 
 import { apiRequest } from "../lib/api";
 import { subscribeArchiveCompletion } from "../lib/archiveEvents";
-import { parseServerDate } from "../lib/helpers";
+import { formatServerDateTime } from "../lib/helpers";
 
 
 const defaultAutomationOverview = {
@@ -380,18 +380,7 @@ function handleVisibilityChange() {
 }
 
 function formatDateTime(value, fallback = "未安排") {
-  const date = parseServerDate(value);
-  if (!date) {
-    return fallback;
-  }
-  return date.toLocaleString("zh-CN", {
-    hour12: false,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return formatServerDateTime(value, { fallback });
 }
 
 function subscriptionStatusLabel(item) {

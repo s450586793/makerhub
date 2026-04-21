@@ -1,11 +1,11 @@
 import json
 import re
 import threading
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 from app.core.settings import LOGS_DIR, STATE_DIR, ensure_app_dirs
+from app.core.timezone import now_iso as china_now_iso, parse_datetime
 
 
 ARCHIVE_QUEUE_PATH = STATE_DIR / "archive_queue.json"
@@ -336,10 +336,9 @@ def _organizer_history_count_from_log() -> int:
 def _organize_task_sort_key(item: dict) -> tuple[int, str, str]:
     raw = str(item.get("updated_at") or "").strip()
     if raw:
-        try:
-            return (int(datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()), raw, str(item.get("id") or ""))
-        except ValueError:
-            pass
+        parsed = parse_datetime(raw)
+        if parsed is not None:
+            return (int(parsed.timestamp()), raw, str(item.get("id") or ""))
     return (0, raw, str(item.get("id") or ""))
 
 
@@ -760,7 +759,7 @@ class TaskStateStore:
                 normalized = _normalize_task_item(item, "queued")
                 if normalized["id"] == task_id and task is None:
                     normalized["status"] = "running"
-                    normalized["updated_at"] = datetime.now().isoformat()
+                    normalized["updated_at"] = china_now_iso()
                     task = normalized
                     continue
                 remaining.append(normalized)
@@ -793,7 +792,7 @@ class TaskStateStore:
                 normalized = _normalize_task_item(item, "running")
                 if normalized["id"] == task_id:
                     normalized.update({key: value for key, value in changes.items() if value is not None})
-                    normalized["updated_at"] = datetime.now().isoformat()
+                    normalized["updated_at"] = china_now_iso()
                 active.append(normalized)
             payload["active"] = active
             return payload
@@ -820,7 +819,7 @@ class TaskStateStore:
                 if normalized["id"] == task_id:
                     normalized["status"] = "failed"
                     normalized["message"] = message
-                    normalized["updated_at"] = datetime.now().isoformat()
+                    normalized["updated_at"] = china_now_iso()
                     failed_item = normalized
                 else:
                     active.append(normalized)
@@ -831,7 +830,7 @@ class TaskStateStore:
                 if normalized["id"] == task_id and failed_item is None:
                     normalized["status"] = "failed"
                     normalized["message"] = message
-                    normalized["updated_at"] = datetime.now().isoformat()
+                    normalized["updated_at"] = china_now_iso()
                     failed_item = normalized
                 else:
                     queued.append(normalized)
@@ -860,7 +859,7 @@ class TaskStateStore:
                 return payload
 
             recovered = []
-            now = datetime.now().isoformat()
+            now = china_now_iso()
             for item in active_items:
                 item["status"] = "queued"
                 item["progress"] = 0
@@ -1095,7 +1094,7 @@ class TaskStateStore:
     ) -> dict:
         def _mutate(payload: dict) -> dict:
             items = _normalize_missing_3mf(payload).get("items", [])
-            now = datetime.now().isoformat()
+            now = china_now_iso()
 
             for item in items:
                 if not _matches_missing_3mf_item(

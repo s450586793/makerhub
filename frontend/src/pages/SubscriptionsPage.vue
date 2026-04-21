@@ -276,7 +276,7 @@ import { useRouter } from "vue-router";
 import CronField from "../components/CronField.vue";
 import SourceLibraryCard from "../components/SourceLibraryCard.vue";
 import { apiRequest } from "../lib/api";
-import { parseServerDate } from "../lib/helpers";
+import { formatServerDateTime } from "../lib/helpers";
 
 
 const router = useRouter();
@@ -572,20 +572,9 @@ async function deleteSubscription(item) {
 }
 
 function formatDateTime(value) {
-  if (!value) {
-    return "未安排";
-  }
-  const date = parseServerDate(value);
-  if (!date) {
-    return value;
-  }
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
+  return formatServerDateTime(value, {
+    fallback: value || "未安排",
+  });
 }
 
 onMounted(async () => {

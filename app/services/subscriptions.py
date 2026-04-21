@@ -12,6 +12,7 @@ from croniter import CroniterBadCronError, croniter
 
 from app.core.settings import LOGS_DIR
 from app.core.store import JsonStore
+from app.core.timezone import ensure_timezone, now as china_now, now_iso as china_now_iso, parse_datetime
 from app.schemas.models import SubscriptionRecord
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.archive_worker import ArchiveTaskManager, detect_archive_mode
@@ -28,21 +29,18 @@ SUBSCRIPTION_POLL_SECONDS = 20
 
 
 def _now() -> datetime:
-    return datetime.now()
+    return china_now()
 
 
 def _now_iso() -> str:
-    return _now().isoformat()
+    return china_now_iso()
 
 
 def _parse_iso(value: str) -> Optional[datetime]:
     raw = str(value or "").strip()
     if not raw:
         return None
-    try:
-        return datetime.fromisoformat(raw)
-    except ValueError:
-        return None
+    return parse_datetime(raw)
 
 
 def _append_subscription_log(event: str, **payload: Any) -> None:
@@ -87,7 +85,7 @@ def _validate_cron(cron_expr: str) -> str:
 
 def _next_run_at(cron_expr: str, base: Optional[datetime] = None) -> str:
     normalized = _validate_cron(cron_expr)
-    return croniter(normalized, base or _now()).get_next(datetime).isoformat()
+    return ensure_timezone(croniter(normalized, base or _now()).get_next(datetime)).isoformat()
 
 
 def _select_cookie(url: str, config) -> str:

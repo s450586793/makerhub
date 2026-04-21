@@ -6,7 +6,6 @@ import sys
 import subprocess
 import threading
 import time
-from datetime import datetime
 from fnmatch import fnmatchcase
 from html import escape, unescape
 from pathlib import Path
@@ -23,6 +22,7 @@ archiver.py (app2)
 
 import requests
 from bs4 import BeautifulSoup
+from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
 from app.services.cookie_utils import extract_auth_token, parse_cookie_values, sanitize_cookie_header
 from app.services.three_mf import describe_three_mf_failure, merge_three_mf_failure, normalize_makerworld_source
 
@@ -2236,8 +2236,8 @@ def build_meta(
     attachments: Optional[List[dict]] = None,
     comments_bundle: Optional[dict] = None,
 ):
-    collect_ts = int(datetime.now().timestamp())
-    update_time = datetime.now().isoformat()
+    collect_ts = int(china_now().timestamp())
+    update_time = china_now_iso()
     counts = design.get("counts") or {}
     comments_bundle = comments_bundle if isinstance(comments_bundle, dict) else {}
     comment_items = comments_bundle.get("items") if isinstance(comments_bundle.get("items"), list) else []
@@ -2987,8 +2987,10 @@ def format_date(date_str):
     try:
         if not date_str:
             return ""
-        clean = date_str.replace("Z", "+00:00") if str(date_str).endswith("Z") else str(date_str)
-        return str(datetime.fromisoformat(clean).date())
+        parsed = parse_datetime(date_str)
+        if parsed is None:
+            return str(date_str or "")
+        return str(parsed.date())
     except Exception:
         return date_str or ""
 
@@ -3448,7 +3450,7 @@ def rebuild_once(meta_path: Path, progress_callback=None, logger=None):
         "design_files": design_files,
         "hero": f"./{hero_rel}",
         "avatar": f"./{avatar_file.relative_to(work_dir).as_posix()}" if avatar_file else None,
-        "collected_date": datetime.now().strftime("%Y-%m-%d"),
+        "collected_date": china_now().strftime("%Y-%m-%d"),
         "instance_files": inst_files,
         "base_name": base_name,
     }
@@ -3839,7 +3841,7 @@ def archive_model(
         with missing_log.open("a", encoding="utf-8") as f:
             for m in missing_3mf:
                 f.write(
-                    f"{datetime.now().isoformat()}\t{base_name}\t{m['id']}\t{m.get('title','')}\t"
+                    f"{china_now_iso()}\t{base_name}\t{m['id']}\t{m.get('title','')}\t"
                     f"{m.get('downloadMessage') or m.get('downloadState') or '未获取到 3MF 下载地址'}\n"
                 )
         log(logger, "缺失 3MF 已记录:", missing_log)

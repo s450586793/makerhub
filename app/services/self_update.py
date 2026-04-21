@@ -5,12 +5,12 @@ import os
 import re
 import socket
 import uuid
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 from app.core.settings import APP_VERSION, STATE_DIR
+from app.core.timezone import now_iso as china_now_iso
 from app.services.business_logs import append_business_log
 
 
@@ -24,7 +24,7 @@ _CONTAINER_ID_PATTERN = re.compile(r"[0-9a-f]{12,64}")
 
 
 def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return china_now_iso()
 
 
 def _default_update_state() -> dict[str, Any]:

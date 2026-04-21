@@ -2,7 +2,6 @@ import json
 import mimetypes
 import re
 import shutil
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -10,6 +9,7 @@ from uuid import uuid4
 from fastapi import UploadFile
 
 from app.core.settings import ARCHIVE_DIR
+from app.core.timezone import now as china_now, now_iso as china_now_iso
 
 
 MANUAL_ATTACHMENTS_SIDECAR = ".makerhub-manual-attachments.json"
@@ -95,7 +95,7 @@ def _sanitize_filename(filename: str) -> str:
 def _build_storage_name(target_dir: Path, filename: str) -> str:
     stem = Path(filename).stem or "attachment"
     suffix = Path(filename).suffix.lower()
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    timestamp = china_now().strftime("%Y%m%d-%H%M%S")
     token = uuid4().hex[:8]
     candidate = f"{timestamp}-{token}-{stem}{suffix}"
     while (target_dir / candidate).exists():
@@ -125,7 +125,7 @@ def create_manual_attachment(model_dir: str, upload: UploadFile, name: str, cate
         target_path.unlink(missing_ok=True)
         raise ValueError("上传文件为空。")
 
-    uploaded_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    uploaded_at = china_now_iso()
     mime_type = str(upload.content_type or mimetypes.guess_type(original_filename)[0] or "application/octet-stream")
     display_name = str(name or "").strip() or original_filename
     relative_path = (MANUAL_ATTACHMENTS_RELATIVE_DIR / storage_name).as_posix()

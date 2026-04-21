@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -8,6 +8,7 @@ from fastapi import Request
 from app.core.security import generate_api_token, generate_session_id, hash_api_token, hash_password, verify_password
 from app.core.settings import STATE_DIR, ensure_app_dirs
 from app.core.store import JsonStore
+from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
 from app.schemas.models import ApiTokenRecord, ApiTokenView
 
 
@@ -48,15 +49,15 @@ class AuthManager:
         )
 
     def _prune_sessions(self, payload: dict) -> dict:
-        now = datetime.now()
+        now = china_now()
         items = []
         for item in payload.get("items") or []:
             expires_at = str(item.get("expires_at") or "")
             if expires_at:
-                try:
-                    if datetime.fromisoformat(expires_at) < now:
-                        continue
-                except ValueError:
+                expires_at_dt = parse_datetime(expires_at)
+                if expires_at_dt is None:
+                    continue
+                if expires_at_dt < now:
                     continue
             items.append(item)
         payload["items"] = items
@@ -70,7 +71,7 @@ class AuthManager:
 
     def create_session(self, username: str) -> dict:
         payload = self._prune_sessions(self._read_sessions())
-        now = datetime.now()
+        now = china_now()
         session = {
             "id": generate_session_id(),
             "username": username,
@@ -98,14 +99,15 @@ class AuthManager:
         changed = False
         for item in payload.get("items") or []:
             if str(item.get("id") or "") == session_id:
-                now = datetime.now()
+                now = china_now()
                 last_seen = str(item.get("last_seen_at") or "")
                 should_touch = True
                 if last_seen:
-                    try:
-                        should_touch = (now - datetime.fromisoformat(last_seen)).total_seconds() >= 300
-                    except ValueError:
+                    last_seen_dt = parse_datetime(last_seen)
+                    if last_seen_dt is None:
                         should_touch = True
+                    else:
+                        should_touch = (now - last_seen_dt).total_seconds() >= 300
                 if should_touch:
                     item["last_seen_at"] = now.isoformat()
                     changed = True
@@ -133,7 +135,7 @@ class AuthManager:
     def create_api_token(self, name: str) -> tuple[str, ApiTokenView]:
         config = self.store.load()
         raw_token = generate_api_token()
-        now = datetime.now().isoformat()
+        now = china_now_iso()
         display_name = str(name or "").strip() or f"Token {len(config.api_tokens) + 1}"
         record = ApiTokenRecord(
             id=generate_session_id(),
@@ -171,7 +173,7 @@ class AuthManager:
             if item.disabled:
                 continue
             if item.token_hash == token_hash:
-                item.last_used_at = datetime.now().isoformat()
+                item.last_used_at = china_now_iso()
                 matched = item
                 break
 
@@ -196,7 +198,7 @@ class AuthManager:
         if len(new_secret) < 4:
             raise ValueError("新密码至少需要 4 个字符。")
         config.user.password_hash = hash_password(new_secret)
-        config.user.password_updated_at = datetime.now().isoformat()
+        config.user.password_updated_at = china_now_iso()
         self.store.save(config)
         self.clear_all_sessions()
 

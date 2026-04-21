@@ -9,10 +9,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.core.settings import ARCHIVE_DIR, LOGS_DIR, STATE_DIR, ensure_app_dirs
 from app.core.store import JsonStore
+from app.core.timezone import now as china_now, parse_datetime
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.batch_discovery import (
     discover_batch_model_urls,
@@ -39,10 +39,6 @@ ACTIVE_BATCH_IDLE_POLL_SECONDS = 2.0
 COLLECTION_DETAIL_RE = re.compile(r"/(?:[a-z]{2}/)?collections/\d+(?:-[^/?#]+)?(?:[/?#]|$)", re.I)
 THREE_MF_LIMIT_GUARD_PATH = STATE_DIR / "three_mf_limit_guard.json"
 THREE_MF_LIMIT_DEFAULT_MESSAGE = "已达到 MakerWorld 每日下载上限，今日暂停自动重试。"
-try:
-    THREE_MF_LIMIT_RESET_TZ = ZoneInfo("Asia/Shanghai")
-except ZoneInfoNotFoundError:
-    THREE_MF_LIMIT_RESET_TZ = None
 
 
 def detect_archive_mode(url: str) -> str:
@@ -92,7 +88,7 @@ def _append_batch_queue_log(event: str, **payload: Any) -> None:
             handle.write(
                 json.dumps(
                     {
-                        "time": datetime.now().isoformat(),
+                        "time": china_now().isoformat(),
                         "event": event,
                         **payload,
                     },
@@ -122,24 +118,14 @@ def _base_three_mf_limit_guard() -> dict[str, Any]:
 
 
 def _three_mf_limit_now(reference: Optional[datetime] = None) -> datetime:
-    if reference is not None and reference.tzinfo is not None:
-        return datetime.now(reference.tzinfo)
-    if THREE_MF_LIMIT_RESET_TZ is None:
-        return datetime.now()
-    return datetime.now(THREE_MF_LIMIT_RESET_TZ)
+    return china_now()
 
 
 def _parse_three_mf_limit_time(value: str) -> Optional[datetime]:
     raw = str(value or "").strip()
     if not raw:
         return None
-    try:
-        parsed = datetime.fromisoformat(raw)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None and THREE_MF_LIMIT_RESET_TZ is not None:
-        return parsed.replace(tzinfo=THREE_MF_LIMIT_RESET_TZ)
-    return parsed
+    return parse_datetime(raw)
 
 
 def _write_three_mf_limit_guard(payload: dict[str, Any]) -> dict[str, Any]:
@@ -690,7 +676,7 @@ class ArchiveTaskManager:
                 "status": "queued",
                 "progress": 0,
                 "message": message,
-                "updated_at": datetime.now().isoformat(),
+                "updated_at": china_now().isoformat(),
             }
         )
         return task_id
@@ -1585,7 +1571,7 @@ class ArchiveTaskManager:
                     "instance_id": str(item.get("id") or item.get("profileId") or item.get("instanceId") or ""),
                     "status": "missing",
                     "message": _missing_3mf_message_from_result(item, limit_guard_state, url=url),
-                    "updated_at": datetime.now().isoformat(),
+                    "updated_at": china_now().isoformat(),
                 }
             )
         resolved_model_id = str(result.get("model_id") or "")

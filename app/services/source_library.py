@@ -3,7 +3,6 @@ import json
 import re
 import threading
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -13,6 +12,7 @@ from bs4 import BeautifulSoup
 
 from app.core.settings import STATE_DIR, ensure_app_dirs
 from app.core.store import JsonStore
+from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
 from app.services.batch_discovery import normalize_source_url
 from app.services.business_logs import append_business_log
 from app.services.catalog import (
@@ -65,7 +65,7 @@ DEFAULT_STATE_SORT_ORDER = {
 
 
 def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return china_now_iso()
 
 
 def _safe_int(value: Any) -> int:
@@ -770,10 +770,9 @@ def _group_sort_timestamp(group: dict[str, Any]) -> int:
         raw = str(group.get(key) or "").strip()
         if not raw:
             continue
-        try:
-            return int(datetime.fromisoformat(raw).timestamp())
-        except ValueError:
-            continue
+        parsed = parse_datetime(raw)
+        if parsed is not None:
+            return int(parsed.timestamp())
     return 0
 
 
@@ -1065,11 +1064,10 @@ def _stale_metadata(item: dict[str, Any], *, force: bool) -> bool:
     last_synced = str(item.get("last_synced_at") or "")
     if not last_synced:
         return True
-    try:
-        synced_at = datetime.fromisoformat(last_synced)
-    except ValueError:
+    synced_at = parse_datetime(last_synced)
+    if synced_at is None:
         return True
-    age_seconds = (datetime.now() - synced_at).total_seconds()
+    age_seconds = (china_now() - synced_at).total_seconds()
     if age_seconds >= SOURCE_LIBRARY_METADATA_TTL_SECONDS:
         return True
     primary_fields = (
