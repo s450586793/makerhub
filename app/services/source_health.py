@@ -34,15 +34,9 @@ MW_BROWSER_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/135.0.0.0 Safari/537.36"
 )
-THREE_MF_PROBES = {
-    "cn": {
-        "origin": "https://makerworld.com.cn",
-        "url": "https://api.bambulab.cn/v1/design-service/instance/2667239/f3mf?type=download&fileType=",
-    },
-    "global": {
-        "origin": "https://makerworld.com",
-        "url": "https://api.bambulab.com/v1/design-service/instance/358109/f3mf?type=download&fileType=",
-    },
+PLATFORM_ORIGINS = {
+    "cn": "https://makerworld.com.cn",
+    "global": "https://makerworld.com",
 }
 AUTH_PROBES = {
     "cn": (
@@ -110,21 +104,6 @@ def _contains_verification_markers(text: str) -> bool:
         "challenge-platform",
     )
     return any(marker in lowered for marker in markers)
-
-
-def _extract_download_url(payload: Any) -> str:
-    current = payload
-    if isinstance(payload, dict):
-        current = payload.get("data") or payload.get("result") or payload
-    if not isinstance(current, dict):
-        return ""
-    return str(
-        current.get("url")
-        or current.get("downloadUrl")
-        or current.get("download_url")
-        or current.get("downloadURL")
-        or ""
-    ).strip()
 
 
 def _safe_error_message(exc: Exception) -> str:
@@ -249,73 +228,6 @@ def _build_request_headers(origin: str, raw_cookie: str) -> dict[str, str]:
     return headers
 
 
-def _classify_probe_response(response: requests.Response) -> dict[str, str]:
-    preview = (response.text or "")[:400]
-    combined = preview.lower()
-
-    if response.status_code == 418 or _contains_verification_markers(preview) or _looks_like_html(preview):
-        return {
-            "state": "verification_required",
-            "status": "需要验证",
-            "detail": "",
-        }
-    if "每日下载上限" in combined or ("daily" in combined and "download" in combined and "limit" in combined):
-        return {
-            "state": "download_limited",
-            "status": "到达每日上限",
-            "detail": "",
-        }
-    if "please log in to download models" in combined or "log in to download models" in combined or response.status_code in {401, 403}:
-        return {
-            "state": "auth_required",
-            "status": "Cookie 失效",
-            "detail": "",
-        }
-
-    if response.status_code < 400:
-        try:
-            payload = response.json()
-        except Exception:
-            payload = None
-        if _extract_download_url(payload):
-            return {
-                "state": "ok",
-                "status": "连接正常",
-                "detail": "",
-            }
-
-    return {
-        "state": "http_error",
-        "status": "连接异常",
-        "detail": f"下载接口返回 HTTP {response.status_code}。",
-    }
-
-
-def _probe_3mf_endpoint(platform: str, raw_cookie: str, proxy_config: Any) -> dict[str, str]:
-    probe = THREE_MF_PROBES.get(platform)
-    if not probe:
-        return {"state": "http_error", "status": "连接异常", "detail": "缺少探针配置。"}
-
-    session = _make_session()
-    proxies = _build_proxy_mapping(proxy_config)
-    try:
-        response = session.get(
-            str(probe.get("url") or ""),
-            headers=_build_request_headers(str(probe.get("origin") or ""), raw_cookie),
-            proxies=proxies or None,
-            timeout=(6, 15),
-        )
-        return _classify_probe_response(response)
-    except Exception as exc:
-        return {
-            "state": "http_error",
-            "status": "连接异常",
-            "detail": _safe_error_message(exc),
-        }
-    finally:
-        session.close()
-
-
 def _classify_auth_probe_result(result: dict[str, Any]) -> str:
     if bool(result.get("ok")):
         return "ok"
@@ -335,7 +247,7 @@ def _probe_auth_endpoints(platform: str, raw_cookie: str, proxy_config: Any) -> 
 
     session = _make_session()
     proxies = _build_proxy_mapping(proxy_config)
-    headers = _build_request_headers(THREE_MF_PROBES.get(platform, {}).get("origin", ""), raw_cookie)
+    headers = _build_request_headers(PLATFORM_ORIGINS.get(platform, ""), raw_cookie)
     states: list[str] = []
     try:
         for url in urls:
@@ -425,11 +337,7 @@ def _probe_platform_status(platform: str, raw_cookie: str, proxy_config: Any) ->
         if cached and now - float(cached.get("checked_at") or 0) < SOURCE_HEALTH_CACHE_TTL_SECONDS:
             return dict(cached.get("payload") or {})
 
-    payload = _probe_3mf_endpoint(platform, normalized_cookie, proxy_config)
-    if payload.get("state") == "http_error":
-        fallback = _probe_auth_endpoints(platform, normalized_cookie, proxy_config)
-        if fallback.get("state") in {"ok", "verification_required", "auth_required"}:
-            payload = fallback
+    payload = _probe_auth_endpoints(platform, normalized_cookie, proxy_config)
 
     with SOURCE_HEALTH_CACHE_LOCK:
         SOURCE_HEALTH_CACHE[cache_key] = {
