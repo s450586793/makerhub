@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import requests
 
 from app.core.settings import STATE_DIR, ensure_app_dirs
-from app.services.cookie_utils import extract_auth_token, sanitize_cookie_header
+from app.services.cookie_utils import sanitize_cookie_header
 from app.services.three_mf import normalize_makerworld_source
 
 
@@ -40,12 +40,12 @@ PLATFORM_ORIGINS = {
 }
 AUTH_PROBES = {
     "cn": (
-        "https://makerworld.com.cn/api/v1/user-service/my/message/count",
-        "https://makerworld.com.cn/api/v1/design-user-service/my/preference",
+        ("消息计数", "https://makerworld.com.cn/api/v1/user-service/my/message/count"),
+        ("个人偏好", "https://makerworld.com.cn/api/v1/design-user-service/my/preference"),
     ),
     "global": (
-        "https://makerworld.com/api/v1/user-service/my/message/count",
-        "https://makerworld.com/api/v1/design-user-service/my/preference",
+        ("消息计数", "https://makerworld.com/api/v1/user-service/my/message/count"),
+        ("个人偏好", "https://makerworld.com/api/v1/design-user-service/my/preference"),
     ),
 }
 SOURCE_HEALTH_LABELS = {
@@ -215,22 +215,15 @@ def _build_request_headers(origin: str, raw_cookie: str) -> dict[str, str]:
     }
     if cookie_header:
         headers["Cookie"] = cookie_header
-    token = extract_auth_token(cookie_header)
-    if token:
-        headers.update(
-            {
-                "Authorization": f"Bearer {token}",
-                "token": token,
-                "X-Token": token,
-                "X-Access-Token": token,
-            }
-        )
     return headers
 
 
 def _classify_auth_probe_result(result: dict[str, Any]) -> str:
     if bool(result.get("ok")):
         return "ok"
+    failure_kind = str(result.get("failure_kind") or "").strip()
+    if failure_kind:
+        return failure_kind
     lowered = str(result.get("error") or "").lower()
     if _contains_verification_markers(lowered) or "html" in lowered:
         return "verification_required"
@@ -240,17 +233,59 @@ def _classify_auth_probe_result(result: dict[str, Any]) -> str:
     return "http_error"
 
 
-def _probe_auth_endpoints(platform: str, raw_cookie: str, proxy_config: Any) -> dict[str, str]:
-    urls = AUTH_PROBES.get(platform) or ()
-    if not urls:
-        return {"state": "http_error", "status": "连接异常", "detail": "缺少认证探针配置。"}
+def _platform_cookie_label(platform: str) -> str:
+    return "国际" if str(platform or "").strip() == "global" else "国内"
+
+
+def _build_cookie_auth_message(platform: str, payload: dict[str, Any]) -> str:
+    platform_label = _platform_cookie_label(platform)
+    success_count = int(payload.get("success_count") or 0)
+    target_count = int(payload.get("target_count") or 0)
+    state = str(payload.get("state") or "")
+    if target_count > 0 and success_count == target_count:
+        return f"{platform_label} Cookie 测试成功，认证接口可正常访问。"
+    if success_count > 0:
+        return f"{platform_label} Cookie 部分成功，{success_count}/{target_count} 个接口可访问。"
+    if state == "missing_cookie":
+        return f"请先填写{platform_label} Cookie。"
+    if state == "verification_required":
+        return f"{platform_label} Cookie 需要验证，请先在浏览器完成 MakerWorld 验证后再测试。"
+    if state == "auth_required":
+        return f"{platform_label} Cookie 失效，请重新获取并保存 Cookie。"
+    if state == "download_limited":
+        return f"{platform_label}站已到达 3MF 每日下载上限，过零点后会自动恢复。"
+    return f"{platform_label} Cookie 测试失败，认证接口未返回有效结果。"
+
+
+def _empty_cookie_auth_payload(platform: str, state: str, status: str, detail: str) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "ok": False,
+        "platform": platform,
+        "state": state,
+        "status": status,
+        "detail": detail,
+        "results": [],
+        "success_count": 0,
+        "target_count": 0,
+        "used_proxy": False,
+    }
+    payload["message"] = _build_cookie_auth_message(platform, payload)
+    return payload
+
+
+def _probe_auth_endpoints(platform: str, raw_cookie: str, proxy_config: Any) -> dict[str, Any]:
+    probes = AUTH_PROBES.get(platform) or ()
+    if not probes:
+        return _empty_cookie_auth_payload(platform, "http_error", "连接异常", "缺少认证探针配置。")
 
     session = _make_session()
     proxies = _build_proxy_mapping(proxy_config)
     headers = _build_request_headers(PLATFORM_ORIGINS.get(platform, ""), raw_cookie)
     states: list[str] = []
+    results: list[dict[str, Any]] = []
     try:
-        for url in urls:
+        for name, url in probes:
+            started = time.perf_counter()
             try:
                 response = session.get(
                     url,
@@ -258,45 +293,92 @@ def _probe_auth_endpoints(platform: str, raw_cookie: str, proxy_config: Any) -> 
                     proxies=proxies or None,
                     timeout=(6, 12),
                 )
+                elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
                 preview = (response.text or "")[:240]
                 looks_like_html = _looks_like_html(preview)
+                verification_marker = _contains_verification_markers(preview)
+                ok = response.status_code < 400 and not looks_like_html
                 result = {
-                    "ok": response.status_code < 400 and not looks_like_html,
+                    "target": name,
+                    "url": url,
+                    "ok": ok,
                     "status_code": int(response.status_code),
-                    "error": "html challenge" if looks_like_html else "",
+                    "elapsed_ms": elapsed_ms,
+                    "content_type": str(response.headers.get("content-type") or "").lower()[:80],
                 }
+                if not ok:
+                    if looks_like_html:
+                        result["failure_kind"] = "verification_required"
+                        result["error"] = (
+                            "返回了验证页面，通常表示需要完成网页验证。"
+                            if verification_marker
+                            else "返回了 HTML 页面，通常表示 Cookie 失效、风控校验未通过，或代理未生效。"
+                        )
+                    elif response.status_code in {401, 403}:
+                        result["failure_kind"] = "auth_required"
+                        result["error"] = f"接口返回状态码 {response.status_code}。"
+                    else:
+                        result["failure_kind"] = "http_error"
+                        result["error"] = f"接口返回状态码 {response.status_code}。"
             except Exception as exc:
+                elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
                 result = {
+                    "target": name,
+                    "url": url,
                     "ok": False,
+                    "elapsed_ms": elapsed_ms,
+                    "failure_kind": "http_error",
                     "error": _safe_error_message(exc),
                 }
+            results.append(result)
             states.append(_classify_auth_probe_result(result))
     finally:
         session.close()
 
+    success_count = sum(1 for item in results if item.get("ok"))
     if "ok" in states:
-        return {
+        payload = {
+            "ok": True,
+            "platform": platform,
             "state": "ok",
             "status": "连接正常",
             "detail": "",
         }
-    if "verification_required" in states:
-        return {
+    elif "verification_required" in states:
+        payload = {
+            "ok": False,
+            "platform": platform,
             "state": "verification_required",
             "status": "需要验证",
             "detail": "",
         }
-    if "auth_required" in states:
-        return {
+    elif "auth_required" in states:
+        payload = {
+            "ok": False,
+            "platform": platform,
             "state": "auth_required",
             "status": "Cookie 失效",
             "detail": "",
         }
-    return {
-        "state": "http_error",
-        "status": "连接异常",
-        "detail": "认证接口暂时不可用。",
-    }
+    else:
+        payload = {
+            "ok": False,
+            "platform": platform,
+            "state": "http_error",
+            "status": "连接异常",
+            "detail": "认证接口暂时不可用。",
+        }
+
+    payload.update(
+        {
+            "results": results,
+            "success_count": success_count,
+            "target_count": len(results),
+            "used_proxy": bool(proxies),
+        }
+    )
+    payload["message"] = _build_cookie_auth_message(platform, payload)
+    return payload
 
 
 def _cache_key(platform: str, raw_cookie: str, proxy_config: Any) -> str:
@@ -313,38 +395,51 @@ def _cache_key(platform: str, raw_cookie: str, proxy_config: Any) -> str:
     return f"{platform}:{cookie_hash}:{proxy_state}"
 
 
-def _probe_platform_status(platform: str, raw_cookie: str, proxy_config: Any) -> dict[str, str]:
+def probe_cookie_auth_status(
+    platform: str,
+    raw_cookie: str,
+    proxy_config: Any,
+    *,
+    include_limit_guard: bool = False,
+    use_cache: bool = False,
+) -> dict[str, Any]:
+    platform_key = "global" if str(platform or "").strip() == "global" else "cn"
     normalized_cookie = sanitize_cookie_header(raw_cookie)
     if not normalized_cookie:
-        return {
-            "state": "missing_cookie",
-            "status": "未配置 Cookie",
-            "detail": "还没有保存对应站点的 Cookie。",
-        }
+        return _empty_cookie_auth_payload(platform_key, "missing_cookie", "未配置 Cookie", "还没有保存对应站点的 Cookie。")
 
-    limit_guard = _limit_guard_for_platform(platform)
-    if limit_guard:
-        return {
-            "state": "download_limited",
-            "status": "到达每日上限",
-            "detail": "",
-        }
+    if include_limit_guard:
+        limit_guard = _limit_guard_for_platform(platform_key)
+        if limit_guard:
+            return _empty_cookie_auth_payload(platform_key, "download_limited", "到达每日上限", "")
 
-    cache_key = _cache_key(platform, normalized_cookie, proxy_config)
+    cache_key = _cache_key(platform_key, normalized_cookie, proxy_config)
     now = time.time()
-    with SOURCE_HEALTH_CACHE_LOCK:
-        cached = SOURCE_HEALTH_CACHE.get(cache_key)
-        if cached and now - float(cached.get("checked_at") or 0) < SOURCE_HEALTH_CACHE_TTL_SECONDS:
-            return dict(cached.get("payload") or {})
+    if use_cache:
+        with SOURCE_HEALTH_CACHE_LOCK:
+            cached = SOURCE_HEALTH_CACHE.get(cache_key)
+            if cached and now - float(cached.get("checked_at") or 0) < SOURCE_HEALTH_CACHE_TTL_SECONDS:
+                return dict(cached.get("payload") or {})
 
-    payload = _probe_auth_endpoints(platform, normalized_cookie, proxy_config)
+    payload = _probe_auth_endpoints(platform_key, normalized_cookie, proxy_config)
 
-    with SOURCE_HEALTH_CACHE_LOCK:
-        SOURCE_HEALTH_CACHE[cache_key] = {
-            "checked_at": now,
-            "payload": payload,
-        }
+    if use_cache:
+        with SOURCE_HEALTH_CACHE_LOCK:
+            SOURCE_HEALTH_CACHE[cache_key] = {
+                "checked_at": now,
+                "payload": payload,
+            }
     return dict(payload)
+
+
+def _probe_platform_status(platform: str, raw_cookie: str, proxy_config: Any) -> dict[str, Any]:
+    return probe_cookie_auth_status(
+        platform,
+        raw_cookie,
+        proxy_config,
+        include_limit_guard=True,
+        use_cache=True,
+    )
 
 
 def build_source_health_cards(config: Any) -> list[dict[str, Any]]:

@@ -58,6 +58,7 @@ from app.services.source_library import (
     build_source_library_payload,
     build_state_group_models_payload,
 )
+from app.services.source_health import probe_cookie_auth_status
 from app.services.task_state import TaskStateStore
 from app.services.archive_worker import BATCH_TASK_MODES, detect_archive_mode
 from app.services.self_update import get_update_status, request_system_update
@@ -132,12 +133,6 @@ PROXY_TEST_TARGETS = (
     ("MakerWorld CN", "https://makerworld.com.cn/"),
     ("MakerWorld Global", "https://makerworld.com/"),
 )
-COOKIE_TEST_ENDPOINTS = (
-    ("消息计数", "/api/v1/user-service/my/message/count"),
-    ("个人偏好", "/api/v1/design-user-service/my/preference"),
-)
-
-
 def _task_identity(item: dict) -> str:
     return str(item.get("id") or item.get("url") or item.get("title") or "")
 
@@ -555,86 +550,18 @@ def _run_proxy_test(config: ProxyConfig) -> dict:
     }
 
 
-def _cookie_base_url(platform: str) -> str:
-    return "https://makerworld.com" if str(platform or "").strip() == "global" else "https://makerworld.com.cn"
-
-
 def _run_cookie_test(payload: CookieTestRequest) -> dict:
     raw_cookie = sanitize_cookie_header(payload.cookie)
     if not raw_cookie:
         raise ValueError("请先填写 Cookie。")
 
-    base_url = _cookie_base_url(payload.platform)
-    proxies = _build_proxy_mapping(payload.proxy) if bool(payload.proxy.enabled) else {}
-    session = _make_test_session()
-    results: list[dict] = []
-    try:
-        for name, path in COOKIE_TEST_ENDPOINTS:
-            url = f"{base_url}{path}"
-            started = time.perf_counter()
-            try:
-                response = session.get(
-                    url,
-                    headers={
-                        "Referer": f"{base_url}/",
-                        "Origin": base_url,
-                        "Cookie": raw_cookie,
-                    },
-                    proxies=proxies or None,
-                    timeout=(6, 12),
-                )
-                elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
-                content_type = str(response.headers.get("content-type") or "").lower()
-                body_preview = (response.text or "")[:160]
-                looks_like_html = "<html" in body_preview.lower() or "<!doctype html" in body_preview.lower()
-                ok = response.status_code < 400 and not looks_like_html
-                result = {
-                    "target": name,
-                    "url": url,
-                    "ok": ok,
-                    "status_code": int(response.status_code),
-                    "elapsed_ms": elapsed_ms,
-                    "content_type": content_type[:80],
-                }
-                if not ok:
-                    result["error"] = (
-                        "返回了 HTML 页面，通常表示 Cookie 失效、风控校验未通过，或代理未生效。"
-                        if looks_like_html
-                        else f"接口返回状态码 {response.status_code}。"
-                    )
-                results.append(result)
-            except Exception as exc:
-                elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
-                results.append(
-                    {
-                        "target": name,
-                        "url": url,
-                        "ok": False,
-                        "elapsed_ms": elapsed_ms,
-                        "error": _safe_error_message(exc),
-                    }
-                )
-    finally:
-        session.close()
-
-    success_count = sum(1 for item in results if item.get("ok"))
-    ok = success_count > 0
-    platform_label = "国际" if payload.platform == "global" else "国内"
-    if success_count == len(results):
-        message = f"{platform_label} Cookie 测试成功，认证接口可正常访问。"
-    elif success_count > 0:
-        message = f"{platform_label} Cookie 部分成功，{success_count}/{len(results)} 个接口可访问。"
-    else:
-        message = f"{platform_label} Cookie 测试失败，认证接口未返回有效结果。"
-    return {
-        "ok": ok,
-        "message": message,
-        "platform": payload.platform,
-        "results": results,
-        "success_count": success_count,
-        "target_count": len(results),
-        "used_proxy": bool(payload.proxy.enabled and proxies),
-    }
+    return probe_cookie_auth_status(
+        payload.platform,
+        raw_cookie,
+        payload.proxy,
+        include_limit_guard=False,
+        use_cache=False,
+    )
 
 
 def _archive_event_snapshot() -> dict:
