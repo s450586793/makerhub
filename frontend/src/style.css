@@ -2388,6 +2388,12 @@
   gap: 14px;
 }
 
+.source-library-card--collection {
+  padding: 14px;
+  display: grid;
+  gap: 14px;
+}
+
 .source-library-card__author-shell {
   padding: 18px 18px 12px;
   border-radius: 22px;
@@ -2408,6 +2414,12 @@
   flex: 0 0 58px;
   width: 58px;
   height: 58px;
+}
+
+.source-library-card__avatar-shell--collection {
+  flex-basis: 54px;
+  width: 54px;
+  height: 54px;
 }
 
 .source-library-card__avatar-shell img,
@@ -2489,8 +2501,8 @@
 }
 
 .source-library-card__stats--collection {
-  margin-top: 14px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: 1px solid var(--border);
 }
 
 .source-library-card__stat {
@@ -2525,6 +2537,10 @@
 }
 
 .source-library-card__preview-grid--author {
+  padding-top: 0;
+}
+
+.source-library-card__preview-grid--collection {
   padding-top: 0;
 }
 
@@ -2565,10 +2581,6 @@
   line-height: 1;
   font-weight: 900;
   letter-spacing: -0.04em;
-}
-
-.source-library-card--collection .source-library-card__preview-grid {
-  padding: 0;
 }
 
 .source-library-card__collection-body {

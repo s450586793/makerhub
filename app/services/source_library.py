@@ -51,6 +51,7 @@ AUTHOR_AVATAR_KEYS = (
 )
 AUTHOR_FOLLOWER_KEYS = ("followerCount", "followersCount", "fanCount", "fansCount", "followedCount", "followCount")
 AUTHOR_LIKE_KEYS = ("likeCount", "likesCount", "likedCount", "thumbsUpCount", "totalLikeCount")
+AUTHOR_MODEL_COUNT_KEYS = ("designCount", "designCnt", "modelCount", "modelsCount", "uploadCount", "worksCount")
 COLLECTION_NAME_KEYS = ("name", "title", "collectionName", "favoritesName")
 COLLECTION_COUNT_KEYS = ("designCount", "designCnt", "modelCount", "modelsCount", "count")
 COLLECTION_FOLLOWER_KEYS = ("followerCount", "followersCount", "favoriteCount", "favoritesCount", "followCount")
@@ -308,11 +309,14 @@ def _extract_author_metadata_from_next_data(next_data: Any, expected_handle: str
         avatar_url = _pick_first_image(node, AUTHOR_AVATAR_KEYS)
         followers = 0
         likes = 0
+        model_count = 0
         for key in AUTHOR_FOLLOWER_KEYS:
             followers = max(followers, _safe_int(node.get(key)))
         for key in AUTHOR_LIKE_KEYS:
             likes = max(likes, _safe_int(node.get(key)))
-        if not any((name, handle, avatar_url, followers, likes)):
+        for key in AUTHOR_MODEL_COUNT_KEYS:
+            model_count = max(model_count, _safe_int(node.get(key)))
+        if not any((name, handle, avatar_url, followers, likes, model_count)):
             continue
         score = 0
         if handle:
@@ -325,6 +329,8 @@ def _extract_author_metadata_from_next_data(next_data: Any, expected_handle: str
             score += 2
         if likes:
             score += 1
+        if model_count:
+            score += 1
         if expected and handle and handle.lower() == expected:
             score += 10
         if score > best_score:
@@ -335,6 +341,7 @@ def _extract_author_metadata_from_next_data(next_data: Any, expected_handle: str
                 "avatar_url": avatar_url,
                 "followers_count": followers,
                 "likes_count": likes,
+                "remote_model_count": model_count,
                 "verified": bool(node.get("verified") or node.get("isVerified") or node.get("officialVerify")),
             }
     return best_payload
@@ -485,6 +492,7 @@ def _base_group(
         "verified": False,
         "followers_count": 0,
         "likes_count": 0,
+        "remote_model_count": 0,
         "secondary_count": 0,
         "model_dirs": [],
         "_model_dir_set": set(),
@@ -520,9 +528,12 @@ def _finalize_group(group: dict[str, Any], models_by_dir: dict[str, dict], metad
     group["verified"] = bool(metadata.get("verified") or group.get("verified"))
     group["followers_count"] = _safe_int(metadata.get("followers_count") or group.get("followers_count"))
     group["likes_count"] = _safe_int(metadata.get("likes_count") or group.get("likes_count"))
+    group["remote_model_count"] = _safe_int(metadata.get("remote_model_count") or group.get("remote_model_count"))
     if metadata.get("description"):
         group["description"] = metadata["description"]
-    group["model_count"] = len(group.get("model_dirs") or [])
+    local_model_count = len(group.get("model_dirs") or [])
+    group["local_model_count"] = local_model_count
+    group["model_count"] = max(local_model_count, _safe_int(group.get("remote_model_count")))
     group["stats"] = _build_group_stats(group, members)
     group["sort_score"] = max(group["followers_count"], group["model_count"], group["likes_count"])
     group.pop("_model_dir_set", None)
@@ -531,7 +542,7 @@ def _finalize_group(group: dict[str, Any], models_by_dir: dict[str, dict], metad
 
 def _build_group_stats(group: dict[str, Any], members: list[dict]) -> list[dict[str, Any]]:
     kind = str(group.get("kind") or "")
-    model_count = len(members)
+    model_count = _safe_int(group.get("model_count")) or len(members)
     if kind == "author":
         likes_value = group.get("likes_count") or sum(_safe_int(item.get("stats", {}).get("likes")) for item in members)
         return [
@@ -718,6 +729,9 @@ def _group_subscription_sources(
         current_items = state_item.get("current_items") or []
         tracked_items = state_item.get("tracked_items") or []
         source_items = current_items or tracked_items
+        source_model_count = max(len(source_items), _safe_int(state_item.get("last_discovered_count")))
+        if source_model_count:
+            group["remote_model_count"] = source_model_count
         for child in source_items:
             task_key = _normalize_text(child.get("task_key"))
             url_key = normalize_source_url(str(child.get("url") or ""))
@@ -1052,6 +1066,79 @@ def _stale_metadata(item: dict[str, Any], *, force: bool) -> bool:
         str(item.get("cover_url") or "").strip(),
     )
     return not any(primary_fields)
+
+
+def _source_identity_from_subscription(url: str, mode: str) -> Optional[dict[str, str]]:
+    source_url = normalize_source_url(url)
+    if not source_url:
+        return None
+    clean_mode = str(mode or "").strip()
+    site = _site_from_url(source_url)
+    if clean_mode == "author_upload":
+        author_url = _author_profile_url(source_url) or source_url
+        return {
+            "key": _source_key("author", site, author_url),
+            "kind": "author",
+            "site": site,
+            "canonical_url": source_url,
+            "fetch_url": author_url,
+        }
+    if clean_mode == "collection_models":
+        kind = _subscription_kind(source_url)
+        return {
+            "key": _source_key(kind, site, source_url),
+            "kind": kind,
+            "site": site,
+            "canonical_url": source_url,
+            "fetch_url": source_url,
+        }
+    return None
+
+
+def _positive_int(value: Any) -> int:
+    numeric = _safe_int(value)
+    return numeric if numeric > 0 else 0
+
+
+def refresh_subscription_source_metadata(
+    *,
+    url: str,
+    mode: str,
+    config,
+    source_model_count: Any = 0,
+) -> dict[str, Any]:
+    identity = _source_identity_from_subscription(url, mode)
+    if not identity:
+        return {"refreshed": False, "reason": "unsupported"}
+
+    kind = identity["kind"]
+    fetch_url = identity["fetch_url"]
+    if kind == "author":
+        payload = _fetch_author_metadata(fetch_url, config)
+    else:
+        payload = _fetch_collection_metadata(fetch_url, config)
+
+    remote_model_count = _positive_int(source_model_count) or _positive_int(payload.get("remote_model_count"))
+    if remote_model_count:
+        payload["remote_model_count"] = remote_model_count
+
+    _save_source_metadata_item(
+        identity["key"],
+        {
+            **payload,
+            "kind": kind,
+            "canonical_url": identity["canonical_url"],
+            "site": identity["site"],
+            "error": "",
+        },
+    )
+    return {
+        "refreshed": True,
+        "source_key": identity["key"],
+        "kind": kind,
+        "remote_model_count": remote_model_count,
+        "title": str(payload.get("title") or ""),
+    }
 
 
 def refresh_source_metadata(force: bool = False, store: Optional[JsonStore] = None, task_store: Optional[TaskStateStore] = None) -> dict[str, Any]:

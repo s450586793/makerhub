@@ -17,7 +17,7 @@ from app.services.cookie_utils import sanitize_cookie_header
 from app.services.archive_worker import ArchiveTaskManager, detect_archive_mode
 from app.services.batch_discovery import discover_batch_model_urls, extract_model_id, normalize_source_url
 from app.services.business_logs import append_business_log
-from app.services.source_library import build_subscription_overview_payload
+from app.services.source_library import build_subscription_overview_payload, refresh_subscription_source_metadata
 from app.services.task_state import TaskStateStore
 
 
@@ -62,10 +62,12 @@ def _append_subscription_log(event: str, **payload: Any) -> None:
             )
     except Exception:
         return
-    if event in {"initialized", "sync_start", "sync_done", "sync_error", "scheduler_error"}:
-        level = "error" if event in {"sync_error", "scheduler_error"} else "info"
+    if event in {"initialized", "metadata_refreshed", "metadata_refresh_error", "sync_start", "sync_done", "sync_error", "scheduler_error"}:
+        level = "error" if event in {"metadata_refresh_error", "sync_error", "scheduler_error"} else "info"
         message_map = {
             "initialized": "订阅初始化完成。",
+            "metadata_refreshed": "订阅来源卡元数据已刷新。",
+            "metadata_refresh_error": "订阅来源卡元数据刷新失败。",
             "sync_start": "订阅同步开始。",
             "sync_done": "订阅同步完成。",
             "sync_error": "订阅同步失败。",
@@ -617,6 +619,7 @@ class SubscriptionManager:
         try:
             discovered = self._discover_subscription_items(subscription)
             current_items = _normalize_source_items(discovered.get("items") or [])
+            self._refresh_subscription_source_metadata(subscription, discovered, len(current_items))
             tracked_items = _merge_source_items(previous_state.get("tracked_items") or [], current_items)
             previous_tracked_keys = {item["task_key"] for item in _normalize_source_items(previous_state.get("tracked_items") or [])}
             source_new_items = [item for item in current_items if item["task_key"] not in previous_tracked_keys]
@@ -705,9 +708,42 @@ class SubscriptionManager:
         with _temporary_proxy_env(config):
             return discover_batch_model_urls(subscription.url, cookie)
 
+    def _refresh_subscription_source_metadata(
+        self,
+        subscription: SubscriptionRecord,
+        discovered: dict,
+        current_count: int,
+    ) -> None:
+        try:
+            expected_total = discovered.get("expected_total") if isinstance(discovered, dict) else None
+            source_model_count = expected_total if isinstance(expected_total, int) and expected_total > 0 else current_count
+            result = refresh_subscription_source_metadata(
+                url=subscription.url,
+                mode=subscription.mode,
+                config=self.store.load(),
+                source_model_count=source_model_count,
+            )
+            if result.get("refreshed"):
+                _append_subscription_log(
+                    "metadata_refreshed",
+                    subscription_id=subscription.id,
+                    url=subscription.url,
+                    source_key=result.get("source_key"),
+                    kind=result.get("kind"),
+                    remote_model_count=result.get("remote_model_count"),
+                )
+        except Exception as exc:
+            _append_subscription_log(
+                "metadata_refresh_error",
+                subscription_id=subscription.id,
+                url=subscription.url,
+                error=str(exc),
+            )
+
     def _initialize_subscription_state(self, subscription: SubscriptionRecord) -> dict:
         discovered = self._discover_subscription_items(subscription)
         current_items = _normalize_source_items(discovered.get("items") or [])
+        self._refresh_subscription_source_metadata(subscription, discovered, len(current_items))
         now_iso = _now_iso()
         next_run_at = now_iso if subscription.enabled else ""
         expected_total = discovered.get("expected_total")
