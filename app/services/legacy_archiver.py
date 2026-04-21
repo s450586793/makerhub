@@ -1072,6 +1072,8 @@ def collect_comments(
     progress_callback=None,
     progress_start: int = 50,
     progress_end: int = 55,
+    download_assets: bool = True,
+    existing_comments: Optional[List[dict]] = None,
 ) -> dict:
     emit_progress(progress_callback, progress_start, "正在整理评论数据")
     total_started_at = time.perf_counter()
@@ -1126,6 +1128,54 @@ def collect_comments(
             or _comment_numeric(design.get("reviewCount"))
             or _comment_numeric(counts.get("comments"))
         )
+
+    existing_comment_lookup = {}
+    if isinstance(existing_comments, list):
+        for item in existing_comments:
+            if not isinstance(item, dict):
+                continue
+            comment_id = str(item.get("id") or "").strip()
+            if comment_id and comment_id not in existing_comment_lookup:
+                existing_comment_lookup[comment_id] = item
+
+    if not download_assets:
+        for item in comments:
+            existing = existing_comment_lookup.get(str(item.get("id") or "").strip()) or {}
+            existing_author = existing.get("author") if isinstance(existing.get("author"), dict) else {}
+            author = item.get("author") if isinstance(item.get("author"), dict) else {}
+            if str(existing_author.get("avatarLocal") or "").strip():
+                author["avatarLocal"] = str(existing_author.get("avatarLocal") or "").strip()
+            if str(existing_author.get("avatarRelPath") or "").strip():
+                author["avatarRelPath"] = str(existing_author.get("avatarRelPath") or "").strip()
+
+            existing_images = existing.get("images") if isinstance(existing.get("images"), list) else []
+            existing_image_lookup = _build_existing_media_lookup(existing_images, url_fields=("url", "originalUrl"))
+            images = item.get("images") if isinstance(item.get("images"), list) else []
+            for img_idx, image in enumerate(images, start=1):
+                if not isinstance(image, dict):
+                    continue
+                existing_image = _match_existing_media_item_from_lookup(
+                    existing_image_lookup,
+                    url=str(image.get("url") or ""),
+                    index=img_idx,
+                )
+                if str(existing_image.get("localName") or "").strip():
+                    image["localName"] = str(existing_image.get("localName") or "").strip()
+                if str(existing_image.get("relPath") or "").strip():
+                    image["relPath"] = str(existing_image.get("relPath") or "").strip()
+        emit_progress(progress_callback, progress_end, "评论整理完成")
+        _log_perf(
+            "comments.total",
+            total_started_at,
+            mode=search_mode,
+            comments=len(comments),
+            assets=0,
+            download_assets=False,
+        )
+        return {
+            "count": max(comment_count, len(comments)),
+            "items": comments,
+        }
 
     asset_total = 0
     for item in comments:
@@ -1215,6 +1265,8 @@ def parse_summary(
     progress_callback=None,
     progress_start: int = 40,
     progress_end: int = 45,
+    download_assets: bool = True,
+    existing_meta: Optional[dict] = None,
 ):
     raw_html = (
         design.get("summary")
@@ -1252,6 +1304,11 @@ def parse_summary(
         if src:
             image_nodes.append((img, src))
 
+    existing_summary_images = []
+    if isinstance(existing_meta, dict):
+        existing_summary_images = existing_meta.get("summaryImages") if isinstance(existing_meta.get("summaryImages"), list) else []
+    existing_summary_lookup = _build_existing_media_lookup(existing_summary_images, url_fields=("originalUrl", "url"))
+
     total_images = len(image_nodes)
     for idx, (img, src) in enumerate(image_nodes, start=1):
         _emit_stage_progress(
@@ -1264,6 +1321,25 @@ def parse_summary(
         )
         ext = pick_ext_from_url(src)
         name = f"summary_img_{idx:02d}.{ext}"
+        existing_image = _match_existing_media_item_from_lookup(
+            existing_summary_lookup,
+            url=src,
+            index=idx,
+        )
+        if not download_assets:
+            rel_path = str(existing_image.get("relPath") or "").strip()
+            file_name = str(existing_image.get("fileName") or "").strip()
+            if rel_path:
+                img["src"] = f"./{rel_path}" if not rel_path.startswith(("./", "http://", "https://")) else rel_path
+            summary_images.append(
+                {
+                    "index": idx,
+                    "originalUrl": src,
+                    "relPath": rel_path,
+                    "fileName": file_name,
+                }
+            )
+            continue
         try:
             download_file(
                 session,
@@ -1473,12 +1549,15 @@ def collect_design_images(
     progress_callback=None,
     progress_start: int = 45,
     progress_end: int = 50,
+    download_assets: bool = True,
+    existing_images: Optional[List[dict]] = None,
 ):
     pics = _normalize_design_pictures(design)
     if not pics:
         return [], None
     design_images = []
     cover_meta = None
+    existing_lookup = _build_existing_media_lookup(existing_images or [], url_fields=("originalUrl", "url"))
     for idx, p in enumerate(pics, start=1):
         _emit_stage_progress(
             progress_callback,
@@ -1498,6 +1577,22 @@ def collect_design_images(
         ext = pick_ext_from_url(url)
         fname = f"design_{idx:02d}.{ext}"
         rel = f"images/{fname}"
+        existing_image = _match_existing_media_item_from_lookup(
+            existing_lookup,
+            url=url,
+            index=idx,
+        )
+        if not download_assets:
+            meta = {
+                "index": idx,
+                "originalUrl": url,
+                "relPath": str(existing_image.get("relPath") or "").strip(),
+                "fileName": str(existing_image.get("fileName") or "").strip(),
+            }
+            design_images.append(meta)
+            if cover_meta is None:
+                cover_meta = meta
+            continue
         try:
             download_file(
                 session,
@@ -2595,9 +2690,13 @@ def build_meta(
         "views": design.get("readCount") or counts.get("views") or 0,
         "comments": comment_count or len(comment_items),
     }
-    images_design_list = [d["fileName"] for d in design_images]
-    summary_image_list = [i["fileName"] for i in summary.get("summaryImages", [])]
-    cover_local = cover_meta["fileName"] if cover_meta else ""
+    images_design_list = [str(d.get("fileName") or "") for d in design_images if str(d.get("fileName") or "").strip()]
+    summary_image_list = [
+        str(i.get("fileName") or "")
+        for i in summary.get("summaryImages", [])
+        if isinstance(i, dict) and str(i.get("fileName") or "").strip()
+    ]
+    cover_local = str(cover_meta.get("fileName") or "") if cover_meta else ""
     cover_url = (
         design.get("coverUrl")
         or design.get("coverImage")
@@ -2626,9 +2725,9 @@ def build_meta(
         "tagsOriginal": design.get("tagsOriginal") or [],
         "stats": stats,
         "cover": {
-            "url": cover_url if cover_meta is None else cover_meta["originalUrl"],
+            "url": cover_url if cover_meta is None else str(cover_meta.get("originalUrl") or ""),
             "localName": cover_local,
-            "relPath": cover_meta["relPath"] if cover_meta else "",
+            "relPath": str(cover_meta.get("relPath") or "") if cover_meta else "",
         },
         "author": {
             "name": author.get("name") or "",
@@ -3821,6 +3920,10 @@ def archive_model(
     skip_three_mf_fetch: bool = False,
     three_mf_skip_message: str = "",
     profile_metadata_only: bool = False,
+    download_assets: bool = True,
+    rebuild_archive: bool = True,
+    record_missing_3mf_log: bool = True,
+    three_mf_skip_state: str = "",
 ):
     """
     对外主入口：采集 + 下载文件 + 生成 meta/index.html/style.css
@@ -3924,19 +4027,26 @@ def archive_model(
 
     author = extract_author(design, html_text)
     if author.get("avatarUrl"):
-        ext = pick_ext_from_url(author["avatarUrl"])
-        fname = f"author_avatar.{ext}"
-        try:
-            download_file(
-                sess,
-                author["avatarUrl"],
-                images_dir / fname,
-                max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
-            )
-            author["avatarLocal"] = fname
-            author["avatarRelPath"] = f"images/{fname}"
-        except Exception as exc:
-            log(logger, "作者头像下载失败，保留原始链接：", author["avatarUrl"], exc)
+        if download_assets:
+            ext = pick_ext_from_url(author["avatarUrl"])
+            fname = f"author_avatar.{ext}"
+            try:
+                download_file(
+                    sess,
+                    author["avatarUrl"],
+                    images_dir / fname,
+                    max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+                )
+                author["avatarLocal"] = fname
+                author["avatarRelPath"] = f"images/{fname}"
+            except Exception as exc:
+                log(logger, "作者头像下载失败，保留原始链接：", author["avatarUrl"], exc)
+        else:
+            existing_author = existing_meta.get("author") if isinstance(existing_meta.get("author"), dict) else {}
+            if str(existing_author.get("avatarLocal") or "").strip():
+                author["avatarLocal"] = str(existing_author.get("avatarLocal") or "").strip()
+            if str(existing_author.get("avatarRelPath") or "").strip():
+                author["avatarRelPath"] = str(existing_author.get("avatarRelPath") or "").strip()
 
     emit_progress(progress_callback, 40, "正在整理摘要与设计图片")
     summary_started_at = time.perf_counter()
@@ -3948,6 +4058,8 @@ def archive_model(
         progress_callback=progress_callback,
         progress_start=40,
         progress_end=45,
+        download_assets=download_assets,
+        existing_meta=existing_meta,
     )
     _log_perf(
         "archive.parse_summary",
@@ -3964,6 +4076,8 @@ def archive_model(
         progress_callback=progress_callback,
         progress_start=45,
         progress_end=50,
+        download_assets=download_assets,
+        existing_images=existing_meta.get("designImages") if isinstance(existing_meta.get("designImages"), list) else [],
     )
     _log_perf(
         "archive.collect_design_images",
@@ -3988,6 +4102,8 @@ def archive_model(
         progress_callback=progress_callback,
         progress_start=50,
         progress_end=55,
+        download_assets=download_assets,
+        existing_comments=existing_meta.get("comments") if isinstance(existing_meta.get("comments"), list) else [],
     )
     _log_perf(
         "archive.collect_comments",
@@ -4018,11 +4134,12 @@ def archive_model(
     reserved_planned_instance_names: set[str] = set()
     three_mf_fetch_paused = bool(skip_three_mf_fetch or profile_metadata_only)
     three_mf_paused_failure = {
-        "state": "missing" if profile_metadata_only else "download_limited",
+        "state": "missing" if profile_metadata_only else str(three_mf_skip_state or "download_limited"),
         "message": (
             "信息补全任务仅整理打印配置详情，不下载 3MF。"
             if profile_metadata_only
-            else str(three_mf_skip_message or "").strip() or describe_three_mf_failure("download_limited", url=fetch_url)
+            else str(three_mf_skip_message or "").strip()
+            or describe_three_mf_failure(str(three_mf_skip_state or "download_limited"), url=fetch_url)
         ),
     }
     skipped_due_limit = 0
@@ -4068,7 +4185,7 @@ def archive_model(
         if three_mf_fetch_paused and url3mf and not existing_file_available:
             url3mf = ""
             skipped_due_limit += 1
-            if profile_metadata_only and (existing_inst.get("downloadState") or existing_inst.get("downloadMessage")):
+            if existing_inst.get("downloadState") or existing_inst.get("downloadMessage"):
                 failure_info = {
                     "state": str(existing_inst.get("downloadState") or "missing"),
                     "message": str(existing_inst.get("downloadMessage") or "未获取到 3MF 下载地址。"),
@@ -4081,7 +4198,7 @@ def archive_model(
             existing_hint_hits += 1
         elif three_mf_fetch_paused:
             skipped_due_limit += 1
-            if profile_metadata_only and (existing_inst.get("downloadState") or existing_inst.get("downloadMessage")):
+            if existing_inst.get("downloadState") or existing_inst.get("downloadMessage"):
                 failure_info = {
                     "state": str(existing_inst.get("downloadState") or "missing"),
                     "message": str(existing_inst.get("downloadMessage") or "未获取到 3MF 下载地址。"),
@@ -4200,18 +4317,21 @@ def archive_model(
     log(logger, "已保存 meta:", meta_path)
 
     # 归档整理
-    log_section("归档整理阶段")
     work_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        rebuild_started_at = time.perf_counter()
-        rebuild_once(meta_path, progress_callback=progress_callback, logger=logger)
-        _log_perf("archive.rebuild_once", rebuild_started_at, logger=logger)
-    except Exception as e:
-        log(logger, "归档/生成本地页面失败:", e)
+    if rebuild_archive:
+        log_section("归档整理阶段")
+        try:
+            rebuild_started_at = time.perf_counter()
+            rebuild_once(meta_path, progress_callback=progress_callback, logger=logger)
+            _log_perf("archive.rebuild_once", rebuild_started_at, logger=logger)
+        except Exception as e:
+            log(logger, "归档/生成本地页面失败:", e)
+    else:
+        log(logger, "已跳过归档目录整理与离线页面重建。")
 
     # 缺失 3MF 记录（仅记录，没有下载 3mf）
     missing_3mf = [inst for inst in inst_list if not inst.get("downloadUrl")]
-    if missing_3mf and not profile_metadata_only:
+    if missing_3mf and not profile_metadata_only and record_missing_3mf_log:
         logs_dir.mkdir(parents=True, exist_ok=True)
         missing_log = logs_dir / "missing_3mf.log"
         with missing_log.open("a", encoding="utf-8") as f:

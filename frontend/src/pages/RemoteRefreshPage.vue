@@ -54,7 +54,7 @@
       </div>
       <p class="archive-form__hint">
         启用后会按计划刷新库内全部可刷新的远端模型，自动增量同步评论、附件与打印配置。
-        已成功下载过的 3MF 不会重复下载。
+        源端刷新不直接下载 3MF，新发现的打印配置会进入新增 3MF 下载队列。
       </p>
       <div class="settings-grid settings-grid--three">
         <label class="field-card">

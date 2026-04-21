@@ -1006,8 +1006,13 @@ class RemoteRefreshManager:
 
         try:
             limit_guard = _read_three_mf_limit_guard()
-            skip_three_mf_fetch = _is_three_mf_limit_guard_active_for_url(origin_url, limit_guard)
-            skip_three_mf_message = _three_mf_limit_message(limit_guard) if skip_three_mf_fetch else ""
+            daily_limit_active = _is_three_mf_limit_guard_active_for_url(origin_url, limit_guard)
+            skip_three_mf_fetch = True
+            skip_three_mf_message = (
+                _three_mf_limit_message(limit_guard)
+                if daily_limit_active
+                else "源端刷新仅检测新增 3MF，下载交给新增 3MF 下载队列。"
+            )
             with _temporary_proxy_env(config):
                 archive_result = legacy_archive_model(
                     url=origin_url,
@@ -1018,8 +1023,12 @@ class RemoteRefreshManager:
                     progress_callback=progress_callback,
                     skip_three_mf_fetch=skip_three_mf_fetch,
                     three_mf_skip_message=skip_three_mf_message,
+                    three_mf_skip_state="download_limited" if daily_limit_active else "pending_download",
+                    download_assets=False,
+                    rebuild_archive=False,
+                    record_missing_3mf_log=False,
                 )
-            limit_guard_state = limit_guard if skip_three_mf_fetch else None
+            limit_guard_state = limit_guard if daily_limit_active else None
             for missing_item in archive_result.get("missing_3mf") or []:
                 if str(missing_item.get("downloadState") or "").strip() != "download_limited":
                     continue
