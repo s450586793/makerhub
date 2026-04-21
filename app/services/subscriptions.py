@@ -3,7 +3,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -26,6 +26,7 @@ DEFAULT_SUBSCRIPTION_CRON = "0 */6 * * *"
 SUBSCRIPTION_MODES = {"author_upload", "collection_models"}
 SUBSCRIPTION_LOG_PATH = LOGS_DIR / "subscriptions.log"
 SUBSCRIPTION_POLL_SECONDS = 20
+SUBSCRIPTION_RUNNING_STALE_AFTER = timedelta(hours=6)
 
 
 def _now() -> datetime:
@@ -234,6 +235,7 @@ class SubscriptionManager:
             self._thread.start()
 
     def list_payload(self) -> dict:
+        self._ensure_state_records()
         config = self.store.load()
         state_payload = self.task_store.load_subscriptions_state()
         state_map = {str(item.get("id") or ""): item for item in state_payload.get("items") or []}
@@ -547,6 +549,59 @@ class SubscriptionManager:
         if stale_ids:
             self.task_store.remove_subscription_state(stale_ids)
 
+        self._recover_stale_running_states(config)
+
+    def _running_state_is_stale(self, state: dict, now: datetime) -> bool:
+        last_run_at = _parse_iso(str(state.get("last_run_at") or ""))
+        if last_run_at is None:
+            return True
+        return now - last_run_at >= SUBSCRIPTION_RUNNING_STALE_AFTER
+
+    def _recover_stale_running_states(self, config) -> None:
+        records = {item.id: item for item in config.subscriptions}
+        state_payload = self.task_store.load_subscriptions_state()
+        now = _now()
+        now_iso = now.isoformat()
+
+        with self._loop_lock:
+            active_running_id = self._running_id
+
+        for state in state_payload.get("items") or []:
+            if not state.get("running"):
+                continue
+
+            subscription_id = str(state.get("id") or "").strip()
+            record = records.get(subscription_id)
+            if record is None:
+                continue
+
+            is_active_runner = bool(active_running_id and subscription_id == active_running_id)
+            if is_active_runner and not self._running_state_is_stale(state, now):
+                continue
+
+            if is_active_runner:
+                with self._loop_lock:
+                    if self._running_id == subscription_id:
+                        self._running_id = ""
+
+            next_run_at = _next_run_at(record.cron, now) if record.enabled else ""
+            self.task_store.patch_subscription_state(
+                subscription_id,
+                status="error",
+                running=False,
+                manual_requested_at=now_iso if record.enabled else "",
+                next_run_at=next_run_at,
+                last_error_at=now_iso,
+                last_message="上次订阅同步中断，已恢复并重新加入调度。",
+            )
+            _append_subscription_log(
+                "sync_recovered",
+                subscription_id=subscription_id,
+                url=record.url,
+                last_run_at=str(state.get("last_run_at") or ""),
+                active_runner=is_active_runner,
+            )
+
     def _state_by_id(self, subscription_id: str) -> dict:
         state_payload = self.task_store.load_subscriptions_state()
         for item in state_payload.get("items") or []:
@@ -664,7 +719,9 @@ class SubscriptionManager:
                     },
                 )
 
-            next_run_at = _next_run_at(subscription.cron, started_at)
+            finished_at = _now()
+            finished_at_iso = finished_at.isoformat()
+            next_run_at = _next_run_at(subscription.cron, finished_at)
             if not subscription.enabled:
                 next_run_at = ""
             enqueued_count = int(enqueue_result.get("queued_count") or 0)
@@ -680,7 +737,7 @@ class SubscriptionManager:
                 status="success",
                 running=False,
                 next_run_at=next_run_at,
-                last_success_at=_now_iso(),
+                last_success_at=finished_at_iso,
                 last_message=message,
                 last_discovered_count=len(current_items),
                 last_new_count=len(new_items),
@@ -699,12 +756,13 @@ class SubscriptionManager:
                 deleted=len(deleted_items),
             )
         except Exception as exc:
+            failed_at = _now()
             self.task_store.patch_subscription_state(
                 subscription.id,
                 status="error",
                 running=False,
-                next_run_at=_next_run_at(subscription.cron, started_at) if subscription.enabled else "",
-                last_error_at=_now_iso(),
+                next_run_at=_next_run_at(subscription.cron, failed_at) if subscription.enabled else "",
+                last_error_at=failed_at.isoformat(),
                 last_message=str(exc),
             )
             _append_subscription_log("sync_error", subscription_id=subscription.id, url=subscription.url, error=str(exc))
