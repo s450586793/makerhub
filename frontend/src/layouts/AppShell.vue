@@ -92,7 +92,7 @@ import { appState, currentUser, logoutSession, refreshVersionStatus, saveThemePr
 
 const route = useRoute();
 const COMPACT_MEDIA_QUERY = "(max-width: 980px)";
-const VERSION_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const VERSION_REFRESH_INTERVAL_MS = 60 * 1000;
 const githubProjectUrl = "https://github.com/s450586793/makerhub";
 const logoUrl = "/static/img/makerhub-logo.png";
 
@@ -200,6 +200,10 @@ function onDocumentVisibilityChange() {
   }
 }
 
+function onWindowFocus() {
+  void refreshVersionPanel({ force: false });
+}
+
 watch(() => route.fullPath, () => {
   closeSidebar();
 });
@@ -229,6 +233,7 @@ onMounted(() => {
   }
 
   window.addEventListener("keydown", onWindowKeydown);
+  window.addEventListener("focus", onWindowFocus);
   document.addEventListener("visibilitychange", onDocumentVisibilityChange);
   startVersionRefreshTimer();
   void refreshVersionPanel({ force: false });
@@ -245,6 +250,7 @@ onBeforeUnmount(() => {
     }
   }
   window.removeEventListener("keydown", onWindowKeydown);
+  window.removeEventListener("focus", onWindowFocus);
   document.removeEventListener("visibilitychange", onDocumentVisibilityChange);
 });
 </script>
