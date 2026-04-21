@@ -120,6 +120,7 @@ _OFFLINE_TEMPLATE_CACHE_LOCK = threading.RLock()
 _OFFLINE_TEMPLATE_CACHE: dict[str, Any] = {
     "signature": (),
     "bundle": None,
+    "unavailable_signature": None,
 }
 _OFFLINE_TEMPLATE_VARS_TOKEN = "<!--OFFLINE_INLINE_VARIABLES-->"
 _OFFLINE_TEMPLATE_MODEL_TOKEN = "<!--OFFLINE_INLINE_MODEL-->"
@@ -3193,11 +3194,21 @@ def build_index_html(meta: dict, assets: dict = None) -> str:
     """基于 CSR 架构的离线 HTML 生成器，读取 model.html 骨架并注入数据和源码。"""
     template_bundle, missing_paths = _load_offline_template_bundle()
     if template_bundle is None:
-        if missing_paths:
-            log("离线模板缺失，使用回退 HTML：", ", ".join(str(path) for path in missing_paths))
-        else:
-            log("离线模板读取失败，使用回退 HTML。")
+        unavailable_signature = tuple(path.as_posix() for path in missing_paths) if missing_paths else ("read_error",)
+        should_log = False
+        with _OFFLINE_TEMPLATE_CACHE_LOCK:
+            if _OFFLINE_TEMPLATE_CACHE.get("unavailable_signature") != unavailable_signature:
+                _OFFLINE_TEMPLATE_CACHE["unavailable_signature"] = unavailable_signature
+                should_log = True
+        if should_log:
+            if missing_paths:
+                log(logger, "离线模板资源不存在，当前使用内置回退 HTML：", ", ".join(str(path) for path in missing_paths))
+            else:
+                log(logger, "离线模板读取失败，当前使用内置回退 HTML。")
         return build_fallback_index_html(meta, assets)
+
+    with _OFFLINE_TEMPLATE_CACHE_LOCK:
+        _OFFLINE_TEMPLATE_CACHE["unavailable_signature"] = None
 
     html = str(template_bundle.get("html_template") or "")
     html = html.replace(
@@ -3447,7 +3458,7 @@ def rebuild_once(meta_path: Path, progress_callback=None, logger=None):
     (work_dir / "index.html").write_text(index_html, encoding="utf-8")
     _log_perf("rebuild.build_offline_page", offline_page_started_at, logger=logger)
 
-    emit_progress(progress_callback, 98, "正在生成离线页面")
+    emit_progress(progress_callback, 98, "正在生成归档页面")
     log("完成归档:", work_dir)
     _log_perf("rebuild.total", rebuild_started_at, logger=logger, base_name=base_name)
 
