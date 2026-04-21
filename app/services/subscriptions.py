@@ -62,9 +62,10 @@ def _append_subscription_log(event: str, **payload: Any) -> None:
             )
     except Exception:
         return
-    if event in {"sync_start", "sync_done", "sync_error", "scheduler_error"}:
+    if event in {"initialized", "sync_start", "sync_done", "sync_error", "scheduler_error"}:
         level = "error" if event in {"sync_error", "scheduler_error"} else "info"
         message_map = {
+            "initialized": "订阅初始化完成。",
             "sync_start": "订阅同步开始。",
             "sync_done": "订阅同步完成。",
             "sync_error": "订阅同步失败。",
@@ -487,11 +488,11 @@ class SubscriptionManager:
             record.id,
             status="success",
             running=False,
-            next_run_at=_next_run_at(record.cron),
+            next_run_at=now_iso,
             manual_requested_at="",
             last_run_at=now_iso,
             last_success_at=now_iso,
-            last_message="归档时已同步订阅基线。",
+            last_message="归档时已同步订阅基线，已安排一次校验同步。",
             last_discovered_count=len(normalized_items),
             last_new_count=0,
             last_enqueued_count=0,
@@ -708,14 +709,29 @@ class SubscriptionManager:
         discovered = self._discover_subscription_items(subscription)
         current_items = _normalize_source_items(discovered.get("items") or [])
         now_iso = _now_iso()
+        next_run_at = now_iso if subscription.enabled else ""
+        expected_total = discovered.get("expected_total")
+        pages_scanned = discovered.get("pages_scanned")
+        scan_mode = discovered.get("mode")
+        _append_subscription_log(
+            "initialized",
+            subscription_id=subscription.id,
+            url=subscription.url,
+            mode=subscription.mode,
+            discovered=len(current_items),
+            expected_total=expected_total,
+            pages_scanned=pages_scanned,
+            scan_mode=scan_mode,
+            next_run_at=next_run_at,
+        )
         return self.task_store.patch_subscription_state(
             subscription.id,
             status="success",
             running=False,
-            next_run_at=_next_run_at(subscription.cron) if subscription.enabled else "",
+            next_run_at=next_run_at,
             last_run_at=now_iso,
             last_success_at=now_iso,
-            last_message=f"订阅已初始化，当前扫描到 {len(current_items)} 个模型。",
+            last_message=f"订阅已初始化，当前扫描到 {len(current_items)} 个模型，已安排一次校验同步。",
             last_discovered_count=len(current_items),
             last_new_count=0,
             last_enqueued_count=0,
