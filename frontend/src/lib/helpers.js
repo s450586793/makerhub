@@ -9,8 +9,7 @@ export function parseServerDate(value) {
     return null;
   }
 
-  const hasTimezone = /(?:Z|[+-]\d{2}:\d{2})$/i.test(raw);
-  const normalized = hasTimezone ? raw : `${raw}Z`;
+  const normalized = raw.includes(" ") ? raw.replace(" ", "T") : raw;
   const date = new Date(normalized);
   return Number.isNaN(date.getTime()) ? null : date;
 }

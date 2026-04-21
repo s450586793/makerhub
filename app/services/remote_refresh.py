@@ -592,7 +592,17 @@ class RemoteRefreshManager:
         self.store = store or JsonStore()
         self.task_store = task_store or TaskStateStore()
         self._loop_lock = threading.Lock()
+        self._batch_state_lock = threading.Lock()
+        self._batch_running = False
         self._thread: Optional[threading.Thread] = None
+
+    def _set_batch_running(self, running: bool) -> None:
+        with self._batch_state_lock:
+            self._batch_running = bool(running)
+
+    def _is_batch_running(self) -> bool:
+        with self._batch_state_lock:
+            return bool(self._batch_running)
 
     def start(self) -> None:
         self._ensure_state()
@@ -603,7 +613,7 @@ class RemoteRefreshManager:
             self._thread.start()
 
     def state_payload(self) -> dict:
-        return self.task_store.load_remote_refresh_state()
+        return self._ensure_state()
 
     def notify_config_updated(self) -> dict:
         return self._ensure_state(force_reschedule=True)
@@ -613,6 +623,8 @@ class RemoteRefreshManager:
         refresh_config = config.remote_refresh
         normalized_cron = _validate_cron(refresh_config.cron)
         current = self.task_store.load_remote_refresh_state()
+        batch_running = self._is_batch_running()
+        stale_running = bool(current.get("running")) and not batch_running
 
         if not refresh_config.enabled:
             return self.task_store.patch_remote_refresh_state(
@@ -626,13 +638,19 @@ class RemoteRefreshManager:
         next_run_at = str(current.get("next_run_at") or "")
         if force_reschedule:
             next_run_at = _next_run_at(normalized_cron)
-        elif not next_run_at:
+        elif stale_running or not next_run_at:
             next_run_at = _next_run_at(normalized_cron)
 
         return self.task_store.patch_remote_refresh_state(
-            status="running" if current.get("running") else "idle",
+            status="running" if batch_running else "idle",
+            running=batch_running,
             next_run_at=next_run_at,
-            last_message=str(current.get("last_message") or "等待下一轮源端刷新。"),
+            last_message=(
+                "检测到上次源端刷新未正常结束，已恢复为空闲并重新安排下次执行。"
+                if stale_running
+                else str(current.get("last_message") or "等待下一轮源端刷新。")
+            ),
+            current_item={} if stale_running else None,
         )
 
     def _run_loop(self) -> None:
@@ -734,125 +752,129 @@ class RemoteRefreshManager:
         return selected, stats
 
     def _run_batch(self, config) -> None:
+        self._set_batch_running(True)
         refresh_config = config.remote_refresh
         normalized_cron = _validate_cron(refresh_config.cron)
         started_at = _now_iso()
         candidates, stats = self._pick_candidates()
 
-        self.task_store.patch_remote_refresh_state(
-            status="running",
-            running=True,
-            last_run_at=started_at,
-            last_batch_total=len(candidates),
-            last_batch_succeeded=0,
-            last_batch_failed=0,
-            last_eligible_total=int(stats.get("eligible_total") or 0),
-            last_remaining_total=int(stats.get("remaining_total") or 0),
-            last_skipped_missing_cookie=int(stats.get("missing_cookie") or 0),
-            last_skipped_local_or_invalid=int(stats.get("local_or_invalid") or 0),
-            current_item={},
-            last_message=(
-                f"源端刷新开始，本轮计划处理 {len(candidates)} 个模型。{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=int(stats.get('remaining_total') or 0))}"
-                if candidates
-                else "当前没有可执行源端刷新的模型。"
-            ),
-        )
-        _append_remote_refresh_log(
-            "batch_started",
-            selected=len(candidates),
-            stats=stats,
-        )
-        append_business_log(
-            "remote_refresh",
-            "batch_started",
-            (
-                f"源端刷新开始，本轮计划处理 {len(candidates)} 个模型。"
-                f"{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=int(stats.get('remaining_total') or 0))}"
-            ),
-            selected=len(candidates),
-            stats=stats,
-        )
-
-        if not candidates:
-            no_candidate_message = "没有可刷新的远端模型，等待下一轮。"
-            if stats.get("missing_cookie"):
-                no_candidate_message = (
-                    f"当前没有可执行源端刷新的模型，另有 {int(stats.get('missing_cookie') or 0)} 个模型因缺少对应站点 Cookie 被跳过。"
-                )
+        try:
             self.task_store.patch_remote_refresh_state(
-                status="idle",
-                running=False,
-                next_run_at=_next_run_at(normalized_cron),
-                last_success_at=started_at,
-                last_message=no_candidate_message,
-                last_batch_total=0,
+                status="running",
+                running=True,
+                last_run_at=started_at,
+                last_batch_total=len(candidates),
                 last_batch_succeeded=0,
                 last_batch_failed=0,
                 last_eligible_total=int(stats.get("eligible_total") or 0),
-                last_remaining_total=0,
+                last_remaining_total=int(stats.get("remaining_total") or 0),
                 last_skipped_missing_cookie=int(stats.get("missing_cookie") or 0),
                 last_skipped_local_or_invalid=int(stats.get("local_or_invalid") or 0),
                 current_item={},
+                last_message=(
+                    f"源端刷新开始，本轮计划处理 {len(candidates)} 个模型。{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=int(stats.get('remaining_total') or 0))}"
+                    if candidates
+                    else "当前没有可执行源端刷新的模型。"
+                ),
             )
-            return
+            _append_remote_refresh_log(
+                "batch_started",
+                selected=len(candidates),
+                stats=stats,
+            )
+            append_business_log(
+                "remote_refresh",
+                "batch_started",
+                (
+                    f"源端刷新开始，本轮计划处理 {len(candidates)} 个模型。"
+                    f"{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=int(stats.get('remaining_total') or 0))}"
+                ),
+                selected=len(candidates),
+                stats=stats,
+            )
 
-        succeeded = 0
-        failed = 0
+            if not candidates:
+                no_candidate_message = "没有可刷新的远端模型，等待下一轮。"
+                if stats.get("missing_cookie"):
+                    no_candidate_message = (
+                        f"当前没有可执行源端刷新的模型，另有 {int(stats.get('missing_cookie') or 0)} 个模型因缺少对应站点 Cookie 被跳过。"
+                    )
+                self.task_store.patch_remote_refresh_state(
+                    status="idle",
+                    running=False,
+                    next_run_at=_next_run_at(normalized_cron),
+                    last_success_at=started_at,
+                    last_message=no_candidate_message,
+                    last_batch_total=0,
+                    last_batch_succeeded=0,
+                    last_batch_failed=0,
+                    last_eligible_total=int(stats.get("eligible_total") or 0),
+                    last_remaining_total=0,
+                    last_skipped_missing_cookie=int(stats.get("missing_cookie") or 0),
+                    last_skipped_local_or_invalid=int(stats.get("local_or_invalid") or 0),
+                    current_item={},
+                )
+                return
 
-        for index, item in enumerate(candidates, start=1):
-            result = self._refresh_one(item, index=index, total=len(candidates), config=config)
-            if result.get("ok"):
-                succeeded += 1
-            else:
-                failed += 1
+            succeeded = 0
+            failed = 0
+
+            for index, item in enumerate(candidates, start=1):
+                result = self._refresh_one(item, index=index, total=len(candidates), config=config)
+                if result.get("ok"):
+                    succeeded += 1
+                else:
+                    failed += 1
+                processed_total = succeeded + failed
+                self.task_store.patch_remote_refresh_state(
+                    last_batch_succeeded=succeeded,
+                    last_batch_failed=failed,
+                    last_remaining_total=max(int(stats.get("eligible_total") or 0) - processed_total, 0),
+                )
+
+            finished_at = _now_iso()
+            previous_state = self.task_store.load_remote_refresh_state()
             processed_total = succeeded + failed
+            remaining_total = max(int(stats.get("eligible_total") or 0) - processed_total, 0)
+            message = (
+                f"源端刷新完成，成功 {succeeded} 个，失败 {failed} 个。"
+                f"{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=remaining_total)}"
+            )
             self.task_store.patch_remote_refresh_state(
+                status="idle" if failed == 0 else "error",
+                running=False,
+                current_item={},
+                next_run_at=_next_run_at(normalized_cron),
+                last_success_at=finished_at if succeeded else str(previous_state.get("last_success_at") or ""),
+                last_error_at=finished_at if failed else str(previous_state.get("last_error_at") or ""),
+                last_message=message,
                 last_batch_succeeded=succeeded,
                 last_batch_failed=failed,
-                last_remaining_total=max(int(stats.get("eligible_total") or 0) - processed_total, 0),
+                last_eligible_total=int(stats.get("eligible_total") or 0),
+                last_remaining_total=remaining_total,
+                last_skipped_missing_cookie=int(stats.get("missing_cookie") or 0),
+                last_skipped_local_or_invalid=int(stats.get("local_or_invalid") or 0),
             )
-
-        finished_at = _now_iso()
-        previous_state = self.task_store.load_remote_refresh_state()
-        processed_total = succeeded + failed
-        remaining_total = max(int(stats.get("eligible_total") or 0) - processed_total, 0)
-        message = (
-            f"源端刷新完成，成功 {succeeded} 个，失败 {failed} 个。"
-            f"{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=remaining_total)}"
-        )
-        self.task_store.patch_remote_refresh_state(
-            status="idle" if failed == 0 else "error",
-            running=False,
-            current_item={},
-            next_run_at=_next_run_at(normalized_cron),
-            last_success_at=finished_at if succeeded else str(previous_state.get("last_success_at") or ""),
-            last_error_at=finished_at if failed else str(previous_state.get("last_error_at") or ""),
-            last_message=message,
-            last_batch_succeeded=succeeded,
-            last_batch_failed=failed,
-            last_eligible_total=int(stats.get("eligible_total") or 0),
-            last_remaining_total=remaining_total,
-            last_skipped_missing_cookie=int(stats.get("missing_cookie") or 0),
-            last_skipped_local_or_invalid=int(stats.get("local_or_invalid") or 0),
-        )
-        _append_remote_refresh_log(
-            "batch_finished",
-            succeeded=succeeded,
-            failed=failed,
-            interrupted=False,
-            stats=stats,
-            remaining_total=remaining_total,
-        )
-        append_business_log(
-            "remote_refresh",
-            "batch_finished",
-            message,
-            succeeded=succeeded,
-            failed=failed,
-            interrupted=False,
-            stats=stats,
-            remaining_total=remaining_total,
-        )
+            _append_remote_refresh_log(
+                "batch_finished",
+                succeeded=succeeded,
+                failed=failed,
+                interrupted=False,
+                stats=stats,
+                remaining_total=remaining_total,
+            )
+            append_business_log(
+                "remote_refresh",
+                "batch_finished",
+                message,
+                succeeded=succeeded,
+                failed=failed,
+                interrupted=False,
+                stats=stats,
+                remaining_total=remaining_total,
+            )
+        finally:
+            self._set_batch_running(False)
 
     def _refresh_one(self, item: dict[str, Any], *, index: int, total: int, config) -> dict[str, Any]:
         model_dir = str(item.get("model_dir") or "").strip().strip("/")
