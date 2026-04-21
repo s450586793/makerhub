@@ -87,11 +87,12 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { RouterLink, RouterView, useRoute } from "vue-router";
 
 import UserMenu from "../components/UserMenu.vue";
-import { appState, currentUser, logoutSession, saveThemePreference } from "../lib/appState";
+import { appState, currentUser, logoutSession, refreshVersionStatus, saveThemePreference } from "../lib/appState";
 
 
 const route = useRoute();
 const COMPACT_MEDIA_QUERY = "(max-width: 980px)";
+const VERSION_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const githubProjectUrl = "https://github.com/s450586793/makerhub";
 const logoUrl = "/static/img/makerhub-logo.png";
 
@@ -102,6 +103,8 @@ const mobileSidebarOpen = ref(false);
 
 let compactMediaQuery = null;
 let mediaListener = null;
+let versionRefreshTimer = 0;
+let versionRefreshInFlight = false;
 
 const sidebarVisible = computed(() => (
   isCompact.value ? mobileSidebarOpen.value : !desktopSidebarHidden.value
@@ -158,6 +161,45 @@ function onWindowKeydown(event) {
   }
 }
 
+async function refreshVersionPanel({ force = false } = {}) {
+  if (versionRefreshInFlight || !appState.session.authenticated) {
+    return;
+  }
+  versionRefreshInFlight = true;
+  try {
+    await refreshVersionStatus({ force });
+  } catch (error) {
+    console.error("版本信息刷新失败", error);
+  } finally {
+    versionRefreshInFlight = false;
+  }
+}
+
+function clearVersionRefreshTimer() {
+  if (versionRefreshTimer) {
+    window.clearInterval(versionRefreshTimer);
+    versionRefreshTimer = 0;
+  }
+}
+
+function startVersionRefreshTimer() {
+  clearVersionRefreshTimer();
+  if (typeof window === "undefined") {
+    return;
+  }
+  versionRefreshTimer = window.setInterval(() => {
+    if (!document.hidden) {
+      void refreshVersionPanel({ force: true });
+    }
+  }, VERSION_REFRESH_INTERVAL_MS);
+}
+
+function onDocumentVisibilityChange() {
+  if (!document.hidden) {
+    void refreshVersionPanel({ force: false });
+  }
+}
+
 watch(() => route.fullPath, () => {
   closeSidebar();
 });
@@ -187,9 +229,13 @@ onMounted(() => {
   }
 
   window.addEventListener("keydown", onWindowKeydown);
+  document.addEventListener("visibilitychange", onDocumentVisibilityChange);
+  startVersionRefreshTimer();
+  void refreshVersionPanel({ force: false });
 });
 
 onBeforeUnmount(() => {
+  clearVersionRefreshTimer();
   document.body.classList.remove("sidebar-overlay-open");
   if (compactMediaQuery && mediaListener) {
     if (typeof compactMediaQuery.removeEventListener === "function") {
@@ -199,5 +245,6 @@ onBeforeUnmount(() => {
     }
   }
   window.removeEventListener("keydown", onWindowKeydown);
+  document.removeEventListener("visibilitychange", onDocumentVisibilityChange);
 });
 </script>

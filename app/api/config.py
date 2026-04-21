@@ -670,6 +670,13 @@ async def get_system_update(force: bool = Query(False)):
     return _with_changelog_status(payload, await _get_github_changelog_status(force=force, proxy_config=config.proxy))
 
 
+@router.get("/system/version")
+async def get_system_version(force: bool = Query(False)):
+    config = store.load()
+    payload = {"app_version": APP_VERSION}
+    return _with_version_status(payload, await _get_github_version_status(force=force, proxy_config=config.proxy))
+
+
 @router.post("/system/update")
 async def start_system_update(payload: SystemUpdateRequest, request: Request):
     _require_session_auth(request)

@@ -28,6 +28,16 @@ from app.services.three_mf import describe_three_mf_failure, merge_three_mf_fail
 
 
 def log(*args):
+    if args and args[0] is None:
+        args = args[1:]
+    if args and callable(args[0]):
+        logger = args[0]
+        message = " ".join(str(arg) for arg in args[1:])
+        try:
+            logger(message)
+            return
+        except Exception:
+            args = args[1:]
     print("[MW-FETCH]", *args)
 
 
@@ -79,6 +89,23 @@ def pick_ext_from_url(url: str, fallback: str = "jpg") -> str:
 
 def parse_cookies(cookie_str: str) -> Dict[str, str]:
     return parse_cookie_values(cookie_str)
+
+
+def summarize_cookie_header(raw_cookie: str, parsed_cookies: Optional[Dict[str, str]] = None) -> str:
+    cookie_header = sanitize_cookie_header(raw_cookie)
+    cookies = parsed_cookies if parsed_cookies is not None else parse_cookie_values(cookie_header)
+    keys = list(cookies.keys())
+    if not keys:
+        return f"keys=none; has_cf_clearance=False; length={len(cookie_header)}"
+    visible_keys = keys[:12]
+    keys_text = ",".join(visible_keys)
+    if len(keys) > len(visible_keys):
+        keys_text = f"{keys_text},...(+{len(keys) - len(visible_keys)})"
+    return (
+        f"keys={keys_text}; "
+        f"has_cf_clearance={'cf_clearance' in cookies}; "
+        f"length={len(cookie_header)}"
+    )
 
 
 def _extract_auth_token(raw_cookie: str) -> str:
@@ -616,17 +643,30 @@ def _is_cloudflare_challenge(html_text: str) -> bool:
     if not html_text:
         return False
     lowered = html_text.lower()
-    markers = [
-        "just a moment",
+    strong_markers = [
+        "<title>just a moment",
+        "cf-chl",
         "cf_chl",
         "challenge-platform",
         "/cdn-cgi/challenge",
-        "cloudflare",
-        "attention required",
+        "/cdn-cgi/challenge-platform",
+        "cf-browser-verification",
         "checking your browser",
         "enable javascript and cookies to continue",
+        "verify you are human",
+        "cf-mitigated",
     ]
-    return any(m in lowered for m in markers)
+    if any(marker in lowered for marker in strong_markers):
+        return True
+    return "cloudflare" in lowered and any(
+        marker in lowered
+        for marker in (
+            "attention required",
+            "ray id",
+            "please enable cookies",
+            "security check",
+        )
+    )
 
 
 def _unwrap_design_payload(payload: object) -> Optional[dict]:
@@ -3447,7 +3487,7 @@ def archive_model(
     emit_progress(progress_callback, 5, "准备抓取模型页面")
     log(logger, "获取页面:", fetch_url)
     log(logger, "请求头:", sess.headers)
-    log(logger, "请求 Cookie 头(前 300 字符):", raw_cookie_header[:300])
+    log(logger, "请求 Cookie:", summarize_cookie_header(raw_cookie_header, parsed_cookies))
 
     # 优先用 requests 拉取页面，失败再回退 curl
     fetch_started_at = time.perf_counter()
@@ -3469,10 +3509,11 @@ def archive_model(
         html_bytes=len(html_text or ""),
     )
 
+    is_cloudflare_challenge = _is_cloudflare_challenge(html_text)
     if "__NEXT_DATA__" not in html_text and "__NUXT__" not in html_text:
         log(logger, "页面未包含 __NEXT_DATA__，前 300 字符:", (html_text or "")[:300])
-    if _is_cloudflare_challenge(html_text):
-        log(logger, "检测到 Cloudflare 验证页面，可能需要更新 cookie 中的 cf_clearance")
+    if is_cloudflare_challenge:
+        log(logger, "疑似 Cloudflare 验证拦截，请更新 cookie 中的 cf_clearance")
 
     design = None
     next_data = {}
@@ -3505,7 +3546,7 @@ def archive_model(
         )
 
     if design is None:
-        if _is_cloudflare_challenge(html_text):
+        if is_cloudflare_challenge:
             raise RuntimeError("页面被 Cloudflare 验证拦截，请更新 cookie（含 cf_clearance）后重试")
         raise RuntimeError("未能解析模型数据，请确认 cookie/页面结构")
 

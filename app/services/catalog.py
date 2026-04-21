@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from bs4 import BeautifulSoup
 
-from app.core.settings import ARCHIVE_DIR, STATE_DIR
+from app.core.settings import ARCHIVE_DIR, CONFIG_PATH, STATE_DIR
 from app.core.store import JsonStore
 from app.services.batch_discovery import extract_model_id, normalize_source_url
 from app.services.model_attachments import (
@@ -20,7 +20,7 @@ from app.services.model_attachments import (
     load_manual_attachments,
 )
 from app.services.source_health import build_source_health_cards
-from app.services.task_state import TaskStateStore
+from app.services.task_state import SUBSCRIPTIONS_STATE_PATH, TaskStateStore
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, resolve_model_instance_files
 
 
@@ -43,6 +43,11 @@ _ARCHIVE_SNAPSHOT_CACHE: dict[str, Any] = {
 }
 _MODEL_DETAIL_CACHE_LOCK = threading.RLock()
 _MODEL_DETAIL_CACHE: dict[str, dict[str, Any]] = {}
+_SUBSCRIPTION_FLAGS_INDEX_LOCK = threading.RLock()
+_SUBSCRIPTION_FLAGS_INDEX_CACHE: dict[str, Any] = {
+    "signature": None,
+    "deleted_by_key": {},
+}
 
 
 def _read_archive_snapshot_marker() -> str:
@@ -90,6 +95,14 @@ def _model_detail_signature(model_root: Path, meta_path: Path) -> tuple[int, int
 
 def _clone_model_items(items: list[dict]) -> list[dict]:
     return [item.copy() for item in items]
+
+
+def _file_signature(path: Path) -> tuple[int, int]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return (0, 0)
+    return (int(stat.st_mtime_ns), int(stat.st_size))
 
 
 def _compose_archive_snapshot(models: list[dict]) -> dict[str, Any]:
@@ -404,9 +417,14 @@ def _subscription_deleted_count(state: dict) -> int:
     return max(len(tracked_keys - current_keys), 0)
 
 
-def _build_dashboard_subscriptions(config, task_store: TaskStateStore) -> dict[str, Any]:
+def _build_dashboard_subscriptions(
+    config,
+    task_store: TaskStateStore,
+    state_payload: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     records = list(getattr(config, "subscriptions", []) or [])
-    state_items = task_store.load_subscriptions_state().get("items") or []
+    state_payload = state_payload if isinstance(state_payload, dict) else task_store.load_subscriptions_state()
+    state_items = state_payload.get("items") or []
     state_map = {
         str(item.get("id") or "").strip(): item
         for item in state_items
@@ -1175,10 +1193,8 @@ def _apply_model_flags(items: list[dict], flags_store: Optional[dict] = None) ->
     return items
 
 
-def _apply_subscription_flags(items: list[dict]) -> list[dict]:
-    config = JsonStore().load()
+def _build_subscription_deleted_index(config: Any, state_payload: dict[str, Any]) -> dict[str, list[dict]]:
     subscriptions = {item.id: item for item in getattr(config, "subscriptions", [])}
-    state_payload = TaskStateStore().load_subscriptions_state()
 
     deleted_by_key: dict[str, list[dict]] = {}
     for state_item in state_payload.get("items") or []:
@@ -1204,7 +1220,43 @@ def _apply_subscription_flags(items: list[dict]) -> list[dict]:
                     "url": subscription.url,
                 }
             )
+    return deleted_by_key
 
+
+def _subscription_flags_cache_signature() -> tuple[tuple[int, int], tuple[int, int]]:
+    return (_file_signature(CONFIG_PATH), _file_signature(SUBSCRIPTIONS_STATE_PATH))
+
+
+def _get_subscription_deleted_index(
+    config: Optional[Any] = None,
+    state_payload: Optional[dict[str, Any]] = None,
+) -> dict[str, list[dict]]:
+    signature = _subscription_flags_cache_signature()
+    with _SUBSCRIPTION_FLAGS_INDEX_LOCK:
+        if _SUBSCRIPTION_FLAGS_INDEX_CACHE.get("signature") == signature:
+            cached = _SUBSCRIPTION_FLAGS_INDEX_CACHE.get("deleted_by_key")
+            if isinstance(cached, dict):
+                return cached
+
+    resolved_config = config if config is not None else JsonStore().load()
+    resolved_state = state_payload if isinstance(state_payload, dict) else TaskStateStore().load_subscriptions_state()
+    deleted_by_key = _build_subscription_deleted_index(resolved_config, resolved_state)
+
+    with _SUBSCRIPTION_FLAGS_INDEX_LOCK:
+        _SUBSCRIPTION_FLAGS_INDEX_CACHE["signature"] = signature
+        _SUBSCRIPTION_FLAGS_INDEX_CACHE["deleted_by_key"] = deleted_by_key
+    return deleted_by_key
+
+
+def _apply_subscription_flags(
+    items: list[dict],
+    *,
+    config: Optional[Any] = None,
+    state_payload: Optional[dict[str, Any]] = None,
+    deleted_by_key: Optional[dict[str, list[dict]]] = None,
+) -> list[dict]:
+    if deleted_by_key is None:
+        deleted_by_key = _get_subscription_deleted_index(config=config, state_payload=state_payload)
     for item in items:
         model_id = str(item.get("id") or "").strip()
         origin_url = normalize_source_url(str(item.get("origin_url") or "").strip())
@@ -1539,10 +1591,11 @@ def build_dashboard_payload(config) -> dict:
     archive_snapshot = get_archive_snapshot()
     all_models = _clone_model_items(list(archive_snapshot.get("collect_sorted") or []))
     flags_store = TaskStateStore().load_model_flags()
-    all_models = _apply_model_flags(all_models, flags_store=flags_store)
-    all_models = _apply_subscription_flags(all_models)
-    visible_models = _visible_models(all_models)
     task_store = TaskStateStore()
+    subscription_state = task_store.load_subscriptions_state()
+    all_models = _apply_model_flags(all_models, flags_store=flags_store)
+    all_models = _apply_subscription_flags(all_models, config=config, state_payload=subscription_state)
+    visible_models = _visible_models(all_models)
     tasks_payload = build_tasks_payload(
         missing_fallback=[
             item.model_dump() if hasattr(item, "model_dump") else item
@@ -1550,7 +1603,7 @@ def build_dashboard_payload(config) -> dict:
         ],
         archive_snapshot=archive_snapshot,
     )
-    subscriptions_summary = _build_dashboard_subscriptions(config, task_store)
+    subscriptions_summary = _build_dashboard_subscriptions(config, task_store, state_payload=subscription_state)
     now = int(time.time())
     seven_days_ago = now - 7 * 24 * 60 * 60
 

@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import hashlib
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -444,17 +447,19 @@ def _probe_platform_status(platform: str, raw_cookie: str, proxy_config: Any) ->
 
 def build_source_health_cards(config: Any) -> list[dict[str, Any]]:
     cookie_map = {item.platform: item.cookie for item in getattr(config, "cookies", [])}
-    cards: list[dict[str, Any]] = []
-    for platform in ("cn", "global"):
+    platforms = ("cn", "global")
+
+    def build_card(platform: str) -> dict[str, Any]:
         probe = _probe_platform_status(platform, str(cookie_map.get(platform) or ""), getattr(config, "proxy", None))
         state = str(probe.get("state") or "").strip()
-        cards.append(
-            {
-                "key": platform,
-                "title": SOURCE_HEALTH_LABELS.get(platform, platform),
-                "status": str(probe.get("status") or "连接异常"),
-                "detail": str(probe.get("detail") or "").strip(),
-                "tone": "ok" if state == "ok" else "danger",
-            }
-        )
-    return cards
+        return {
+            "key": platform,
+            "title": SOURCE_HEALTH_LABELS.get(platform, platform),
+            "status": str(probe.get("status") or "连接异常"),
+            "detail": str(probe.get("detail") or "").strip(),
+            "tone": "ok" if state == "ok" else "danger",
+        }
+
+    with ThreadPoolExecutor(max_workers=len(platforms)) as executor:
+        results = list(executor.map(build_card, platforms))
+    return results

@@ -59,6 +59,16 @@ function applyBootstrap(payload) {
 }
 
 
+export function applyVersionPayload(payload) {
+  appState.appVersion = String(payload?.app_version || appState.appVersion);
+  appState.githubLatestVersion = String(payload?.github_latest_version ?? "");
+  appState.githubVersionCheckedAt = String(payload?.github_version_checked_at ?? "");
+  appState.githubVersionError = String(payload?.github_version_error || "");
+  appState.githubUpdateAvailable = Boolean(payload?.github_update_available);
+  return payload;
+}
+
+
 export async function refreshBootstrap() {
   const payload = await apiRequest("/api/bootstrap", { redirectOn401: false });
   const session = applyBootstrap(payload);
@@ -76,11 +86,7 @@ export async function refreshSession() {
 
 export function applyConfigPayload(payload) {
   appState.config = payload;
-  appState.appVersion = String(payload?.app_version || appState.appVersion);
-  appState.githubLatestVersion = String(payload?.github_latest_version ?? "");
-  appState.githubVersionCheckedAt = String(payload?.github_version_checked_at ?? "");
-  appState.githubVersionError = String(payload?.github_version_error || "");
-  appState.githubUpdateAvailable = Boolean(payload?.github_update_available);
+  applyVersionPayload(payload);
   if (appState.session.authenticated) {
     appState.session.username = String(payload?.user?.username || appState.session.username || "");
     appState.session.display_name = String(payload?.user?.display_name || appState.session.display_name || "");
@@ -92,6 +98,13 @@ export function applyConfigPayload(payload) {
 
 export async function refreshConfig() {
   return applyConfigPayload(await apiRequest("/api/config"));
+}
+
+
+export async function refreshVersionStatus(options = {}) {
+  const { force = false } = options;
+  const query = force ? "?force=true" : "";
+  return applyVersionPayload(await apiRequest(`/api/system/version${query}`));
 }
 
 
