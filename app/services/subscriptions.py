@@ -270,7 +270,7 @@ class SubscriptionManager:
         existing = next((item for item in config.subscriptions if normalize_source_url(item.url) == clean_url), None)
         now_iso = _now_iso()
         created_new = False
-        initial_sync_requested = False
+        initial_enqueue_count = 0
 
         if existing:
             existing.name = str(name or existing.name or _default_subscription_name(clean_url, mode)).strip()
@@ -297,13 +297,8 @@ class SubscriptionManager:
         try:
             if initialize_from_source:
                 initialized = self._initialize_subscription_state(record)
-                discovered_count = int(initialized.get("last_discovered_count") or 0)
-                self.task_store.patch_subscription_state(
-                    record.id,
-                    manual_requested_at=_now_iso(),
-                    last_message=f"订阅已初始化，当前扫描到 {discovered_count} 个模型，正在启动首次同步。",
-                )
-                initial_sync_requested = True
+                initialized = self._enqueue_initialized_subscription_items(record, initialized)
+                initial_enqueue_count = int(initialized.get("last_enqueued_count") or 0)
             else:
                 initialized = self.task_store.patch_subscription_state(
                     record.id,
@@ -321,18 +316,16 @@ class SubscriptionManager:
             raise
 
         self.start()
-        if initial_sync_requested:
-            self._maybe_launch_due_sync()
         payload = self.list_payload()
         return {
             "success": True,
             "subscription": next((item for item in payload["items"] if item["id"] == record.id), None),
             "subscriptions": payload,
             "message": (
-                "订阅已创建，已开始首次同步。"
-                if not existing and initial_sync_requested
-                else "订阅已更新，已开始首次同步。"
-                if initial_sync_requested
+                f"订阅已创建，首次扫描已入队 {initial_enqueue_count} 个模型。"
+                if not existing and initialize_from_source
+                else f"订阅已更新，首次扫描已入队 {initial_enqueue_count} 个模型。"
+                if initialize_from_source
                 else "订阅已创建。"
                 if not existing
                 else "订阅已更新。"
@@ -756,12 +749,72 @@ class SubscriptionManager:
                 error=str(exc),
             )
 
+    def _enqueue_initialized_subscription_items(self, subscription: SubscriptionRecord, initialized: dict) -> dict:
+        current_items = _normalize_source_items(initialized.get("current_items") or [])
+        pending_keys = self.archive_manager._queued_task_keys()
+        archived_keys = self.archive_manager._archived_task_keys()
+        new_items = []
+        for item in current_items:
+            task_key = item.get("task_key") or ""
+            if not task_key or task_key in pending_keys or task_key in archived_keys:
+                continue
+            new_items.append(item)
+
+        enqueue_result = {
+            "accepted": True,
+            "queued_count": 0,
+            "message": "没有新增模型。",
+        }
+        if new_items:
+            enqueue_result = self.archive_manager.submit_discovered_batch(
+                source_url=subscription.url,
+                mode=subscription.mode,
+                discovered_items=[item["url"] for item in new_items],
+                expected_total=len(current_items),
+                pages_scanned=initialized.get("pages_scanned"),
+                scan_mode=f"subscription-initial:{subscription.id}",
+                message_prefix=f"来自订阅首次扫描：{subscription.name or subscription.url}",
+                meta={
+                    "subscription_id": subscription.id,
+                    "subscription_name": subscription.name,
+                },
+            )
+
+        enqueued_count = int(enqueue_result.get("queued_count") or 0)
+        message = f"订阅已初始化：扫描 {len(current_items)} 个，首次入队 {enqueued_count} 个。"
+        if not new_items:
+            message = f"订阅已初始化：扫描 {len(current_items)} 个，模型均已归档或已在队列中。"
+        if not enqueue_result.get("accepted", True) and str(enqueue_result.get("message") or "").strip():
+            message = f"{message} {enqueue_result.get('message')}"
+
+        patched = self.task_store.patch_subscription_state(
+            subscription.id,
+            status="success",
+            running=False,
+            next_run_at=_next_run_at(subscription.cron) if subscription.enabled else "",
+            manual_requested_at="",
+            last_message=message,
+            last_new_count=len(new_items),
+            last_enqueued_count=enqueued_count,
+            current_items=current_items,
+            tracked_items=current_items,
+        )
+        _append_subscription_log(
+            "initial_enqueue_done",
+            subscription_id=subscription.id,
+            url=subscription.url,
+            scanned=len(current_items),
+            new=len(new_items),
+            enqueued=enqueued_count,
+        )
+        return patched
+
     def _initialize_subscription_state(self, subscription: SubscriptionRecord) -> dict:
         discovered = self._discover_subscription_items(subscription)
         current_items = _normalize_source_items(discovered.get("items") or [])
         self._refresh_subscription_source_metadata(subscription, discovered, len(current_items))
         now_iso = _now_iso()
-        next_run_at = now_iso if subscription.enabled else ""
+        next_run_at = _next_run_at(subscription.cron) if subscription.enabled else ""
         expected_total = discovered.get("expected_total")
         pages_scanned = discovered.get("pages_scanned")
         scan_mode = discovered.get("mode")
@@ -781,9 +834,10 @@ class SubscriptionManager:
             status="success",
             running=False,
             next_run_at=next_run_at,
+            manual_requested_at="",
             last_run_at=now_iso,
             last_success_at=now_iso,
-            last_message=f"订阅已初始化，当前扫描到 {len(current_items)} 个模型，已安排一次校验同步。",
+            last_message=f"订阅已初始化，当前扫描到 {len(current_items)} 个模型。",
             last_discovered_count=len(current_items),
             last_new_count=0,
             last_enqueued_count=0,
