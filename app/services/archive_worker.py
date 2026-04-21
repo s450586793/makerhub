@@ -746,6 +746,51 @@ class ArchiveTaskManager:
             "message": "归档任务已加入队列。" if not force else "缺失 3MF 重新下载任务已加入队列。",
         }
 
+    def submit_profile_metadata_backfill(self, url: str, model_dir: str = "", title: str = "") -> dict:
+        clean_url = normalize_source_url(url)
+        if not clean_url:
+            return {
+                "accepted": False,
+                "message": "缺少可用模型链接，无法补全信息。",
+            }
+
+        task_key = _task_key(clean_url)
+        if task_key in self._queued_task_keys():
+            return {
+                "accepted": False,
+                "message": "该模型已经在归档队列中。",
+                "mode": "single_model",
+                "url": clean_url,
+                "queued": True,
+            }
+
+        task_id = self._enqueue_single_task(
+            clean_url,
+            message="等待补全现有库信息",
+            mode="single_model",
+            meta={
+                "profile_metadata_only": True,
+                "existing_model_dir": str(model_dir or "").strip(),
+                "title": str(title or "").strip(),
+            },
+        )
+        self._ensure_worker()
+        _log_archive(
+            "profile_metadata_backfill_submitted",
+            "现有库信息补全任务已入队。",
+            url=clean_url,
+            task_id=task_id,
+            task_key=task_key,
+            model_dir=model_dir,
+        )
+        return {
+            "accepted": True,
+            "task_id": task_id,
+            "mode": "single_model",
+            "url": clean_url,
+            "message": "信息补全任务已加入归档队列。",
+        }
+
     def _is_missing_3mf_retry_task(self, item: dict) -> bool:
         meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
         if meta.get("missing_3mf_retry"):
@@ -1269,7 +1314,7 @@ class ArchiveTaskManager:
                 if task_mode in {"author_upload", "collection_models"}:
                     self._run_batch_task(task_id, task_url, task_mode, meta=task.get("meta") or {})
                 else:
-                    self._run_single_task(task_id, task_url)
+                    self._run_single_task(task_id, task_url, meta=task.get("meta") or {})
             except Exception as exc:
                 model_id = extract_model_id(task.get("url") or "")
                 if model_id:
@@ -1512,17 +1557,19 @@ class ArchiveTaskManager:
             meta=meta,
         )
 
-    def _run_single_task(self, task_id: str, url: str) -> None:
+    def _run_single_task(self, task_id: str, url: str, meta: Optional[dict] = None) -> None:
         config = self.store.load()
         cookie = _select_cookie(url, config)
         if not cookie:
             raise RuntimeError("未找到可用 Cookie，请先到设置页配置对应站点 Cookie。")
 
+        meta = meta if isinstance(meta, dict) else {}
+        profile_metadata_only = bool(meta.get("profile_metadata_only"))
         model_id = extract_model_id(url)
         limit_guard = _read_three_mf_limit_guard()
-        skip_three_mf_fetch = _is_three_mf_limit_guard_active_for_url(url, limit_guard)
-        skip_three_mf_message = _three_mf_limit_message(limit_guard) if skip_three_mf_fetch else ""
-        if model_id:
+        skip_three_mf_fetch = profile_metadata_only or _is_three_mf_limit_guard_active_for_url(url, limit_guard)
+        skip_three_mf_message = _three_mf_limit_message(limit_guard) if skip_three_mf_fetch and not profile_metadata_only else ""
+        if model_id and not profile_metadata_only:
             self.task_store.update_missing_3mf_status(
                 model_id=model_id,
                 status="running",
@@ -1550,11 +1597,12 @@ class ArchiveTaskManager:
                 progress_callback=progress_callback,
                 skip_three_mf_fetch=skip_three_mf_fetch,
                 three_mf_skip_message=skip_three_mf_message,
+                profile_metadata_only=profile_metadata_only,
             )
 
         missing_items = []
         limit_guard_state: Optional[dict[str, Any]] = limit_guard if skip_three_mf_fetch else None
-        for item in result.get("missing_3mf") or []:
+        for item in ([] if profile_metadata_only else result.get("missing_3mf") or []):
             if str(item.get("downloadState") or "").strip() == "download_limited":
                 if not _is_three_mf_limit_guard_active_for_url(url, limit_guard_state):
                     limit_guard_state = _activate_three_mf_limit_guard(
@@ -1575,8 +1623,9 @@ class ArchiveTaskManager:
                 }
             )
         resolved_model_id = str(result.get("model_id") or "")
-        self.task_store.replace_missing_3mf_for_model(resolved_model_id, missing_items)
-        if limit_guard_state is not None:
+        if not profile_metadata_only:
+            self.task_store.replace_missing_3mf_for_model(resolved_model_id, missing_items)
+        if limit_guard_state is not None and not profile_metadata_only:
             self._pause_missing_3mf_retry_tasks_for_limit(limit_guard_state)
         self.task_store.remove_recent_failures_for_model(
             resolved_model_id,

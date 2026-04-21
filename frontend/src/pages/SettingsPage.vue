@@ -175,6 +175,46 @@
           <code class="system-update-code">{{ manualUpdateCommand }}</code>
         </div>
 
+        <section class="system-update-changelog system-maintenance-card">
+          <div class="section-card__header">
+            <div>
+              <span class="eyebrow">系统维护</span>
+              <h2>现有库信息补全</h2>
+            </div>
+            <div class="settings-inline-actions">
+              <button class="button button-secondary" type="button" :disabled="profileBackfillLoading || profileBackfillSubmitting" @click="loadProfileBackfillStatus">
+                {{ profileBackfillLoading ? "读取中..." : "刷新状态" }}
+              </button>
+              <button class="button button-primary" type="button" :disabled="profileBackfillSubmitting" @click="triggerProfileBackfill">
+                {{ profileBackfillSubmitting ? "提交中..." : "补全现有库信息" }}
+              </button>
+            </div>
+          </div>
+          <p class="archive-form__hint">
+            扫描本地已归档模型，把缺少打印配置详情字段的模型加入归档补整理队列。该任务只补配置元数据，不主动消耗 3MF 下载次数。
+          </p>
+          <div class="settings-grid settings-grid--three system-update-grid">
+            <article class="field-card system-update-stat">
+              <span>发现缺失</span>
+              <strong>{{ profileBackfillStats.scanned }}</strong>
+              <small>{{ profileBackfill.started_at ? `最近开始：${profileBackfill.started_at}` : "尚未执行" }}</small>
+            </article>
+            <article class="field-card system-update-stat">
+              <span>新增入队</span>
+              <strong>{{ profileBackfillStats.queued }}</strong>
+              <small>已在队列：{{ profileBackfillStats.alreadyQueued }}</small>
+            </article>
+            <article class="field-card system-update-stat">
+              <span>失败</span>
+              <strong>{{ profileBackfillStats.failed }}</strong>
+              <small>{{ profileBackfill.finished_at ? `最近完成：${profileBackfill.finished_at}` : "等待执行" }}</small>
+            </article>
+          </div>
+          <div class="form-footer">
+            <span class="form-status">{{ statuses.profile_backfill || profileBackfill.last_error || profileBackfill.message || "只在需要补旧库字段时手动执行。" }}</span>
+          </div>
+        </section>
+
         <section class="system-update-changelog">
           <div class="section-card__header">
             <div>
@@ -332,6 +372,9 @@ const tokenItems = ref([]);
 const systemUpdate = ref(defaultSystemUpdateState());
 const systemUpdateLoading = ref(false);
 const systemUpdateSubmitting = ref(false);
+const profileBackfill = ref(defaultProfileBackfillState());
+const profileBackfillLoading = ref(false);
+const profileBackfillSubmitting = ref(false);
 
 const connectionForm = reactive({
   cookie_cn: "",
@@ -367,6 +410,7 @@ const statuses = reactive({
   tokens: "",
   theme: "",
   system_update: "",
+  profile_backfill: "",
 });
 const testing = reactive({
   cookie_cn: false,
@@ -426,6 +470,15 @@ const changelogSummaryText = computed(() => {
   }
   return "会优先读取 GitHub 仓库 README 中的最新更新记录。";
 });
+const profileBackfillStats = computed(() => {
+  const result = profileBackfill.value.last_result || {};
+  return {
+    scanned: Number(result.scanned_candidates || 0),
+    queued: Number(result.queued_count || 0),
+    alreadyQueued: Number(result.already_queued_count || 0),
+    failed: Number(result.failed_count || 0),
+  };
+});
 
 function defaultSystemUpdateState() {
   return {
@@ -453,9 +506,27 @@ function defaultSystemUpdateState() {
   };
 }
 
+function defaultProfileBackfillState() {
+  return {
+    running: false,
+    started_at: "",
+    finished_at: "",
+    last_error: "",
+    last_result: {},
+    message: "",
+  };
+}
+
 function applySystemUpdateStatus(payload) {
   systemUpdate.value = {
     ...defaultSystemUpdateState(),
+    ...(payload || {}),
+  };
+}
+
+function applyProfileBackfillStatus(payload) {
+  profileBackfill.value = {
+    ...defaultProfileBackfillState(),
     ...(payload || {}),
   };
 }
@@ -490,6 +561,7 @@ function setActiveTab(tab) {
   }
   if (activeTab.value === "system" && !systemUpdateLoading.value && !systemUpdateSubmitting.value) {
     loadSystemUpdateStatus({ force: true });
+    loadProfileBackfillStatus({ silent: true });
   }
 }
 
@@ -579,6 +651,46 @@ async function triggerSystemUpdate() {
   } finally {
     systemUpdateSubmitting.value = false;
     scheduleSystemUpdatePolling();
+  }
+}
+
+async function loadProfileBackfillStatus(options = {}) {
+  const { silent = false } = options;
+  if (!silent) {
+    profileBackfillLoading.value = true;
+    statuses.profile_backfill = "";
+  }
+  try {
+    const payload = await apiRequest("/api/admin/archive/profile-backfill");
+    applyProfileBackfillStatus(payload);
+  } catch (error) {
+    if (!silent) {
+      statuses.profile_backfill = error instanceof Error ? error.message : "读取信息补全状态失败。";
+    }
+  } finally {
+    if (!silent) {
+      profileBackfillLoading.value = false;
+    }
+  }
+}
+
+async function triggerProfileBackfill() {
+  const shouldProceed = window.confirm("会扫描本地归档库，并把缺少打印配置详情字段的模型加入归档补整理队列。不会主动下载 3MF。确定继续吗？");
+  if (!shouldProceed) {
+    return;
+  }
+  profileBackfillSubmitting.value = true;
+  statuses.profile_backfill = "";
+  try {
+    const payload = await apiRequest("/api/admin/archive/profile-backfill", {
+      method: "POST",
+    });
+    applyProfileBackfillStatus(payload);
+    statuses.profile_backfill = payload.message || "现有库信息补全任务已提交。";
+  } catch (error) {
+    statuses.profile_backfill = error instanceof Error ? error.message : "提交信息补全失败。";
+  } finally {
+    profileBackfillSubmitting.value = false;
   }
 }
 

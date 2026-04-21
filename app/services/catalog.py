@@ -1,5 +1,6 @@
 import json
 import mimetypes
+import re
 import shutil
 import threading
 import time
@@ -218,6 +219,31 @@ def _safe_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        if value in ("", None):
+            return 0.0
+        if isinstance(value, str):
+            match = re.search(r"-?\d+(?:\.\d+)?", value.replace(",", ""))
+            if not match:
+                return 0.0
+            value = match.group(0)
+        number = float(value)
+        return number if number >= 0 else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _format_decimal(value: Any, digits: int = 1) -> str:
+    number = _safe_float(value)
+    if not number:
+        return ""
+    rounded = round(number, digits)
+    if float(rounded).is_integer():
+        return str(int(rounded))
+    return f"{rounded:.{digits}f}".rstrip("0").rstrip(".")
 
 
 def _parse_timestamp(value: Any) -> int:
@@ -610,7 +636,56 @@ def _format_duration(value: Any) -> str:
     return f"{seconds / 60:.1f} min"
 
 
+def _normalize_profile_filaments(item: dict) -> list[dict]:
+    details = item.get("profileDetails") if isinstance(item.get("profileDetails"), dict) else {}
+    raw_items = item.get("filaments") if isinstance(item.get("filaments"), list) else details.get("filaments")
+    if not isinstance(raw_items, list):
+        raw_items = []
+
+    normalized = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        material = str(raw.get("material") or "耗材").strip()
+        color = str(raw.get("color") or raw.get("colorHex") or raw.get("color_hex") or "").strip()
+        weight = _safe_float(raw.get("weight") or raw.get("weight_g") or raw.get("weightG"))
+        weight_text = f"{_format_decimal(weight, 1)} g" if weight else ""
+        normalized.append(
+            {
+                "material": material or "耗材",
+                "color": color,
+                "weight": weight,
+                "weight_label": weight_text,
+                "ams": bool(raw.get("ams")),
+                "slot": raw.get("slot") if raw.get("slot") not in ("", None) else "",
+            }
+        )
+    return normalized
+
+
+def _normalize_profile_details(item: dict) -> dict:
+    details = item.get("profileDetails") if isinstance(item.get("profileDetails"), dict) else {}
+    nozzle = _safe_float(item.get("nozzleDiameter") or details.get("nozzleDiameter"))
+    filament_weight = _safe_float(item.get("filamentWeight") or details.get("filamentWeight") or item.get("weight"))
+    plate_items = item.get("plates") if isinstance(item.get("plates"), list) else []
+    plate_count = _safe_int(item.get("plateCount") or item.get("plateNum") or details.get("plateCount")) or len(plate_items)
+    print_time_seconds = _safe_int(item.get("printTimeSeconds") or item.get("duration") or details.get("printTimeSeconds"))
+    filaments = _normalize_profile_filaments(item)
+    return {
+        "schema_version": _safe_int(item.get("profileDetailVersion") or details.get("schemaVersion")),
+        "plate_count": plate_count,
+        "print_time_seconds": print_time_seconds,
+        "nozzle_diameter": nozzle,
+        "nozzle_diameter_label": f"{_format_decimal(nozzle, 2)} mm" if nozzle else "",
+        "filament_weight": filament_weight,
+        "filament_weight_label": f"{_format_decimal(filament_weight, 1)} g" if filament_weight else "",
+        "need_ams": bool(item.get("needAms") or details.get("needAms")),
+        "filaments": filaments,
+    }
+
+
 def _normalize_instance_overview(item: dict) -> dict:
+    profile_details = _normalize_profile_details(item)
     duration = (
         item.get("time")
         or item.get("timeText")
@@ -618,7 +693,7 @@ def _normalize_instance_overview(item: dict) -> dict:
         or _format_duration(item.get("printTimeSeconds") or item.get("duration"))
     )
     plate_items = item.get("plates") if isinstance(item.get("plates"), list) else []
-    plates = _safe_int(item.get("plateCount") or item.get("plateNum")) or len(plate_items)
+    plates = profile_details["plate_count"] or _safe_int(item.get("plateCount") or item.get("plateNum")) or len(plate_items)
     rating_value = item.get("rating") or item.get("score") or item.get("stars")
     rating = str(rating_value).strip() if rating_value not in ("", None) else ""
     return {
@@ -643,6 +718,7 @@ def _normalize_instance_overview(item: dict) -> dict:
         "download_count": _safe_int(item.get("downloadCount")),
         "print_count": _safe_int(item.get("printCount")),
         "summary": str(item.get("summary") or item.get("summaryTranslated") or ""),
+        "profile_details": profile_details,
     }
 
 
@@ -673,6 +749,7 @@ def _normalize_model_profile_summary(meta: dict) -> dict:
             "download_count": 0,
             "print_count": 0,
             "profile_count": 0,
+            "profile_details": {},
         }
 
     selected = overviews[0]
@@ -813,6 +890,13 @@ def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
                 "download_count": overview["download_count"],
                 "print_count": overview["print_count"],
                 "summary": overview["summary"],
+                "profile_details": overview["profile_details"],
+                "nozzle_diameter": overview["profile_details"].get("nozzle_diameter") or 0,
+                "nozzle_diameter_label": overview["profile_details"].get("nozzle_diameter_label") or "",
+                "filament_weight": overview["profile_details"].get("filament_weight") or 0,
+                "filament_weight_label": overview["profile_details"].get("filament_weight_label") or "",
+                "need_ams": bool(overview["profile_details"].get("need_ams")),
+                "filaments": overview["profile_details"].get("filaments") or [],
                 "thumbnail_url": thumbnail_url,
                 "thumbnail_fallback_url": thumbnail_fallback_url,
                 "primary_image_url": (primary_media or {}).get("url") or thumbnail_url,

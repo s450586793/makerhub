@@ -52,6 +52,10 @@ from app.services.archive_repair import (
     run_archive_repair_job,
     write_archive_repair_status,
 )
+from app.services.archive_profile_backfill import (
+    queue_profile_backfill,
+    read_profile_backfill_status,
+)
 from app.services.subscriptions import SubscriptionManager
 from app.services.source_library import (
     build_source_group_models_payload,
@@ -84,6 +88,7 @@ remote_refresh_manager = RemoteRefreshManager(
 )
 archive_repair_process: Process | None = None
 archive_repair_start_lock = asyncio.Lock()
+profile_backfill_start_lock = asyncio.Lock()
 github_version_refresh_task: asyncio.Task | None = None
 github_version_refresh_lock = asyncio.Lock()
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/s450586793/makerhub/main/VERSION"
@@ -1540,6 +1545,39 @@ async def repair_archive_3mf(request: Request):
         }
     )
     return state
+
+
+@router.get("/admin/archive/profile-backfill")
+async def get_archive_profile_backfill_status(request: Request):
+    _require_session_auth(request)
+    return read_profile_backfill_status()
+
+
+@router.post("/admin/archive/profile-backfill")
+async def start_archive_profile_backfill(request: Request):
+    _require_session_auth(request)
+    async with profile_backfill_start_lock:
+        state = read_profile_backfill_status()
+        if state.get("running"):
+            state.update(
+                {
+                    "accepted": False,
+                    "message": "现有库信息补全正在扫描，请稍后查看状态。",
+                }
+            )
+            return state
+        try:
+            result = queue_profile_backfill(crawler.manager)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    result.update(
+        {
+            "accepted": True,
+            "message": result.get("message") or "现有库信息补全扫描完成。",
+        }
+    )
+    return result
 
 
 @router.post("/archive/preview")

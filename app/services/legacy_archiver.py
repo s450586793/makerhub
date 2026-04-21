@@ -2225,6 +2225,351 @@ def extract_instances(design: dict) -> List[dict]:
     return []
 
 
+PROFILE_DETAIL_SCHEMA_VERSION = 1
+_NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _coerce_number(value: Any) -> Optional[float]:
+    if value in ("", None):
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return number if number >= 0 else None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    match = _NUMBER_RE.search(raw.replace(",", ""))
+    if not match:
+        return None
+    try:
+        number = float(match.group(0))
+    except ValueError:
+        return None
+    return number if number >= 0 else None
+
+
+def _round_profile_number(value: Any, digits: int = 2) -> Optional[float]:
+    number = _coerce_number(value)
+    if number is None:
+        return None
+    rounded = round(number, digits)
+    return int(rounded) if float(rounded).is_integer() else rounded
+
+
+def _walk_values(payload: Any, max_depth: int = 6):
+    stack: list[tuple[Any, int]] = [(payload, 0)]
+    seen: set[int] = set()
+    while stack:
+        current, depth = stack.pop()
+        if depth > max_depth:
+            continue
+        if isinstance(current, (dict, list)):
+            marker = id(current)
+            if marker in seen:
+                continue
+            seen.add(marker)
+        yield current
+        if isinstance(current, dict):
+            for value in current.values():
+                if isinstance(value, (dict, list)):
+                    stack.append((value, depth + 1))
+        elif isinstance(current, list):
+            for value in current:
+                if isinstance(value, (dict, list)):
+                    stack.append((value, depth + 1))
+
+
+def _first_value_by_keys(payload: Any, keys: tuple[str, ...]) -> Any:
+    wanted = {key.lower() for key in keys}
+    for current in _walk_values(payload):
+        if not isinstance(current, dict):
+            continue
+        for key, value in current.items():
+            if str(key).lower() in wanted and value not in ("", None, [], {}):
+                return value
+    return None
+
+
+def _normalize_rgb_triplet(values: Any) -> str:
+    if not isinstance(values, (list, tuple)) or len(values) < 3:
+        return ""
+    numbers = []
+    for value in values[:3]:
+        number = _coerce_number(value)
+        if number is None:
+            return ""
+        numbers.append(max(0, min(int(round(number)), 255)))
+    return f"rgb({numbers[0]}, {numbers[1]}, {numbers[2]})"
+
+
+def _normalize_color_value(value: Any) -> str:
+    if value in ("", None):
+        return ""
+    if isinstance(value, dict):
+        for key in ("hex", "color", "colorHex", "rgb", "value"):
+            normalized = _normalize_color_value(value.get(key))
+            if normalized:
+                return normalized
+        rgb = _normalize_rgb_triplet([value.get("r"), value.get("g"), value.get("b")])
+        if rgb:
+            return rgb
+        return ""
+    if isinstance(value, (list, tuple)):
+        return _normalize_rgb_triplet(value)
+
+    raw = str(value).strip()
+    if not raw:
+        return ""
+    if raw.lower().startswith("rgb"):
+        numbers = [int(float(item)) for item in re.findall(r"\d+(?:\.\d+)?", raw)[:3]]
+        if len(numbers) == 3:
+            return f"rgb({numbers[0]}, {numbers[1]}, {numbers[2]})"
+        return raw
+    if re.fullmatch(r"#[0-9a-fA-F]{3}", raw):
+        return "#" + "".join(char * 2 for char in raw[1:])
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", raw):
+        return raw
+    if re.fullmatch(r"[0-9a-fA-F]{6}", raw):
+        return f"#{raw}"
+    if "," in raw:
+        rgb = _normalize_rgb_triplet([part.strip() for part in raw.split(",")])
+        if rgb:
+            return rgb
+    return raw
+
+
+def _truthy_flag(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if value in ("", None):
+        return None
+    raw = str(value).strip().lower()
+    if raw in {"1", "true", "yes", "y", "需要", "是"}:
+        return True
+    if raw in {"0", "false", "no", "n", "不需要", "否"}:
+        return False
+    return None
+
+
+def _normalize_filament_item(item: Any, default_ams: bool = False) -> Optional[dict[str, Any]]:
+    if isinstance(item, str):
+        material = item.strip()
+        return {"material": material, "color": "", "weight": 0, "ams": default_ams} if material else None
+    if not isinstance(item, dict):
+        return None
+
+    material = str(
+        _first_value_by_keys(
+            item,
+            (
+                "material",
+                "materialName",
+                "filamentType",
+                "filament_type",
+                "type",
+                "name",
+                "filamentName",
+                "filament",
+            ),
+        )
+        or ""
+    ).strip()
+    if "｜" in material:
+        material = material.split("｜", 1)[0].strip()
+    if "|" in material:
+        material = material.split("|", 1)[0].strip()
+
+    color = _normalize_color_value(
+        _first_value_by_keys(
+            item,
+            (
+                "color",
+                "hex",
+                "colorHex",
+                "color_hex",
+                "filamentColor",
+                "filament_color",
+                "materialColor",
+                "trayColor",
+                "displayColor",
+            ),
+        )
+    )
+    weight = _round_profile_number(
+        _first_value_by_keys(
+            item,
+            (
+                "weight",
+                "weightG",
+                "weight_g",
+                "usedWeight",
+                "used_weight",
+                "filamentWeight",
+                "materialWeight",
+                "grams",
+                "gram",
+                "usage",
+                "used",
+                "consume",
+                "consumption",
+            ),
+        ),
+        digits=1,
+    )
+    slot = _first_value_by_keys(item, ("slot", "slotIndex", "trayIndex", "trayId", "index"))
+    ams_flag = _truthy_flag(_first_value_by_keys(item, ("ams", "isAms", "isAMS", "needAms")))
+
+    if not material and not color and weight in (None, 0):
+        return None
+    result: dict[str, Any] = {
+        "material": material or "耗材",
+        "color": color,
+        "weight": weight or 0,
+        "ams": default_ams if ams_flag is None else ams_flag,
+    }
+    if slot not in ("", None):
+        result["slot"] = slot
+    return result
+
+
+def _collect_raw_filament_items(inst: dict, plates: list[dict]) -> list[Any]:
+    model_info = (
+        inst.get("extention", {}).get("modelInfo")
+        or inst.get("extension", {}).get("modelInfo")
+        or inst.get("modelInfo")
+        or {}
+    )
+    sources = [
+        inst.get("instanceFilaments"),
+        inst.get("filaments"),
+        inst.get("filamentList"),
+        inst.get("materials"),
+        model_info.get("instanceFilaments"),
+        model_info.get("filaments"),
+        model_info.get("filamentList"),
+        model_info.get("materials"),
+    ]
+    raw_items: list[Any] = []
+    for source in sources:
+        if isinstance(source, list):
+            raw_items.extend(source)
+    if raw_items:
+        return raw_items
+
+    for plate in plates or []:
+        if not isinstance(plate, dict):
+            continue
+        filaments = plate.get("filaments")
+        if isinstance(filaments, list):
+            raw_items.extend(filaments)
+    return raw_items
+
+
+def _merge_profile_filaments(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[tuple[str, str, str], dict[str, Any]] = {}
+    order: list[tuple[str, str, str]] = []
+    for item in items:
+        material = str(item.get("material") or "耗材").strip()
+        color = str(item.get("color") or "").strip()
+        slot = str(item.get("slot") or "").strip()
+        key = (material.lower(), color.lower(), slot)
+        if key not in merged:
+            merged[key] = {
+                "material": material,
+                "color": color,
+                "weight": 0,
+                "ams": bool(item.get("ams")),
+            }
+            if slot:
+                merged[key]["slot"] = item.get("slot")
+            order.append(key)
+        merged[key]["weight"] = _round_profile_number(
+            float(merged[key].get("weight") or 0) + float(item.get("weight") or 0),
+            digits=1,
+        ) or 0
+        merged[key]["ams"] = bool(merged[key].get("ams") or item.get("ams"))
+    return [merged[key] for key in order]
+
+
+def normalize_profile_details(inst: dict, plates: list[dict], existing_inst: Optional[dict] = None) -> dict[str, Any]:
+    existing_inst = existing_inst if isinstance(existing_inst, dict) else {}
+    existing_details = existing_inst.get("profileDetails") if isinstance(existing_inst.get("profileDetails"), dict) else {}
+    need_ams_flag = _truthy_flag(inst.get("needAms"))
+    raw_filaments = _collect_raw_filament_items(inst, plates)
+    filaments = [
+        normalized
+        for raw in raw_filaments
+        if (normalized := _normalize_filament_item(raw, default_ams=bool(need_ams_flag)))
+    ]
+    if not filaments and isinstance(existing_inst.get("filaments"), list):
+        filaments = [dict(item) for item in existing_inst.get("filaments") or [] if isinstance(item, dict)]
+    if not filaments and isinstance(existing_details.get("filaments"), list):
+        filaments = [dict(item) for item in existing_details.get("filaments") or [] if isinstance(item, dict)]
+    filaments = _merge_profile_filaments(filaments)
+
+    filament_weight = (
+        _round_profile_number(inst.get("filamentWeight") or inst.get("filamentWeightG") or inst.get("materialWeight") or inst.get("weight"), digits=1)
+        or _round_profile_number((inst.get("prediction") or {}).get("weight") if isinstance(inst.get("prediction"), dict) else None, digits=1)
+        or _round_profile_number(existing_inst.get("filamentWeight"), digits=1)
+        or _round_profile_number(existing_details.get("filamentWeight"), digits=1)
+    )
+    if filament_weight is None and filaments:
+        total_weight = sum(float(item.get("weight") or 0) for item in filaments)
+        filament_weight = _round_profile_number(total_weight, digits=1) if total_weight > 0 else None
+
+    nozzle_diameter = (
+        _round_profile_number(
+            _first_value_by_keys(
+                inst,
+                (
+                    "nozzleDiameter",
+                    "nozzle_diameter",
+                    "nozzleDiameterMm",
+                    "nozzleDiameterMM",
+                    "nozzleSize",
+                    "nozzle",
+                ),
+            ),
+            digits=2,
+        )
+        or _round_profile_number(existing_inst.get("nozzleDiameter"), digits=2)
+        or _round_profile_number(existing_details.get("nozzleDiameter"), digits=2)
+    )
+    if nozzle_diameter is not None and nozzle_diameter > 5:
+        nozzle_diameter = None
+
+    plate_count = (
+        _round_profile_number(inst.get("plateCount") or inst.get("plateNum"), digits=0)
+        or len(plates or [])
+        or _round_profile_number(existing_inst.get("plateCount") or existing_inst.get("plateNum"), digits=0)
+        or _round_profile_number(existing_details.get("plateCount"), digits=0)
+        or 0
+    )
+    print_time_seconds = (
+        _round_profile_number(inst.get("printTimeSeconds") or inst.get("duration"), digits=0)
+        or _round_profile_number(existing_inst.get("printTimeSeconds") or existing_inst.get("duration"), digits=0)
+        or _round_profile_number(existing_details.get("printTimeSeconds"), digits=0)
+        or 0
+    )
+    need_ams = bool(
+        need_ams_flag
+        if need_ams_flag is not None
+        else existing_inst.get("needAms") or existing_details.get("needAms") or any(item.get("ams") for item in filaments)
+    )
+
+    return {
+        "schemaVersion": PROFILE_DETAIL_SCHEMA_VERSION,
+        "plateCount": int(plate_count or 0),
+        "printTimeSeconds": int(print_time_seconds or 0),
+        "nozzleDiameter": nozzle_diameter,
+        "filamentWeight": filament_weight,
+        "needAms": need_ams,
+        "filaments": filaments,
+    }
+
+
 def build_meta(
     design: dict,
     summary: dict,
@@ -3475,6 +3820,7 @@ def archive_model(
     progress_callback=None,
     skip_three_mf_fetch: bool = False,
     three_mf_skip_message: str = "",
+    profile_metadata_only: bool = False,
 ):
     """
     对外主入口：采集 + 下载文件 + 生成 meta/index.html/style.css
@@ -3670,10 +4016,14 @@ def archive_model(
         if path.is_file()
     }
     reserved_planned_instance_names: set[str] = set()
-    three_mf_fetch_paused = bool(skip_three_mf_fetch)
+    three_mf_fetch_paused = bool(skip_three_mf_fetch or profile_metadata_only)
     three_mf_paused_failure = {
-        "state": "download_limited",
-        "message": str(three_mf_skip_message or "").strip() or describe_three_mf_failure("download_limited", url=fetch_url),
+        "state": "missing" if profile_metadata_only else "download_limited",
+        "message": (
+            "信息补全任务仅整理打印配置详情，不下载 3MF。"
+            if profile_metadata_only
+            else str(three_mf_skip_message or "").strip() or describe_three_mf_failure("download_limited", url=fetch_url)
+        ),
     }
     skipped_due_limit = 0
     for idx, inst in enumerate(extracted_instances, start=1):
@@ -3705,20 +4055,39 @@ def archive_model(
         name3mf = hinted_name or str(existing_inst.get("name") or "").strip()
         url3mf = hinted_url or str(existing_inst.get("downloadUrl") or "").strip()
         used_api_url = api_url
-        failure_info = {"state": "available", "message": ""} if url3mf else {"state": "missing", "message": "未获取到 3MF 下载地址。"}
+        failure_info = (
+            {"state": "available", "message": ""}
+            if url3mf
+            else {
+                "state": str(existing_inst.get("downloadState") or "missing"),
+                "message": str(existing_inst.get("downloadMessage") or "未获取到 3MF 下载地址。"),
+            }
+        )
         existing_file_name = str(existing_inst.get("fileName") or "").strip()
         existing_file_available = bool(existing_file_name and (planned_instances_dir / existing_file_name).exists())
         if three_mf_fetch_paused and url3mf and not existing_file_available:
             url3mf = ""
             skipped_due_limit += 1
-            failure_info = dict(three_mf_paused_failure)
+            if profile_metadata_only and (existing_inst.get("downloadState") or existing_inst.get("downloadMessage")):
+                failure_info = {
+                    "state": str(existing_inst.get("downloadState") or "missing"),
+                    "message": str(existing_inst.get("downloadMessage") or "未获取到 3MF 下载地址。"),
+                }
+            else:
+                failure_info = dict(three_mf_paused_failure)
         elif hinted_url:
             payload_hint_hits += 1
         elif url3mf:
             existing_hint_hits += 1
         elif three_mf_fetch_paused:
             skipped_due_limit += 1
-            failure_info = dict(three_mf_paused_failure)
+            if profile_metadata_only and (existing_inst.get("downloadState") or existing_inst.get("downloadMessage")):
+                failure_info = {
+                    "state": str(existing_inst.get("downloadState") or "missing"),
+                    "message": str(existing_inst.get("downloadMessage") or "未获取到 3MF 下载地址。"),
+                }
+            else:
+                failure_info = dict(three_mf_paused_failure)
         else:
             name3mf, url3mf, used_api_url, failure_info = fetch_instance_3mf(
                 sess,
@@ -3735,6 +4104,7 @@ def archive_model(
                 three_mf_paused_failure = dict(failure_info or three_mf_paused_failure)
         failure_state = str((failure_info or {}).get("state") or "").strip()
         failure_message = str((failure_info or {}).get("message") or "").strip()
+        profile_details = normalize_profile_details(inst, plates, existing_inst)
         inst_record = {
             "id": inst_id,
             "profileId": inst.get("profileId") or inst.get("profile_id") or inst.get("profileID") or existing_inst.get("profileId") or existing_inst.get("profile_id") or existing_inst.get("profileID"),
@@ -3751,9 +4121,12 @@ def archive_model(
             "printCount": inst.get("printCount") or existing_inst.get("printCount") or 0,
             "prediction": inst.get("prediction"),
             "weight": inst.get("weight"),
+            "plateCount": profile_details.get("plateCount") or inst.get("plateCount") or inst.get("plateNum") or existing_inst.get("plateCount") or existing_inst.get("plateNum") or 0,
+            "nozzleDiameter": profile_details.get("nozzleDiameter"),
+            "filamentWeight": profile_details.get("filamentWeight"),
             "materialCnt": inst.get("materialCnt"),
             "materialColorCnt": inst.get("materialColorCnt"),
-            "needAms": inst.get("needAms"),
+            "needAms": profile_details.get("needAms"),
             "cover": inst.get("cover") or inst.get("coverUrl") or existing_inst.get("cover") or existing_inst.get("coverUrl") or "",
             "previewImage": inst.get("previewImage") or existing_inst.get("previewImage") or "",
             "thumbnail": inst.get("thumbnail") or existing_inst.get("thumbnail") or "",
@@ -3761,6 +4134,9 @@ def archive_model(
             "plates": plates,
             "pictures": pics,
             "instanceFilaments": inst.get("instanceFilaments") or existing_inst.get("instanceFilaments") or [],
+            "filaments": profile_details.get("filaments") or [],
+            "profileDetails": profile_details,
+            "profileDetailVersion": PROFILE_DETAIL_SCHEMA_VERSION,
             "summary": inst.get("summary") or existing_inst.get("summary") or "",
             "summaryTranslated": inst.get("summaryTranslated") or existing_inst.get("summaryTranslated") or "",
             "name": name3mf,
@@ -3835,7 +4211,7 @@ def archive_model(
 
     # 缺失 3MF 记录（仅记录，没有下载 3mf）
     missing_3mf = [inst for inst in inst_list if not inst.get("downloadUrl")]
-    if missing_3mf:
+    if missing_3mf and not profile_metadata_only:
         logs_dir.mkdir(parents=True, exist_ok=True)
         missing_log = logs_dir / "missing_3mf.log"
         with missing_log.open("a", encoding="utf-8") as f:
@@ -3859,7 +4235,8 @@ def archive_model(
     return {
         "base_name": base_name,
         "work_dir": str(work_dir.resolve()),
-        "missing_3mf": missing_3mf,
+        "missing_3mf": [] if profile_metadata_only else missing_3mf,
+        "metadata_only_missing_3mf_count": len(missing_3mf) if profile_metadata_only else 0,
         "action": action,
         "model_id": design_id,
     }
