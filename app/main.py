@@ -64,7 +64,7 @@ def _apply_cache_headers(path: str, response):
 
 
 @app.get("/favicon.ico", include_in_schema=False)
-async def favicon() -> FileResponse | Response:
+async def favicon() -> Response:
     if LOGO_PATH.exists():
         return FileResponse(LOGO_PATH, media_type="image/png")
     return Response(status_code=204)

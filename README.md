@@ -38,6 +38,10 @@ makerhub 是一个面向个人 NAS / DSM 部署的 MakerWorld 模型归档与管
 ## 更新记录
 
 ### 2026-04-21
+- 版本号升级到 `v0.5.55`
+- 修复 `/favicon.ico` 路由返回类型标注导致 FastAPI 启动时把 `FileResponse | Response` 误解析为 Pydantic response model 的问题，容器可正常启动
+
+### 2026-04-21
 - 版本号升级到 `v0.5.54`
 - 接入 makerhub 项目 logo：README 顶部、浏览器标签页 favicon、侧边栏品牌位和登录页品牌位统一使用新图标
 
