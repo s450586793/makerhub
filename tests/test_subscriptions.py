@@ -47,6 +47,7 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.store.save(config)
         self.task_store = TaskStateStore()
         self.manager = SubscriptionManager(ArchiveManagerStub(), store=self.store, task_store=self.task_store)
+        self.manager._refresh_subscription_source_metadata = lambda *_args, **_kwargs: None
 
     def tearDown(self):
         task_state_module.SUBSCRIPTIONS_STATE_PATH = self.original_subscriptions_state_path
@@ -135,7 +136,7 @@ class SubscriptionManagerTest(unittest.TestCase):
         state = self._subscription_state()
         self.assertFalse(state["running"])
         self.assertEqual(state["status"], "success")
-        self.assertEqual(state["next_run_at"], "2026-04-21T23:00:00")
+        self.assertEqual(state["next_run_at"], "2026-04-21T23:00:00+08:00")
 
 
 if __name__ == "__main__":
