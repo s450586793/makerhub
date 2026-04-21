@@ -190,6 +190,11 @@ select {
   transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
 }
 
+.sidebar-visibility-toggle {
+  position: relative;
+  top: 8px;
+}
+
 .sidebar-visibility-toggle:hover,
 .shell-visibility-toggle:hover {
   transform: translateY(-1px);
