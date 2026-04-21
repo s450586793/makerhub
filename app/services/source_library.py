@@ -511,7 +511,7 @@ def _append_group_model(group: dict[str, Any], model: dict[str, Any]) -> None:
     group["model_dirs"].append(model_dir)
 
 
-def _fallback_author_avatar_from_members(members: list[dict]) -> str:
+def _author_avatar_from_members(members: list[dict]) -> str:
     for model in members:
         author = model.get("author") if isinstance(model.get("author"), dict) else {}
         for key in ("avatar_url", "avatar_remote_url"):
@@ -529,10 +529,10 @@ def _finalize_group(group: dict[str, Any], models_by_dir: dict[str, dict], metad
         group["title"] = metadata["title"]
     if metadata.get("subtitle"):
         group["subtitle"] = metadata["subtitle"]
-    if metadata.get("avatar_url"):
+    if group.get("kind") == "author":
+        group["avatar_url"] = _author_avatar_from_members(members) or str(group.get("avatar_url") or "")
+    elif metadata.get("avatar_url"):
         group["avatar_url"] = metadata["avatar_url"]
-    elif group.get("kind") == "author" and not group.get("avatar_url"):
-        group["avatar_url"] = _fallback_author_avatar_from_members(members)
     if metadata.get("cover_url"):
         group["cover_url"] = metadata["cover_url"]
     elif preview_models:
