@@ -270,6 +270,7 @@ class SubscriptionManager:
         existing = next((item for item in config.subscriptions if normalize_source_url(item.url) == clean_url), None)
         now_iso = _now_iso()
         created_new = False
+        initial_sync_requested = False
 
         if existing:
             existing.name = str(name or existing.name or _default_subscription_name(clean_url, mode)).strip()
@@ -296,6 +297,13 @@ class SubscriptionManager:
         try:
             if initialize_from_source:
                 initialized = self._initialize_subscription_state(record)
+                discovered_count = int(initialized.get("last_discovered_count") or 0)
+                self.task_store.patch_subscription_state(
+                    record.id,
+                    manual_requested_at=_now_iso(),
+                    last_message=f"订阅已初始化，当前扫描到 {discovered_count} 个模型，正在启动首次同步。",
+                )
+                initial_sync_requested = True
             else:
                 initialized = self.task_store.patch_subscription_state(
                     record.id,
@@ -313,12 +321,22 @@ class SubscriptionManager:
             raise
 
         self.start()
+        if initial_sync_requested:
+            self._maybe_launch_due_sync()
         payload = self.list_payload()
         return {
             "success": True,
             "subscription": next((item for item in payload["items"] if item["id"] == record.id), None),
             "subscriptions": payload,
-            "message": "订阅已创建。" if not existing else "订阅已更新。",
+            "message": (
+                "订阅已创建，已开始首次同步。"
+                if not existing and initial_sync_requested
+                else "订阅已更新，已开始首次同步。"
+                if initial_sync_requested
+                else "订阅已创建。"
+                if not existing
+                else "订阅已更新。"
+            ),
             "initialized": initialized,
         }
 

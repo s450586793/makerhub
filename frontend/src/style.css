@@ -97,6 +97,38 @@
   margin-bottom: 12px;
 }
 
+.subscription-page-intro {
+  align-items: flex-start;
+}
+
+.subscription-page-intro__side {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  justify-items: end;
+}
+
+.subscription-page-tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.subscription-page-status {
+  margin: 0 0 12px;
+  min-height: 20px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.subscription-page-status--dialog {
+  margin: 0;
+  min-height: 0;
+}
+
 .subscriptions-create-card {
   display: grid;
   gap: 10px;
@@ -1858,6 +1890,21 @@
   justify-content: flex-end;
 }
 
+.subscription-create-dialog__panel {
+  width: min(560px, calc(100vw - 32px));
+  display: grid;
+  gap: 14px;
+}
+
+.subscription-create-dialog__form {
+  display: grid;
+  gap: 12px;
+}
+
+.subscription-create-dialog__form .submit-dialog__actions {
+  justify-content: flex-end;
+}
+
 .count-pill--ok {
   color: #126442;
   background: rgba(31, 157, 98, 0.12);
@@ -2228,6 +2275,19 @@
 
   .page-intro--compact {
     margin-bottom: 10px;
+  }
+
+  .subscription-page-intro__side {
+    width: 100%;
+    justify-items: stretch;
+  }
+
+  .subscription-page-tools {
+    justify-content: stretch;
+  }
+
+  .subscription-page-tools > * {
+    width: 100%;
   }
 
   .subscriptions-create-card {

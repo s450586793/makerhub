@@ -28,6 +28,7 @@ SPA_SHELL_PATHS = {
     "/login",
     "/models",
     "/subscriptions",
+    "/subscriptions/manage",
     "/settings",
     "/organizer",
     "/remote-refresh",

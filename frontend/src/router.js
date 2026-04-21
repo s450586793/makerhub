@@ -15,6 +15,7 @@ const ModelsPage = () => import("./pages/ModelsPage.vue");
 const OrganizerPage = () => import("./pages/OrganizerPage.vue");
 const RemoteRefreshPage = () => import("./pages/RemoteRefreshPage.vue");
 const SettingsPage = () => import("./pages/SettingsPage.vue");
+const SubscriptionsManagePage = () => import("./pages/SubscriptionsManagePage.vue");
 const SubscriptionsPage = () => import("./pages/SubscriptionsPage.vue");
 const TasksPage = () => import("./pages/TasksPage.vue");
 
@@ -80,6 +81,14 @@ const routes = [
         component: SubscriptionsPage,
         meta: {
           title: "订阅 | makerhub",
+        },
+      },
+      {
+        path: "subscriptions/manage",
+        name: "subscriptions-manage",
+        component: SubscriptionsManagePage,
+        meta: {
+          title: "订阅管理 | makerhub",
         },
       },
       {
