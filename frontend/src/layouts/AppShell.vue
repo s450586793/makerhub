@@ -6,6 +6,7 @@
       <div class="site-sidebar__inner">
         <div class="site-sidebar__head">
           <RouterLink class="brand-mark" to="/" @click="closeSidebar">
+            <img class="brand-mark__logo" :src="logoUrl" alt="" aria-hidden="true">
             <span>
               <strong>makerhub</strong>
               <small>真实归档数据工作台</small>
@@ -92,6 +93,7 @@ import { appState, currentUser, logoutSession, saveThemePreference } from "../li
 const route = useRoute();
 const COMPACT_MEDIA_QUERY = "(max-width: 980px)";
 const githubProjectUrl = "https://github.com/s450586793/makerhub";
+const logoUrl = "/static/img/makerhub-logo.png";
 
 const user = computed(() => currentUser());
 const isCompact = ref(false);

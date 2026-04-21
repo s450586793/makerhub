@@ -6,7 +6,7 @@
           <div class="login-card__header">
             <div class="login-card__brand">
               <div class="brand-mark">
-                <span class="brand-mark__badge">MH</span>
+                <img class="brand-mark__logo" :src="logoUrl" alt="" aria-hidden="true">
                 <span class="login-card__brand-copy">
                   <strong>makerhub</strong>
                   <small>真实归档数据工作台</small>
@@ -53,6 +53,7 @@ import { safeNextPath } from "../lib/helpers";
 
 
 const route = useRoute();
+const logoUrl = "/static/img/makerhub-logo.png";
 
 const username = ref("admin");
 const password = ref("");

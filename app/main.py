@@ -1,7 +1,7 @@
 from urllib.parse import quote
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.api.auth import router as auth_router
@@ -21,6 +21,7 @@ ensure_app_dirs()
 
 app = FastAPI(title="makerhub", version=APP_VERSION)
 auth_manager = AuthManager()
+LOGO_PATH = ROOT_DIR / "app" / "static" / "img" / "makerhub-logo.png"
 
 SPA_SHELL_PATHS = {
     "/",
@@ -63,7 +64,9 @@ def _apply_cache_headers(path: str, response):
 
 
 @app.get("/favicon.ico", include_in_schema=False)
-async def favicon() -> Response:
+async def favicon() -> FileResponse | Response:
+    if LOGO_PATH.exists():
+        return FileResponse(LOGO_PATH, media_type="image/png")
     return Response(status_code=204)
 
 

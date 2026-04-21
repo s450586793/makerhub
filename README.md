@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="app/static/img/makerhub-logo.png" width="160" alt="makerhub logo">
+</p>
+
 # makerhub
 
 > 此项目由 Codex 生成，并在此基础上继续迭代。
@@ -32,6 +36,10 @@ makerhub 是一个面向个人 NAS / DSM 部署的 MakerWorld 模型归档与管
 - Docker / DSM 部署：适合通过 Docker Compose 或 Synology DSM Container Manager 部署，配置、日志、状态和归档目录分离挂载；仓库内的 `compose.yaml` 已默认打开网页更新所需的 `docker.sock` 挂载。
 
 ## 更新记录
+
+### 2026-04-21
+- 版本号升级到 `v0.5.54`
+- 接入 makerhub 项目 logo：README 顶部、浏览器标签页 favicon、侧边栏品牌位和登录页品牌位统一使用新图标
 
 ### 2026-04-21
 - 版本号升级到 `v0.5.53`

@@ -233,6 +233,16 @@ html[data-theme="dark"] .shell-visibility-toggle {
   box-shadow: 0 16px 32px rgba(31, 157, 98, 0.24);
 }
 
+.brand-mark__logo {
+  width: 48px;
+  height: 48px;
+  border-radius: 16px;
+  display: block;
+  flex: 0 0 auto;
+  object-fit: cover;
+  box-shadow: 0 16px 32px rgba(31, 157, 98, 0.24);
+}
+
 .brand-mark strong {
   display: block;
   font-size: 20px;
