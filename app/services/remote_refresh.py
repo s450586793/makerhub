@@ -229,6 +229,56 @@ def _instance_key(instance: Any) -> str:
     return ""
 
 
+def _instance_match_tokens(instance: Any) -> set[tuple[str, str]]:
+    if not isinstance(instance, dict):
+        return set()
+    tokens: set[tuple[str, str]] = set()
+    for field in ("id", "profileId", "instanceId"):
+        value = str(instance.get(field) or "").strip()
+        if value:
+            tokens.add(("id", value))
+    for field in ("title", "name"):
+        value = str(instance.get(field) or "").strip()
+        if value:
+            tokens.add(("title", value))
+    return tokens
+
+
+def _missing_3mf_match_tokens(item: Any) -> set[tuple[str, str]]:
+    if not isinstance(item, dict):
+        return set()
+    tokens: set[tuple[str, str]] = set()
+    instance_id = str(item.get("instance_id") or item.get("profileId") or item.get("instanceId") or "").strip()
+    if instance_id:
+        tokens.add(("id", instance_id))
+    title = str(item.get("title") or item.get("name") or "").strip()
+    if title:
+        tokens.add(("title", title))
+    return tokens
+
+
+def _split_new_instance_missing_3mf_items(
+    items: list[dict[str, Any]],
+    added_instance_tokens: set[tuple[str, str]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not items or not added_instance_tokens:
+        return [], list(items or [])
+
+    pending_download: list[dict[str, Any]] = []
+    remaining_missing: list[dict[str, Any]] = []
+    for item in items:
+        item_tokens = _missing_3mf_match_tokens(item)
+        item_id_tokens = {token for token in item_tokens if token[0] == "id"}
+        if (
+            (item_id_tokens and item_id_tokens & added_instance_tokens)
+            or (not item_id_tokens and item_tokens & added_instance_tokens)
+        ):
+            pending_download.append(item)
+        else:
+            remaining_missing.append(item)
+    return pending_download, remaining_missing
+
+
 def _merge_instance_record(existing_item: dict[str, Any], fresh_item: dict[str, Any]) -> dict[str, Any]:
     merged = copy.deepcopy(fresh_item)
 
@@ -467,6 +517,16 @@ def _finalize_refreshed_meta(meta_path: Path, existing_meta: dict[str, Any]) -> 
     added_instance_count = _count_added_items(existing_instances, fresh_instances, _instance_key)
     attachments_added = _count_added_items(existing_attachments, fresh_attachments, _attachment_key)
     summary_changed = _summary_signature(existing_meta.get("summary")) != _summary_signature(fresh_meta.get("summary"))
+    existing_instance_keys = {
+        key
+        for key in (_instance_key(item) for item in existing_instances)
+        if key
+    }
+    added_instance_tokens: set[tuple[str, str]] = set()
+    for item in fresh_instances:
+        key = _instance_key(item)
+        if key and key not in existing_instance_keys:
+            added_instance_tokens.update(_instance_match_tokens(item))
 
     added_comments = max(
         len(merged_comments)
@@ -513,6 +573,7 @@ def _finalize_refreshed_meta(meta_path: Path, existing_meta: dict[str, Any]) -> 
         "change_labels": change_labels,
         "change_summary": "，".join(change_labels),
         "checked_at": checked_at,
+        "added_instance_tokens": added_instance_tokens,
     }
 
 
@@ -586,9 +647,15 @@ def _refresh_priority(item: dict[str, Any]) -> tuple[int, int, str]:
 
 
 class RemoteRefreshManager:
-    def __init__(self, store: Optional[JsonStore] = None, task_store: Optional[TaskStateStore] = None) -> None:
+    def __init__(
+        self,
+        store: Optional[JsonStore] = None,
+        task_store: Optional[TaskStateStore] = None,
+        archive_manager: Any = None,
+    ) -> None:
         self.store = store or JsonStore()
         self.task_store = task_store or TaskStateStore()
+        self.archive_manager = archive_manager
         self._loop_lock = threading.Lock()
         self._batch_state_lock = threading.Lock()
         self._batch_running = False
@@ -974,15 +1041,48 @@ class RemoteRefreshManager:
                 invalidate_archive_snapshot("remote_refresh_completed")
             invalidate_model_detail_cache(model_dir)
             model_id = str(finalized["meta"].get("id") or existing_meta.get("id") or "").strip()
+            missing_3mf_items: list[dict[str, Any]] = []
+            new_3mf_download_items: list[dict[str, Any]] = []
+            new_3mf_download_result: dict[str, Any] = {}
             if model_id:
+                missing_3mf_items = _build_missing_3mf_items(meta_path, finalized["meta"])
+                pending_download_items, remaining_missing_items = _split_new_instance_missing_3mf_items(
+                    missing_3mf_items,
+                    finalized.get("added_instance_tokens") or set(),
+                )
+                effective_limit_guard = limit_guard_state or _read_three_mf_limit_guard()
+                can_enqueue_new_download = (
+                    bool(pending_download_items)
+                    and self.archive_manager is not None
+                    and not _is_three_mf_limit_guard_active_for_url(origin_url, effective_limit_guard)
+                )
+                if can_enqueue_new_download:
+                    new_3mf_download_result = self.archive_manager.submit_three_mf_download(
+                        origin_url,
+                        model_id=model_id,
+                        title=title,
+                        instance_ids=[
+                            str(item.get("instance_id") or "").strip()
+                            for item in pending_download_items
+                            if str(item.get("instance_id") or "").strip()
+                        ],
+                    )
+                    if new_3mf_download_result.get("accepted") or new_3mf_download_result.get("queued"):
+                        new_3mf_download_items = pending_download_items
+                        missing_3mf_items = remaining_missing_items
+
                 self.task_store.replace_missing_3mf_for_model(
                     model_id,
-                    _build_missing_3mf_items(meta_path, finalized["meta"]),
+                    missing_3mf_items,
                 )
             message = _sanitize_remote_refresh_message(
                 finalized["meta"].get("remoteSync", {}).get("lastMessage") or "源端刷新完成。",
                 "源端刷新完成。",
             )
+            change_labels = list(finalized.get("change_labels") or [])
+            if new_3mf_download_items:
+                change_labels.append(f"新增 3MF 下载入队 {len(new_3mf_download_items)}")
+                message = f"{message.rstrip('。')}，新增 3MF 已加入下载队列。"
             history_item = {
                 "id": _history_id(model_dir, "success"),
                 "title": title,
@@ -1000,8 +1100,10 @@ class RemoteRefreshManager:
                     "deleted_instances": finalized.get("deleted_instances"),
                     "attachments_added": finalized.get("attachments_added"),
                     "summary_changed": finalized.get("summary_changed"),
-                    "change_labels": finalized.get("change_labels"),
-                    "change_summary": finalized.get("change_summary"),
+                    "change_labels": change_labels,
+                    "change_summary": "，".join(change_labels),
+                    "new_3mf_download_queued": len(new_3mf_download_items),
+                    "new_3mf_download_task_id": str(new_3mf_download_result.get("task_id") or ""),
                 },
             }
             self.task_store.append_remote_refresh_history(history_item)
@@ -1013,7 +1115,9 @@ class RemoteRefreshManager:
                 deleted_instances=finalized.get("deleted_instances"),
                 attachments_added=finalized.get("attachments_added"),
                 summary_changed=finalized.get("summary_changed"),
-                change_labels=finalized.get("change_labels"),
+                change_labels=change_labels,
+                new_3mf_download_queued=len(new_3mf_download_items),
+                new_3mf_download_task_id=str(new_3mf_download_result.get("task_id") or ""),
             )
             append_business_log(
                 "remote_refresh",
@@ -1027,7 +1131,9 @@ class RemoteRefreshManager:
                 deleted_instances=finalized.get("deleted_instances"),
                 attachments_added=finalized.get("attachments_added"),
                 summary_changed=finalized.get("summary_changed"),
-                change_labels=finalized.get("change_labels"),
+                change_labels=change_labels,
+                new_3mf_download_queued=len(new_3mf_download_items),
+                new_3mf_download_task_id=str(new_3mf_download_result.get("task_id") or ""),
             )
             return {"ok": True}
         except Exception as exc:

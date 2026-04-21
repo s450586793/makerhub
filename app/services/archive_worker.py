@@ -746,6 +746,101 @@ class ArchiveTaskManager:
             "message": "归档任务已加入队列。" if not force else "缺失 3MF 重新下载任务已加入队列。",
         }
 
+    def submit_three_mf_download(self, url: str, model_id: str = "", title: str = "", instance_ids: Optional[list[str]] = None) -> dict:
+        clean_url = normalize_source_url(url)
+        if not clean_url:
+            return {
+                "accepted": False,
+                "message": "缺少可用模型链接，无法下载新增 3MF。",
+            }
+
+        task_key = _task_key(clean_url)
+        deleted_item = self._deleted_task_lookup().get(task_key)
+        if deleted_item is not None:
+            message = f"该模型已在 MakerHub 端删除，不会自动下载新增 3MF：{deleted_item.get('title') or clean_url}"
+            _log_archive(
+                "three_mf_download_skipped_deleted",
+                message,
+                url=clean_url,
+                task_key=task_key,
+                model_dir=deleted_item.get("model_dir") or "",
+            )
+            return {
+                "accepted": False,
+                "message": message,
+                "mode": "single_model",
+                "url": clean_url,
+            }
+
+        queue_snapshot = self._queue_state_snapshot()
+        queued_match = (
+            queue_snapshot.get("active_by_key", {}).get(task_key)
+            or queue_snapshot.get("queued_by_key", {}).get(task_key)
+        )
+        if queued_match:
+            queued_meta = queued_match.get("meta") if isinstance(queued_match.get("meta"), dict) else {}
+            if queued_meta.get("profile_metadata_only"):
+                return {
+                    "accepted": False,
+                    "queued": False,
+                    "message": "该模型当前只有信息补全任务在排队，暂不合并为新增 3MF 下载任务。",
+                    "mode": "single_model",
+                    "url": clean_url,
+                }
+            _log_archive("three_mf_download_skipped_queued", "新增 3MF 下载任务已在归档队列中。", url=clean_url, task_key=task_key)
+            return {
+                "accepted": False,
+                "queued": True,
+                "message": "该模型已经在归档队列中，等待队列任务下载新增 3MF。",
+                "mode": "single_model",
+                "url": clean_url,
+            }
+
+        limit_guard = _read_three_mf_limit_guard()
+        if _is_three_mf_limit_guard_active_for_url(clean_url, limit_guard):
+            return {
+                "accepted": False,
+                "paused": True,
+                "message": _three_mf_limit_message(limit_guard),
+                "mode": "single_model",
+                "url": clean_url,
+            }
+
+        clean_instance_ids = [
+            str(item or "").strip()
+            for item in (instance_ids or [])
+            if str(item or "").strip()
+        ]
+        task_id = self._enqueue_single_task(
+            clean_url,
+            message="等待下载新增 3MF",
+            mode="single_model",
+            meta={
+                "three_mf_download": True,
+                "model_id": str(model_id or extract_model_id(clean_url) or "").strip(),
+                "model_url": clean_url,
+                "title": str(title or "").strip(),
+                "instance_ids": clean_instance_ids,
+            },
+        )
+        self._ensure_worker()
+        _log_archive(
+            "three_mf_download_submitted",
+            "新增 3MF 下载任务已入队。",
+            url=clean_url,
+            task_id=task_id,
+            task_key=task_key,
+            model_id=model_id,
+            instance_ids=clean_instance_ids,
+        )
+        return {
+            "accepted": True,
+            "task_id": task_id,
+            "mode": "single_model",
+            "url": clean_url,
+            "message": "新增 3MF 下载任务已加入队列。",
+        }
+
     def submit_profile_metadata_backfill(self, url: str, model_dir: str = "", title: str = "") -> dict:
         clean_url = normalize_source_url(url)
         if not clean_url:
@@ -1565,11 +1660,13 @@ class ArchiveTaskManager:
 
         meta = meta if isinstance(meta, dict) else {}
         profile_metadata_only = bool(meta.get("profile_metadata_only"))
+        missing_3mf_retry = bool(meta.get("missing_3mf_retry"))
+        three_mf_download_task = bool(meta.get("three_mf_download"))
         model_id = extract_model_id(url)
         limit_guard = _read_three_mf_limit_guard()
         skip_three_mf_fetch = profile_metadata_only or _is_three_mf_limit_guard_active_for_url(url, limit_guard)
         skip_three_mf_message = _three_mf_limit_message(limit_guard) if skip_three_mf_fetch and not profile_metadata_only else ""
-        if model_id and not profile_metadata_only:
+        if model_id and missing_3mf_retry:
             self.task_store.update_missing_3mf_status(
                 model_id=model_id,
                 status="running",
@@ -1643,12 +1740,20 @@ class ArchiveTaskManager:
         self.task_store.update_active_task(
             task_id,
             progress=100,
-            message=f"归档完成：{result.get('base_name') or result.get('work_dir') or ''}",
+            message=(
+                f"新增 3MF 下载完成：{result.get('base_name') or result.get('work_dir') or ''}"
+                if three_mf_download_task
+                else f"归档完成：{result.get('base_name') or result.get('work_dir') or ''}"
+            ),
         )
         self.task_store.complete_archive_task(task_id)
         _log_archive(
-            "single_completed",
-            f"归档完成：{result.get('base_name') or result.get('work_dir') or ''}",
+            "three_mf_download_completed" if three_mf_download_task else "single_completed",
+            (
+                f"新增 3MF 下载完成：{result.get('base_name') or result.get('work_dir') or ''}"
+                if three_mf_download_task
+                else f"归档完成：{result.get('base_name') or result.get('work_dir') or ''}"
+            ),
             task_id=task_id,
             url=url,
             model_id=resolved_model_id,

@@ -85,6 +85,7 @@ local_organizer = LocalOrganizerService(
 remote_refresh_manager = RemoteRefreshManager(
     store=store,
     task_store=task_state_store,
+    archive_manager=crawler.manager,
 )
 archive_repair_process: Process | None = None
 archive_repair_start_lock = asyncio.Lock()
