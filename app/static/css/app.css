@@ -3544,10 +3544,6 @@ select:focus {
   align-items: flex-start;
 }
 
-.mw-comment-section__header .mw-section-card__hint {
-  margin: 6px 0 0;
-}
-
 .mw-comment-editor {
   display: flex;
   flex-direction: column;
@@ -3962,6 +3958,17 @@ select:focus {
   font-size: 13px;
   font-weight: 600;
   line-height: 18px;
+  cursor: pointer;
+}
+
+.mw-comment-thread__expand:disabled {
+  cursor: not-allowed;
+}
+
+.mw-comments-autoload-trigger {
+  width: 100%;
+  height: 1px;
+  margin-top: -1px;
 }
 
 .lightbox[hidden] {

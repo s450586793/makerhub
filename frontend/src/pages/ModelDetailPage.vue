@@ -441,7 +441,6 @@
         <div class="mw-section-card__header mw-comment-section__header">
           <div>
             <h2>评论 &amp; 评分 ({{ commentsTotal }})</h2>
-            <p class="mw-section-card__hint">评论展示已同步的 MakerWorld 数据，当前仅提供只读浏览。</p>
           </div>
         </div>
 
@@ -533,9 +532,6 @@
                       </span>
                     </div>
                   </div>
-                  <button class="mw-comment-thread__more" type="button" disabled aria-label="更多操作">
-                    <span v-html="COMMENT_UI_ICONS.more"></span>
-                  </button>
                 </div>
 
                 <div v-if="comment.reply_to" class="mw-comment-thread__reply-target">
@@ -582,7 +578,7 @@
 
                 <div v-if="comment.replies?.length" class="mw-comment-replies">
                   <article
-                    v-for="(reply, replyIndex) in comment.replies"
+                    v-for="(reply, replyIndex) in visibleCommentReplies(comment)"
                     :key="reply.id || `${reply.author}-${reply.time}-${replyIndex}`"
                     class="mw-comment-reply"
                   >
@@ -640,7 +636,16 @@
                 </div>
 
                 <button
-                  v-else-if="comment.reply_count > 0"
+                  v-if="commentHasExpandableReplies(comment)"
+                  class="mw-comment-thread__expand"
+                  type="button"
+                  @click="toggleCommentReplies(comment)"
+                >
+                  {{ commentRepliesExpanded(comment) ? "收起回复" : `共 ${formatStat(commentReplyTotal(comment))} 回复，查看更多` }}
+                </button>
+
+                <button
+                  v-else-if="comment.reply_count > 0 && !comment.replies?.length"
                   class="mw-comment-thread__expand"
                   type="button"
                   disabled
@@ -653,10 +658,31 @@
           <div v-else class="comment-list comment-list--pending">
             <p class="empty-copy">正在分批加载评论内容…</p>
           </div>
-          <div v-if="hasMoreComments" class="mw-comments-more">
-            <button class="button button-secondary" type="button" @click="loadMoreComments" :disabled="commentsLoadingMore">
+          <div
+            v-if="hasMoreComments && commentsAutoLoadSupported"
+            ref="commentsLoadMoreTrigger"
+            class="mw-comments-autoload-trigger"
+            aria-hidden="true"
+          ></div>
+          <div v-if="hasMoreComments || commentsLoadingMore" class="mw-comments-more">
+            <button
+              v-if="hasMoreComments && !commentsAutoLoadSupported"
+              class="button button-secondary"
+              type="button"
+              @click="loadMoreComments"
+              :disabled="commentsLoadingMore"
+            >
               {{ commentsLoadingMore ? "加载中..." : "加载更多评论" }}
             </button>
+            <span class="mw-comments-more__meta">
+              {{
+                commentsLoadingMore
+                  ? "正在加载更多评论…"
+                  : (hasMoreComments
+                      ? (commentsAutoLoadSupported ? "继续下滑自动加载更多评论" : "点击加载更多评论")
+                      : "评论已全部加载")
+              }}
+            </span>
             <span class="mw-comments-more__meta">
               已显示 {{ visibleComments.length }} / {{ commentsTotal }}
             </span>
@@ -678,7 +704,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onErrorCaptured, onMounted, ref, shallowRef, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onErrorCaptured, onMounted, ref, shallowRef, watch } from "vue";
 import { useRoute } from "vue-router";
 
 import { apiRequest } from "../lib/api";
@@ -715,12 +741,17 @@ const commentsNextOffset = ref(null);
 const commentsLoadingMore = ref(false);
 const commentsLoadError = ref("");
 const commentSortKey = ref("hot");
+const commentsLoadMoreTrigger = ref(null);
+const commentsAutoLoadSupported = ref(false);
+const expandedCommentReplies = ref({});
 
 let hoverPopoverMediaQuery = null;
 let hoverPopoverMediaListener = null;
 let commentsRenderFrame = 0;
+let commentsLoadMoreObserver = null;
 
 const INITIAL_COMMENT_BATCH = 20;
+const COMMENT_REPLY_PREVIEW_COUNT = 3;
 const STAT_FORMATTER = new Intl.NumberFormat("zh-CN");
 const PROFILE_FACT_ICONS = {
   clock: '<svg width="16" height="17" viewBox="0 0 16 17" fill="none"><path d="M15 8.52342C15 4.64449 11.866 1.5 8 1.5V8.52342L12.9395 13.5C14.2123 12.2282 15 10.4681 15 8.52342Z" fill="var(--mui-palette-colorSystem-grey200)"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M7.9999 2.10039C4.46528 2.10039 1.5999 4.96577 1.5999 8.50039C1.5999 12.035 4.46528 14.9004 7.9999 14.9004C11.5345 14.9004 14.3999 12.035 14.3999 8.50039C14.3999 4.96577 11.5345 2.10039 7.9999 2.10039ZM0.399902 8.50039C0.399902 4.30303 3.80254 0.900391 7.9999 0.900391C12.1973 0.900391 15.5999 4.30303 15.5999 8.50039C15.5999 12.6978 12.1973 16.1004 7.9999 16.1004C3.80254 16.1004 0.399902 12.6978 0.399902 8.50039Z" fill="var(--mui-palette-colorSystem-grey700)"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M7.9999 5.90039C8.33127 5.90039 8.5999 6.16902 8.5999 6.50039V8.50039C8.5999 8.83176 8.33127 9.10039 7.9999 9.10039C7.66853 9.10039 7.3999 8.83176 7.3999 8.50039V6.50039C7.3999 6.16902 7.66853 5.90039 7.9999 5.90039Z" fill="var(--mui-palette-colorSystem-grey700)"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M7.57564 8.07613C7.80995 7.84181 8.18985 7.84181 8.42417 8.07613L10.4242 10.0761C10.6585 10.3104 10.6585 10.6903 10.4242 10.9247C10.1899 11.159 9.80995 11.159 9.57564 10.9247L7.57564 8.92465C7.34132 8.69034 7.34132 8.31044 7.57564 8.07613Z" fill="var(--mui-palette-colorSystem-grey700)"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M0.5 8.5C0.5 8.22386 0.723858 8 1 8H2.5C2.77614 8 3 8.22386 3 8.5C3 8.77614 2.77614 9 2.5 9H1C0.723858 9 0.5 8.77614 0.5 8.5Z" fill="var(--mui-palette-colorSystem-grey700)"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M13 8.5C13 8.22386 13.2239 8 13.5 8H15C15.2761 8 15.5 8.22386 15.5 8.5C15.5 8.77614 15.2761 9 15 9H13.5C13.2239 9 13 8.77614 13 8.5Z" fill="var(--mui-palette-colorSystem-grey700)"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M8 16C7.72386 16 7.5 15.7761 7.5 15.5L7.5 14C7.5 13.7239 7.72386 13.5 8 13.5C8.27614 13.5 8.5 13.7239 8.5 14L8.5 15.5C8.5 15.7761 8.27614 16 8 16Z" fill="var(--mui-palette-colorSystem-grey700)"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M8 3.5C7.72386 3.5 7.5 3.27614 7.5 3L7.5 1.5C7.5 1.22386 7.72386 1 8 1C8.27614 1 8.5 1.22386 8.5 1.5L8.5 3C8.5 3.27614 8.27614 3.5 8 3.5Z" fill="var(--mui-palette-colorSystem-grey700)"></path></svg>',
@@ -1447,6 +1478,77 @@ function commentBadgeClass(badge) {
   return "mw-comment-badge--plain";
 }
 
+function commentReplyKey(comment) {
+  return String(comment?.id || `${comment?.author || ""}|${comment?.time || ""}|${comment?.content || ""}`).trim();
+}
+
+function commentReplyTotal(comment) {
+  const replies = Array.isArray(comment?.replies) ? comment.replies.length : 0;
+  return Math.max(Number(comment?.reply_count || 0), replies);
+}
+
+function commentRepliesExpanded(comment) {
+  const key = commentReplyKey(comment);
+  return key ? Boolean(expandedCommentReplies.value[key]) : false;
+}
+
+function commentHasExpandableReplies(comment) {
+  return Array.isArray(comment?.replies) && comment.replies.length > COMMENT_REPLY_PREVIEW_COUNT;
+}
+
+function visibleCommentReplies(comment) {
+  const replies = Array.isArray(comment?.replies) ? comment.replies : [];
+  if (!commentHasExpandableReplies(comment) || commentRepliesExpanded(comment)) {
+    return replies;
+  }
+  return replies.slice(0, COMMENT_REPLY_PREVIEW_COUNT);
+}
+
+function toggleCommentReplies(comment) {
+  const key = commentReplyKey(comment);
+  if (!key || !commentHasExpandableReplies(comment)) {
+    return;
+  }
+  expandedCommentReplies.value = {
+    ...expandedCommentReplies.value,
+    [key]: !expandedCommentReplies.value[key],
+  };
+}
+
+function disconnectCommentsLoadMoreObserver() {
+  if (commentsLoadMoreObserver) {
+    commentsLoadMoreObserver.disconnect();
+    commentsLoadMoreObserver = null;
+  }
+}
+
+async function syncCommentsLoadMoreObserver() {
+  disconnectCommentsLoadMoreObserver();
+  if (
+    typeof window === "undefined"
+    || !commentsAutoLoadSupported.value
+    || !commentsReady.value
+    || !hasMoreComments.value
+  ) {
+    return;
+  }
+  await nextTick();
+  const target = commentsLoadMoreTrigger.value;
+  if (!(target instanceof HTMLElement)) {
+    return;
+  }
+  commentsLoadMoreObserver = new window.IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) {
+      loadMoreComments();
+    }
+  }, {
+    root: null,
+    rootMargin: "0px 0px 240px 0px",
+    threshold: 0,
+  });
+  commentsLoadMoreObserver.observe(target);
+}
+
 function compareComments(left, right) {
   if (commentSortKey.value === "likes") {
     return (right.like_count - left.like_count) || (right.reply_count - left.reply_count) || (right.timestamp - left.timestamp);
@@ -1689,6 +1791,8 @@ async function load() {
   commentsNextOffset.value = null;
   commentsLoadingMore.value = false;
   commentsLoadError.value = "";
+  expandedCommentReplies.value = {};
+  disconnectCommentsLoadMoreObserver();
   try {
     const payload = prepareDetailPayload(await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}`));
     detail.value = payload;
@@ -1724,12 +1828,18 @@ watch(modelDir, (value) => {
     commentsNextOffset.value = null;
     commentsLoadingMore.value = false;
     commentsLoadError.value = "";
+    expandedCommentReplies.value = {};
+    disconnectCommentsLoadMoreObserver();
     loading.value = false;
     errorMessage.value = "模型不存在。";
     return;
   }
   load();
 }, { immediate: true });
+
+watch([commentsReady, hasMoreComments, () => visibleComments.value.length], () => {
+  syncCommentsLoadMoreObserver();
+}, { flush: "post" });
 
 onErrorCaptured((error) => {
   errorMessage.value = error instanceof Error ? error.message : "模型详情渲染失败。";
@@ -1741,6 +1851,7 @@ onMounted(() => {
   if (typeof window === "undefined") {
     return;
   }
+  commentsAutoLoadSupported.value = "IntersectionObserver" in window;
   hoverPopoverMediaQuery = window.matchMedia("(hover: hover) and (pointer: fine)");
   applyHoverPopoverEnabled(hoverPopoverMediaQuery.matches);
   hoverPopoverMediaListener = (event) => applyHoverPopoverEnabled(event.matches);
@@ -1762,6 +1873,8 @@ onBeforeUnmount(() => {
   commentsNextOffset.value = null;
   commentsLoadingMore.value = false;
   commentsLoadError.value = "";
+  expandedCommentReplies.value = {};
+  disconnectCommentsLoadMoreObserver();
   if (commentsRenderFrame && typeof window !== "undefined") {
     window.cancelAnimationFrame(commentsRenderFrame);
   }
