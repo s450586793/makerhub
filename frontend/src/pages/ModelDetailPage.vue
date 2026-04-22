@@ -429,30 +429,7 @@
           </div>
         </div>
 
-        <div class="mw-comment-editor" aria-disabled="true">
-          <div class="mw-comment-editor__surface">
-            <div class="mw-comment-editor__content">请填写您的意见</div>
-          </div>
-          <div class="mw-comment-editor__footer">
-            <button class="mw-comment-editor__upload" type="button" disabled>
-              <span class="mw-comment-editor__upload-icon" v-html="COMMENT_UI_ICONS.image"></span>
-              <span>选择照片</span>
-            </button>
-            <div class="mw-comment-editor__actions">
-              <span class="mw-comment-editor__counter">(0/1000)</span>
-              <button class="mw-comment-editor__submit" type="button" disabled>
-                <span class="mw-comment-editor__submit-icon" v-html="COMMENT_UI_ICONS.send"></span>
-                <span>发布</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
         <div class="mw-comment-toolbar">
-          <button class="mw-comment-toolbar__filter" type="button" disabled>
-            <span>全部</span>
-            <span class="mw-comment-toolbar__filter-icon" v-html="COMMENT_UI_ICONS.chevron"></span>
-          </button>
           <div class="mw-comment-toolbar__sorts">
             <button
               v-for="sort in commentSortOptions"
