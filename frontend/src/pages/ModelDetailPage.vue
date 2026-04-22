@@ -155,18 +155,6 @@
                 <span>{{ item.value }}</span>
               </span>
             </div>
-            <div v-if="activeProfileFilaments.length" class="mw-profile-filaments">
-              <span v-if="activeProfileNeedAms" class="mw-profile-ams" aria-hidden="true" v-html="AMS_ICON"></span>
-              <span
-                v-for="(filament, filamentIndex) in activeProfileFilaments"
-                :key="`active-${filament.material}-${filament.color}-${filamentIndex}`"
-                class="mw-profile-filament-chip"
-                :style="filamentChipStyle(filament)"
-              >
-                <span>{{ filament.material || "耗材" }}｜</span>
-                <span>{{ filament.weight_label || formatFilamentWeight(filament.weight) }}</span>
-              </span>
-            </div>
             <p v-if="activeInstance.summary" class="mw-active-profile__summary">{{ activeInstance.summary }}</p>
           </section>
 
@@ -677,9 +665,6 @@ const activeProfileFacts = computed(() => {
   }
   return items;
 });
-
-const activeProfileFilaments = computed(() => profileFilaments(activeInstance.value));
-const activeProfileNeedAms = computed(() => profileNeedAms(activeInstance.value));
 
 const headCrumbs = computed(() => {
   const crumbs = [];
