@@ -14,6 +14,7 @@ from app.api.web import router as web_router
 from app.core.settings import APP_VERSION, ARCHIVE_DIR, FRONTEND_DIST_DIR, ROOT_DIR, ensure_app_dirs
 from app.services.auth import AuthManager
 from app.services.business_logs import append_business_log
+from app.services.request_threads import shutdown_request_threads
 from app.services.self_update import mark_update_started_after_restart
 
 
@@ -90,6 +91,11 @@ async def resume_archive_queue() -> None:
     )
     if queued_count:
         print(f"[makerhub] archive queue resumed queued={queued_count} recovered_active={recovered_count}", flush=True)
+
+
+@app.on_event("shutdown")
+async def shutdown_thread_pools() -> None:
+    shutdown_request_threads()
 
 
 @app.middleware("http")

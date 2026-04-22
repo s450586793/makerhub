@@ -46,6 +46,7 @@ from app.services.cookie_utils import sanitize_cookie_header
 from app.services.local_organizer import LocalOrganizerService
 from app.services.model_attachments import create_manual_attachment, delete_manual_attachment
 from app.services.remote_refresh import RemoteRefreshManager
+from app.services.request_threads import run_task_api, run_web_io
 from app.services.auth import AuthManager
 from app.services.archive_repair import (
     read_archive_repair_status,
@@ -653,7 +654,7 @@ def _require_session_auth(request: Request) -> None:
 @router.get("/bootstrap")
 async def get_bootstrap(request: Request):
     identity = getattr(request.state, "auth_identity", None) or {}
-    config = store.load()
+    config = await run_web_io(store.load)
     payload = {
         "app_version": APP_VERSION,
         "session": _session_payload(identity, config=config if identity else None),
@@ -664,21 +665,22 @@ async def get_bootstrap(request: Request):
 
 @router.get("/config")
 async def get_config():
-    config = store.load()
-    return _with_version_status(_public_config_payload(config), await _get_github_version_status(proxy_config=config.proxy))
+    config = await run_web_io(store.load)
+    payload = await run_web_io(_public_config_payload, config)
+    return _with_version_status(payload, await _get_github_version_status(proxy_config=config.proxy))
 
 
 @router.get("/system/update")
 async def get_system_update(force: bool = Query(False)):
-    config = store.load()
-    payload = get_update_status()
+    config = await run_web_io(store.load)
+    payload = await run_web_io(get_update_status)
     payload = _with_version_status(payload, await _get_github_version_status(force=force, proxy_config=config.proxy))
     return _with_changelog_status(payload, await _get_github_changelog_status(force=force, proxy_config=config.proxy))
 
 
 @router.get("/system/version")
 async def get_system_version(force: bool = Query(False)):
-    config = store.load()
+    config = await run_web_io(store.load)
     payload = {"app_version": APP_VERSION}
     return _with_version_status(payload, await _get_github_version_status(force=force, proxy_config=config.proxy))
 
@@ -741,7 +743,7 @@ async def save_proxy(payload: ProxyConfig, request: Request):
 async def test_proxy(payload: ProxyConfig, request: Request):
     _require_session_auth(request)
     try:
-        result = await asyncio.to_thread(_run_proxy_test, payload)
+        result = await run_task_api(_run_proxy_test, payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     append_business_log(
@@ -763,7 +765,7 @@ async def test_proxy(payload: ProxyConfig, request: Request):
 async def test_cookie(payload: CookieTestRequest, request: Request):
     _require_session_auth(request)
     try:
-        result = await asyncio.to_thread(_run_cookie_test, payload)
+        result = await run_task_api(_run_cookie_test, payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     append_business_log(
@@ -868,8 +870,7 @@ async def save_subscription_settings(payload: SubscriptionSettingsUpdate, reques
 
 @router.get("/dashboard")
 async def get_dashboard_data():
-    config = store.load()
-    return build_dashboard_payload(config)
+    return await run_web_io(lambda: build_dashboard_payload(store.load()))
 
 
 @router.get("/models")
@@ -881,7 +882,8 @@ async def get_models_data(
     page: int = Query(1, ge=1, description="分页页码"),
     page_size: int = Query(8, ge=1, le=120, description="每页数量"),
 ):
-    return build_models_payload(
+    return await run_web_io(
+        build_models_payload,
         q=q,
         source=source,
         tag=tag,
@@ -895,7 +897,8 @@ async def get_models_data(
 async def get_source_library_data(
     q: str = Query("", description="搜索来源卡标题"),
 ):
-    return build_source_library_payload(
+    return await run_web_io(
+        build_source_library_payload,
         q=q,
         store=store,
         task_store=task_state_store,
@@ -913,7 +916,8 @@ async def get_source_group_models(
     page: int = Query(1, ge=1, description="分页页码"),
     page_size: int = Query(8, ge=1, le=120, description="每页数量"),
 ):
-    payload = build_source_group_models_payload(
+    payload = await run_web_io(
+        build_source_group_models_payload,
         source_type=source_type,
         source_key=source_key,
         q=q,
@@ -940,7 +944,8 @@ async def get_state_group_models(
     page: int = Query(1, ge=1, description="分页页码"),
     page_size: int = Query(8, ge=1, le=120, description="每页数量"),
 ):
-    payload = build_state_group_models_payload(
+    payload = await run_web_io(
+        build_state_group_models_payload,
         state_key=state_key,
         q=q,
         source=source,
@@ -962,7 +967,7 @@ async def get_model_detail_comments(
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
 ):
-    payload = get_model_comments_page(model_dir, offset=offset, limit=limit)
+    payload = await run_web_io(get_model_comments_page, model_dir, offset=offset, limit=limit)
     if payload is None:
         raise HTTPException(status_code=404, detail="模型不存在。")
     return payload
@@ -970,7 +975,7 @@ async def get_model_detail_comments(
 
 @router.get("/models/{model_dir:path}")
 async def get_model_detail_data(model_dir: str):
-    detail = get_model_detail(model_dir)
+    detail = await run_web_io(get_model_detail, model_dir)
     if detail is None:
         raise HTTPException(status_code=404, detail="模型不存在。")
     return detail
@@ -986,8 +991,11 @@ async def upload_model_attachment(
 ):
     _require_session_auth(request)
     try:
-        attachment = create_manual_attachment(model_dir, file, name=name, category=category)
-        detail = get_model_detail(model_dir)
+        def _upload_and_load_detail():
+            attachment_item = create_manual_attachment(model_dir, file, name=name, category=category)
+            return attachment_item, get_model_detail(model_dir)
+
+        attachment, detail = await run_task_api(_upload_and_load_detail)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
@@ -1017,8 +1025,11 @@ async def upload_model_attachment(
 async def remove_model_attachment(model_dir: str, attachment_id: str, request: Request):
     _require_session_auth(request)
     try:
-        removed = delete_manual_attachment(model_dir, attachment_id)
-        detail = get_model_detail(model_dir)
+        def _remove_and_load_detail():
+            removed_item = delete_manual_attachment(model_dir, attachment_id)
+            return removed_item, get_model_detail(model_dir)
+
+        removed, detail = await run_task_api(_remove_and_load_detail)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -1044,63 +1055,67 @@ async def remove_model_attachment(model_dir: str, attachment_id: str, request: R
 @router.post("/models/delete")
 async def delete_models(payload: ModelDeleteRequest, request: Request):
     _require_session_auth(request)
-    marked: list[dict] = []
-    skipped: list[dict] = []
 
-    for raw_value in payload.model_dirs:
-        clean_model_dir = str(raw_value or "").strip().strip("/")
-        if not clean_model_dir:
-            continue
+    def _delete_models_payload() -> dict:
+        marked: list[dict] = []
+        skipped: list[dict] = []
 
-        detail = get_model_detail(clean_model_dir, include_detail=False)
-        if not detail:
-            skipped.append({"model_dir": clean_model_dir, "reason": "模型不存在"})
-            continue
-        if detail.get("local_flags", {}).get("deleted"):
-            skipped.append({"model_dir": clean_model_dir, "reason": "已在 MakerHub 端删除"})
-            continue
+        for raw_value in payload.model_dirs:
+            clean_model_dir = str(raw_value or "").strip().strip("/")
+            if not clean_model_dir:
+                continue
 
-        task_state_store.update_model_flag(clean_model_dir, "deleted", True)
-        model_id = str(detail.get("id") or "").strip()
-        origin_url = str(detail.get("origin_url") or "").strip()
-        if model_id:
-            task_state_store.remove_missing_3mf_for_model(model_id)
-        task_state_store.remove_recent_failures_for_model(model_id, url=origin_url)
-        invalidate_model_detail_cache(clean_model_dir)
-        marked.append(
-            {
-                "model_dir": clean_model_dir,
-                "id": model_id,
-                "title": str(detail.get("title") or clean_model_dir),
-            }
+            detail = get_model_detail(clean_model_dir, include_detail=False)
+            if not detail:
+                skipped.append({"model_dir": clean_model_dir, "reason": "模型不存在"})
+                continue
+            if detail.get("local_flags", {}).get("deleted"):
+                skipped.append({"model_dir": clean_model_dir, "reason": "已在 MakerHub 端删除"})
+                continue
+
+            task_state_store.update_model_flag(clean_model_dir, "deleted", True)
+            model_id = str(detail.get("id") or "").strip()
+            origin_url = str(detail.get("origin_url") or "").strip()
+            if model_id:
+                task_state_store.remove_missing_3mf_for_model(model_id)
+            task_state_store.remove_recent_failures_for_model(model_id, url=origin_url)
+            invalidate_model_detail_cache(clean_model_dir)
+            marked.append(
+                {
+                    "model_dir": clean_model_dir,
+                    "id": model_id,
+                    "title": str(detail.get("title") or clean_model_dir),
+                }
+            )
+
+        if marked:
+            invalidate_archive_snapshot("models_soft_deleted")
+
+        result = {
+            "success": bool(marked),
+            "soft_deleted": marked,
+            "skipped": skipped,
+            "soft_deleted_count": len(marked),
+            "skipped_count": len(skipped),
+            "flags": task_state_store.load_model_flags(),
+            "message": (
+                f"已在 MakerHub 端删除 {len(marked)} 个模型，默认已从模型库隐藏。"
+                if marked
+                else "没有标记任何模型。"
+            ),
+        }
+        append_business_log(
+            "model",
+            "models_soft_deleted",
+            result["message"],
+            requested_count=len(payload.model_dirs),
+            soft_deleted_count=result.get("soft_deleted_count", 0),
+            skipped_count=result.get("skipped_count", 0),
+            model_dirs=payload.model_dirs,
         )
+        return result
 
-    if marked:
-        invalidate_archive_snapshot("models_soft_deleted")
-
-    result = {
-        "success": bool(marked),
-        "soft_deleted": marked,
-        "skipped": skipped,
-        "soft_deleted_count": len(marked),
-        "skipped_count": len(skipped),
-        "flags": task_state_store.load_model_flags(),
-        "message": (
-            f"已在 MakerHub 端删除 {len(marked)} 个模型，默认已从模型库隐藏。"
-            if marked
-            else "没有标记任何模型。"
-        ),
-    }
-    append_business_log(
-        "model",
-        "models_soft_deleted",
-        result["message"],
-        requested_count=len(payload.model_dirs),
-        soft_deleted_count=result.get("soft_deleted_count", 0),
-        skipped_count=result.get("skipped_count", 0),
-        model_dirs=payload.model_dirs,
-    )
-    return result
+    return await run_task_api(_delete_models_payload)
 
 
 @router.get("/models/flags")
@@ -1148,18 +1163,24 @@ async def update_model_printed(payload: ModelFlagUpdateRequest, request: Request
 
 @router.get("/tasks")
 async def get_tasks_data():
-    config = store.load()
-    fallback_items = [item.model_dump() for item in config.missing_3mf]
-    return build_tasks_payload(missing_fallback=fallback_items)
+    def _tasks_payload() -> dict:
+        config = store.load()
+        fallback_items = [item.model_dump() for item in config.missing_3mf]
+        return build_tasks_payload(missing_fallback=fallback_items)
+
+    return await run_web_io(_tasks_payload)
 
 
 @router.get("/remote-refresh")
 async def get_remote_refresh_data():
-    config = store.load()
-    return {
-        "config": config.remote_refresh.model_dump(),
-        "state": remote_refresh_manager.state_payload(),
-    }
+    def _remote_refresh_payload() -> dict:
+        config = store.load()
+        return {
+            "config": config.remote_refresh.model_dump(),
+            "state": remote_refresh_manager.state_payload(),
+        }
+
+    return await run_web_io(_remote_refresh_payload)
 
 
 @router.post("/tasks/organize/clear")
@@ -1176,7 +1197,7 @@ async def clear_organize_tasks(request: Request):
 
 @router.get("/subscriptions")
 async def get_subscriptions_data():
-    return subscription_manager.list_payload()
+    return await run_web_io(subscription_manager.list_payload)
 
 
 @router.get("/logs")
@@ -1185,14 +1206,15 @@ async def get_logs_data(
     limit: int = Query(300, ge=1, le=2000, description="最多返回行数"),
     q: str = Query("", description="日志内容搜索"),
 ):
-    return read_log_entries(file_name=file, limit=limit, query=q)
+    return await run_web_io(read_log_entries, file_name=file, limit=limit, query=q)
 
 
 @router.post("/subscriptions")
 async def create_subscription(payload: SubscriptionCreateRequest, request: Request):
     _require_session_auth(request)
     try:
-        result = subscription_manager.create_subscription(
+        result = await run_task_api(
+            subscription_manager.create_subscription,
             url=payload.url,
             cron=payload.cron,
             name=payload.name,
@@ -1218,7 +1240,8 @@ async def create_subscription(payload: SubscriptionCreateRequest, request: Reque
 async def update_subscription(subscription_id: str, payload: SubscriptionUpdateRequest, request: Request):
     _require_session_auth(request)
     try:
-        result = subscription_manager.update_subscription(
+        result = await run_task_api(
+            subscription_manager.update_subscription,
             subscription_id,
             url=payload.url,
             name=payload.name,
@@ -1251,7 +1274,7 @@ async def update_subscription(subscription_id: str, payload: SubscriptionUpdateR
 async def delete_subscription(subscription_id: str, request: Request):
     _require_session_auth(request)
     try:
-        result = subscription_manager.delete_subscription(subscription_id)
+        result = await run_task_api(subscription_manager.delete_subscription, subscription_id)
         append_business_log(
             "subscription",
             "deleted",
@@ -1268,7 +1291,7 @@ async def delete_subscription(subscription_id: str, request: Request):
 async def sync_subscription(subscription_id: str, request: Request):
     _require_session_auth(request)
     try:
-        result = subscription_manager.request_sync(subscription_id)
+        result = await run_task_api(subscription_manager.request_sync, subscription_id)
         append_business_log(
             "subscription",
             "sync_requested",
@@ -1284,7 +1307,7 @@ async def sync_subscription(subscription_id: str, request: Request):
 @router.get("/events/archive")
 async def stream_archive_events(request: Request):
     async def event_stream():
-        snapshot = _archive_event_snapshot()
+        snapshot = await run_web_io(_archive_event_snapshot)
         previous_active = dict(snapshot["active"])
         previous_organize_success = set(snapshot["organize_success"])
 
@@ -1298,7 +1321,7 @@ async def stream_archive_events(request: Request):
             if await request.is_disconnected():
                 break
 
-            snapshot = _archive_event_snapshot()
+            snapshot = await run_web_io(_archive_event_snapshot)
             current_active = dict(snapshot["active"])
             recent_failures = set(snapshot["recent_failures"])
             current_organize_success = set(snapshot["organize_success"])
@@ -1364,7 +1387,8 @@ async def stream_archive_events(request: Request):
 @router.post("/tasks/missing-3mf/retry")
 async def retry_missing_3mf(payload: Missing3mfRetryRequest, request: Request):
     _require_session_auth(request)
-    result = crawler.retry_missing_3mf(
+    result = await run_task_api(
+        crawler.retry_missing_3mf,
         model_url=payload.model_url,
         model_id=payload.model_id,
         title=payload.title,
@@ -1385,7 +1409,7 @@ async def retry_missing_3mf(payload: Missing3mfRetryRequest, request: Request):
 @router.post("/tasks/missing-3mf/retry-all")
 async def retry_all_missing_3mf(request: Request):
     _require_session_auth(request)
-    result = crawler.retry_all_missing_3mf()
+    result = await run_task_api(crawler.retry_all_missing_3mf)
     append_business_log(
         "missing_3mf",
         "retry_all_requested",
@@ -1400,7 +1424,8 @@ async def retry_all_missing_3mf(request: Request):
 @router.post("/tasks/missing-3mf/cancel")
 async def cancel_missing_3mf(payload: Missing3mfCancelRequest, request: Request):
     _require_session_auth(request)
-    result = crawler.cancel_missing_3mf(
+    result = await run_task_api(
+        crawler.cancel_missing_3mf,
         model_url=payload.model_url,
         model_id=payload.model_id,
         title=payload.title,
@@ -1421,79 +1446,82 @@ async def cancel_missing_3mf(payload: Missing3mfCancelRequest, request: Request)
 
 @router.post("/archive")
 async def archive_model(payload: ArchiveRequest):
-    batch_preview = None
-    archive_mode = detect_archive_mode(payload.url)
-    if payload.create_subscription and archive_mode in BATCH_TASK_MODES:
-        batch_preview = crawler.manager.peek_batch_preview(
-            payload.preview_token,
-            payload.url,
-            mode=archive_mode,
-        )
-        if payload.preview_token and batch_preview is None:
-            raise HTTPException(status_code=400, detail="预扫描结果已失效，请重新扫描后再确认提交。")
+    def _archive_model_payload() -> dict:
+        batch_preview = None
+        archive_mode = detect_archive_mode(payload.url)
+        if payload.create_subscription and archive_mode in BATCH_TASK_MODES:
+            batch_preview = crawler.manager.peek_batch_preview(
+                payload.preview_token,
+                payload.url,
+                mode=archive_mode,
+            )
+            if payload.preview_token and batch_preview is None:
+                raise HTTPException(status_code=400, detail="预扫描结果已失效，请重新扫描后再确认提交。")
 
-    response = crawler.manager.submit(payload.url, preview_token=payload.preview_token)
-    if (
-        payload.create_subscription
-        and response.get("accepted") is not False
-        and archive_mode in BATCH_TASK_MODES
-    ):
-        try:
-            subscription_result = subscription_manager.upsert_from_archive(
-                url=payload.url,
-                mode=archive_mode,
-                discovered_items=list((batch_preview or {}).get("discovered_items") or []),
-                name=str(
-                    payload.subscription_name
-                    or (batch_preview or {}).get("source_name")
-                    or ""
-                ).strip(),
-            )
-            subscription = subscription_result.get("subscription") or {}
-            subscription_name = str(subscription.get("name") or "").strip()
-            response["subscription"] = subscription
-            response["subscription_created"] = bool(subscription_result.get("created"))
-            response["subscription_message"] = (
-                f"已自动创建订阅「{subscription_name}」。"
-                if subscription_result.get("created")
-                else f"已自动更新订阅「{subscription_name}」。"
-            )
-            response["message"] = (
-                f"{response.get('message') or '归档任务已加入队列。'} "
-                f"{response['subscription_message']}"
-            ).strip()
-        except Exception as exc:
-            response["subscription_error"] = str(exc)
-            response["message"] = (
-                f"{response.get('message') or '归档任务已加入队列。'} "
-                f"但订阅写入失败：{exc}"
-            ).strip()
-            append_business_log(
-                "archive",
-                "archive_subscribe_failed",
-                str(exc),
-                level="error",
-                url=payload.url,
-                mode=archive_mode,
-            )
-    append_business_log(
-        "archive",
-        "archive_submitted",
-        response.get("message") or "归档提交完成。",
-        accepted=bool(response.get("accepted")),
-        url=payload.url,
-        mode=response.get("mode") or archive_mode,
-        task_id=response.get("task_id"),
-        create_subscription=payload.create_subscription,
-        subscription_created=response.get("subscription_created"),
-    )
-    return response
+        response = crawler.manager.submit(payload.url, preview_token=payload.preview_token)
+        if (
+            payload.create_subscription
+            and response.get("accepted") is not False
+            and archive_mode in BATCH_TASK_MODES
+        ):
+            try:
+                subscription_result = subscription_manager.upsert_from_archive(
+                    url=payload.url,
+                    mode=archive_mode,
+                    discovered_items=list((batch_preview or {}).get("discovered_items") or []),
+                    name=str(
+                        payload.subscription_name
+                        or (batch_preview or {}).get("source_name")
+                        or ""
+                    ).strip(),
+                )
+                subscription = subscription_result.get("subscription") or {}
+                subscription_name = str(subscription.get("name") or "").strip()
+                response["subscription"] = subscription
+                response["subscription_created"] = bool(subscription_result.get("created"))
+                response["subscription_message"] = (
+                    f"已自动创建订阅「{subscription_name}」。"
+                    if subscription_result.get("created")
+                    else f"已自动更新订阅「{subscription_name}」。"
+                )
+                response["message"] = (
+                    f"{response.get('message') or '归档任务已加入队列。'} "
+                    f"{response['subscription_message']}"
+                ).strip()
+            except Exception as exc:
+                response["subscription_error"] = str(exc)
+                response["message"] = (
+                    f"{response.get('message') or '归档任务已加入队列。'} "
+                    f"但订阅写入失败：{exc}"
+                ).strip()
+                append_business_log(
+                    "archive",
+                    "archive_subscribe_failed",
+                    str(exc),
+                    level="error",
+                    url=payload.url,
+                    mode=archive_mode,
+                )
+        append_business_log(
+            "archive",
+            "archive_submitted",
+            response.get("message") or "归档提交完成。",
+            accepted=bool(response.get("accepted")),
+            url=payload.url,
+            mode=response.get("mode") or archive_mode,
+            task_id=response.get("task_id"),
+            create_subscription=payload.create_subscription,
+            subscription_created=response.get("subscription_created"),
+        )
+        return response
+
+    return await run_task_api(_archive_model_payload)
 
 
 @router.get("/admin/archive/repair-3mf")
 async def get_archive_3mf_repair_status(request: Request):
     _require_session_auth(request)
-    return read_archive_repair_status()
+    return await run_web_io(read_archive_repair_status)
 
 
 @router.post("/admin/archive/repair-3mf")
@@ -1551,7 +1579,7 @@ async def repair_archive_3mf(request: Request):
 @router.get("/admin/archive/profile-backfill")
 async def get_archive_profile_backfill_status(request: Request):
     _require_session_auth(request)
-    return read_profile_backfill_status()
+    return await run_web_io(read_profile_backfill_status)
 
 
 @router.post("/admin/archive/profile-backfill")
@@ -1568,7 +1596,7 @@ async def start_archive_profile_backfill(request: Request):
             )
             return state
         try:
-            result = queue_profile_backfill(crawler.manager)
+            result = await run_task_api(queue_profile_backfill, crawler.manager)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -1583,7 +1611,7 @@ async def start_archive_profile_backfill(request: Request):
 
 @router.post("/archive/preview")
 async def preview_archive_model(payload: ArchiveRequest):
-    response = crawler.preview_archive(payload.url)
+    response = await run_task_api(crawler.preview_archive, payload.url)
     append_business_log(
         "archive",
         "archive_preview",
