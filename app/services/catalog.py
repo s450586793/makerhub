@@ -639,21 +639,52 @@ def _format_duration(value: Any) -> str:
 
 _PROFILE_FILAMENT_WEIGHT_KEYS = (
     "weight",
+    "weightUsed",
     "weightLabel",
     "weight_label",
     "weight_g",
     "weightG",
     "usedWeight",
     "used_weight",
+    "usedWeightG",
+    "used_weight_g",
+    "usedG",
+    "used_g",
     "filamentWeight",
+    "filamentWeightG",
     "filament_weight",
+    "filament_weight_g",
     "materialWeight",
+    "materialWeightG",
+    "material_weight",
+    "material_weight_g",
     "grams",
     "gram",
+    "usedGrams",
     "usage",
+    "usageG",
     "used",
     "consume",
+    "consumeG",
     "consumption",
+    "consumptionG",
+)
+_PROFILE_PRINT_TIME_KEYS = (
+    "printTimeSeconds",
+    "print_time_seconds",
+    "printingTimeSeconds",
+    "printing_time_seconds",
+    "estimatedPrintTimeSeconds",
+    "estimated_print_time_seconds",
+    "durationSeconds",
+    "duration_seconds",
+    "printTime",
+    "print_time",
+    "printingTime",
+    "printing_time",
+    "estimatedPrintTime",
+    "estimated_print_time",
+    "duration",
 )
 
 
@@ -663,6 +694,14 @@ def _first_positive_float(item: dict, keys: tuple[str, ...]) -> float:
         if value > 0:
             return value
     return 0.0
+
+
+def _first_positive_int(item: dict, keys: tuple[str, ...]) -> int:
+    for key in keys:
+        value = _safe_int(item.get(key))
+        if value > 0:
+            return value
+    return 0
 
 
 def _normalize_profile_filaments(item: dict) -> list[dict]:
@@ -709,7 +748,7 @@ def _normalize_profile_details(item: dict) -> dict:
     nozzle = _safe_float(item.get("nozzleDiameter") or details.get("nozzleDiameter"))
     plate_items = item.get("plates") if isinstance(item.get("plates"), list) else []
     plate_count = _safe_int(item.get("plateCount") or item.get("plateNum") or details.get("plateCount")) or len(plate_items)
-    print_time_seconds = _safe_int(item.get("printTimeSeconds") or item.get("duration") or details.get("printTimeSeconds"))
+    print_time_seconds = _first_positive_int(item, _PROFILE_PRINT_TIME_KEYS) or _first_positive_int(details, _PROFILE_PRINT_TIME_KEYS)
     filaments = _normalize_profile_filaments(item)
     filament_weight = _first_positive_float(
         item,
@@ -740,6 +779,7 @@ def _normalize_instance_overview(item: dict) -> dict:
         or item.get("timeText")
         or item.get("durationText")
         or _format_duration(item.get("printTimeSeconds") or item.get("duration"))
+        or _format_duration(profile_details["print_time_seconds"])
     )
     plate_items = item.get("plates") if isinstance(item.get("plates"), list) else []
     plates = profile_details["plate_count"] or _safe_int(item.get("plateCount") or item.get("plateNum")) or len(plate_items)

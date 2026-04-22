@@ -205,9 +205,9 @@
                     <span v-if="profile.source_deleted" class="mw-profile-card__meta-item mw-profile-card__meta-item--danger">
                       已删除
                     </span>
-                    <span v-if="profile.time" class="mw-profile-card__meta-item">
+                    <span v-if="profileTimeLabel(profile)" class="mw-profile-card__meta-item">
                       <span class="mw-profile-card__meta-icon" aria-hidden="true" v-html="PROFILE_FACT_ICONS.clock"></span>
-                      <span>{{ profile.time }}</span>
+                      <span>{{ profileTimeLabel(profile) }}</span>
                     </span>
                     <span v-if="profile.plates" class="mw-profile-card__meta-item">
                       <span class="mw-profile-card__meta-icon" aria-hidden="true" v-html="PROFILE_FACT_ICONS.plates"></span>
@@ -257,7 +257,7 @@
                   <h3>{{ profile.title }}</h3>
                 <div class="mw-profile-popover__meta">
                   <span>{{ profile.machine || "通用" }}</span>
-                  <span v-if="profile.time">{{ profile.time }}</span>
+                  <span v-if="profileTimeLabel(profile)">{{ profileTimeLabel(profile) }}</span>
                   <span v-if="profile.publish_date">上传于 {{ profile.publish_date }}</span>
                   <span v-if="profile.source_deleted">源端已删除</span>
                 </div>
@@ -283,7 +283,7 @@
                     class="mw-profile-filament-chip"
                     :style="filamentChipStyle(filament)"
                   >
-                    <span>{{ formatFilamentChipLabel(filament) }}</span>
+                    <span>{{ formatFilamentChipLabel(filament, profile, filamentIndex) }}</span>
                   </span>
                 </div>
 
@@ -1162,8 +1162,9 @@ function profilePopoverFacts(profile) {
   if (Number(profile.plates || 0) > 0) {
     items.push({ key: "plates", label: "盘数", icon: PROFILE_FACT_ICONS.plates, value: `${profile.plates} 盘` });
   }
-  if (profile.time) {
-    items.push({ key: "time", label: "时长", icon: PROFILE_FACT_ICONS.clock, value: String(profile.time) });
+  const timeLabel = profileTimeLabel(profile);
+  if (timeLabel) {
+    items.push({ key: "time", label: "时长", icon: PROFILE_FACT_ICONS.clock, value: timeLabel });
   }
   const nozzleLabel = profileNozzleLabel(profile);
   if (nozzleLabel) {
@@ -1199,6 +1200,35 @@ function formatFilamentWeight(value) {
   return `${numeric % 1 === 0 ? numeric.toFixed(0) : numeric.toFixed(1)} g`;
 }
 
+function formatProfileDuration(value) {
+  const seconds = extractPositiveNumber(value);
+  if (!seconds) {
+    return "";
+  }
+  if (seconds >= 3600) {
+    const hours = seconds / 3600;
+    return `${hours % 1 === 0 ? hours.toFixed(0) : hours.toFixed(1)} h`;
+  }
+  const minutes = seconds / 60;
+  return `${minutes % 1 === 0 ? minutes.toFixed(0) : minutes.toFixed(1)} min`;
+}
+
+function profileTimeLabel(profile) {
+  if (!profile) {
+    return "";
+  }
+  const explicit = String(profile.time || profile.time_label || profile.duration_label || "").trim();
+  if (explicit) {
+    return explicit;
+  }
+  return formatProfileDuration(
+    profile.print_time_seconds
+      || profile.duration
+      || profile.profile_details?.print_time_seconds
+      || profile.profile_details?.printTimeSeconds,
+  );
+}
+
 function filamentWeightValue(filament) {
   if (!filament) {
     return 0;
@@ -1211,14 +1241,28 @@ function filamentWeightValue(filament) {
     filament.weightG,
     filament.usedWeight,
     filament.used_weight,
+    filament.usedWeightG,
+    filament.used_weight_g,
+    filament.usedG,
+    filament.used_g,
     filament.filamentWeight,
+    filament.filamentWeightG,
+    filament.filament_weight,
+    filament.filament_weight_g,
     filament.materialWeight,
+    filament.materialWeightG,
+    filament.material_weight,
+    filament.material_weight_g,
     filament.grams,
     filament.gram,
+    filament.usedGrams,
     filament.usage,
+    filament.usageG,
     filament.used,
     filament.consume,
+    filament.consumeG,
     filament.consumption,
+    filament.consumptionG,
   ];
   for (const candidate of candidates) {
     const numeric = extractPositiveNumber(candidate);
@@ -1229,13 +1273,41 @@ function filamentWeightValue(filament) {
   return 0;
 }
 
-function formatFilamentChipWeight(filament) {
-  return formatFilamentWeight(filamentWeightValue(filament));
+function profileTotalFilamentWeight(profile) {
+  if (!profile) {
+    return 0;
+  }
+  const candidates = [
+    profile.filament_weight,
+    profile.filament_weight_label,
+    profile.profile_details?.filament_weight,
+    profile.profile_details?.filament_weight_label,
+  ];
+  for (const candidate of candidates) {
+    const numeric = extractPositiveNumber(candidate);
+    if (numeric) {
+      return numeric;
+    }
+  }
+  return 0;
 }
 
-function formatFilamentChipLabel(filament) {
+function fallbackFilamentWeightValue(profile) {
+  const filaments = profileFilaments(profile);
+  if (!filaments.length || filaments.some((item) => filamentWeightValue(item) > 0)) {
+    return 0;
+  }
+  const total = profileTotalFilamentWeight(profile);
+  return total ? total / filaments.length : 0;
+}
+
+function formatFilamentChipWeight(filament, profile) {
+  return formatFilamentWeight(filamentWeightValue(filament) || fallbackFilamentWeightValue(profile));
+}
+
+function formatFilamentChipLabel(filament, profile) {
   const material = String(filament?.material || "耗材").trim() || "耗材";
-  const weightLabel = formatFilamentChipWeight(filament);
+  const weightLabel = formatFilamentChipWeight(filament, profile);
   return weightLabel ? `${material}｜${weightLabel}` : material;
 }
 
@@ -1282,7 +1354,7 @@ function profileFilamentWeightLabel(profile) {
   if (explicit) {
     return explicit;
   }
-  const direct = extractPositiveNumber(profile.filament_weight || profile.profile_details?.filament_weight);
+  const direct = profileTotalFilamentWeight(profile);
   if (direct) {
     return formatFilamentWeight(direct);
   }

@@ -2321,7 +2321,7 @@ def extract_instances(design: dict) -> List[dict]:
     return []
 
 
-PROFILE_DETAIL_SCHEMA_VERSION = 3
+PROFILE_DETAIL_SCHEMA_VERSION = 4
 _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
 
@@ -2472,18 +2472,50 @@ _FILAMENT_COLOR_KEYS = (
 )
 _FILAMENT_WEIGHT_KEYS = (
     "weight",
+    "weightUsed",
     "weightG",
     "weight_g",
     "usedWeight",
     "used_weight",
+    "usedWeightG",
+    "used_weight_g",
+    "usedG",
+    "used_g",
     "filamentWeight",
+    "filamentWeightG",
+    "filament_weight",
+    "filament_weight_g",
     "materialWeight",
+    "materialWeightG",
+    "material_weight",
+    "material_weight_g",
     "grams",
     "gram",
+    "usedGrams",
     "usage",
+    "usageG",
     "used",
     "consume",
+    "consumeG",
     "consumption",
+    "consumptionG",
+)
+_PROFILE_PRINT_TIME_KEYS = (
+    "printTimeSeconds",
+    "print_time_seconds",
+    "printingTimeSeconds",
+    "printing_time_seconds",
+    "estimatedPrintTimeSeconds",
+    "estimated_print_time_seconds",
+    "durationSeconds",
+    "duration_seconds",
+    "printTime",
+    "print_time",
+    "printingTime",
+    "printing_time",
+    "estimatedPrintTime",
+    "estimated_print_time",
+    "duration",
 )
 
 
@@ -2579,12 +2611,8 @@ def _collect_raw_filament_items(inst: dict, plates: list[dict]) -> list[Any]:
     for source in sources:
         if isinstance(source, list):
             raw_items.extend(source)
-    if raw_items:
-        return raw_items
 
-    raw_items = _collect_recursive_filament_items(inst)
-    if raw_items:
-        return raw_items
+    raw_items.extend(_collect_recursive_filament_items(inst))
 
     for plate in plates or []:
         if not isinstance(plate, dict):
@@ -2592,7 +2620,24 @@ def _collect_raw_filament_items(inst: dict, plates: list[dict]) -> list[Any]:
         filaments = plate.get("filaments")
         if isinstance(filaments, list):
             raw_items.extend(filaments)
-    return raw_items
+
+    deduped_items: list[Any] = []
+    seen_signatures: set[str] = set()
+    for entry in raw_items:
+        if _normalize_filament_item(entry) is None:
+            continue
+        if isinstance(entry, (dict, list)):
+            try:
+                signature = json.dumps(entry, ensure_ascii=False, sort_keys=True, default=str)
+            except TypeError:
+                signature = repr(entry)
+        else:
+            signature = str(entry)
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+        deduped_items.append(entry)
+    return deduped_items
 
 
 def _merge_profile_filaments(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2676,9 +2721,9 @@ def normalize_profile_details(inst: dict, plates: list[dict], existing_inst: Opt
         or 0
     )
     print_time_seconds = (
-        _round_profile_number(inst.get("printTimeSeconds") or inst.get("duration"), digits=0)
-        or _round_profile_number(existing_inst.get("printTimeSeconds") or existing_inst.get("duration"), digits=0)
-        or _round_profile_number(existing_details.get("printTimeSeconds"), digits=0)
+        _round_profile_number(_first_value_by_keys(inst, _PROFILE_PRINT_TIME_KEYS), digits=0)
+        or _round_profile_number(_first_value_by_keys(existing_inst, _PROFILE_PRINT_TIME_KEYS), digits=0)
+        or _round_profile_number(_first_value_by_keys(existing_details, _PROFILE_PRINT_TIME_KEYS), digits=0)
         or 0
     )
     need_ams = bool(
@@ -4262,10 +4307,10 @@ def archive_model(
             "titleTranslated": inst.get("titleTranslated") or existing_inst.get("titleTranslated") or "",
             "publishTime": inst.get("publishTime") or inst.get("publishedAt") or existing_inst.get("publishTime") or existing_inst.get("publishedAt") or "",
             "machine": inst.get("machine") or inst.get("machineName") or inst.get("printerModel") or inst.get("printer") or inst.get("device") or existing_inst.get("machine") or existing_inst.get("machineName") or existing_inst.get("printerModel") or existing_inst.get("printer") or existing_inst.get("device") or "",
-            "time": inst.get("time") or inst.get("timeText") or inst.get("durationText") or existing_inst.get("time") or existing_inst.get("timeText") or existing_inst.get("durationText") or "",
+            "time": inst.get("time") or inst.get("timeText") or inst.get("durationText") or existing_inst.get("time") or existing_inst.get("timeText") or existing_inst.get("durationText") or (format_duration(profile_details.get("printTimeSeconds")) if profile_details.get("printTimeSeconds") else ""),
             "timeText": inst.get("timeText") or existing_inst.get("timeText") or "",
             "durationText": inst.get("durationText") or existing_inst.get("durationText") or "",
-            "printTimeSeconds": inst.get("printTimeSeconds") or inst.get("duration") or existing_inst.get("printTimeSeconds") or existing_inst.get("duration") or 0,
+            "printTimeSeconds": profile_details.get("printTimeSeconds") or inst.get("printTimeSeconds") or inst.get("duration") or existing_inst.get("printTimeSeconds") or existing_inst.get("duration") or 0,
             "rating": normalize_profile_rating(
                 inst.get("rating")
                 or inst.get("score")

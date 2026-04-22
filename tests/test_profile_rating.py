@@ -23,6 +23,16 @@ class ProfileRatingTest(unittest.TestCase):
 
         self.assertEqual(overview["rating"], 4.81)
 
+    def test_normalizes_instance_time_from_profile_details(self):
+        overview = _normalize_instance_overview({
+            "name": "Timed profile",
+            "profileDetails": {
+                "printTimeSeconds": 38880,
+            },
+        })
+
+        self.assertEqual(overview["time"], "10.8 h")
+
     def test_normalizes_legacy_filament_weights_for_catalog(self):
         details = _normalize_profile_details({
             "profileDetails": {
