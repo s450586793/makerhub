@@ -218,7 +218,9 @@
                     </span>
                     <span v-if="profile.plates" class="mw-profile-card__meta-item">{{ profile.plates }} 盘</span>
                     <span v-if="profile.download_count" class="mw-profile-card__meta-item">{{ formatStat(profile.download_count) }} 下载</span>
-                    <span v-if="profile.rating" class="mw-profile-card__meta-item">★ {{ profile.rating }}</span>
+                    <span v-if="formatProfileRating(profile.rating)" class="mw-profile-card__meta-item">
+                      ★ {{ formatProfileRating(profile.rating) }}
+                    </span>
                   </div>
                 </div>
               </button>
@@ -531,6 +533,7 @@ import { computed, onBeforeUnmount, onErrorCaptured, onMounted, ref, shallowRef,
 import { useRoute } from "vue-router";
 
 import { apiRequest } from "../lib/api";
+import { formatProfileRating } from "../lib/helpers";
 
 
 const route = useRoute();
@@ -652,7 +655,7 @@ const activeProfileFacts = computed(() => {
     items.push({ key: "filament", icon: PROFILE_FACT_ICONS.filament, value: filamentWeightLabel });
   }
   if (String(source.rating ?? "").trim()) {
-    items.push({ key: "rating", icon: PROFILE_FACT_ICONS.rating, value: formatRating(source.rating) });
+    items.push({ key: "rating", icon: PROFILE_FACT_ICONS.rating, value: formatProfileRating(source.rating) });
   }
   return items;
 });
@@ -1008,14 +1011,6 @@ function formatStat(value) {
   return STAT_FORMATTER.format(Number(value || 0));
 }
 
-function formatRating(value) {
-  const numeric = Number(value);
-  if (Number.isFinite(numeric)) {
-    return numeric.toFixed(1);
-  }
-  return String(value || "");
-}
-
 function profilePopoverFacts(profile) {
   if (!profile) {
     return [];
@@ -1030,7 +1025,7 @@ function profilePopoverFacts(profile) {
   items.push({ key: "download", label: "下载", icon: PROFILE_FACT_ICONS.download, value: formatStat(profile.download_count) });
   items.push({ key: "prints", label: "打印", icon: PROFILE_FACT_ICONS.prints, value: formatStat(profile.print_count) });
   if (String(profile.rating ?? "").trim()) {
-    items.push({ key: "rating", label: "评分", icon: PROFILE_FACT_ICONS.rating, value: formatRating(profile.rating) });
+    items.push({ key: "rating", label: "评分", icon: PROFILE_FACT_ICONS.rating, value: formatProfileRating(profile.rating) });
   }
   return items;
 }

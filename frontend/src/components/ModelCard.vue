@@ -112,6 +112,8 @@
 import { computed, ref } from "vue";
 import { useRouter } from "vue-router";
 
+import { formatProfileRating } from "../lib/helpers";
+
 
 const props = defineProps({
   model: {
@@ -155,7 +157,7 @@ const profileSummaryItems = computed(() => {
     items.push({ key: "plates", icon: icons.plates, value: `${summary.plates} 盘` });
   }
   if (String(summary.rating ?? "").trim()) {
-    items.push({ key: "rating", icon: icons.rating, value: formatRating(summary.rating) });
+    items.push({ key: "rating", icon: icons.rating, value: formatProfileRating(summary.rating) });
   }
   return items;
 });
@@ -214,13 +216,5 @@ function onAuthorAvatarError() {
 
 function formatStat(value) {
   return new Intl.NumberFormat("zh-CN").format(Number(value || 0));
-}
-
-function formatRating(value) {
-  const numeric = Number(value);
-  if (Number.isFinite(numeric)) {
-    return numeric.toFixed(1);
-  }
-  return String(value || "");
 }
 </script>

@@ -65,3 +65,40 @@ export function encodeModelPath(modelDir) {
     .join("/");
   return `/models/${encoded}`;
 }
+
+export function normalizeProfileRating(value) {
+  if (value === null || value === undefined || value === false) {
+    return null;
+  }
+  const raw = typeof value === "number" ? String(value) : String(value || "").trim();
+  if (!raw) {
+    return null;
+  }
+
+  const match = raw.replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);
+  if (!match) {
+    return null;
+  }
+
+  let numeric = Number(match[0]);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return null;
+  }
+  if (raw.includes("%") && numeric > 1) {
+    numeric /= 20;
+  } else if (numeric <= 1) {
+    numeric *= 5;
+  }
+  if (numeric > 5) {
+    numeric = 5;
+  }
+  return Math.round(numeric * 100) / 100;
+}
+
+export function formatProfileRating(value, fallback = "") {
+  const normalized = normalizeProfileRating(value);
+  if (normalized === null) {
+    return fallback;
+  }
+  return normalized.toFixed(1);
+}

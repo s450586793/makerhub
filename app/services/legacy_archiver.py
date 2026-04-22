@@ -24,6 +24,7 @@ import requests
 from bs4 import BeautifulSoup
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
 from app.services.cookie_utils import extract_auth_token, parse_cookie_values, sanitize_cookie_header
+from app.services.profile_rating import normalize_profile_rating
 from app.services.three_mf import describe_three_mf_failure, merge_three_mf_failure, normalize_makerworld_source
 
 
@@ -4265,7 +4266,14 @@ def archive_model(
             "timeText": inst.get("timeText") or existing_inst.get("timeText") or "",
             "durationText": inst.get("durationText") or existing_inst.get("durationText") or "",
             "printTimeSeconds": inst.get("printTimeSeconds") or inst.get("duration") or existing_inst.get("printTimeSeconds") or existing_inst.get("duration") or 0,
-            "rating": inst.get("rating") or inst.get("score") or inst.get("stars") or existing_inst.get("rating") or existing_inst.get("score") or existing_inst.get("stars") or "",
+            "rating": normalize_profile_rating(
+                inst.get("rating")
+                or inst.get("score")
+                or inst.get("stars")
+                or existing_inst.get("rating")
+                or existing_inst.get("score")
+                or existing_inst.get("stars")
+            ),
             "downloadCount": inst.get("downloadCount") or existing_inst.get("downloadCount") or 0,
             "printCount": inst.get("printCount") or existing_inst.get("printCount") or 0,
             "prediction": inst.get("prediction"),

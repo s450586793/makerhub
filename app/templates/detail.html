@@ -117,7 +117,7 @@
                 {% if profile.plates %}<span>{{ profile.plates }} 盘</span>{% endif %}
                 {% if profile.download_count %}<span>{{ profile.download_count }} 下载</span>{% endif %}
                 {% if profile.time %}<span>{{ profile.time }}</span>{% endif %}
-                {% if profile.rating %}<span>★ {{ profile.rating }}</span>{% endif %}
+                {% if profile.rating %}<span>★ {{ "%.1f"|format(profile.rating|float) }}</span>{% endif %}
               </div>
             </div>
           </button>

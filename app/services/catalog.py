@@ -20,6 +20,7 @@ from app.services.model_attachments import (
     MANUAL_ATTACHMENTS_SIDECAR,
     load_manual_attachments,
 )
+from app.services.profile_rating import normalize_profile_rating
 from app.services.source_health import build_source_health_cards
 from app.services.task_state import SUBSCRIPTIONS_STATE_PATH, TaskStateStore
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, resolve_model_instance_files
@@ -694,8 +695,7 @@ def _normalize_instance_overview(item: dict) -> dict:
     )
     plate_items = item.get("plates") if isinstance(item.get("plates"), list) else []
     plates = profile_details["plate_count"] or _safe_int(item.get("plateCount") or item.get("plateNum")) or len(plate_items)
-    rating_value = item.get("rating") or item.get("score") or item.get("stars")
-    rating = str(rating_value).strip() if rating_value not in ("", None) else ""
+    rating = normalize_profile_rating(item.get("rating") or item.get("score") or item.get("stars"))
     return {
         "title": str(
             item.get("name")
@@ -745,7 +745,7 @@ def _normalize_model_profile_summary(meta: dict) -> dict:
             "machine": "",
             "time": "",
             "plates": 0,
-            "rating": "",
+            "rating": None,
             "download_count": 0,
             "print_count": 0,
             "profile_count": 0,
