@@ -438,12 +438,18 @@ def build_source_health_cards(config: Any) -> list[dict[str, Any]]:
     def build_card(platform: str) -> dict[str, Any]:
         probe = _probe_platform_status(platform, str(cookie_map.get(platform) or ""), getattr(config, "proxy", None))
         state = str(probe.get("state") or "").strip()
+        detail = str(probe.get("detail") or "").strip()
+        if not detail and state == "verification_required":
+            detail = "点击“去验证”打开对应 MakerWorld 页面，完成浏览器验证后再回首页刷新。"
         return {
             "key": platform,
             "title": SOURCE_HEALTH_LABELS.get(platform, platform),
             "status": str(probe.get("status") or "连接异常"),
-            "detail": str(probe.get("detail") or "").strip(),
+            "detail": detail,
             "tone": "ok" if state == "ok" else "danger",
+            "state": state,
+            "url": PLATFORM_ORIGINS.get(platform, ""),
+            "action_label": "去验证" if state == "verification_required" else "打开官网",
         }
 
     with ThreadPoolExecutor(max_workers=len(platforms)) as executor:

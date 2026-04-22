@@ -14,10 +14,18 @@
       </div>
 
       <div class="dashboard-hero__status-grid">
-        <div
+        <component
           v-for="item in payload.system_status"
           :key="item.key || item.title"
-          :class="['dashboard-hero__status', item.tone && `is-${item.tone}`]"
+          :is="item.url ? 'a' : 'div'"
+          :class="[
+            'dashboard-hero__status',
+            item.tone && `is-${item.tone}`,
+            item.url && 'dashboard-hero__status--link',
+          ]"
+          :href="item.url || undefined"
+          :target="item.url ? '_blank' : undefined"
+          :rel="item.url ? 'noreferrer noopener' : undefined"
         >
           <strong>{{ item.title }}</strong>
           <div class="dashboard-hero__status-line">
@@ -25,7 +33,8 @@
             <span class="dashboard-hero__status-text">{{ item.status }}</span>
           </div>
           <span v-if="item.detail" class="dashboard-hero__status-detail">{{ item.detail }}</span>
-        </div>
+          <span v-if="item.url && item.action_label" class="dashboard-hero__status-action">{{ item.action_label }}</span>
+        </component>
       </div>
     </section>
 
