@@ -95,6 +95,7 @@ async def resume_archive_queue() -> None:
 
 @app.on_event("shutdown")
 async def shutdown_thread_pools() -> None:
+    local_organizer.stop()
     shutdown_request_threads()
 
 

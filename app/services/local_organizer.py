@@ -38,6 +38,8 @@ ORGANIZER_PREVIEW_LIMIT = 6
 PREVIEW_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 ORGANIZER_IGNORED_DIR_NAMES = {"_duplicates", "_failed", "_skipped"}
 ORGANIZER_VISIBLE_QUEUE_LIMIT = ORGANIZER_TASK_LIMIT
+ORGANIZER_PROCESS_MODE_ENV = "MAKERHUB_LOCAL_ORGANIZER_MODE"
+ORGANIZER_DAEMON_ENV = "MAKERHUB_LOCAL_ORGANIZER_DAEMON"
 
 
 def _now_iso() -> str:
@@ -139,6 +141,7 @@ class LocalOrganizerService:
         self.store = store or JsonStore()
         self.task_store = task_store or TaskStateStore()
         self._thread: Optional[threading.Thread] = None
+        self._daemon_process: Optional[subprocess.Popen[str]] = None
         self._worker_process: Optional[subprocess.Popen[str]] = None
         self._worker_source_path = ""
         self._start_lock = threading.Lock()
@@ -150,10 +153,70 @@ class LocalOrganizerService:
 
     def start(self) -> None:
         with self._start_lock:
+            if self._process_mode() == "off":
+                return
+            if self._should_run_daemon_process():
+                self._ensure_daemon_process()
+                return
             if self._thread and self._thread.is_alive():
                 return
             self._thread = threading.Thread(target=self._run_loop, name="makerhub-local-organizer", daemon=True)
             self._thread.start()
+
+    def stop(self) -> None:
+        with self._start_lock:
+            if self._daemon_process and self._daemon_process.poll() is None:
+                self._daemon_process.terminate()
+                try:
+                    self._daemon_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._daemon_process.kill()
+                    self._daemon_process.wait(timeout=5)
+                _append_organizer_log("daemon_stopped", pid=self._daemon_process.pid)
+            self._daemon_process = None
+
+        if self._worker_process and self._worker_process.poll() is None:
+            self._worker_process.terminate()
+            try:
+                self._worker_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._worker_process.kill()
+                self._worker_process.wait(timeout=5)
+            _append_organizer_log("worker_stopped", source=self._worker_source_path)
+        self._worker_process = None
+        self._worker_source_path = ""
+
+    def run_forever(self) -> None:
+        self._run_loop()
+
+    def _should_run_daemon_process(self) -> bool:
+        if os.environ.get(ORGANIZER_DAEMON_ENV) == "1":
+            return False
+        mode = self._process_mode()
+        return mode not in {"thread", "inline", "off"}
+
+    def _process_mode(self) -> str:
+        return str(os.environ.get(ORGANIZER_PROCESS_MODE_ENV) or "process").strip().lower()
+
+    def _ensure_daemon_process(self) -> None:
+        if self._daemon_process and self._daemon_process.poll() is None:
+            return
+        command = [
+            sys.executable,
+            "-m",
+            "app.services.local_organizer_daemon",
+        ]
+        env = os.environ.copy()
+        env[ORGANIZER_DAEMON_ENV] = "1"
+        self._daemon_process = subprocess.Popen(
+            command,
+            cwd=Path(__file__).resolve().parents[2],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            env=env,
+        )
+        _append_organizer_log("daemon_started", pid=self._daemon_process.pid)
 
     def _run_loop(self) -> None:
         while True:
