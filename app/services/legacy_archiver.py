@@ -2448,6 +2448,44 @@ def _truthy_flag(value: Any) -> Optional[bool]:
     return None
 
 
+_FILAMENT_MATERIAL_KEYS = (
+    "material",
+    "materialName",
+    "filamentType",
+    "filament_type",
+    "type",
+    "name",
+    "filamentName",
+    "filament",
+)
+_FILAMENT_COLOR_KEYS = (
+    "color",
+    "hex",
+    "colorHex",
+    "color_hex",
+    "filamentColor",
+    "filament_color",
+    "materialColor",
+    "trayColor",
+    "displayColor",
+)
+_FILAMENT_WEIGHT_KEYS = (
+    "weight",
+    "weightG",
+    "weight_g",
+    "usedWeight",
+    "used_weight",
+    "filamentWeight",
+    "materialWeight",
+    "grams",
+    "gram",
+    "usage",
+    "used",
+    "consume",
+    "consumption",
+)
+
+
 def _normalize_filament_item(item: Any, default_ams: bool = False) -> Optional[dict[str, Any]]:
     if isinstance(item, str):
         material = item.strip()
@@ -2458,16 +2496,7 @@ def _normalize_filament_item(item: Any, default_ams: bool = False) -> Optional[d
     material = str(
         _first_value_by_keys(
             item,
-            (
-                "material",
-                "materialName",
-                "filamentType",
-                "filament_type",
-                "type",
-                "name",
-                "filamentName",
-                "filament",
-            ),
+            _FILAMENT_MATERIAL_KEYS,
         )
         or ""
     ).strip()
@@ -2479,37 +2508,13 @@ def _normalize_filament_item(item: Any, default_ams: bool = False) -> Optional[d
     color = _normalize_color_value(
         _first_value_by_keys(
             item,
-            (
-                "color",
-                "hex",
-                "colorHex",
-                "color_hex",
-                "filamentColor",
-                "filament_color",
-                "materialColor",
-                "trayColor",
-                "displayColor",
-            ),
+            _FILAMENT_COLOR_KEYS,
         )
     )
     weight = _round_profile_number(
         _first_value_by_keys(
             item,
-            (
-                "weight",
-                "weightG",
-                "weight_g",
-                "usedWeight",
-                "used_weight",
-                "filamentWeight",
-                "materialWeight",
-                "grams",
-                "gram",
-                "usage",
-                "used",
-                "consume",
-                "consumption",
-            ),
+            _FILAMENT_WEIGHT_KEYS,
         ),
         digits=1,
     )
@@ -2527,6 +2532,29 @@ def _normalize_filament_item(item: Any, default_ams: bool = False) -> Optional[d
     if slot not in ("", None):
         result["slot"] = slot
     return result
+
+
+def _collect_recursive_filament_items(payload: Any) -> list[Any]:
+    fallback_items: list[Any] = []
+    seen_signatures: set[str] = set()
+    for current in _walk_values(payload):
+        if not isinstance(current, list) or not current:
+            continue
+        for entry in current:
+            if _normalize_filament_item(entry) is None:
+                continue
+            if isinstance(entry, (dict, list)):
+                try:
+                    signature = json.dumps(entry, ensure_ascii=False, sort_keys=True, default=str)
+                except TypeError:
+                    signature = repr(entry)
+            else:
+                signature = str(entry)
+            if signature in seen_signatures:
+                continue
+            seen_signatures.add(signature)
+            fallback_items.append(entry)
+    return fallback_items
 
 
 def _collect_raw_filament_items(inst: dict, plates: list[dict]) -> list[Any]:
@@ -2550,6 +2578,10 @@ def _collect_raw_filament_items(inst: dict, plates: list[dict]) -> list[Any]:
     for source in sources:
         if isinstance(source, list):
             raw_items.extend(source)
+    if raw_items:
+        return raw_items
+
+    raw_items = _collect_recursive_filament_items(inst)
     if raw_items:
         return raw_items
 
