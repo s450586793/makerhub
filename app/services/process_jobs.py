@@ -1,4 +1,5 @@
 import os
+import time
 import traceback
 from multiprocessing import get_context
 from pathlib import Path
@@ -15,6 +16,7 @@ from app.services.legacy_archiver import archive_model as legacy_archive_model
 JOB_CONTEXT = get_context("spawn")
 JOB_POLL_SECONDS = 0.5
 JOB_EXIT_TIMEOUT_SECONDS = 5
+DEFAULT_JOB_IDLE_TIMEOUT_SECONDS = 30 * 60
 
 
 def _job_mode() -> str:
@@ -23,6 +25,14 @@ def _job_mode() -> str:
 
 def _use_subprocess() -> bool:
     return _job_mode() != "inline"
+
+
+def _job_idle_timeout_seconds() -> int:
+    try:
+        value = int(os.environ.get("MAKERHUB_HEAVY_JOB_IDLE_TIMEOUT_SECONDS") or DEFAULT_JOB_IDLE_TIMEOUT_SECONDS)
+    except (TypeError, ValueError):
+        return DEFAULT_JOB_IDLE_TIMEOUT_SECONDS
+    return max(value, 30)
 
 
 def _source_looks_deleted(url: str, cookie: str) -> bool:
@@ -128,12 +138,15 @@ def _run_process_job(
     payload: dict[str, Any],
     *,
     progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+    idle_timeout_seconds: Optional[int] = None,
 ) -> Any:
     queue = JOB_CONTEXT.Queue()
     process = JOB_CONTEXT.Process(target=target, args=(queue, payload), daemon=True)
     process.start()
     result: Any = None
     error_payload: Optional[dict[str, Any]] = None
+    timeout_seconds = int(idle_timeout_seconds or _job_idle_timeout_seconds())
+    last_event_at = time.monotonic()
 
     try:
         while True:
@@ -142,8 +155,14 @@ def _run_process_job(
             except Empty:
                 if not process.is_alive():
                     break
+                if time.monotonic() - last_event_at >= timeout_seconds:
+                    error_payload = {
+                        "message": f"后台任务超过 {timeout_seconds} 秒没有进度，已自动终止。",
+                    }
+                    break
                 continue
 
+            last_event_at = time.monotonic()
             event_type = str(message.get("type") or "")
             event_payload = message.get("payload")
 

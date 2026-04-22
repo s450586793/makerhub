@@ -32,7 +32,7 @@ from app.services.catalog import (
     upsert_archive_snapshot_model,
 )
 from app.services.process_jobs import run_archive_model_job, run_source_deleted_check_job
-from app.services.task_state import TaskStateStore
+from app.services.task_state import TaskStateStore, is_metadata_only_missing_3mf_placeholder
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, resolve_model_instance_files
 
 
@@ -328,6 +328,8 @@ def _build_missing_3mf_items(
         resolved_match = resolved_matches.get(index) if isinstance(resolved_matches, dict) else None
         resolved_path = resolved_match.get("path") if isinstance(resolved_match, dict) else None
         if isinstance(resolved_path, Path) and resolved_path.exists():
+            continue
+        if is_metadata_only_missing_3mf_placeholder(instance):
             continue
         instance_id = str(instance.get("id") or instance.get("profileId") or instance.get("instanceId") or "").strip()
         title = str(instance.get("title") or instance.get("name") or model_title).strip()

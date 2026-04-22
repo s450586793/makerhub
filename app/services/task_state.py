@@ -24,6 +24,7 @@ ORGANIZER_TERMINAL_EVENTS = {
     "organize_failed",
     "worker_timeout",
 }
+METADATA_ONLY_MISSING_3MF_MESSAGE = "信息补全任务仅整理打印配置详情，不下载 3MF。"
 _STATE_LOCK = threading.RLock()
 _ORGANIZER_HISTORY_COUNT_CACHE = {
     "mtime_ns": 0,
@@ -150,6 +151,8 @@ def _normalize_missing_3mf(payload: Any, fallback_items: Optional[list[dict]] = 
             continue
         if not isinstance(item, dict):
             continue
+        if is_metadata_only_missing_3mf_placeholder(item):
+            continue
         normalized.append(
             {
                 "model_id": str(item.get("model_id") or item.get("id") or ""),
@@ -163,6 +166,13 @@ def _normalize_missing_3mf(payload: Any, fallback_items: Optional[list[dict]] = 
         )
 
     return {"items": normalized}
+
+
+def is_metadata_only_missing_3mf_placeholder(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    message = str(item.get("message") or item.get("downloadMessage") or "").strip()
+    return "信息补全任务仅整理打印配置详情" in message
 
 
 def _missing_3mf_key(item: dict) -> tuple[str, str, str]:
