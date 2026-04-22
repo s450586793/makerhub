@@ -84,6 +84,56 @@ class ProfileDetailsTest(unittest.TestCase):
         self.assertEqual(details["filaments"][0]["weight"], 70.5)
         self.assertEqual(details["filaments"][1]["weight"], 18.2)
 
+    def test_uses_parallel_filament_weight_list_without_splitting_total(self):
+        inst = {
+            "filaments": [
+                {"material": "PLA", "color": "#FF9016"},
+                {"material": "PETG", "color": "#FFFFFF"},
+            ],
+            "filamentWeights": ["70.5 g", "18.2 g"],
+            "filamentWeight": 100,
+        }
+
+        details = normalize_profile_details(inst, [])
+
+        self.assertEqual(details["filamentWeight"], 100)
+        self.assertEqual(details["filaments"][0]["weight"], 70.5)
+        self.assertEqual(details["filaments"][1]["weight"], 18.2)
+
+    def test_does_not_split_total_filament_weight_across_materials(self):
+        inst = {
+            "filaments": [
+                {"material": "PLA", "color": "#FF9016"},
+                {"material": "PETG", "color": "#FFFFFF"},
+            ],
+            "filamentWeight": 100,
+        }
+
+        details = normalize_profile_details(inst, [])
+
+        self.assertEqual(details["filamentWeight"], 100)
+        self.assertEqual(details["filaments"][0]["weight"], 0)
+        self.assertEqual(details["filaments"][1]["weight"], 0)
+
+    def test_plate_total_weight_is_not_used_as_material_weight(self):
+        plates = [
+            {
+                "index": 1,
+                "prediction": {"weight": 100},
+                "filaments": [
+                    {"material": "PLA", "color": "#FF9016"},
+                    {"material": "PETG", "color": "#FFFFFF"},
+                ],
+            }
+        ]
+        inst = {"extension": {"modelInfo": {"plates": plates}}}
+
+        details = normalize_profile_details(inst, plates)
+
+        self.assertEqual(details["filamentWeight"], 100)
+        self.assertEqual(details["filaments"][0]["weight"], 0)
+        self.assertEqual(details["filaments"][1]["weight"], 0)
+
     def test_recovers_nested_print_time_seconds(self):
         details = normalize_profile_details({
             "prediction": {

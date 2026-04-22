@@ -2473,6 +2473,8 @@ _FILAMENT_COLOR_KEYS = (
 _FILAMENT_WEIGHT_KEYS = (
     "weight",
     "weightUsed",
+    "weightLabel",
+    "weight_label",
     "weightG",
     "weight_g",
     "usedWeight",
@@ -2500,6 +2502,45 @@ _FILAMENT_WEIGHT_KEYS = (
     "consumption",
     "consumptionG",
 )
+_FILAMENT_WEIGHT_LIST_KEYS = (
+    "weight",
+    "weights",
+    "weightList",
+    "weight_list",
+    "filamentWeight",
+    "filament_weight",
+    "filamentWeights",
+    "filament_weights",
+    "filamentWeightList",
+    "filament_weight_list",
+    "materialWeight",
+    "material_weight",
+    "materialWeights",
+    "material_weights",
+    "materialWeightList",
+    "material_weight_list",
+    "usedWeight",
+    "used_weight",
+    "usedWeights",
+    "used_weights",
+    "usedWeightList",
+    "used_weight_list",
+    "consumption",
+    "consumptionWeights",
+    "consumption_weights",
+    "consumptionWeightList",
+    "consumption_weight_list",
+)
+_FILAMENT_WRAPPER_KEYS = (
+    "trayInfo",
+    "tray_info",
+    "filamentInfo",
+    "filament_info",
+    "materialInfo",
+    "material_info",
+    "consumableInfo",
+    "consumable_info",
+)
 _PROFILE_PRINT_TIME_KEYS = (
     "printTimeSeconds",
     "print_time_seconds",
@@ -2517,6 +2558,83 @@ _PROFILE_PRINT_TIME_KEYS = (
     "estimated_print_time",
     "duration",
 )
+
+
+def _extract_filament_weight_sequence(value: Any) -> list[Optional[float]]:
+    if not isinstance(value, list):
+        return []
+
+    weights: list[Optional[float]] = []
+    has_weight = False
+    for entry in value:
+        candidate = entry
+        if isinstance(entry, dict):
+            candidate = _first_value_by_keys(entry, _FILAMENT_WEIGHT_KEYS)
+        weight = _round_profile_number(candidate, digits=1)
+        weights.append(weight)
+        has_weight = has_weight or weight is not None
+    return weights if has_weight else []
+
+
+def _first_filament_weight_sequence(container: Any, expected_count: int) -> list[Optional[float]]:
+    if not isinstance(container, dict) or expected_count <= 0:
+        return []
+
+    wanted = {key.lower() for key in _FILAMENT_WEIGHT_LIST_KEYS}
+    for key, value in container.items():
+        if str(key).lower() not in wanted:
+            continue
+        weights = _extract_filament_weight_sequence(value)
+        if len(weights) == expected_count:
+            return weights
+    return []
+
+
+def _apply_parallel_filament_weights(items: list[Any], container: Any) -> list[Any]:
+    weights = _first_filament_weight_sequence(container, len(items))
+    if not weights:
+        return items
+
+    weighted_items: list[Any] = []
+    for item, weight in zip(items, weights):
+        if weight is None:
+            weighted_items.append(item)
+            continue
+        if isinstance(item, dict):
+            current_weight = _round_profile_number(_first_value_by_keys(item, _FILAMENT_WEIGHT_KEYS), digits=1)
+            if current_weight in (None, 0):
+                merged = dict(item)
+                merged["weight"] = weight
+                weighted_items.append(merged)
+                continue
+        weighted_items.append(item)
+    return weighted_items
+
+
+def _dict_get_case_insensitive(item: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    wanted = {key.lower() for key in keys}
+    for key, value in item.items():
+        if str(key).lower() in wanted:
+            return value
+    return None
+
+
+def _has_direct_filament_signal(item: dict[str, Any]) -> bool:
+    item_keys = {str(key).lower() for key in item.keys()}
+    material_keys = {key.lower() for key in _FILAMENT_MATERIAL_KEYS if key != "name"}
+    color_keys = {key.lower() for key in _FILAMENT_COLOR_KEYS}
+    return bool(item_keys & (material_keys | color_keys))
+
+
+def _is_filament_candidate_entry(entry: Any) -> bool:
+    if isinstance(entry, str):
+        return bool(entry.strip())
+    if not isinstance(entry, dict):
+        return False
+    if _has_direct_filament_signal(entry):
+        return True
+    wrapped = _dict_get_case_insensitive(entry, _FILAMENT_WRAPPER_KEYS)
+    return isinstance(wrapped, dict) and _is_filament_candidate_entry(wrapped)
 
 
 def _normalize_filament_item(item: Any, default_ams: bool = False) -> Optional[dict[str, Any]]:
@@ -2571,9 +2689,27 @@ def _collect_recursive_filament_items(payload: Any) -> list[Any]:
     fallback_items: list[Any] = []
     seen_signatures: set[str] = set()
     for current in _walk_values(payload):
+        if isinstance(current, dict):
+            for filament_key in ("instanceFilaments", "filaments", "filamentList", "materials"):
+                source = current.get(filament_key)
+                if not isinstance(source, list) or not source:
+                    continue
+                for entry in _apply_parallel_filament_weights(source, current):
+                    if _normalize_filament_item(entry) is None:
+                        continue
+                    try:
+                        signature = json.dumps(entry, ensure_ascii=False, sort_keys=True, default=str)
+                    except TypeError:
+                        signature = repr(entry)
+                    if signature in seen_signatures:
+                        continue
+                    seen_signatures.add(signature)
+                    fallback_items.append(entry)
         if not isinstance(current, list) or not current:
             continue
         for entry in current:
+            if not _is_filament_candidate_entry(entry):
+                continue
             if _normalize_filament_item(entry) is None:
                 continue
             if isinstance(entry, (dict, list)):
@@ -2611,6 +2747,13 @@ def _collect_raw_filament_items(inst: dict, plates: list[dict]) -> list[Any]:
     for source in sources:
         if isinstance(source, list):
             raw_items.extend(source)
+    for container in (inst, model_info):
+        if not isinstance(container, dict):
+            continue
+        for filament_key in ("instanceFilaments", "filaments", "filamentList", "materials"):
+            source = container.get(filament_key)
+            if isinstance(source, list):
+                raw_items.extend(_apply_parallel_filament_weights(source, container))
 
     raw_items.extend(_collect_recursive_filament_items(inst))
 
@@ -2666,6 +2809,31 @@ def _merge_profile_filaments(items: list[dict[str, Any]]) -> list[dict[str, Any]
     return [merged[key] for key in order]
 
 
+def _plate_total_filament_weight(plates: list[dict]) -> Optional[float]:
+    total = 0.0
+    found = False
+    for plate in plates or []:
+        if not isinstance(plate, dict):
+            continue
+        prediction = plate.get("prediction") if isinstance(plate.get("prediction"), dict) else {}
+        weight = _round_profile_number(
+            plate.get("filamentWeight")
+            or plate.get("materialWeight")
+            or plate.get("weight")
+            or prediction.get("filamentWeight")
+            or prediction.get("materialWeight")
+            or prediction.get("weight"),
+            digits=1,
+        )
+        if weight is None:
+            continue
+        total += float(weight)
+        found = True
+    if not found:
+        return None
+    return _round_profile_number(total, digits=1)
+
+
 def normalize_profile_details(inst: dict, plates: list[dict], existing_inst: Optional[dict] = None) -> dict[str, Any]:
     existing_inst = existing_inst if isinstance(existing_inst, dict) else {}
     existing_details = existing_inst.get("profileDetails") if isinstance(existing_inst.get("profileDetails"), dict) else {}
@@ -2687,6 +2855,7 @@ def normalize_profile_details(inst: dict, plates: list[dict], existing_inst: Opt
         or _round_profile_number((inst.get("prediction") or {}).get("weight") if isinstance(inst.get("prediction"), dict) else None, digits=1)
         or _round_profile_number(existing_inst.get("filamentWeight"), digits=1)
         or _round_profile_number(existing_details.get("filamentWeight"), digits=1)
+        or _plate_total_filament_weight(plates)
     )
     if filament_weight is None and filaments:
         total_weight = sum(float(item.get("weight") or 0) for item in filaments)

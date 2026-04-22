@@ -283,7 +283,7 @@
                     class="mw-profile-filament-chip"
                     :style="filamentChipStyle(filament)"
                   >
-                    <span>{{ formatFilamentChipLabel(filament, profile, filamentIndex) }}</span>
+                    <span>{{ formatFilamentChipLabel(filament) }}</span>
                   </span>
                 </div>
 
@@ -1292,22 +1292,13 @@ function profileTotalFilamentWeight(profile) {
   return 0;
 }
 
-function fallbackFilamentWeightValue(profile) {
-  const filaments = profileFilaments(profile);
-  if (!filaments.length || filaments.some((item) => filamentWeightValue(item) > 0)) {
-    return 0;
-  }
-  const total = profileTotalFilamentWeight(profile);
-  return total ? total / filaments.length : 0;
+function formatFilamentChipWeight(filament) {
+  return formatFilamentWeight(filamentWeightValue(filament));
 }
 
-function formatFilamentChipWeight(filament, profile) {
-  return formatFilamentWeight(filamentWeightValue(filament) || fallbackFilamentWeightValue(profile));
-}
-
-function formatFilamentChipLabel(filament, profile) {
+function formatFilamentChipLabel(filament) {
   const material = String(filament?.material || "耗材").trim() || "耗材";
-  const weightLabel = formatFilamentChipWeight(filament, profile);
+  const weightLabel = formatFilamentChipWeight(filament);
   return weightLabel ? `${material}｜${weightLabel}` : material;
 }
 
