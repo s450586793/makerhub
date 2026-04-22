@@ -24,6 +24,29 @@ export const appState = reactive({
 });
 
 let bootstrapPromise = null;
+const APP_VERSION_RELOAD_KEY = "makerhub:last-reloaded-version";
+
+
+function maybeReloadForVersion(nextVersion) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const normalizedNext = String(nextVersion || "").trim();
+  const currentVersion = String(appState.appVersion || "").trim();
+  if (!appState.ready || !normalizedNext || !currentVersion || normalizedNext === currentVersion) {
+    return;
+  }
+  try {
+    const lastReloadedVersion = window.sessionStorage.getItem(APP_VERSION_RELOAD_KEY) || "";
+    if (lastReloadedVersion === normalizedNext) {
+      return;
+    }
+    window.sessionStorage.setItem(APP_VERSION_RELOAD_KEY, normalizedNext);
+  } catch (error) {
+    console.warn("记录版本刷新状态失败", error);
+  }
+  window.location.reload();
+}
 
 
 function applyConfigTheme(config) {
@@ -60,7 +83,9 @@ function applyBootstrap(payload) {
 
 
 export function applyVersionPayload(payload) {
-  appState.appVersion = String(payload?.app_version || appState.appVersion);
+  const nextVersion = String(payload?.app_version || appState.appVersion);
+  maybeReloadForVersion(nextVersion);
+  appState.appVersion = nextVersion;
   appState.githubLatestVersion = String(payload?.github_latest_version ?? "");
   appState.githubVersionCheckedAt = String(payload?.github_version_checked_at ?? "");
   appState.githubVersionError = String(payload?.github_version_error || "");

@@ -2321,7 +2321,7 @@ def extract_instances(design: dict) -> List[dict]:
     return []
 
 
-PROFILE_DETAIL_SCHEMA_VERSION = 2
+PROFILE_DETAIL_SCHEMA_VERSION = 3
 _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
 
