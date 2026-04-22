@@ -2854,35 +2854,8 @@ select:focus {
   font-weight: 600;
 }
 
-.mw-profile-popover__stats {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+.mw-profile-popover__facts {
   gap: 6px;
-}
-
-.mw-profile-popover__stat {
-  min-width: 0;
-  padding: 8px 6px;
-  border-radius: 8px;
-  background: #f8fafc;
-  display: grid;
-  gap: 2px;
-  text-align: center;
-}
-
-.mw-profile-popover__stat strong {
-  color: #6b7280;
-  font-size: 10px;
-  line-height: 14px;
-  font-weight: 700;
-}
-
-.mw-profile-popover__stat em {
-  font-style: normal;
-  color: #111827;
-  font-size: 13px;
-  line-height: 18px;
-  font-weight: 700;
 }
 
 .mw-profile-popover__summary {
