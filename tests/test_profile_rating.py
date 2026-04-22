@@ -1,6 +1,6 @@
 import unittest
 
-from app.services.catalog import _normalize_instance_overview
+from app.services.catalog import _normalize_instance_overview, _normalize_profile_details
 from app.services.profile_rating import normalize_profile_rating
 
 
@@ -22,6 +22,36 @@ class ProfileRatingTest(unittest.TestCase):
         })
 
         self.assertEqual(overview["rating"], 4.81)
+
+    def test_normalizes_legacy_filament_weights_for_catalog(self):
+        details = _normalize_profile_details({
+            "profileDetails": {
+                "filaments": [
+                    {
+                        "material": "PLA",
+                        "colorHex": "#FF9016",
+                        "usedWeight": "69 g",
+                        "isAMS": True,
+                        "slotIndex": 1,
+                    },
+                    {
+                        "material": "PETG",
+                        "color_hex": "#FFFFFF",
+                        "consumption": "12 g",
+                        "trayIndex": 2,
+                    },
+                ],
+            },
+        })
+
+        self.assertEqual(details["filament_weight"], 81)
+        self.assertEqual(details["filament_weight_label"], "81 g")
+        self.assertEqual(details["filaments"][0]["weight"], 69)
+        self.assertEqual(details["filaments"][0]["weight_label"], "69 g")
+        self.assertTrue(details["filaments"][0]["ams"])
+        self.assertEqual(details["filaments"][0]["slot"], 1)
+        self.assertEqual(details["filaments"][1]["weight"], 12)
+        self.assertEqual(details["filaments"][1]["slot"], 2)
 
 
 if __name__ == "__main__":

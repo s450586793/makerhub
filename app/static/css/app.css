@@ -2580,6 +2580,10 @@ select:focus {
   white-space: nowrap;
 }
 
+.mw-profile-card__meta-item--rating {
+  color: #c78700;
+}
+
 .mw-profile-card__meta-icon {
   width: 14px;
   height: 15px;

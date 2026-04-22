@@ -637,6 +637,34 @@ def _format_duration(value: Any) -> str:
     return f"{seconds / 60:.1f} min"
 
 
+_PROFILE_FILAMENT_WEIGHT_KEYS = (
+    "weight",
+    "weightLabel",
+    "weight_label",
+    "weight_g",
+    "weightG",
+    "usedWeight",
+    "used_weight",
+    "filamentWeight",
+    "filament_weight",
+    "materialWeight",
+    "grams",
+    "gram",
+    "usage",
+    "used",
+    "consume",
+    "consumption",
+)
+
+
+def _first_positive_float(item: dict, keys: tuple[str, ...]) -> float:
+    for key in keys:
+        value = _safe_float(item.get(key))
+        if value > 0:
+            return value
+    return 0.0
+
+
 def _normalize_profile_filaments(item: dict) -> list[dict]:
     details = item.get("profileDetails") if isinstance(item.get("profileDetails"), dict) else {}
     raw_items = item.get("filaments") if isinstance(item.get("filaments"), list) else details.get("filaments")
@@ -649,7 +677,7 @@ def _normalize_profile_filaments(item: dict) -> list[dict]:
             continue
         material = str(raw.get("material") or "耗材").strip()
         color = str(raw.get("color") or raw.get("colorHex") or raw.get("color_hex") or "").strip()
-        weight = _safe_float(raw.get("weight") or raw.get("weight_g") or raw.get("weightG"))
+        weight = _first_positive_float(raw, _PROFILE_FILAMENT_WEIGHT_KEYS)
         weight_text = f"{_format_decimal(weight, 1)} g" if weight else ""
         normalized.append(
             {
@@ -657,8 +685,20 @@ def _normalize_profile_filaments(item: dict) -> list[dict]:
                 "color": color,
                 "weight": weight,
                 "weight_label": weight_text,
-                "ams": bool(raw.get("ams")),
-                "slot": raw.get("slot") if raw.get("slot") not in ("", None) else "",
+                "ams": bool(raw.get("ams") or raw.get("isAMS") or raw.get("isAms") or raw.get("needAms")),
+                "slot": (
+                    raw.get("slot")
+                    if raw.get("slot") not in ("", None)
+                    else raw.get("slotIndex")
+                    if raw.get("slotIndex") not in ("", None)
+                    else raw.get("trayIndex")
+                    if raw.get("trayIndex") not in ("", None)
+                    else raw.get("trayId")
+                    if raw.get("trayId") not in ("", None)
+                    else raw.get("index")
+                    if raw.get("index") not in ("", None)
+                    else ""
+                ),
             }
         )
     return normalized
@@ -667,11 +707,19 @@ def _normalize_profile_filaments(item: dict) -> list[dict]:
 def _normalize_profile_details(item: dict) -> dict:
     details = item.get("profileDetails") if isinstance(item.get("profileDetails"), dict) else {}
     nozzle = _safe_float(item.get("nozzleDiameter") or details.get("nozzleDiameter"))
-    filament_weight = _safe_float(item.get("filamentWeight") or details.get("filamentWeight") or item.get("weight"))
     plate_items = item.get("plates") if isinstance(item.get("plates"), list) else []
     plate_count = _safe_int(item.get("plateCount") or item.get("plateNum") or details.get("plateCount")) or len(plate_items)
     print_time_seconds = _safe_int(item.get("printTimeSeconds") or item.get("duration") or details.get("printTimeSeconds"))
     filaments = _normalize_profile_filaments(item)
+    filament_weight = _first_positive_float(
+        item,
+        ("filamentWeight", "filamentWeightG", "filament_weight", "materialWeight", "weight"),
+    ) or _first_positive_float(
+        details,
+        ("filamentWeight", "filamentWeightG", "filament_weight", "materialWeight", "weight"),
+    )
+    if not filament_weight and filaments:
+        filament_weight = round(sum(float(filament.get("weight") or 0) for filament in filaments), 1)
     return {
         "schema_version": _safe_int(item.get("profileDetailVersion") or details.get("schemaVersion")),
         "plate_count": plate_count,
