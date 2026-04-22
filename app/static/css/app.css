@@ -2175,11 +2175,16 @@ select:focus {
 }
 
 .mw-hero {
+  --mw-hero-media-height: 374px;
   display: grid;
   grid-template-columns: minmax(0, 499px) minmax(332px, 356px);
   gap: 16px;
   align-items: start;
   justify-content: start;
+}
+
+.mw-hero__head {
+  grid-column: 1 / -1;
 }
 
 .mw-hero__gallery-column,
@@ -2189,6 +2194,32 @@ select:focus {
 .mw-content-stack {
   display: grid;
   gap: 14px;
+}
+
+.mw-hero__gallery-column,
+.mw-hero__sidebar {
+  min-width: 0;
+  align-content: start;
+}
+
+.mw-head__top {
+  justify-content: space-between;
+}
+
+.mw-head__avatar.avatar-placeholder {
+  display: grid;
+  place-items: center;
+  color: #111827;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.mw-head__crumbs {
+  min-width: 0;
+  margin-left: auto;
+  justify-content: flex-end;
+  text-align: right;
+  flex: 0 1 44%;
 }
 
 .mw-hero__sidebar > .mw-head {
@@ -2231,7 +2262,7 @@ select:focus {
 .mw-gallery__cover {
   position: relative;
   width: 100%;
-  height: 374px;
+  height: var(--mw-hero-media-height);
   overflow: hidden;
   border-radius: 5px;
   background: #f3f4f6;
@@ -2412,15 +2443,17 @@ select:focus {
 }
 
 .mw-config-panel {
+  min-height: var(--mw-hero-media-height);
   border-radius: 7px;
   border: 1px solid rgba(15, 23, 42, 0.12);
   background: #fff;
   overflow: visible;
+  display: grid;
+  grid-template-rows: auto 1px minmax(0, 1fr);
 }
 
 .mw-config-panel__header {
   padding: 10px 14px;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
   display: grid;
   gap: 6px;
 }
@@ -2453,6 +2486,7 @@ select:focus {
   padding: 10px;
   gap: 0;
   position: relative;
+  align-content: start;
 }
 
 .mw-profile-entry {
@@ -4445,6 +4479,10 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
     grid-template-columns: 1fr;
     gap: 20px;
   }
+
+  .mw-config-panel {
+    min-height: 0;
+  }
 }
 
 @media (max-width: 980px) {
@@ -4628,6 +4666,12 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
   .mw-head__links,
   .mw-config-panel__filters {
     justify-content: flex-start;
+  }
+
+  .mw-head__crumbs {
+    margin-left: 0;
+    text-align: left;
+    flex: 1 1 auto;
   }
 
   .mw-head__identity h1 {

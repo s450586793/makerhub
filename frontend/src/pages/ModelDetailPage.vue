@@ -14,27 +14,38 @@
 
     <section class="mw-card">
       <div class="mw-hero">
-        <div class="mw-hero__gallery-column">
-          <header class="mw-head mw-head--gallery">
-            <div class="mw-head__identity mw-head__identity--gallery">
-              <h1>{{ detail.title }}</h1>
-              <div class="mw-head__subline">
-                <span>{{ detail.author?.name || "未知作者" }}</span>
-                <span class="mw-follow-pill">已归档</span>
-                <span
-                  v-if="detail.local_flags?.deleted"
-                  class="mw-chip"
-                  title="该模型已在 MakerHub 端删除，默认不会出现在模型库中。"
-                >
-                  本地已删
-                </span>
-                <span
-                  v-if="detail.subscription_flags?.deleted_on_source"
-                  class="mw-chip mw-chip--danger"
-                  :title="deletedSourceTitle"
-                >
-                  源已删除
-                </span>
+        <header class="mw-head mw-head--gallery mw-hero__head">
+          <div class="mw-head__top">
+            <div class="mw-head__author">
+              <img
+                v-if="detail.author?.avatar_url || detail.author?.avatar_remote_url"
+                class="mw-head__avatar"
+                :src="detail.author?.avatar_url || detail.author?.avatar_remote_url"
+                :alt="detail.author?.name || '作者头像'"
+                @error="swapEventImage($event, detail.author?.avatar_remote_url)"
+              >
+              <span v-else class="mw-head__avatar avatar-placeholder">{{ (detail.author?.name || detail.title || "?").slice(0, 1) }}</span>
+
+              <div class="mw-head__identity mw-head__identity--gallery">
+                <h1>{{ detail.title }}</h1>
+                <div class="mw-head__subline">
+                  <span>{{ detail.author?.name || "未知作者" }}</span>
+                  <span class="mw-follow-pill">已归档</span>
+                  <span
+                    v-if="detail.local_flags?.deleted"
+                    class="mw-chip"
+                    title="该模型已在 MakerHub 端删除，默认不会出现在模型库中。"
+                  >
+                    本地已删
+                  </span>
+                  <span
+                    v-if="detail.subscription_flags?.deleted_on_source"
+                    class="mw-chip mw-chip--danger"
+                    :title="deletedSourceTitle"
+                  >
+                    源已删除
+                  </span>
+                </div>
               </div>
             </div>
 
@@ -45,7 +56,10 @@
                 <span class="mw-crumb">{{ crumb }}</span>
               </template>
             </div>
-          </header>
+          </div>
+        </header>
+
+        <div class="mw-hero__gallery-column">
 
           <div class="mw-gallery">
             <div class="mw-gallery__cover">
