@@ -704,6 +704,12 @@ def _first_positive_int(item: dict, keys: tuple[str, ...]) -> int:
     return 0
 
 
+def _prediction_time_seconds(value: Any) -> int:
+    if isinstance(value, dict):
+        return _first_positive_int(value, _PROFILE_PRINT_TIME_KEYS)
+    return _safe_int(value)
+
+
 def _normalize_profile_filaments(item: dict) -> list[dict]:
     details = item.get("profileDetails") if isinstance(item.get("profileDetails"), dict) else {}
     raw_items = item.get("filaments") if isinstance(item.get("filaments"), list) else details.get("filaments")
@@ -748,7 +754,12 @@ def _normalize_profile_details(item: dict) -> dict:
     nozzle = _safe_float(item.get("nozzleDiameter") or details.get("nozzleDiameter"))
     plate_items = item.get("plates") if isinstance(item.get("plates"), list) else []
     plate_count = _safe_int(item.get("plateCount") or item.get("plateNum") or details.get("plateCount")) or len(plate_items)
-    print_time_seconds = _first_positive_int(item, _PROFILE_PRINT_TIME_KEYS) or _first_positive_int(details, _PROFILE_PRINT_TIME_KEYS)
+    print_time_seconds = (
+        _first_positive_int(item, _PROFILE_PRINT_TIME_KEYS)
+        or _prediction_time_seconds(item.get("prediction"))
+        or _first_positive_int(details, _PROFILE_PRINT_TIME_KEYS)
+        or _prediction_time_seconds(details.get("prediction"))
+    )
     filaments = _normalize_profile_filaments(item)
     filament_weight = _first_positive_float(
         item,

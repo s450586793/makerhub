@@ -2834,6 +2834,12 @@ def _plate_total_filament_weight(plates: list[dict]) -> Optional[float]:
     return _round_profile_number(total, digits=1)
 
 
+def _prediction_time_seconds(payload: Any) -> Optional[float]:
+    if isinstance(payload, dict):
+        return _round_profile_number(_first_value_by_keys(payload, _PROFILE_PRINT_TIME_KEYS), digits=0)
+    return _round_profile_number(payload, digits=0)
+
+
 def normalize_profile_details(inst: dict, plates: list[dict], existing_inst: Optional[dict] = None) -> dict[str, Any]:
     existing_inst = existing_inst if isinstance(existing_inst, dict) else {}
     existing_details = existing_inst.get("profileDetails") if isinstance(existing_inst.get("profileDetails"), dict) else {}
@@ -2891,8 +2897,11 @@ def normalize_profile_details(inst: dict, plates: list[dict], existing_inst: Opt
     )
     print_time_seconds = (
         _round_profile_number(_first_value_by_keys(inst, _PROFILE_PRINT_TIME_KEYS), digits=0)
+        or _prediction_time_seconds(inst.get("prediction"))
         or _round_profile_number(_first_value_by_keys(existing_inst, _PROFILE_PRINT_TIME_KEYS), digits=0)
+        or _prediction_time_seconds(existing_inst.get("prediction"))
         or _round_profile_number(_first_value_by_keys(existing_details, _PROFILE_PRINT_TIME_KEYS), digits=0)
+        or _prediction_time_seconds(existing_details.get("prediction"))
         or 0
     )
     need_ams = bool(

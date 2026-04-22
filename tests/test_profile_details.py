@@ -143,6 +143,13 @@ class ProfileDetailsTest(unittest.TestCase):
 
         self.assertEqual(details["printTimeSeconds"], 38880)
 
+    def test_recovers_scalar_prediction_as_print_time_seconds(self):
+        details = normalize_profile_details({
+            "prediction": 20446,
+        }, [])
+
+        self.assertEqual(details["printTimeSeconds"], 20446)
+
 
 if __name__ == "__main__":
     unittest.main()
