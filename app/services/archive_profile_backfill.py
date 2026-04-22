@@ -86,6 +86,39 @@ def _profile_detail_version(instance: dict[str, Any]) -> int:
     return 0
 
 
+def _asset_has_value(value: Any, keys: tuple[str, ...] = ()) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if not isinstance(value, dict):
+        return False
+    return any(str(value.get(key) or "").strip() for key in keys)
+
+
+def _instance_has_display_media(instance: dict[str, Any]) -> bool:
+    pictures = instance.get("pictures") if isinstance(instance.get("pictures"), list) else []
+    for picture in pictures:
+        if _asset_has_value(
+            picture,
+            ("url", "originalUrl", "imageUrl", "src", "relPath", "localName", "coverUrl", "previewImage"),
+        ):
+            return True
+
+    plates = instance.get("plates") if isinstance(instance.get("plates"), list) else []
+    for plate in plates:
+        if not isinstance(plate, dict):
+            continue
+        if any(
+            str(plate.get(key) or "").strip()
+            for key in ("thumbnailUrl", "thumbnailRelPath", "thumbnailFile")
+        ):
+            return True
+
+    return any(
+        str(instance.get(key) or "").strip()
+        for key in ("thumbnailUrl", "thumbnail", "thumbnailLocal", "cover", "previewImage")
+    )
+
+
 def _meta_needs_profile_backfill(meta: dict[str, Any]) -> bool:
     instances = meta.get("instances") if isinstance(meta.get("instances"), list) else []
     if not instances:
@@ -94,6 +127,8 @@ def _meta_needs_profile_backfill(meta: dict[str, Any]) -> bool:
         if not isinstance(instance, dict):
             continue
         if _profile_detail_version(instance) < PROFILE_DETAIL_SCHEMA_VERSION:
+            return True
+        if not _instance_has_display_media(instance):
             return True
     return False
 
@@ -200,6 +235,7 @@ def queue_profile_backfill(
             "message": (
                 f"扫描完成：发现 {result['scanned_candidates']} 个缺信息模型，"
                 f"新增入队 {result['queued_count']} 个，已在队列 {result['already_queued_count']} 个。"
+                "这些模型会继续在归档队列后台补全。"
             ),
         }
     except Exception as exc:

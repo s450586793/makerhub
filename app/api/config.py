@@ -1563,7 +1563,7 @@ async def start_archive_profile_backfill(request: Request):
             state.update(
                 {
                     "accepted": False,
-                    "message": "现有库信息补全正在扫描，请稍后查看状态。",
+                    "message": "现有库信息补全正在扫描并持续入队，请稍后刷新状态。",
                 }
             )
             return state
@@ -1575,7 +1575,7 @@ async def start_archive_profile_backfill(request: Request):
     result.update(
         {
             "accepted": True,
-            "message": result.get("message") or "现有库信息补全扫描完成。",
+            "message": result.get("message") or "现有库信息补全扫描完成，缺失模型会继续在归档队列后台补全。",
         }
     )
     return result

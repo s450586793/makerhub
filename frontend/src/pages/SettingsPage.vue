@@ -191,13 +191,13 @@
             </div>
           </div>
           <p class="archive-form__hint">
-            扫描本地已归档模型，把缺少打印配置详情字段的模型加入归档补整理队列。该任务只补配置元数据，不主动消耗 3MF 下载次数。
+            这里只负责扫描本地已归档模型，并把缺少打印配置详情或实例展示媒体字段的模型加入归档补整理队列。实际补全会在后台归档队列继续执行，不主动消耗 3MF 下载次数。
           </p>
           <div class="settings-grid settings-grid--three system-update-grid">
             <article class="field-card system-update-stat">
               <span>发现缺失</span>
               <strong>{{ profileBackfillStats.scanned }}</strong>
-              <small>{{ profileBackfill.started_at ? `最近开始：${profileBackfill.started_at}` : "尚未执行" }}</small>
+              <small>{{ profileBackfill.started_at ? `最近扫描：${profileBackfill.started_at}` : "尚未执行" }}</small>
             </article>
             <article class="field-card system-update-stat">
               <span>新增入队</span>
@@ -207,11 +207,11 @@
             <article class="field-card system-update-stat">
               <span>失败</span>
               <strong>{{ profileBackfillStats.failed }}</strong>
-              <small>{{ profileBackfill.finished_at ? `最近完成：${profileBackfill.finished_at}` : "等待执行" }}</small>
+              <small>{{ profileBackfill.finished_at ? `最近扫描结束：${profileBackfill.finished_at}` : "等待执行" }}</small>
             </article>
           </div>
           <div class="form-footer">
-            <span class="form-status">{{ statuses.profile_backfill || profileBackfill.last_error || profileBackfill.message || "只在需要补旧库字段时手动执行。" }}</span>
+            <span class="form-status">{{ statuses.profile_backfill || profileBackfill.last_error || profileBackfill.message || "这里只负责扫描并加入归档队列；实际补全会在后台继续执行，可到任务页查看进度。" }}</span>
           </div>
         </section>
 
@@ -675,7 +675,7 @@ async function loadProfileBackfillStatus(options = {}) {
 }
 
 async function triggerProfileBackfill() {
-  const shouldProceed = window.confirm("会扫描本地归档库，并把缺少打印配置详情字段的模型加入归档补整理队列。不会主动下载 3MF。确定继续吗？");
+  const shouldProceed = window.confirm("会扫描本地归档库，并把缺少打印配置详情或实例展示媒体字段的模型加入归档补整理队列。这里只负责扫描和入队，不会主动下载 3MF。确定继续吗？");
   if (!shouldProceed) {
     return;
   }
@@ -686,7 +686,7 @@ async function triggerProfileBackfill() {
       method: "POST",
     });
     applyProfileBackfillStatus(payload);
-    statuses.profile_backfill = payload.message || "现有库信息补全任务已提交。";
+    statuses.profile_backfill = payload.message || "现有库信息补全扫描已提交，缺失模型会继续在归档队列后台处理。";
   } catch (error) {
     statuses.profile_backfill = error instanceof Error ? error.message : "提交信息补全失败。";
   } finally {
