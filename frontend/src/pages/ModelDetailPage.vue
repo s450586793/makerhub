@@ -233,37 +233,14 @@
                 ]"
               >
                 <div v-if="profile.media_resolved?.length" class="mw-profile-popover__gallery">
-                  <button
-                    class="mw-profile-popover__stage"
-                    type="button"
-                    @click="openLightbox(popoverCurrentMedia(profile)?.url || popoverCurrentMedia(profile)?.fallback_url || '')"
-                  >
-                    <img
-                      v-if="popoverCurrentMedia(profile)?.url || popoverCurrentMedia(profile)?.fallback_url"
-                      class="mw-profile-popover__stage-image"
-                      :src="popoverCurrentMedia(profile)?.url || popoverCurrentMedia(profile)?.fallback_url"
-                      :alt="`${profile.title} ${popoverCurrentMedia(profile)?.label || ''}`.trim()"
-                      loading="lazy"
-                      @error="swapEventImage($event, popoverCurrentMedia(profile)?.fallback_url)"
-                    >
-                    <span v-else class="mw-profile-popover__stage-image avatar-placeholder">{{ detail.title.slice(0, 1) }}</span>
-                    <span class="mw-profile-popover__stage-badge">{{ popoverCurrentMedia(profile)?.label || "预览" }}</span>
-                  </button>
-
-                  <div class="mw-profile-popover__gallery-meta">
-                    <span>{{ popoverCurrentMedia(profile)?.kind === "plate" ? "分盘预览" : "配置图集" }}</span>
-                    <span>{{ currentPopoverMediaIndex(profile) + 1 }} / {{ profile.media_resolved.length }}</span>
-                  </div>
-
-                  <div v-if="profile.media_resolved.length > 1" class="mw-profile-popover__media-strip">
+                  <div class="mw-profile-popover__media-strip">
                     <button
                       v-for="(media, mediaIndex) in profile.media_resolved"
                       :key="`${profile.instance_key}-${media.label}-${mediaIndex}`"
-                      :class="['mw-profile-popover__media-thumb', currentPopoverMediaIndex(profile) === mediaIndex && 'is-active']"
+                      class="mw-profile-popover__media-thumb"
                       type="button"
-                      @mouseenter="selectPopoverMedia(profile, mediaIndex)"
-                      @focus="selectPopoverMedia(profile, mediaIndex)"
-                      @click="selectPopoverMedia(profile, mediaIndex)"
+                      :title="media.label || `预览 ${mediaIndex + 1}`"
+                      @click="openLightbox(media.url || media.fallback_url || '')"
                     >
                       <span class="mw-profile-popover__media-thumb-figure">
                         <img
@@ -275,7 +252,6 @@
                         >
                         <span v-else class="avatar-placeholder">{{ detail.title.slice(0, 1) }}</span>
                       </span>
-                      <span class="mw-profile-popover__media-thumb-label">{{ media.label }}</span>
                     </button>
                   </div>
                 </div>
@@ -747,7 +723,6 @@ const hoverPopoverEnabled = ref(false);
 const previewedInstanceKey = ref("");
 const profileEntryRefs = new Map();
 const popoverPlacementState = ref({});
-const popoverMediaState = ref({});
 const commentsReady = ref(false);
 const comments = shallowRef([]);
 const commentsTotal = ref(0);
@@ -1048,9 +1023,6 @@ function handleProfileCardClick(profile) {
     return;
   }
   previewedInstanceKey.value = profile.instance_key;
-  if (!(profile.instance_key in popoverMediaState.value)) {
-    selectPopoverMedia(profile, 0);
-  }
 }
 
 function isProfilePopoverOpen(profile) {
@@ -1093,9 +1065,6 @@ function openProfilePopover(profile, entryElement = null) {
   }
   updateProfilePopoverPlacement(profile, entryElement);
   previewedInstanceKey.value = profile.instance_key;
-  if (!(profile.instance_key in popoverMediaState.value)) {
-    selectPopoverMedia(profile, 0);
-  }
 }
 
 function closeProfilePopover(instanceKey = "", options = {}) {
@@ -1598,37 +1567,6 @@ function buildProfileMedia(profile) {
   ];
 }
 
-function currentPopoverMediaIndex(profile) {
-  const mediaItems = Array.isArray(profile?.media_resolved) ? profile.media_resolved : [];
-  if (!mediaItems.length || !profile?.instance_key) {
-    return 0;
-  }
-  const currentIndex = Number(popoverMediaState.value[profile.instance_key] ?? 0);
-  if (!Number.isInteger(currentIndex) || currentIndex < 0 || currentIndex >= mediaItems.length) {
-    return 0;
-  }
-  return currentIndex;
-}
-
-function popoverCurrentMedia(profile) {
-  const mediaItems = Array.isArray(profile?.media_resolved) ? profile.media_resolved : [];
-  return mediaItems[currentPopoverMediaIndex(profile)] || null;
-}
-
-function selectPopoverMedia(profile, index) {
-  if (!profile?.instance_key) {
-    return;
-  }
-  const mediaItems = Array.isArray(profile?.media_resolved) ? profile.media_resolved : [];
-  if (!mediaItems[index]) {
-    return;
-  }
-  popoverMediaState.value = {
-    ...popoverMediaState.value,
-    [profile.instance_key]: index,
-  };
-}
-
 function resetAttachmentUploadState(options = {}) {
   const { keepCategory = true, clearFeedback = true } = options;
   if (clearFeedback) {
@@ -1798,7 +1736,6 @@ async function load() {
   profileEntryRefs.clear();
   previewedInstanceKey.value = "";
   popoverPlacementState.value = {};
-  popoverMediaState.value = {};
   commentsReady.value = false;
   comments.value = [];
   commentsTotal.value = 0;
