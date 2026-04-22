@@ -3540,6 +3540,430 @@ select:focus {
   display: block;
 }
 
+.mw-comment-section__header {
+  align-items: flex-start;
+}
+
+.mw-comment-section__header .mw-section-card__hint {
+  margin: 6px 0 0;
+}
+
+.mw-comment-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 8px;
+  padding: 18px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 249, 252, 0.95));
+}
+
+.mw-comment-editor__surface {
+  min-height: 112px;
+  padding: 16px 18px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 18px;
+  background: #fff;
+}
+
+.mw-comment-editor__content {
+  color: #9ca3af;
+  font-size: 15px;
+  line-height: 24px;
+}
+
+.mw-comment-editor__footer,
+.mw-comment-editor__actions,
+.mw-comment-toolbar,
+.mw-comment-toolbar__sorts,
+.mw-comment-thread__author-row,
+.mw-comment-thread__footer,
+.mw-comment-thread__meta,
+.mw-comment-thread__actions,
+.mw-comment-reply__header,
+.mw-comment-reply__footer,
+.mw-comment-action {
+  display: flex;
+  align-items: center;
+}
+
+.mw-comment-editor__footer,
+.mw-comment-toolbar,
+.mw-comment-thread__footer {
+  justify-content: space-between;
+}
+
+.mw-comment-editor__upload,
+.mw-comment-editor__submit,
+.mw-comment-toolbar__filter,
+.mw-comment-toolbar__sort,
+.mw-comment-thread__more,
+.mw-comment-thread__expand {
+  appearance: none;
+  border: 0;
+  background: none;
+  font: inherit;
+}
+
+.mw-comment-editor__upload {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 999px;
+  color: #475569;
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.mw-comment-editor__actions {
+  gap: 12px;
+}
+
+.mw-comment-editor__counter {
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.mw-comment-editor__submit {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(65, 199, 132, 0.48);
+}
+
+.mw-comment-editor__upload:disabled,
+.mw-comment-editor__submit:disabled,
+.mw-comment-toolbar__filter:disabled,
+.mw-comment-thread__more:disabled,
+.mw-comment-thread__expand:disabled {
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+.mw-comment-editor__upload-icon,
+.mw-comment-editor__submit-icon,
+.mw-comment-toolbar__filter-icon,
+.mw-comment-action__icon,
+.mw-comment-thread__more span {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+}
+
+.mw-comment-editor__upload-icon svg,
+.mw-comment-editor__submit-icon svg,
+.mw-comment-toolbar__filter-icon svg,
+.mw-comment-action__icon svg,
+.mw-comment-thread__more span svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.mw-comment-toolbar {
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.mw-comment-toolbar__filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 12px;
+  color: #111827;
+  background: #fff;
+}
+
+.mw-comment-toolbar__sorts {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mw-comment-toolbar__sort {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 999px;
+  color: #64748b;
+  background: rgba(15, 23, 42, 0.04);
+  transition: color 0.18s ease, background 0.18s ease;
+}
+
+.mw-comment-toolbar__sort.is-active {
+  color: #0f172a;
+  background: rgba(65, 199, 132, 0.18);
+}
+
+.mw-comment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  margin-top: 22px;
+}
+
+.mw-comment-thread {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.mw-comment-thread:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.mw-comment-thread__avatar,
+.mw-comment-thread__avatar img,
+.mw-comment-thread__avatar .avatar-placeholder {
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+}
+
+.mw-comment-thread__content {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.mw-comment-thread__top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.mw-comment-thread__identity {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.mw-comment-thread__author-row {
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mw-comment-thread__author,
+.mw-comment-reply__author {
+  color: #111827;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+  text-decoration: none;
+}
+
+.mw-comment-rating {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: #d1d5db;
+}
+
+.mw-comment-rating__star {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.mw-comment-rating__star.is-active,
+.mw-comment-rating__value {
+  color: #f59e0b;
+}
+
+.mw-comment-rating__value {
+  margin-left: 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mw-comment-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.mw-comment-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.mw-comment-badge--plain {
+  color: #475569;
+  background: rgba(148, 163, 184, 0.14);
+}
+
+.mw-comment-badge--pinned {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.18);
+}
+
+.mw-comment-badge--designer {
+  color: #0f766e;
+  background: rgba(45, 212, 191, 0.18);
+}
+
+.mw-comment-badge--boosted {
+  color: #7c3aed;
+  background: rgba(196, 181, 253, 0.24);
+}
+
+.mw-comment-thread__more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  color: #64748b;
+}
+
+.mw-comment-thread__reply-target {
+  margin-top: 10px;
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.mw-comment-thread__reply-target span {
+  color: #111827;
+  font-weight: 600;
+}
+
+.mw-comment-thread__body,
+.mw-comment-reply__body {
+  color: #111827;
+  font-size: 14px;
+  line-height: 22px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mw-comment-thread__body {
+  margin-top: 10px;
+}
+
+.mw-comment-gallery {
+  margin-top: 14px;
+}
+
+.mw-comment-gallery .comment-gallery__item {
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.03);
+}
+
+.mw-comment-gallery .comment-gallery__item img {
+  border-radius: 12px;
+}
+
+.mw-comment-thread__meta {
+  gap: 10px;
+  flex-wrap: wrap;
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.mw-comment-thread__footer {
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.mw-comment-thread__actions,
+.mw-comment-reply__footer {
+  gap: 18px;
+}
+
+.mw-comment-action {
+  gap: 6px;
+  color: #475569;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.mw-comment-replies {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 16px;
+  padding-left: 16px;
+  border-left: 2px solid rgba(15, 23, 42, 0.08);
+}
+
+.mw-comment-reply {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.mw-comment-reply__avatar,
+.mw-comment-reply__avatar img,
+.mw-comment-reply__avatar .avatar-placeholder {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+}
+
+.mw-comment-reply__content {
+  min-width: 0;
+  flex: 1 1 auto;
+  padding: 12px 14px;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 16px;
+  background: rgba(248, 250, 252, 0.88);
+}
+
+.mw-comment-reply__header {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mw-comment-reply__time {
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.mw-comment-reply__body {
+  margin-top: 8px;
+}
+
+.mw-comment-reply__footer {
+  margin-top: 10px;
+}
+
+.mw-comment-gallery.is-reply {
+  margin-top: 12px;
+}
+
+.mw-comment-thread__expand {
+  margin-top: 14px;
+  padding: 0;
+  color: #0f766e;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
 .lightbox[hidden] {
   display: none;
 }
@@ -3857,6 +4281,64 @@ html[data-theme="dark"] .detail-page--makerworld .mw-attachment-upload__status.i
 
 html[data-theme="dark"] .detail-page--makerworld .comment-item {
   border-color: var(--mw-border);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-editor,
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-toolbar__filter,
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-reply__content {
+  border-color: rgba(148, 163, 184, 0.18);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-editor {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.72), rgba(15, 23, 42, 0.9));
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-editor__surface,
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-toolbar__filter,
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-reply__content {
+  background: rgba(15, 23, 42, 0.92);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-editor__content,
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-editor__counter,
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-thread__meta,
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-reply__time,
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-action,
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-thread__reply-target {
+  color: var(--mw-muted);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-thread__author,
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-reply__author,
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-thread__body,
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-reply__body,
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-thread__reply-target span,
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-toolbar__filter,
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-toolbar__sort.is-active {
+  color: var(--mw-text);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-editor__upload,
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-toolbar__sort {
+  color: var(--mw-muted);
+  background: rgba(148, 163, 184, 0.12);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-editor__submit {
+  background: rgba(65, 199, 132, 0.34);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-thread,
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-replies {
+  border-color: var(--mw-border);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-thread__more {
+  color: var(--mw-muted);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-comment-gallery .comment-gallery__item {
+  background: rgba(148, 163, 184, 0.12);
 }
 
 html[data-theme="dark"] .detail-page--makerworld .mw-comments-more__meta {
@@ -4326,6 +4808,58 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__close {
 
   .comment-item {
     gap: 12px;
+  }
+
+  .mw-comment-editor {
+    padding: 14px;
+    border-radius: 18px;
+  }
+
+  .mw-comment-editor__surface {
+    min-height: 96px;
+    padding: 14px;
+  }
+
+  .mw-comment-editor__footer,
+  .mw-comment-toolbar,
+  .mw-comment-thread__footer,
+  .mw-comment-reply__header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .mw-comment-editor__actions,
+  .mw-comment-thread__actions,
+  .mw-comment-reply__footer {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .mw-comment-toolbar__sorts {
+    width: 100%;
+  }
+
+  .mw-comment-toolbar__sort {
+    flex: 1 1 calc(50% - 8px);
+    justify-content: center;
+  }
+
+  .mw-comment-thread {
+    gap: 12px;
+  }
+
+  .mw-comment-thread__top {
+    gap: 10px;
+  }
+
+  .mw-comment-thread__more {
+    width: 28px;
+    height: 28px;
+  }
+
+  .mw-comment-replies {
+    margin-top: 14px;
+    padding-left: 12px;
   }
 
   .comment-gallery--2 .comment-gallery__item,

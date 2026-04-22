@@ -438,17 +438,58 @@
       </article>
 
       <article id="detail-comments" class="mw-section-card">
-        <div class="mw-section-card__header">
-          <h2>评论 &amp; 评分 ({{ commentsTotal }})</h2>
+        <div class="mw-section-card__header mw-comment-section__header">
+          <div>
+            <h2>评论 &amp; 评分 ({{ commentsTotal }})</h2>
+            <p class="mw-section-card__hint">评论展示已同步的 MakerWorld 数据，当前仅提供只读浏览。</p>
+          </div>
         </div>
+
+        <div class="mw-comment-editor" aria-disabled="true">
+          <div class="mw-comment-editor__surface">
+            <div class="mw-comment-editor__content">请填写您的意见</div>
+          </div>
+          <div class="mw-comment-editor__footer">
+            <button class="mw-comment-editor__upload" type="button" disabled>
+              <span class="mw-comment-editor__upload-icon" v-html="COMMENT_UI_ICONS.image"></span>
+              <span>选择照片</span>
+            </button>
+            <div class="mw-comment-editor__actions">
+              <span class="mw-comment-editor__counter">(0/1000)</span>
+              <button class="mw-comment-editor__submit" type="button" disabled>
+                <span class="mw-comment-editor__submit-icon" v-html="COMMENT_UI_ICONS.send"></span>
+                <span>发布</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="mw-comment-toolbar">
+          <button class="mw-comment-toolbar__filter" type="button" disabled>
+            <span>全部</span>
+            <span class="mw-comment-toolbar__filter-icon" v-html="COMMENT_UI_ICONS.chevron"></span>
+          </button>
+          <div class="mw-comment-toolbar__sorts">
+            <button
+              v-for="sort in commentSortOptions"
+              :key="sort.value"
+              :class="['mw-comment-toolbar__sort', commentSortKey === sort.value && 'is-active']"
+              type="button"
+              @click="commentSortKey = sort.value"
+            >
+              {{ sort.label }}
+            </button>
+          </div>
+        </div>
+
         <template v-if="commentsTotal > 0">
-          <div v-if="commentsReady" class="comment-list">
+          <div v-if="commentsReady" class="mw-comment-list">
             <article
               v-for="(comment, index) in visibleComments"
-              :key="`${comment.author}-${comment.time}-${index}`"
-              class="comment-item"
+              :key="comment.id || `${comment.author}-${comment.time}-${index}`"
+              class="mw-comment-thread"
             >
-              <div class="comment-item__avatar">
+              <div class="mw-comment-thread__avatar">
                 <div class="model-author">
                   <img
                     v-if="comment.avatar_url"
@@ -459,19 +500,56 @@
                   <span v-else class="avatar-placeholder">{{ comment.author?.slice(0, 1) || "?" }}</span>
                 </div>
               </div>
-              <div class="comment-item__content">
-                <div class="comment-item__header">
-                  <span class="comment-item__author">{{ comment.author }}</span>
-                  <span>{{ comment.time }}</span>
+              <div class="mw-comment-thread__content">
+                <div class="mw-comment-thread__top">
+                  <div class="mw-comment-thread__identity">
+                    <div class="mw-comment-thread__author-row">
+                      <a
+                        v-if="comment.author_url"
+                        class="mw-comment-thread__author"
+                        :href="comment.author_url"
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {{ comment.author }}
+                      </a>
+                      <span v-else class="mw-comment-thread__author">{{ comment.author }}</span>
+                      <div v-if="comment.rating > 0" class="mw-comment-rating" :aria-label="`评分 ${comment.rating}`">
+                        <span
+                          v-for="starIndex in 5"
+                          :key="starIndex"
+                          :class="['mw-comment-rating__star', starIndex <= Math.round(comment.rating) && 'is-active']"
+                        >★</span>
+                        <span class="mw-comment-rating__value">{{ comment.rating_label }}</span>
+                      </div>
+                    </div>
+                    <div v-if="comment.badges?.length" class="mw-comment-badges">
+                      <span
+                        v-for="badge in comment.badges"
+                        :key="badge"
+                        :class="['mw-comment-badge', commentBadgeClass(badge)]"
+                      >
+                        {{ badge }}
+                      </span>
+                    </div>
+                  </div>
+                  <button class="mw-comment-thread__more" type="button" disabled aria-label="更多操作">
+                    <span v-html="COMMENT_UI_ICONS.more"></span>
+                  </button>
                 </div>
-                <div class="comment-item__body">{{ comment.content }}</div>
+
+                <div v-if="comment.reply_to" class="mw-comment-thread__reply-target">
+                  回复 <span>@{{ comment.reply_to }}</span>：
+                </div>
+                <div v-if="comment.content" class="mw-comment-thread__body">{{ comment.content }}</div>
+
                 <div
                   v-if="comment.images?.length"
-                  :class="['comment-gallery', comment.gallery_class]"
+                  :class="['comment-gallery', comment.gallery_class, 'mw-comment-gallery']"
                 >
                   <button
                     v-for="(image, imageIndex) in comment.images"
-                    :key="`${comment.author}-${imageIndex}`"
+                    :key="`${comment.id || comment.author}-${imageIndex}`"
                     class="comment-gallery__item"
                     type="button"
                     @click="openLightbox(image.full_url || image.thumb_url)"
@@ -484,6 +562,91 @@
                     >
                   </button>
                 </div>
+
+                <div class="mw-comment-thread__footer">
+                  <div class="mw-comment-thread__meta">
+                    <span>{{ comment.time_display }}</span>
+                    <span v-if="comment.status_copy">{{ comment.status_copy }}</span>
+                  </div>
+                  <div class="mw-comment-thread__actions">
+                    <span class="mw-comment-action">
+                      <span class="mw-comment-action__icon" v-html="COMMENT_UI_ICONS.like"></span>
+                      <span>{{ formatStat(comment.like_count) }}</span>
+                    </span>
+                    <span class="mw-comment-action">
+                      <span class="mw-comment-action__icon" v-html="COMMENT_UI_ICONS.reply"></span>
+                      <span>{{ comment.reply_count > 0 ? formatStat(comment.reply_count) : "回复" }}</span>
+                    </span>
+                  </div>
+                </div>
+
+                <div v-if="comment.replies?.length" class="mw-comment-replies">
+                  <article
+                    v-for="(reply, replyIndex) in comment.replies"
+                    :key="reply.id || `${reply.author}-${reply.time}-${replyIndex}`"
+                    class="mw-comment-reply"
+                  >
+                    <div class="mw-comment-reply__avatar">
+                      <div class="model-author">
+                        <img
+                          v-if="reply.avatar_url"
+                          :src="reply.avatar_url"
+                          :alt="reply.author"
+                          @error="swapEventImage($event, reply.avatar_remote_url)"
+                        >
+                        <span v-else class="avatar-placeholder">{{ reply.author?.slice(0, 1) || "?" }}</span>
+                      </div>
+                    </div>
+                    <div class="mw-comment-reply__content">
+                      <div class="mw-comment-reply__header">
+                        <span class="mw-comment-reply__author">{{ reply.author }}</span>
+                        <span class="mw-comment-reply__time">{{ reply.time_display }}</span>
+                      </div>
+                      <div v-if="reply.reply_to" class="mw-comment-thread__reply-target">
+                        回复 <span>@{{ reply.reply_to }}</span>：
+                      </div>
+                      <div v-if="reply.content" class="mw-comment-reply__body">{{ reply.content }}</div>
+                      <div
+                        v-if="reply.images?.length"
+                        :class="['comment-gallery', reply.gallery_class, 'mw-comment-gallery', 'is-reply']"
+                      >
+                        <button
+                          v-for="(image, imageIndex) in reply.images"
+                          :key="`${reply.id || reply.author}-${imageIndex}`"
+                          class="comment-gallery__item"
+                          type="button"
+                          @click="openLightbox(image.full_url || image.thumb_url)"
+                        >
+                          <img
+                            :src="image.thumb_url"
+                            :alt="`${reply.author} 评论图片 ${imageIndex + 1}`"
+                            loading="lazy"
+                            @error="swapEventImage($event, image.fallback_url)"
+                          >
+                        </button>
+                      </div>
+                      <div class="mw-comment-reply__footer">
+                        <span class="mw-comment-action">
+                          <span class="mw-comment-action__icon" v-html="COMMENT_UI_ICONS.like"></span>
+                          <span>{{ formatStat(reply.like_count) }}</span>
+                        </span>
+                        <span class="mw-comment-action">
+                          <span class="mw-comment-action__icon" v-html="COMMENT_UI_ICONS.reply"></span>
+                          <span>{{ reply.reply_count > 0 ? formatStat(reply.reply_count) : "回复" }}</span>
+                        </span>
+                      </div>
+                    </div>
+                  </article>
+                </div>
+
+                <button
+                  v-else-if="comment.reply_count > 0"
+                  class="mw-comment-thread__expand"
+                  type="button"
+                  disabled
+                >
+                  共 {{ formatStat(comment.reply_count) }} 回复，查看更多
+                </button>
               </div>
             </article>
           </div>
@@ -551,6 +714,7 @@ const commentsTotal = ref(0);
 const commentsNextOffset = ref(null);
 const commentsLoadingMore = ref(false);
 const commentsLoadError = ref("");
+const commentSortKey = ref("hot");
 
 let hoverPopoverMediaQuery = null;
 let hoverPopoverMediaListener = null;
@@ -568,6 +732,14 @@ const PROFILE_FACT_ICONS = {
   rating: '<svg viewBox="0 0 20 20" fill="currentColor"><path d="m10 2.5 2.3 4.65 5.14.75-3.72 3.62.88 5.12L10 14.19l-4.6 2.45.88-5.12L2.56 7.9l5.14-.75L10 2.5Z"/></svg>',
 };
 const AMS_ICON = '<svg width="2.3em" height="1.2em" viewBox="0 0 46 24" fill="none"><rect x="0.5" y="0.5" width="45" height="23" rx="1.5" fill="#212121" stroke="#000"></rect><path opacity="0.6" d="M1 2a1 1 0 011-1h10v22H2a1 1 0 01-1-1V2z" fill="#E14747"></path><path opacity="0.6" d="M12 1h11v22H12V1z" fill="#FEC90D"></path><path opacity="0.6" d="M23 1h11v22H23V1z" fill="var(--mui-palette-primary-main)"></path><path opacity="0.6" d="M34 1h10a1 1 0 011 1v20a1 1 0 01-1 1H34V1z" fill="#0E65E9"></path><path d="M15.822 17l-.62-2.04h-3.124L11.457 17H9.5l3.023-8.602h2.221L17.78 17h-1.957zm-1.054-3.563l-.622-1.992c-.039-.133-.091-.302-.158-.51a57.03 57.03 0 00-.193-.638 15.253 15.253 0 01-.152-.568 58.37 58.37 0 01-.492 1.717l-.616 1.991h2.233zM22.49 17l-2.062-6.72h-.053l.035.726c.02.32.037.662.053 1.025.015.364.023.692.023.985V17h-1.623V8.434h2.473l2.027 6.55h.035l2.15-6.55h2.474V17h-1.694v-4.055c0-.27.004-.58.012-.931.012-.352.025-.686.04-1.002.017-.32.028-.56.036-.721h-.053L24.154 17H22.49zm12.75-2.379c0 .508-.123.95-.369 1.324-.246.375-.605.664-1.078.867-.469.204-1.04.305-1.711.305a6.42 6.42 0 01-.873-.058 6.022 6.022 0 01-.814-.17 5.096 5.096 0 01-.739-.287v-1.688c.407.18.828.342 1.266.486a4.13 4.13 0 001.3.217c.297 0 .536-.039.715-.117a.817.817 0 00.399-.322.892.892 0 00.123-.469.772.772 0 00-.217-.55 2.265 2.265 0 00-.597-.429c-.25-.132-.534-.275-.85-.427a9.757 9.757 0 01-.65-.34 3.801 3.801 0 01-.668-.498 2.4 2.4 0 01-.522-.71c-.133-.28-.2-.616-.2-1.007 0-.512.118-.95.352-1.312.235-.364.569-.641 1.002-.832.438-.196.953-.293 1.547-.293.446 0 .87.052 1.272.158.406.101.83.25 1.271.445l-.586 1.412a9.706 9.706 0 00-1.06-.369 3.44 3.44 0 00-.955-.135c-.227 0-.42.037-.58.112a.781.781 0 00-.364.304.822.822 0 00-.123.452c0 .203.059.375.176.515.121.137.3.27.54.399.241.128.542.279.901.45.438.208.811.425 1.12.651.312.223.552.486.72.791.168.3.252.676.252 1.125z" fill="#fff"></path></svg>';
+const COMMENT_UI_ICONS = {
+  image: '<svg viewBox="0 0 18 16" fill="none"><rect x="1.5" y="1.5" width="15" height="13" rx="1.75" stroke="currentColor" stroke-width="1.2"></rect><circle cx="5.25" cy="5" r="1.25" fill="currentColor"></circle><path d="m3 12.5 3.25-3.25a1 1 0 0 1 1.45.05l1.52 1.75 2.64-3.35a1 1 0 0 1 1.53-.06l1.63 1.86" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"></path></svg>',
+  send: '<svg viewBox="0 0 16 16" fill="none"><path fill-rule="evenodd" clip-rule="evenodd" d="M11.4001 8.33291C11.4001 8.00154 11.6687 7.73291 12.0001 7.73291H14.6667C14.9981 7.73291 15.2667 8.00154 15.2667 8.33291V13.6662C15.2667 13.9976 14.9981 14.2662 14.6667 14.2662H13.2486L12.4243 15.0905C12.19 15.3248 11.8101 15.3248 11.5758 15.0905L10.7515 14.2662H7.3334C7.00203 14.2662 6.7334 13.9976 6.7334 13.6662V10.9996C6.7334 10.6682 7.00203 10.3996 7.3334 10.3996H11.4001V8.33291ZM12.6001 8.93291V10.9996C12.6001 11.3309 12.3314 11.5996 12.0001 11.5996H7.9334V13.0662H11.0001C11.1592 13.0662 11.3118 13.1295 11.4243 13.242L12.0001 13.8177L12.5758 13.242C12.6883 13.1295 12.8409 13.0662 13.0001 13.0662H14.0667V8.93291H12.6001Z" fill="currentColor"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M0.733398 2.9999C0.733398 2.66853 1.00203 2.3999 1.3334 2.3999H12.0001C12.3314 2.3999 12.6001 2.66853 12.6001 2.9999V10.9999C12.6001 11.3313 12.3314 11.5999 12.0001 11.5999H5.91526L4.75766 12.7575C4.52335 12.9918 4.14345 12.9918 3.90913 12.7575L2.75154 11.5999H1.3334C1.00203 11.5999 0.733398 11.3313 0.733398 10.9999V2.9999ZM1.9334 3.5999V10.3999H3.00007C3.1592 10.3999 3.31181 10.4631 3.42433 10.5756L4.3334 11.4847L5.24247 10.5756C5.35499 10.4631 5.5076 10.3999 5.66673 10.3999H11.4001V3.5999H1.9334Z" fill="currentColor"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M5.7334 6.9999C5.7334 6.66853 6.00203 6.3999 6.3334 6.3999H6.66673C6.9981 6.3999 7.26673 6.66853 7.26673 6.9999C7.26673 7.33127 6.9981 7.5999 6.66673 7.5999H6.3334C6.00203 7.5999 5.7334 7.33127 5.7334 6.9999Z" fill="currentColor"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M8.06665 6.9999C8.06665 6.66853 8.33528 6.3999 8.66665 6.3999H8.99998C9.33135 6.3999 9.59998 6.66853 9.59998 6.9999C9.59998 7.33127 9.33135 7.5999 8.99998 7.5999H8.66665C8.33528 7.5999 8.06665 7.33127 8.06665 6.9999Z" fill="currentColor"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M3.40002 6.9999C3.40002 6.66853 3.66865 6.3999 4.00002 6.3999H4.33336C4.66473 6.3999 4.93336 6.66853 4.93336 6.9999C4.93336 7.33127 4.66473 7.5999 4.33336 7.5999H4.00002C3.66865 7.5999 3.40002 7.33127 3.40002 6.9999Z" fill="currentColor"></path></svg>',
+  chevron: '<svg viewBox="0 0 20 20" fill="none"><path fill-rule="evenodd" clip-rule="evenodd" d="M15.0606 7.75174C15.3358 8.06132 15.3079 8.53538 14.9983 8.81056L10.4983 12.8106C10.2141 13.0632 9.7859 13.0632 9.50174 12.8106L5.00174 8.81056C4.69215 8.53538 4.66426 8.06132 4.93945 7.75174C5.21464 7.44215 5.68869 7.41426 5.99828 7.68945L10 11.2465L14.0017 7.68945C14.3113 7.41426 14.7854 7.44215 15.0606 7.75174Z" fill="currentColor"></path></svg>',
+  more: '<svg viewBox="0 0 4 18" fill="none"><path fill-rule="evenodd" clip-rule="evenodd" d="M2 3.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM3.5 9a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm0 7a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0z" fill="currentColor"></path></svg>',
+  like: '<svg viewBox="0 0 16 16" fill="none"><path d="M6.42 6.833 8.24 3.816c.297-.491 1.06-.275 1.06.304v1.744h1.862c.805 0 1.392.77 1.177 1.54L11.317 11.04a1.2 1.2 0 0 1-1.156.87H6.42V6.833Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"></path><path d="M6.42 6.833H4.533c-.589 0-1.067.478-1.067 1.067v2.943c0 .589.478 1.067 1.067 1.067H6.42V6.833Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"></path></svg>',
+  reply: '<svg viewBox="0 0 16 16" fill="none"><path d="M11 13.666H7.335V11h4.667V8.333h2.666v5.333h-1.666l-1 1-1-1z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"></path><path d="M1.334 3h10.667v8H5.667l-1.333 1.333L3.001 11H1.334V3z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"></path><path d="M6.334 7h.333M8.666 7h.333M4 7h.333" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"></path></svg>',
+};
 
 const attachmentForm = ref({
   category: "assembly",
@@ -587,6 +759,12 @@ const detailSections = [
   { id: "detail-description", label: "描述" },
   { id: "detail-docs", label: "文档" },
   { id: "detail-comments", label: "评论" },
+];
+const commentSortOptions = [
+  { value: "hot", label: "热门" },
+  { value: "likes", label: "最多点赞" },
+  { value: "latest", label: "最新" },
+  { value: "replies", label: "最多回复" },
 ];
 
 function decodeRouteValue(value) {
@@ -669,7 +847,7 @@ const visibleComments = computed(() => {
   if (!commentsReady.value) {
     return [];
   }
-  return comments.value;
+  return [...comments.value].sort(compareComments);
 });
 
 const hasMoreComments = computed(() => {
@@ -1073,6 +1251,215 @@ function commentGalleryClass(count) {
   return "comment-gallery--more";
 }
 
+function normalizeCommentNumber(value) {
+  const numeric = Number(value ?? 0);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
+}
+
+function commentTimestamp(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value > 1e12 ? value : value * 1000;
+  }
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return 0;
+  }
+  if (/^\d{10,13}$/.test(raw)) {
+    const numeric = Number(raw);
+    return raw.length === 13 ? numeric : numeric * 1000;
+  }
+  const direct = Date.parse(raw);
+  if (Number.isFinite(direct)) {
+    return direct;
+  }
+  const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+  const parsed = Date.parse(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function padDatePart(value) {
+  return String(value).padStart(2, "0");
+}
+
+function formatCommentTime(value, fallback = "") {
+  const timestamp = commentTimestamp(value);
+  if (!timestamp) {
+    return String(fallback || value || "").trim();
+  }
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return String(fallback || value || "").trim();
+  }
+  return [
+    date.getFullYear(),
+    padDatePart(date.getMonth() + 1),
+    padDatePart(date.getDate()),
+  ].join("-") + ` ${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}`;
+}
+
+function extractCommentBadges(comment) {
+  const source = Array.isArray(comment?.badges) ? comment.badges : [];
+  const badges = [];
+  for (const badge of source) {
+    const label = typeof badge === "string"
+      ? badge.trim()
+      : String(badge?.label || badge?.name || badge?.title || "").trim();
+    if (label && !badges.includes(label)) {
+      badges.push(label);
+    }
+  }
+  if ((comment?.is_pinned || comment?.isPinned || comment?.isTop) && !badges.includes("置顶")) {
+    badges.push("置顶");
+  }
+  if ((comment?.is_boosted || comment?.isBoost || comment?.isBoosted) && !badges.includes("已助力")) {
+    badges.push("已助力");
+  }
+  if (
+    (comment?.has_designer_reply || comment?.designerReplied || comment?.hasDesignerReply || comment?.isOfficialReply)
+    && !badges.includes("设计师已回复")
+  ) {
+    badges.push("设计师已回复");
+  }
+  const profileName = String(comment?.profile_name || comment?.profileName || comment?.profileTitle || "").trim();
+  if (profileName && !badges.includes(profileName)) {
+    badges.push(profileName);
+  }
+  return badges;
+}
+
+function extractReplyTarget(comment) {
+  const directCandidates = [
+    comment?.reply_to,
+    comment?.replyToName,
+    comment?.replyUserName,
+    comment?.replyNickName,
+    comment?.targetUserName,
+    comment?.parentAuthor,
+    comment?.parentUserName,
+    comment?.toUserName,
+    comment?.beRepliedUserName,
+  ];
+  for (const candidate of directCandidates) {
+    const label = String(candidate || "").trim();
+    if (label) {
+      return label;
+    }
+  }
+  const nestedCandidates = [
+    comment?.replyToUser,
+    comment?.replyUser,
+    comment?.targetUser,
+    comment?.beRepliedUser,
+    comment?.parentUser,
+  ];
+  for (const candidate of nestedCandidates) {
+    const label = String(
+      candidate?.nickname
+      || candidate?.nickName
+      || candidate?.name
+      || candidate?.userName
+      || candidate?.username
+      || "",
+    ).trim();
+    if (label) {
+      return label;
+    }
+  }
+  return "";
+}
+
+function commentStatusCopy(comment) {
+  if (comment.badges.includes("设计师已回复")) {
+    return "设计师已回复";
+  }
+  if (comment.badges.includes("置顶")) {
+    return "已置顶";
+  }
+  if (comment.badges.includes("已助力")) {
+    return "已助力";
+  }
+  return "";
+}
+
+function computeCommentHotScore(comment) {
+  const ageHours = comment.timestamp > 0 ? Math.max((Date.now() - comment.timestamp) / 36e5, 0) : 0;
+  const freshness = comment.timestamp > 0 ? Math.max(0, 96 - ageHours) : 0;
+  return (comment.like_count * 4) + (comment.reply_count * 7) + (comment.rating * 18) + freshness;
+}
+
+function prepareCommentItem(comment, depth = 0) {
+  if (!comment || typeof comment !== "object") {
+    return null;
+  }
+  const rawTime = comment.time || comment.createdAt || comment.createTime || comment.updatedAt || "";
+  const timestamp = commentTimestamp(comment.timestamp || rawTime);
+  const images = Array.isArray(comment.images)
+    ? comment.images.filter((image) => image && (image.thumb_url || image.full_url || image.fallback_url))
+    : [];
+  const badges = extractCommentBadges(comment);
+  const repliesSource = Array.isArray(comment.replies)
+    ? comment.replies
+    : Array.isArray(comment.children)
+      ? comment.children
+      : [];
+  const replies = depth < 2
+    ? repliesSource.map((item) => prepareCommentItem(item, depth + 1)).filter(Boolean)
+    : [];
+  const rating = Math.min(Math.max(normalizeCommentNumber(comment.rating), 0), 5);
+  const likeCount = normalizeCommentNumber(comment.like_count ?? comment.likeCount ?? comment.praiseCount);
+  const replyCount = Math.max(
+    replies.length,
+    normalizeCommentNumber(comment.reply_count ?? comment.replyCount ?? comment.subCommentCount ?? comment.childrenCount),
+  );
+  return {
+    ...comment,
+    author: String(comment.author || comment.userName || comment.nickname || comment.authorName || "匿名用户").trim() || "匿名用户",
+    author_url: String(comment.author_url || comment.authorUrl || "").trim(),
+    avatar_url: String(comment.avatar_url || comment.avatarUrl || "").trim(),
+    avatar_remote_url: String(comment.avatar_remote_url || comment.avatarRemoteUrl || "").trim(),
+    content: String(comment.content || comment.comment || comment.text || comment.message || "").trim(),
+    time: String(rawTime || "").trim(),
+    time_display: formatCommentTime(rawTime, comment.time_display),
+    timestamp,
+    images,
+    gallery_class: commentGalleryClass(images.length),
+    badges,
+    reply_to: extractReplyTarget(comment),
+    replies,
+    like_count: likeCount,
+    reply_count: replyCount,
+    rating,
+    rating_label: rating ? rating.toFixed(rating % 1 === 0 ? 0 : 1) : "",
+    status_copy: commentStatusCopy({ badges }),
+    hot_score: computeCommentHotScore({
+      timestamp,
+      like_count: likeCount,
+      reply_count: replyCount,
+      rating,
+    }),
+  };
+}
+
+function commentBadgeClass(badge) {
+  if (badge.includes("置顶")) return "mw-comment-badge--pinned";
+  if (badge.includes("设计师")) return "mw-comment-badge--designer";
+  if (badge.includes("助力")) return "mw-comment-badge--boosted";
+  return "mw-comment-badge--plain";
+}
+
+function compareComments(left, right) {
+  if (commentSortKey.value === "likes") {
+    return (right.like_count - left.like_count) || (right.reply_count - left.reply_count) || (right.timestamp - left.timestamp);
+  }
+  if (commentSortKey.value === "latest") {
+    return (right.timestamp - left.timestamp) || (right.like_count - left.like_count) || (right.reply_count - left.reply_count);
+  }
+  if (commentSortKey.value === "replies") {
+    return (right.reply_count - left.reply_count) || (right.like_count - left.like_count) || (right.timestamp - left.timestamp);
+  }
+  return (right.hot_score - left.hot_score) || (right.like_count - left.like_count) || (right.timestamp - left.timestamp);
+}
+
 function buildProfileMedia(profile) {
   const mediaItems = Array.isArray(profile?.media)
     ? profile.media.filter((item) => item && (item.url || item.fallback_url))
@@ -1175,10 +1562,9 @@ function prepareComments(items) {
   if (!Array.isArray(items)) {
     return [];
   }
-  return items.map((comment) => ({
-    ...comment,
-    gallery_class: commentGalleryClass(Array.isArray(comment.images) ? comment.images.length : 0),
-  }));
+  return items
+    .map((comment) => prepareCommentItem(comment))
+    .filter(Boolean);
 }
 
 function scheduleCommentsRender() {

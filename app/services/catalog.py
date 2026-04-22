@@ -948,97 +948,231 @@ def _extract_publish_value(meta: dict) -> Any:
     return ""
 
 
+def _comment_badges(item: dict) -> list[str]:
+    badges: list[str] = []
+    raw_badges = item.get("badges") if isinstance(item.get("badges"), list) else []
+    for badge in raw_badges:
+        if isinstance(badge, dict):
+            label = str(badge.get("label") or badge.get("name") or badge.get("title") or "").strip()
+        else:
+            label = str(badge or "").strip()
+        if label and label not in badges:
+            badges.append(label)
+
+    if (item.get("isTop") or item.get("isPinned")) and "置顶" not in badges:
+        badges.append("置顶")
+    if (item.get("isBoost") or item.get("isBoosted")) and "已助力" not in badges:
+        badges.append("已助力")
+    if (
+        item.get("designerReplied")
+        or item.get("hasDesignerReply")
+        or item.get("isOfficialReply")
+    ) and "设计师已回复" not in badges:
+        badges.append("设计师已回复")
+
+    profile_name = str(item.get("profileName") or item.get("profileTitle") or "").strip()
+    if profile_name and profile_name not in badges:
+        badges.append(profile_name)
+
+    return badges
+
+
+def _comment_reply_to(item: dict) -> str:
+    direct_candidates = (
+        item.get("replyToName"),
+        item.get("replyUserName"),
+        item.get("replyNickName"),
+        item.get("targetUserName"),
+        item.get("parentAuthor"),
+        item.get("parentUserName"),
+        item.get("toUserName"),
+        item.get("beRepliedUserName"),
+    )
+    for candidate in direct_candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+
+    nested_candidates = (
+        item.get("replyToUser"),
+        item.get("replyUser"),
+        item.get("targetUser"),
+        item.get("beRepliedUser"),
+        item.get("parentUser"),
+    )
+    for candidate in nested_candidates:
+        if not isinstance(candidate, dict):
+            continue
+        for key in ("nickname", "nickName", "name", "username", "userName"):
+            value = str(candidate.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _comment_images(item: dict, model_root: Path) -> list[dict]:
+    normalized_images = []
+    for image in item.get("images") or []:
+        url = _asset_url_from_item(model_root, image)
+        if url:
+            normalized_images.append(
+                {
+                    "thumb_url": url,
+                    "full_url": url,
+                    "fallback_url": _pick_remote_url(image) or "",
+                }
+            )
+    return normalized_images
+
+
+def _comment_author_payload(item: dict, model_root: Path) -> dict[str, str]:
+    author_raw = item.get("author")
+    author_name = ""
+    author_avatar_url = ""
+    author_avatar_remote_url = ""
+    author_url = ""
+    if isinstance(author_raw, dict):
+        author_name = str(
+            author_raw.get("name")
+            or author_raw.get("nickname")
+            or author_raw.get("username")
+            or author_raw.get("userName")
+            or ""
+        ).strip()
+        author_avatar_url = _pick_image_url(
+            model_root,
+            {
+                "avatarRelPath": author_raw.get("avatarRelPath"),
+                "avatarLocal": author_raw.get("avatarLocal"),
+                "avatarUrl": author_raw.get("avatarUrl"),
+            },
+        ) or ""
+        author_avatar_remote_url = _pick_remote_url(author_raw) or ""
+        author_url = str(author_raw.get("url") or author_raw.get("homepage") or "").strip()
+    elif isinstance(author_raw, str):
+        author_name = author_raw.strip()
+
+    fallback_author = ""
+    for candidate in (
+        item.get("userName"),
+        item.get("nickname"),
+        item.get("authorName"),
+        item.get("creatorName"),
+    ):
+        if isinstance(candidate, str) and candidate.strip():
+            fallback_author = candidate.strip()
+            break
+
+    avatar_url = _pick_image_url(
+        model_root,
+        {
+            "avatarRelPath": item.get("avatarRelPath"),
+            "avatarLocal": item.get("avatarLocal"),
+            "avatarUrl": item.get("avatarUrl"),
+        },
+    ) or author_avatar_url
+    avatar_remote_url = (
+        _pick_remote_url(
+            {
+                "avatarUrl": item.get("avatarUrl"),
+            }
+        )
+        or author_avatar_remote_url
+    )
+
+    return {
+        "author": str(author_name or fallback_author or "匿名用户"),
+        "author_url": author_url,
+        "avatar_url": avatar_url,
+        "avatar_remote_url": avatar_remote_url,
+    }
+
+
+def _comment_children(item: dict) -> list[dict]:
+    for key in (
+        "replies",
+        "children",
+        "subComments",
+        "subCommentList",
+        "replyList",
+        "replys",
+        "commentReplies",
+        "commentReplyVos",
+        "replyComments",
+    ):
+        children = item.get(key)
+        if isinstance(children, list):
+            return [child for child in children if isinstance(child, dict)]
+    return []
+
+
+def _normalize_comment_item(item: dict, model_root: Path, depth: int = 0) -> Optional[dict]:
+    if not isinstance(item, dict):
+        return None
+
+    content = str(
+        item.get("content")
+        or item.get("comment")
+        or item.get("text")
+        or item.get("message")
+        or item.get("commentContent")
+        or ""
+    )
+    images = _comment_images(item, model_root)
+    if not content.strip() and not images:
+        return None
+
+    time_value = (
+        item.get("time")
+        or item.get("createdAt")
+        or item.get("createTime")
+        or item.get("commentTime")
+        or item.get("updatedAt")
+        or ""
+    )
+    timestamp = _parse_timestamp(time_value)
+
+    replies: list[dict] = []
+    if depth < 2:
+        for child in _comment_children(item):
+            normalized_child = _normalize_comment_item(child, model_root, depth + 1)
+            if normalized_child:
+                replies.append(normalized_child)
+
+    author_payload = _comment_author_payload(item, model_root)
+    rating = min(max(_safe_float(item.get("rating") or item.get("score") or item.get("star") or item.get("starLevel")), 0.0), 5.0)
+    reply_count = max(
+        len(replies),
+        _safe_int(item.get("replyCount") or item.get("subCommentCount") or item.get("childrenCount")),
+    )
+
+    return {
+        "id": str(item.get("id") or item.get("commentId") or item.get("rootCommentId") or "").strip(),
+        "author": author_payload["author"],
+        "author_url": author_payload["author_url"],
+        "time": _format_datetime(time_value) or str(time_value or ""),
+        "timestamp": timestamp,
+        "content": content,
+        "avatar_url": author_payload["avatar_url"],
+        "avatar_remote_url": author_payload["avatar_remote_url"],
+        "images": images,
+        "like_count": _safe_int(item.get("likeCount") or item.get("praiseCount")),
+        "reply_count": reply_count,
+        "rating": float(_format_decimal(rating, digits=1) or "0"),
+        "badges": _comment_badges(item),
+        "reply_to": _comment_reply_to(item),
+        "replies": replies,
+    }
+
+
 def _normalize_comments(meta: dict, model_root: Path, offset: int = 0, limit: Optional[int] = None) -> list[dict]:
     normalized = []
     comment_items = meta.get("comments") if isinstance(meta.get("comments"), list) else []
     start = max(int(offset or 0), 0)
     selected = comment_items[start:] if limit is None else comment_items[start : start + max(int(limit or 0), 0)]
     for item in selected:
-        if not isinstance(item, dict):
-            continue
-
-        comment_images = []
-        for image in item.get("images") or []:
-            url = _asset_url_from_item(model_root, image)
-            if url:
-                comment_images.append(
-                    {
-                        "thumb_url": url,
-                        "full_url": url,
-                        "fallback_url": _pick_remote_url(image) or "",
-                    }
-                )
-
-        author_raw = item.get("author")
-        author_name = ""
-        author_avatar_url = None
-        author_avatar_remote_url = ""
-        if isinstance(author_raw, dict):
-            author_name = str(author_raw.get("name") or author_raw.get("nickname") or author_raw.get("username") or "").strip()
-            author_avatar_url = _pick_image_url(
-                model_root,
-                {
-                    "avatarRelPath": author_raw.get("avatarRelPath"),
-                    "avatarLocal": author_raw.get("avatarLocal"),
-                    "avatarUrl": author_raw.get("avatarUrl"),
-                },
-            )
-            author_avatar_remote_url = _pick_remote_url(author_raw) or ""
-        elif isinstance(author_raw, str):
-            author_name = author_raw.strip()
-
-        fallback_author = ""
-        for candidate in (
-            item.get("userName"),
-            item.get("nickname"),
-            item.get("authorName"),
-            item.get("creatorName"),
-        ):
-            if isinstance(candidate, str) and candidate.strip():
-                fallback_author = candidate.strip()
-                break
-
-        normalized.append(
-            {
-                "author": str(
-                    author_name
-                    or fallback_author
-                    or "匿名用户"
-                ),
-                "time": str(
-                    item.get("time")
-                    or item.get("createdAt")
-                    or item.get("createTime")
-                    or item.get("updatedAt")
-                    or ""
-                ),
-                "content": str(
-                    item.get("content")
-                    or item.get("comment")
-                    or item.get("text")
-                    or item.get("message")
-                    or ""
-                ),
-                "avatar_url": _pick_image_url(
-                    model_root,
-                    {
-                        "avatarRelPath": item.get("avatarRelPath"),
-                        "avatarLocal": item.get("avatarLocal"),
-                        "avatarUrl": item.get("avatarUrl"),
-                    },
-                )
-                or author_avatar_url,
-                "avatar_remote_url": (
-                    _pick_remote_url(
-                        {
-                            "avatarUrl": item.get("avatarUrl"),
-                        }
-                    )
-                    or author_avatar_remote_url
-                ),
-                "images": comment_images,
-            }
-        )
+        normalized_comment = _normalize_comment_item(item, model_root)
+        if normalized_comment:
+            normalized.append(normalized_comment)
     return normalized
 
 
