@@ -10,7 +10,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-import requests
 from croniter import CroniterBadCronError, croniter
 
 from app.core.settings import ARCHIVE_DIR, LOGS_DIR
@@ -32,7 +31,7 @@ from app.services.catalog import (
     invalidate_model_detail_cache,
     upsert_archive_snapshot_model,
 )
-from app.services.legacy_archiver import archive_model as legacy_archive_model
+from app.services.process_jobs import run_archive_model_job, run_source_deleted_check_job
 from app.services.task_state import TaskStateStore
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, resolve_model_instance_files
 
@@ -598,29 +597,6 @@ def _update_meta_refresh_error(meta_path: Path, message: str, *, source_deleted:
     _write_json(meta_path, payload)
 
 
-def _source_looks_deleted(url: str, cookie: str) -> bool:
-    cookie_header = sanitize_cookie_header(cookie)
-    headers = {
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "User-Agent": "Mozilla/5.0 (Makerhub Remote Refresh)",
-    }
-    if cookie_header:
-        headers["Cookie"] = cookie_header
-    try:
-        response = requests.get(
-            normalize_source_url(url),
-            headers=headers,
-            timeout=(6, 12),
-            allow_redirects=True,
-        )
-    except Exception:
-        return False
-    if response.status_code == 404:
-        return True
-    final_url = str(response.url or "")
-    return "/404" in final_url or "not found" in response.text[:400].lower()
-
-
 def _supports_remote_refresh(item: dict[str, Any]) -> bool:
     source = str(item.get("source") or "").strip().lower()
     origin_url = normalize_source_url(str(item.get("origin_url") or ""))
@@ -1014,12 +990,12 @@ class RemoteRefreshManager:
                 else "源端刷新仅检测新增 3MF，下载交给新增 3MF 下载队列。"
             )
             with _temporary_proxy_env(config):
-                archive_result = legacy_archive_model(
+                archive_result = run_archive_model_job(
                     url=origin_url,
                     cookie=cookie,
-                    download_dir=ARCHIVE_DIR,
-                    logs_dir=LOGS_DIR,
-                    existing_root=ARCHIVE_DIR,
+                    download_dir=str(ARCHIVE_DIR),
+                    logs_dir=str(LOGS_DIR),
+                    existing_root=str(ARCHIVE_DIR),
                     progress_callback=progress_callback,
                     skip_three_mf_fetch=skip_three_mf_fetch,
                     three_mf_skip_message=skip_three_mf_message,
@@ -1147,7 +1123,7 @@ class RemoteRefreshManager:
             return {"ok": True}
         except Exception as exc:
             with _temporary_proxy_env(config):
-                deleted_on_source = _source_looks_deleted(origin_url, cookie)
+                deleted_on_source = run_source_deleted_check_job(origin_url, cookie)
             if deleted_on_source and meta_path.exists():
                 message = "源端模型已删除，本地保留现有归档。"
                 _update_meta_refresh_error(meta_path, message, source_deleted=True)

@@ -16,8 +16,9 @@ from app.core.timezone import ensure_timezone, now as china_now, now_iso as chin
 from app.schemas.models import SubscriptionRecord
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.archive_worker import ArchiveTaskManager, detect_archive_mode
-from app.services.batch_discovery import discover_batch_model_urls, extract_model_id, normalize_source_url
+from app.services.batch_discovery import extract_model_id, normalize_source_url
 from app.services.business_logs import append_business_log
+from app.services.process_jobs import run_discover_batch_urls_job
 from app.services.source_library import build_subscription_overview_payload, refresh_subscription_source_metadata
 from app.services.task_state import TaskStateStore
 
@@ -773,7 +774,7 @@ class SubscriptionManager:
         if not cookie:
             raise RuntimeError("未找到可用 Cookie，请先到设置页配置对应站点 Cookie。")
         with _temporary_proxy_env(config):
-            return discover_batch_model_urls(subscription.url, cookie)
+            return run_discover_batch_urls_job(subscription.url, cookie)
 
     def _refresh_subscription_source_metadata(
         self,

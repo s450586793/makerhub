@@ -15,7 +15,6 @@ from app.core.store import JsonStore
 from app.core.timezone import now as china_now, parse_datetime
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.batch_discovery import (
-    discover_batch_model_urls,
     extract_model_id,
     normalize_model_url,
     normalize_source_url,
@@ -28,7 +27,7 @@ from app.services.catalog import (
     invalidate_model_detail_cache,
     upsert_archive_snapshot_model,
 )
-from app.services.legacy_archiver import archive_model as legacy_archive_model
+from app.services.process_jobs import run_archive_model_job, run_discover_batch_urls_job
 from app.services.task_state import TaskStateStore
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source
 
@@ -1155,7 +1154,7 @@ class ArchiveTaskManager:
 
         with _temporary_proxy_env(config):
             _log_archive("batch_preview_started", "开始批量预扫描。", url=clean_url, mode=mode)
-            discovered = discover_batch_model_urls(clean_url, cookie)
+            discovered = run_discover_batch_urls_job(clean_url, cookie)
             discovered["source_name"] = resolve_batch_source_name(clean_url, cookie)
 
         discovered_items = list(discovered.get("items") or [])
@@ -1484,7 +1483,7 @@ class ArchiveTaskManager:
             )
 
             with _temporary_proxy_env(config):
-                discovered = discover_batch_model_urls(url, cookie)
+                discovered = run_discover_batch_urls_job(url, cookie)
 
         pending_keys = self._queued_task_keys()
         archived_keys = self._archived_task_keys()
@@ -1685,16 +1684,17 @@ class ArchiveTaskManager:
             )
 
         with _temporary_proxy_env(config):
-            result = legacy_archive_model(
+            result = run_archive_model_job(
                 url=url,
                 cookie=cookie,
-                download_dir=ARCHIVE_DIR,
-                logs_dir=LOGS_DIR,
-                existing_root=ARCHIVE_DIR,
+                download_dir=str(ARCHIVE_DIR),
+                logs_dir=str(LOGS_DIR),
+                existing_root=str(ARCHIVE_DIR),
                 progress_callback=progress_callback,
                 skip_three_mf_fetch=skip_three_mf_fetch,
                 three_mf_skip_message=skip_three_mf_message,
                 profile_metadata_only=profile_metadata_only,
+                three_mf_skip_state="download_limited" if skip_three_mf_fetch and not profile_metadata_only else "",
             )
 
         missing_items = []
