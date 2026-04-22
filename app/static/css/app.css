@@ -2543,12 +2543,22 @@ select:focus {
   align-items: center;
   gap: 4px;
   min-width: 0;
+  white-space: nowrap;
 }
 
 .mw-profile-card__meta-icon {
   width: 14px;
   height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
+}
+
+.mw-profile-card__meta-icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .mw-profile-popover {

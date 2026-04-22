@@ -140,24 +140,6 @@
             </a>
           </div>
 
-          <section v-if="activeInstance" class="mw-active-profile">
-            <div class="mw-active-profile__heading">
-              <strong>{{ activeInstance.title }}</strong>
-              <span>{{ activeInstance.machine || "通用" }}</span>
-            </div>
-            <div v-if="activeProfileFacts.length" class="mw-active-profile__facts">
-              <span
-                v-for="item in activeProfileFacts"
-                :key="item.key"
-                :class="['mw-active-profile__fact', item.key === 'rating' && 'mw-active-profile__fact--rating']"
-              >
-                <span class="mw-active-profile__fact-icon" aria-hidden="true" v-html="item.icon"></span>
-                <span>{{ item.value }}</span>
-              </span>
-            </div>
-            <p v-if="activeInstance.summary" class="mw-active-profile__summary">{{ activeInstance.summary }}</p>
-          </section>
-
           <aside class="mw-config-panel">
           <div class="mw-config-panel__header">
             <h2>打印配置 <span>({{ detail.instances?.length || 0 }})</span></h2>
@@ -210,16 +192,20 @@
                       已删除
                     </span>
                     <span v-if="profile.time" class="mw-profile-card__meta-item">
-                      <svg class="mw-profile-card__meta-icon" viewBox="0 0 16 17" fill="none">
-                        <path d="M15 8.52342C15 4.64449 11.866 1.5 8 1.5V8.52342L12.9395 13.5C14.2123 12.2282 15 10.4681 15 8.52342Z" fill="currentColor" opacity=".24"></path>
-                        <path d="M8 1.1a7.4 7.4 0 1 0 0 14.8 7.4 7.4 0 0 0 0-14.8Zm0 1.2a6.2 6.2 0 1 1 0 12.4 6.2 6.2 0 0 1 0-12.4Zm0 3.6a.6.6 0 0 1 .6.6v1.75l1.82 1.82a.6.6 0 1 1-.84.84L7.58 8.92A.6.6 0 0 1 7.4 8.5v-2a.6.6 0 0 1 .6-.6Z" fill="currentColor"></path>
-                      </svg>
+                      <span class="mw-profile-card__meta-icon" aria-hidden="true" v-html="PROFILE_FACT_ICONS.clock"></span>
                       <span>{{ profile.time }}</span>
                     </span>
-                    <span v-if="profile.plates" class="mw-profile-card__meta-item">{{ profile.plates }} 盘</span>
-                    <span v-if="profile.download_count" class="mw-profile-card__meta-item">{{ formatStat(profile.download_count) }} 下载</span>
+                    <span v-if="profile.plates" class="mw-profile-card__meta-item">
+                      <span class="mw-profile-card__meta-icon" aria-hidden="true" v-html="PROFILE_FACT_ICONS.plates"></span>
+                      <span>{{ profile.plates }} 盘</span>
+                    </span>
+                    <span v-if="profile.download_count" class="mw-profile-card__meta-item">
+                      <span class="mw-profile-card__meta-icon" aria-hidden="true" v-html="PROFILE_FACT_ICONS.download"></span>
+                      <span>{{ formatStat(profile.download_count) }}</span>
+                    </span>
                     <span v-if="formatProfileRating(profile.rating)" class="mw-profile-card__meta-item">
-                      ★ {{ formatProfileRating(profile.rating) }}
+                      <span class="mw-profile-card__meta-icon" aria-hidden="true" v-html="PROFILE_FACT_ICONS.rating"></span>
+                      <span>{{ formatProfileRating(profile.rating) }}</span>
                     </span>
                   </div>
                 </div>
@@ -628,36 +614,6 @@ const modelDir = computed(() => {
 
 const activeInstance = computed(() => {
   return detail.value?.instances?.find((item) => item.instance_key === activeInstanceKey.value) || null;
-});
-
-const activeProfileFacts = computed(() => {
-  const source = activeInstance.value || detail.value?.profile_summary || null;
-  if (!source) {
-    return [];
-  }
-
-  const profileDetails = source.profile_details || {};
-  const items = [];
-  const plates = Number(source.plates || profileDetails.plate_count || 0);
-  if (plates > 0) {
-    items.push({ key: "plates", icon: PROFILE_FACT_ICONS.plates, value: `${plates} 盘` });
-  }
-  const time = source.time || profileDetails.print_time_label || "";
-  if (time) {
-    items.push({ key: "time", icon: PROFILE_FACT_ICONS.clock, value: String(time) });
-  }
-  const nozzleLabel = source.nozzle_diameter_label || profileDetails.nozzle_diameter_label || "";
-  if (nozzleLabel) {
-    items.push({ key: "nozzle", icon: PROFILE_FACT_ICONS.nozzle, value: nozzleLabel });
-  }
-  const filamentWeightLabel = source.filament_weight_label || profileDetails.filament_weight_label || "";
-  if (filamentWeightLabel) {
-    items.push({ key: "filament", icon: PROFILE_FACT_ICONS.filament, value: filamentWeightLabel });
-  }
-  if (String(source.rating ?? "").trim()) {
-    items.push({ key: "rating", icon: PROFILE_FACT_ICONS.rating, value: formatProfileRating(source.rating) });
-  }
-  return items;
 });
 
 const headCrumbs = computed(() => {
