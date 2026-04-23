@@ -185,9 +185,47 @@ def _comment_key(comment: Any) -> str:
     return digest[:16]
 
 
+def _comment_reply_items(comment: Any) -> list[dict[str, Any]]:
+    if not isinstance(comment, dict):
+        return []
+    replies = comment.get("replies")
+    if not isinstance(replies, list):
+        return []
+    return [item for item in replies if isinstance(item, dict)]
+
+
+def _count_comment_threads(comments: list[Any]) -> int:
+    total = 0
+    for item in comments or []:
+        if not isinstance(item, dict):
+            continue
+        total += 1 + _count_comment_threads(_comment_reply_items(item))
+    return total
+
+
+def _merge_single_comment(existing: dict[str, Any], fresh: dict[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(existing)
+    for key, value in fresh.items():
+        if key == "replies":
+            continue
+        if value in (None, "", [], {}):
+            continue
+        merged[key] = copy.deepcopy(value)
+
+    merged_replies, _ = _merge_comments(_comment_reply_items(existing), _comment_reply_items(fresh))
+    if merged_replies:
+        merged["replies"] = merged_replies
+        merged["replyCount"] = max(
+            len(merged_replies),
+            int(existing.get("replyCount") or existing.get("reply_count") or 0),
+            int(fresh.get("replyCount") or fresh.get("reply_count") or 0),
+        )
+    return merged
+
+
 def _merge_comments(existing_comments: list[Any], fresh_comments: list[Any]) -> tuple[list[dict[str, Any]], int]:
     merged: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    merged_by_key: dict[str, dict[str, Any]] = {}
     fresh_count = 0
 
     for raw in fresh_comments or []:
@@ -195,11 +233,16 @@ def _merge_comments(existing_comments: list[Any], fresh_comments: list[Any]) -> 
             continue
         item = copy.deepcopy(raw)
         key = _comment_key(item)
-        if not key or key in seen:
+        if not key:
             continue
         item["id"] = key
-        seen.add(key)
+        if key in merged_by_key:
+            merged_comment = _merge_single_comment(merged_by_key[key], item)
+            merged_by_key[key].clear()
+            merged_by_key[key].update(merged_comment)
+            continue
         merged.append(item)
+        merged_by_key[key] = item
         fresh_count += 1
 
     added_count = 0
@@ -208,14 +251,21 @@ def _merge_comments(existing_comments: list[Any], fresh_comments: list[Any]) -> 
             continue
         item = copy.deepcopy(raw)
         key = _comment_key(item)
-        if not key or key in seen:
+        if not key:
             continue
         item["id"] = key
-        seen.add(key)
+        if key in merged_by_key:
+            merged_comment = _merge_single_comment(merged_by_key[key], item)
+            merged_by_key[key].clear()
+            merged_by_key[key].update(merged_comment)
+            continue
         merged.append(item)
+        merged_by_key[key] = item
         added_count += 1
 
-    return merged, max(len(merged) - (len(fresh_comments or [])), 0 if fresh_count else added_count)
+    merged_total = _count_comment_threads(merged)
+    fresh_total = _count_comment_threads(fresh_comments or [])
+    return merged, max(merged_total - fresh_total, 0 if fresh_count else added_count)
 
 
 def _instance_key(instance: Any) -> str:

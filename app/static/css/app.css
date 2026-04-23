@@ -3935,11 +3935,17 @@ select:focus {
 .mw-comment-thread__expand {
   margin-top: 14px;
   padding: 0;
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  position: relative;
+  z-index: 1;
   color: #0f766e;
   font-size: 13px;
   font-weight: 600;
   line-height: 18px;
   cursor: pointer;
+  pointer-events: auto;
 }
 
 .mw-comment-thread__expand:disabled {

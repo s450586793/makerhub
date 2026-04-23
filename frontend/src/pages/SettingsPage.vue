@@ -358,13 +358,13 @@ const route = useRoute();
 const router = useRouter();
 
 const tabs = [
-  { key: "connections", label: "连接设置" },
-  { key: "notifications", label: "通知" },
   { key: "system", label: "系统" },
+  { key: "connections", label: "连接设置" },
   { key: "user", label: "用户" },
+  { key: "notifications", label: "通知" },
 ];
 
-const activeTab = ref("connections");
+const activeTab = ref("system");
 const themePreference = ref("auto");
 const tokenName = ref("");
 const newToken = ref("");
@@ -555,7 +555,7 @@ function applyConfigToForms(payload) {
 }
 
 function setActiveTab(tab) {
-  activeTab.value = tabs.some((item) => item.key === tab) ? tab : "connections";
+  activeTab.value = tabs.some((item) => item.key === tab) ? tab : "system";
   if (route.query.tab !== activeTab.value) {
     router.replace({ path: "/settings", query: { tab: activeTab.value } });
   }

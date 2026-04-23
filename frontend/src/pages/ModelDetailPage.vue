@@ -601,9 +601,13 @@
                   v-if="commentHasExpandableReplies(comment)"
                   class="mw-comment-thread__expand"
                   type="button"
-                  @click="toggleCommentReplies(comment)"
+                  @click.stop="toggleCommentReplies(comment)"
                 >
-                  {{ commentRepliesExpanded(comment) ? "收起回复" : `共 ${formatStat(commentReplyTotal(comment))} 回复，查看更多` }}
+                  {{
+                    commentRepliesExpanded(comment)
+                      ? "收起回复"
+                      : `查看更多 ${formatStat(hiddenCommentReplyCount(comment))} 条回复`
+                  }}
                 </button>
 
                 <button
@@ -1589,11 +1593,6 @@ function commentReplyKey(comment) {
   return String(comment?.id || `${comment?.author || ""}|${comment?.time || ""}|${comment?.content || ""}`).trim();
 }
 
-function commentReplyTotal(comment) {
-  const replies = Array.isArray(comment?.replies) ? comment.replies.length : 0;
-  return Math.max(Number(comment?.reply_count || 0), replies);
-}
-
 function commentRepliesExpanded(comment) {
   const key = commentReplyKey(comment);
   return key ? Boolean(expandedCommentReplies.value[key]) : false;
@@ -1609,6 +1608,11 @@ function visibleCommentReplies(comment) {
     return replies;
   }
   return replies.slice(0, COMMENT_REPLY_PREVIEW_COUNT);
+}
+
+function hiddenCommentReplyCount(comment) {
+  const replies = Array.isArray(comment?.replies) ? comment.replies.length : 0;
+  return Math.max(replies - COMMENT_REPLY_PREVIEW_COUNT, 0);
 }
 
 function toggleCommentReplies(comment) {

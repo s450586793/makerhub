@@ -809,7 +809,86 @@ def _extract_comment_image_candidates(node: dict) -> List[dict]:
     return found
 
 
-def _normalize_comment_candidate(node: dict) -> Optional[dict]:
+_COMMENT_CHILD_KEYS = (
+    "replies",
+    "children",
+    "subComments",
+    "subCommentList",
+    "replyList",
+    "replys",
+    "commentReplies",
+    "commentReplyVos",
+    "replyComments",
+)
+_COMMENT_REPLY_DIRECT_KEYS = (
+    "replyToName",
+    "replyUserName",
+    "replyNickName",
+    "targetUserName",
+    "parentAuthor",
+    "parentUserName",
+    "toUserName",
+    "beRepliedUserName",
+)
+_COMMENT_REPLY_USER_KEYS = (
+    "replyToUser",
+    "replyUser",
+    "targetUser",
+    "beRepliedUser",
+    "parentUser",
+)
+
+
+def _comment_child_nodes(node: dict) -> List[dict]:
+    children: List[dict] = []
+    seen_markers: set[int] = set()
+    for key in _COMMENT_CHILD_KEYS:
+        items = node.get(key)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            marker = id(item)
+            if marker in seen_markers:
+                continue
+            seen_markers.add(marker)
+            children.append(item)
+    return children
+
+
+def _comment_reply_user_payload(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    payload: dict[str, object] = {}
+    for key in ("nickname", "nickName", "name", "username", "userName", "avatarUrl", "avatar", "headImg", "url", "homepage"):
+        candidate = value.get(key)
+        if candidate in (None, "", [], {}):
+            continue
+        payload[key] = candidate
+    return payload
+
+
+def _comment_tree_items(items: object):
+    if not isinstance(items, list):
+        return
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        yield item
+        yield from _comment_tree_items(item.get("replies"))
+
+
+def _build_existing_comment_lookup(items: object) -> dict[str, dict]:
+    lookup: dict[str, dict] = {}
+    for item in _comment_tree_items(items):
+        comment_id = str(item.get("id") or "").strip()
+        if comment_id and comment_id not in lookup:
+            lookup[comment_id] = item
+    return lookup
+
+
+def _normalize_comment_candidate(node: dict, *, replies: Optional[List[dict]] = None) -> Optional[dict]:
     if not isinstance(node, dict):
         return None
 
@@ -871,7 +950,8 @@ def _normalize_comment_candidate(node: dict) -> Optional[dict]:
     ).strip()
     author_url = str(user.get("homepage") or user.get("url") or node.get("authorUrl") or "").strip()
 
-    comment_id = str(node.get("commentId") or node.get("id") or node.get("rootCommentId") or "").strip()
+    comment_id = str(node.get("commentId") or node.get("id") or "").strip()
+    root_comment_id = str(node.get("rootCommentId") or "").strip()
     created_at = str(
         node.get("commentTime")
         or node.get("createTime")
@@ -900,11 +980,12 @@ def _normalize_comment_candidate(node: dict) -> Optional[dict]:
         badges.append(profile_name)
 
     images = _extract_comment_image_candidates(node)
+    reply_items = replies if isinstance(replies, list) else []
     stable_id = comment_id or hashlib.sha1(
-        f"{author_name}|{created_at}|{content}".encode("utf-8", errors="ignore")
+        f"{root_comment_id}|{author_name}|{created_at}|{content}".encode("utf-8", errors="ignore")
     ).hexdigest()[:16]
 
-    return {
+    payload = {
         "id": stable_id,
         "author": {
             "name": author_name,
@@ -916,14 +997,92 @@ def _normalize_comment_candidate(node: dict) -> Optional[dict]:
         "content": content,
         "createdAt": created_at,
         "likeCount": like_count,
-        "replyCount": reply_count,
+        "replyCount": max(reply_count, len(reply_items)),
         "rating": rating,
         "badges": badges,
         "images": images,
+        "rootCommentId": root_comment_id,
     }
+    if reply_items:
+        payload["replies"] = reply_items
+
+    for key in _COMMENT_REPLY_DIRECT_KEYS:
+        value = node.get(key)
+        if isinstance(value, str) and value.strip():
+            payload[key] = value.strip()
+
+    for key in _COMMENT_REPLY_USER_KEYS:
+        value = _comment_reply_user_payload(node.get(key))
+        if value:
+            payload[key] = value
+
+    return payload
 
 
-def _collect_comments_from_payload(node: object, out: List[dict], seen: set[str], depth: int = 0):
+def _merge_comment_items(existing: dict, fresh: dict) -> dict:
+    merged = dict(existing)
+    for key, value in fresh.items():
+        if key == "replies":
+            continue
+        if value in (None, "", [], {}):
+            continue
+        merged[key] = value
+
+    existing_replies = existing.get("replies") if isinstance(existing.get("replies"), list) else []
+    fresh_replies = fresh.get("replies") if isinstance(fresh.get("replies"), list) else []
+    if existing_replies or fresh_replies:
+        reply_lookup: dict[str, dict] = {}
+        merged_replies: List[dict] = []
+        for source in (existing_replies, fresh_replies):
+            for item in source:
+                if not isinstance(item, dict):
+                    continue
+                reply_id = str(item.get("id") or "").strip()
+                if reply_id and reply_id in reply_lookup:
+                    merged_reply = _merge_comment_items(reply_lookup[reply_id], item)
+                    reply_lookup[reply_id].clear()
+                    reply_lookup[reply_id].update(merged_reply)
+                    continue
+                cloned = dict(item)
+                merged_replies.append(cloned)
+                if reply_id:
+                    reply_lookup[reply_id] = cloned
+        merged["replies"] = merged_replies
+        merged["replyCount"] = max(
+            len(merged_replies),
+            _comment_numeric(existing.get("replyCount")),
+            _comment_numeric(fresh.get("replyCount")),
+        )
+    return merged
+
+
+def _collect_comment_tree(node: object, seen: dict[str, dict], depth: int = 0) -> tuple[Optional[dict], bool]:
+    if depth > 12 or node is None or not isinstance(node, dict):
+        return None, False
+
+    replies: List[dict] = []
+    for child in _comment_child_nodes(node):
+        reply, is_new = _collect_comment_tree(child, seen, depth + 1)
+        if reply and is_new:
+            replies.append(reply)
+
+    comment = _normalize_comment_candidate(node, replies=replies)
+    if not comment:
+        return None, False
+
+    comment_id = str(comment.get("id") or "").strip()
+    if comment_id and comment_id in seen:
+        merged = _merge_comment_items(seen[comment_id], comment)
+        seen[comment_id].clear()
+        seen[comment_id].update(merged)
+        return seen[comment_id], False
+
+    if comment_id:
+        seen[comment_id] = comment
+    return comment, True
+
+
+def _collect_comments_from_payload(node: object, out: List[dict], seen: dict[str, dict], depth: int = 0):
     if depth > 12 or node is None:
         return
     if isinstance(node, list):
@@ -933,12 +1092,20 @@ def _collect_comments_from_payload(node: object, out: List[dict], seen: set[str]
     if not isinstance(node, dict):
         return
 
-    comment = _normalize_comment_candidate(node)
+    comment, is_new = _collect_comment_tree(node, seen, depth)
     if comment:
-        comment_id = str(comment.get("id") or "").strip()
-        if comment_id and comment_id not in seen:
-            seen.add(comment_id)
+        if is_new:
             out.append(comment)
+        child_value_markers = {
+            id(value)
+            for key, value in node.items()
+            if key in _COMMENT_CHILD_KEYS and isinstance(value, list)
+        }
+        for value in node.values():
+            if id(value) in child_value_markers:
+                continue
+            _collect_comments_from_payload(value, out, seen, depth + 1)
+        return
 
     for value in node.values():
         _collect_comments_from_payload(value, out, seen, depth + 1)
@@ -1079,7 +1246,7 @@ def collect_comments(
     emit_progress(progress_callback, progress_start, "正在整理评论数据")
     total_started_at = time.perf_counter()
     comments: List[dict] = []
-    seen: set[str] = set()
+    seen: dict[str, dict] = {}
 
     section_lookup_started_at = time.perf_counter()
     candidate_sections = _extract_comment_candidate_sections(next_data)
@@ -1130,17 +1297,10 @@ def collect_comments(
             or _comment_numeric(counts.get("comments"))
         )
 
-    existing_comment_lookup = {}
-    if isinstance(existing_comments, list):
-        for item in existing_comments:
-            if not isinstance(item, dict):
-                continue
-            comment_id = str(item.get("id") or "").strip()
-            if comment_id and comment_id not in existing_comment_lookup:
-                existing_comment_lookup[comment_id] = item
+    existing_comment_lookup = _build_existing_comment_lookup(existing_comments)
 
     if not download_assets:
-        for item in comments:
+        for item in _comment_tree_items(comments):
             existing = existing_comment_lookup.get(str(item.get("id") or "").strip()) or {}
             existing_author = existing.get("author") if isinstance(existing.get("author"), dict) else {}
             author = item.get("author") if isinstance(item.get("author"), dict) else {}
@@ -1179,7 +1339,7 @@ def collect_comments(
         }
 
     asset_total = 0
-    for item in comments:
+    for item in _comment_tree_items(comments):
         author = item.get("author") if isinstance(item.get("author"), dict) else {}
         if str(author.get("avatarUrl") or "").strip():
             asset_total += 1
@@ -1187,7 +1347,7 @@ def collect_comments(
         asset_total += sum(1 for image in images if isinstance(image, dict) and str(image.get("url") or "").strip())
 
     asset_index = 0
-    for idx, item in enumerate(comments, start=1):
+    for idx, item in enumerate(_comment_tree_items(comments), start=1):
         author = item.get("author") if isinstance(item.get("author"), dict) else {}
         avatar_url = str(author.get("avatarUrl") or "").strip()
         if avatar_url:
