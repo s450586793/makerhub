@@ -4,6 +4,7 @@ import json
 import os
 import re
 import socket
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,9 @@ HELPER_CONTAINER_PREFIX = "makerhub-self-update"
 HELPER_LABEL_KEY = "com.makerhub.self_update.role"
 HELPER_LABEL_VALUE = "helper"
 _CONTAINER_ID_PATTERN = re.compile(r"[0-9a-f]{12,64}")
+STARTUP_WAIT_TIMEOUT_SECONDS = 20
+STARTUP_WAIT_INTERVAL_SECONDS = 1.0
+STARTUP_WAIT_STABLE_POLLS = 3
 
 
 def _now_iso() -> str:
@@ -260,6 +264,17 @@ class DockerSocketClient:
             f"/containers/{quote(container_id, safe='')}" f"?force={force_flag}",
             expected_statuses={204},
         )
+
+    def get_container_logs(self, container_id: str, *, tail: int = 120) -> str:
+        _, payload, _ = self.request(
+            "GET",
+            (
+                f"/containers/{quote(container_id, safe='')}/logs"
+                f"?stdout=1&stderr=1&tail={max(int(tail or 0), 1)}"
+            ),
+            expected_statuses={200},
+        )
+        return str(payload or "").strip()
 
     def pull_image(self, image_ref: str) -> None:
         _, payload, _ = self.request(
@@ -627,6 +642,92 @@ def _update_state_from_helper(request_id: str, **fields: Any) -> dict[str, Any]:
     return _write_update_state(state)
 
 
+def _container_state_summary(container_inspect: dict[str, Any]) -> str:
+    state = container_inspect.get("State") or {}
+    status = str(state.get("Status") or "").strip() or "unknown"
+    running = bool(state.get("Running"))
+    restarting = bool(state.get("Restarting"))
+    exit_code = state.get("ExitCode")
+    error = str(state.get("Error") or "").strip()
+    health = state.get("Health") or {}
+    health_status = str(health.get("Status") or "").strip()
+
+    parts = [f"status={status}", f"running={running}"]
+    if restarting:
+        parts.append("restarting=true")
+    if exit_code not in (None, ""):
+        parts.append(f"exit_code={exit_code}")
+    if health_status:
+        parts.append(f"health={health_status}")
+    if error:
+        parts.append(f"error={error}")
+    return ", ".join(parts)
+
+
+def _container_startup_logs(client: DockerSocketClient, container_id: str) -> str:
+    try:
+        logs = client.get_container_logs(container_id, tail=80)
+    except Exception as exc:  # noqa: BLE001
+        return f"（启动日志读取失败：{_friendly_error_message(exc)}）"
+    if not logs:
+        return "（没有读取到启动日志）"
+    compact = " | ".join(line.strip() for line in logs.splitlines() if line.strip())
+    compact = compact[:1200].strip()
+    return compact or "（没有读取到启动日志）"
+
+
+def _wait_for_replacement_container(
+    client: DockerSocketClient,
+    container_id: str,
+    *,
+    timeout_seconds: int = STARTUP_WAIT_TIMEOUT_SECONDS,
+    interval_seconds: float = STARTUP_WAIT_INTERVAL_SECONDS,
+    stable_polls: int = STARTUP_WAIT_STABLE_POLLS,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + max(int(timeout_seconds or 0), 1)
+    stable_count = 0
+    last_inspect: dict[str, Any] = {}
+
+    while time.monotonic() < deadline:
+        inspect = client.inspect_container(container_id)
+        last_inspect = inspect
+        state = inspect.get("State") or {}
+        status = str(state.get("Status") or "").strip().lower()
+        running = bool(state.get("Running"))
+        restarting = bool(state.get("Restarting"))
+        exit_code = state.get("ExitCode")
+        health = state.get("Health") or {}
+        health_status = str(health.get("Status") or "").strip().lower()
+
+        if running and not restarting:
+            if health_status == "unhealthy":
+                logs = _container_startup_logs(client, container_id)
+                raise RuntimeError(
+                    f"新容器健康检查失败（{_container_state_summary(inspect)}）。启动日志：{logs}"
+                )
+            if health_status not in {"", "healthy"}:
+                stable_count = 0
+            else:
+                stable_count += 1
+                if stable_count >= max(int(stable_polls or 0), 1):
+                    return inspect
+        else:
+            stable_count = 0
+            if status in {"exited", "dead"} or (exit_code not in (None, "") and not running):
+                logs = _container_startup_logs(client, container_id)
+                raise RuntimeError(
+                    f"新容器启动后未能保持运行（{_container_state_summary(inspect)}）。启动日志：{logs}"
+                )
+
+        time.sleep(max(float(interval_seconds or 0), 0.2))
+
+    logs = _container_startup_logs(client, container_id) if last_inspect else "（未读取到容器状态）"
+    raise RuntimeError(
+        f"等待新容器恢复超时（{_container_state_summary(last_inspect) if last_inspect else 'no-state'}）。"
+        f" 启动日志：{logs}"
+    )
+
+
 def run_update_helper(*, request_id: str, container_id: str, image_ref: str) -> int:
     current_phase = "pulling"
     client = DockerSocketClient(timeout=600)
@@ -733,10 +834,11 @@ def run_update_helper(*, request_id: str, container_id: str, image_ref: str) -> 
             request_id,
             status="pending_startup",
             phase="starting",
-            message="新容器已启动，正在等待应用恢复。",
+            message="新容器已创建，正在等待应用恢复。",
             replacement_container_id=replacement_container_id,
         )
         client.start_container(replacement_container_id)
+        _wait_for_replacement_container(client, replacement_container_id)
 
         try:
             client.remove_container(container_id, force=True)
