@@ -1,3 +1,4 @@
+import hashlib
 import json
 import mimetypes
 import re
@@ -1273,6 +1274,192 @@ def _comment_children(item: dict) -> list[dict]:
     return children
 
 
+def _comment_identity_key(item: dict) -> str:
+    explicit = str(item.get("id") or item.get("commentId") or "").strip()
+    if explicit:
+        return explicit
+
+    author = item.get("author")
+    if isinstance(author, dict):
+        author_name = str(
+            author.get("name")
+            or author.get("nickname")
+            or author.get("username")
+            or author.get("userName")
+            or ""
+        ).strip()
+    else:
+        author_name = str(
+            author
+            or item.get("userName")
+            or item.get("nickname")
+            or item.get("authorName")
+            or item.get("creatorName")
+            or ""
+        ).strip()
+
+    content = str(
+        item.get("content")
+        or item.get("comment")
+        or item.get("text")
+        or item.get("message")
+        or item.get("commentContent")
+        or ""
+    ).strip()
+    time_value = str(
+        item.get("time")
+        or item.get("createdAt")
+        or item.get("createTime")
+        or item.get("commentTime")
+        or item.get("updatedAt")
+        or ""
+    ).strip()
+    digest = hashlib.sha1(
+        "|".join([author_name, time_value, content]).encode("utf-8", errors="ignore")
+    ).hexdigest()
+    return digest[:16]
+
+
+def _normalized_comment_replies(item: dict) -> list[dict]:
+    replies = item.get("replies")
+    if not isinstance(replies, list):
+        return []
+    return [reply for reply in replies if isinstance(reply, dict)]
+
+
+def _merge_normalized_comment_list(existing_items: list[dict], fresh_items: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    merged_by_key: dict[str, dict] = {}
+
+    def upsert(item: dict):
+        normalized = dict(item)
+        normalized_replies = _normalized_comment_replies(item)
+        if normalized_replies:
+            normalized["replies"] = normalized_replies
+        key = _comment_identity_key(normalized)
+        if key in merged_by_key:
+            merged_comment = _merge_normalized_comment_item(merged_by_key[key], normalized)
+            merged_by_key[key].clear()
+            merged_by_key[key].update(merged_comment)
+            return
+        merged.append(normalized)
+        merged_by_key[key] = normalized
+
+    for item in existing_items or []:
+        if isinstance(item, dict):
+            upsert(item)
+    for item in fresh_items or []:
+        if isinstance(item, dict):
+            upsert(item)
+    return merged
+
+
+def _merge_normalized_comment_item(existing: dict, fresh: dict) -> dict:
+    merged = dict(existing)
+    for key, value in fresh.items():
+        if key == "replies":
+            continue
+        if value in (None, "", [], {}):
+            continue
+        merged[key] = value
+
+    merged_replies = _merge_normalized_comment_list(
+        _normalized_comment_replies(existing),
+        _normalized_comment_replies(fresh),
+    )
+    if merged_replies:
+        merged["replies"] = merged_replies
+    elif "replies" in merged:
+        merged["replies"] = []
+
+    merged["reply_count"] = max(
+        len(merged_replies),
+        _safe_int(existing.get("reply_count")),
+        _safe_int(fresh.get("reply_count")),
+    )
+    return merged
+
+
+def _thread_normalized_comments(comment_items: list[dict], model_root: Path) -> list[dict]:
+    roots: list[dict] = []
+    roots_by_key: dict[str, dict] = {}
+    pending_replies: dict[str, list[dict]] = {}
+
+    def attach_pending(root_key: str):
+        pending_items = pending_replies.pop(root_key, [])
+        if not pending_items:
+            return
+        root = roots_by_key.get(root_key)
+        if not root:
+            pending_replies[root_key] = pending_items
+            return
+        root["replies"] = _merge_normalized_comment_list(
+            _normalized_comment_replies(root),
+            pending_items,
+        )
+        root["reply_count"] = max(
+            len(root["replies"]),
+            _safe_int(root.get("reply_count")),
+        )
+
+    def upsert_root(item: dict) -> dict:
+        key = _comment_identity_key(item)
+        if key in roots_by_key:
+            merged = _merge_normalized_comment_item(roots_by_key[key], item)
+            roots_by_key[key].clear()
+            roots_by_key[key].update(merged)
+            attach_pending(key)
+            return roots_by_key[key]
+
+        normalized = dict(item)
+        normalized["replies"] = _merge_normalized_comment_list(
+            [],
+            _normalized_comment_replies(item),
+        )
+        normalized["reply_count"] = max(
+            len(normalized["replies"]),
+            _safe_int(normalized.get("reply_count")),
+        )
+        roots.append(normalized)
+        roots_by_key[key] = normalized
+        attach_pending(key)
+        return normalized
+
+    def add_reply(root_key: str, reply: dict):
+        root = roots_by_key.get(root_key)
+        if not root:
+            pending_replies.setdefault(root_key, []).append(reply)
+            return
+        root["replies"] = _merge_normalized_comment_list(
+            _normalized_comment_replies(root),
+            [reply],
+        )
+        root["reply_count"] = max(
+            len(root["replies"]),
+            _safe_int(root.get("reply_count")),
+        )
+
+    for item in comment_items or []:
+        if not isinstance(item, dict):
+            continue
+        normalized_comment = _normalize_comment_item(item, model_root)
+        if not normalized_comment:
+            continue
+
+        comment_key = _comment_identity_key(normalized_comment)
+        root_key = str(normalized_comment.get("root_comment_id") or comment_key).strip() or comment_key
+        if root_key and root_key != comment_key:
+            add_reply(root_key, normalized_comment)
+            continue
+        upsert_root(normalized_comment)
+
+    for replies in pending_replies.values():
+        for reply in replies:
+            upsert_root(reply)
+
+    return roots
+
+
 def _normalize_comment_item(item: dict, model_root: Path, depth: int = 0) -> Optional[dict]:
     if not isinstance(item, dict):
         return None
@@ -1307,6 +1494,8 @@ def _normalize_comment_item(item: dict, model_root: Path, depth: int = 0) -> Opt
                 replies.append(normalized_child)
 
     author_payload = _comment_author_payload(item, model_root)
+    comment_id = _comment_identity_key(item)
+    root_comment_id = str(item.get("rootCommentId") or "").strip() or comment_id
     rating = min(max(_safe_float(item.get("rating") or item.get("score") or item.get("star") or item.get("starLevel")), 0.0), 5.0)
     reply_count = max(
         len(replies),
@@ -1314,7 +1503,8 @@ def _normalize_comment_item(item: dict, model_root: Path, depth: int = 0) -> Opt
     )
 
     return {
-        "id": str(item.get("id") or item.get("commentId") or item.get("rootCommentId") or "").strip(),
+        "id": comment_id,
+        "root_comment_id": root_comment_id,
         "author": author_payload["author"],
         "author_url": author_payload["author_url"],
         "time": _format_datetime(time_value) or str(time_value or ""),
@@ -1333,15 +1523,12 @@ def _normalize_comment_item(item: dict, model_root: Path, depth: int = 0) -> Opt
 
 
 def _normalize_comments(meta: dict, model_root: Path, offset: int = 0, limit: Optional[int] = None) -> list[dict]:
-    normalized = []
     comment_items = meta.get("comments") if isinstance(meta.get("comments"), list) else []
+    normalized = _thread_normalized_comments(comment_items, model_root)
     start = max(int(offset or 0), 0)
-    selected = comment_items[start:] if limit is None else comment_items[start : start + max(int(limit or 0), 0)]
-    for item in selected:
-        normalized_comment = _normalize_comment_item(item, model_root)
-        if normalized_comment:
-            normalized.append(normalized_comment)
-    return normalized
+    if limit is None:
+        return normalized[start:]
+    return normalized[start : start + max(int(limit or 0), 0)]
 
 
 def _normalize_attachments(meta: dict, model_root: Path) -> list[dict]:
@@ -1496,6 +1683,7 @@ def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[
 
     summary = meta.get("summary") if isinstance(meta.get("summary"), dict) else {}
     raw_comments = meta.get("comments") if isinstance(meta.get("comments"), list) else []
+    threaded_comments = _normalize_comments(meta, model_root, offset=0, limit=None)
     initial_comments = _normalize_comments(meta, model_root, offset=0, limit=DETAIL_COMMENTS_PAGE_SIZE)
     total_comments = max(len(raw_comments), _safe_int(stats.get("comments")))
     payload.update(
@@ -1505,7 +1693,7 @@ def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[
             "summary_text": str(summary.get("text") or summary.get("raw") or ""),
             "comments": initial_comments,
             "comments_total": total_comments,
-            "comments_next_offset": len(initial_comments) if len(raw_comments) > len(initial_comments) else None,
+            "comments_next_offset": len(initial_comments) if len(threaded_comments) > len(initial_comments) else None,
             "instances": _normalize_instances(meta, model_root),
             "attachments": _normalize_attachments(meta, model_root),
         }
@@ -1815,11 +2003,12 @@ def get_model_comments_page(model_dir: str, offset: int = 0, limit: int = DETAIL
         return None
 
     raw_comments = meta.get("comments") if isinstance(meta.get("comments"), list) else []
+    threaded_comments = _normalize_comments(meta, target, offset=0, limit=None)
     safe_offset = max(int(offset or 0), 0)
     safe_limit = max(int(limit or 0), 1)
     items = _normalize_comments(meta, target, offset=safe_offset, limit=safe_limit)
     next_offset = safe_offset + len(items)
-    if next_offset >= len(raw_comments):
+    if next_offset >= len(threaded_comments):
         next_offset = None
 
     return {
