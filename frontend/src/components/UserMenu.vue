@@ -26,7 +26,7 @@
 
       <div class="user-menu__group">
         <RouterLink class="user-menu__link" to="/settings?tab=user" @click="open = false">个人信息</RouterLink>
-        <RouterLink class="user-menu__link" to="/settings?tab=connections" @click="open = false">系统设置</RouterLink>
+        <RouterLink class="user-menu__link" to="/settings?tab=system" @click="open = false">系统设置</RouterLink>
       </div>
 
       <div class="user-menu__theme">

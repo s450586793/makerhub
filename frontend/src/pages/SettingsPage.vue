@@ -568,7 +568,7 @@ function setActiveTab(tab) {
 async function load() {
   const payload = config.value || await refreshConfig();
   applyConfigToForms(payload);
-  setActiveTab(typeof route.query.tab === "string" ? route.query.tab : "connections");
+  setActiveTab(typeof route.query.tab === "string" ? route.query.tab : "system");
 }
 
 function clearSystemUpdateTimer() {

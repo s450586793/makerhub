@@ -1902,7 +1902,7 @@ def build_dashboard_payload(config) -> dict:
     seven_days_ago = now - 7 * 24 * 60 * 60
 
     status_cards = [
-        *build_source_health_cards(config),
+        *build_source_health_cards(config, tasks_payload["missing_3mf"]["items"]),
         {
             "key": "proxy",
             "title": "HTTP 代理",

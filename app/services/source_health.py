@@ -13,7 +13,12 @@ import requests
 from app.core.settings import STATE_DIR, ensure_app_dirs
 from app.core.timezone import now as china_now, parse_datetime
 from app.services.cookie_utils import sanitize_cookie_header
-from app.services.three_mf import normalize_makerworld_source
+from app.services.three_mf import (
+    describe_three_mf_failure,
+    merge_three_mf_failure,
+    normalize_makerworld_source,
+    three_mf_failure_priority,
+)
 
 
 THREE_MF_LIMIT_GUARD_PATH = STATE_DIR / "three_mf_limit_guard.json"
@@ -431,25 +436,71 @@ def _probe_platform_status(platform: str, raw_cookie: str, proxy_config: Any) ->
     )
 
 
-def build_source_health_cards(config: Any) -> list[dict[str, Any]]:
+def _build_missing_3mf_overrides(items: list[dict[str, Any]] | None) -> dict[str, dict[str, str]]:
+    overrides: dict[str, dict[str, str]] = {}
+    for raw_item in items or []:
+        if not isinstance(raw_item, dict):
+            continue
+        state = str(raw_item.get("status") or raw_item.get("downloadState") or "").strip()
+        if state not in {"download_limited", "verification_required", "cloudflare", "auth_required"}:
+            continue
+        platform = normalize_makerworld_source(url=raw_item.get("model_url"))
+        if platform not in {"cn", "global"}:
+            continue
+        message = describe_three_mf_failure(
+            state,
+            raw_item.get("message") or raw_item.get("downloadMessage") or "",
+            url=raw_item.get("model_url") or "",
+        )
+        overrides[platform] = merge_three_mf_failure(
+            overrides.get(platform),
+            {
+                "state": state,
+                "message": message,
+            },
+        )
+    return overrides
+
+
+def _status_text_from_failure_state(state: str) -> str:
+    if state == "download_limited":
+        return "到达每日上限"
+    if state in {"verification_required", "cloudflare"}:
+        return "需要验证"
+    if state == "auth_required":
+        return "Cookie 失效"
+    return "连接异常"
+
+
+def build_source_health_cards(config: Any, missing_3mf_items: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     cookie_map = {item.platform: item.cookie for item in getattr(config, "cookies", [])}
     platforms = ("cn", "global")
+    missing_overrides = _build_missing_3mf_overrides(missing_3mf_items)
 
     def build_card(platform: str) -> dict[str, Any]:
         probe = _probe_platform_status(platform, str(cookie_map.get(platform) or ""), getattr(config, "proxy", None))
         state = str(probe.get("state") or "").strip()
         detail = str(probe.get("detail") or "").strip()
+        override = missing_overrides.get(platform) or {}
+        override_state = str(override.get("state") or "").strip()
+        if (
+            override_state
+            and state != "missing_cookie"
+            and three_mf_failure_priority(override_state) >= three_mf_failure_priority(state)
+        ):
+            state = override_state
+            detail = str(override.get("message") or "").strip()
         if not detail and state == "verification_required":
             detail = "点击“去验证”打开对应 MakerWorld 页面，完成浏览器验证后再回首页刷新。"
         return {
             "key": platform,
             "title": SOURCE_HEALTH_LABELS.get(platform, platform),
-            "status": str(probe.get("status") or "连接异常"),
+            "status": _status_text_from_failure_state(state) if override_state and state == override_state else str(probe.get("status") or "连接异常"),
             "detail": detail,
             "tone": "ok" if state == "ok" else "danger",
             "state": state,
             "url": PLATFORM_ORIGINS.get(platform, ""),
-            "action_label": "去验证" if state == "verification_required" else "打开官网",
+            "action_label": "去验证" if state in {"verification_required", "cloudflare"} else "打开官网",
         }
 
     with ThreadPoolExecutor(max_workers=len(platforms)) as executor:
