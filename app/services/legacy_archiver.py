@@ -814,12 +814,30 @@ _COMMENT_CHILD_KEYS = (
     "children",
     "subComments",
     "subCommentList",
+    "subCommentVos",
+    "subCommentVOList",
     "replyList",
     "replys",
+    "replyVos",
+    "replyVOList",
     "commentReplies",
     "commentReplyVos",
+    "commentReplyList",
     "replyComments",
+    "replyInfoList",
+    "childComments",
 )
+_COMMENT_CHILD_CONTAINER_KEYS = (
+    "items",
+    "list",
+    "rows",
+    "records",
+    "results",
+    "nodes",
+    "edges",
+    "data",
+)
+_COMMENT_CHILD_NODE_KEYS = ("node", "item", "record", "comment", "reply", "child")
 _COMMENT_REPLY_DIRECT_KEYS = (
     "replyToName",
     "replyUserName",
@@ -840,15 +858,54 @@ _COMMENT_REPLY_USER_KEYS = (
 
 
 def _comment_child_nodes(node: dict) -> List[dict]:
+    def _looks_like_comment(value: object) -> bool:
+        if not isinstance(value, dict):
+            return False
+        return any(
+            key in value
+            for key in (
+                "id",
+                "commentId",
+                "rootCommentId",
+                "content",
+                "commentContent",
+                "comment",
+                "message",
+                "text",
+                "replyCount",
+                "subCommentCount",
+                "childrenCount",
+                "commentTime",
+                "createTime",
+                "createdAt",
+            )
+        )
+
+    def _extract_children(value: object, depth: int = 0) -> List[dict]:
+        if depth > 4 or value is None:
+            return []
+        if isinstance(value, list):
+            children: List[dict] = []
+            for item in value:
+                if _looks_like_comment(item):
+                    children.append(item)
+                    continue
+                if isinstance(item, dict):
+                    children.extend(_extract_children(item, depth + 1))
+            return children
+        if isinstance(value, dict):
+            if _looks_like_comment(value):
+                return [value]
+            for key in (*_COMMENT_CHILD_CONTAINER_KEYS, *_COMMENT_CHILD_NODE_KEYS):
+                nested = _extract_children(value.get(key), depth + 1)
+                if nested:
+                    return nested
+        return []
+
     children: List[dict] = []
     seen_markers: set[int] = set()
     for key in _COMMENT_CHILD_KEYS:
-        items = node.get(key)
-        if not isinstance(items, list):
-            continue
-        for item in items:
-            if not isinstance(item, dict):
-                continue
+        for item in _extract_children(node.get(key)):
             marker = id(item)
             if marker in seen_markers:
                 continue
@@ -2482,6 +2539,7 @@ def extract_instances(design: dict) -> List[dict]:
 
 
 PROFILE_DETAIL_SCHEMA_VERSION = 4
+COMMENT_SCHEMA_VERSION = 1
 _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
 
@@ -3164,6 +3222,7 @@ def build_meta(
             "html": summary.get("html", ""),
             "text": summary.get("text", ""),
         },
+        "commentSchemaVersion": COMMENT_SCHEMA_VERSION,
         "commentCount": comment_count or len(comment_items),
         "comments": comment_items,
         "instances": instances,
@@ -4552,7 +4611,7 @@ def archive_model(
     three_mf_paused_failure = {
         "state": "missing" if profile_metadata_only else str(three_mf_skip_state or "download_limited"),
         "message": (
-            "信息补全任务仅整理打印配置详情，不下载 3MF。"
+            "信息补全任务会整理打印配置详情、实例展示媒体和评论回复，不下载 3MF。"
             if profile_metadata_only
             else str(three_mf_skip_message or "").strip()
             or describe_three_mf_failure(str(three_mf_skip_state or "download_limited"), url=fetch_url)

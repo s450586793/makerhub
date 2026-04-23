@@ -24,7 +24,7 @@ ORGANIZER_TERMINAL_EVENTS = {
     "organize_failed",
     "worker_timeout",
 }
-METADATA_ONLY_MISSING_3MF_MESSAGE = "信息补全任务仅整理打印配置详情，不下载 3MF。"
+METADATA_ONLY_MISSING_3MF_MESSAGE = "信息补全任务会整理打印配置详情、实例展示媒体和评论回复，不下载 3MF。"
 _STATE_LOCK = threading.RLock()
 _ORGANIZER_HISTORY_COUNT_CACHE = {
     "mtime_ns": 0,
@@ -172,7 +172,7 @@ def is_metadata_only_missing_3mf_placeholder(item: Any) -> bool:
     if not isinstance(item, dict):
         return False
     message = str(item.get("message") or item.get("downloadMessage") or "").strip()
-    return "信息补全任务仅整理打印配置详情" in message
+    return "信息补全任务" in message and "不下载 3MF" in message
 
 
 def _missing_3mf_key(item: dict) -> tuple[str, str, str]:

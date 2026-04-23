@@ -1187,21 +1187,90 @@ def _comment_author_payload(item: dict, model_root: Path) -> dict[str, str]:
 
 
 def _comment_children(item: dict) -> list[dict]:
-    for key in (
+    child_keys = (
         "replies",
         "children",
         "subComments",
         "subCommentList",
+        "subCommentVos",
+        "subCommentVOList",
         "replyList",
         "replys",
+        "replyVos",
+        "replyVOList",
         "commentReplies",
         "commentReplyVos",
+        "commentReplyList",
         "replyComments",
-    ):
-        children = item.get(key)
-        if isinstance(children, list):
-            return [child for child in children if isinstance(child, dict)]
-    return []
+        "replyInfoList",
+        "childComments",
+    )
+    container_keys = (
+        "items",
+        "list",
+        "rows",
+        "records",
+        "results",
+        "nodes",
+        "edges",
+        "data",
+    )
+    node_keys = ("node", "item", "record", "comment", "reply", "child")
+
+    def looks_like_comment(node: object) -> bool:
+        if not isinstance(node, dict):
+            return False
+        return any(
+            key in node
+            for key in (
+                "id",
+                "commentId",
+                "rootCommentId",
+                "content",
+                "commentContent",
+                "comment",
+                "message",
+                "text",
+                "replyCount",
+                "subCommentCount",
+                "childrenCount",
+                "commentTime",
+                "createTime",
+                "createdAt",
+            )
+        )
+
+    def extract_children(value: object, depth: int = 0) -> list[dict]:
+        if depth > 4 or value is None:
+            return []
+        if isinstance(value, list):
+            children: list[dict] = []
+            for child in value:
+                if looks_like_comment(child):
+                    children.append(child)
+                    continue
+                if isinstance(child, dict):
+                    children.extend(extract_children(child, depth + 1))
+            return children
+        if isinstance(value, dict):
+            if looks_like_comment(value):
+                return [value]
+            for key in (*container_keys, *node_keys):
+                nested = extract_children(value.get(key), depth + 1)
+                if nested:
+                    return nested
+        return []
+
+    seen_markers: set[int] = set()
+    children: list[dict] = []
+    for key in child_keys:
+        for child in extract_children(item.get(key)):
+            marker = id(child)
+            if marker in seen_markers:
+                continue
+            seen_markers.add(marker)
+            children.append(child)
+    return children
 
 
 def _normalize_comment_item(item: dict, model_root: Path, depth: int = 0) -> Optional[dict]:

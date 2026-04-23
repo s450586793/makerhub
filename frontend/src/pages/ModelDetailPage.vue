@@ -75,7 +75,7 @@
                 v-if="currentMedia.src"
                 class="mw-gallery__preview"
                 type="button"
-                @click="openLightbox(currentMedia.src)"
+                @click="openLightbox(currentMedia.src, currentMedia.alt || detail.title)"
               >
                 <span class="mw-gallery__preview-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="currentColor">
@@ -88,20 +88,55 @@
               </button>
             </div>
 
-            <div v-if="detail.gallery?.length" class="mw-gallery__thumbs">
+            <div
+              v-if="detail.gallery?.length"
+              :class="[
+                'mw-thumb-rail',
+                'mw-thumb-rail--gallery',
+                mainGalleryRail.overflow && 'is-overflowing',
+                mainGalleryRail.canScrollPrev && 'has-prev',
+                mainGalleryRail.canScrollNext && 'has-next',
+              ]"
+            >
               <button
-                v-for="(image, index) in detail.gallery"
-                :key="`${image.url}-${index}`"
-                :class="['mw-gallery__thumb', currentMedia.key === `gallery:${index}` && 'is-active']"
+                v-if="mainGalleryRail.overflow"
+                class="mw-thumb-rail__control is-prev"
                 type="button"
-                @click="selectGallery(index)"
+                :disabled="!mainGalleryRail.canScrollPrev"
+                aria-label="向左查看缩略图"
+                @click="scrollMainGalleryThumbs('prev')"
               >
-                <img
-                  :src="image.url"
-                  :alt="`${detail.title} ${index + 1}`"
-                  loading="lazy"
-                  @error="swapEventImage($event, image.fallback_url)"
+                <span class="mw-thumb-rail__control-icon" aria-hidden="true" v-html="THUMB_RAIL_ICONS.prev"></span>
+              </button>
+              <div
+                :ref="setMainGalleryThumbsRef"
+                class="mw-gallery__thumbs"
+                @scroll="syncMainGalleryRail"
+              >
+                <button
+                  v-for="(image, index) in detail.gallery"
+                  :key="`${image.url}-${index}`"
+                  :class="['mw-gallery__thumb', currentMedia.key === `gallery:${index}` && 'is-active']"
+                  type="button"
+                  @click="selectGallery(index)"
                 >
+                  <img
+                    :src="image.url"
+                    :alt="`${detail.title} ${index + 1}`"
+                    loading="lazy"
+                    @error="swapEventImage($event, image.fallback_url)"
+                  >
+                </button>
+              </div>
+              <button
+                v-if="mainGalleryRail.overflow"
+                class="mw-thumb-rail__control is-next"
+                type="button"
+                :disabled="!mainGalleryRail.canScrollNext"
+                aria-label="向右查看缩略图"
+                @click="scrollMainGalleryThumbs('next')"
+              >
+                <span class="mw-thumb-rail__control-icon" aria-hidden="true" v-html="THUMB_RAIL_ICONS.next"></span>
               </button>
             </div>
           </div>
@@ -229,14 +264,37 @@
                 ]"
               >
                 <div v-if="profile.media_resolved?.length" class="mw-profile-popover__gallery">
-                  <div class="mw-profile-popover__media-strip">
+                  <div
+                    :class="[
+                      'mw-thumb-rail',
+                      'mw-thumb-rail--popover',
+                      profileMediaRailState(profile.instance_key).overflow && 'is-overflowing',
+                      profileMediaRailState(profile.instance_key).canScrollPrev && 'has-prev',
+                      profileMediaRailState(profile.instance_key).canScrollNext && 'has-next',
+                    ]"
+                  >
+                    <button
+                      v-if="profileMediaRailState(profile.instance_key).overflow"
+                      class="mw-thumb-rail__control is-prev"
+                      type="button"
+                      :disabled="!profileMediaRailState(profile.instance_key).canScrollPrev"
+                      aria-label="向左查看配置图片"
+                      @click="scrollProfileMediaStrip(profile.instance_key, 'prev')"
+                    >
+                      <span class="mw-thumb-rail__control-icon" aria-hidden="true" v-html="THUMB_RAIL_ICONS.prev"></span>
+                    </button>
+                    <div
+                      :ref="(element) => setProfileMediaStripRef(profile.instance_key, element)"
+                      class="mw-profile-popover__media-strip"
+                      @scroll="syncProfileMediaRail(profile.instance_key)"
+                    >
                     <button
                       v-for="(media, mediaIndex) in profile.media_resolved"
                       :key="`${profile.instance_key}-${media.label}-${mediaIndex}`"
                       class="mw-profile-popover__media-thumb"
                       type="button"
                       :title="media.label || `预览 ${mediaIndex + 1}`"
-                      @click="openLightbox(media.url || media.fallback_url || '')"
+                      @click="openLightbox(media.url || media.fallback_url || '', `${profile.title} ${media.label || `预览 ${mediaIndex + 1}`}`.trim())"
                     >
                       <span class="mw-profile-popover__media-thumb-figure">
                         <img
@@ -248,6 +306,17 @@
                         >
                         <span v-else class="avatar-placeholder">{{ detail.title.slice(0, 1) }}</span>
                       </span>
+                    </button>
+                    </div>
+                    <button
+                      v-if="profileMediaRailState(profile.instance_key).overflow"
+                      class="mw-thumb-rail__control is-next"
+                      type="button"
+                      :disabled="!profileMediaRailState(profile.instance_key).canScrollNext"
+                      aria-label="向右查看配置图片"
+                      @click="scrollProfileMediaStrip(profile.instance_key, 'next')"
+                    >
+                      <span class="mw-thumb-rail__control-icon" aria-hidden="true" v-html="THUMB_RAIL_ICONS.next"></span>
                     </button>
                   </div>
                 </div>
@@ -373,7 +442,7 @@
                     v-if="attachment.is_image && attachmentDownloadUrl(attachment)"
                     class="button button-secondary button-small mw-doc-action"
                     type="button"
-                    @click="openLightbox(attachmentDownloadUrl(attachment))"
+                    @click="openLightbox(attachmentDownloadUrl(attachment), attachment.name || '附件预览')"
                   >
                     预览
                   </button>
@@ -510,7 +579,7 @@
                     :key="`${comment.id || comment.author}-${imageIndex}`"
                     class="comment-gallery__item"
                     type="button"
-                    @click="openLightbox(image.full_url || image.thumb_url)"
+                    @click="openLightbox(image.full_url || image.thumb_url, `${comment.author} 评论图片 ${imageIndex + 1}`)"
                   >
                     <img
                       :src="image.thumb_url"
@@ -573,7 +642,7 @@
                           :key="`${reply.id || reply.author}-${imageIndex}`"
                           class="comment-gallery__item"
                           type="button"
-                          @click="openLightbox(image.full_url || image.thumb_url)"
+                          @click="openLightbox(image.full_url || image.thumb_url, `${reply.author} 评论图片 ${imageIndex + 1}`)"
                         >
                           <img
                             :src="image.thumb_url"
@@ -610,14 +679,12 @@
                   }}
                 </button>
 
-                <button
+                <span
                   v-else-if="comment.reply_count > 0 && !comment.replies?.length"
-                  class="mw-comment-thread__expand"
-                  type="button"
-                  disabled
+                  class="mw-comment-thread__expand mw-comment-thread__expand--static"
                 >
-                  共 {{ formatStat(comment.reply_count) }} 回复，查看更多
-                </button>
+                  共 {{ formatStat(comment.reply_count) }} 回复
+                </span>
               </div>
             </article>
           </div>
@@ -659,11 +726,16 @@
       </article>
     </section>
 
-    <div v-if="lightboxSrc" class="lightbox" @click="closeLightbox">
-      <button class="lightbox__backdrop" type="button" aria-label="关闭预览"></button>
+    <div
+      v-if="lightbox.open && lightbox.src"
+      class="lightbox"
+      role="dialog"
+      aria-modal="true"
+      aria-label="图片预览"
+      @click="closeLightbox"
+    >
       <div class="lightbox__dialog" @click.stop>
-        <button class="lightbox__close" type="button" aria-label="关闭" @click="closeLightbox">×</button>
-        <img class="lightbox__image" :src="lightboxSrc" alt="预览图片">
+        <img class="lightbox__image" :src="lightbox.src" :alt="lightbox.alt || '预览图片'">
       </div>
     </div>
   </div>
@@ -689,7 +761,11 @@ const currentMedia = ref({
   alt: "",
 });
 const activeInstanceKey = ref("");
-const lightboxSrc = ref("");
+const lightbox = ref({
+  open: false,
+  src: "",
+  alt: "预览图片",
+});
 const attachmentFileInput = ref(null);
 const attachmentUploading = ref(false);
 const attachmentUploadMessage = ref("");
@@ -709,14 +785,39 @@ const commentSortKey = ref("hot");
 const commentsLoadMoreTrigger = ref(null);
 const commentsAutoLoadSupported = ref(false);
 const expandedCommentReplies = ref({});
+const mainGalleryThumbsRef = ref(null);
+const mainGalleryRail = ref(createThumbRailState());
+const profileMediaStripRefs = new Map();
+const profileMediaRails = ref({});
 
 let hoverPopoverMediaQuery = null;
 let hoverPopoverMediaListener = null;
 let commentsRenderFrame = 0;
 let commentsLoadMoreObserver = null;
+let railResizeObserver = null;
 
 const INITIAL_COMMENT_BATCH = 20;
 const COMMENT_REPLY_PREVIEW_COUNT = 3;
+const COMMENT_CHILD_KEYS = [
+  "replies",
+  "children",
+  "subComments",
+  "subCommentList",
+  "subCommentVos",
+  "subCommentVOList",
+  "replyList",
+  "replys",
+  "replyVos",
+  "replyVOList",
+  "commentReplies",
+  "commentReplyVos",
+  "commentReplyList",
+  "replyComments",
+  "replyInfoList",
+  "childComments",
+];
+const COMMENT_CHILD_CONTAINER_KEYS = ["items", "list", "rows", "records", "results", "nodes", "edges", "data"];
+const COMMENT_CHILD_NODE_KEYS = ["node", "item", "record", "comment", "reply", "child"];
 const STAT_FORMATTER = new Intl.NumberFormat("zh-CN");
 const PROFILE_FACT_ICONS = {
   clock: '<svg width="16" height="17" viewBox="0 0 16 17" fill="none"><path d="M15 8.52342C15 4.64449 11.866 1.5 8 1.5V8.52342L12.9395 13.5C14.2123 12.2282 15 10.4681 15 8.52342Z" fill="var(--mui-palette-colorSystem-grey200)"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M7.9999 2.10039C4.46528 2.10039 1.5999 4.96577 1.5999 8.50039C1.5999 12.035 4.46528 14.9004 7.9999 14.9004C11.5345 14.9004 14.3999 12.035 14.3999 8.50039C14.3999 4.96577 11.5345 2.10039 7.9999 2.10039ZM0.399902 8.50039C0.399902 4.30303 3.80254 0.900391 7.9999 0.900391C12.1973 0.900391 15.5999 4.30303 15.5999 8.50039C15.5999 12.6978 12.1973 16.1004 7.9999 16.1004C3.80254 16.1004 0.399902 12.6978 0.399902 8.50039Z" fill="var(--mui-palette-colorSystem-grey700)"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M7.9999 5.90039C8.33127 5.90039 8.5999 6.16902 8.5999 6.50039V8.50039C8.5999 8.83176 8.33127 9.10039 7.9999 9.10039C7.66853 9.10039 7.3999 8.83176 7.3999 8.50039V6.50039C7.3999 6.16902 7.66853 5.90039 7.9999 5.90039Z" fill="var(--mui-palette-colorSystem-grey700)"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M7.57564 8.07613C7.80995 7.84181 8.18985 7.84181 8.42417 8.07613L10.4242 10.0761C10.6585 10.3104 10.6585 10.6903 10.4242 10.9247C10.1899 11.159 9.80995 11.159 9.57564 10.9247L7.57564 8.92465C7.34132 8.69034 7.34132 8.31044 7.57564 8.07613Z" fill="var(--mui-palette-colorSystem-grey700)"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M0.5 8.5C0.5 8.22386 0.723858 8 1 8H2.5C2.77614 8 3 8.22386 3 8.5C3 8.77614 2.77614 9 2.5 9H1C0.723858 9 0.5 8.77614 0.5 8.5Z" fill="var(--mui-palette-colorSystem-grey700)"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M13 8.5C13 8.22386 13.2239 8 13.5 8H15C15.2761 8 15.5 8.22386 15.5 8.5C15.5 8.77614 15.2761 9 15 9H13.5C13.2239 9 13 8.77614 13 8.5Z" fill="var(--mui-palette-colorSystem-grey700)"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M8 16C7.72386 16 7.5 15.7761 7.5 15.5L7.5 14C7.5 13.7239 7.72386 13.5 8 13.5C8.27614 13.5 8.5 13.7239 8.5 14L8.5 15.5C8.5 15.7761 8.27614 16 8 16Z" fill="var(--mui-palette-colorSystem-grey700)"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M8 3.5C7.72386 3.5 7.5 3.27614 7.5 3L7.5 1.5C7.5 1.22386 7.72386 1 8 1C8.27614 1 8.5 1.22386 8.5 1.5L8.5 3C8.5 3.27614 8.27614 3.5 8 3.5Z" fill="var(--mui-palette-colorSystem-grey700)"></path></svg>',
@@ -735,6 +836,10 @@ const COMMENT_UI_ICONS = {
   more: '<svg viewBox="0 0 4 18" fill="none"><path fill-rule="evenodd" clip-rule="evenodd" d="M2 3.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM3.5 9a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm0 7a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0z" fill="currentColor"></path></svg>',
   like: '<svg viewBox="0 0 16 16" fill="none"><path d="M6.42 6.833 8.24 3.816c.297-.491 1.06-.275 1.06.304v1.744h1.862c.805 0 1.392.77 1.177 1.54L11.317 11.04a1.2 1.2 0 0 1-1.156.87H6.42V6.833Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"></path><path d="M6.42 6.833H4.533c-.589 0-1.067.478-1.067 1.067v2.943c0 .589.478 1.067 1.067 1.067H6.42V6.833Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"></path></svg>',
   reply: '<svg viewBox="0 0 16 16" fill="none"><path d="M11 13.666H7.335V11h4.667V8.333h2.666v5.333h-1.666l-1 1-1-1z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"></path><path d="M1.334 3h10.667v8H5.667l-1.333 1.333L3.001 11H1.334V3z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"></path><path d="M6.334 7h.333M8.666 7h.333M4 7h.333" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"></path></svg>',
+};
+const THUMB_RAIL_ICONS = {
+  prev: '<svg viewBox="0 0 20 20" fill="none"><path d="m12.5 4.75-5.25 5.25 5.25 5.25" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>',
+  next: '<svg viewBox="0 0 20 20" fill="none"><path d="m7.5 4.75 5.25 5.25-5.25 5.25" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>',
 };
 
 const attachmentForm = ref({
@@ -907,6 +1012,161 @@ const heroDownloadLabel = computed(() => {
   return "当前没有 3MF";
 });
 
+function createThumbRailState() {
+  return {
+    overflow: false,
+    canScrollPrev: false,
+    canScrollNext: false,
+  };
+}
+
+function sameThumbRailState(left, right) {
+  return Boolean(
+    left
+    && right
+    && left.overflow === right.overflow
+    && left.canScrollPrev === right.canScrollPrev
+    && left.canScrollNext === right.canScrollNext,
+  );
+}
+
+function measureThumbRail(element) {
+  if (!(element instanceof HTMLElement)) {
+    return createThumbRailState();
+  }
+  const maxScrollLeft = Math.max(element.scrollWidth - element.clientWidth, 0);
+  const tolerance = 2;
+  return {
+    overflow: maxScrollLeft > tolerance,
+    canScrollPrev: element.scrollLeft > tolerance,
+    canScrollNext: element.scrollLeft < maxScrollLeft - tolerance,
+  };
+}
+
+function observeThumbRail(element) {
+  if (railResizeObserver && element instanceof HTMLElement) {
+    railResizeObserver.observe(element);
+  }
+}
+
+function unobserveThumbRail(element) {
+  if (railResizeObserver && element instanceof HTMLElement) {
+    railResizeObserver.unobserve(element);
+  }
+}
+
+function setMainGalleryThumbsRef(element) {
+  const nextElement = element instanceof HTMLElement ? element : null;
+  if (mainGalleryThumbsRef.value && mainGalleryThumbsRef.value !== nextElement) {
+    unobserveThumbRail(mainGalleryThumbsRef.value);
+  }
+  mainGalleryThumbsRef.value = nextElement;
+  if (nextElement) {
+    observeThumbRail(nextElement);
+    syncMainGalleryRail();
+    return;
+  }
+  mainGalleryRail.value = createThumbRailState();
+}
+
+function syncMainGalleryRail() {
+  mainGalleryRail.value = measureThumbRail(mainGalleryThumbsRef.value);
+}
+
+function profileMediaRailState(instanceKey) {
+  return profileMediaRails.value[instanceKey] || createThumbRailState();
+}
+
+function setProfileMediaStripRef(instanceKey, element) {
+  if (!instanceKey) {
+    return;
+  }
+  const nextElement = element instanceof HTMLElement ? element : null;
+  const previousElement = profileMediaStripRefs.get(instanceKey);
+  if (previousElement && previousElement !== nextElement) {
+    unobserveThumbRail(previousElement);
+  }
+  if (nextElement) {
+    profileMediaStripRefs.set(instanceKey, nextElement);
+    observeThumbRail(nextElement);
+    syncProfileMediaRail(instanceKey);
+    return;
+  }
+  profileMediaStripRefs.delete(instanceKey);
+  if (!(instanceKey in profileMediaRails.value)) {
+    return;
+  }
+  const nextStates = { ...profileMediaRails.value };
+  delete nextStates[instanceKey];
+  profileMediaRails.value = nextStates;
+}
+
+function syncProfileMediaRail(instanceKey) {
+  if (!instanceKey) {
+    return;
+  }
+  const nextState = measureThumbRail(profileMediaStripRefs.get(instanceKey));
+  const currentState = profileMediaRails.value[instanceKey];
+  if (sameThumbRailState(currentState, nextState)) {
+    return;
+  }
+  profileMediaRails.value = {
+    ...profileMediaRails.value,
+    [instanceKey]: nextState,
+  };
+}
+
+function syncThumbRailByElement(element) {
+  if (!(element instanceof HTMLElement)) {
+    return;
+  }
+  if (element === mainGalleryThumbsRef.value) {
+    syncMainGalleryRail();
+    return;
+  }
+  for (const [instanceKey, railElement] of profileMediaStripRefs.entries()) {
+    if (railElement === element) {
+      syncProfileMediaRail(instanceKey);
+      return;
+    }
+  }
+}
+
+function syncAllThumbRails() {
+  syncMainGalleryRail();
+  for (const instanceKey of profileMediaStripRefs.keys()) {
+    syncProfileMediaRail(instanceKey);
+  }
+}
+
+function clearProfileMediaStripRefs() {
+  for (const element of profileMediaStripRefs.values()) {
+    unobserveThumbRail(element);
+  }
+  profileMediaStripRefs.clear();
+  profileMediaRails.value = {};
+}
+
+function scrollThumbRail(element, direction) {
+  if (!(element instanceof HTMLElement)) {
+    return;
+  }
+  const viewport = Math.max(element.clientWidth - 72, 140);
+  const offset = direction === "prev" ? -viewport : viewport;
+  element.scrollBy({
+    left: offset,
+    behavior: "smooth",
+  });
+}
+
+function scrollMainGalleryThumbs(direction) {
+  scrollThumbRail(mainGalleryThumbsRef.value, direction);
+}
+
+function scrollProfileMediaStrip(instanceKey, direction) {
+  scrollThumbRail(profileMediaStripRefs.get(instanceKey), direction);
+}
+
 function applyHoverPopoverEnabled(matches) {
   hoverPopoverEnabled.value = matches;
 }
@@ -999,6 +1259,7 @@ function handleProfileCardClick(profile) {
     return;
   }
   previewedInstanceKey.value = profile.instance_key;
+  nextTick(() => syncProfileMediaRail(profile.instance_key));
 }
 
 function isProfilePopoverOpen(profile) {
@@ -1041,6 +1302,7 @@ function openProfilePopover(profile, entryElement = null) {
   }
   updateProfilePopoverPlacement(profile, entryElement);
   previewedInstanceKey.value = profile.instance_key;
+  nextTick(() => syncProfileMediaRail(profile.instance_key));
 }
 
 function closeProfilePopover(instanceKey = "", options = {}) {
@@ -1095,6 +1357,7 @@ function handleWindowPointerDown(event) {
 }
 
 function handleWindowResize() {
+  syncAllThumbRails();
   if (!previewedInstanceKey.value || !detail.value?.instances?.length) {
     return;
   }
@@ -1121,14 +1384,36 @@ function onMainMediaError() {
   }
 }
 
-function openLightbox(src) {
-  lightboxSrc.value = src;
-  document.body.classList.add("is-lightbox-open");
+function openLightbox(src, alt = "预览图片") {
+  const resolvedSrc = String(src || "").trim();
+  if (!resolvedSrc) {
+    return;
+  }
+  lightbox.value = {
+    open: true,
+    src: resolvedSrc,
+    alt: String(alt || "预览图片").trim() || "预览图片",
+  };
+  if (typeof document !== "undefined") {
+    document.body.classList.add("is-lightbox-open");
+  }
 }
 
 function closeLightbox() {
-  lightboxSrc.value = "";
-  document.body.classList.remove("is-lightbox-open");
+  lightbox.value = {
+    open: false,
+    src: "",
+    alt: "预览图片",
+  };
+  if (typeof document !== "undefined") {
+    document.body.classList.remove("is-lightbox-open");
+  }
+}
+
+function handleWindowKeydown(event) {
+  if (event.key === "Escape" && lightbox.value.open) {
+    closeLightbox();
+  }
 }
 
 function formatStat(value) {
@@ -1529,6 +1814,74 @@ function computeCommentHotScore(comment) {
   return (comment.like_count * 4) + (comment.reply_count * 7) + (comment.rating * 18) + freshness;
 }
 
+function isCommentLikeItem(item) {
+  return Boolean(item && typeof item === "object" && (
+    "id" in item
+    || "commentId" in item
+    || "rootCommentId" in item
+    || "content" in item
+    || "commentContent" in item
+    || "comment" in item
+    || "message" in item
+    || "text" in item
+    || "replyCount" in item
+    || "subCommentCount" in item
+    || "childrenCount" in item
+    || "commentTime" in item
+    || "createTime" in item
+    || "createdAt" in item
+  ));
+}
+
+function extractCommentChildren(value, depth = 0) {
+  if (depth > 4 || value == null) {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    const children = [];
+    for (const item of value) {
+      if (isCommentLikeItem(item)) {
+        children.push(item);
+        continue;
+      }
+      if (item && typeof item === "object") {
+        children.push(...extractCommentChildren(item, depth + 1));
+      }
+    }
+    return children;
+  }
+  if (value && typeof value === "object") {
+    if (isCommentLikeItem(value)) {
+      return [value];
+    }
+    for (const key of [...COMMENT_CHILD_CONTAINER_KEYS, ...COMMENT_CHILD_NODE_KEYS]) {
+      const children = extractCommentChildren(value[key], depth + 1);
+      if (children.length) {
+        return children;
+      }
+    }
+  }
+  return [];
+}
+
+function commentReplyItems(comment) {
+  if (!comment || typeof comment !== "object") {
+    return [];
+  }
+  const replies = [];
+  const seen = new Set();
+  for (const key of COMMENT_CHILD_KEYS) {
+    for (const item of extractCommentChildren(comment[key])) {
+      if (seen.has(item)) {
+        continue;
+      }
+      seen.add(item);
+      replies.push(item);
+    }
+  }
+  return replies;
+}
+
 function prepareCommentItem(comment, depth = 0) {
   if (!comment || typeof comment !== "object") {
     return null;
@@ -1539,11 +1892,7 @@ function prepareCommentItem(comment, depth = 0) {
     ? comment.images.filter((image) => image && (image.thumb_url || image.full_url || image.fallback_url))
     : [];
   const badges = extractCommentBadges(comment);
-  const repliesSource = Array.isArray(comment.replies)
-    ? comment.replies
-    : Array.isArray(comment.children)
-      ? comment.children
-      : [];
+  const repliesSource = commentReplyItems(comment);
   const replies = depth < 2
     ? repliesSource.map((item) => prepareCommentItem(item, depth + 1)).filter(Boolean)
     : [];
@@ -1820,6 +2169,8 @@ async function submitAttachmentUpload() {
     commentsTotal.value = Number(payload.detail?.comments_total || comments.value.length);
     commentsNextOffset.value = payload.detail?.comments_next_offset ?? null;
     scheduleCommentsRender();
+    await nextTick();
+    syncAllThumbRails();
     attachmentUploadMessage.value = payload.message || "附件已上传。";
     resetAttachmentUploadState({ clearFeedback: false });
   } catch (error) {
@@ -1850,6 +2201,8 @@ async function removeAttachment(attachment) {
     commentsTotal.value = Number(payload.detail?.comments_total || comments.value.length);
     commentsNextOffset.value = payload.detail?.comments_next_offset ?? null;
     scheduleCommentsRender();
+    await nextTick();
+    syncAllThumbRails();
     attachmentUploadMessage.value = payload.message || "附件已删除。";
   } catch (error) {
     attachmentUploadError.value = error instanceof Error ? error.message : "附件删除失败。";
@@ -1861,7 +2214,10 @@ async function removeAttachment(attachment) {
 async function load() {
   loading.value = true;
   errorMessage.value = "";
+  closeLightbox();
   profileEntryRefs.clear();
+  clearProfileMediaStripRefs();
+  mainGalleryRail.value = createThumbRailState();
   previewedInstanceKey.value = "";
   popoverPlacementState.value = {};
   commentsReady.value = false;
@@ -1890,6 +2246,8 @@ async function load() {
       setMainMedia("", payload.cover_url || "", payload.cover_remote_url || "", payload.title);
     }
     scheduleCommentsRender();
+    await nextTick();
+    syncAllThumbRails();
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "读取模型失败。";
   } finally {
@@ -1900,7 +2258,10 @@ async function load() {
 watch(modelDir, (value) => {
   resetAttachmentUploadState({ keepCategory: false });
   if (!value) {
+    closeLightbox();
     profileEntryRefs.clear();
+    clearProfileMediaStripRefs();
+    mainGalleryRail.value = createThumbRailState();
     detail.value = null;
     comments.value = [];
     commentsTotal.value = 0;
@@ -1920,6 +2281,14 @@ watch([commentsReady, hasMoreComments, () => visibleComments.value.length], () =
   syncCommentsLoadMoreObserver();
 }, { flush: "post" });
 
+watch(previewedInstanceKey, async (value) => {
+  if (!value) {
+    return;
+  }
+  await nextTick();
+  syncProfileMediaRail(value);
+}, { flush: "post" });
+
 onErrorCaptured((error) => {
   errorMessage.value = error instanceof Error ? error.message : "模型详情渲染失败。";
   loading.value = false;
@@ -1931,6 +2300,16 @@ onMounted(() => {
     return;
   }
   commentsAutoLoadSupported.value = "IntersectionObserver" in window;
+  if ("ResizeObserver" in window) {
+    railResizeObserver = new window.ResizeObserver((entries) => {
+      for (const entry of entries) {
+        syncThumbRailByElement(entry.target);
+      }
+    });
+    if (mainGalleryThumbsRef.value) {
+      observeThumbRail(mainGalleryThumbsRef.value);
+    }
+  }
   hoverPopoverMediaQuery = window.matchMedia("(hover: hover) and (pointer: fine)");
   applyHoverPopoverEnabled(hoverPopoverMediaQuery.matches);
   hoverPopoverMediaListener = (event) => applyHoverPopoverEnabled(event.matches);
@@ -1940,12 +2319,16 @@ onMounted(() => {
     hoverPopoverMediaQuery.addListener(hoverPopoverMediaListener);
   }
   window.addEventListener("hashchange", handleHashChange);
+  window.addEventListener("keydown", handleWindowKeydown);
   window.addEventListener("pointerdown", handleWindowPointerDown);
   window.addEventListener("resize", handleWindowResize);
 });
 onBeforeUnmount(() => {
-  document.body.classList.remove("is-lightbox-open");
+  closeLightbox();
   profileEntryRefs.clear();
+  clearProfileMediaStripRefs();
+  mainGalleryThumbsRef.value = null;
+  mainGalleryRail.value = createThumbRailState();
   commentsReady.value = false;
   comments.value = [];
   commentsTotal.value = 0;
@@ -1957,6 +2340,10 @@ onBeforeUnmount(() => {
   if (commentsRenderFrame && typeof window !== "undefined") {
     window.cancelAnimationFrame(commentsRenderFrame);
   }
+  if (railResizeObserver) {
+    railResizeObserver.disconnect();
+    railResizeObserver = null;
+  }
   if (hoverPopoverMediaQuery && hoverPopoverMediaListener) {
     if (typeof hoverPopoverMediaQuery.removeEventListener === "function") {
       hoverPopoverMediaQuery.removeEventListener("change", hoverPopoverMediaListener);
@@ -1966,6 +2353,7 @@ onBeforeUnmount(() => {
   }
   if (typeof window !== "undefined") {
     window.removeEventListener("hashchange", handleHashChange);
+    window.removeEventListener("keydown", handleWindowKeydown);
     window.removeEventListener("pointerdown", handleWindowPointerDown);
     window.removeEventListener("resize", handleWindowResize);
   }

@@ -191,7 +191,7 @@
             </div>
           </div>
           <p class="archive-form__hint">
-            这里只负责扫描本地已归档模型，并把缺少打印配置详情或实例展示媒体字段的模型加入归档补整理队列。实际补全会在后台归档队列继续执行，不主动消耗 3MF 下载次数。
+            这里只负责扫描本地已归档模型，并把缺少打印配置详情、实例展示媒体或评论回复字段的模型加入归档补整理队列。实际补全会在后台归档队列继续执行，不主动消耗 3MF 下载次数。
           </p>
           <div class="settings-grid settings-grid--three system-update-grid">
             <article class="field-card system-update-stat">
@@ -675,7 +675,7 @@ async function loadProfileBackfillStatus(options = {}) {
 }
 
 async function triggerProfileBackfill() {
-  const shouldProceed = window.confirm("会扫描本地归档库，并把缺少打印配置详情或实例展示媒体字段的模型加入归档补整理队列。这里只负责扫描和入队，不会主动下载 3MF。确定继续吗？");
+  const shouldProceed = window.confirm("会扫描本地归档库，并把缺少打印配置详情、实例展示媒体或评论回复字段的模型加入归档补整理队列。这里只负责扫描和入队，不会主动下载 3MF。确定继续吗？");
   if (!shouldProceed) {
     return;
   }

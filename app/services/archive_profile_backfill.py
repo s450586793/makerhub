@@ -6,7 +6,7 @@ from app.core.settings import ARCHIVE_DIR, STATE_DIR, ensure_app_dirs
 from app.core.timezone import now_iso as china_now_iso
 from app.services.archive_worker import ArchiveTaskManager
 from app.services.business_logs import append_business_log
-from app.services.legacy_archiver import PROFILE_DETAIL_SCHEMA_VERSION
+from app.services.legacy_archiver import COMMENT_SCHEMA_VERSION, PROFILE_DETAIL_SCHEMA_VERSION
 
 
 PROFILE_BACKFILL_STATUS_PATH = STATE_DIR / "archive_profile_backfill_status.json"
@@ -119,10 +119,59 @@ def _instance_has_display_media(instance: dict[str, Any]) -> bool:
     )
 
 
+def _comment_schema_version(meta: dict[str, Any]) -> int:
+    for value in (meta.get("commentSchemaVersion"), meta.get("commentsSchemaVersion")):
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _comment_reply_count(item: dict[str, Any]) -> int:
+    for value in (
+        item.get("replyCount"),
+        item.get("reply_count"),
+        item.get("subCommentCount"),
+        item.get("childrenCount"),
+    ):
+        try:
+            count = int(value or 0)
+        except (TypeError, ValueError):
+            continue
+        if count > 0:
+            return count
+    return 0
+
+
+def _iter_comment_tree(items: Any):
+    if not isinstance(items, list):
+        return
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        yield item
+        yield from _iter_comment_tree(item.get("replies"))
+
+
+def _meta_needs_comment_reply_backfill(meta: dict[str, Any]) -> bool:
+    if _comment_schema_version(meta) >= COMMENT_SCHEMA_VERSION:
+        return False
+    comments = meta.get("comments") if isinstance(meta.get("comments"), list) else []
+    for item in _iter_comment_tree(comments):
+        reply_count = _comment_reply_count(item)
+        if reply_count <= 0:
+            continue
+        replies = item.get("replies") if isinstance(item.get("replies"), list) else []
+        if len(replies) < reply_count:
+            return True
+    return False
+
+
 def _meta_needs_profile_backfill(meta: dict[str, Any]) -> bool:
     instances = meta.get("instances") if isinstance(meta.get("instances"), list) else []
     if not instances:
-        return False
+        return _meta_needs_comment_reply_backfill(meta)
     for instance in instances:
         if not isinstance(instance, dict):
             continue
@@ -130,7 +179,7 @@ def _meta_needs_profile_backfill(meta: dict[str, Any]) -> bool:
             return True
         if not _instance_has_display_media(instance):
             return True
-    return False
+    return _meta_needs_comment_reply_backfill(meta)
 
 
 def discover_profile_backfill_candidates(archive_root: Path = ARCHIVE_DIR) -> list[dict[str, str]]:
