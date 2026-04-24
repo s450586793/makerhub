@@ -6,6 +6,7 @@ __pycache__/
 *.pyd
 .pytest_cache/
 .mypy_cache/
+.bytro
 runtime/
 frontend/node_modules/
 frontend/dist/

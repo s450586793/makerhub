@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 from app.core.settings import LOGS_DIR, STATE_DIR, ensure_app_dirs
 from app.core.timezone import now_iso as china_now_iso, parse_datetime
+from app.services.three_mf import normalize_three_mf_failure_state
 
 
 ARCHIVE_QUEUE_PATH = STATE_DIR / "archive_queue.json"
@@ -153,14 +154,20 @@ def _normalize_missing_3mf(payload: Any, fallback_items: Optional[list[dict]] = 
             continue
         if is_metadata_only_missing_3mf_placeholder(item):
             continue
+        message = _sanitize_message_text(item.get("message") or item.get("downloadMessage") or "")
+        status = normalize_three_mf_failure_state(
+            item.get("status") or item.get("downloadState") or "",
+            message,
+            url=item.get("model_url") or item.get("url") or "",
+        )
         normalized.append(
             {
                 "model_id": str(item.get("model_id") or item.get("id") or ""),
                 "title": str(item.get("title") or item.get("name") or ""),
-                "status": str(item.get("status") or "missing"),
+                "status": status,
                 "model_url": str(item.get("model_url") or item.get("url") or ""),
                 "instance_id": str(item.get("instance_id") or item.get("profileId") or item.get("instanceId") or ""),
-                "message": _sanitize_message_text(item.get("message") or ""),
+                "message": message,
                 "updated_at": str(item.get("updated_at") or item.get("time") or ""),
             }
         )

@@ -29,7 +29,11 @@ from app.services.catalog import (
 )
 from app.services.process_jobs import run_archive_model_job, run_discover_batch_urls_job
 from app.services.task_state import TaskStateStore
-from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source
+from app.services.three_mf import (
+    describe_three_mf_failure,
+    normalize_makerworld_source,
+    normalize_three_mf_failure_state,
+)
 
 BATCH_TASK_MODES = {"author_upload", "collection_models"}
 BATCH_QUEUE_LOG_PATH = LOGS_DIR / "batch_queue.log"
@@ -1714,7 +1718,11 @@ class ArchiveTaskManager:
                     "model_url": normalize_source_url(url),
                     "title": str(item.get("title") or item.get("name") or result.get("base_name") or ""),
                     "instance_id": str(item.get("id") or item.get("profileId") or item.get("instanceId") or ""),
-                    "status": "missing",
+                    "status": normalize_three_mf_failure_state(
+                        item.get("downloadState") or "",
+                        item.get("downloadMessage") or "",
+                        url=url,
+                    ),
                     "message": _missing_3mf_message_from_result(item, limit_guard_state, url=url),
                     "updated_at": china_now().isoformat(),
                 }

@@ -59,6 +59,24 @@ class Missing3mfTest(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["instance_id"], "profile-2")
 
+    def test_normalize_infers_verification_status_from_message(self):
+        payload = {
+            "items": [
+                {
+                    "model_id": "1759345",
+                    "title": "0.2mm 层高, 2 层墙, 15% 填充",
+                    "status": "missing",
+                    "model_url": "https://makerworld.com.cn/zh/models/1759345",
+                    "message": "国区下载 3MF 时触发站点验证；请先在浏览器完成验证，再更新国内站 Cookie / token。",
+                }
+            ]
+        }
+
+        normalized = _normalize_missing_3mf(payload)
+
+        self.assertEqual(len(normalized["items"]), 1)
+        self.assertEqual(normalized["items"][0]["status"], "verification_required")
+
 
 if __name__ == "__main__":
     unittest.main()

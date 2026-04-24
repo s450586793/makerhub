@@ -25,6 +25,49 @@ _THREE_MF_FAILURE_PRIORITY = {
     "missing": 10,
     "available": 0,
 }
+_THREE_MF_FAILURE_INFERENCE_KEYWORDS = {
+    "download_limited": (
+        "每日下载上限",
+        "今日暂停自动重试",
+        "daily download limit",
+        "reached your daily download limit",
+    ),
+    "cloudflare": (
+        "cloudflare",
+        "cf_clearance",
+        "cf-browser-verification",
+        "cf-chl",
+        "__cf_bm",
+        "challenge-platform",
+    ),
+    "verification_required": (
+        "需要验证",
+        "站点验证",
+        "完成验证",
+        "验证页面",
+        "验证页",
+        "verify you are human",
+        "verification required",
+        "security check",
+        "captcha",
+    ),
+    "auth_required": (
+        "cookie 失效",
+        "登录态",
+        "请登录",
+        "please log in",
+        "log in to download",
+        "cookie 是否过期",
+        "token 是否过期",
+    ),
+    "not_found": (
+        "源端没有返回该打印配置的 3mf 下载地址",
+        "没有返回该打印配置的 3mf 下载地址",
+    ),
+    "missing": (
+        "未获取到 3mf 下载地址",
+    ),
+}
 _THREE_MF_LEGACY_MESSAGES = {
     "download_limited": {
         "已达到 MakerWorld 每日下载上限，今日暂停自动重试。",
@@ -150,6 +193,54 @@ def describe_three_mf_failure(
     if normalized_message:
         return normalized_message
     return "等待重新下载"
+
+
+def normalize_three_mf_failure_state(
+    state: Any,
+    message: Any = "",
+    *,
+    source: Any = "",
+    url: Any = "",
+) -> str:
+    normalized_state = str(state or "").strip()
+    if normalized_state in _THREE_MF_FAILURE_PRIORITY and normalized_state not in {"missing", "available"}:
+        return normalized_state
+
+    raw_message = str(message or "").strip()
+    if not raw_message:
+        return normalized_state or "missing"
+
+    lowered = raw_message.lower()
+    normalized_message = _normalize_loose_identity_text(raw_message)
+    for candidate_state in (
+        "download_limited",
+        "cloudflare",
+        "verification_required",
+        "auth_required",
+        "not_found",
+        "missing",
+    ):
+        for keyword in _THREE_MF_FAILURE_INFERENCE_KEYWORDS.get(candidate_state, ()):
+            if keyword.lower() in lowered:
+                return candidate_state
+            if _normalize_loose_identity_text(keyword) in normalized_message:
+                return candidate_state
+
+    described = describe_three_mf_failure(normalized_state, raw_message, source=source, url=url)
+    normalized_described = _normalize_loose_identity_text(described)
+    for candidate_state in (
+        "download_limited",
+        "cloudflare",
+        "verification_required",
+        "auth_required",
+        "not_found",
+        "missing",
+    ):
+        for keyword in _THREE_MF_FAILURE_INFERENCE_KEYWORDS.get(candidate_state, ()):
+            if _normalize_loose_identity_text(keyword) in normalized_described:
+                return candidate_state
+
+    return normalized_state or "missing"
 
 
 def three_mf_failure_priority(state: Any) -> int:

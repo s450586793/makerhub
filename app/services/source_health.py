@@ -17,6 +17,7 @@ from app.services.three_mf import (
     describe_three_mf_failure,
     merge_three_mf_failure,
     normalize_makerworld_source,
+    normalize_three_mf_failure_state,
     three_mf_failure_priority,
 )
 
@@ -441,7 +442,11 @@ def _build_missing_3mf_overrides(items: list[dict[str, Any]] | None) -> dict[str
     for raw_item in items or []:
         if not isinstance(raw_item, dict):
             continue
-        state = str(raw_item.get("status") or raw_item.get("downloadState") or "").strip()
+        state = normalize_three_mf_failure_state(
+            raw_item.get("status") or raw_item.get("downloadState") or "",
+            raw_item.get("message") or raw_item.get("downloadMessage") or "",
+            url=raw_item.get("model_url") or raw_item.get("url") or "",
+        )
         if state not in {"download_limited", "verification_required", "cloudflare", "auth_required"}:
             continue
         platform = normalize_makerworld_source(url=raw_item.get("model_url"))
