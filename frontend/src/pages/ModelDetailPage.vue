@@ -679,6 +679,16 @@
                   }}
                 </button>
 
+                <button
+                  v-if="commentCanLoadMoreReplies(comment)"
+                  class="mw-comment-thread__expand"
+                  type="button"
+                  :disabled="commentsLoadingMore"
+                  @click.stop="loadMoreRepliesForComment(comment)"
+                >
+                  {{ commentsLoadingMore ? "加载中..." : `继续加载 ${formatStat(commentMissingReplyCount(comment))} 条回复` }}
+                </button>
+
                 <span
                   v-else-if="comment.reply_count > 0 && !comment.replies?.length"
                   class="mw-comment-thread__expand mw-comment-thread__expand--static"
@@ -777,6 +787,7 @@ const profileEntryRefs = new Map();
 const popoverPlacementState = ref({});
 const commentsReady = ref(false);
 const comments = shallowRef([]);
+const rawComments = shallowRef([]);
 const commentsTotal = ref(0);
 const commentsNextOffset = ref(null);
 const commentsLoadingMore = ref(false);
@@ -1882,6 +1893,214 @@ function commentReplyItems(comment) {
   return replies;
 }
 
+function commentIdentityKey(comment) {
+  const explicit = String(comment?.id || comment?.commentId || "").trim();
+  if (explicit) {
+    return explicit;
+  }
+  const authorSource = comment?.author;
+  const author = String(
+    (authorSource && typeof authorSource === "object"
+      ? (authorSource.name || authorSource.nickname || authorSource.username || authorSource.userName)
+      : authorSource)
+    || comment?.userName
+    || comment?.nickname
+    || comment?.authorName
+    || comment?.creatorName
+    || "",
+  ).trim();
+  const content = String(
+    comment?.content
+    || comment?.commentContent
+    || comment?.comment
+    || comment?.message
+    || comment?.text
+    || "",
+  ).trim();
+  const timeValue = String(
+    comment?.time
+    || comment?.createdAt
+    || comment?.createTime
+    || comment?.commentTime
+    || comment?.updatedAt
+    || "",
+  ).trim();
+  const rootCommentId = String(comment?.rootCommentId || comment?.root_comment_id || "").trim();
+  return [rootCommentId, author, timeValue, content].join("|");
+}
+
+function commentReplyCountValue(comment) {
+  return normalizeCommentNumber(comment?.reply_count ?? comment?.replyCount ?? comment?.subCommentCount ?? comment?.childrenCount);
+}
+
+function normalizeThreadedCommentNode(comment) {
+  if (!comment || typeof comment !== "object") {
+    return null;
+  }
+  const normalized = { ...comment };
+  const replies = commentReplyItems(comment)
+    .map((item) => normalizeThreadedCommentNode(item))
+    .filter(Boolean);
+  normalized.replies = mergeThreadedCommentList([], replies);
+  normalized.replyCount = Math.max(normalized.replies.length, commentReplyCountValue(normalized));
+  return normalized;
+}
+
+function mergeThreadedCommentItem(existing, fresh) {
+  const merged = { ...existing };
+  for (const [key, value] of Object.entries(fresh || {})) {
+    if (key === "replies") {
+      continue;
+    }
+    if (value == null || value === "" || (Array.isArray(value) && value.length === 0)) {
+      continue;
+    }
+    if (typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0) {
+      continue;
+    }
+    merged[key] = value;
+  }
+
+  const mergedReplies = mergeThreadedCommentList(
+    Array.isArray(existing?.replies) ? existing.replies : [],
+    Array.isArray(fresh?.replies) ? fresh.replies : [],
+  );
+  merged.replies = mergedReplies;
+  merged.replyCount = Math.max(mergedReplies.length, commentReplyCountValue(existing), commentReplyCountValue(fresh));
+  return merged;
+}
+
+function mergeThreadedCommentList(existingItems, freshItems) {
+  const merged = [];
+  const mergedByKey = new Map();
+
+  function upsert(item) {
+    if (!item || typeof item !== "object") {
+      return;
+    }
+    const normalized = { ...item };
+    normalized.replies = mergeThreadedCommentList([], commentReplyItems(item));
+    normalized.replyCount = Math.max(normalized.replies.length, commentReplyCountValue(normalized));
+    const key = commentIdentityKey(normalized);
+    if (mergedByKey.has(key)) {
+      mergedByKey.set(key, mergeThreadedCommentItem(mergedByKey.get(key), normalized));
+      return;
+    }
+    merged.push(normalized);
+    mergedByKey.set(key, normalized);
+  }
+
+  for (const item of existingItems || []) {
+    upsert(item);
+  }
+  for (const item of freshItems || []) {
+    upsert(item);
+  }
+
+  return merged.map((item) => mergedByKey.get(commentIdentityKey(item)) || item);
+}
+
+function isFlatReplyCandidate(comment) {
+  if (!comment || typeof comment !== "object") {
+    return false;
+  }
+  if (extractReplyTarget(comment)) {
+    return true;
+  }
+  const commentType = String(comment?.commentType || comment?.comment_type || "").trim().toLowerCase();
+  return Boolean(commentType && !["0", "root", "comment", "main"].includes(commentType));
+}
+
+function threadTopLevelComments(items) {
+  const roots = [];
+  const rootsByKey = new Map();
+  const pendingReplies = new Map();
+  let currentFallbackRootKey = "";
+
+  function replySlotsRemaining(rootKey) {
+    const root = rootsByKey.get(rootKey);
+    if (!root) {
+      return 0;
+    }
+    return Math.max(commentReplyCountValue(root) - (Array.isArray(root.replies) ? root.replies.length : 0), 0);
+  }
+
+  function attachPending(rootKey) {
+    const pendingItems = pendingReplies.get(rootKey) || [];
+    if (!pendingItems.length) {
+      return;
+    }
+    const root = rootsByKey.get(rootKey);
+    if (!root) {
+      return;
+    }
+    root.replies = mergeThreadedCommentList(root.replies || [], pendingItems);
+    root.replyCount = Math.max(root.replies.length, commentReplyCountValue(root));
+    pendingReplies.delete(rootKey);
+  }
+
+  function upsertRoot(item) {
+    const key = commentIdentityKey(item);
+    if (rootsByKey.has(key)) {
+      const merged = mergeThreadedCommentItem(rootsByKey.get(key), item);
+      rootsByKey.set(key, merged);
+      const index = roots.findIndex((entry) => commentIdentityKey(entry) === key);
+      if (index >= 0) {
+        roots[index] = merged;
+      }
+      attachPending(key);
+      currentFallbackRootKey = replySlotsRemaining(key) > 0 ? key : "";
+      return;
+    }
+    roots.push(item);
+    rootsByKey.set(key, item);
+    attachPending(key);
+    currentFallbackRootKey = replySlotsRemaining(key) > 0 ? key : "";
+  }
+
+  function addReply(rootKey, reply) {
+    const root = rootsByKey.get(rootKey);
+    if (!root) {
+      pendingReplies.set(rootKey, [...(pendingReplies.get(rootKey) || []), reply]);
+      return;
+    }
+    root.replies = mergeThreadedCommentList(root.replies || [], [reply]);
+    root.replyCount = Math.max(root.replies.length, commentReplyCountValue(root));
+    currentFallbackRootKey = replySlotsRemaining(rootKey) > 0 ? rootKey : "";
+  }
+
+  for (const item of items || []) {
+    const normalized = normalizeThreadedCommentNode(item);
+    if (!normalized) {
+      continue;
+    }
+    const commentKey = commentIdentityKey(normalized);
+    const explicitRootKey = String(item?.rootCommentId || item?.root_comment_id || "").trim();
+    if (explicitRootKey && explicitRootKey !== commentKey) {
+      addReply(explicitRootKey, normalized);
+      continue;
+    }
+    if (
+      currentFallbackRootKey
+      && currentFallbackRootKey !== commentKey
+      && replySlotsRemaining(currentFallbackRootKey) > 0
+      && isFlatReplyCandidate(item)
+    ) {
+      addReply(currentFallbackRootKey, normalized);
+      continue;
+    }
+    upsertRoot(normalized);
+  }
+
+  for (const replies of pendingReplies.values()) {
+    for (const reply of replies) {
+      upsertRoot(reply);
+    }
+  }
+
+  return roots;
+}
+
 function prepareCommentItem(comment, depth = 0) {
   if (!comment || typeof comment !== "object") {
     return null;
@@ -1962,6 +2181,35 @@ function visibleCommentReplies(comment) {
 function hiddenCommentReplyCount(comment) {
   const replies = Array.isArray(comment?.replies) ? comment.replies.length : 0;
   return Math.max(replies - COMMENT_REPLY_PREVIEW_COUNT, 0);
+}
+
+function commentMissingReplyCount(comment) {
+  const replies = Array.isArray(comment?.replies) ? comment.replies.length : 0;
+  return Math.max(normalizeCommentNumber(comment?.reply_count) - replies, 0);
+}
+
+function commentCanLoadMoreReplies(comment) {
+  return commentMissingReplyCount(comment) > 0 && commentsNextOffset.value !== null;
+}
+
+function findPreparedComment(key) {
+  return comments.value.find((item) => commentReplyKey(item) === key) || null;
+}
+
+async function loadMoreRepliesForComment(comment) {
+  const key = commentReplyKey(comment);
+  if (!key || commentsLoadingMore.value) {
+    return;
+  }
+  let attempts = 0;
+  while (commentsNextOffset.value !== null && attempts < 20) {
+    const current = findPreparedComment(key);
+    if (!current || commentMissingReplyCount(current) <= 0) {
+      return;
+    }
+    await loadMoreComments();
+    attempts += 1;
+  }
 }
 
 function toggleCommentReplies(comment) {
@@ -2093,7 +2341,7 @@ function prepareComments(items) {
   if (!Array.isArray(items)) {
     return [];
   }
-  return items
+  return threadTopLevelComments(items)
     .map((comment) => prepareCommentItem(comment))
     .filter(Boolean);
 }
@@ -2125,7 +2373,8 @@ async function loadMoreComments() {
     const payload = await apiRequest(
       `/api/models/${encodeURIComponent(modelDir.value)}/comments?offset=${commentsNextOffset.value}&limit=${INITIAL_COMMENT_BATCH}`,
     );
-    comments.value = [...comments.value, ...prepareComments(payload.items || [])];
+    rawComments.value = [...rawComments.value, ...(Array.isArray(payload.items) ? payload.items : [])];
+    comments.value = prepareComments(rawComments.value);
     commentsTotal.value = Number(payload.total || commentsTotal.value || comments.value.length);
     commentsNextOffset.value = payload.next_offset ?? null;
   } catch (error) {
@@ -2165,7 +2414,8 @@ async function submitAttachmentUpload() {
       body: formData,
     });
     detail.value = prepareDetailPayload(payload.detail);
-    comments.value = prepareComments(payload.detail?.comments || []);
+    rawComments.value = Array.isArray(payload.detail?.comments) ? payload.detail.comments : [];
+    comments.value = prepareComments(rawComments.value);
     commentsTotal.value = Number(payload.detail?.comments_total || comments.value.length);
     commentsNextOffset.value = payload.detail?.comments_next_offset ?? null;
     scheduleCommentsRender();
@@ -2197,7 +2447,8 @@ async function removeAttachment(attachment) {
       method: "DELETE",
     });
     detail.value = prepareDetailPayload(payload.detail);
-    comments.value = prepareComments(payload.detail?.comments || []);
+    rawComments.value = Array.isArray(payload.detail?.comments) ? payload.detail.comments : [];
+    comments.value = prepareComments(rawComments.value);
     commentsTotal.value = Number(payload.detail?.comments_total || comments.value.length);
     commentsNextOffset.value = payload.detail?.comments_next_offset ?? null;
     scheduleCommentsRender();
@@ -2222,6 +2473,7 @@ async function load() {
   popoverPlacementState.value = {};
   commentsReady.value = false;
   comments.value = [];
+  rawComments.value = [];
   commentsTotal.value = 0;
   commentsNextOffset.value = null;
   commentsLoadingMore.value = false;
@@ -2231,7 +2483,8 @@ async function load() {
   try {
     const payload = prepareDetailPayload(await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}`));
     detail.value = payload;
-    comments.value = prepareComments(payload.comments || []);
+    rawComments.value = Array.isArray(payload.comments) ? payload.comments : [];
+    comments.value = prepareComments(rawComments.value);
     commentsTotal.value = Number(payload.comments_total || comments.value.length);
     commentsNextOffset.value = payload.comments_next_offset ?? null;
     const initialInstance = findInstanceByHash(payload.instances || []) || payload.instances?.[0] || null;
@@ -2264,6 +2517,7 @@ watch(modelDir, (value) => {
     mainGalleryRail.value = createThumbRailState();
     detail.value = null;
     comments.value = [];
+    rawComments.value = [];
     commentsTotal.value = 0;
     commentsNextOffset.value = null;
     commentsLoadingMore.value = false;
@@ -2331,6 +2585,7 @@ onBeforeUnmount(() => {
   mainGalleryRail.value = createThumbRailState();
   commentsReady.value = false;
   comments.value = [];
+  rawComments.value = [];
   commentsTotal.value = 0;
   commentsNextOffset.value = null;
   commentsLoadingMore.value = false;
