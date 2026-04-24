@@ -7,11 +7,38 @@ from app.services.legacy_archiver import (
     COMMENT_SCHEMA_VERSION,
     PROFILE_DETAIL_SCHEMA_VERSION,
     _collect_comment_tree,
+    collect_comments,
     normalize_threaded_comments,
 )
 
 
 class CommentRepliesTest(unittest.TestCase):
+    class _DummyResponse:
+        def __init__(self, payload, status_code: int = 200):
+            self._payload = payload
+            self.status_code = status_code
+            self.text = "{}"
+
+        def json(self):
+            return self._payload
+
+    class _DummySession:
+        def __init__(self, payload):
+            self.headers = {"User-Agent": "MakerHub Test"}
+            self._payload = payload
+            self.calls = []
+
+        def get(self, url, params=None, headers=None, timeout=None):
+            self.calls.append(
+                {
+                    "url": url,
+                    "params": params,
+                    "headers": headers,
+                    "timeout": timeout,
+                }
+            )
+            return CommentRepliesTest._DummyResponse(self._payload)
+
     def test_catalog_normalizes_wrapped_reply_lists(self):
         comment = {
             "commentId": "root-comment",
@@ -178,6 +205,60 @@ class CommentRepliesTest(unittest.TestCase):
         self.assertEqual(threaded[0]["replyCount"], 2)
         self.assertEqual([item["id"] for item in threaded[0]["replies"]], ["reply-1", "reply-2"])
         self.assertEqual(threaded[1]["id"], "other-root")
+
+    def test_collect_comments_fetches_missing_replies_from_comment_api(self):
+        next_data = {
+            "comments": [
+                {
+                    "commentId": "root-comment",
+                    "commentContent": "主评论",
+                    "commentTime": "2026-04-23 12:00:00",
+                    "replyCount": 2,
+                }
+            ]
+        }
+        design = {
+            "url": "https://makerworld.com.cn/zh/models/123456",
+            "commentCount": 3,
+        }
+        reply_payload = {
+            "data": {
+                "items": [
+                    {
+                        "commentId": "reply-1",
+                        "rootCommentId": "root-comment",
+                        "commentContent": "第一条回复",
+                        "commentTime": "2026-04-23 12:05:00",
+                        "replyToName": "楼主",
+                    },
+                    {
+                        "commentId": "reply-2",
+                        "rootCommentId": "root-comment",
+                        "commentContent": "第二条回复",
+                        "commentTime": "2026-04-23 12:06:00",
+                        "replyToName": "楼主",
+                    },
+                ],
+                "hasNext": False,
+            }
+        }
+        session = self._DummySession(reply_payload)
+
+        bundle = collect_comments(
+            next_data,
+            design,
+            session,
+            Path("."),
+            download_assets=False,
+        )
+
+        self.assertEqual(bundle["count"], 3)
+        self.assertEqual(len(bundle["items"]), 1)
+        self.assertEqual(bundle["items"][0]["replyCount"], 2)
+        self.assertEqual([item["id"] for item in bundle["items"][0]["replies"]], ["reply-1", "reply-2"])
+        self.assertEqual(len(session.calls), 1)
+        self.assertIn("/comment-service/comment/root-comment/reply", session.calls[0]["url"])
+        self.assertEqual(session.calls[0]["params"], {"limit": 20})
 
     def test_profile_backfill_detects_models_missing_comment_replies(self):
         meta = {

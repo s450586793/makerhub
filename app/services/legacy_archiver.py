@@ -117,6 +117,13 @@ IMAGE_TRANSFER_TIMEOUT_SECONDS = 45
 BINARY_TRANSFER_TIMEOUT_SECONDS = 300
 CONNECT_TIMEOUT_SECONDS = 15
 READ_TIMEOUT_SECONDS = 30
+MAKERWORLD_API_BROWSER_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "X-BBL-Client-Type": "web",
+    "X-BBL-Client-Version": "00.00.00.01",
+    "X-BBL-App-Source": "makerworld",
+    "X-BBL-Client-Name": "MakerWorld",
+}
 _OFFLINE_TEMPLATE_CACHE_LOCK = threading.RLock()
 _OFFLINE_TEMPLATE_CACHE: dict[str, Any] = {
     "signature": (),
@@ -1511,6 +1518,252 @@ def _extract_comment_count_from_sections(sections: List[object]) -> List[int]:
     return found
 
 
+def _normalize_service_base(base: Optional[str]) -> str:
+    normalized = str(base or "").strip()
+    if not normalized:
+        return ""
+    if not normalized.startswith("http://") and not normalized.startswith("https://"):
+        normalized = f"https://{normalized}"
+    return normalized.rstrip("/")
+
+
+def _comment_api_base_candidates(source_url: str, api_host_hint: Optional[str] = None) -> List[str]:
+    normalized_source = normalize_makerworld_source(url=source_url)
+    if normalized_source == "global":
+        preferred_site = "https://makerworld.com"
+        preferred_api = "https://api.bambulab.com"
+    else:
+        preferred_site = "https://makerworld.com.cn"
+        preferred_api = "https://api.bambulab.cn"
+
+    parsed = urlparse(str(source_url or "").strip())
+    origin = (
+        f"{parsed.scheme}://{parsed.netloc}"
+        if parsed.scheme and parsed.netloc
+        else preferred_site
+    )
+
+    bases: List[str] = []
+    for candidate in (origin, api_host_hint, preferred_site, preferred_api):
+        normalized = _normalize_service_base(candidate)
+        if normalized and normalized not in bases:
+            bases.append(normalized)
+    return bases
+
+
+def _comment_service_endpoint_candidates(
+    source_url: str,
+    path: str,
+    *,
+    api_host_hint: Optional[str] = None,
+) -> List[str]:
+    clean_path = "/" + str(path or "").lstrip("/")
+    endpoints: List[str] = []
+    for base in _comment_api_base_candidates(source_url, api_host_hint=api_host_hint):
+        for prefix in ("", "/makerworld"):
+            for service_prefix in ("/api/v1/comment-service", "/v1/comment-service"):
+                candidate = f"{base}{prefix}{service_prefix}{clean_path}"
+                if candidate not in endpoints:
+                    endpoints.append(candidate)
+    return endpoints
+
+
+def _build_makerworld_api_headers(session: requests.Session, referer: str) -> dict[str, str]:
+    headers = dict(MAKERWORLD_API_BROWSER_HEADERS)
+    effective_referer = str(referer or "").strip() or "https://makerworld.com.cn/"
+    parsed = urlparse(effective_referer)
+    headers["Referer"] = effective_referer
+    headers["Origin"] = (
+        f"{parsed.scheme}://{parsed.netloc}"
+        if parsed.scheme and parsed.netloc
+        else "https://makerworld.com.cn"
+    )
+    headers["User-Agent"] = session.headers.get("User-Agent", "Mozilla/5.0 (MW-Fetcher)")
+    return headers
+
+
+def _looks_like_html_response(text: object) -> bool:
+    if not isinstance(text, str):
+        return False
+    lowered = text.lstrip().lower()
+    return lowered.startswith("<!doctype html") or lowered.startswith("<html")
+
+
+def _iter_payload_dicts(node: object, depth: int = 0):
+    if depth > 10 or node is None:
+        return
+    if isinstance(node, dict):
+        yield node
+        for value in node.values():
+            yield from _iter_payload_dicts(value, depth + 1)
+        return
+    if isinstance(node, list):
+        for item in node:
+            yield from _iter_payload_dicts(item, depth + 1)
+
+
+def _extract_comment_reply_payload_has_more(payload: object) -> Optional[bool]:
+    for node in _iter_payload_dicts(payload):
+        for key in ("hasNext", "hasMore", "more"):
+            value = node.get(key)
+            if isinstance(value, bool):
+                return value
+        for key in ("isEnd", "end"):
+            value = node.get(key)
+            if isinstance(value, bool):
+                return not value
+    return None
+
+
+def _extract_comment_replies_from_payload(payload: object, root_comment_id: str) -> List[dict]:
+    if not root_comment_id:
+        return []
+
+    comments: List[dict] = []
+    seen: dict[str, dict] = {}
+    _collect_comments_from_payload(payload, comments, seen)
+    if not comments:
+        return []
+
+    threaded = normalize_threaded_comments(comments)
+    replies: List[dict] = []
+    for item in threaded:
+        if not isinstance(item, dict):
+            continue
+        comment_id = str(item.get("id") or "").strip()
+        item_root_id = str(item.get("rootCommentId") or item.get("root_comment_id") or "").strip()
+        if comment_id == root_comment_id:
+            replies = _merge_threaded_comment_list(replies, _comment_reply_items(item))
+            continue
+        if item_root_id and item_root_id != root_comment_id:
+            continue
+        if item_root_id == root_comment_id or _looks_like_flat_reply_candidate(item):
+            replies = _merge_threaded_comment_list(replies, [item])
+    return replies
+
+
+def _fetch_comment_reply_payload(
+    session: requests.Session,
+    source_url: str,
+    root_comment_id: str,
+    *,
+    params: Optional[dict[str, object]] = None,
+    api_host_hint: Optional[str] = None,
+) -> Optional[object]:
+    headers = _build_makerworld_api_headers(session, source_url)
+    for api_url in _comment_service_endpoint_candidates(
+        source_url,
+        f"/comment/{root_comment_id}/reply",
+        api_host_hint=api_host_hint,
+    ):
+        try:
+            response = session.get(api_url, params=params or None, headers=headers, timeout=(5, 12))
+        except Exception:
+            continue
+        if response.status_code >= 400:
+            continue
+        if _looks_like_html_response(response.text):
+            continue
+        try:
+            return response.json()
+        except Exception:
+            continue
+    return None
+
+
+def _hydrate_missing_comment_replies(
+    comments: List[dict],
+    session: requests.Session,
+    source_url: str,
+    *,
+    api_host_hint: Optional[str] = None,
+    logger=None,
+) -> tuple[List[dict], dict[str, int]]:
+    if not comments or not source_url:
+        return comments, {"roots": 0, "replies": 0}
+
+    hydrated: List[dict] = []
+    hydrated_root_count = 0
+    hydrated_reply_count = 0
+    fetch_started_at = time.perf_counter()
+
+    for root in comments:
+        if not isinstance(root, dict):
+            continue
+        normalized_root = dict(root)
+        root_comment_id = str(normalized_root.get("id") or normalized_root.get("commentId") or "").strip()
+        existing_replies = _comment_reply_items(normalized_root)
+        expected_reply_count = _comment_reply_count(normalized_root)
+        merged_replies = _merge_threaded_comment_list([], existing_replies)
+
+        if root_comment_id and expected_reply_count > len(merged_replies):
+            page_limit = min(max(expected_reply_count, 20), 200)
+            after: Optional[int] = None
+            last_reply_id = ""
+            seen_offsets: set[int] = set()
+
+            for _ in range(5):
+                params: dict[str, object] = {"limit": page_limit}
+                if after is not None:
+                    params["after"] = after
+                if last_reply_id:
+                    params["msgCommentReplyId"] = last_reply_id
+
+                payload = _fetch_comment_reply_payload(
+                    session,
+                    source_url,
+                    root_comment_id,
+                    params=params,
+                    api_host_hint=api_host_hint,
+                )
+                if payload is None:
+                    break
+
+                fetched_replies = _extract_comment_replies_from_payload(payload, root_comment_id)
+                if not fetched_replies:
+                    break
+
+                before_count = len(merged_replies)
+                merged_replies = _merge_threaded_comment_list(merged_replies, fetched_replies)
+                if len(merged_replies) > before_count:
+                    last_reply = merged_replies[-1] if merged_replies else {}
+                    last_reply_id = str(last_reply.get("id") or last_reply_id).strip()
+
+                if len(merged_replies) >= expected_reply_count:
+                    break
+
+                has_more = _extract_comment_reply_payload_has_more(payload)
+                if has_more is False:
+                    break
+                if has_more is None and len(fetched_replies) < page_limit:
+                    break
+
+                next_after = len(merged_replies)
+                if next_after in seen_offsets:
+                    break
+                seen_offsets.add(next_after)
+                after = next_after
+
+        if len(merged_replies) > len(existing_replies):
+            hydrated_root_count += 1
+            hydrated_reply_count += max(len(merged_replies) - len(existing_replies), 0)
+        if merged_replies:
+            normalized_root["replies"] = merged_replies
+        elif "replies" in normalized_root:
+            normalized_root["replies"] = []
+        normalized_root["replyCount"] = max(len(merged_replies), expected_reply_count)
+        hydrated.append(normalized_root)
+
+    _log_perf(
+        "comments.fetch_replies",
+        fetch_started_at,
+        logger=logger,
+        roots=hydrated_root_count,
+        replies=hydrated_reply_count,
+    )
+    return hydrated, {"roots": hydrated_root_count, "replies": hydrated_reply_count}
+
+
 def collect_comments(
     next_data: dict,
     design: dict,
@@ -1521,6 +1774,7 @@ def collect_comments(
     progress_end: int = 55,
     download_assets: bool = True,
     existing_comments: Optional[List[dict]] = None,
+    api_host_hint: Optional[str] = None,
 ) -> dict:
     emit_progress(progress_callback, progress_start, "正在整理评论数据")
     total_started_at = time.perf_counter()
@@ -1554,6 +1808,12 @@ def collect_comments(
         _collect_comments_from_payload(next_data, comments, seen)
         _collect_comments_from_payload(design, comments, seen)
     comments = normalize_threaded_comments(comments)
+    comments, reply_fetch_stats = _hydrate_missing_comment_replies(
+        comments,
+        session,
+        str(design.get("url") or next_data.get("url") or ""),
+        api_host_hint=api_host_hint,
+    )
     comment_total = _count_comment_threads(comments)
     _log_perf(
         "comments.extract",
@@ -1562,6 +1822,8 @@ def collect_comments(
         comments=comment_total,
         roots=len(comments),
         sections=len(unique_sections),
+        hydrated_roots=reply_fetch_stats.get("roots") or 0,
+        hydrated_replies=reply_fetch_stats.get("replies") or 0,
     )
 
     comment_count = 0
@@ -2766,7 +3028,7 @@ def extract_instances(design: dict) -> List[dict]:
 
 
 PROFILE_DETAIL_SCHEMA_VERSION = 4
-COMMENT_SCHEMA_VERSION = 2
+COMMENT_SCHEMA_VERSION = 3
 _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
 
@@ -4806,6 +5068,7 @@ def archive_model(
         progress_end=55,
         download_assets=download_assets,
         existing_comments=existing_meta.get("comments") if isinstance(existing_meta.get("comments"), list) else [],
+        api_host_hint=api_host_hint,
     )
     _log_perf(
         "archive.collect_comments",
