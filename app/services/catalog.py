@@ -1274,6 +1274,18 @@ def _comment_children(item: dict) -> list[dict]:
     return children
 
 
+def _looks_like_flat_reply_candidate(item: dict) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if _comment_reply_to(item):
+        return True
+
+    comment_type = str(item.get("commentType") or item.get("comment_type") or "").strip().lower()
+    if comment_type and comment_type not in {"0", "root", "comment", "main"}:
+        return True
+    return False
+
+
 def _comment_identity_key(item: dict) -> str:
     explicit = str(item.get("id") or item.get("commentId") or "").strip()
     if explicit:
@@ -1384,6 +1396,13 @@ def _thread_normalized_comments(comment_items: list[dict], model_root: Path) -> 
     roots: list[dict] = []
     roots_by_key: dict[str, dict] = {}
     pending_replies: dict[str, list[dict]] = {}
+    current_fallback_root_key = ""
+
+    def root_reply_slots_remaining(root_key: str) -> int:
+        root = roots_by_key.get(root_key)
+        if not root:
+            return 0
+        return max(_safe_int(root.get("reply_count")) - len(_normalized_comment_replies(root)), 0)
 
     def attach_pending(root_key: str):
         pending_items = pending_replies.pop(root_key, [])
@@ -1403,12 +1422,14 @@ def _thread_normalized_comments(comment_items: list[dict], model_root: Path) -> 
         )
 
     def upsert_root(item: dict) -> dict:
+        nonlocal current_fallback_root_key
         key = _comment_identity_key(item)
         if key in roots_by_key:
             merged = _merge_normalized_comment_item(roots_by_key[key], item)
             roots_by_key[key].clear()
             roots_by_key[key].update(merged)
             attach_pending(key)
+            current_fallback_root_key = key if root_reply_slots_remaining(key) > 0 else ""
             return roots_by_key[key]
 
         normalized = dict(item)
@@ -1423,9 +1444,11 @@ def _thread_normalized_comments(comment_items: list[dict], model_root: Path) -> 
         roots.append(normalized)
         roots_by_key[key] = normalized
         attach_pending(key)
+        current_fallback_root_key = key if root_reply_slots_remaining(key) > 0 else ""
         return normalized
 
     def add_reply(root_key: str, reply: dict):
+        nonlocal current_fallback_root_key
         root = roots_by_key.get(root_key)
         if not root:
             pending_replies.setdefault(root_key, []).append(reply)
@@ -1438,6 +1461,7 @@ def _thread_normalized_comments(comment_items: list[dict], model_root: Path) -> 
             len(root["replies"]),
             _safe_int(root.get("reply_count")),
         )
+        current_fallback_root_key = root_key if root_reply_slots_remaining(root_key) > 0 else ""
 
     for item in comment_items or []:
         if not isinstance(item, dict):
@@ -1447,10 +1471,20 @@ def _thread_normalized_comments(comment_items: list[dict], model_root: Path) -> 
             continue
 
         comment_key = _comment_identity_key(normalized_comment)
-        root_key = str(normalized_comment.get("root_comment_id") or comment_key).strip() or comment_key
-        if root_key and root_key != comment_key:
-            add_reply(root_key, normalized_comment)
+        explicit_root_key = str(item.get("rootCommentId") or "").strip()
+        if explicit_root_key and explicit_root_key != comment_key:
+            add_reply(explicit_root_key, normalized_comment)
             continue
+
+        if (
+            current_fallback_root_key
+            and current_fallback_root_key != comment_key
+            and root_reply_slots_remaining(current_fallback_root_key) > 0
+            and _looks_like_flat_reply_candidate(item)
+        ):
+            add_reply(current_fallback_root_key, normalized_comment)
+            continue
+
         upsert_root(normalized_comment)
 
     for replies in pending_replies.values():
