@@ -244,7 +244,7 @@ def _build_cookie_auth_message(platform: str, payload: dict[str, Any]) -> str:
     if state == "missing_cookie":
         return f"请先填写{platform_label} Cookie。"
     if state == "verification_required":
-        return f"{platform_label} Cookie 需要验证，请先在浏览器完成 MakerWorld 验证后再测试。"
+        return "MakerWorld 需要验证，前往官网任意下载一个模型。"
     if state == "auth_required":
         return f"{platform_label} Cookie 失效，请重新获取并保存 Cookie。"
     if state == "download_limited":
@@ -496,7 +496,7 @@ def build_source_health_cards(config: Any, missing_3mf_items: list[dict[str, Any
             state = override_state
             detail = str(override.get("message") or "").strip()
         if not detail and state == "verification_required":
-            detail = "点击“去验证”打开对应 MakerWorld 页面，完成浏览器验证后再回首页刷新。"
+            detail = "MakerWorld 需要验证，前往官网任意下载一个模型。"
         return {
             "key": platform,
             "title": SOURCE_HEALTH_LABELS.get(platform, platform),

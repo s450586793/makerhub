@@ -93,7 +93,7 @@ class SourceHealthCardsTest(unittest.TestCase):
                 [
                     {
                         "status": "missing",
-                        "message": "国区下载 3MF 时触发站点验证；请先在浏览器完成验证，再更新国内站 Cookie / token。",
+                        "message": "MakerWorld 需要验证，前往官网任意下载一个模型。",
                         "model_url": "https://makerworld.com.cn/zh/models/789",
                     }
                 ],

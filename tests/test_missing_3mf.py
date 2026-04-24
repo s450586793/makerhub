@@ -67,7 +67,7 @@ class Missing3mfTest(unittest.TestCase):
                     "title": "0.2mm 层高, 2 层墙, 15% 填充",
                     "status": "missing",
                     "model_url": "https://makerworld.com.cn/zh/models/1759345",
-                    "message": "国区下载 3MF 时触发站点验证；请先在浏览器完成验证，再更新国内站 Cookie / token。",
+                    "message": "MakerWorld 需要验证，前往官网任意下载一个模型。",
                 }
             ]
         }

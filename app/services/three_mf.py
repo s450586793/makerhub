@@ -41,9 +41,11 @@ _THREE_MF_FAILURE_INFERENCE_KEYWORDS = {
         "challenge-platform",
     ),
     "verification_required": (
+        "makerworld 需要验证",
         "需要验证",
         "站点验证",
         "完成验证",
+        "前往官网任意下载一个模型",
         "验证页面",
         "验证页",
         "verify you are human",
@@ -141,17 +143,9 @@ def _default_three_mf_failure_message(state: str, source: str) -> str:
             return "国际区返回了每日下载上限，今日暂停自动重试。"
         return "已达到 MakerWorld 每日下载上限，今日暂停自动重试。"
     if state == "verification_required":
-        if source == "global":
-            return "国际区下载 3MF 时触发站点验证；请先在浏览器完成验证，再更新 global Cookie / token，必要时补充 cf_clearance。"
-        if source == "cn":
-            return "国区下载 3MF 时触发站点验证；请先在浏览器完成验证，再更新国内站 Cookie / token。"
-        return "下载 3MF 时触发站点验证；请更新 Cookie / token，必要时调整代理。"
+        return "MakerWorld 需要验证，前往官网任意下载一个模型。"
     if state == "cloudflare":
-        if source == "global":
-            return "国际区下载 3MF 时触发站点验证或 Cloudflare 校验；请先在浏览器完成验证，再更新 global Cookie / token，必要时补充 cf_clearance。"
-        if source == "cn":
-            return "国区下载 3MF 时触发站点验证；请先在浏览器完成验证，再更新国内站 Cookie / token。"
-        return "下载 3MF 时触发站点验证或 Cloudflare 校验；请更新 Cookie / token，必要时调整代理。"
+        return "MakerWorld 需要验证，前往官网任意下载一个模型。"
     if state == "auth_required":
         if source == "global":
             return "国际区下载 3MF 需要有效登录态；如果最近出现验证页，请更新 global Cookie / token，必要时补充 cf_clearance。"
