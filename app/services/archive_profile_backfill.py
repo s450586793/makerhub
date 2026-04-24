@@ -144,6 +144,45 @@ def _comment_reply_count(item: dict[str, Any]) -> int:
     return 0
 
 
+def _comment_has_flattened_reply_signal(item: dict[str, Any]) -> bool:
+    comment_id = str(item.get("id") or item.get("commentId") or "").strip()
+    root_comment_id = str(item.get("rootCommentId") or item.get("root_comment_id") or "").strip()
+    if root_comment_id and root_comment_id != comment_id:
+        return True
+
+    direct_fields = (
+        "replyToName",
+        "replyUserName",
+        "replyNickName",
+        "targetUserName",
+        "parentAuthor",
+        "parentUserName",
+        "toUserName",
+        "beRepliedUserName",
+    )
+    if any(str(item.get(field) or "").strip() for field in direct_fields):
+        return True
+
+    nested_fields = (
+        "replyToUser",
+        "replyUser",
+        "targetUser",
+        "beRepliedUser",
+        "parentUser",
+    )
+    for field in nested_fields:
+        value = item.get(field)
+        if not isinstance(value, dict):
+            continue
+        if any(str(value.get(key) or "").strip() for key in ("nickname", "nickName", "name", "username", "userName")):
+            return True
+
+    comment_type = str(item.get("commentType") or item.get("comment_type") or "").strip().lower()
+    if comment_type and comment_type not in {"0", "root", "comment", "main"}:
+        return True
+    return False
+
+
 def _iter_comment_tree(items: Any):
     if not isinstance(items, list):
         return
@@ -158,6 +197,9 @@ def _meta_needs_comment_reply_backfill(meta: dict[str, Any]) -> bool:
     if _comment_schema_version(meta) >= COMMENT_SCHEMA_VERSION:
         return False
     comments = meta.get("comments") if isinstance(meta.get("comments"), list) else []
+    for item in comments:
+        if isinstance(item, dict) and _comment_has_flattened_reply_signal(item):
+            return True
     for item in _iter_comment_tree(comments):
         reply_count = _comment_reply_count(item)
         if reply_count <= 0:

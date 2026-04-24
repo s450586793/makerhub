@@ -3,7 +3,12 @@ from pathlib import Path
 
 from app.services.archive_profile_backfill import _meta_needs_profile_backfill
 from app.services.catalog import _normalize_comment_item, _normalize_comments
-from app.services.legacy_archiver import COMMENT_SCHEMA_VERSION, PROFILE_DETAIL_SCHEMA_VERSION, _collect_comment_tree
+from app.services.legacy_archiver import (
+    COMMENT_SCHEMA_VERSION,
+    PROFILE_DETAIL_SCHEMA_VERSION,
+    _collect_comment_tree,
+    normalize_threaded_comments,
+)
 
 
 class CommentRepliesTest(unittest.TestCase):
@@ -138,6 +143,42 @@ class CommentRepliesTest(unittest.TestCase):
         self.assertEqual(threaded[0]["replies"][1]["id"], "reply-2")
         self.assertEqual(threaded[1]["id"], "other-root")
 
+    def test_archiver_threads_flattened_replies_before_saving(self):
+        comments = [
+            {
+                "id": "root-comment",
+                "content": "主评论",
+                "createdAt": "2026-04-23 12:00:00",
+                "replyCount": 2,
+            },
+            {
+                "id": "reply-1",
+                "rootCommentId": "root-comment",
+                "content": "第一条回复",
+                "createdAt": "2026-04-23 12:05:00",
+                "replyToName": "楼主",
+            },
+            {
+                "id": "reply-2",
+                "content": "第二条顺序回复",
+                "createdAt": "2026-04-23 12:06:00",
+                "replyToName": "楼主",
+            },
+            {
+                "id": "other-root",
+                "content": "第二个主评论",
+                "createdAt": "2026-04-23 12:10:00",
+            },
+        ]
+
+        threaded = normalize_threaded_comments(comments)
+
+        self.assertEqual(len(threaded), 2)
+        self.assertEqual(threaded[0]["id"], "root-comment")
+        self.assertEqual(threaded[0]["replyCount"], 2)
+        self.assertEqual([item["id"] for item in threaded[0]["replies"]], ["reply-1", "reply-2"])
+        self.assertEqual(threaded[1]["id"], "other-root")
+
     def test_profile_backfill_detects_models_missing_comment_replies(self):
         meta = {
             "instances": [
@@ -152,6 +193,30 @@ class CommentRepliesTest(unittest.TestCase):
                     "content": "主评论",
                     "replyCount": 2,
                 }
+            ],
+        }
+
+        self.assertTrue(_meta_needs_profile_backfill(meta))
+
+    def test_profile_backfill_detects_flattened_top_level_reply_items(self):
+        meta = {
+            "instances": [
+                {
+                    "profileDetailVersion": PROFILE_DETAIL_SCHEMA_VERSION,
+                    "pictures": [{"url": "https://example.com/preview.jpg"}],
+                }
+            ],
+            "comments": [
+                {
+                    "id": "root-comment",
+                    "content": "主评论",
+                },
+                {
+                    "id": "reply-1",
+                    "rootCommentId": "root-comment",
+                    "content": "第一条回复",
+                    "replyToName": "楼主",
+                },
             ],
         }
 

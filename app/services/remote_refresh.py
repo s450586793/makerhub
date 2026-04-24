@@ -31,6 +31,7 @@ from app.services.catalog import (
     invalidate_model_detail_cache,
     upsert_archive_snapshot_model,
 )
+from app.services.legacy_archiver import COMMENT_SCHEMA_VERSION, normalize_threaded_comments
 from app.services.process_jobs import run_archive_model_job, run_source_deleted_check_job
 from app.services.task_state import TaskStateStore, is_metadata_only_missing_3mf_placeholder
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, resolve_model_instance_files
@@ -552,14 +553,18 @@ def _finalize_refreshed_meta(meta_path: Path, existing_meta: dict[str, Any]) -> 
     fresh_meta = _load_json(meta_path)
     checked_at = _now_iso()
     previous_remote_sync = _remote_sync_payload(existing_meta.get("remoteSync"))
+    existing_comments = _list_of_dicts(existing_meta.get("comments"))
     existing_instances = _list_of_dicts(existing_meta.get("instances"))
     fresh_instances = _list_of_dicts(fresh_meta.get("instances"))
     existing_attachments = _list_of_dicts(existing_meta.get("attachments"))
     fresh_attachments = _list_of_dicts(fresh_meta.get("attachments"))
     merged_comments, preserved_comment_count = _merge_comments(
-        existing_meta.get("comments") if isinstance(existing_meta.get("comments"), list) else [],
+        existing_comments,
         fresh_meta.get("comments") if isinstance(fresh_meta.get("comments"), list) else [],
     )
+    merged_comments = normalize_threaded_comments(merged_comments)
+    merged_comment_total = _count_comment_threads(merged_comments)
+    existing_comment_total = _count_comment_threads(existing_comments)
     merged_instances, deleted_instance_count = _merge_instances(
         existing_instances,
         fresh_instances,
@@ -580,8 +585,7 @@ def _finalize_refreshed_meta(meta_path: Path, existing_meta: dict[str, Any]) -> 
             added_instance_tokens.update(_instance_match_tokens(item))
 
     added_comments = max(
-        len(merged_comments)
-        - len(existing_meta.get("comments") if isinstance(existing_meta.get("comments"), list) else []),
+        merged_comment_total - existing_comment_total,
         0,
     )
     change_labels = _build_change_labels(
@@ -594,9 +598,10 @@ def _finalize_refreshed_meta(meta_path: Path, existing_meta: dict[str, Any]) -> 
     success_message = _build_success_message(change_labels)
 
     fresh_meta["comments"] = merged_comments
+    fresh_meta["commentSchemaVersion"] = COMMENT_SCHEMA_VERSION
     fresh_meta["commentCount"] = max(
         int(fresh_meta.get("commentCount") or 0),
-        len(merged_comments),
+        merged_comment_total,
         int(existing_meta.get("commentCount") or 0),
     )
     fresh_meta["instances"] = merged_instances

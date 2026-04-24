@@ -945,6 +945,228 @@ def _build_existing_comment_lookup(items: object) -> dict[str, dict]:
     return lookup
 
 
+def _comment_reply_items(node: object) -> List[dict]:
+    if not isinstance(node, dict):
+        return []
+    replies = node.get("replies")
+    if not isinstance(replies, list):
+        return []
+    return [item for item in replies if isinstance(item, dict)]
+
+
+def _comment_reply_count(node: dict) -> int:
+    return _comment_numeric(
+        node.get("replyCount")
+        or node.get("reply_count")
+        or node.get("subCommentCount")
+        or node.get("childrenCount")
+    )
+
+
+def _comment_reply_to(node: dict) -> str:
+    for key in _COMMENT_REPLY_DIRECT_KEYS:
+        value = node.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    for key in _COMMENT_REPLY_USER_KEYS:
+        value = node.get(key)
+        if not isinstance(value, dict):
+            continue
+        for field in ("nickname", "nickName", "name", "username", "userName"):
+            candidate = str(value.get(field) or "").strip()
+            if candidate:
+                return candidate
+    return ""
+
+
+def _looks_like_flat_reply_candidate(node: dict) -> bool:
+    if not isinstance(node, dict):
+        return False
+    if _comment_reply_to(node):
+        return True
+
+    comment_type = str(node.get("commentType") or node.get("comment_type") or "").strip().lower()
+    if comment_type and comment_type not in {"0", "root", "comment", "main"}:
+        return True
+    return False
+
+
+def _comment_identity_key(node: dict) -> str:
+    explicit = str(node.get("id") or node.get("commentId") or "").strip()
+    if explicit:
+        return explicit
+
+    author = node.get("author")
+    if isinstance(author, dict):
+        author_name = str(
+            author.get("name")
+            or author.get("nickname")
+            or author.get("username")
+            or author.get("userName")
+            or ""
+        ).strip()
+    else:
+        author_name = str(
+            node.get("nickname")
+            or node.get("nickName")
+            or node.get("userName")
+            or node.get("username")
+            or node.get("authorName")
+            or node.get("creatorName")
+            or author
+            or ""
+        ).strip()
+
+    content = ""
+    for key in ("content", "commentContent", "comment", "message", "text", "body", "description"):
+        value = _comment_text_value(node.get(key))
+        if value:
+            content = value
+            break
+
+    time_value = str(
+        node.get("commentTime")
+        or node.get("createTime")
+        or node.get("createdAt")
+        or node.get("publishTime")
+        or node.get("time")
+        or node.get("updatedAt")
+        or ""
+    ).strip()
+    root_comment_id = str(node.get("rootCommentId") or node.get("root_comment_id") or "").strip()
+    digest = hashlib.sha1(
+        "|".join([root_comment_id, author_name, time_value, content]).encode("utf-8", errors="ignore")
+    ).hexdigest()
+    return digest[:16]
+
+
+def _merge_threaded_comment_list(existing_items: List[dict], fresh_items: List[dict]) -> List[dict]:
+    merged: List[dict] = []
+    merged_by_key: dict[str, dict] = {}
+
+    def _upsert(item: dict):
+        normalized = dict(item)
+        normalized_replies = _merge_threaded_comment_list([], _comment_reply_items(item))
+        if normalized_replies:
+            normalized["replies"] = normalized_replies
+        elif "replies" in normalized:
+            normalized["replies"] = []
+
+        key = _comment_identity_key(normalized)
+        if key in merged_by_key:
+            merged_comment = _merge_comment_items(merged_by_key[key], normalized)
+            merged_by_key[key].clear()
+            merged_by_key[key].update(merged_comment)
+            return
+
+        merged.append(normalized)
+        merged_by_key[key] = normalized
+
+    for item in existing_items or []:
+        if isinstance(item, dict):
+            _upsert(item)
+    for item in fresh_items or []:
+        if isinstance(item, dict):
+            _upsert(item)
+    return merged
+
+
+def _count_comment_threads(items: List[dict]) -> int:
+    total = 0
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        total += 1 + _count_comment_threads(_comment_reply_items(item))
+    return total
+
+
+def normalize_threaded_comments(comment_items: Optional[List[dict]]) -> List[dict]:
+    roots: List[dict] = []
+    roots_by_key: dict[str, dict] = {}
+    pending_replies: dict[str, List[dict]] = {}
+    current_fallback_root_key = ""
+
+    def _reply_slots_remaining(root_key: str) -> int:
+        root = roots_by_key.get(root_key)
+        if not root:
+            return 0
+        return max(_comment_reply_count(root) - len(_comment_reply_items(root)), 0)
+
+    def _attach_pending(root_key: str):
+        pending_items = pending_replies.pop(root_key, [])
+        if not pending_items:
+            return
+        root = roots_by_key.get(root_key)
+        if not root:
+            pending_replies[root_key] = pending_items
+            return
+        root["replies"] = _merge_threaded_comment_list(_comment_reply_items(root), pending_items)
+        root["replyCount"] = max(len(root["replies"]), _comment_reply_count(root))
+
+    def _upsert_root(item: dict) -> dict:
+        nonlocal current_fallback_root_key
+        key = _comment_identity_key(item)
+        normalized = dict(item)
+        normalized["replies"] = _merge_threaded_comment_list([], _comment_reply_items(item))
+        normalized["replyCount"] = max(len(normalized["replies"]), _comment_reply_count(normalized))
+
+        if key in roots_by_key:
+            merged = _merge_comment_items(roots_by_key[key], normalized)
+            roots_by_key[key].clear()
+            roots_by_key[key].update(merged)
+            _attach_pending(key)
+            current_fallback_root_key = key if _reply_slots_remaining(key) > 0 else ""
+            return roots_by_key[key]
+
+        roots.append(normalized)
+        roots_by_key[key] = normalized
+        _attach_pending(key)
+        current_fallback_root_key = key if _reply_slots_remaining(key) > 0 else ""
+        return normalized
+
+    def _add_reply(root_key: str, reply: dict):
+        nonlocal current_fallback_root_key
+        root = roots_by_key.get(root_key)
+        if not root:
+            pending_replies.setdefault(root_key, []).append(reply)
+            return
+        root["replies"] = _merge_threaded_comment_list(_comment_reply_items(root), [reply])
+        root["replyCount"] = max(len(root["replies"]), _comment_reply_count(root))
+        current_fallback_root_key = root_key if _reply_slots_remaining(root_key) > 0 else ""
+
+    for item in comment_items or []:
+        if not isinstance(item, dict):
+            continue
+
+        normalized = dict(item)
+        normalized["replies"] = _merge_threaded_comment_list([], _comment_reply_items(item))
+        normalized["replyCount"] = max(len(normalized["replies"]), _comment_reply_count(normalized))
+
+        comment_key = _comment_identity_key(normalized)
+        explicit_root_key = str(item.get("rootCommentId") or item.get("root_comment_id") or "").strip()
+        if explicit_root_key and explicit_root_key != comment_key:
+            _add_reply(explicit_root_key, normalized)
+            continue
+
+        if (
+            current_fallback_root_key
+            and current_fallback_root_key != comment_key
+            and _reply_slots_remaining(current_fallback_root_key) > 0
+            and _looks_like_flat_reply_candidate(item)
+        ):
+            _add_reply(current_fallback_root_key, normalized)
+            continue
+
+        _upsert_root(normalized)
+
+    for replies in pending_replies.values():
+        for reply in replies:
+            _upsert_root(reply)
+
+    return roots
+
+
 def _normalize_comment_candidate(node: dict, *, replies: Optional[List[dict]] = None) -> Optional[dict]:
     if not isinstance(node, dict):
         return None
@@ -1331,11 +1553,14 @@ def collect_comments(
         search_mode = "full_scan"
         _collect_comments_from_payload(next_data, comments, seen)
         _collect_comments_from_payload(design, comments, seen)
+    comments = normalize_threaded_comments(comments)
+    comment_total = _count_comment_threads(comments)
     _log_perf(
         "comments.extract",
         extract_started_at,
         mode=search_mode,
-        comments=len(comments),
+        comments=comment_total,
+        roots=len(comments),
         sections=len(unique_sections),
     )
 
@@ -1386,12 +1611,13 @@ def collect_comments(
             "comments.total",
             total_started_at,
             mode=search_mode,
-            comments=len(comments),
+            comments=comment_total,
+            roots=len(comments),
             assets=0,
             download_assets=False,
         )
         return {
-            "count": max(comment_count, len(comments)),
+            "count": max(comment_count, comment_total),
             "items": comments,
         }
 
@@ -1465,12 +1691,13 @@ def collect_comments(
         "comments.total",
         total_started_at,
         mode=search_mode,
-        comments=len(comments),
+        comments=comment_total,
+        roots=len(comments),
         assets=asset_total,
     )
 
     return {
-        "count": max(comment_count, len(comments)),
+        "count": max(comment_count, comment_total),
         "items": comments,
     }
 
@@ -2539,7 +2766,7 @@ def extract_instances(design: dict) -> List[dict]:
 
 
 PROFILE_DETAIL_SCHEMA_VERSION = 4
-COMMENT_SCHEMA_VERSION = 1
+COMMENT_SCHEMA_VERSION = 2
 _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
 
