@@ -1183,6 +1183,16 @@ async def get_remote_refresh_data():
     return await run_web_io(_remote_refresh_payload)
 
 
+@router.post("/remote-refresh/run")
+async def run_remote_refresh(request: Request):
+    _require_session_auth(request)
+
+    def _manual_trigger_payload() -> dict:
+        return remote_refresh_manager.trigger_manual_refresh()
+
+    return await run_web_io(_manual_trigger_payload)
+
+
 @router.post("/tasks/organize/clear")
 async def clear_organize_tasks(request: Request):
     _require_session_auth(request)

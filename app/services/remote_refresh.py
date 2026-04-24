@@ -691,6 +691,7 @@ class RemoteRefreshManager:
         self.archive_manager = archive_manager
         self._loop_lock = threading.Lock()
         self._batch_state_lock = threading.Lock()
+        self._batch_launch_lock = threading.Lock()
         self._batch_running = False
         self._thread: Optional[threading.Thread] = None
 
@@ -716,6 +717,122 @@ class RemoteRefreshManager:
     def notify_config_updated(self) -> dict:
         return self._ensure_state(force_reschedule=True)
 
+    def trigger_manual_refresh(self) -> dict[str, Any]:
+        config = self.store.load()
+        current_state = self._ensure_state(force_reschedule=bool(config.remote_refresh.enabled))
+        if self._is_batch_running():
+            message = "源端刷新已在运行中，无需重复手动同步。"
+            state = self.task_store.patch_remote_refresh_state(
+                status="running",
+                running=True,
+                last_message=message,
+            )
+            return {
+                "accepted": False,
+                "message": message,
+                "config": config.remote_refresh.model_dump(),
+                "state": state,
+            }
+
+        if self._service_busy():
+            message = "当前有归档队列或本地整理任务在运行，请稍后再试手动同步。"
+            state = self.task_store.patch_remote_refresh_state(
+                status="disabled" if not config.remote_refresh.enabled else "idle",
+                running=False,
+                last_message=message,
+                current_item={},
+            )
+            _append_remote_refresh_log("manual_trigger_rejected", reason="service_busy")
+            append_business_log(
+                "remote_refresh",
+                "manual_trigger_rejected",
+                message,
+                level="warning",
+            )
+            return {
+                "accepted": False,
+                "message": message,
+                "config": config.remote_refresh.model_dump(),
+                "state": state,
+            }
+
+        if not self._start_batch_async(config):
+            message = "源端刷新已在运行中，无需重复手动同步。"
+            state = self.task_store.patch_remote_refresh_state(
+                status="running",
+                running=True,
+                last_message=message,
+            )
+            return {
+                "accepted": False,
+                "message": message,
+                "config": config.remote_refresh.model_dump(),
+                "state": state,
+            }
+
+        message = "已手动触发一轮源端同步，正在启动。"
+        state = self.task_store.patch_remote_refresh_state(
+            status="running",
+            running=True,
+            last_message=message,
+            current_item={},
+        )
+        _append_remote_refresh_log("manual_trigger_accepted", enabled=bool(config.remote_refresh.enabled))
+        append_business_log(
+            "remote_refresh",
+            "manual_trigger_accepted",
+            message,
+            enabled=bool(config.remote_refresh.enabled),
+        )
+        return {
+            "accepted": True,
+            "message": message,
+            "config": config.remote_refresh.model_dump(),
+            "state": state,
+        }
+
+    def _start_batch_async(self, config) -> bool:
+        with self._batch_launch_lock:
+            if self._is_batch_running():
+                return False
+            self._set_batch_running(True)
+
+            def _worker() -> None:
+                try:
+                    self._run_batch(config, prelocked=True)
+                except Exception as exc:
+                    message = f"手动源端刷新异常：{exc}"
+                    self.task_store.patch_remote_refresh_state(
+                        status="error",
+                        running=False,
+                        last_error_at=_now_iso(),
+                        last_message=_sanitize_remote_refresh_message(message, "手动源端刷新异常。"),
+                        current_item={},
+                    )
+                    _append_remote_refresh_log(
+                        "manual_trigger_error",
+                        error=_sanitize_remote_refresh_message(exc, exc.__class__.__name__),
+                    )
+                    append_business_log(
+                        "remote_refresh",
+                        "manual_trigger_error",
+                        _sanitize_remote_refresh_message(message, "手动源端刷新异常。"),
+                        level="error",
+                    )
+                    self._set_batch_running(False)
+
+            thread = threading.Thread(
+                target=_worker,
+                name="makerhub-remote-refresh-manual",
+                daemon=True,
+            )
+            try:
+                thread.start()
+            except Exception:
+                self._set_batch_running(False)
+                raise
+            return True
+
     def _ensure_state(self, force_reschedule: bool = False) -> dict:
         config = self.store.load()
         refresh_config = config.remote_refresh
@@ -725,6 +842,12 @@ class RemoteRefreshManager:
         stale_running = bool(current.get("running")) and not batch_running
 
         if not refresh_config.enabled:
+            if batch_running:
+                return self.task_store.patch_remote_refresh_state(
+                    status="running",
+                    running=True,
+                    last_message=str(current.get("last_message") or "源端刷新进行中。"),
+                )
             return self.task_store.patch_remote_refresh_state(
                 status="disabled",
                 running=False,
@@ -774,6 +897,9 @@ class RemoteRefreshManager:
             time.sleep(REMOTE_REFRESH_POLL_SECONDS)
 
     def _tick(self) -> None:
+        if self._is_batch_running():
+            return
+
         config = self.store.load()
         refresh_config = config.remote_refresh
         if not refresh_config.enabled:
@@ -849,8 +975,9 @@ class RemoteRefreshManager:
         stats["remaining_total"] = max(len(eligible) - len(selected), 0)
         return selected, stats
 
-    def _run_batch(self, config) -> None:
-        self._set_batch_running(True)
+    def _run_batch(self, config, *, prelocked: bool = False) -> None:
+        if not prelocked:
+            self._set_batch_running(True)
         refresh_config = config.remote_refresh
         normalized_cron = _validate_cron(refresh_config.cron)
         started_at = _now_iso()

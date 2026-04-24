@@ -75,8 +75,13 @@
           <button class="button button-primary" type="submit" :disabled="saving">
             {{ saving ? "保存中..." : "保存源端刷新设置" }}
           </button>
-          <button class="button button-secondary" type="button" :disabled="loading" @click="refreshStateManually">
-            刷新状态
+          <button
+            class="button button-secondary"
+            type="button"
+            :disabled="loading || manualSyncing || remoteRefreshState.running"
+            @click="runRemoteRefreshManually"
+          >
+            {{ (manualSyncing || remoteRefreshState.running) ? "同步中..." : "手动同步" }}
           </button>
         </div>
         <span class="form-status">{{ status }}</span>
@@ -229,7 +234,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { RouterLink } from "vue-router";
 
 import CronField from "../components/CronField.vue";
-import { applyConfigPayload, refreshConfig } from "../lib/appState";
+import { applyConfigPayload } from "../lib/appState";
 import { apiRequest } from "../lib/api";
 import { encodeModelPath, formatServerDateTime } from "../lib/helpers";
 
@@ -240,6 +245,7 @@ const IDLE_REFRESH_INTERVAL_MS = 60000;
 const status = ref("");
 const loading = ref(true);
 const saving = ref(false);
+const manualSyncing = ref(false);
 const historyFilter = ref("changed");
 const historyVisibleLimit = ref(HISTORY_PAGE_SIZE);
 const remoteRefreshState = ref({});
@@ -460,11 +466,23 @@ async function saveRemoteRefresh() {
   }
 }
 
-async function refreshStateManually() {
+async function runRemoteRefreshManually() {
+  if (manualSyncing.value || remoteRefreshState.value?.running) {
+    return;
+  }
   status.value = "";
-  const ok = await load();
-  if (ok) {
-    status.value = "源端刷新状态已刷新。";
+  manualSyncing.value = true;
+  try {
+    const payload = await apiRequest("/api/remote-refresh/run", {
+      method: "POST",
+    });
+    applyPayload(payload);
+    status.value = payload?.message || "已手动触发源端同步。";
+  } catch (error) {
+    status.value = error instanceof Error ? error.message : "手动同步触发失败。";
+  } finally {
+    manualSyncing.value = false;
+    scheduleRefresh();
   }
 }
 
