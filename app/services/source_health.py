@@ -202,6 +202,24 @@ def _limit_guard_for_platform(platform: str) -> dict[str, Any]:
     return {}
 
 
+def _limit_guard_message(state: dict[str, Any]) -> str:
+    source = normalize_makerworld_source(url=state.get("model_url"))
+    base_message = str(state.get("message") or "").strip() or describe_three_mf_failure(
+        "download_limited",
+        source=source,
+    )
+    if "自动重试暂停至" in base_message:
+        base_message = base_message.split("自动重试暂停至", 1)[0].rstrip("，,。 ")
+    limited_until = str(state.get("limited_until") or "").strip()
+    if not limited_until:
+        return base_message
+    parsed_until = _parse_limit_guard_time(limited_until)
+    if parsed_until is None:
+        return base_message
+    until_text = parsed_until.strftime("%Y-%m-%d %H:%M")
+    return f"{base_message.rstrip('。')}，自动重试暂停至 {until_text}。"
+
+
 def _build_request_headers(origin: str, raw_cookie: str) -> dict[str, str]:
     cookie_header = sanitize_cookie_header(raw_cookie)
     headers = {
@@ -406,7 +424,12 @@ def probe_cookie_auth_status(
     if include_limit_guard:
         limit_guard = _limit_guard_for_platform(platform_key)
         if limit_guard:
-            return _empty_cookie_auth_payload(platform_key, "download_limited", "到达每日上限", "")
+            return _empty_cookie_auth_payload(
+                platform_key,
+                "download_limited",
+                "到达每日上限",
+                _limit_guard_message(limit_guard),
+            )
 
     cache_key = _cache_key(platform_key, normalized_cookie, proxy_config)
     now = time.time()
@@ -439,6 +462,7 @@ def _probe_platform_status(platform: str, raw_cookie: str, proxy_config: Any) ->
 
 def _build_missing_3mf_overrides(items: list[dict[str, Any]] | None) -> dict[str, dict[str, str]]:
     overrides: dict[str, dict[str, str]] = {}
+    limit_guards: dict[str, dict[str, Any]] = {}
     for raw_item in items or []:
         if not isinstance(raw_item, dict):
             continue
@@ -452,10 +476,20 @@ def _build_missing_3mf_overrides(items: list[dict[str, Any]] | None) -> dict[str
         platform = normalize_makerworld_source(url=raw_item.get("model_url"))
         if platform not in {"cn", "global"}:
             continue
+        if state == "download_limited":
+            if platform not in limit_guards:
+                limit_guards[platform] = _limit_guard_for_platform(platform)
+            limit_guard = limit_guards.get(platform) or {}
+            if not limit_guard:
+                continue
+            limit_message = _limit_guard_message(limit_guard)
+        else:
+            limit_message = ""
         message = describe_three_mf_failure(
             state,
             raw_item.get("message") or raw_item.get("downloadMessage") or "",
             url=raw_item.get("model_url") or "",
+            limit_message=limit_message,
         )
         overrides[platform] = merge_three_mf_failure(
             overrides.get(platform),
