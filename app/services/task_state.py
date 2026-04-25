@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from app.core.settings import LOGS_DIR, STATE_DIR, ensure_app_dirs
 from app.core.timezone import now_iso as china_now_iso, parse_datetime
-from app.services.three_mf import normalize_three_mf_failure_state
+from app.services.three_mf import describe_three_mf_failure, normalize_three_mf_failure_state
 
 
 ARCHIVE_QUEUE_PATH = STATE_DIR / "archive_queue.json"
@@ -160,6 +160,8 @@ def _normalize_missing_3mf(payload: Any, fallback_items: Optional[list[dict]] = 
             message,
             url=item.get("model_url") or item.get("url") or "",
         )
+        if status in {"verification_required", "cloudflare"}:
+            message = describe_three_mf_failure(status, message, url=item.get("model_url") or item.get("url") or "")
         normalized.append(
             {
                 "model_id": str(item.get("model_id") or item.get("id") or ""),
@@ -1129,6 +1131,39 @@ class TaskStateStore:
                 item["updated_at"] = now
 
             return {"items": items}
+
+        return self._update_missing_3mf(_mutate)
+
+    def mark_missing_3mf_retrying(
+        self,
+        items: list[dict],
+        *,
+        status: str = "queued",
+        message: str = "等待重新下载 3MF",
+    ) -> dict:
+        targets = _normalize_missing_3mf({"items": items or []}).get("items", [])
+        if not targets:
+            return self.load_missing_3mf()
+
+        target_keys = {_missing_3mf_key(item) for item in targets}
+        target_urls = {
+            str(item.get("model_url") or "").strip()
+            for item in targets
+            if str(item.get("model_url") or "").strip()
+        }
+
+        def _mutate(payload: dict) -> dict:
+            existing = _normalize_missing_3mf(payload).get("items", [])
+            now = china_now_iso()
+            for item in existing:
+                key = _missing_3mf_key(item)
+                item_url = str(item.get("model_url") or "").strip()
+                if key not in target_keys and item_url not in target_urls:
+                    continue
+                item["status"] = status
+                item["message"] = message
+                item["updated_at"] = now
+            return {"items": existing}
 
         return self._update_missing_3mf(_mutate)
 

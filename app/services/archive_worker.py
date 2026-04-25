@@ -994,13 +994,22 @@ class ArchiveTaskManager:
                 title="" if clean_model_id else title,
                 instance_id="" if clean_model_id else instance_id,
                 model_url="" if clean_model_id else clean_url,
-                status="missing",
+                status="download_limited",
                 message=message,
             )
             return {
                 "accepted": False,
                 "message": message,
             }
+
+        self.task_store.update_missing_3mf_status(
+            model_id=clean_model_id,
+            title="" if clean_model_id else title,
+            instance_id="" if clean_model_id else instance_id,
+            model_url="" if clean_model_id else clean_url,
+            status="queued",
+            message="等待重新下载 3MF",
+        )
 
         result = self.submit(
             clean_url,
@@ -1033,6 +1042,15 @@ class ArchiveTaskManager:
                 model_url="" if clean_model_id else clean_url,
                 status="queued",
                 message="已存在于归档队列",
+            )
+        elif message:
+            self.task_store.update_missing_3mf_status(
+                model_id=clean_model_id,
+                title="" if clean_model_id else title,
+                instance_id="" if clean_model_id else instance_id,
+                model_url="" if clean_model_id else clean_url,
+                status="missing",
+                message=message,
             )
         return result
 
@@ -1096,6 +1114,11 @@ class ArchiveTaskManager:
         queued = 0
         failed = 0
         last_message = ""
+        self.task_store.mark_missing_3mf_retrying(
+            items,
+            status="queued",
+            message="等待重新下载 3MF",
+        )
 
         for item in items:
             result = self.retry_missing_3mf(

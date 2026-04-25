@@ -495,6 +495,8 @@ def build_source_health_cards(config: Any, missing_3mf_items: list[dict[str, Any
         ):
             state = override_state
             detail = str(override.get("message") or "").strip()
+        if state in {"verification_required", "cloudflare"}:
+            detail = describe_three_mf_failure(state, detail, url=PLATFORM_ORIGINS.get(platform, ""))
         if not detail and state == "verification_required":
             detail = "MakerWorld 需要验证，前往官网任意下载一个模型。"
         return {

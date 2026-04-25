@@ -41,6 +41,7 @@ class SourceHealthCardsTest(unittest.TestCase):
         card_map = {item["key"]: item for item in cards}
         self.assertEqual(card_map["cn"]["state"], "verification_required")
         self.assertEqual(card_map["cn"]["status"], "需要验证")
+        self.assertEqual(card_map["cn"]["detail"], "MakerWorld 需要验证，前往官网任意下载一个模型。")
         self.assertEqual(card_map["global"]["state"], "ok")
 
     def test_missing_3mf_limit_overrides_probe_verification(self):
@@ -104,6 +105,37 @@ class SourceHealthCardsTest(unittest.TestCase):
         card_map = {item["key"]: item for item in cards}
         self.assertEqual(card_map["cn"]["state"], "verification_required")
         self.assertEqual(card_map["cn"]["status"], "需要验证")
+
+    def test_retrying_missing_3mf_does_not_override_probe_ok(self):
+        original_probe = source_health._probe_platform_status
+        source_health._probe_platform_status = lambda platform, *_args, **_kwargs: {
+            "platform": platform,
+            "state": "ok",
+            "status": "连接正常",
+            "detail": "",
+        }
+
+        class Config:
+            cookies = []
+            proxy = None
+
+        try:
+            cards = source_health.build_source_health_cards(
+                Config(),
+                [
+                    {
+                        "status": "queued",
+                        "message": "MakerWorld 需要验证，前往官网任意下载一个模型。",
+                        "model_url": "https://makerworld.com.cn/zh/models/789",
+                    }
+                ],
+            )
+        finally:
+            source_health._probe_platform_status = original_probe
+
+        card_map = {item["key"]: item for item in cards}
+        self.assertEqual(card_map["cn"]["state"], "ok")
+        self.assertEqual(card_map["cn"]["status"], "连接正常")
 
 class InlineExecutor:
     def __init__(self, *args, **kwargs):

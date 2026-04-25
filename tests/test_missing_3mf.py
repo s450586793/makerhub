@@ -76,6 +76,25 @@ class Missing3mfTest(unittest.TestCase):
 
         self.assertEqual(len(normalized["items"]), 1)
         self.assertEqual(normalized["items"][0]["status"], "verification_required")
+        self.assertEqual(normalized["items"][0]["message"], "MakerWorld 需要验证，前往官网任意下载一个模型。")
+
+    def test_retry_state_is_not_reclassified_by_old_verification_message(self):
+        payload = {
+            "items": [
+                {
+                    "model_id": "1759345",
+                    "title": "0.2mm 层高, 2 层墙, 15% 填充",
+                    "status": "queued",
+                    "model_url": "https://makerworld.com.cn/zh/models/1759345",
+                    "message": "MakerWorld 需要验证，前往官网任意下载一个模型。",
+                }
+            ]
+        }
+
+        normalized = _normalize_missing_3mf(payload)
+
+        self.assertEqual(len(normalized["items"]), 1)
+        self.assertEqual(normalized["items"][0]["status"], "queued")
 
 
 if __name__ == "__main__":

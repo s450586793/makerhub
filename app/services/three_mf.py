@@ -25,6 +25,12 @@ _THREE_MF_FAILURE_PRIORITY = {
     "missing": 10,
     "available": 0,
 }
+_THREE_MF_TRANSIENT_STATES = {
+    "queued",
+    "running",
+    "retrying",
+    "pending_download",
+}
 _THREE_MF_FAILURE_INFERENCE_KEYWORDS = {
     "download_limited": (
         "每日下载上限",
@@ -176,6 +182,8 @@ def describe_three_mf_failure(
 
     if normalized_state == "download_limited" and normalized_limit:
         return normalized_limit
+    if normalized_state in {"verification_required", "cloudflare"}:
+        return _default_three_mf_failure_message(normalized_state, normalized_source)
 
     legacy_messages = _THREE_MF_LEGACY_MESSAGES.get(normalized_state, set())
     if normalized_message and normalized_message not in legacy_messages:
@@ -197,6 +205,8 @@ def normalize_three_mf_failure_state(
     url: Any = "",
 ) -> str:
     normalized_state = str(state or "").strip()
+    if normalized_state in _THREE_MF_TRANSIENT_STATES:
+        return normalized_state
     if normalized_state in _THREE_MF_FAILURE_PRIORITY and normalized_state not in {"missing", "available"}:
         return normalized_state
 
