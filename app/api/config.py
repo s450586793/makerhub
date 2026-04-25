@@ -46,7 +46,7 @@ from app.services.cookie_utils import sanitize_cookie_header
 from app.services.local_organizer import LocalOrganizerService
 from app.services.model_attachments import create_manual_attachment, delete_manual_attachment
 from app.services.remote_refresh import RemoteRefreshManager
-from app.services.request_threads import run_task_api, run_web_io
+from app.services.request_threads import run_task_api, run_ui_io, run_web_io
 from app.services.auth import AuthManager
 from app.services.archive_repair import (
     read_archive_repair_status,
@@ -654,7 +654,7 @@ def _require_session_auth(request: Request) -> None:
 @router.get("/bootstrap")
 async def get_bootstrap(request: Request):
     identity = getattr(request.state, "auth_identity", None) or {}
-    config = await run_web_io(store.load)
+    config = await run_ui_io(store.load)
     payload = {
         "app_version": APP_VERSION,
         "session": _session_payload(identity, config=config if identity else None),
@@ -665,22 +665,22 @@ async def get_bootstrap(request: Request):
 
 @router.get("/config")
 async def get_config():
-    config = await run_web_io(store.load)
-    payload = await run_web_io(_public_config_payload, config)
+    config = await run_ui_io(store.load)
+    payload = await run_ui_io(_public_config_payload, config)
     return _with_version_status(payload, await _get_github_version_status(proxy_config=config.proxy))
 
 
 @router.get("/system/update")
 async def get_system_update(force: bool = Query(False)):
-    config = await run_web_io(store.load)
-    payload = await run_web_io(get_update_status)
+    config = await run_ui_io(store.load)
+    payload = await run_ui_io(get_update_status)
     payload = _with_version_status(payload, await _get_github_version_status(force=force, proxy_config=config.proxy))
     return _with_changelog_status(payload, await _get_github_changelog_status(force=force, proxy_config=config.proxy))
 
 
 @router.get("/system/version")
 async def get_system_version(force: bool = Query(False)):
-    config = await run_web_io(store.load)
+    config = await run_ui_io(store.load)
     payload = {"app_version": APP_VERSION}
     return _with_version_status(payload, await _get_github_version_status(force=force, proxy_config=config.proxy))
 
@@ -1168,7 +1168,7 @@ async def get_tasks_data():
         fallback_items = [item.model_dump() for item in config.missing_3mf]
         return build_tasks_payload(missing_fallback=fallback_items)
 
-    return await run_web_io(_tasks_payload)
+    return await run_ui_io(_tasks_payload)
 
 
 @router.get("/remote-refresh")
@@ -1180,7 +1180,7 @@ async def get_remote_refresh_data():
             "state": remote_refresh_manager.state_payload(),
         }
 
-    return await run_web_io(_remote_refresh_payload)
+    return await run_ui_io(_remote_refresh_payload)
 
 
 @router.post("/remote-refresh/run")
@@ -1190,7 +1190,7 @@ async def run_remote_refresh(request: Request):
     def _manual_trigger_payload() -> dict:
         return remote_refresh_manager.trigger_manual_refresh()
 
-    return await run_web_io(_manual_trigger_payload)
+    return await run_task_api(_manual_trigger_payload)
 
 
 @router.post("/tasks/organize/clear")
@@ -1317,7 +1317,7 @@ async def sync_subscription(subscription_id: str, request: Request):
 @router.get("/events/archive")
 async def stream_archive_events(request: Request):
     async def event_stream():
-        snapshot = await run_web_io(_archive_event_snapshot)
+        snapshot = await run_ui_io(_archive_event_snapshot)
         previous_active = dict(snapshot["active"])
         previous_organize_success = set(snapshot["organize_success"])
 
@@ -1331,7 +1331,7 @@ async def stream_archive_events(request: Request):
             if await request.is_disconnected():
                 break
 
-            snapshot = await run_web_io(_archive_event_snapshot)
+            snapshot = await run_ui_io(_archive_event_snapshot)
             current_active = dict(snapshot["active"])
             recent_failures = set(snapshot["recent_failures"])
             current_organize_success = set(snapshot["organize_success"])
@@ -1531,7 +1531,7 @@ async def archive_model(payload: ArchiveRequest):
 @router.get("/admin/archive/repair-3mf")
 async def get_archive_3mf_repair_status(request: Request):
     _require_session_auth(request)
-    return await run_web_io(read_archive_repair_status)
+    return await run_ui_io(read_archive_repair_status)
 
 
 @router.post("/admin/archive/repair-3mf")
@@ -1589,7 +1589,7 @@ async def repair_archive_3mf(request: Request):
 @router.get("/admin/archive/profile-backfill")
 async def get_archive_profile_backfill_status(request: Request):
     _require_session_auth(request)
-    return await run_web_io(read_profile_backfill_status)
+    return await run_ui_io(read_profile_backfill_status)
 
 
 @router.post("/admin/archive/profile-backfill")
