@@ -5,12 +5,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 from app.core.settings import LOGS_DIR, STATE_DIR, ensure_app_dirs
-from app.core.timezone import now_iso as china_now_iso, parse_datetime
-from app.services.three_mf import describe_three_mf_failure, normalize_three_mf_failure_state
+from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
+from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, normalize_three_mf_failure_state
 
 
 ARCHIVE_QUEUE_PATH = STATE_DIR / "archive_queue.json"
 MISSING_3MF_PATH = STATE_DIR / "missing_3mf.json"
+THREE_MF_LIMIT_GUARD_PATH = STATE_DIR / "three_mf_limit_guard.json"
 ORGANIZE_TASKS_PATH = STATE_DIR / "organize_tasks.json"
 MODEL_FLAGS_PATH = STATE_DIR / "model_flags.json"
 SUBSCRIPTIONS_STATE_PATH = STATE_DIR / "subscriptions_state.json"
@@ -134,6 +135,52 @@ def _organize_count_needs_backfill(*, item_count: int, total_count: int) -> bool
     return item_count >= ORGANIZE_TASK_VISIBLE_LIMIT and total_count <= item_count
 
 
+def _read_active_three_mf_limit_guard() -> dict[str, Any]:
+    if not THREE_MF_LIMIT_GUARD_PATH.exists():
+        return {}
+    try:
+        payload = json.loads(THREE_MF_LIMIT_GUARD_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict) or not bool(payload.get("active")):
+        return {}
+
+    limited_until = str(payload.get("limited_until") or "").strip()
+    parsed_until = parse_datetime(limited_until)
+    if parsed_until is None or parsed_until <= china_now():
+        return {}
+    return payload
+
+
+def _limit_guard_for_missing_item(item_url: str, guard: dict[str, Any]) -> dict[str, Any]:
+    if not guard:
+        return {}
+    guard_source = normalize_makerworld_source(url=guard.get("model_url"))
+    item_source = normalize_makerworld_source(url=item_url)
+    if guard_source and item_source and guard_source != item_source:
+        return {}
+    return guard
+
+
+def _format_three_mf_limit_guard_message(guard: dict[str, Any]) -> str:
+    if not guard:
+        return ""
+    source = normalize_makerworld_source(url=guard.get("model_url"))
+    base_message = str(guard.get("message") or "").strip() or describe_three_mf_failure(
+        "download_limited",
+        source=source,
+    )
+    if "自动重试暂停至" in base_message:
+        base_message = base_message.split("自动重试暂停至", 1)[0].rstrip("，,。 ")
+
+    limited_until = str(guard.get("limited_until") or "").strip()
+    parsed_until = parse_datetime(limited_until)
+    if parsed_until is None:
+        return base_message
+    until_text = parsed_until.strftime("%Y-%m-%d %H:%M")
+    return f"{base_message.rstrip('。')}，自动重试暂停至 {until_text}。"
+
+
 def _normalize_missing_3mf(payload: Any, fallback_items: Optional[list[dict]] = None) -> dict:
     if isinstance(payload, list):
         items = payload
@@ -146,6 +193,7 @@ def _normalize_missing_3mf(payload: Any, fallback_items: Optional[list[dict]] = 
         items = fallback_items
 
     normalized = []
+    limit_guard = _read_active_three_mf_limit_guard()
     for item in items:
         if isinstance(item, str):
             normalized.append({"model_id": "", "title": item, "status": "missing"})
@@ -155,19 +203,28 @@ def _normalize_missing_3mf(payload: Any, fallback_items: Optional[list[dict]] = 
         if is_metadata_only_missing_3mf_placeholder(item):
             continue
         message = _sanitize_message_text(item.get("message") or item.get("downloadMessage") or "")
+        item_url = str(item.get("model_url") or item.get("url") or "")
         status = normalize_three_mf_failure_state(
             item.get("status") or item.get("downloadState") or "",
             message,
-            url=item.get("model_url") or item.get("url") or "",
+            url=item_url,
         )
+        if status == "download_limited":
+            limit_message = _format_three_mf_limit_guard_message(_limit_guard_for_missing_item(item_url, limit_guard))
+            message = describe_three_mf_failure(
+                status,
+                "",
+                url=item_url,
+                limit_message=limit_message,
+            )
         if status in {"verification_required", "cloudflare"}:
-            message = describe_three_mf_failure(status, message, url=item.get("model_url") or item.get("url") or "")
+            message = describe_three_mf_failure(status, message, url=item_url)
         normalized.append(
             {
                 "model_id": str(item.get("model_id") or item.get("id") or ""),
                 "title": str(item.get("title") or item.get("name") or ""),
                 "status": status,
-                "model_url": str(item.get("model_url") or item.get("url") or ""),
+                "model_url": item_url,
                 "instance_id": str(item.get("instance_id") or item.get("profileId") or item.get("instanceId") or ""),
                 "message": message,
                 "updated_at": str(item.get("updated_at") or item.get("time") or ""),
