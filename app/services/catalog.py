@@ -1187,6 +1187,27 @@ def _comment_author_payload(item: dict, model_root: Path) -> dict[str, str]:
     }
 
 
+_COMMENT_PLACEHOLDER_CONTENT = {
+    "模型描述",
+    "评论",
+    "描述",
+    "回复",
+    "modeldescription",
+    "comment",
+    "comments",
+    "description",
+    "review",
+    "reviews",
+    "reply",
+    "replies",
+}
+
+
+def _is_placeholder_comment_content(value: str) -> bool:
+    compact = re.sub(r"[\s:：/|_\\-]+", "", str(value or "").strip().casefold())
+    return compact in _COMMENT_PLACEHOLDER_CONTENT
+
+
 def _comment_children(item: dict) -> list[dict]:
     child_keys = (
         "replies",
@@ -1535,6 +1556,16 @@ def _normalize_comment_item(item: dict, model_root: Path, depth: int = 0) -> Opt
         len(replies),
         _safe_int(item.get("replyCount") or item.get("subCommentCount") or item.get("childrenCount")),
     )
+    if (
+        _is_placeholder_comment_content(content)
+        and author_payload["author"] == "匿名用户"
+        and not str(time_value or "").strip()
+        and not images
+        and not replies
+        and _safe_int(item.get("likeCount") or item.get("praiseCount")) <= 0
+        and reply_count <= 0
+    ):
+        return None
 
     return {
         "id": comment_id,

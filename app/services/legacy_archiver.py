@@ -769,6 +769,104 @@ def _comment_text_value(value) -> str:
     return ""
 
 
+_COMMENT_STRONG_MARKER_KEYS = (
+    "commentId",
+    "rootCommentId",
+    "replyCount",
+    "subCommentCount",
+    "commentTime",
+    "commentType",
+    "isTop",
+    "isPinned",
+    "praiseCount",
+    "likeCount",
+)
+_COMMENT_WEAK_MARKER_KEYS = ("rating", "score", "star", "starLevel")
+_COMMENT_PLACEHOLDER_CONTENT = {
+    "模型描述",
+    "评论",
+    "描述",
+    "回复",
+    "modeldescription",
+    "comment",
+    "comments",
+    "description",
+    "review",
+    "reviews",
+    "reply",
+    "replies",
+}
+
+
+def _compact_comment_content(value: str) -> str:
+    return re.sub(r"[\s:：/|_\\-]+", "", str(value or "").strip().casefold())
+
+
+def _is_placeholder_comment_content(value: str) -> bool:
+    return _compact_comment_content(value) in _COMMENT_PLACEHOLDER_CONTENT
+
+
+def _comment_author_name(node: dict) -> str:
+    user = node.get("user") or node.get("author") or node.get("creator") or node.get("commentUser") or {}
+    if not isinstance(user, dict):
+        user = {}
+    return str(
+        user.get("nickname")
+        or user.get("nickName")
+        or user.get("name")
+        or user.get("username")
+        or user.get("userName")
+        or node.get("nickname")
+        or node.get("nickName")
+        or node.get("userName")
+        or node.get("username")
+        or node.get("authorName")
+        or node.get("creatorName")
+        or ""
+    ).strip()
+
+
+def _comment_created_at_value(node: dict) -> str:
+    return str(
+        node.get("commentTime")
+        or node.get("createTime")
+        or node.get("createdAt")
+        or node.get("publishTime")
+        or node.get("time")
+        or ""
+    ).strip()
+
+
+def _has_comment_source_identity(node: dict, images: Optional[List[dict]] = None) -> bool:
+    if not isinstance(node, dict):
+        return False
+    return bool(
+        str(node.get("commentId") or node.get("rootCommentId") or "").strip()
+        or _comment_created_at_value(node)
+        or _comment_author_name(node)
+        or str(node.get("avatarUrl") or node.get("avatar") or "").strip()
+        or images
+    )
+
+
+def _is_placeholder_comment_payload(node: dict) -> bool:
+    if not isinstance(node, dict):
+        return False
+    content = ""
+    for key in ("content", "commentContent", "comment", "message", "text", "body", "description"):
+        content = _comment_text_value(node.get(key))
+        if content:
+            break
+    if not _is_placeholder_comment_content(content):
+        return False
+
+    author_name = _comment_author_name(node)
+    images = node.get("images")
+    has_images = isinstance(images, list) and bool(images)
+    has_real_author = bool(author_name and author_name != "匿名用户")
+    return not has_real_author and not _comment_created_at_value(node) and not has_images
+
+
 def _comment_numeric(value) -> int:
     try:
         if value in (None, ""):
@@ -1059,6 +1157,8 @@ def _merge_threaded_comment_list(existing_items: List[dict], fresh_items: List[d
             normalized["replies"] = normalized_replies
         elif "replies" in normalized:
             normalized["replies"] = []
+        if _is_placeholder_comment_payload(normalized):
+            return
 
         key = _comment_identity_key(normalized)
         if key in merged_by_key:
@@ -1149,6 +1249,8 @@ def normalize_threaded_comments(comment_items: Optional[List[dict]]) -> List[dic
         normalized = dict(item)
         normalized["replies"] = _merge_threaded_comment_list([], _comment_reply_items(item))
         normalized["replyCount"] = max(len(normalized["replies"]), _comment_reply_count(normalized))
+        if _is_placeholder_comment_payload(normalized):
+            continue
 
         comment_key = _comment_identity_key(normalized)
         explicit_root_key = str(item.get("rootCommentId") or item.get("root_comment_id") or "").strip()
@@ -1169,6 +1271,8 @@ def normalize_threaded_comments(comment_items: Optional[List[dict]]) -> List[dic
 
     for replies in pending_replies.values():
         for reply in replies:
+            if _is_placeholder_comment_payload(reply):
+                continue
             _upsert_root(reply)
 
     return roots
@@ -1178,29 +1282,18 @@ def _normalize_comment_candidate(node: dict, *, replies: Optional[List[dict]] = 
     if not isinstance(node, dict):
         return None
 
-    comment_markers = (
-        "commentId",
-        "rootCommentId",
-        "replyCount",
-        "subCommentCount",
-        "commentTime",
-        "commentType",
-        "isTop",
-        "isPinned",
-        "praiseCount",
-        "likeCount",
-        "rating",
-        "score",
-        "star",
-        "starLevel",
-    )
-    if not any(key in node for key in comment_markers):
+    has_strong_marker = any(key in node for key in _COMMENT_STRONG_MARKER_KEYS)
+    has_weak_marker = any(key in node for key in _COMMENT_WEAK_MARKER_KEYS)
+    if not has_strong_marker and not has_weak_marker:
         return None
     if any(key in node for key in ("designExtension", "coverUrl", "downloadCount", "printCount", "instances")):
         return None
 
     content = ""
-    for key in ("commentContent", "content", "comment", "message", "text", "body", "description"):
+    content_keys = ("commentContent", "content", "comment", "message", "text", "body")
+    if has_strong_marker:
+        content_keys = (*content_keys, "description")
+    for key in content_keys:
         content = _comment_text_value(node.get(key))
         if content:
             break
@@ -1210,22 +1303,7 @@ def _normalize_comment_candidate(node: dict, *, replies: Optional[List[dict]] = 
     user = node.get("user") or node.get("author") or node.get("creator") or node.get("commentUser") or {}
     if not isinstance(user, dict):
         user = {}
-    author_name = (
-        str(
-            user.get("nickname")
-            or user.get("nickName")
-            or user.get("name")
-            or user.get("username")
-            or user.get("userName")
-            or node.get("nickname")
-            or node.get("nickName")
-            or node.get("userName")
-            or node.get("username")
-            or node.get("authorName")
-            or node.get("creatorName")
-            or ""
-        ).strip()
-    )
+    author_name = _comment_author_name(node)
     author_avatar = str(
         user.get("avatarUrl")
         or user.get("avatar")
@@ -1238,14 +1316,7 @@ def _normalize_comment_candidate(node: dict, *, replies: Optional[List[dict]] = 
 
     comment_id = str(node.get("commentId") or node.get("id") or "").strip()
     root_comment_id = str(node.get("rootCommentId") or "").strip()
-    created_at = str(
-        node.get("commentTime")
-        or node.get("createTime")
-        or node.get("createdAt")
-        or node.get("publishTime")
-        or node.get("time")
-        or ""
-    ).strip()
+    created_at = _comment_created_at_value(node)
     like_count = _comment_numeric(node.get("likeCount") or node.get("praiseCount"))
     reply_count = _comment_numeric(node.get("replyCount") or node.get("subCommentCount") or node.get("childrenCount"))
     rating = _comment_numeric(node.get("rating") or node.get("score") or node.get("star") or node.get("starLevel"))
@@ -1266,6 +1337,14 @@ def _normalize_comment_candidate(node: dict, *, replies: Optional[List[dict]] = 
         badges.append(profile_name)
 
     images = _extract_comment_image_candidates(node)
+    has_source_identity = _has_comment_source_identity(node, images)
+    if _is_placeholder_comment_content(content) and not has_source_identity:
+        return None
+    if has_weak_marker and not has_strong_marker and not has_source_identity:
+        return None
+    if not has_source_identity and like_count <= 0 and reply_count <= 0 and rating <= 0 and len(content) <= 12:
+        return None
+
     reply_items = replies if isinstance(replies, list) else []
     stable_id = comment_id or hashlib.sha1(
         f"{root_comment_id}|{author_name}|{created_at}|{content}".encode("utf-8", errors="ignore")

@@ -90,6 +90,54 @@ class CommentRepliesTest(unittest.TestCase):
         self.assertEqual(len(normalized["replies"]), 1)
         self.assertEqual(normalized["replies"][0]["content"], "第一条回复")
 
+    def test_archiver_ignores_page_labels_that_look_like_comments(self):
+        for comment in (
+            {"score": 5, "description": "模型描述"},
+            {"rating": 0, "content": "评论"},
+            {"replyCount": 0, "content": "Model Description"},
+        ):
+            normalized, is_new = _collect_comment_tree(comment, {})
+
+            self.assertFalse(is_new)
+            self.assertIsNone(normalized)
+
+    def test_archiver_keeps_real_comment_even_when_content_is_short(self):
+        comment = {
+            "commentId": "real-comment",
+            "commentContent": "评论",
+            "commentTime": "2026-04-23 12:00:00",
+        }
+
+        normalized, is_new = _collect_comment_tree(comment, {})
+
+        self.assertTrue(is_new)
+        self.assertIsNotNone(normalized)
+        self.assertEqual(normalized["content"], "评论")
+
+    def test_catalog_hides_stored_page_label_comments(self):
+        meta = {
+            "comments": [
+                {
+                    "id": "generated-placeholder-id",
+                    "author": {"name": ""},
+                    "content": "Model Description",
+                    "likeCount": 0,
+                    "replyCount": 0,
+                },
+                {
+                    "commentId": "real-comment",
+                    "author": {"name": "用户"},
+                    "content": "Model Description",
+                    "commentTime": "2026-04-23 12:00:00",
+                },
+            ]
+        }
+
+        normalized = _normalize_comments(meta, Path("."))
+
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(normalized[0]["id"], "real-comment")
+
     def test_catalog_threads_flattened_replies_back_under_root_comment(self):
         meta = {
             "comments": [
