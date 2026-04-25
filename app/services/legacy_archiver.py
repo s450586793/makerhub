@@ -926,6 +926,7 @@ _COMMENT_CHILD_KEYS = (
     "replyVos",
     "replyVOList",
     "commentReplies",
+    "commentReply",
     "commentReplyVos",
     "commentReplyList",
     "replyComments",
@@ -1698,14 +1699,33 @@ def _extract_comment_replies_from_payload(payload: object, root_comment_id: str)
     if not root_comment_id:
         return []
 
+    direct_replies: List[dict] = []
+    direct_seen: dict[str, dict] = {}
+    for node in _iter_payload_dicts(payload):
+        if not isinstance(node, dict):
+            continue
+        for key in _COMMENT_CHILD_KEYS:
+            value = node.get(key)
+            if not isinstance(value, list):
+                continue
+            for raw_reply in value:
+                reply, is_new = _collect_comment_tree(raw_reply, direct_seen)
+                if not reply or not is_new:
+                    continue
+                if str(reply.get("id") or "").strip() == root_comment_id:
+                    continue
+                if not str(reply.get("rootCommentId") or reply.get("root_comment_id") or "").strip():
+                    reply["rootCommentId"] = root_comment_id
+                direct_replies = _merge_threaded_comment_list(direct_replies, [reply])
+
     comments: List[dict] = []
     seen: dict[str, dict] = {}
     _collect_comments_from_payload(payload, comments, seen)
+    replies: List[dict] = _merge_threaded_comment_list([], direct_replies)
     if not comments:
-        return []
+        return replies
 
     threaded = normalize_threaded_comments(comments)
-    replies: List[dict] = []
     for item in threaded:
         if not isinstance(item, dict):
             continue
@@ -1887,6 +1907,9 @@ def collect_comments(
         _collect_comments_from_payload(next_data, comments, seen)
         _collect_comments_from_payload(design, comments, seen)
     comments = normalize_threaded_comments(comments)
+    existing_comment_items = existing_comments if isinstance(existing_comments, list) else []
+    if existing_comment_items:
+        comments = _merge_threaded_comment_list(existing_comment_items, comments)
     comments, reply_fetch_stats = _hydrate_missing_comment_replies(
         comments,
         session,

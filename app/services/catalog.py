@@ -1221,6 +1221,7 @@ def _comment_children(item: dict) -> list[dict]:
         "replyVos",
         "replyVOList",
         "commentReplies",
+        "commentReply",
         "commentReplyVos",
         "commentReplyList",
         "replyComments",

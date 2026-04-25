@@ -90,6 +90,31 @@ class CommentRepliesTest(unittest.TestCase):
         self.assertEqual(len(normalized["replies"]), 1)
         self.assertEqual(normalized["replies"][0]["content"], "第一条回复")
 
+    def test_archiver_collects_makerworld_comment_reply_field(self):
+        comment = {
+            "commentId": "root-comment",
+            "commentContent": "主评论",
+            "commentTime": "2026-04-23 12:00:00",
+            "replyCount": 1,
+            "commentReply": [
+                {
+                    "id": "reply-comment",
+                    "content": "MakerWorld commentReply 回复",
+                    "createTime": "2026-04-23 12:05:00",
+                    "replyCount": 0,
+                    "likeCount": 0,
+                }
+            ],
+        }
+
+        normalized, is_new = _collect_comment_tree(comment, {})
+
+        self.assertTrue(is_new)
+        self.assertIsNotNone(normalized)
+        self.assertEqual(normalized["replyCount"], 1)
+        self.assertEqual(len(normalized["replies"]), 1)
+        self.assertEqual(normalized["replies"][0]["content"], "MakerWorld commentReply 回复")
+
     def test_archiver_ignores_page_labels_that_look_like_comments(self):
         for comment in (
             {"score": 5, "description": "模型描述"},
@@ -308,6 +333,101 @@ class CommentRepliesTest(unittest.TestCase):
         self.assertIn("/comment-service/comment/root-comment/reply", session.calls[0]["url"])
         self.assertEqual(session.calls[0]["params"], {"limit": 20})
 
+    def test_collect_comments_accepts_reply_api_top_level_replies(self):
+        next_data = {
+            "comments": [
+                {
+                    "commentId": "root-comment",
+                    "commentContent": "主评论",
+                    "commentTime": "2026-04-23 12:00:00",
+                    "replyCount": 2,
+                }
+            ]
+        }
+        design = {
+            "url": "https://makerworld.com.cn/zh/models/123456",
+            "commentCount": 3,
+        }
+        reply_payload = {
+            "comment": {
+                "id": "root-comment",
+                "content": "主评论",
+                "createTime": "2026-04-23 12:00:00",
+                "replyCount": 2,
+            },
+            "replies": [
+                {
+                    "id": "reply-1",
+                    "content": "第一条顶层 replies 回复",
+                    "createTime": "2026-04-23 12:05:00",
+                    "replyCount": 0,
+                    "likeCount": 0,
+                },
+                {
+                    "id": "reply-2",
+                    "content": "第二条顶层 replies 回复",
+                    "createTime": "2026-04-23 12:06:00",
+                    "replyCount": 0,
+                    "likeCount": 0,
+                },
+            ],
+        }
+        session = self._DummySession(reply_payload)
+
+        bundle = collect_comments(
+            next_data,
+            design,
+            session,
+            Path("."),
+            download_assets=False,
+        )
+
+        self.assertEqual(bundle["count"], 3)
+        self.assertEqual(len(bundle["items"]), 1)
+        self.assertEqual(bundle["items"][0]["replyCount"], 2)
+        self.assertEqual([item["id"] for item in bundle["items"][0]["replies"]], ["reply-1", "reply-2"])
+        self.assertEqual([item["rootCommentId"] for item in bundle["items"][0]["replies"]], ["root-comment", "root-comment"])
+
+    def test_collect_comments_hydrates_existing_comments_when_fresh_payload_has_no_comments(self):
+        design = {
+            "url": "https://makerworld.com.cn/zh/models/123456",
+            "commentCount": 2,
+        }
+        existing_comments = [
+            {
+                "id": "root-comment",
+                "content": "本地已有主评论",
+                "createdAt": "2026-04-23 12:00:00",
+                "replyCount": 1,
+            }
+        ]
+        reply_payload = {
+            "replies": [
+                {
+                    "id": "reply-1",
+                    "content": "补回来的回复",
+                    "createTime": "2026-04-23 12:05:00",
+                    "replyCount": 0,
+                    "likeCount": 0,
+                }
+            ],
+        }
+        session = self._DummySession(reply_payload)
+
+        bundle = collect_comments(
+            {},
+            design,
+            session,
+            Path("."),
+            download_assets=False,
+            existing_comments=existing_comments,
+        )
+
+        self.assertEqual(bundle["count"], 2)
+        self.assertEqual(len(bundle["items"]), 1)
+        self.assertEqual(bundle["items"][0]["id"], "root-comment")
+        self.assertEqual(bundle["items"][0]["replies"][0]["content"], "补回来的回复")
+
     def test_profile_backfill_detects_models_missing_comment_replies(self):
         meta = {
             "instances": [
@@ -351,7 +471,7 @@ class CommentRepliesTest(unittest.TestCase):
 
         self.assertTrue(_meta_needs_profile_backfill(meta))
 
-    def test_profile_backfill_skips_comment_reply_rescan_after_schema_upgrade(self):
+    def test_profile_backfill_detects_missing_replies_even_after_schema_upgrade(self):
         meta = {
             "commentSchemaVersion": COMMENT_SCHEMA_VERSION,
             "instances": [
@@ -365,6 +485,32 @@ class CommentRepliesTest(unittest.TestCase):
                     "id": "root-comment",
                     "content": "主评论",
                     "replyCount": 2,
+                }
+            ],
+        }
+
+        self.assertTrue(_meta_needs_profile_backfill(meta))
+
+    def test_profile_backfill_skips_complete_replies_after_schema_upgrade(self):
+        meta = {
+            "commentSchemaVersion": COMMENT_SCHEMA_VERSION,
+            "instances": [
+                {
+                    "profileDetailVersion": PROFILE_DETAIL_SCHEMA_VERSION,
+                    "pictures": [{"url": "https://example.com/preview.jpg"}],
+                }
+            ],
+            "comments": [
+                {
+                    "id": "root-comment",
+                    "content": "主评论",
+                    "replyCount": 1,
+                    "replies": [
+                        {
+                            "id": "reply-1",
+                            "content": "第一条回复",
+                        }
+                    ],
                 }
             ],
         }

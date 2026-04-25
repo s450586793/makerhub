@@ -821,6 +821,7 @@ const COMMENT_CHILD_KEYS = [
   "replyVos",
   "replyVOList",
   "commentReplies",
+  "commentReply",
   "commentReplyVos",
   "commentReplyList",
   "replyComments",
@@ -2101,7 +2102,7 @@ function threadTopLevelComments(items) {
   return roots;
 }
 
-function prepareCommentItem(comment, depth = 0) {
+function prepareCommentItem(comment, depth = 0, threadPath = "0") {
   if (!comment || typeof comment !== "object") {
     return null;
   }
@@ -2113,7 +2114,7 @@ function prepareCommentItem(comment, depth = 0) {
   const badges = extractCommentBadges(comment);
   const repliesSource = commentReplyItems(comment);
   const replies = depth < 2
-    ? repliesSource.map((item) => prepareCommentItem(item, depth + 1)).filter(Boolean)
+    ? repliesSource.map((item, index) => prepareCommentItem(item, depth + 1, `${threadPath}.${index}`)).filter(Boolean)
     : [];
   const rating = Math.min(Math.max(normalizeCommentNumber(comment.rating), 0), 5);
   const likeCount = normalizeCommentNumber(comment.like_count ?? comment.likeCount ?? comment.praiseCount);
@@ -2140,6 +2141,7 @@ function prepareCommentItem(comment, depth = 0) {
     reply_count: replyCount,
     rating,
     rating_label: rating ? rating.toFixed(rating % 1 === 0 ? 0 : 1) : "",
+    _thread_key: `${threadPath}:${commentIdentityKey(comment)}`,
     status_copy: commentStatusCopy({ badges }),
     hot_score: computeCommentHotScore({
       timestamp,
@@ -2158,6 +2160,10 @@ function commentBadgeClass(badge) {
 }
 
 function commentReplyKey(comment) {
+  const threadKey = String(comment?._thread_key || "").trim();
+  if (threadKey) {
+    return threadKey;
+  }
   return String(comment?.id || `${comment?.author || ""}|${comment?.time || ""}|${comment?.content || ""}`).trim();
 }
 
@@ -2342,7 +2348,7 @@ function prepareComments(items) {
     return [];
   }
   return threadTopLevelComments(items)
-    .map((comment) => prepareCommentItem(comment))
+    .map((comment, index) => prepareCommentItem(comment, 0, `root:${index}`))
     .filter(Boolean);
 }
 

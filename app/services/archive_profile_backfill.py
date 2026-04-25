@@ -6,7 +6,7 @@ from app.core.settings import ARCHIVE_DIR, STATE_DIR, ensure_app_dirs
 from app.core.timezone import now_iso as china_now_iso
 from app.services.archive_worker import ArchiveTaskManager
 from app.services.business_logs import append_business_log
-from app.services.legacy_archiver import COMMENT_SCHEMA_VERSION, PROFILE_DETAIL_SCHEMA_VERSION
+from app.services.legacy_archiver import PROFILE_DETAIL_SCHEMA_VERSION
 
 
 PROFILE_BACKFILL_STATUS_PATH = STATE_DIR / "archive_profile_backfill_status.json"
@@ -119,15 +119,6 @@ def _instance_has_display_media(instance: dict[str, Any]) -> bool:
     )
 
 
-def _comment_schema_version(meta: dict[str, Any]) -> int:
-    for value in (meta.get("commentSchemaVersion"), meta.get("commentsSchemaVersion")):
-        try:
-            return int(value or 0)
-        except (TypeError, ValueError):
-            continue
-    return 0
-
-
 def _comment_reply_count(item: dict[str, Any]) -> int:
     for value in (
         item.get("replyCount"),
@@ -194,8 +185,6 @@ def _iter_comment_tree(items: Any):
 
 
 def _meta_needs_comment_reply_backfill(meta: dict[str, Any]) -> bool:
-    if _comment_schema_version(meta) >= COMMENT_SCHEMA_VERSION:
-        return False
     comments = meta.get("comments") if isinstance(meta.get("comments"), list) else []
     for item in comments:
         if isinstance(item, dict) and _comment_has_flattened_reply_signal(item):
