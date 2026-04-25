@@ -1,14 +1,13 @@
 import json
 import mimetypes
 import re
-import shutil
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from fastapi import UploadFile
 
-from app.core.settings import ARCHIVE_DIR
+from app.core.settings import ARCHIVE_DIR, MAX_MANUAL_ATTACHMENT_BYTES
 from app.core.timezone import now as china_now, now_iso as china_now_iso
 
 
@@ -104,6 +103,25 @@ def _build_storage_name(target_dir: Path, filename: str) -> str:
     return candidate
 
 
+def _copy_upload_with_limit(upload: UploadFile, target_path: Path) -> int:
+    total_size = 0
+    upload.file.seek(0)
+    try:
+        with target_path.open("wb") as output_file:
+            while True:
+                chunk = upload.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total_size += len(chunk)
+                if total_size > MAX_MANUAL_ATTACHMENT_BYTES:
+                    raise ValueError("上传文件过大。")
+                output_file.write(chunk)
+    except Exception:
+        target_path.unlink(missing_ok=True)
+        raise
+    return total_size
+
+
 def create_manual_attachment(model_dir: str, upload: UploadFile, name: str, category: str) -> dict:
     model_root = resolve_model_root(model_dir)
     original_filename = _sanitize_filename(upload.filename or "")
@@ -116,11 +134,7 @@ def create_manual_attachment(model_dir: str, upload: UploadFile, name: str, cate
     storage_name = _build_storage_name(target_dir, original_filename)
     target_path = target_dir / storage_name
 
-    upload.file.seek(0)
-    with target_path.open("wb") as output_file:
-        shutil.copyfileobj(upload.file, output_file)
-
-    size = target_path.stat().st_size if target_path.exists() else 0
+    size = _copy_upload_with_limit(upload, target_path)
     if size <= 0:
         target_path.unlink(missing_ok=True)
         raise ValueError("上传文件为空。")

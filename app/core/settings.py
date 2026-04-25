@@ -29,11 +29,23 @@ def _resolve_dir(env_name: str, fallback: Path) -> Path:
     return fallback
 
 
+def _resolve_int(env_name: str, fallback: int) -> int:
+    raw = str(os.getenv(env_name, "")).strip()
+    if not raw:
+        return fallback
+    try:
+        value = int(raw)
+    except ValueError:
+        return fallback
+    return value if value > 0 else fallback
+
+
 CONFIG_DIR = _resolve_dir("MAKERHUB_CONFIG_DIR", RUNTIME_DIR / "config")
 LOGS_DIR = _resolve_dir("MAKERHUB_LOGS_DIR", RUNTIME_DIR / "logs")
 STATE_DIR = _resolve_dir("MAKERHUB_STATE_DIR", RUNTIME_DIR / "state")
 ARCHIVE_DIR = _resolve_dir("MAKERHUB_ARCHIVE_DIR", RUNTIME_DIR / "archive")
 LOCAL_DIR = _resolve_dir("MAKERHUB_LOCAL_DIR", RUNTIME_DIR / "local")
+MAX_MANUAL_ATTACHMENT_BYTES = _resolve_int("MAKERHUB_MAX_MANUAL_ATTACHMENT_BYTES", 128 * 1024 * 1024)
 
 CONFIG_PATH = CONFIG_DIR / "config.json"
 

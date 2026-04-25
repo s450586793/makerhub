@@ -11,7 +11,7 @@ from app.api.config import remote_refresh_manager
 from app.api.config import subscription_manager
 from app.api.config import router as config_router
 from app.api.web import router as web_router
-from app.core.settings import APP_VERSION, ARCHIVE_DIR, FRONTEND_DIST_DIR, ROOT_DIR, ensure_app_dirs
+from app.core.settings import APP_VERSION, ARCHIVE_DIR, FRONTEND_DIST_DIR, MAX_MANUAL_ATTACHMENT_BYTES, ROOT_DIR, ensure_app_dirs
 from app.services.auth import AuthManager
 from app.services.business_logs import append_business_log
 from app.services.request_threads import shutdown_request_threads
@@ -102,6 +102,17 @@ async def shutdown_thread_pools() -> None:
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
     path = request.url.path
+    if request.method == "POST" and path.startswith("/api/models/") and path.endswith("/attachments"):
+        content_length = str(request.headers.get("content-length") or "").strip()
+        if not content_length:
+            return JSONResponse({"detail": "上传请求缺少 Content-Length。"}, status_code=411)
+        try:
+            body_size = int(content_length)
+        except ValueError:
+            return JSONResponse({"detail": "上传请求大小无效。"}, status_code=400)
+        if body_size > MAX_MANUAL_ATTACHMENT_BYTES:
+            return JSONResponse({"detail": "上传文件过大。"}, status_code=413)
+
     if path.startswith("/static") or path.startswith("/assets"):
         response = await call_next(request)
         return _apply_cache_headers(path, response)
