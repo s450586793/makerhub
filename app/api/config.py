@@ -28,6 +28,7 @@ from app.schemas.models import (
     SubscriptionUpdateRequest,
     SystemUpdateRequest,
     ThemeSettingsUpdate,
+    ThreeMfDownloadLimitsConfig,
     UserSettingsUpdate,
 )
 from app.schemas.models import OrganizeTask
@@ -623,6 +624,7 @@ def _public_config_payload(config) -> dict:
         "missing_3mf": [item.model_dump() for item in config.missing_3mf],
         "organizer": config.organizer.model_dump(),
         "remote_refresh": config.remote_refresh.model_dump(),
+        "three_mf_limits": config.three_mf_limits.model_dump(),
         "remote_refresh_state": task_state_store.load_remote_refresh_state(),
         "paths": config.paths.model_dump(),
     }
@@ -845,6 +847,22 @@ async def save_remote_refresh(payload: RemoteRefreshConfig, request: Request):
         enabled=payload.enabled,
         cron=payload.cron,
         next_run_at=state.get("next_run_at"),
+    )
+    return _with_version_status(_public_config_payload(config), await _get_github_version_status(proxy_config=config.proxy))
+
+
+@router.post("/config/three-mf-limits")
+async def save_three_mf_limits(payload: ThreeMfDownloadLimitsConfig, request: Request):
+    _require_session_auth(request)
+    config = store.load()
+    config.three_mf_limits = payload
+    store.save(config)
+    append_business_log(
+        "settings",
+        "three_mf_limits_saved",
+        "每日 3MF 下载上限已保存。",
+        cn_daily_limit=payload.cn_daily_limit,
+        global_daily_limit=payload.global_daily_limit,
     )
     return _with_version_status(_public_config_payload(config), await _get_github_version_status(proxy_config=config.proxy))
 

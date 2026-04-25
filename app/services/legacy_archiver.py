@@ -26,6 +26,7 @@ from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_
 from app.services.cookie_utils import extract_auth_token, parse_cookie_values, sanitize_cookie_header
 from app.services.profile_rating import normalize_profile_rating
 from app.services.three_mf import describe_three_mf_failure, merge_three_mf_failure, normalize_makerworld_source
+from app.services.three_mf_quota import reserve_three_mf_download_slot
 
 
 def log(*args):
@@ -4990,6 +4991,8 @@ def archive_model(
     rebuild_archive: bool = True,
     record_missing_3mf_log: bool = True,
     three_mf_skip_state: str = "",
+    three_mf_daily_limit_cn: int = 100,
+    three_mf_daily_limit_global: int = 100,
 ):
     """
     对外主入口：采集 + 下载文件 + 生成 meta/index.html/style.css
@@ -5183,6 +5186,7 @@ def archive_model(
 
     parsed_origin = urlparse(fetch_url)
     origin = f"{parsed_origin.scheme}://{parsed_origin.netloc}" if parsed_origin.scheme and parsed_origin.netloc else "https://makerworld.com.cn"
+    makerworld_source = normalize_makerworld_source(url=fetch_url) or normalize_makerworld_source(url=origin)
 
     inst_list = []
     planned_instances_dir = work_dir / "instances"
@@ -5273,19 +5277,37 @@ def archive_model(
             else:
                 failure_info = dict(three_mf_paused_failure)
         else:
-            name3mf, url3mf, used_api_url, failure_info = fetch_instance_3mf(
-                sess,
-                inst_id,
-                raw_cookie_header,
-                api_url,
-                api_host_hint=api_host_hint,
-                origin=origin,
+            quota_limit = three_mf_daily_limit_global if makerworld_source == "global" else three_mf_daily_limit_cn
+            quota_result = reserve_three_mf_download_slot(
+                source=makerworld_source,
+                url=fetch_url,
+                limit=quota_limit,
+                model_id=str(design_id or ""),
+                model_url=fetch_url,
+                instance_id=str(inst_id or ""),
             )
-            if url3mf:
-                fetched_hint_hits += 1
-            elif str((failure_info or {}).get("state") or "").strip() == "download_limited":
+            if not quota_result.get("allowed", True):
+                failure_info = {
+                    "state": "download_limited",
+                    "message": str(quota_result.get("message") or ""),
+                }
                 three_mf_fetch_paused = True
                 three_mf_paused_failure = dict(failure_info or three_mf_paused_failure)
+                skipped_due_limit += 1
+            else:
+                name3mf, url3mf, used_api_url, failure_info = fetch_instance_3mf(
+                    sess,
+                    inst_id,
+                    raw_cookie_header,
+                    api_url,
+                    api_host_hint=api_host_hint,
+                    origin=origin,
+                )
+                if url3mf:
+                    fetched_hint_hits += 1
+                elif str((failure_info or {}).get("state") or "").strip() == "download_limited":
+                    three_mf_fetch_paused = True
+                    three_mf_paused_failure = dict(failure_info or three_mf_paused_failure)
         failure_state = str((failure_info or {}).get("state") or "").strip()
         failure_message = str((failure_info or {}).get("message") or "").strip()
         profile_details = normalize_profile_details(inst, plates, existing_inst)

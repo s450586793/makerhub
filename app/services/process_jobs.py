@@ -84,6 +84,8 @@ def _run_archive_model_entry(queue, payload: dict[str, Any]) -> None:
             rebuild_archive=bool(payload.get("rebuild_archive", True)),
             record_missing_3mf_log=bool(payload.get("record_missing_3mf_log", True)),
             three_mf_skip_state=str(payload.get("three_mf_skip_state") or ""),
+            three_mf_daily_limit_cn=int(payload.get("three_mf_daily_limit_cn") or 100),
+            three_mf_daily_limit_global=int(payload.get("three_mf_daily_limit_global") or 100),
         )
         _emit(queue, "result", result)
     except Exception as exc:
@@ -214,6 +216,8 @@ def run_archive_model_job(
     rebuild_archive: bool = True,
     record_missing_3mf_log: bool = True,
     three_mf_skip_state: str = "",
+    three_mf_daily_limit_cn: int = 100,
+    three_mf_daily_limit_global: int = 100,
 ) -> dict[str, Any]:
     if not _use_subprocess():
         return legacy_archive_model(
@@ -230,6 +234,8 @@ def run_archive_model_job(
             rebuild_archive=rebuild_archive,
             record_missing_3mf_log=record_missing_3mf_log,
             three_mf_skip_state=three_mf_skip_state,
+            three_mf_daily_limit_cn=three_mf_daily_limit_cn,
+            three_mf_daily_limit_global=three_mf_daily_limit_global,
         )
     return _run_process_job(
         _run_archive_model_entry,
@@ -246,6 +252,8 @@ def run_archive_model_job(
             "rebuild_archive": rebuild_archive,
             "record_missing_3mf_log": record_missing_3mf_log,
             "three_mf_skip_state": three_mf_skip_state,
+            "three_mf_daily_limit_cn": three_mf_daily_limit_cn,
+            "three_mf_daily_limit_global": three_mf_daily_limit_global,
         },
         progress_callback=progress_callback,
     )

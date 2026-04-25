@@ -63,6 +63,19 @@ def _select_cookie(url: str, config) -> str:
     return sanitize_cookie_header(cookie_map.get(platform) or "")
 
 
+def _three_mf_daily_limits(config) -> tuple[int, int]:
+    limits = getattr(config, "three_mf_limits", None)
+    try:
+        cn_limit = int(getattr(limits, "cn_daily_limit", 100) or 100)
+    except (TypeError, ValueError):
+        cn_limit = 100
+    try:
+        global_limit = int(getattr(limits, "global_daily_limit", 100) or 100)
+    except (TypeError, ValueError):
+        global_limit = 100
+    return max(1, cn_limit), max(1, global_limit)
+
+
 def _task_key(url: str) -> str:
     model_id = extract_model_id(url)
     if model_id:
@@ -206,6 +219,8 @@ def _three_mf_limit_until() -> str:
 def _three_mf_limit_message(state: Optional[dict[str, Any]] = None) -> str:
     current = state or _read_three_mf_limit_guard()
     base_message = str(current.get("message") or "").strip() or THREE_MF_LIMIT_DEFAULT_MESSAGE
+    if "自动重试暂停至" in base_message:
+        base_message = base_message.split("自动重试暂停至", 1)[0].rstrip("，,。 ")
     limited_until = str(current.get("limited_until") or "").strip()
     if not limited_until:
         return base_message
@@ -1710,6 +1725,7 @@ class ArchiveTaskManager:
                 message=str(payload.get("message") or ""),
             )
 
+        cn_daily_limit, global_daily_limit = _three_mf_daily_limits(config)
         with _temporary_proxy_env(config):
             result = run_archive_model_job(
                 url=url,
@@ -1722,6 +1738,8 @@ class ArchiveTaskManager:
                 three_mf_skip_message=skip_three_mf_message,
                 profile_metadata_only=profile_metadata_only,
                 three_mf_skip_state="download_limited" if skip_three_mf_fetch and not profile_metadata_only else "",
+                three_mf_daily_limit_cn=cn_daily_limit,
+                three_mf_daily_limit_global=global_daily_limit,
             )
 
         missing_items = []

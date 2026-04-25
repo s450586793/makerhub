@@ -75,6 +75,18 @@
           </button>
           <span class="form-status">{{ statuses.proxy }}</span>
         </div>
+        <div class="settings-grid settings-grid--two">
+          <label class="field-card">
+            <span>国区每日 3MF 下载上限</span>
+            <input v-model.number="threeMfLimitsForm.cn_daily_limit" type="number" min="1" step="1">
+            <small class="archive-form__hint">达到上限后，国区缺失 3MF 会暂停到次日 00:00。</small>
+          </label>
+          <label class="field-card">
+            <span>国际区每日 3MF 下载上限</span>
+            <input v-model.number="threeMfLimitsForm.global_daily_limit" type="number" min="1" step="1">
+            <small class="archive-form__hint">达到上限后，国际区缺失 3MF 会暂停到次日 00:00。</small>
+          </label>
+        </div>
         <div class="form-footer">
           <button class="button button-primary" type="submit">保存连接设置</button>
           <span class="form-status">{{ statuses.connections }}</span>
@@ -389,6 +401,10 @@ const notificationsForm = reactive({
   telegram_chat_id: "",
   webhook_url: "",
 });
+const threeMfLimitsForm = reactive({
+  cn_daily_limit: 100,
+  global_daily_limit: 100,
+});
 const userForm = reactive({
   username: "admin",
   display_name: "Admin",
@@ -541,6 +557,8 @@ function applyConfigToForms(payload) {
   connectionForm.proxy_enabled = Boolean(payload.proxy?.enabled);
   connectionForm.http_proxy = payload.proxy?.http_proxy || "";
   connectionForm.https_proxy = payload.proxy?.https_proxy || "";
+  threeMfLimitsForm.cn_daily_limit = Number(payload.three_mf_limits?.cn_daily_limit || 100);
+  threeMfLimitsForm.global_daily_limit = Number(payload.three_mf_limits?.global_daily_limit || 100);
 
   notificationsForm.enabled = Boolean(payload.notifications?.enabled);
   notificationsForm.telegram_bot_token = payload.notifications?.telegram_bot_token || "";
@@ -703,12 +721,19 @@ async function saveConnections() {
         { platform: "global", cookie: connectionForm.cookie_global },
       ],
     });
-    const payload = await apiRequest("/api/config/proxy", {
+    await apiRequest("/api/config/proxy", {
       method: "POST",
       body: {
         enabled: connectionForm.proxy_enabled,
         http_proxy: connectionForm.http_proxy,
         https_proxy: connectionForm.https_proxy,
+      },
+    });
+    const payload = await apiRequest("/api/config/three-mf-limits", {
+      method: "POST",
+      body: {
+        cn_daily_limit: Number(threeMfLimitsForm.cn_daily_limit || 100),
+        global_daily_limit: Number(threeMfLimitsForm.global_daily_limit || 100),
       },
     });
     applyConfigPayload(payload);

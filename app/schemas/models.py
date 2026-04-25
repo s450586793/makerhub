@@ -139,6 +139,11 @@ class RemoteRefreshConfig(BaseModel):
     cron: str = "0 0 * * *"
 
 
+class ThreeMfDownloadLimitsConfig(BaseModel):
+    cn_daily_limit: int = Field(default=100, ge=1, le=100000)
+    global_daily_limit: int = Field(default=100, ge=1, le=100000)
+
+
 class SubscriptionSettingsConfig(BaseModel):
     default_cron: str = "0 */6 * * *"
     default_enabled: bool = True
@@ -227,4 +232,5 @@ class AppConfig(BaseModel):
     missing_3mf: List[Missing3mfItem] = Field(default_factory=list)
     organizer: OrganizeTask = Field(default_factory=OrganizeTask)
     remote_refresh: RemoteRefreshConfig = Field(default_factory=RemoteRefreshConfig)
+    three_mf_limits: ThreeMfDownloadLimitsConfig = Field(default_factory=ThreeMfDownloadLimitsConfig)
     paths: RuntimePaths = Field(default_factory=RuntimePaths)
