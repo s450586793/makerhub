@@ -360,10 +360,14 @@ def fetch_html_with_curl(url: str, raw_cookie: str) -> str:
     备用：使用 curl 拉取页面，尽量复刻浏览器最小头。
     """
     cookie_header = sanitize_cookie_header(raw_cookie)
-    cmd = [
+    base_cmd = [
         "curl",
         "-sSL",
         "--compressed",
+        "--connect-timeout",
+        "20",
+        "--max-time",
+        "60",
         "-H",
         "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "-H",
@@ -388,16 +392,32 @@ def fetch_html_with_curl(url: str, raw_cookie: str) -> str:
         "User-Agent: Mozilla/5.0 (MW-Fetcher-curl)",
     ]
     if cookie_header:
-        cmd.extend(["-H", f"Cookie: {cookie_header}"])
-    cmd.append(url)
-    log("尝试 curl 获取页面:", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=False)
-    if result.returncode != 0:
+        base_cmd.extend(["-H", f"Cookie: {cookie_header}"])
+
+    attempts = [
+        ("default", []),
+        ("http1_tls12", ["--http1.1", "--tlsv1.2"]),
+        ("ipv4_http1_tls12", ["--ipv4", "--http1.1", "--tlsv1.2"]),
+    ]
+    failed_messages: list[str] = []
+    result: Optional[subprocess.CompletedProcess[bytes]] = None
+    used_variant = ""
+    for variant, extra_args in attempts:
+        cmd = [*base_cmd, *extra_args, url]
+        log("尝试 curl 获取页面:", variant, " ".join(cmd))
+        result = subprocess.run(cmd, capture_output=True, text=False)
+        if result.returncode == 0:
+            used_variant = variant
+            break
         err_msg = result.stderr.decode(errors="ignore") if result.stderr else ""
-        raise RuntimeError(f"curl 失败 code={result.returncode} stderr={err_msg[:300]}")
+        failed_messages.append(f"{variant}: code={result.returncode} stderr={err_msg[:220]}")
+        if result.returncode not in {28, 35, 56, 92}:
+            break
+    if result is None or result.returncode != 0:
+        raise RuntimeError(f"curl 失败 {'; '.join(failed_messages)[:500]}")
 
     stdout = result.stdout or b""
-    log("curl 返回长度:", len(stdout))
+    log("curl 返回长度:", len(stdout), "variant:", used_variant)
 
     # 尝试直接 utf-8 解码
     try:
