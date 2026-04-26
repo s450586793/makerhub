@@ -255,6 +255,34 @@ def _activate_three_mf_limit_guard(
     )
 
 
+def _clear_three_mf_limit_guard_for_manual_retry(url: str = "") -> bool:
+    guard_state = _read_three_mf_limit_guard()
+    if not _is_three_mf_limit_guard_active(guard_state):
+        return False
+    if url and not _is_three_mf_limit_guard_active_for_url(url, guard_state):
+        return False
+
+    _write_three_mf_limit_guard(
+        {
+            "active": False,
+            "limited_until": "",
+            "message": "",
+            "reason": "manual_missing_3mf_retry",
+            "model_id": "",
+            "model_url": "",
+            "instance_id": "",
+        }
+    )
+    append_business_log(
+        "missing_3mf",
+        "limit_guard_cleared_for_manual_retry",
+        "手动重试缺失 3MF，已清除旧的每日上限暂停标记并重新检测。",
+        model_url=normalize_source_url(url),
+        previous_limited_until=guard_state.get("limited_until") or "",
+    )
+    return True
+
+
 def _missing_3mf_message_from_result(
     item: dict[str, Any],
     limit_guard: Optional[dict[str, Any]] = None,
@@ -1001,21 +1029,7 @@ class ArchiveTaskManager:
                 "message": message,
             }
 
-        limit_guard = _read_three_mf_limit_guard()
-        if _is_three_mf_limit_guard_active_for_url(clean_url, limit_guard):
-            message = _three_mf_limit_message(limit_guard)
-            self.task_store.update_missing_3mf_status(
-                model_id=clean_model_id,
-                title="" if clean_model_id else title,
-                instance_id="" if clean_model_id else instance_id,
-                model_url="" if clean_model_id else clean_url,
-                status="download_limited",
-                message=message,
-            )
-            return {
-                "accepted": False,
-                "message": message,
-            }
+        _clear_three_mf_limit_guard_for_manual_retry(clean_url)
 
         self.task_store.update_missing_3mf_status(
             model_id=clean_model_id,
@@ -1109,22 +1123,14 @@ class ArchiveTaskManager:
         items = missing_payload.get("items") or []
         limit_guard = _read_three_mf_limit_guard()
         if _is_three_mf_limit_guard_active(limit_guard):
-            message = _three_mf_limit_message(limit_guard)
-            paused_count = self._pause_missing_3mf_retry_tasks_for_limit(limit_guard)
             append_business_log(
                 "missing_3mf",
-                "retry_all_paused_daily_limit",
-                message,
+                "retry_all_limit_guard_cleared_for_manual_retry",
+                "手动批量重试缺失 3MF，已清除旧的每日上限暂停标记并重新检测。",
                 total=len(items),
-                paused_queue_count=paused_count,
+                previous_limited_until=limit_guard.get("limited_until") or "",
             )
-            return {
-                "accepted": False,
-                "accepted_count": 0,
-                "queued_count": 0,
-                "failed_count": len(items),
-                "message": message,
-            }
+            _clear_three_mf_limit_guard_for_manual_retry()
         accepted = 0
         queued = 0
         failed = 0
