@@ -1,5 +1,5 @@
 <template>
-  <div :class="['site-shell', !sidebarVisible && 'site-shell--sidebar-hidden', isCompact && 'site-shell--compact']">
+  <div :class="shellClass">
     <div v-if="isCompact && sidebarVisible" class="site-sidebar-backdrop" @click="closeSidebar" />
 
     <aside :class="['site-sidebar', sidebarVisible && 'is-open', isCompact && 'is-compact']">
@@ -111,6 +111,14 @@ let sidebarResetFrame = 0;
 const sidebarVisible = computed(() => (
   isCompact.value ? mobileSidebarOpen.value : !desktopSidebarHidden.value
 ));
+const desktopSidebarCollapsed = computed(() => !isCompact.value && desktopSidebarHidden.value);
+const mobileSidebarClosed = computed(() => isCompact.value && !mobileSidebarOpen.value);
+const shellClass = computed(() => [
+  "site-shell",
+  desktopSidebarCollapsed.value && "site-shell--sidebar-hidden",
+  isCompact.value && "site-shell--compact",
+  mobileSidebarClosed.value && "site-shell--mobile-sidebar-closed",
+]);
 const githubVersionText = computed(() => {
   if (appState.githubLatestVersion) {
     return `v${appState.githubLatestVersion}`;

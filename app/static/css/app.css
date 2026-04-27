@@ -4585,11 +4585,11 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__image {
 }
 
 @media (max-width: 980px) {
-  .site-shell,
-  .site-shell--sidebar-hidden {
+  .site-shell {
     display: block;
   }
 
+  .site-shell--mobile-sidebar-closed .page-shell,
   .site-shell--sidebar-hidden .page-shell,
   .site-shell--sidebar-hidden .detail-page--makerworld .page-shell {
     padding-top: 76px;
@@ -4827,6 +4827,7 @@ html[data-theme="dark"] .detail-page--makerworld .lightbox__image {
   }
 
   .site-shell--sidebar-hidden .page-shell,
+  .site-shell--mobile-sidebar-closed .page-shell,
   .site-shell--sidebar-hidden .detail-page--makerworld .page-shell {
     padding-top: 72px;
   }
