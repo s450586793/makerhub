@@ -3,7 +3,7 @@
     <div v-if="isCompact && sidebarVisible" class="site-sidebar-backdrop" @click="closeSidebar" />
 
     <aside :class="['site-sidebar', sidebarVisible && 'is-open', isCompact && 'is-compact']">
-      <div class="site-sidebar__inner">
+      <div ref="sidebarInnerRef" class="site-sidebar__inner">
         <div class="site-sidebar__head">
           <RouterLink class="brand-mark" to="/" @click="closeSidebar">
             <img class="brand-mark__logo" :src="logoUrl" alt="" aria-hidden="true">
@@ -100,11 +100,13 @@ const user = computed(() => currentUser());
 const isCompact = ref(false);
 const desktopSidebarHidden = ref(false);
 const mobileSidebarOpen = ref(false);
+const sidebarInnerRef = ref(null);
 
 let compactMediaQuery = null;
 let mediaListener = null;
 let versionRefreshTimer = 0;
 let versionRefreshInFlight = false;
+let sidebarResetFrame = 0;
 
 const sidebarVisible = computed(() => (
   isCompact.value ? mobileSidebarOpen.value : !desktopSidebarHidden.value
@@ -138,7 +140,11 @@ function applyCompact(matches) {
   isCompact.value = matches;
   if (matches) {
     mobileSidebarOpen.value = false;
+    resetSidebarScroll();
+    return;
   }
+  mobileSidebarOpen.value = false;
+  resetSidebarScroll();
 }
 
 function toggleSidebar() {
@@ -152,7 +158,25 @@ function toggleSidebar() {
 function closeSidebar() {
   if (isCompact.value) {
     mobileSidebarOpen.value = false;
+    resetSidebarScroll();
   }
+}
+
+function resetSidebarScroll() {
+  if (typeof window === "undefined") {
+    return;
+  }
+  if (sidebarResetFrame) {
+    window.cancelAnimationFrame(sidebarResetFrame);
+  }
+  sidebarResetFrame = window.requestAnimationFrame(() => {
+    sidebarResetFrame = 0;
+    if (!sidebarInnerRef.value) {
+      return;
+    }
+    sidebarInnerRef.value.scrollTop = 0;
+    sidebarInnerRef.value.scrollLeft = 0;
+  });
 }
 
 function onWindowKeydown(event) {
@@ -242,6 +266,10 @@ onMounted(() => {
 onBeforeUnmount(() => {
   clearVersionRefreshTimer();
   document.body.classList.remove("sidebar-overlay-open");
+  if (sidebarResetFrame) {
+    window.cancelAnimationFrame(sidebarResetFrame);
+    sidebarResetFrame = 0;
+  }
   if (compactMediaQuery && mediaListener) {
     if (typeof compactMediaQuery.removeEventListener === "function") {
       compactMediaQuery.removeEventListener("change", mediaListener);
