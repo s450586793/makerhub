@@ -141,9 +141,10 @@ select {
   max-height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  justify-content: flex-start;
+  gap: 16px;
   min-height: 0;
-  padding: 22px 18px;
+  padding: 22px 18px 18px;
   border-radius: 28px;
   background: var(--surface-muted);
   border: 1px solid var(--sidebar-panel-border);
@@ -286,22 +287,22 @@ html[data-theme="dark"] .shell-visibility-toggle {
   display: grid;
   align-content: start;
   flex: 0 0 auto;
-  gap: 10px;
+  gap: 6px;
   min-height: 0;
 }
 
 .sidebar-footer {
-  margin-top: auto;
+  margin-top: 4px;
   display: grid;
   flex: 0 0 auto;
-  gap: 12px;
+  gap: 8px;
   position: relative;
 }
 
 .sidebar-nav__link {
-  min-height: 46px;
-  padding: 0 16px;
-  border-radius: 16px;
+  min-height: 42px;
+  padding: 0 14px;
+  border-radius: 14px;
   display: flex;
   align-items: center;
   color: var(--muted);
@@ -318,7 +319,7 @@ html[data-theme="dark"] .shell-visibility-toggle {
 .sidebar-version {
   margin-top: 0;
   min-width: 0;
-  padding: 0 16px 2px;
+  padding: 0 14px 2px;
   display: grid;
   gap: 6px;
   color: var(--muted);
