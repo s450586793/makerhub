@@ -17,6 +17,15 @@ JOB_CONTEXT = get_context("spawn")
 JOB_POLL_SECONDS = 0.5
 JOB_EXIT_TIMEOUT_SECONDS = 5
 DEFAULT_JOB_IDLE_TIMEOUT_SECONDS = 30 * 60
+DEFAULT_THREE_MF_DAILY_LIMIT = 100
+
+
+def _normalize_three_mf_daily_limit(value: Any, fallback: int = DEFAULT_THREE_MF_DAILY_LIMIT) -> int:
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(0, limit)
 
 
 def _job_mode() -> str:
@@ -84,8 +93,8 @@ def _run_archive_model_entry(queue, payload: dict[str, Any]) -> None:
             rebuild_archive=bool(payload.get("rebuild_archive", True)),
             record_missing_3mf_log=bool(payload.get("record_missing_3mf_log", True)),
             three_mf_skip_state=str(payload.get("three_mf_skip_state") or ""),
-            three_mf_daily_limit_cn=int(payload.get("three_mf_daily_limit_cn") or 100),
-            three_mf_daily_limit_global=int(payload.get("three_mf_daily_limit_global") or 100),
+            three_mf_daily_limit_cn=_normalize_three_mf_daily_limit(payload.get("three_mf_daily_limit_cn")),
+            three_mf_daily_limit_global=_normalize_three_mf_daily_limit(payload.get("three_mf_daily_limit_global")),
         )
         _emit(queue, "result", result)
     except Exception as exc:

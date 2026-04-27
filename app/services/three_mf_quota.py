@@ -21,7 +21,7 @@ def _coerce_limit(value: Any) -> int:
         limit = int(value)
     except (TypeError, ValueError):
         return DEFAULT_THREE_MF_DAILY_LIMIT
-    return max(1, limit)
+    return max(0, limit)
 
 
 def _source_label(source: str) -> str:
@@ -90,6 +90,15 @@ def reserve_three_mf_download_slot(
     normalized_limit = _coerce_limit(limit)
     if normalized_source not in {"cn", "global"}:
         return {"allowed": True, "source": normalized_source, "limit": normalized_limit}
+    if normalized_limit <= 0:
+        return {
+            "allowed": True,
+            "source": normalized_source,
+            "limit": 0,
+            "used": 0,
+            "remaining": None,
+            "unlimited": True,
+        }
 
     now = china_now()
     today = now.date().isoformat()

@@ -140,8 +140,8 @@ class RemoteRefreshConfig(BaseModel):
 
 
 class ThreeMfDownloadLimitsConfig(BaseModel):
-    cn_daily_limit: int = Field(default=100, ge=1, le=100000)
-    global_daily_limit: int = Field(default=100, ge=1, le=100000)
+    cn_daily_limit: int = Field(default=100, ge=0, le=100000)
+    global_daily_limit: int = Field(default=100, ge=0, le=100000)
 
 
 class SubscriptionSettingsConfig(BaseModel):

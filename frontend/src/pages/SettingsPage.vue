@@ -77,13 +77,13 @@
         <div class="settings-grid settings-grid--two">
           <label class="field-card">
             <span>国区每日 3MF 下载上限</span>
-            <input v-model.number="threeMfLimitsForm.cn_daily_limit" type="number" min="1" step="1">
-            <small class="archive-form__hint">达到上限后，国区缺失 3MF 会暂停到次日 00:00。</small>
+            <input v-model.number="threeMfLimitsForm.cn_daily_limit" type="number" min="0" step="1">
+            <small class="archive-form__hint">默认 100，填 0 表示不限制；达到上限后，国区缺失 3MF 会暂停到次日 00:00。</small>
           </label>
           <label class="field-card">
             <span>国际区每日 3MF 下载上限</span>
-            <input v-model.number="threeMfLimitsForm.global_daily_limit" type="number" min="1" step="1">
-            <small class="archive-form__hint">达到上限后，国际区缺失 3MF 会暂停到次日 00:00。</small>
+            <input v-model.number="threeMfLimitsForm.global_daily_limit" type="number" min="0" step="1">
+            <small class="archive-form__hint">默认 100，填 0 表示不限制；达到上限后，国际区缺失 3MF 会暂停到次日 00:00。</small>
           </label>
         </div>
         <div class="form-footer">
@@ -548,6 +548,17 @@ function applyProfileBackfillStatus(payload) {
   };
 }
 
+function normalizeDailyThreeMfLimit(value, fallback = 100) {
+  if (value === "" || value === null || value === undefined) {
+    return fallback;
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return Math.max(0, Math.trunc(numeric));
+}
+
 function applyConfigToForms(payload) {
   const cookies = {};
   for (const item of payload.cookies || []) {
@@ -558,8 +569,8 @@ function applyConfigToForms(payload) {
   connectionForm.proxy_enabled = Boolean(payload.proxy?.enabled);
   connectionForm.http_proxy = payload.proxy?.http_proxy || "";
   connectionForm.https_proxy = payload.proxy?.https_proxy || "";
-  threeMfLimitsForm.cn_daily_limit = Number(payload.three_mf_limits?.cn_daily_limit || 100);
-  threeMfLimitsForm.global_daily_limit = Number(payload.three_mf_limits?.global_daily_limit || 100);
+  threeMfLimitsForm.cn_daily_limit = normalizeDailyThreeMfLimit(payload.three_mf_limits?.cn_daily_limit);
+  threeMfLimitsForm.global_daily_limit = normalizeDailyThreeMfLimit(payload.three_mf_limits?.global_daily_limit);
 
   notificationsForm.enabled = Boolean(payload.notifications?.enabled);
   notificationsForm.telegram_bot_token = payload.notifications?.telegram_bot_token || "";
@@ -757,8 +768,8 @@ async function saveConnections() {
     const payload = await apiRequest("/api/config/three-mf-limits", {
       method: "POST",
       body: {
-        cn_daily_limit: Number(threeMfLimitsForm.cn_daily_limit || 100),
-        global_daily_limit: Number(threeMfLimitsForm.global_daily_limit || 100),
+        cn_daily_limit: normalizeDailyThreeMfLimit(threeMfLimitsForm.cn_daily_limit),
+        global_daily_limit: normalizeDailyThreeMfLimit(threeMfLimitsForm.global_daily_limit),
       },
     });
     applyConfigPayload(payload);

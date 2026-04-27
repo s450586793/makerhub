@@ -42,6 +42,15 @@ ACTIVE_BATCH_IDLE_POLL_SECONDS = 2.0
 COLLECTION_DETAIL_RE = re.compile(r"/(?:[a-z]{2}/)?collections/\d+(?:-[^/?#]+)?(?:[/?#]|$)", re.I)
 THREE_MF_LIMIT_GUARD_PATH = STATE_DIR / "three_mf_limit_guard.json"
 THREE_MF_LIMIT_DEFAULT_MESSAGE = "已达到 MakerWorld 每日下载上限，今日暂停自动重试。"
+DEFAULT_THREE_MF_DAILY_LIMIT = 100
+
+
+def _normalize_three_mf_daily_limit(value: Any, fallback: int = DEFAULT_THREE_MF_DAILY_LIMIT) -> int:
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(0, limit)
 
 
 def detect_archive_mode(url: str) -> str:
@@ -65,15 +74,13 @@ def _select_cookie(url: str, config) -> str:
 
 def _three_mf_daily_limits(config) -> tuple[int, int]:
     limits = getattr(config, "three_mf_limits", None)
-    try:
-        cn_limit = int(getattr(limits, "cn_daily_limit", 100) or 100)
-    except (TypeError, ValueError):
-        cn_limit = 100
-    try:
-        global_limit = int(getattr(limits, "global_daily_limit", 100) or 100)
-    except (TypeError, ValueError):
-        global_limit = 100
-    return max(1, cn_limit), max(1, global_limit)
+    cn_limit = _normalize_three_mf_daily_limit(
+        getattr(limits, "cn_daily_limit", DEFAULT_THREE_MF_DAILY_LIMIT)
+    )
+    global_limit = _normalize_three_mf_daily_limit(
+        getattr(limits, "global_daily_limit", DEFAULT_THREE_MF_DAILY_LIMIT)
+    )
+    return cn_limit, global_limit
 
 
 def _task_key(url: str) -> str:
