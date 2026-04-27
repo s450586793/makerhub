@@ -140,6 +140,9 @@ def _comment_has_flattened_reply_signal(item: dict[str, Any]) -> bool:
     root_comment_id = str(item.get("rootCommentId") or item.get("root_comment_id") or "").strip()
     if root_comment_id and root_comment_id != comment_id:
         return True
+    rating_id = str(item.get("ratingId") or item.get("rating_id") or "").strip()
+    if rating_id and rating_id != comment_id:
+        return True
 
     direct_fields = (
         "replyToName",
@@ -160,6 +163,7 @@ def _comment_has_flattened_reply_signal(item: dict[str, Any]) -> bool:
         "targetUser",
         "beRepliedUser",
         "parentUser",
+        "atUser",
     )
     for field in nested_fields:
         value = item.get(field)
@@ -184,8 +188,18 @@ def _iter_comment_tree(items: Any):
         yield from _iter_comment_tree(item.get("replies"))
 
 
+def _comment_tree_count(items: Any) -> int:
+    return sum(1 for _ in _iter_comment_tree(items))
+
+
 def _meta_needs_comment_reply_backfill(meta: dict[str, Any]) -> bool:
     comments = meta.get("comments") if isinstance(meta.get("comments"), list) else []
+    try:
+        expected_comment_count = int(meta.get("commentCount") or 0)
+    except (TypeError, ValueError):
+        expected_comment_count = 0
+    if expected_comment_count > _comment_tree_count(comments):
+        return True
     for item in comments:
         if isinstance(item, dict) and _comment_has_flattened_reply_signal(item):
             return True

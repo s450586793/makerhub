@@ -37,6 +37,9 @@ class CommentRepliesTest(unittest.TestCase):
                     "timeout": timeout,
                 }
             )
+            if callable(self._payload):
+                payload = self._payload(url, params or {}, headers or {}, timeout)
+                return CommentRepliesTest._DummyResponse(payload)
             return CommentRepliesTest._DummyResponse(self._payload)
 
     def test_catalog_normalizes_wrapped_reply_lists(self):
@@ -329,9 +332,9 @@ class CommentRepliesTest(unittest.TestCase):
         self.assertEqual(len(bundle["items"]), 1)
         self.assertEqual(bundle["items"][0]["replyCount"], 2)
         self.assertEqual([item["id"] for item in bundle["items"][0]["replies"]], ["reply-1", "reply-2"])
-        self.assertEqual(len(session.calls), 1)
-        self.assertIn("/comment-service/comment/root-comment/reply", session.calls[0]["url"])
-        self.assertEqual(session.calls[0]["params"], {"limit": 20})
+        reply_calls = [call for call in session.calls if "/comment-service/comment/root-comment/reply" in call["url"]]
+        self.assertEqual(len(reply_calls), 1)
+        self.assertEqual(reply_calls[0]["params"], {"limit": 20})
 
     def test_collect_comments_accepts_reply_api_top_level_replies(self):
         next_data = {
@@ -428,6 +431,192 @@ class CommentRepliesTest(unittest.TestCase):
         self.assertEqual(bundle["items"][0]["id"], "root-comment")
         self.assertEqual(bundle["items"][0]["replies"][0]["content"], "补回来的回复")
 
+    def test_collect_comments_fetches_paginated_commentandrating_pages(self):
+        def payload(url, params, _headers, _timeout):
+            if "commentandrating" not in url:
+                return {}
+            offset = int(params.get("offset") or 0)
+            if offset == 0:
+                return {
+                    "total": 3,
+                    "hits": [
+                        {
+                            "type": 1,
+                            "comment": {
+                                "id": "comment-1",
+                                "content": "第一页评论",
+                                "createTime": "2026-04-23 12:00:00",
+                                "replyCount": 0,
+                                "user": {"name": "用户一"},
+                            },
+                        },
+                        {
+                            "type": 2,
+                            "ratingItem": {
+                                "id": "rating-1",
+                                "score": 5,
+                                "instanceId": "profile-1",
+                                "content": "第一页评分",
+                                "createTime": "2026-04-23 12:01:00",
+                                "replyCount": 0,
+                                "creator": {"name": "用户二"},
+                            },
+                        },
+                    ],
+                }
+            if offset == 2:
+                return {
+                    "total": 3,
+                    "hits": [
+                        {
+                            "type": 1,
+                            "comment": {
+                                "id": "comment-2",
+                                "content": "第二页评论",
+                                "createTime": "2026-04-23 12:02:00",
+                                "replyCount": 0,
+                                "user": {"name": "用户三"},
+                            },
+                        }
+                    ],
+                }
+            return {"total": 3, "hits": []}
+
+        session = self._DummySession(payload)
+
+        bundle = collect_comments(
+            {},
+            {"id": "123456", "url": "https://makerworld.com.cn/zh/models/123456", "commentCount": 3},
+            session,
+            Path("."),
+            download_assets=False,
+        )
+
+        self.assertEqual(bundle["count"], 3)
+        self.assertEqual([item["id"] for item in bundle["items"]], ["comment-1", "rating-1", "comment-2"])
+        page_calls = [call for call in session.calls if "commentandrating" in call["url"]]
+        self.assertEqual([call["params"]["offset"] for call in page_calls], [0, 2])
+
+    def test_collect_comments_hydrates_rating_replies_from_rating_api(self):
+        def payload(url, params, _headers, _timeout):
+            if "commentandrating" in url:
+                return {
+                    "total": 1,
+                    "hits": [
+                        {
+                            "type": 2,
+                            "ratingItem": {
+                                "id": "rating-root",
+                                "score": 5,
+                                "instanceId": "profile-1",
+                                "content": "带回复的评分",
+                                "createTime": "2026-04-23 12:00:00",
+                                "replyCount": 3,
+                                "creator": {"name": "评分用户"},
+                                "instRatingReply": [
+                                    {
+                                        "id": "rating-reply-1",
+                                        "ratingId": "rating-root",
+                                        "content": "已有评分回复",
+                                        "createTime": "2026-04-23 12:05:00",
+                                        "replyCount": 0,
+                                        "creator": {"name": "回复用户一"},
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                }
+            if "/rating/rating-root/reply" in url:
+                return {
+                    "total": 3,
+                    "hits": [
+                        {
+                            "id": "rating-reply-1",
+                            "ratingId": "rating-root",
+                            "content": "已有评分回复",
+                            "createTime": "2026-04-23 12:05:00",
+                            "replyCount": 0,
+                            "creator": {"name": "回复用户一"},
+                        },
+                        {
+                            "id": "rating-reply-2",
+                            "ratingId": "rating-root",
+                            "content": "补全评分回复二",
+                            "createTime": "2026-04-23 12:06:00",
+                            "replyCount": 0,
+                            "creator": {"name": "回复用户二"},
+                        },
+                        {
+                            "id": "rating-reply-3",
+                            "ratingId": "rating-root",
+                            "content": "补全评分回复三",
+                            "createTime": "2026-04-23 12:07:00",
+                            "replyCount": 0,
+                            "creator": {"name": "回复用户三"},
+                        },
+                    ],
+                }
+            return {}
+
+        session = self._DummySession(payload)
+
+        bundle = collect_comments(
+            {},
+            {"id": "123456", "url": "https://makerworld.com.cn/zh/models/123456", "commentCount": 1},
+            session,
+            Path("."),
+            download_assets=False,
+        )
+
+        self.assertEqual(len(bundle["items"]), 1)
+        self.assertEqual(bundle["items"][0]["id"], "rating-root")
+        self.assertEqual(bundle["items"][0]["commentSource"], "rating")
+        self.assertEqual([item["id"] for item in bundle["items"][0]["replies"]], [
+            "rating-reply-1",
+            "rating-reply-2",
+            "rating-reply-3",
+        ])
+        self.assertTrue(any("/rating/rating-root/reply" in call["url"] for call in session.calls))
+        self.assertFalse(any("/comment/rating-root/reply" in call["url"] for call in session.calls))
+
+    def test_collect_comments_keeps_blank_rating_items(self):
+        def payload(url, params, _headers, _timeout):
+            if "commentandrating" in url:
+                return {
+                    "total": 1,
+                    "hits": [
+                        {
+                            "type": 2,
+                            "ratingItem": {
+                                "id": "blank-rating",
+                                "score": 5,
+                                "instanceId": "profile-1",
+                                "content": "",
+                                "createTime": "2026-04-23 12:00:00",
+                                "replyCount": 0,
+                                "creator": {"name": "评分用户"},
+                            },
+                        }
+                    ],
+                }
+            return {}
+
+        session = self._DummySession(payload)
+
+        bundle = collect_comments(
+            {},
+            {"id": "123456", "url": "https://makerworld.com.cn/zh/models/123456", "commentCount": 1},
+            session,
+            Path("."),
+            download_assets=False,
+        )
+
+        self.assertEqual(len(bundle["items"]), 1)
+        self.assertEqual(bundle["items"][0]["id"], "blank-rating")
+        self.assertEqual(bundle["items"][0]["content"], "")
+        self.assertEqual(bundle["items"][0]["rating"], 5)
+
     def test_profile_backfill_detects_models_missing_comment_replies(self):
         meta = {
             "instances": [
@@ -485,6 +674,27 @@ class CommentRepliesTest(unittest.TestCase):
                     "id": "root-comment",
                     "content": "主评论",
                     "replyCount": 2,
+                }
+            ],
+        }
+
+        self.assertTrue(_meta_needs_profile_backfill(meta))
+
+    def test_profile_backfill_detects_partial_comment_pages(self):
+        meta = {
+            "commentSchemaVersion": COMMENT_SCHEMA_VERSION,
+            "commentCount": 3,
+            "instances": [
+                {
+                    "profileDetailVersion": PROFILE_DETAIL_SCHEMA_VERSION,
+                    "pictures": [{"url": "https://example.com/preview.jpg"}],
+                }
+            ],
+            "comments": [
+                {
+                    "id": "root-comment",
+                    "content": "只存了一条评论",
+                    "replyCount": 0,
                 }
             ],
         }

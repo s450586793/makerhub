@@ -37,6 +37,12 @@ makerhub 是一个面向个人 NAS / DSM 部署的 MakerWorld 模型归档与管
 
 ## 更新记录
 
+### 2026-04-27
+- 版本号升级到 `v0.5.104`
+- 评论采集新增 MakerWorld `commentandrating` 主列表分页，不再只依赖模型页面首屏数据；归档、订阅、源端刷新、缺失 `3MF` 重试和现有库信息补全都会复用这条链路
+- 评分评论的 `instRatingReply` 会按评论回复树保存，回复不足时改走 `rating/{id}/reply` 补全；普通评论回复继续走 `comment/{id}/reply`
+- 现有库信息补全会把 `commentCount` 大于本地评论树数量的模型重新列入候选，方便把过去只抓到第一页评论的模型补齐
+
 ### 2026-04-26
 - 版本号升级到 `v0.5.103`
 - 源端刷新页面抓取的 `curl` 兜底增加 TLS 兼容重试：默认请求失败后会依次尝试 `HTTP/1.1 + TLS1.2` 和 `IPv4 + HTTP/1.1 + TLS1.2`，减少 `curl code=35 unexpected eof while reading` 导致整轮刷新失败的问题

@@ -897,6 +897,20 @@ def _comment_numeric(value) -> int:
         return 0
 
 
+def _is_rating_comment_node(node: dict) -> bool:
+    if not isinstance(node, dict):
+        return False
+    if not any(key in node for key in ("score", "star", "starLevel", "rating")):
+        return False
+    return any(key in node for key in ("instanceId", "instInfo", "successPrinted", "instRatingReply"))
+
+
+def _is_rating_reply_node(node: dict) -> bool:
+    if not isinstance(node, dict) or "ratingId" not in node:
+        return False
+    return any(key in node for key in ("replyId", "replyUid", "creator", "atUser"))
+
+
 def _extract_comment_image_candidates(node: dict) -> List[dict]:
     found: List[dict] = []
     if not isinstance(node, dict):
@@ -950,6 +964,10 @@ _COMMENT_CHILD_KEYS = (
     "commentReply",
     "commentReplyVos",
     "commentReplyList",
+    "instRatingReply",
+    "instRatingReplies",
+    "ratingReply",
+    "ratingReplies",
     "replyComments",
     "replyInfoList",
     "childComments",
@@ -981,6 +999,7 @@ _COMMENT_REPLY_USER_KEYS = (
     "targetUser",
     "beRepliedUser",
     "parentUser",
+    "atUser",
 )
 
 
@@ -1000,6 +1019,7 @@ def _comment_child_nodes(node: dict) -> List[dict]:
                 "message",
                 "text",
                 "replyCount",
+                "ratingId",
                 "subCommentCount",
                 "childrenCount",
                 "commentTime",
@@ -1319,8 +1339,6 @@ def _normalize_comment_candidate(node: dict, *, replies: Optional[List[dict]] = 
         content = _comment_text_value(node.get(key))
         if content:
             break
-    if not content:
-        return None
 
     user = node.get("user") or node.get("author") or node.get("creator") or node.get("commentUser") or {}
     if not isinstance(user, dict):
@@ -1338,6 +1356,14 @@ def _normalize_comment_candidate(node: dict, *, replies: Optional[List[dict]] = 
 
     comment_id = str(node.get("commentId") or node.get("id") or "").strip()
     root_comment_id = str(node.get("rootCommentId") or "").strip()
+    rating_id = str(node.get("ratingId") or "").strip()
+    comment_source = ""
+    if _is_rating_comment_node(node):
+        comment_source = "rating"
+        root_comment_id = root_comment_id or comment_id
+    elif _is_rating_reply_node(node):
+        comment_source = "rating_reply"
+        root_comment_id = root_comment_id or rating_id
     created_at = _comment_created_at_value(node)
     like_count = _comment_numeric(node.get("likeCount") or node.get("praiseCount"))
     reply_count = _comment_numeric(node.get("replyCount") or node.get("subCommentCount") or node.get("childrenCount"))
@@ -1360,6 +1386,8 @@ def _normalize_comment_candidate(node: dict, *, replies: Optional[List[dict]] = 
 
     images = _extract_comment_image_candidates(node)
     has_source_identity = _has_comment_source_identity(node, images)
+    if not content and not (_is_rating_comment_node(node) and has_source_identity and (rating > 0 or images)):
+        return None
     if _is_placeholder_comment_content(content) and not has_source_identity:
         return None
     if has_weak_marker and not has_strong_marker and not has_source_identity:
@@ -1392,6 +1420,15 @@ def _normalize_comment_candidate(node: dict, *, replies: Optional[List[dict]] = 
     }
     if reply_items:
         payload["replies"] = reply_items
+    if comment_source:
+        payload["commentSource"] = comment_source
+    if rating_id:
+        payload["ratingId"] = rating_id
+    elif comment_source == "rating" and comment_id:
+        payload["ratingId"] = comment_id
+    reply_id = str(node.get("replyId") or "").strip()
+    if reply_id:
+        payload["replyId"] = reply_id
 
     for key in _COMMENT_REPLY_DIRECT_KEYS:
         value = node.get(key)
@@ -1769,11 +1806,17 @@ def _fetch_comment_reply_payload(
     *,
     params: Optional[dict[str, object]] = None,
     api_host_hint: Optional[str] = None,
+    reply_kind: str = "comment",
 ) -> Optional[object]:
     headers = _build_makerworld_api_headers(session, source_url)
+    reply_path = (
+        f"/rating/{root_comment_id}/reply"
+        if str(reply_kind or "").strip().lower() == "rating"
+        else f"/comment/{root_comment_id}/reply"
+    )
     for api_url in _comment_service_endpoint_candidates(
         source_url,
-        f"/comment/{root_comment_id}/reply",
+        reply_path,
         api_host_hint=api_host_hint,
     ):
         try:
@@ -1789,6 +1832,159 @@ def _fetch_comment_reply_payload(
         except Exception:
             continue
     return None
+
+
+_COMMENT_LIST_PAGE_LIMIT = 100
+_COMMENT_LIST_MAX_PAGES = 250
+
+
+def _fetch_comment_list_payload(
+    session: requests.Session,
+    source_url: str,
+    design_id: str,
+    *,
+    offset: int,
+    limit: int,
+    api_host_hint: Optional[str] = None,
+) -> Optional[object]:
+    if not design_id:
+        return None
+    headers = _build_makerworld_api_headers(session, source_url)
+    params: dict[str, object] = {
+        "designId": design_id,
+        "offset": max(int(offset or 0), 0),
+        "limit": max(min(int(limit or _COMMENT_LIST_PAGE_LIMIT), _COMMENT_LIST_PAGE_LIMIT), 1),
+        "type": 0,
+        "sort": 0,
+    }
+    for api_url in _comment_service_endpoint_candidates(
+        source_url,
+        "/commentandrating",
+        api_host_hint=api_host_hint,
+    ):
+        try:
+            response = session.get(api_url, params=params, headers=headers, timeout=(5, 15))
+        except Exception:
+            continue
+        if response.status_code >= 400:
+            continue
+        if _looks_like_html_response(response.text):
+            continue
+        try:
+            return response.json()
+        except Exception:
+            continue
+    return None
+
+
+def _comment_list_payload_total(payload: object) -> int:
+    if not isinstance(payload, dict):
+        return 0
+    return _comment_numeric(
+        payload.get("total")
+        or payload.get("count")
+        or payload.get("totalCount")
+        or payload.get("commentCount")
+    )
+
+
+def _comment_list_payload_hit_count(payload: object) -> int:
+    if not isinstance(payload, dict):
+        return 0
+    for key in ("hits", "items", "list", "records", "rows", "results"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return len(value)
+    return 0
+
+
+def _extract_comment_list_items(payload: object) -> List[dict]:
+    comments: List[dict] = []
+    seen: dict[str, dict] = {}
+    if isinstance(payload, dict) and isinstance(payload.get("hits"), list):
+        for hit in payload.get("hits") or []:
+            if not isinstance(hit, dict):
+                continue
+            source = hit.get("comment") if isinstance(hit.get("comment"), dict) else None
+            if source is None and isinstance(hit.get("ratingItem"), dict):
+                source = hit.get("ratingItem")
+            if isinstance(source, dict):
+                comment, is_new = _collect_comment_tree(source, seen)
+                if comment and is_new:
+                    comments.append(comment)
+                continue
+            _collect_comments_from_payload(hit, comments, seen)
+    else:
+        _collect_comments_from_payload(payload, comments, seen)
+    return normalize_threaded_comments(comments)
+
+
+def _fetch_paginated_comment_list(
+    comments: List[dict],
+    session: requests.Session,
+    design: dict,
+    source_url: str,
+    *,
+    api_host_hint: Optional[str] = None,
+    logger=None,
+) -> tuple[List[dict], dict[str, int]]:
+    design_id = str(design.get("id") or _parse_design_id(source_url) or "").strip()
+    if not design_id or not source_url:
+        return comments, {"pages": 0, "roots": 0, "total": 0}
+
+    fetched_comments: List[dict] = []
+    offset = 0
+    total = 0
+    pages = 0
+    seen_offsets: set[int] = set()
+    list_started_at = time.perf_counter()
+
+    for _ in range(_COMMENT_LIST_MAX_PAGES):
+        if offset in seen_offsets:
+            break
+        seen_offsets.add(offset)
+        payload = _fetch_comment_list_payload(
+            session,
+            source_url,
+            design_id,
+            offset=offset,
+            limit=_COMMENT_LIST_PAGE_LIMIT,
+            api_host_hint=api_host_hint,
+        )
+        if payload is None:
+            break
+
+        hit_count = _comment_list_payload_hit_count(payload)
+        total = max(total, _comment_list_payload_total(payload))
+        if hit_count <= 0 and total <= 0:
+            break
+        page_items = _extract_comment_list_items(payload)
+        if not page_items and hit_count <= 0:
+            break
+
+        if page_items:
+            fetched_comments = _merge_threaded_comment_list(fetched_comments, page_items)
+        pages += 1
+
+        step = max(hit_count, len(page_items), 1)
+        offset += step
+        if total > 0 and offset >= total:
+            break
+        if total <= 0 and hit_count < _COMMENT_LIST_PAGE_LIMIT:
+            break
+
+    if fetched_comments:
+        comments = _merge_threaded_comment_list(comments, fetched_comments)
+
+    _log_perf(
+        "comments.fetch_pages",
+        list_started_at,
+        logger=logger,
+        pages=pages,
+        roots=len(fetched_comments),
+        total=total,
+    )
+    return comments, {"pages": pages, "roots": len(fetched_comments), "total": total}
 
 
 def _hydrate_missing_comment_replies(
@@ -1815,6 +2011,14 @@ def _hydrate_missing_comment_replies(
         existing_replies = _comment_reply_items(normalized_root)
         expected_reply_count = _comment_reply_count(normalized_root)
         merged_replies = _merge_threaded_comment_list([], existing_replies)
+        root_comment_source = str(normalized_root.get("commentSource") or "").strip().lower()
+        root_rating_id = str(normalized_root.get("ratingId") or "").strip()
+        is_rating_root = root_comment_source == "rating" or (
+            bool(root_rating_id)
+            and root_rating_id == root_comment_id
+            and _comment_numeric(normalized_root.get("rating")) > 0
+        )
+        cursor_param = "msgRatingReplyId" if is_rating_root else "msgCommentReplyId"
 
         if root_comment_id and expected_reply_count > len(merged_replies):
             page_limit = min(max(expected_reply_count, 20), 200)
@@ -1827,7 +2031,7 @@ def _hydrate_missing_comment_replies(
                 if after is not None:
                     params["after"] = after
                 if last_reply_id:
-                    params["msgCommentReplyId"] = last_reply_id
+                    params[cursor_param] = last_reply_id
 
                 payload = _fetch_comment_reply_payload(
                     session,
@@ -1835,6 +2039,7 @@ def _hydrate_missing_comment_replies(
                     root_comment_id,
                     params=params,
                     api_host_hint=api_host_hint,
+                    reply_kind="rating" if is_rating_root else "comment",
                 )
                 if payload is None:
                     break
@@ -1928,6 +2133,13 @@ def collect_comments(
         _collect_comments_from_payload(next_data, comments, seen)
         _collect_comments_from_payload(design, comments, seen)
     comments = normalize_threaded_comments(comments)
+    comments, page_fetch_stats = _fetch_paginated_comment_list(
+        comments,
+        session,
+        design,
+        str(design.get("url") or next_data.get("url") or ""),
+        api_host_hint=api_host_hint,
+    )
     existing_comment_items = existing_comments if isinstance(existing_comments, list) else []
     if existing_comment_items:
         comments = _merge_threaded_comment_list(existing_comment_items, comments)
@@ -1945,6 +2157,9 @@ def collect_comments(
         comments=comment_total,
         roots=len(comments),
         sections=len(unique_sections),
+        fetched_pages=page_fetch_stats.get("pages") or 0,
+        fetched_roots=page_fetch_stats.get("roots") or 0,
+        fetched_total=page_fetch_stats.get("total") or 0,
         hydrated_roots=reply_fetch_stats.get("roots") or 0,
         hydrated_replies=reply_fetch_stats.get("replies") or 0,
     )
@@ -3151,7 +3366,7 @@ def extract_instances(design: dict) -> List[dict]:
 
 
 PROFILE_DETAIL_SCHEMA_VERSION = 4
-COMMENT_SCHEMA_VERSION = 3
+COMMENT_SCHEMA_VERSION = 4
 _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
 

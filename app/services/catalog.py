@@ -1098,6 +1098,7 @@ def _comment_reply_to(item: dict) -> str:
         item.get("targetUser"),
         item.get("beRepliedUser"),
         item.get("parentUser"),
+        item.get("atUser"),
     )
     for candidate in nested_candidates:
         if not isinstance(candidate, dict):
@@ -1224,6 +1225,10 @@ def _comment_children(item: dict) -> list[dict]:
         "commentReply",
         "commentReplyVos",
         "commentReplyList",
+        "instRatingReply",
+        "instRatingReplies",
+        "ratingReply",
+        "ratingReplies",
         "replyComments",
         "replyInfoList",
         "childComments",
@@ -1255,6 +1260,7 @@ def _comment_children(item: dict) -> list[dict]:
                 "message",
                 "text",
                 "replyCount",
+                "ratingId",
                 "subCommentCount",
                 "childrenCount",
                 "commentTime",
