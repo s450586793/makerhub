@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 
+from app.services.catalog import _source_deleted_model_count
 from app.services.source_library import build_state_group_models_payload
 
 
@@ -41,6 +42,15 @@ class SourceLibraryTest(unittest.TestCase):
         self.assertEqual(payload["source_counts"]["all"], 2)
         self.assertEqual(payload["source_counts"]["local"], 1)
         self.assertEqual([item["model_dir"] for item in payload["items"]], ["deleted-local", "deleted-cn"])
+
+    def test_dashboard_source_deleted_count_uses_archived_models(self):
+        items = [
+            {"model_dir": "marked", "subscription_flags": {"deleted_on_source": True}},
+            {"model_dir": "visible", "subscription_flags": {"deleted_on_source": False}},
+            {"model_dir": "plain"},
+        ]
+
+        self.assertEqual(_source_deleted_model_count(items), 1)
 
 
 if __name__ == "__main__":

@@ -422,6 +422,14 @@ def _subscription_deleted_count(state: dict) -> int:
     return max(len(tracked_keys - current_keys), 0)
 
 
+def _source_deleted_model_count(items: list[dict]) -> int:
+    return len([
+        item
+        for item in items
+        if item.get("subscription_flags", {}).get("deleted_on_source")
+    ])
+
+
 def _build_dashboard_subscriptions(
     config,
     task_store: TaskStateStore,
@@ -2244,6 +2252,7 @@ def build_dashboard_payload(config) -> dict:
 
     recent_models = _clone_model_items(visible_models[:8])
     recent_week_count = len([item for item in visible_models if item["collect_ts"] >= seven_days_ago])
+    source_deleted_model_count = _source_deleted_model_count(visible_models)
     organize_tasks = tasks_payload["organize_tasks"]
     remote_refresh = tasks_payload["remote_refresh"]
 
@@ -2265,7 +2274,8 @@ def build_dashboard_payload(config) -> dict:
                 "count": subscriptions_summary["count"],
                 "enabled_count": subscriptions_summary["enabled_count"],
                 "running_count": subscriptions_summary["running_count"],
-                "deleted_marked_count": subscriptions_summary["deleted_marked_count"],
+                "deleted_marked_count": source_deleted_model_count,
+                "deleted_source_item_count": subscriptions_summary["deleted_marked_count"],
                 "recent_items": subscriptions_summary["recent_items"],
                 "next_items": subscriptions_summary["next_items"],
             },
