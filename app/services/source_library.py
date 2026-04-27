@@ -1053,6 +1053,7 @@ def build_state_group_models_payload(
         sort_key=sort_key,
         page=page,
         page_size=page_size,
+        default_include_deleted=str(group.get("key") or "") == "local_deleted",
     )
     payload["view"] = group
     return payload
