@@ -57,6 +57,7 @@ from app.services.archive_repair import (
 from app.services.archive_profile_backfill import (
     queue_profile_backfill,
     read_profile_backfill_status,
+    write_profile_backfill_status,
 )
 from app.services.subscriptions import SubscriptionManager
 from app.services.source_library import (
@@ -92,6 +93,7 @@ remote_refresh_manager = RemoteRefreshManager(
 archive_repair_process: Process | None = None
 archive_repair_start_lock = asyncio.Lock()
 profile_backfill_start_lock = asyncio.Lock()
+profile_backfill_task: asyncio.Task | None = None
 github_version_refresh_task: asyncio.Task | None = None
 github_version_refresh_lock = asyncio.Lock()
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/s450586793/makerhub/main/VERSION"
@@ -1607,12 +1609,14 @@ async def repair_archive_3mf(request: Request):
 @router.get("/admin/archive/profile-backfill")
 async def get_archive_profile_backfill_status(request: Request):
     _require_session_auth(request)
-    return await run_ui_io(read_profile_backfill_status)
+    status = await run_ui_io(read_profile_backfill_status)
+    return _compact_profile_backfill_status(status)
 
 
 @router.post("/admin/archive/profile-backfill")
 async def start_archive_profile_backfill(request: Request):
     _require_session_auth(request)
+    global profile_backfill_task
     async with profile_backfill_start_lock:
         state = read_profile_backfill_status()
         if state.get("running"):
@@ -1622,19 +1626,50 @@ async def start_archive_profile_backfill(request: Request):
                     "message": "现有库信息补全正在扫描并持续入队，请稍后刷新状态。",
                 }
             )
-            return state
-        try:
-            result = await run_task_api(queue_profile_backfill, crawler.manager)
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+            return _compact_profile_backfill_status(state)
 
-    result.update(
+        started_at = china_now_iso()
+        state = write_profile_backfill_status(
+            {
+                "running": True,
+                "started_at": started_at,
+                "finished_at": "",
+                "last_error": "",
+                "last_result": {},
+            }
+        )
+        profile_backfill_task = asyncio.create_task(_run_profile_backfill_background())
+
+    state.update(
         {
             "accepted": True,
-            "message": result.get("message") or "现有库信息补全扫描完成，缺失模型会继续在归档队列后台补全。",
+            "message": "现有库信息补全扫描已在后台启动，请稍后刷新状态；缺失模型会继续加入归档队列。",
         }
     )
-    return result
+    return _compact_profile_backfill_status(state)
+
+
+def _compact_profile_backfill_status(status: dict) -> dict:
+    payload = dict(status or {})
+    result = payload.get("last_result")
+    if isinstance(result, dict):
+        compact_result = dict(result)
+        items = compact_result.get("items")
+        if isinstance(items, list) and len(items) > 50:
+            compact_result["items"] = items[:50]
+            compact_result["items_total"] = len(items)
+            compact_result["items_truncated"] = True
+        payload["last_result"] = compact_result
+    return payload
+
+
+async def _run_profile_backfill_background() -> None:
+    try:
+        await run_task_api(queue_profile_backfill, crawler.manager)
+    except Exception:
+        # queue_profile_backfill writes last_error itself; keep the background
+        # task from surfacing an unhandled asyncio exception.
+        pass
 
 
 @router.post("/archive/preview")
