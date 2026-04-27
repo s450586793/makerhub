@@ -100,7 +100,18 @@
             <span aria-hidden="true" v-html="model.local_flags?.printed ? icons.printedFilled : icons.printedOutline"></span>
           </button>
         </div>
-        <button class="gallery-delete" type="button" title="在 MakerHub 中删除" aria-label="在 MakerHub 中删除" @click.stop="$emit('delete', model.model_dir)">
+        <button
+          v-if="model.local_flags?.deleted"
+          class="gallery-restore"
+          type="button"
+          title="恢复到模型库"
+          aria-label="恢复到模型库"
+          @click.stop="$emit('restore', model.model_dir)"
+        >
+          <span aria-hidden="true" v-html="icons.restore"></span>
+          <em>恢复</em>
+        </button>
+        <button v-else class="gallery-delete" type="button" title="在 MakerHub 中删除" aria-label="在 MakerHub 中删除" @click.stop="$emit('delete', model.model_dir)">
           <span aria-hidden="true" v-html="icons.delete"></span>
         </button>
       </div>
@@ -122,7 +133,7 @@ const props = defineProps({
   },
 });
 
-defineEmits(["favorite", "printed", "delete"]);
+defineEmits(["favorite", "printed", "delete", "restore"]);
 
 const router = useRouter();
 
@@ -138,6 +149,7 @@ const icons = {
   printedOutline: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="6.7"/><path d="m7.2 10.1 1.9 1.9 3.7-3.8"/></svg>',
   printedFilled: '<svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 2.2a7.8 7.8 0 1 0 0 15.6 7.8 7.8 0 0 0 0-15.6Zm-1.1 10.96-3-2.98 1.16-1.17 1.83 1.83 4.06-4.08 1.17 1.17-5.22 5.23Z"/></svg>',
   delete: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 6.1h10.2"/><path d="M8.1 6.1V4.7c0-.77.63-1.4 1.4-1.4h1c.77 0 1.4.63 1.4 1.4v1.4"/><path d="m6.2 6.1.72 9a1.4 1.4 0 0 0 1.4 1.29h3.32a1.4 1.4 0 0 0 1.4-1.29l.72-9"/><path d="M8.6 8.9v4.3"/><path d="M11.4 8.9v4.3"/></svg>',
+  restore: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7.2 7.3H4.1V4.2"/><path d="M4.4 7.2a6.6 6.6 0 1 1 1.1 7.1"/><path d="m4.1 7.3 2.1-2.1"/></svg>',
 };
 
 const coverSrc = ref(props.model.cover_url || "");

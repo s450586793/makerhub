@@ -53,6 +53,7 @@
       @favorite="toggleFavorite"
       @printed="togglePrinted"
       @delete="deleteOne"
+      @restore="restoreOne"
     />
   </section>
 
@@ -361,6 +362,28 @@ async function deleteOne(modelDir) {
     status.value = error instanceof Error ? error.message : "本地删除失败。";
   } finally {
     deleting.value = false;
+  }
+}
+
+async function restoreOne(modelDir) {
+  const model = findModel(modelDir);
+  if (!model) return;
+
+  patchLocalFlag(modelDir, "deleted", false);
+  status.value = "";
+  try {
+    const response = await apiRequest("/api/models/flags/deleted", {
+      method: "POST",
+      body: {
+        model_dir: modelDir,
+        value: false,
+      },
+    });
+    status.value = response.message || "模型已恢复到模型库。";
+    await reloadVisiblePages();
+  } catch (error) {
+    patchLocalFlag(modelDir, "deleted", true);
+    status.value = error instanceof Error ? error.message : "恢复模型失败。";
   }
 }
 

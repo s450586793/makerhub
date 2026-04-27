@@ -1181,6 +1181,41 @@ async def update_model_printed(payload: ModelFlagUpdateRequest, request: Request
     }
 
 
+@router.post("/models/flags/deleted")
+async def update_model_deleted(payload: ModelFlagUpdateRequest, request: Request):
+    _require_session_auth(request)
+    clean_model_dir = str(payload.model_dir or "").strip().strip("/")
+    if not clean_model_dir:
+        raise HTTPException(status_code=400, detail="模型目录不能为空。")
+    detail = await run_web_io(get_model_detail, clean_model_dir, include_detail=False)
+    if not detail:
+        raise HTTPException(status_code=404, detail="模型不存在。")
+    flags = task_state_store.update_model_flag(clean_model_dir, "deleted", payload.value)
+    if payload.value:
+        model_id = str(detail.get("id") or "").strip()
+        origin_url = str(detail.get("origin_url") or "").strip()
+        if model_id:
+            task_state_store.remove_missing_3mf_for_model(model_id)
+        task_state_store.remove_recent_failures_for_model(model_id, url=origin_url)
+    invalidate_model_detail_cache(clean_model_dir)
+    invalidate_archive_snapshot("model_deleted_flag_updated")
+    message = "模型已恢复到模型库。" if not payload.value else "模型已标记为本地删除。"
+    append_business_log(
+        "model",
+        "deleted_flag_updated",
+        message,
+        model_dir=clean_model_dir,
+        value=payload.value,
+    )
+    return {
+        "success": True,
+        "model_dir": clean_model_dir,
+        "deleted": payload.value,
+        "flags": flags,
+        "message": message,
+    }
+
+
 @router.get("/tasks")
 async def get_tasks_data():
     def _tasks_payload() -> dict:
