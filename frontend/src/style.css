@@ -343,24 +343,39 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   min-height: 20px;
 }
 
+.settings-page-intro {
+  padding-block: 22px;
+}
+
+.settings-page-intro h1 {
+  margin-top: 8px;
+}
+
 .system-update-card {
   display: grid;
-  gap: 16px;
+  gap: 12px;
 }
 
 .system-update-grid {
   align-items: stretch;
+  gap: 12px;
 }
 
 .system-update-stat,
 .system-update-detail,
 .system-update-manual {
   min-height: 100%;
+  padding: 16px;
+}
+
+.system-update-stat,
+.system-update-detail {
+  gap: 6px;
 }
 
 .system-update-stat strong,
 .system-update-detail strong {
-  font-size: 20px;
+  font-size: 19px;
   line-height: 1.2;
   letter-spacing: -0.03em;
 }

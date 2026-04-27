@@ -1,9 +1,8 @@
 <template>
-  <section class="page-intro">
+  <section class="page-intro settings-page-intro">
     <div>
       <span class="eyebrow">设置</span>
       <h1>连接、通知与用户配置</h1>
-      <p>国内 Cookie、国际 Cookie 与 HTTP 代理统一收在“连接设置”，整理与源端刷新已拆成独立页面。</p>
     </div>
   </section>
 
@@ -141,25 +140,18 @@
           </div>
         </div>
 
-        <p class="archive-form__hint">
-          网页更新会拉取当前镜像标签的最新内容并重建 MakerHub 容器。执行期间页面会短暂不可用，但挂载的配置、状态和归档目录会保留。
-        </p>
-
         <div class="settings-grid settings-grid--three system-update-grid">
           <article class="field-card system-update-stat">
             <span>当前版本</span>
             <strong>{{ appState.appVersion ? `v${appState.appVersion}` : "读取中" }}</strong>
-            <small>{{ systemUpdate.current_version ? `运行中：v${systemUpdate.current_version}` : "等待应用状态" }}</small>
           </article>
           <article class="field-card system-update-stat">
             <span>最新版本</span>
             <strong>{{ githubVersionText }}</strong>
-            <small>{{ appState.githubUpdateAvailable ? "检测到可更新版本" : "已是最新或尚未确认" }}</small>
           </article>
           <article class="field-card system-update-stat">
             <span>更新状态</span>
             <strong>{{ systemUpdateStatusLabel }}</strong>
-            <small>{{ systemUpdate.message || "当前还没有进行中的网页更新任务。" }}</small>
           </article>
         </div>
 
@@ -167,12 +159,10 @@
           <article class="field-card system-update-detail">
             <span>运行容器</span>
             <strong>{{ systemUpdate.container_name || "-" }}</strong>
-            <small>{{ systemUpdate.image_ref || "未检测到镜像引用" }}</small>
           </article>
           <article class="field-card system-update-detail">
             <span>一键更新支持</span>
             <strong>{{ systemUpdate.supported ? "已启用" : "未启用" }}</strong>
-            <small>{{ systemUpdateSupportText }}</small>
           </article>
         </div>
 
@@ -467,12 +457,6 @@ const systemUpdateStatusLabel = computed(() => {
     failed: "失败",
   };
   return labelMap[systemUpdate.value.status] || "未知";
-});
-const systemUpdateSupportText = computed(() => {
-  if (systemUpdate.value.supported) {
-    return "已检测到 docker.sock，可从网页直接触发容器重建。";
-  }
-  return systemUpdate.value.support_reason || "当前部署未开启网页更新能力。";
 });
 const manualUpdateCommand = computed(() => "docker compose pull makerhub && docker compose up -d makerhub");
 const changelogEntries = computed(() => (
