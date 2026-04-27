@@ -197,8 +197,8 @@
               <button class="button button-secondary" type="button" :disabled="profileBackfillLoading || profileBackfillSubmitting" @click="loadProfileBackfillStatus">
                 {{ profileBackfillLoading ? "读取中..." : "刷新状态" }}
               </button>
-              <button class="button button-primary" type="button" :disabled="profileBackfillSubmitting" @click="triggerProfileBackfill">
-                {{ profileBackfillSubmitting ? "提交中..." : "补全现有库信息" }}
+              <button class="button button-primary" type="button" :disabled="profileBackfillSubmitting || profileBackfill.running" @click="triggerProfileBackfill">
+                {{ profileBackfill.running ? "扫描中..." : profileBackfillSubmitting ? "提交中..." : "补全现有库信息" }}
               </button>
             </div>
           </div>
@@ -219,11 +219,11 @@
             <article class="field-card system-update-stat">
               <span>失败</span>
               <strong>{{ profileBackfillStats.failed }}</strong>
-              <small>{{ profileBackfill.finished_at ? `最近扫描结束：${profileBackfill.finished_at}` : "等待执行" }}</small>
+              <small>{{ profileBackfill.running ? "正在扫描并入队" : profileBackfill.finished_at ? `最近扫描结束：${profileBackfill.finished_at}` : "等待执行" }}</small>
             </article>
           </div>
           <div class="form-footer">
-            <span class="form-status">{{ statuses.profile_backfill || profileBackfill.last_error || profileBackfill.message || "这里只负责扫描并加入归档队列；实际补全会在后台继续执行，可到任务页查看进度。" }}</span>
+            <span class="form-status">{{ profileBackfillStatusText }}</span>
           </div>
         </section>
 
@@ -434,6 +434,7 @@ const testing = reactive({
   proxy: false,
 });
 let systemUpdateTimer = null;
+let profileBackfillTimer = null;
 
 const config = computed(() => appState.config);
 const systemUpdateActive = computed(() => ["queued", "launching_helper", "running", "pending_startup"].includes(systemUpdate.value.status));
@@ -494,6 +495,22 @@ const profileBackfillStats = computed(() => {
     alreadyQueued: Number(result.already_queued_count || 0),
     failed: Number(result.failed_count || 0),
   };
+});
+const profileBackfillStatusText = computed(() => {
+  if (statuses.profile_backfill) {
+    return statuses.profile_backfill;
+  }
+  if (profileBackfill.value.last_error) {
+    return profileBackfill.value.last_error;
+  }
+  if (profileBackfill.value.running) {
+    return "现有库信息补全正在后台扫描并入队，页面会自动刷新状态。";
+  }
+  const result = profileBackfill.value.last_result || {};
+  if (profileBackfill.value.finished_at && Object.keys(result).length > 0) {
+    return `扫描完成：发现 ${profileBackfillStats.value.scanned} 个缺信息模型，新增入队 ${profileBackfillStats.value.queued} 个，已在队列 ${profileBackfillStats.value.alreadyQueued} 个，失败 ${profileBackfillStats.value.failed} 个。`;
+  }
+  return profileBackfill.value.message || "这里只负责扫描并加入归档队列；实际补全会在后台继续执行，可到任务页查看进度。";
 });
 
 function defaultSystemUpdateState() {
@@ -606,6 +623,28 @@ function scheduleSystemUpdatePolling() {
   }, 3000);
 }
 
+function clearProfileBackfillTimer() {
+  if (profileBackfillTimer) {
+    window.clearTimeout(profileBackfillTimer);
+    profileBackfillTimer = null;
+  }
+}
+
+function clearTimers() {
+  clearSystemUpdateTimer();
+  clearProfileBackfillTimer();
+}
+
+function scheduleProfileBackfillPolling() {
+  clearProfileBackfillTimer();
+  if (!profileBackfill.value.running) {
+    return;
+  }
+  profileBackfillTimer = window.setTimeout(() => {
+    loadProfileBackfillStatus({ silent: true });
+  }, 3000);
+}
+
 async function loadSystemUpdateStatus(options = {}) {
   const { silent = false, force = false } = options;
   const wasActive = systemUpdateActive.value;
@@ -689,6 +728,7 @@ async function loadProfileBackfillStatus(options = {}) {
     if (!silent) {
       profileBackfillLoading.value = false;
     }
+    scheduleProfileBackfillPolling();
   }
 }
 
@@ -709,6 +749,7 @@ async function triggerProfileBackfill() {
     statuses.profile_backfill = error instanceof Error ? error.message : "提交信息补全失败。";
   } finally {
     profileBackfillSubmitting.value = false;
+    scheduleProfileBackfillPolling();
   }
 }
 
@@ -878,5 +919,5 @@ watch(() => route.query.tab, (value) => {
 });
 
 onMounted(load);
-onBeforeUnmount(clearSystemUpdateTimer);
+onBeforeUnmount(clearTimers);
 </script>
