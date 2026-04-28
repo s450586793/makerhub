@@ -279,6 +279,9 @@ def _iter_local_candidates(model_root: Path, ref: str) -> list[Path]:
     if not clean:
         return []
 
+    if clean.startswith("_shared/"):
+        return [ARCHIVE_DIR / clean]
+
     primary = model_root / clean
     candidates = [primary]
     if "/" not in clean:

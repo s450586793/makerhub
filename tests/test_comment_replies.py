@@ -1,3 +1,4 @@
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -6,6 +7,7 @@ from app.services.catalog import _normalize_comment_item, _normalize_comments
 from app.services.legacy_archiver import (
     COMMENT_SCHEMA_VERSION,
     PROFILE_DETAIL_SCHEMA_VERSION,
+    _safe_curl_command_for_log,
     _collect_comment_tree,
     collect_comments,
     normalize_threaded_comments,
@@ -726,6 +728,135 @@ class CommentRepliesTest(unittest.TestCase):
         }
 
         self.assertFalse(_meta_needs_profile_backfill(meta))
+
+    def test_curl_log_redacts_cookie_header(self):
+        logged = _safe_curl_command_for_log([
+            "curl",
+            "-H",
+            "Cookie: token=secret; cf_clearance=secret",
+            "-H",
+            "Authorization: Bearer secret",
+            "https://makerworld.com",
+        ])
+
+        self.assertIn("Cookie: [redacted]", logged)
+        self.assertIn("Authorization: [redacted]", logged)
+        self.assertNotIn("token=secret", logged)
+        self.assertNotIn("cf_clearance=secret", logged)
+        self.assertNotIn("Bearer secret", logged)
+
+    def test_collect_comments_reuses_shared_avatar_cache_for_same_url(self):
+        class BinaryResponse:
+            status_code = 200
+            text = ""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def raise_for_status(self):
+                return None
+
+            def iter_content(self, chunk_size=65536):
+                yield b"avatar-bytes"
+
+        class BinarySession:
+            def __init__(self):
+                self.headers = {"User-Agent": "MakerHub Test"}
+                self.calls = []
+
+            def get(self, url, timeout=None, stream=False):
+                self.calls.append(url)
+                return BinaryResponse()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_root = Path(temp_dir) / "MW_1_Test"
+            out_dir = model_root / "images"
+            out_dir.mkdir(parents=True)
+            session = BinarySession()
+            avatar_url = "https://public-cdn.example.com/avatar/user.png"
+
+            bundle = collect_comments(
+                {
+                    "comments": [
+                        {
+                            "commentId": "c1",
+                            "commentContent": "第一条",
+                            "user": {"nickname": "A", "avatarUrl": avatar_url},
+                        },
+                        {
+                            "commentId": "c2",
+                            "commentContent": "第二条",
+                            "user": {"nickname": "A", "avatarUrl": avatar_url},
+                        },
+                    ]
+                },
+                {},
+                session,
+                out_dir,
+                download_assets=True,
+            )
+
+            first_author = bundle["items"][0]["author"]
+            second_author = bundle["items"][1]["author"]
+            self.assertEqual(len(session.calls), 1)
+            self.assertTrue(first_author["avatarRelPath"].startswith("_shared/avatars/"))
+            self.assertEqual(first_author["avatarRelPath"], second_author["avatarRelPath"])
+            self.assertTrue((Path(temp_dir) / first_author["avatarRelPath"]).is_file())
+
+            meta = {"comments": bundle["items"]}
+            normalized = _normalize_comments(meta, model_root)
+            self.assertEqual(normalized[0]["avatar_url"], f"/archive/{first_author['avatarRelPath']}")
+
+    def test_collect_comments_migrates_existing_model_avatar_to_shared_cache(self):
+        class BinarySession:
+            headers = {"User-Agent": "MakerHub Test"}
+
+            def get(self, *args, **kwargs):
+                raise AssertionError("existing avatar should be copied, not downloaded")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_root = Path(temp_dir) / "MW_1_Test"
+            out_dir = model_root / "images"
+            out_dir.mkdir(parents=True)
+            old_avatar = out_dir / "comment_01_avatar.png"
+            old_avatar.write_bytes(b"old-avatar")
+            avatar_url = "https://public-cdn.example.com/avatar/user.png"
+
+            bundle = collect_comments(
+                {
+                    "comments": [
+                        {
+                            "commentId": "c1",
+                            "commentContent": "第一条",
+                            "user": {"nickname": "A", "avatarUrl": avatar_url},
+                        },
+                    ]
+                },
+                {},
+                BinarySession(),
+                out_dir,
+                download_assets=True,
+                existing_comments=[
+                    {
+                        "id": "c1",
+                        "content": "第一条",
+                        "author": {
+                            "name": "A",
+                            "avatarUrl": avatar_url,
+                            "avatarLocal": "comment_01_avatar.png",
+                            "avatarRelPath": "images/comment_01_avatar.png",
+                        },
+                    }
+                ],
+            )
+
+            author = bundle["items"][0]["author"]
+            self.assertTrue(author["avatarRelPath"].startswith("_shared/avatars/"))
+            self.assertTrue((Path(temp_dir) / author["avatarRelPath"]).is_file())
+            self.assertTrue(old_avatar.is_file())
 
 
 if __name__ == "__main__":

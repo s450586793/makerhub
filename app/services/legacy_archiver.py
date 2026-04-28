@@ -1,11 +1,13 @@
 import hashlib
 import json
+import os
 import re
 import shutil
 import sys
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from fnmatch import fnmatchcase
 from html import escape, unescape
 from pathlib import Path
@@ -114,10 +116,24 @@ def _extract_auth_token(raw_cookie: str) -> str:
     return extract_auth_token(raw_cookie or "")
 
 
+def _safe_curl_command_for_log(cmd: list[str]) -> str:
+    safe_args: list[str] = []
+    sensitive_headers = ("cookie:", "authorization:", "token:", "x-token:", "x-access-token:")
+    for arg in cmd:
+        if isinstance(arg, str) and arg.lower().startswith(sensitive_headers):
+            header = arg.split(":", 1)[0].strip() or "Header"
+            safe_args.append(f"{header}: [redacted]")
+        else:
+            safe_args.append(str(arg))
+    return " ".join(safe_args)
+
+
 IMAGE_TRANSFER_TIMEOUT_SECONDS = 45
 BINARY_TRANSFER_TIMEOUT_SECONDS = 300
 CONNECT_TIMEOUT_SECONDS = 15
 READ_TIMEOUT_SECONDS = 30
+COMMENT_ASSET_DOWNLOAD_WORKERS = 4
+SHARED_AVATAR_REL_DIR = "_shared/avatars"
 MAKERWORLD_API_BROWSER_HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "X-BBL-Client-Type": "web",
@@ -201,7 +217,7 @@ def download_file(
         log("存在，跳过：", dest)
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
-    temp_dest = dest.with_name(f"{dest.name}.part")
+    temp_dest = dest.with_name(f"{dest.name}.{os.getpid()}.{threading.get_ident()}.part")
     started_at = time.monotonic()
     log("开始下载：", url, "->", dest)
     try:
@@ -404,7 +420,7 @@ def fetch_html_with_curl(url: str, raw_cookie: str) -> str:
     used_variant = ""
     for variant, extra_args in attempts:
         cmd = [*base_cmd, *extra_args, url]
-        log("尝试 curl 获取页面:", variant, " ".join(cmd))
+        log("尝试 curl 获取页面:", variant, _safe_curl_command_for_log(cmd))
         result = subprocess.run(cmd, capture_output=True, text=False)
         if result.returncode == 0:
             used_variant = variant
@@ -1090,6 +1106,197 @@ def _build_existing_comment_lookup(items: object) -> dict[str, dict]:
         if comment_id and comment_id not in lookup:
             lookup[comment_id] = item
     return lookup
+
+
+def _archive_root_from_comment_out_dir(out_dir: Path) -> Path:
+    model_root = out_dir.parent if out_dir.name == "images" else out_dir
+    return model_root.parent
+
+
+def _shared_avatar_dir(out_dir: Path) -> Path:
+    return _archive_root_from_comment_out_dir(out_dir) / SHARED_AVATAR_REL_DIR
+
+
+def _avatar_cache_key(avatar_url: str) -> str:
+    normalized = _normalize_url_value(avatar_url) or str(avatar_url or "").strip()
+    return hashlib.sha1(normalized.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _avatar_cache_filename(avatar_url: str, fallback_path: Optional[Path] = None) -> str:
+    ext = pick_ext_from_url(avatar_url, "")
+    if not ext and fallback_path is not None:
+        ext = fallback_path.suffix.lower().lstrip(".")
+    if not ext:
+        ext = "jpg"
+    return f"{_avatar_cache_key(avatar_url)}.{ext}"
+
+
+def _shared_avatar_rel_path(filename: str) -> str:
+    return f"{SHARED_AVATAR_REL_DIR}/{filename}"
+
+
+def _comment_model_root(out_dir: Path) -> Path:
+    return out_dir.parent if out_dir.name == "images" else out_dir
+
+
+def _comment_local_asset_path(out_dir: Path, rel_path: str = "", local_name: str = "") -> Optional[Path]:
+    model_root = _comment_model_root(out_dir)
+    archive_root = _archive_root_from_comment_out_dir(out_dir)
+    candidates: list[Path] = []
+    clean_rel = str(rel_path or "").strip().lstrip("/")
+    clean_local = str(local_name or "").strip().lstrip("/")
+    if clean_rel:
+        if clean_rel.startswith(f"{SHARED_AVATAR_REL_DIR}/"):
+            candidates.append(archive_root / clean_rel)
+        else:
+            candidates.append(model_root / clean_rel)
+    if clean_local:
+        candidates.append(out_dir / Path(clean_local).name)
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def _avatar_rel_path_exists(out_dir: Path, rel_path: str = "") -> bool:
+    return _comment_local_asset_path(out_dir, rel_path=rel_path) is not None
+
+
+def _copy_existing_avatar_to_shared(out_dir: Path, avatar_url: str, existing_author: dict) -> Optional[str]:
+    if not isinstance(existing_author, dict):
+        return None
+    existing_rel = str(existing_author.get("avatarRelPath") or "").strip()
+    existing_local = str(existing_author.get("avatarLocal") or "").strip()
+    if existing_rel.startswith(f"{SHARED_AVATAR_REL_DIR}/") and _avatar_rel_path_exists(out_dir, existing_rel):
+        return existing_rel
+    source = _comment_local_asset_path(out_dir, rel_path=existing_rel, local_name=existing_local)
+    if source is None:
+        return None
+    filename = _avatar_cache_filename(avatar_url, source)
+    target = _shared_avatar_dir(out_dir) / filename
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists():
+        temp_target = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.part")
+        try:
+            shutil.copy2(source, temp_target)
+            temp_target.replace(target)
+        except Exception:
+            try:
+                if temp_target.exists():
+                    temp_target.unlink()
+            except Exception:
+                pass
+            return None
+    return _shared_avatar_rel_path(filename)
+
+
+def _apply_author_avatar_ref(author: dict, rel_path: str) -> None:
+    filename = Path(rel_path).name
+    author["avatarLocal"] = filename
+    author["avatarRelPath"] = rel_path
+
+
+def _apply_comment_image_ref(image: dict, local_name: str, rel_path: str) -> None:
+    image["localName"] = local_name
+    image["relPath"] = rel_path
+
+
+def _download_asset_with_fresh_session(base_session: requests.Session, url: str, dest: Path) -> None:
+    if dest.exists():
+        return
+    if type(base_session) is not requests.Session:
+        download_file(
+            base_session,
+            url,
+            dest,
+            max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+        )
+        return
+    with requests.Session() as asset_session:
+        asset_session.headers.update(getattr(base_session, "headers", {}) or {})
+        download_file(
+            asset_session,
+            url,
+            dest,
+            max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+        )
+
+
+def _download_comment_assets(tasks: list[dict], progress_callback, progress_start: int, progress_end: int) -> None:
+    if not tasks:
+        return
+    total = len(tasks)
+    completed = 0
+    workers = max(1, min(COMMENT_ASSET_DOWNLOAD_WORKERS, total))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {executor.submit(task["download"]): task for task in tasks}
+        for future in as_completed(future_map):
+            task = future_map[future]
+            completed += 1
+            if total and (completed == 1 or completed == total or completed % 5 == 0):
+                _emit_stage_progress(
+                    progress_callback,
+                    progress_start,
+                    progress_end,
+                    completed,
+                    total,
+                    "正在下载评论资源",
+                )
+            try:
+                future.result()
+            except Exception as exc:
+                log(task.get("error_message") or "评论资源下载失败，保留原始链接：", task.get("url") or "", exc)
+                continue
+            for apply_ref in task.get("apply") or []:
+                try:
+                    apply_ref()
+                except Exception:
+                    continue
+
+
+def _apply_existing_comment_assets(
+    comments: list[dict],
+    existing_comment_lookup: dict[str, dict],
+    out_dir: Path,
+    *,
+    migrate_avatars: bool = True,
+) -> None:
+    for item in _comment_tree_items(comments):
+        existing = existing_comment_lookup.get(str(item.get("id") or "").strip()) or {}
+        existing_author = existing.get("author") if isinstance(existing.get("author"), dict) else {}
+        author = item.get("author") if isinstance(item.get("author"), dict) else {}
+        avatar_url = str(author.get("avatarUrl") or existing_author.get("avatarUrl") or "").strip()
+        migrated_rel = (
+            _copy_existing_avatar_to_shared(out_dir, avatar_url, existing_author)
+            if migrate_avatars and avatar_url
+            else None
+        )
+        if migrated_rel:
+            _apply_author_avatar_ref(author, migrated_rel)
+        else:
+            if str(existing_author.get("avatarLocal") or "").strip():
+                author["avatarLocal"] = str(existing_author.get("avatarLocal") or "").strip()
+            if str(existing_author.get("avatarRelPath") or "").strip():
+                author["avatarRelPath"] = str(existing_author.get("avatarRelPath") or "").strip()
+
+        existing_images = existing.get("images") if isinstance(existing.get("images"), list) else []
+        existing_image_lookup = _build_existing_media_lookup(existing_images, url_fields=("url", "originalUrl"))
+        images = item.get("images") if isinstance(item.get("images"), list) else []
+        for img_idx, image in enumerate(images, start=1):
+            if not isinstance(image, dict):
+                continue
+            existing_image = _match_existing_media_item_from_lookup(
+                existing_image_lookup,
+                url=str(image.get("url") or ""),
+                index=img_idx,
+            )
+            if str(existing_image.get("localName") or "").strip():
+                image["localName"] = str(existing_image.get("localName") or "").strip()
+            if str(existing_image.get("relPath") or "").strip():
+                image["relPath"] = str(existing_image.get("relPath") or "").strip()
 
 
 def _comment_reply_items(node: object) -> List[dict]:
@@ -2180,32 +2387,9 @@ def collect_comments(
         )
 
     existing_comment_lookup = _build_existing_comment_lookup(existing_comments)
+    _apply_existing_comment_assets(comments, existing_comment_lookup, out_dir)
 
     if not download_assets:
-        for item in _comment_tree_items(comments):
-            existing = existing_comment_lookup.get(str(item.get("id") or "").strip()) or {}
-            existing_author = existing.get("author") if isinstance(existing.get("author"), dict) else {}
-            author = item.get("author") if isinstance(item.get("author"), dict) else {}
-            if str(existing_author.get("avatarLocal") or "").strip():
-                author["avatarLocal"] = str(existing_author.get("avatarLocal") or "").strip()
-            if str(existing_author.get("avatarRelPath") or "").strip():
-                author["avatarRelPath"] = str(existing_author.get("avatarRelPath") or "").strip()
-
-            existing_images = existing.get("images") if isinstance(existing.get("images"), list) else []
-            existing_image_lookup = _build_existing_media_lookup(existing_images, url_fields=("url", "originalUrl"))
-            images = item.get("images") if isinstance(item.get("images"), list) else []
-            for img_idx, image in enumerate(images, start=1):
-                if not isinstance(image, dict):
-                    continue
-                existing_image = _match_existing_media_item_from_lookup(
-                    existing_image_lookup,
-                    url=str(image.get("url") or ""),
-                    index=img_idx,
-                )
-                if str(existing_image.get("localName") or "").strip():
-                    image["localName"] = str(existing_image.get("localName") or "").strip()
-                if str(existing_image.get("relPath") or "").strip():
-                    image["relPath"] = str(existing_image.get("relPath") or "").strip()
         emit_progress(progress_callback, progress_end, "评论整理完成")
         _log_perf(
             "comments.total",
@@ -2221,41 +2405,32 @@ def collect_comments(
             "items": comments,
         }
 
-    asset_total = 0
-    for item in _comment_tree_items(comments):
-        author = item.get("author") if isinstance(item.get("author"), dict) else {}
-        if str(author.get("avatarUrl") or "").strip():
-            asset_total += 1
-        images = item.get("images") if isinstance(item.get("images"), list) else []
-        asset_total += sum(1 for image in images if isinstance(image, dict) and str(image.get("url") or "").strip())
-
-    asset_index = 0
+    avatar_tasks: dict[str, dict] = {}
+    image_tasks: dict[str, dict] = {}
     for idx, item in enumerate(_comment_tree_items(comments), start=1):
         author = item.get("author") if isinstance(item.get("author"), dict) else {}
         avatar_url = str(author.get("avatarUrl") or "").strip()
         if avatar_url:
-            avatar_name = f"comment_{idx:02d}_avatar.{pick_ext_from_url(avatar_url)}"
-            asset_index += 1
-            if asset_total and (asset_index == 1 or asset_index == asset_total or asset_index % 5 == 0):
-                _emit_stage_progress(
-                    progress_callback,
-                    progress_start,
-                    progress_end,
-                    asset_index,
-                    asset_total,
-                    "正在下载评论资源",
+            current_rel = str(author.get("avatarRelPath") or "").strip()
+            if current_rel.startswith(f"{SHARED_AVATAR_REL_DIR}/") and _avatar_rel_path_exists(out_dir, current_rel):
+                continue
+            avatar_name = _avatar_cache_filename(avatar_url)
+            avatar_rel = _shared_avatar_rel_path(avatar_name)
+            avatar_target = _shared_avatar_dir(out_dir) / avatar_name
+            if avatar_target.exists():
+                _apply_author_avatar_ref(author, avatar_rel)
+            else:
+                avatar_key = avatar_rel
+                if avatar_key not in avatar_tasks:
+                    avatar_tasks[avatar_key] = {
+                        "url": avatar_url,
+                        "apply": [],
+                        "error_message": "评论头像下载失败，保留原始链接：",
+                        "download": lambda s=session, u=avatar_url, d=avatar_target: _download_asset_with_fresh_session(s, u, d),
+                    }
+                avatar_tasks[avatar_key]["apply"].append(
+                    lambda author=author, rel=avatar_rel: _apply_author_avatar_ref(author, rel)
                 )
-            try:
-                download_file(
-                    session,
-                    avatar_url,
-                    out_dir / avatar_name,
-                    max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
-                )
-                author["avatarLocal"] = avatar_name
-                author["avatarRelPath"] = f"images/{avatar_name}"
-            except Exception as exc:
-                log("评论头像下载失败，保留原始链接：", avatar_url, exc)
         images = item.get("images") if isinstance(item.get("images"), list) else []
         for img_idx, image in enumerate(images, start=1):
             if not isinstance(image, dict):
@@ -2263,28 +2438,34 @@ def collect_comments(
             url = str(image.get("url") or "").strip()
             if not url:
                 continue
+            existing_rel = str(image.get("relPath") or "").strip()
+            existing_local = str(image.get("localName") or "").strip()
+            if _comment_local_asset_path(out_dir, rel_path=existing_rel, local_name=existing_local) is not None:
+                continue
             image_name = f"comment_{idx:02d}_img_{img_idx:02d}.{pick_ext_from_url(url)}"
-            asset_index += 1
-            if asset_total and (asset_index == 1 or asset_index == asset_total or asset_index % 5 == 0):
-                _emit_stage_progress(
-                    progress_callback,
-                    progress_start,
-                    progress_end,
-                    asset_index,
-                    asset_total,
-                    "正在下载评论资源",
+            image_rel = f"images/{image_name}"
+            image_target = out_dir / image_name
+            normalized_image_url = _normalize_url_value(url) or url
+            if image_target.exists():
+                _apply_comment_image_ref(image, image_name, image_rel)
+            elif normalized_image_url in image_tasks:
+                image_tasks[normalized_image_url]["apply"].append(
+                    lambda image=image, name=image_tasks[normalized_image_url]["local_name"], rel=image_tasks[normalized_image_url]["rel_path"]: _apply_comment_image_ref(image, name, rel)
                 )
-            try:
-                download_file(
-                    session,
-                    url,
-                    out_dir / image_name,
-                    max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
-                )
-                image["localName"] = image_name
-                image["relPath"] = f"images/{image_name}"
-            except Exception as exc:
-                log("评论图片下载失败，保留原始链接：", url, exc)
+            else:
+                image_tasks[normalized_image_url] = {
+                    "url": url,
+                    "local_name": image_name,
+                    "rel_path": image_rel,
+                    "apply": [
+                        lambda image=image, name=image_name, rel=image_rel: _apply_comment_image_ref(image, name, rel)
+                    ],
+                    "error_message": "评论图片下载失败，保留原始链接：",
+                    "download": lambda s=session, u=url, d=image_target: _download_asset_with_fresh_session(s, u, d),
+                }
+
+    asset_tasks = list(avatar_tasks.values()) + list(image_tasks.values())
+    _download_comment_assets(asset_tasks, progress_callback, progress_start, progress_end)
 
     emit_progress(progress_callback, progress_end, "评论整理完成")
     _log_perf(
@@ -2293,7 +2474,7 @@ def collect_comments(
         mode=search_mode,
         comments=comment_total,
         roots=len(comments),
-        assets=asset_total,
+        assets=len(asset_tasks),
     )
 
     return {
@@ -4938,7 +5119,7 @@ def _load_offline_template_bundle() -> tuple[Optional[dict[str, str]], list[Path
     return bundle, []
 
 
-def build_index_html(meta: dict, assets: dict = None) -> str:
+def build_index_html(meta: dict, assets: dict = None, logger=None) -> str:
     """基于 CSR 架构的离线 HTML 生成器，读取 model.html 骨架并注入数据和源码。"""
     template_bundle, missing_paths = _load_offline_template_bundle()
     if template_bundle is None:
@@ -4996,7 +5177,7 @@ def rebuild_once(meta_path: Path, progress_callback=None, logger=None):
     ensure_dir(work_dir)
 
     emit_progress(progress_callback, 84, f"正在整理归档目录：{base_name}")
-    log("归档生成页面:", base_name)
+    log(logger, "归档生成页面:", base_name)
 
     # 1. 写/移动 meta.json 到目标目录，仅保留目标目录一份
     target_meta = work_dir / "meta.json"
@@ -5202,12 +5383,12 @@ def rebuild_once(meta_path: Path, progress_callback=None, logger=None):
     }
 
     offline_page_started_at = time.perf_counter()
-    index_html = build_index_html(meta, assets)
+    index_html = build_index_html(meta, assets, logger=logger)
     (work_dir / "index.html").write_text(index_html, encoding="utf-8")
     _log_perf("rebuild.build_offline_page", offline_page_started_at, logger=logger)
 
     emit_progress(progress_callback, 98, "正在生成归档页面")
-    log("完成归档:", work_dir)
+    log(logger, "完成归档:", work_dir)
     _log_perf("rebuild.total", rebuild_started_at, logger=logger, base_name=base_name)
 
 
@@ -5275,10 +5456,11 @@ def archive_model(
         html_bytes=len(html_text or ""),
     )
 
+    has_app_data = "__NEXT_DATA__" in html_text or "__NUXT__" in html_text
     is_cloudflare_challenge = _is_cloudflare_challenge(html_text)
-    if "__NEXT_DATA__" not in html_text and "__NUXT__" not in html_text:
+    if not has_app_data:
         log(logger, "页面未包含 __NEXT_DATA__，前 300 字符:", (html_text or "")[:300])
-    if is_cloudflare_challenge:
+    if is_cloudflare_challenge and not has_app_data:
         log(logger, "疑似 Cloudflare 验证拦截，请更新 cookie 中的 cf_clearance")
 
     design = None
