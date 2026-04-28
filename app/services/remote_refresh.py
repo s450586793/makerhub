@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 from croniter import CroniterBadCronError, croniter
 
-from app.core.settings import ARCHIVE_DIR, LOGS_DIR
+from app.core.settings import ARCHIVE_DIR, BACKGROUND_TASKS_ENABLED, LOGS_DIR
 from app.core.store import JsonStore
 from app.core.timezone import ensure_timezone, from_timestamp as china_from_timestamp, now as china_now, now_iso as china_now_iso, parse_datetime
 from app.services.cookie_utils import sanitize_cookie_header
@@ -1032,10 +1032,13 @@ class RemoteRefreshManager:
         store: Optional[JsonStore] = None,
         task_store: Optional[TaskStateStore] = None,
         archive_manager: Any = None,
+        *,
+        background_enabled: Optional[bool] = None,
     ) -> None:
         self.store = store or JsonStore()
         self.task_store = task_store or TaskStateStore()
         self.archive_manager = archive_manager
+        self.background_enabled = BACKGROUND_TASKS_ENABLED if background_enabled is None else bool(background_enabled)
         self._loop_lock = threading.Lock()
         self._batch_state_lock = threading.Lock()
         self._batch_launch_lock = threading.Lock()
@@ -1082,6 +1085,8 @@ class RemoteRefreshManager:
 
     def start(self) -> None:
         self._ensure_state()
+        if not self.background_enabled:
+            return
         with self._loop_lock:
             if self._thread and self._thread.is_alive():
                 return
@@ -1097,6 +1102,28 @@ class RemoteRefreshManager:
     def trigger_manual_refresh(self) -> dict[str, Any]:
         config = self.store.load()
         current_state = self._ensure_state(force_reschedule=bool(config.remote_refresh.enabled))
+        if not self.background_enabled:
+            message = "已提交源端刷新请求，等待后台 worker 执行。"
+            state = self.task_store.patch_remote_refresh_state(
+                status="idle",
+                running=False,
+                manual_requested_at=_now_iso(),
+                last_message=message,
+                current_item={},
+            )
+            _append_remote_refresh_log("manual_trigger_queued_for_worker", enabled=bool(config.remote_refresh.enabled))
+            append_business_log(
+                "remote_refresh",
+                "manual_trigger_queued_for_worker",
+                message,
+                enabled=bool(config.remote_refresh.enabled),
+            )
+            return {
+                "accepted": True,
+                "message": message,
+                "config": config.remote_refresh.model_dump(),
+                "state": state,
+            }
         if self._is_batch_running():
             message = "源端刷新已在运行中，无需重复手动同步。"
             state = self.task_store.patch_remote_refresh_state(
@@ -1279,7 +1306,9 @@ class RemoteRefreshManager:
 
         config = self.store.load()
         refresh_config = config.remote_refresh
-        if not refresh_config.enabled:
+        state = self._ensure_state()
+        manual_requested = bool(str(state.get("manual_requested_at") or "").strip())
+        if not refresh_config.enabled and not manual_requested:
             self.task_store.patch_remote_refresh_state(
                 status="disabled",
                 running=False,
@@ -1289,9 +1318,8 @@ class RemoteRefreshManager:
             )
             return
 
-        state = self._ensure_state()
         next_run_at = _parse_iso(state.get("next_run_at"))
-        if next_run_at and next_run_at > _now():
+        if not manual_requested and next_run_at and next_run_at > _now():
             return
 
         if self._service_busy():
@@ -1368,6 +1396,7 @@ class RemoteRefreshManager:
             self.task_store.patch_remote_refresh_state(
                 status="running",
                 running=True,
+                manual_requested_at="",
                 last_run_at=started_at,
                 last_batch_total=len(candidates),
                 last_batch_succeeded=0,

@@ -1,12 +1,19 @@
 import json
+import os
 import re
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
 from app.core.settings import LOGS_DIR, STATE_DIR, ensure_app_dirs
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, normalize_three_mf_failure_state
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback for local dev only.
+    fcntl = None
 
 
 ARCHIVE_QUEUE_PATH = STATE_DIR / "archive_queue.json"
@@ -565,6 +572,7 @@ def _normalize_remote_refresh_state(payload: Any) -> dict:
         "last_run_at": str(payload.get("last_run_at") or ""),
         "last_success_at": str(payload.get("last_success_at") or ""),
         "last_error_at": str(payload.get("last_error_at") or ""),
+        "manual_requested_at": str(payload.get("manual_requested_at") or ""),
         "last_message": _normalize_source_refresh_text(_sanitize_message_text(payload.get("last_message") or "")),
         "last_batch_total": _safe_int(payload.get("last_batch_total") or 0),
         "last_batch_succeeded": _safe_int(payload.get("last_batch_succeeded") or 0),
@@ -600,10 +608,23 @@ class TaskStateStore:
 
     def _write_json(self, path: Path, payload: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        temp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(path)
+
+    @contextmanager
+    def _state_file_lock(self, path: Path):
+        lock_path = path.with_name(f"{path.name}.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+", encoding="utf-8")
+        try:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
 
     def _load_archive_queue_unlocked(self) -> dict:
         payload = self._read_json(
@@ -629,7 +650,7 @@ class TaskStateStore:
         return self._load_archive_queue_unlocked()
 
     def _update_archive_queue(self, updater) -> dict:
-        with _STATE_LOCK:
+        with _STATE_LOCK, self._state_file_lock(ARCHIVE_QUEUE_PATH):
             payload = self._load_archive_queue_unlocked()
             updated = updater(payload)
             if updated is None:
@@ -648,7 +669,7 @@ class TaskStateStore:
         return self._load_missing_3mf_unlocked()
 
     def _update_missing_3mf(self, updater) -> dict:
-        with _STATE_LOCK:
+        with _STATE_LOCK, self._state_file_lock(MISSING_3MF_PATH):
             payload = self._load_missing_3mf_unlocked()
             updated = updater(payload)
             if updated is None:
@@ -671,6 +692,7 @@ class TaskStateStore:
                 "last_run_at": "",
                 "last_success_at": "",
                 "last_error_at": "",
+                "manual_requested_at": "",
                 "last_message": "",
                 "last_batch_total": 0,
                 "last_batch_succeeded": 0,
@@ -709,7 +731,7 @@ class TaskStateStore:
         return self._load_organize_tasks_unlocked()
 
     def _update_organize_tasks(self, updater) -> dict:
-        with _STATE_LOCK:
+        with _STATE_LOCK, self._state_file_lock(ORGANIZE_TASKS_PATH):
             payload = self._load_organize_tasks_unlocked()
             updated = updater(payload)
             if updated is None:
@@ -727,7 +749,7 @@ class TaskStateStore:
         return self._load_remote_refresh_state_unlocked()
 
     def _update_subscriptions_state(self, updater) -> dict:
-        with _STATE_LOCK:
+        with _STATE_LOCK, self._state_file_lock(SUBSCRIPTIONS_STATE_PATH):
             payload = self._load_subscriptions_state_unlocked()
             updated = updater(payload)
             if updated is None:
@@ -735,7 +757,7 @@ class TaskStateStore:
             return self._save_subscriptions_state_unlocked(updated)
 
     def _update_remote_refresh_state(self, updater) -> dict:
-        with _STATE_LOCK:
+        with _STATE_LOCK, self._state_file_lock(REMOTE_REFRESH_STATE_PATH):
             payload = self._load_remote_refresh_state_unlocked()
             updated = updater(payload)
             if updated is None:
@@ -743,11 +765,11 @@ class TaskStateStore:
             return self._save_remote_refresh_state_unlocked(updated)
 
     def save_archive_queue(self, payload: dict) -> dict:
-        with _STATE_LOCK:
+        with _STATE_LOCK, self._state_file_lock(ARCHIVE_QUEUE_PATH):
             return self._save_archive_queue_unlocked(payload)
 
     def save_missing_3mf(self, payload: dict) -> dict:
-        with _STATE_LOCK:
+        with _STATE_LOCK, self._state_file_lock(MISSING_3MF_PATH):
             return self._save_missing_3mf_unlocked(payload)
 
     def load_archive_queue(self) -> dict:
@@ -763,11 +785,11 @@ class TaskStateStore:
             return self._load_organize_tasks_unlocked()
 
     def save_organize_tasks(self, payload: dict) -> dict:
-        with _STATE_LOCK:
+        with _STATE_LOCK, self._state_file_lock(ORGANIZE_TASKS_PATH):
             return self._save_organize_tasks_unlocked(payload)
 
     def save_subscriptions_state(self, payload: dict) -> dict:
-        with _STATE_LOCK:
+        with _STATE_LOCK, self._state_file_lock(SUBSCRIPTIONS_STATE_PATH):
             return self._save_subscriptions_state_unlocked(payload)
 
     def load_subscriptions_state(self) -> dict:
@@ -775,7 +797,7 @@ class TaskStateStore:
             return self._load_subscriptions_state_unlocked()
 
     def save_remote_refresh_state(self, payload: dict) -> dict:
-        with _STATE_LOCK:
+        with _STATE_LOCK, self._state_file_lock(REMOTE_REFRESH_STATE_PATH):
             return self._save_remote_refresh_state_unlocked(payload)
 
     def load_remote_refresh_state(self) -> dict:
@@ -783,7 +805,7 @@ class TaskStateStore:
             return self._load_remote_refresh_state_unlocked()
 
     def save_model_flags(self, payload: dict) -> dict:
-        with _STATE_LOCK:
+        with _STATE_LOCK, self._state_file_lock(MODEL_FLAGS_PATH):
             normalized = _normalize_model_flags(payload)
             self._write_json(MODEL_FLAGS_PATH, normalized)
             return self.load_model_flags()

@@ -22,6 +22,30 @@ def _resolve_app_version() -> str:
 APP_VERSION = _resolve_app_version()
 
 
+def _resolve_process_role() -> str:
+    value = (
+        os.getenv("MAKERHUB_PROCESS_ROLE", "")
+        or os.getenv("MAKERHUB_ROLE", "")
+        or ""
+    ).strip().lower()
+    return value or "legacy"
+
+
+def _resolve_bool(env_name: str, default: bool) -> bool:
+    raw = str(os.getenv(env_name, "")).strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on", "enabled"}
+
+
+PROCESS_ROLE = _resolve_process_role()
+_ROLE_DEFAULT_BACKGROUND = PROCESS_ROLE in {"legacy", "worker", "background", "all"}
+BACKGROUND_TASKS_ENABLED = _resolve_bool(
+    "MAKERHUB_BACKGROUND_TASKS",
+    _resolve_bool("MAKERHUB_RUN_BACKGROUND_TASKS", _ROLE_DEFAULT_BACKGROUND),
+)
+
+
 def _resolve_dir(env_name: str, fallback: Path) -> Path:
     raw = str(os.getenv(env_name, "")).strip()
     if raw:

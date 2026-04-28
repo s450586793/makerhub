@@ -1,4 +1,7 @@
 import json
+import os
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -11,13 +14,35 @@ from app.services.legacy_archiver import PROFILE_DETAIL_SCHEMA_VERSION
 
 PROFILE_BACKFILL_STATUS_PATH = STATE_DIR / "archive_profile_backfill_status.json"
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback for local dev only.
+    fcntl = None
+
+
+@contextmanager
+def _status_file_lock():
+    lock_path = PROFILE_BACKFILL_STATUS_PATH.with_name(f"{PROFILE_BACKFILL_STATUS_PATH.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+", encoding="utf-8")
+    try:
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(path)
 
 
 def _base_profile_backfill_status() -> dict[str, Any]:
@@ -32,26 +57,27 @@ def _base_profile_backfill_status() -> dict[str, Any]:
 
 def write_profile_backfill_status(payload: dict[str, Any]) -> dict[str, Any]:
     ensure_app_dirs()
-    current = _base_profile_backfill_status()
-    if PROFILE_BACKFILL_STATUS_PATH.exists():
-        try:
-            existing = _read_json(PROFILE_BACKFILL_STATUS_PATH)
-            if isinstance(existing, dict):
-                current.update(existing)
-        except (OSError, json.JSONDecodeError):
-            pass
+    with _status_file_lock():
+        current = _base_profile_backfill_status()
+        if PROFILE_BACKFILL_STATUS_PATH.exists():
+            try:
+                existing = _read_json(PROFILE_BACKFILL_STATUS_PATH)
+                if isinstance(existing, dict):
+                    current.update(existing)
+            except (OSError, json.JSONDecodeError):
+                pass
 
-    current.update(
-        {
-            "running": bool(payload.get("running", current.get("running"))),
-            "started_at": str(payload.get("started_at", current.get("started_at")) or ""),
-            "finished_at": str(payload.get("finished_at", current.get("finished_at")) or ""),
-            "last_error": str(payload.get("last_error", current.get("last_error")) or ""),
-            "last_result": payload.get("last_result", current.get("last_result")) if isinstance(payload.get("last_result", current.get("last_result")), dict) else {},
-        }
-    )
-    _write_json(PROFILE_BACKFILL_STATUS_PATH, current)
-    return current
+        current.update(
+            {
+                "running": bool(payload.get("running", current.get("running"))),
+                "started_at": str(payload.get("started_at", current.get("started_at")) or ""),
+                "finished_at": str(payload.get("finished_at", current.get("finished_at")) or ""),
+                "last_error": str(payload.get("last_error", current.get("last_error")) or ""),
+                "last_result": payload.get("last_result", current.get("last_result")) if isinstance(payload.get("last_result", current.get("last_result")), dict) else {},
+            }
+        )
+        _write_json(PROFILE_BACKFILL_STATUS_PATH, current)
+        return current
 
 
 def read_profile_backfill_status() -> dict[str, Any]:

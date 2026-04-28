@@ -11,7 +11,16 @@ from app.api.config import remote_refresh_manager
 from app.api.config import subscription_manager
 from app.api.config import router as config_router
 from app.api.web import router as web_router
-from app.core.settings import APP_VERSION, ARCHIVE_DIR, FRONTEND_DIST_DIR, MAX_MANUAL_ATTACHMENT_BYTES, ROOT_DIR, ensure_app_dirs
+from app.core.settings import (
+    APP_VERSION,
+    ARCHIVE_DIR,
+    BACKGROUND_TASKS_ENABLED,
+    FRONTEND_DIST_DIR,
+    MAX_MANUAL_ATTACHMENT_BYTES,
+    PROCESS_ROLE,
+    ROOT_DIR,
+    ensure_app_dirs,
+)
 from app.services.auth import AuthManager
 from app.services.business_logs import append_business_log
 from app.services.request_threads import shutdown_request_threads
@@ -75,10 +84,12 @@ async def favicon() -> Response:
 @app.on_event("startup")
 async def resume_archive_queue() -> None:
     mark_update_started_after_restart()
-    queue = config_crawler.manager.resume_pending_tasks()
-    subscription_manager.start()
-    local_organizer.start()
-    remote_refresh_manager.start()
+    queue = {"recovered_count": 0, "queued_count": 0}
+    if BACKGROUND_TASKS_ENABLED:
+        queue = config_crawler.manager.resume_pending_tasks()
+        subscription_manager.start()
+        local_organizer.start()
+        remote_refresh_manager.start()
     recovered_count = int(queue.get("recovered_count") or 0)
     queued_count = int(queue.get("queued_count") or 0)
     append_business_log(
@@ -86,6 +97,8 @@ async def resume_archive_queue() -> None:
         "app_started",
         "makerhub 已启动。",
         app_version=APP_VERSION,
+        process_role=PROCESS_ROLE,
+        background_tasks_enabled=BACKGROUND_TASKS_ENABLED,
         queued_count=queued_count,
         recovered_active=recovered_count,
     )

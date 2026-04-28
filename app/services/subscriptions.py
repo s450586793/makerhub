@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 from croniter import CroniterBadCronError, croniter
 
-from app.core.settings import LOGS_DIR
+from app.core.settings import BACKGROUND_TASKS_ENABLED, LOGS_DIR
 from app.core.store import JsonStore
 from app.core.timezone import ensure_timezone, now as china_now, now_iso as china_now_iso, parse_datetime
 from app.schemas.models import SubscriptionRecord
@@ -219,16 +219,21 @@ class SubscriptionManager:
         archive_manager: ArchiveTaskManager,
         store: Optional[JsonStore] = None,
         task_store: Optional[TaskStateStore] = None,
+        *,
+        background_enabled: Optional[bool] = None,
     ) -> None:
         self.archive_manager = archive_manager
         self.store = store or JsonStore()
         self.task_store = task_store or TaskStateStore()
+        self.background_enabled = BACKGROUND_TASKS_ENABLED if background_enabled is None else bool(background_enabled)
         self._loop_lock = threading.Lock()
         self._running_id = ""
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
         self._ensure_state_records()
+        if not self.background_enabled:
+            return
         with self._loop_lock:
             if self._thread and self._thread.is_alive():
                 return
@@ -298,7 +303,16 @@ class SubscriptionManager:
         self.store.save(config)
 
         try:
-            if initialize_from_source:
+            if initialize_from_source and not self.background_enabled:
+                initialized = self.task_store.patch_subscription_state(
+                    record.id,
+                    status="pending",
+                    running=False,
+                    manual_requested_at=now_iso,
+                    next_run_at=now_iso,
+                    last_message="订阅已创建，等待后台 worker 执行首次扫描。",
+                )
+            elif initialize_from_source:
                 initialized = self._initialize_subscription_state(record)
                 initialized = self._enqueue_initialized_subscription_items(record, initialized)
                 initial_enqueue_count = int(initialized.get("last_enqueued_count") or 0)
@@ -325,6 +339,11 @@ class SubscriptionManager:
             "subscription": next((item for item in payload["items"] if item["id"] == record.id), None),
             "subscriptions": payload,
             "message": (
+                "订阅已创建，等待后台 worker 首次扫描。"
+                if not existing and initialize_from_source and not self.background_enabled
+                else "订阅已更新，等待后台 worker 首次扫描。"
+                if initialize_from_source and not self.background_enabled
+                else
                 f"订阅已创建，首次扫描已入队 {initial_enqueue_count} 个模型。"
                 if not existing and initialize_from_source
                 else f"订阅已更新，首次扫描已入队 {initial_enqueue_count} 个模型。"
@@ -374,7 +393,16 @@ class SubscriptionManager:
         target.updated_at = _now_iso()
         self.store.save(config)
 
-        if url_changed:
+        if url_changed and not self.background_enabled:
+            self.task_store.patch_subscription_state(
+                target.id,
+                status="pending",
+                running=False,
+                manual_requested_at=_now_iso(),
+                next_run_at=_now_iso(),
+                last_message="订阅链接已更新，等待后台 worker 重新初始化。",
+            )
+        elif url_changed:
             try:
                 self._initialize_subscription_state(target)
             except Exception:
@@ -445,7 +473,8 @@ class SubscriptionManager:
             last_message="已手动触发同步，等待调度器执行。",
         )
         self.start()
-        self._maybe_launch_due_sync()
+        if self.background_enabled:
+            self._maybe_launch_due_sync()
         return {
             "success": True,
             "message": "订阅同步已触发。",

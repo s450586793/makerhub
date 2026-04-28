@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-from app.core.settings import ARCHIVE_DIR, LOGS_DIR, STATE_DIR, ensure_app_dirs
+from app.core.settings import ARCHIVE_DIR, BACKGROUND_TASKS_ENABLED, LOGS_DIR, STATE_DIR, ensure_app_dirs
 from app.core.store import JsonStore
 from app.core.timezone import now as china_now, parse_datetime
 from app.services.cookie_utils import sanitize_cookie_header
@@ -344,9 +344,10 @@ def _temporary_proxy_env(config):
 
 
 class ArchiveTaskManager:
-    def __init__(self) -> None:
+    def __init__(self, *, background_enabled: Optional[bool] = None) -> None:
         self.store = JsonStore()
         self.task_store = TaskStateStore()
+        self.background_enabled = BACKGROUND_TASKS_ENABLED if background_enabled is None else bool(background_enabled)
         self._lock = threading.Lock()
         self._worker: Optional[threading.Thread] = None
         self._preview_lock = threading.Lock()
@@ -1416,11 +1417,19 @@ class ArchiveTaskManager:
         }
 
     def _ensure_worker(self) -> None:
+        if not self.background_enabled:
+            return
         with self._lock:
             if self._worker and self._worker.is_alive():
                 return
             self._worker = threading.Thread(target=self._run_loop, daemon=True)
             self._worker.start()
+
+    def ensure_worker_for_pending(self) -> dict:
+        queue = self.task_store.load_archive_queue()
+        if int(queue.get("queued_count") or 0) > 0:
+            self._ensure_worker()
+        return queue
 
     def resume_pending_tasks(self) -> dict:
         queue = self.task_store.requeue_active_tasks()
