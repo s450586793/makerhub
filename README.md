@@ -13,7 +13,7 @@
 
 makerhub 是一个面向个人 NAS / DSM 部署的 MakerWorld 模型归档与管理系统。它通过用户配置的 Cookie 和代理能力抓取 MakerWorld 模型信息、图片、评论、打印配置和 `3MF` 文件，并把这些内容长期保存到本地目录中，方便在内网或公网统一浏览、搜索、补档和维护自己的模型库。
 
-它的定位不是公开模型站，而是“个人 MakerWorld 本地资料库”。你可以归档单个模型，也可以批量归档作者页、收藏夹、合集页；可以为这些来源创建订阅并定时同步；也可以把本地已有的 `3MF` 文件导入并自动整理入库。现在设置页还内置了系统更新中心，可直接查看当前版本、线上版本、最近更新日志，并在 Docker Compose 部署下触发网页一键更新。
+它的定位不是公开模型站，而是“个人 MakerWorld 本地资料库”。你可以归档单个模型，也可以批量归档作者页、收藏夹、合集页；可以为这些来源创建订阅并定时同步；也可以把本地已有的 `3MF` 文件导入并自动整理入库。推荐的 Docker Compose 部署已拆成 `makerhub-web` 与 `makerhub-api` 两个容器，设置页仍可直接查看当前版本、线上版本、最近更新日志，并触发网页一键更新。
 
 ## 部署说明
 
@@ -37,10 +37,78 @@ uvicorn app.main:app --reload
 
 默认情况下，本地开发环境会把运行数据写到仓库下的 `runtime/` 目录；FastAPI 会直接分发 `frontend/dist`。Docker 容器内则固定使用 `/app/config`、`/app/logs`、`/app/state`、`/app/archive`、`/app/local`。
 
-### Docker
+### Docker Compose（推荐）
+
+当前仓库根目录的 `compose.yaml` 默认启用前后端分离：
+
+- `makerhub-web`：Nginx 静态前端容器，对外暴露 `9042:80`
+- `makerhub-api`：FastAPI 与后台任务容器，负责 API、归档、源端刷新、订阅、本地整理和资源文件
+
+API 容器会挂载 Docker socket，因此设置页里的“一键更新”会先重建 `makerhub-web`，再重建 `makerhub-api`。
 
 ```bash
-docker build -t makerhub .
+docker compose -f compose.yaml up -d
+```
+
+如果你是从旧的单容器 `makerhub` 迁移到前后端分离，先停掉旧容器释放 `9042` 端口，再启动新服务：
+
+```bash
+docker compose -f compose.yaml stop makerhub || true
+docker compose -f compose.yaml rm -f makerhub || true
+docker compose -f compose.yaml pull makerhub-api makerhub-web
+docker compose -f compose.yaml up -d makerhub-api makerhub-web
+```
+
+### Compose 示例
+
+仓库内的 `compose.yaml` 已包含完整配置，核心结构如下：
+
+```bash
+version: "3.8"
+
+services:
+  makerhub-api:
+    image: ghcr.io/s450586793/makerhub:latest
+    pull_policy: always
+    container_name: makerhub-api
+    expose:
+      - "8000"
+    environment:
+      MAKERHUB_DEPLOYMENT_MODE: split
+      MAKERHUB_WEB_CONTAINER_NAME: makerhub-web
+      MAKERHUB_WEB_IMAGE_REF: ghcr.io/s450586793/makerhub:latest
+    volumes:
+      - /volume4/docker/docker/makerhub/config:/app/config
+      - /volume4/docker/docker/makerhub/logs:/app/logs
+      - /volume4/docker/docker/makerhub/state:/app/state
+      - /volume2/entertainment/3D打印/makerhub:/app/archive
+      - /volume2/entertainment/3D打印/makerhub/local:/app/local
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  makerhub-web:
+    image: ghcr.io/s450586793/makerhub:latest
+    pull_policy: always
+    container_name: makerhub-web
+    command: ["nginx", "-g", "daemon off;"]
+    depends_on:
+      - makerhub-api
+    ports:
+      - "9042:80"
+    restart: unless-stopped
+```
+
+如果没有挂载 `docker.sock`，设置页仍会显示版本信息，但“一键更新”按钮会保持不可用，并提示你继续在宿主机执行：
+
+```bash
+docker compose pull makerhub-api makerhub-web && docker compose up -d makerhub-api makerhub-web
+```
+
+### 单容器兼容
+
+镜像仍保留单容器运行方式，适合临时测试或不想拆分的部署：
+
+```bash
 docker run -d \
   --name makerhub \
   -p 9042:8000 \
@@ -49,50 +117,8 @@ docker run -d \
   -v /volume4/docker/docker/makerhub/state:/app/state \
   -v /volume2/entertainment/3D打印/makerhub:/app/archive \
   -v /volume2/entertainment/3D打印/makerhub/local:/app/local \
-  makerhub
-```
-
-如果希望启用设置页里的“一键更新”按钮，可额外加上：
-
-```bash
--v /var/run/docker.sock:/var/run/docker.sock
-```
-
-### Compose
-
-当前仓库根目录的 `compose.yaml` 已默认启用设置页网页更新能力，容器会额外挂载 Docker socket，便于直接在“设置 -> 系统”里拉取新镜像并重建自己。
-
-```bash
-version: "3.8"
-
-services:
-  makerhub:
-    image: ghcr.io/s450586793/makerhub:latest
-    pull_policy: always
-    container_name: makerhub
-    ports:
-      - "9042:8000"
-    volumes:
-      - /volume4/docker/docker/makerhub/config:/app/config
-      - /volume4/docker/docker/makerhub/logs:/app/logs
-      - /volume4/docker/docker/makerhub/state:/app/state
-      - /volume2/entertainment/3D打印/makerhub:/app/archive
-      - /volume2/entertainment/3D打印/makerhub/local:/app/local
-      # 允许设置页直接触发 Docker 网页更新
-      - /var/run/docker.sock:/var/run/docker.sock
-    restart: unless-stopped
-```
-
-### 启动
-
-```bash
-docker compose -f compose.yaml up -d
-```
-
-如果没有挂载 `docker.sock`，设置页仍会显示版本信息，但“一键更新”按钮会保持不可用，并提示你继续在宿主机执行：
-
-```bash
-docker compose pull makerhub && docker compose up -d makerhub
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  ghcr.io/s450586793/makerhub:latest
 ```
 
 ## 功能概览
@@ -111,9 +137,9 @@ docker compose pull makerhub && docker compose up -d makerhub
 - 软删除与源端删除标记：本地删除采用软删除机制；源端删除只做标记，不会自动删除本地归档内容。
 - 连接设置：提供国内 Cookie、国际 Cookie 和 HTTP 代理配置，适配不同 MakerWorld 访问环境。
 - 用户与安全：支持单用户登录、Token 管理和公网部署场景下的基础访问控制。
-- 系统更新中心：在设置页集中查看当前版本、GitHub 最新版本、最近更新日志和更新状态；Compose 部署挂载 `docker.sock` 后，可直接拉取最新镜像并重建当前容器。
+- 系统更新中心：在设置页集中查看当前版本、GitHub 最新版本、最近更新日志和更新状态；Compose 部署挂载 `docker.sock` 后，可直接拉取最新镜像并重建 Web / API 容器。
 - 日志：集中查看归档、订阅、源端刷新、本地整理、缺失 `3MF` 和系统错误等业务日志。
-- Docker / DSM 部署：适合通过 Docker Compose 或 Synology DSM Container Manager 部署，配置、日志、状态和归档目录分离挂载；仓库内的 `compose.yaml` 已默认打开网页更新所需的 `docker.sock` 挂载。
+- Docker / DSM 部署：适合通过 Docker Compose 或 Synology DSM Container Manager 部署，配置、日志、状态和归档目录分离挂载；仓库内的 `compose.yaml` 默认采用 Web / API 双容器，并打开网页更新所需的 `docker.sock` 挂载。
 
 ## 设计目标
 - 复用旧项目里已经验证过的爬虫与下载逻辑
@@ -130,6 +156,13 @@ docker compose pull makerhub && docker compose up -d makerhub
 ## 更新记录
 
 ### 2026-04-28
+- 版本号升级到 `v0.6.0`
+- Docker Compose 默认拆分为 `makerhub-web` 与 `makerhub-api`：Web 容器用 Nginx 托管 Vue 静态资源，API 容器继续负责后台任务、归档资源和接口
+- 设置页网页一键更新支持前后端分离部署：API 更新 helper 会先重建 Web 容器，再重建 API 容器
+- 保留 `makerhub` legacy 单容器服务和单容器镜像启动方式，方便旧部署回退或手动迁移
+- 设置页系统更新区增加部署模式、API 容器和 Web 容器展示，并按部署模式给出对应手动更新命令
+
+### 2026-04-28
 - 版本号升级到 `v0.5.119`
 - 源端刷新改为两阶段同步：先轻量抓取线上元数据并对比库内评论、回复、图片、简介、附件和打印配置，确认有变化后再进入资源同步
 - 第二阶段资源同步按单项判断，URL 一致且本地文件存在时直接复用，只有 URL 变化或文件缺失时才下载 / 覆盖对应头像、图片或附件
@@ -142,14 +175,14 @@ docker compose pull makerhub && docker compose up -d makerhub
 - 评论列表分页判断会识别包裹后的 `total` / `hits`，同时避免把评论回复接口的 `data.items` 误当成顶层评论
 - 新增评论归档回归测试，覆盖包裹结构评论列表和回复接口分离场景
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-04-28
 - 版本号升级到 `v0.5.117`
 - 设置页新增“高级”标签页，集中管理后台任务并发和资源限制
 - 国区 / 国际区每日 `3MF` 下载上限从“连接设置”移动到“高级”，继续默认各 `100`，填 `0` 表示不限制
 - 高级设置支持调整源端刷新模型并发、MakerWorld 请求并发、评论资源下载并发、`3MF` 下载并发和磁盘写入 / 索引并发，保存后运行时立即应用
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-04-28
 - 版本号升级到 `v0.5.116`

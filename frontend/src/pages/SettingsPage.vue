@@ -205,8 +205,19 @@
 
         <div class="settings-grid settings-grid--two system-update-grid">
           <article class="field-card system-update-detail">
-            <span>运行容器</span>
+            <span>API 容器</span>
             <strong>{{ systemUpdate.container_name || "-" }}</strong>
+          </article>
+          <article class="field-card system-update-detail">
+            <span>Web 容器</span>
+            <strong>{{ systemUpdate.web_container_name || (systemUpdate.deployment_mode === "split" ? "-" : "单容器") }}</strong>
+          </article>
+        </div>
+
+        <div class="settings-grid settings-grid--two system-update-grid">
+          <article class="field-card system-update-detail">
+            <span>部署模式</span>
+            <strong>{{ systemUpdate.deployment_mode === "split" ? "前后端分离" : "单容器" }}</strong>
           </article>
           <article class="field-card system-update-detail">
             <span>一键更新支持</span>
@@ -217,7 +228,7 @@
         <div class="field-card system-update-manual">
           <span>{{ systemUpdate.supported ? "执行说明" : "如何启用一键更新" }}</span>
           <p v-if="systemUpdate.supported">
-            更新会复用当前容器名称、挂载、端口和重启策略。如果页面短暂报错，通常只是容器正在重启；恢复后可在日志页查看 <code>system</code> 分类结果。
+            更新会复用当前容器名称、挂载、端口和重启策略。前后端分离部署下会先更新 Web 容器，再更新 API 容器；页面短暂报错通常只是容器正在重启。
           </p>
           <p v-else>
             首次仍需要手动在部署里挂载 <code>/var/run/docker.sock:/var/run/docker.sock</code>。启用后，这个页面才能直接拉取新镜像并重建容器。
@@ -515,7 +526,11 @@ const systemUpdateStatusLabel = computed(() => {
   };
   return labelMap[systemUpdate.value.status] || "未知";
 });
-const manualUpdateCommand = computed(() => "docker compose pull makerhub && docker compose up -d makerhub");
+const manualUpdateCommand = computed(() => (
+  systemUpdate.value.deployment_mode === "split"
+    ? "docker compose pull makerhub-api makerhub-web && docker compose up -d makerhub-api makerhub-web"
+    : "docker compose pull makerhub && docker compose up -d makerhub"
+));
 const changelogEntries = computed(() => (
   Array.isArray(systemUpdate.value.github_changelog) ? systemUpdate.value.github_changelog : []
 ));
@@ -568,6 +583,10 @@ function defaultSystemUpdateState() {
     replacement_container_id: "",
     container_name: "",
     image_ref: "",
+    deployment_mode: "",
+    web_container_name: "",
+    web_image_ref: "",
+    web_replacement_container_id: "",
     target_version: "",
     current_version: "",
     supported: false,

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import http.client
 import json
@@ -21,6 +23,9 @@ ACTIVE_UPDATE_STATUSES = {"queued", "launching_helper", "running", "pending_star
 HELPER_CONTAINER_PREFIX = "makerhub-self-update"
 HELPER_LABEL_KEY = "com.makerhub.self_update.role"
 HELPER_LABEL_VALUE = "helper"
+DEPLOYMENT_MODE_ENV = "MAKERHUB_DEPLOYMENT_MODE"
+WEB_CONTAINER_NAME_ENV = "MAKERHUB_WEB_CONTAINER_NAME"
+WEB_IMAGE_REF_ENV = "MAKERHUB_WEB_IMAGE_REF"
 _CONTAINER_ID_PATTERN = re.compile(r"[0-9a-f]{12,64}")
 STARTUP_WAIT_TIMEOUT_SECONDS = 20
 STARTUP_WAIT_INTERVAL_SECONDS = 1.0
@@ -45,6 +50,10 @@ def _default_update_state() -> dict[str, Any]:
         "replacement_container_id": "",
         "container_name": "",
         "image_ref": "",
+        "deployment_mode": "",
+        "web_container_name": "",
+        "web_image_ref": "",
+        "web_replacement_container_id": "",
         "target_version": "",
         "current_version": APP_VERSION,
         "last_error": "",
@@ -143,6 +152,21 @@ def _friendly_error_message(error: Exception | str) -> str:
     if not text:
         return "更新失败。"
     return text.replace("\n", " ").strip()[:400]
+
+
+def _deployment_mode() -> str:
+    value = str(os.getenv(DEPLOYMENT_MODE_ENV, "") or "").strip().lower()
+    if value:
+        return value
+    return "split" if str(os.getenv(WEB_CONTAINER_NAME_ENV, "") or "").strip() else "single"
+
+
+def _web_update_target(default_image_ref: str = "") -> dict[str, str]:
+    container_name = str(os.getenv(WEB_CONTAINER_NAME_ENV, "") or "").strip()
+    if not container_name:
+        return {"container_name": "", "image_ref": ""}
+    image_ref = str(os.getenv(WEB_IMAGE_REF_ENV, "") or "").strip() or str(default_image_ref or "").strip()
+    return {"container_name": container_name, "image_ref": image_ref}
 
 
 class UnixSocketHTTPConnection(http.client.HTTPConnection):
@@ -451,16 +475,30 @@ def get_update_capability() -> dict[str, Any]:
         "docker_socket_mounted": DOCKER_SOCKET_PATH.exists(),
         "container_name": "",
         "image_ref": "",
+        "deployment_mode": _deployment_mode(),
+        "web_container_name": "",
+        "web_image_ref": "",
     }
     if not DOCKER_SOCKET_PATH.exists():
         payload["support_reason"] = "当前容器没有挂载 /var/run/docker.sock，不能从网页直接触发 Docker 更新。"
         return payload
 
     try:
-        metadata = _resolve_self_container(DockerSocketClient(timeout=15))
+        client = DockerSocketClient(timeout=15)
+        metadata = _resolve_self_container(client)
     except Exception as exc:  # noqa: BLE001
         payload["support_reason"] = _friendly_error_message(exc)
         return payload
+
+    web_target = _web_update_target(str(metadata.get("image_ref") or ""))
+    if web_target.get("container_name"):
+        try:
+            web_inspect = client.inspect_container(str(web_target.get("container_name") or ""))
+        except Exception as exc:  # noqa: BLE001
+            payload["support_reason"] = f"Web 容器无法访问：{_friendly_error_message(exc)}"
+            return payload
+        payload["web_container_name"] = str(web_inspect.get("Name") or web_target.get("container_name") or "").lstrip("/")
+        payload["web_image_ref"] = str(web_target.get("image_ref") or "")
 
     payload.update(
         {
@@ -468,6 +506,7 @@ def get_update_capability() -> dict[str, Any]:
             "support_reason": "",
             "container_name": str(metadata.get("container_name") or ""),
             "image_ref": str(metadata.get("image_ref") or ""),
+            "deployment_mode": _deployment_mode(),
         }
     )
     return payload
@@ -483,6 +522,9 @@ def get_update_status() -> dict[str, Any]:
         "docker_socket_mounted": bool(capability.get("docker_socket_mounted")),
         "container_name": str(capability.get("container_name") or state.get("container_name") or ""),
         "image_ref": str(capability.get("image_ref") or state.get("image_ref") or ""),
+        "deployment_mode": str(capability.get("deployment_mode") or state.get("deployment_mode") or ""),
+        "web_container_name": str(capability.get("web_container_name") or state.get("web_container_name") or ""),
+        "web_image_ref": str(capability.get("web_image_ref") or state.get("web_image_ref") or ""),
     }
 
 
@@ -502,24 +544,43 @@ def request_system_update(*, requested_by: str = "", target_version: str = "", f
     requested_at = _now_iso()
     target_image = str(metadata.get("image_ref") or "")
     helper_image = str(metadata.get("container_image_id") or target_image)
+    deployment_mode = _deployment_mode()
+    web_target = _web_update_target(target_image)
     if not target_image:
         raise RuntimeError("当前容器缺少镜像引用，无法确定要拉取的目标镜像。")
     if not helper_image:
         raise RuntimeError("当前容器缺少本地镜像 ID，无法启动更新 helper。")
+    if web_target.get("container_name"):
+        try:
+            client.inspect_container(str(web_target.get("container_name") or ""))
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"Web 容器无法访问：{_friendly_error_message(exc)}") from exc
+    helper_cmd = [
+        "python",
+        "-m",
+        "app.services.self_update",
+        "--run-helper",
+        "--request-id",
+        request_id,
+        "--container-id",
+        str(metadata.get("container_id") or ""),
+        "--image-ref",
+        target_image,
+        "--deployment-mode",
+        deployment_mode,
+    ]
+    if web_target.get("container_name"):
+        helper_cmd.extend(
+            [
+                "--web-container",
+                str(web_target.get("container_name") or ""),
+                "--web-image-ref",
+                str(web_target.get("image_ref") or target_image),
+            ]
+        )
     helper_body = {
         "Image": helper_image,
-        "Cmd": [
-            "python",
-            "-m",
-            "app.services.self_update",
-            "--run-helper",
-            "--request-id",
-            request_id,
-            "--container-id",
-            str(metadata.get("container_id") or ""),
-            "--image-ref",
-            target_image,
-        ],
+        "Cmd": helper_cmd,
         "Env": [
             f"MAKERHUB_STATE_DIR={STATE_DIR}",
             "PYTHONUNBUFFERED=1",
@@ -553,6 +614,10 @@ def request_system_update(*, requested_by: str = "", target_version: str = "", f
             "replacement_container_id": "",
             "container_name": str(metadata.get("container_name") or ""),
             "image_ref": target_image,
+            "deployment_mode": deployment_mode,
+            "web_container_name": str(web_target.get("container_name") or ""),
+            "web_image_ref": str(web_target.get("image_ref") or ""),
+            "web_replacement_container_id": "",
             "target_version": str(target_version or ""),
             "last_error": "",
         }
@@ -602,6 +667,9 @@ def request_system_update(*, requested_by: str = "", target_version: str = "", f
         helper_container_id=helper_container_id,
         container_name=str(metadata.get("container_name") or ""),
         image_ref=target_image,
+        deployment_mode=deployment_mode,
+        web_container_name=str(web_target.get("container_name") or ""),
+        web_image_ref=str(web_target.get("image_ref") or ""),
         target_version=str(target_version or ""),
         force=bool(force),
     )
@@ -728,7 +796,104 @@ def _wait_for_replacement_container(
     )
 
 
-def run_update_helper(*, request_id: str, container_id: str, image_ref: str) -> int:
+def _replace_related_container(
+    client: DockerSocketClient,
+    *,
+    request_id: str,
+    container_ref: str,
+    image_ref: str,
+    role: str,
+) -> dict[str, str]:
+    container_inspect = client.inspect_container(container_ref)
+    old_container_id = str(container_inspect.get("Id") or container_ref)
+    container_name = str(container_inspect.get("Name") or "").lstrip("/") or str(container_ref or "")
+    replacement_container_id = ""
+    replacement_container_name = _replacement_container_name(container_name, request_id)
+    backup_container_name = _backup_container_name(container_name, request_id)
+    old_container_renamed = False
+    replacement_container_renamed = False
+
+    def rollback() -> None:
+        rollback_errors: list[str] = []
+        if replacement_container_id:
+            try:
+                client.remove_container(replacement_container_id, force=True)
+            except Exception as exc:  # noqa: BLE001
+                rollback_errors.append(f"remove-{role}-new:{_friendly_error_message(exc)}")
+        if old_container_renamed:
+            try:
+                client.rename_container(old_container_id, name=container_name)
+            except Exception as exc:  # noqa: BLE001
+                rollback_errors.append(f"rename-{role}-old:{_friendly_error_message(exc)}")
+            else:
+                try:
+                    client.start_container(old_container_id)
+                except Exception as exc:  # noqa: BLE001
+                    rollback_errors.append(f"start-{role}-old:{_friendly_error_message(exc)}")
+        else:
+            try:
+                client.start_container(old_container_id)
+            except Exception as exc:  # noqa: BLE001
+                rollback_errors.append(f"restart-{role}-old:{_friendly_error_message(exc)}")
+        if rollback_errors:
+            raise RuntimeError("；".join(rollback_errors))
+
+    try:
+        client.pull_image(image_ref)
+        replacement_body = _build_replacement_container_body(container_inspect, image_ref)
+        replacement_container_id = client.create_container(replacement_body, name=replacement_container_name)
+        _update_state_from_helper(
+            request_id,
+            web_replacement_container_id=replacement_container_id if role == "web" else "",
+        )
+        client.stop_container(old_container_id, timeout_seconds=10)
+        client.rename_container(old_container_id, name=backup_container_name)
+        old_container_renamed = True
+        client.rename_container(replacement_container_id, name=container_name)
+        replacement_container_renamed = True
+        client.start_container(replacement_container_id)
+        _wait_for_replacement_container(client, replacement_container_id)
+        try:
+            client.remove_container(old_container_id, force=True)
+        except Exception as exc:  # noqa: BLE001
+            append_business_log(
+                "system",
+                "self_update_cleanup_warning",
+                f"{role} 新容器已启动，但旧容器清理失败。",
+                level="warning",
+                request_id=request_id,
+                container_name=container_name,
+                backup_container_name=backup_container_name,
+                error=_friendly_error_message(exc),
+            )
+        return {
+            "container_name": container_name,
+            "old_container_id": old_container_id,
+            "replacement_container_id": replacement_container_id,
+            "replacement_container_name": replacement_container_name if not replacement_container_renamed else container_name,
+        }
+    except Exception as exc:  # noqa: BLE001
+        rollback_error = ""
+        if replacement_container_id or old_container_renamed:
+            try:
+                rollback()
+            except Exception as rollback_exc:  # noqa: BLE001
+                rollback_error = _friendly_error_message(rollback_exc)
+        message = _friendly_error_message(exc)
+        if rollback_error:
+            message = f"{message}；{role} 自动回滚失败：{rollback_error}"
+        raise RuntimeError(message) from exc
+
+
+def run_update_helper(
+    *,
+    request_id: str,
+    container_id: str,
+    image_ref: str,
+    deployment_mode: str = "",
+    web_container_name: str = "",
+    web_image_ref: str = "",
+) -> int:
     current_phase = "pulling"
     client = DockerSocketClient(timeout=600)
     replacement_container_id = ""
@@ -790,6 +955,9 @@ def run_update_helper(*, request_id: str, container_id: str, image_ref: str) -> 
             finished_at="",
             container_name=container_name,
             image_ref=image_ref,
+            deployment_mode=str(deployment_mode or ""),
+            web_container_name=str(web_container_name or ""),
+            web_image_ref=str(web_image_ref or ""),
             last_error="",
         )
         append_business_log(
@@ -799,9 +967,43 @@ def run_update_helper(*, request_id: str, container_id: str, image_ref: str) -> 
             request_id=request_id,
             container_name=container_name,
             image_ref=image_ref,
+            deployment_mode=str(deployment_mode or ""),
+            web_container_name=str(web_container_name or ""),
         )
 
         client.pull_image(image_ref)
+        if web_container_name:
+            current_phase = "updating_web"
+            _update_state_from_helper(
+                request_id,
+                status="running",
+                phase="updating_web",
+                message="API 镜像已拉取完成，正在更新 Web 前端容器。",
+            )
+            web_result = _replace_related_container(
+                client,
+                request_id=request_id,
+                container_ref=web_container_name,
+                image_ref=web_image_ref or image_ref,
+                role="web",
+            )
+            _update_state_from_helper(
+                request_id,
+                status="running",
+                phase="web_updated",
+                message="Web 前端容器已更新，正在替换 API 容器。",
+                web_container_name=str(web_result.get("container_name") or web_container_name),
+                web_replacement_container_id=str(web_result.get("replacement_container_id") or ""),
+            )
+            append_business_log(
+                "system",
+                "self_update_web_updated",
+                "Web 前端容器已更新。",
+                request_id=request_id,
+                container_name=str(web_result.get("container_name") or web_container_name),
+                image_ref=web_image_ref or image_ref,
+                replacement_container_id=str(web_result.get("replacement_container_id") or ""),
+            )
         current_phase = "recreating"
         _update_state_from_helper(
             request_id,
@@ -884,6 +1086,9 @@ def run_update_helper(*, request_id: str, container_id: str, image_ref: str) -> 
             replacement_container_name=replacement_container_name,
             backup_container_name=backup_container_name,
             rollback_error=rollback_error,
+            deployment_mode=str(deployment_mode or ""),
+            web_container_name=str(web_container_name or ""),
+            web_image_ref=str(web_image_ref or ""),
         )
         return 1
 
@@ -894,6 +1099,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--request-id", default="", help="Current update request id")
     parser.add_argument("--container-id", default="", help="Current makerhub container id")
     parser.add_argument("--image-ref", default="", help="Target image reference")
+    parser.add_argument("--deployment-mode", default="", help="Current deployment mode")
+    parser.add_argument("--web-container", default="", help="Optional frontend web container name or id")
+    parser.add_argument("--web-image-ref", default="", help="Optional frontend web image reference")
     return parser.parse_args()
 
 
@@ -907,6 +1115,9 @@ def main() -> int:
         request_id=str(args.request_id or ""),
         container_id=str(args.container_id or ""),
         image_ref=str(args.image_ref or ""),
+        deployment_mode=str(args.deployment_mode or ""),
+        web_container_name=str(args.web_container or ""),
+        web_image_ref=str(args.web_image_ref or ""),
     )
 
 

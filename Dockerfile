@@ -19,7 +19,8 @@ ENV MAKERHUB_ARCHIVE_DIR=/app/archive
 ENV MAKERHUB_LOCAL_DIR=/app/local
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends curl nginx \
+    && rm -f /etc/nginx/sites-enabled/default \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -30,6 +31,7 @@ COPY app ./app
 COPY VERSION ./VERSION
 COPY frontend/package.json ./frontend/package.json
 COPY --from=frontend-build /frontend/dist ./frontend/dist
+COPY docker/nginx.conf /etc/nginx/nginx.conf
 
-EXPOSE 8000
+EXPOSE 8000 80
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

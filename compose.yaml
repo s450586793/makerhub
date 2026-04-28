@@ -1,7 +1,40 @@
 version: "3.8"
 
 services:
+  makerhub-api:
+    image: ghcr.io/s450586793/makerhub:latest
+    pull_policy: always
+    container_name: makerhub-api
+    expose:
+      - "8000"
+    environment:
+      MAKERHUB_DEPLOYMENT_MODE: split
+      MAKERHUB_WEB_CONTAINER_NAME: makerhub-web
+      MAKERHUB_WEB_IMAGE_REF: ghcr.io/s450586793/makerhub:latest
+    volumes:
+      - /volume4/docker/docker/makerhub/config:/app/config
+      - /volume4/docker/docker/makerhub/logs:/app/logs
+      - /volume4/docker/docker/makerhub/state:/app/state
+      - /volume2/entertainment/3D打印/makerhub:/app/archive
+      - /volume2/entertainment/3D打印/makerhub/local:/app/local
+      # 允许设置页里的“系统更新”直接通过 Docker API 重建 API 与 Web 容器
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  makerhub-web:
+    image: ghcr.io/s450586793/makerhub:latest
+    pull_policy: always
+    container_name: makerhub-web
+    command: ["nginx", "-g", "daemon off;"]
+    depends_on:
+      - makerhub-api
+    ports:
+      - "9042:80"
+    restart: unless-stopped
+
   makerhub:
+    profiles:
+      - legacy
     image: ghcr.io/s450586793/makerhub:latest
     pull_policy: always
     container_name: makerhub
@@ -13,6 +46,5 @@ services:
       - /volume4/docker/docker/makerhub/state:/app/state
       - /volume2/entertainment/3D打印/makerhub:/app/archive
       - /volume2/entertainment/3D打印/makerhub/local:/app/local
-      # 允许设置页里的“系统更新”直接通过 Docker API 重建当前容器
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
