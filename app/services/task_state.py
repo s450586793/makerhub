@@ -540,12 +540,23 @@ def _normalize_remote_refresh_state(payload: Any) -> dict:
         payload = {}
 
     current_item = payload.get("current_item") if isinstance(payload.get("current_item"), dict) else {}
+    current_items = payload.get("current_items") if isinstance(payload.get("current_items"), list) else []
     recent_items = payload.get("recent_items") if isinstance(payload.get("recent_items"), list) else []
     normalized_recent = [
         _normalize_source_refresh_item(_normalize_task_item(item, "idle"))
         for item in recent_items
         if isinstance(item, (dict, str))
     ]
+    normalized_current_items = [
+        _normalize_source_refresh_item(_normalize_task_item(item, "running"))
+        for item in current_items
+        if isinstance(item, (dict, str))
+    ]
+    if current_item and not normalized_current_items:
+        normalized_current_items = [_normalize_source_refresh_item(_normalize_task_item(current_item, "running"))]
+    normalized_metrics = payload.get("last_batch_metrics") if isinstance(payload.get("last_batch_metrics"), dict) else {}
+    normalized_resource_waits = payload.get("last_resource_waits") if isinstance(payload.get("last_resource_waits"), dict) else {}
+    normalized_slow_models = payload.get("last_slow_models") if isinstance(payload.get("last_slow_models"), list) else []
 
     return {
         "status": str(payload.get("status") or "idle"),
@@ -558,11 +569,16 @@ def _normalize_remote_refresh_state(payload: Any) -> dict:
         "last_batch_total": _safe_int(payload.get("last_batch_total") or 0),
         "last_batch_succeeded": _safe_int(payload.get("last_batch_succeeded") or 0),
         "last_batch_failed": _safe_int(payload.get("last_batch_failed") or 0),
+        "last_batch_skipped": _safe_int(payload.get("last_batch_skipped") or 0),
         "last_eligible_total": _safe_int(payload.get("last_eligible_total") or 0),
         "last_remaining_total": _safe_int(payload.get("last_remaining_total") or 0),
         "last_skipped_missing_cookie": _safe_int(payload.get("last_skipped_missing_cookie") or 0),
         "last_skipped_local_or_invalid": _safe_int(payload.get("last_skipped_local_or_invalid") or 0),
-        "current_item": _normalize_source_refresh_item(_normalize_task_item(current_item, "running")) if current_item else {},
+        "current_item": normalized_current_items[0] if normalized_current_items else {},
+        "current_items": normalized_current_items[:8],
+        "last_batch_metrics": normalized_metrics,
+        "last_resource_waits": normalized_resource_waits,
+        "last_slow_models": normalized_slow_models[:10],
         "recent_items": normalized_recent[:50],
     }
 
@@ -659,11 +675,16 @@ class TaskStateStore:
                 "last_batch_total": 0,
                 "last_batch_succeeded": 0,
                 "last_batch_failed": 0,
+                "last_batch_skipped": 0,
                 "last_eligible_total": 0,
                 "last_remaining_total": 0,
                 "last_skipped_missing_cookie": 0,
                 "last_skipped_local_or_invalid": 0,
                 "current_item": {},
+                "current_items": [],
+                "last_batch_metrics": {},
+                "last_resource_waits": {},
+                "last_slow_models": [],
                 "recent_items": [],
             },
         )
@@ -1323,6 +1344,16 @@ class TaskStateStore:
                         merged[key] = _normalize_task_item(value, "running")
                     elif not value:
                         merged[key] = {}
+                    continue
+                if key == "current_items":
+                    if isinstance(value, list):
+                        merged[key] = [
+                            _normalize_task_item(item, "running")
+                            for item in value
+                            if isinstance(item, (dict, str))
+                        ][:8]
+                    elif not value:
+                        merged[key] = []
                     continue
                 merged[key] = value
             return merged

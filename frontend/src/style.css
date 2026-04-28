@@ -2089,6 +2089,10 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   gap: 6px;
 }
 
+.remote-refresh-stats--metrics .remote-refresh-stat strong {
+  font-size: 16px;
+}
+
 .remote-refresh-stat span,
 .remote-refresh-time span,
 .remote-refresh-history__time,
@@ -2116,6 +2120,16 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 .remote-refresh-current {
   display: grid;
   gap: 10px;
+}
+
+.remote-refresh-current__item {
+  display: grid;
+  gap: 8px;
+}
+
+.remote-refresh-current__item + .remote-refresh-current__item {
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
 }
 
 .remote-refresh-current__head {

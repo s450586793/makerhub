@@ -120,6 +120,25 @@
         </div>
       </div>
 
+      <div class="remote-refresh-stats remote-refresh-stats--metrics">
+        <div class="remote-refresh-stat">
+          <span>评论 / 回复</span>
+          <strong>{{ batchMetrics.comments || 0 }} / {{ batchMetrics.replies || 0 }}</strong>
+        </div>
+        <div class="remote-refresh-stat">
+          <span>评论图片</span>
+          <strong>{{ batchMetrics.comment_images || 0 }}</strong>
+        </div>
+        <div class="remote-refresh-stat">
+          <span>头像缓存/迁移</span>
+          <strong>{{ (batchMetrics.avatar_cache_hits || 0) + (batchMetrics.avatar_migrated || 0) }}</strong>
+        </div>
+        <div class="remote-refresh-stat">
+          <span>资源去重</span>
+          <strong>{{ batchMetrics.deduped_downloads || 0 }}</strong>
+        </div>
+      </div>
+
       <div class="remote-refresh-times">
         <div class="remote-refresh-time">
           <span>上次成功</span>
@@ -131,19 +150,25 @@
         </div>
         <div class="remote-refresh-time">
           <span>当前任务</span>
-          <strong>{{ hasCurrentItem ? (remoteRefreshState.current_item.title || "刷新中") : "空闲" }}</strong>
+          <strong>{{ hasCurrentItem ? `${currentItems.length} 个运行中` : "空闲" }}</strong>
         </div>
       </div>
 
       <p class="archive-form__hint remote-refresh-note">{{ batchExplanation }}</p>
 
       <div v-if="hasCurrentItem" class="remote-refresh-current">
-        <div class="remote-refresh-current__head">
-          <strong>{{ remoteRefreshState.current_item.title || "未命名模型" }}</strong>
-          <span>{{ remoteRefreshState.current_item.progress || 0 }}%</span>
+        <div
+          v-for="item in currentItems"
+          :key="item.id || item.title"
+          class="remote-refresh-current__item"
+        >
+          <div class="remote-refresh-current__head">
+            <strong>{{ item.title || "未命名模型" }}</strong>
+            <span>{{ item.progress || 0 }}%</span>
+          </div>
+          <div class="progress-bar"><span :style="{ width: `${item.progress || 0}%` }"></span></div>
+          <p>{{ item.message || "源端刷新进行中" }}</p>
         </div>
-        <div class="progress-bar"><span :style="{ width: `${remoteRefreshState.current_item.progress || 0}%` }"></span></div>
-        <p>{{ remoteRefreshState.current_item.message || "源端刷新进行中" }}</p>
       </div>
     </article>
 
@@ -278,7 +303,16 @@ const filteredHistory = computed(() => {
 
 const visibleHistory = computed(() => filteredHistory.value.slice(0, historyVisibleLimit.value));
 
-const hasCurrentItem = computed(() => Boolean(remoteRefreshState.value?.current_item?.title || remoteRefreshState.value?.current_item?.id));
+const currentItems = computed(() => {
+  const items = remoteRefreshState.value?.current_items;
+  if (Array.isArray(items) && items.length) {
+    return items;
+  }
+  const item = remoteRefreshState.value?.current_item;
+  return item?.title || item?.id ? [item] : [];
+});
+const hasCurrentItem = computed(() => currentItems.value.length > 0);
+const batchMetrics = computed(() => remoteRefreshState.value?.last_batch_metrics || {});
 const emptyHistoryText = computed(() => {
   if (!recentHistory.value.length) {
     return "还没有源端刷新记录。";

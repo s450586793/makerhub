@@ -1,4 +1,6 @@
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -80,6 +82,87 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         self.assertEqual(state["status"], "running")
         self.assertTrue(state["running"])
         self.assertIn("已手动触发一轮源端同步", state["last_message"])
+
+    def test_remote_refresh_state_preserves_parallel_items_and_metrics(self):
+        state = self.task_store.patch_remote_refresh_state(
+            status="running",
+            running=True,
+            current_items=[
+                {"id": "m1", "title": "模型 1", "progress": 20, "message": "运行中"},
+                {"id": "m2", "title": "模型 2", "progress": 40, "message": "运行中"},
+            ],
+            last_batch_metrics={"comments": 12, "replies": 5},
+            last_resource_waits={"disk_io": {"wait_count": 1}},
+            last_slow_models=[{"model_dir": "m1", "total_duration_ms": 1200}],
+        )
+
+        self.assertEqual(len(state["current_items"]), 2)
+        self.assertEqual(state["current_item"]["id"], "m1")
+        self.assertEqual(state["last_batch_metrics"]["comments"], 12)
+        self.assertEqual(state["last_resource_waits"]["disk_io"]["wait_count"], 1)
+        self.assertEqual(state["last_slow_models"][0]["model_dir"], "m1")
+
+    def test_run_batch_refreshes_models_concurrently(self):
+        original_workers = remote_refresh._remote_refresh_model_workers
+        remote_refresh._remote_refresh_model_workers = lambda: 2
+        config = self.store.load()
+        items = [
+            {"model_dir": "m1", "title": "模型 1", "origin_url": "https://makerworld.com.cn/model/1", "meta_path": str(self.temp_path / "m1" / "meta.json")},
+            {"model_dir": "m2", "title": "模型 2", "origin_url": "https://makerworld.com.cn/model/2", "meta_path": str(self.temp_path / "m2" / "meta.json")},
+            {"model_dir": "m3", "title": "模型 3", "origin_url": "https://makerworld.com.cn/model/3", "meta_path": str(self.temp_path / "m3" / "meta.json")},
+        ]
+        self.manager._pick_candidates = lambda: (
+            items,
+            {
+                "eligible_total": 3,
+                "selected_total": 3,
+                "remaining_total": 0,
+                "missing_cookie": 0,
+                "local_or_invalid": 0,
+            },
+        )
+        first_two_started = threading.Event()
+        release = threading.Event()
+        started: list[str] = []
+        started_lock = threading.Lock()
+
+        def fake_refresh_one(item, *, index, total, config):
+            with started_lock:
+                started.append(str(item.get("model_dir") or ""))
+                if len(started) == 2:
+                    first_two_started.set()
+            first_two_started.wait(timeout=2)
+            release.wait(timeout=2)
+            time.sleep(0.01)
+            return {
+                "ok": True,
+                "metrics": {
+                    "model_dir": str(item.get("model_dir") or ""),
+                    "title": str(item.get("title") or ""),
+                    "comments": 1,
+                    "total_duration_ms": 10,
+                },
+            }
+
+        self.manager._refresh_one = fake_refresh_one
+        try:
+            runner = threading.Thread(target=lambda: self.manager._run_batch(config), daemon=True)
+            runner.start()
+            self.assertTrue(first_two_started.wait(timeout=2))
+            with started_lock:
+                self.assertEqual(len(started), 2)
+            release.set()
+            runner.join(timeout=3)
+            self.assertFalse(runner.is_alive())
+        finally:
+            remote_refresh._remote_refresh_model_workers = original_workers
+            release.set()
+
+        state = self.task_store.load_remote_refresh_state()
+        self.assertEqual(state["last_batch_succeeded"], 3)
+        self.assertEqual(state["last_batch_failed"], 0)
+        self.assertEqual(state["last_batch_metrics"]["comments"], 3)
+        self.assertEqual(len(state["last_slow_models"]), 3)
 
 
 if __name__ == "__main__":

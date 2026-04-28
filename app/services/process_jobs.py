@@ -11,6 +11,7 @@ import requests
 from app.services.batch_discovery import discover_batch_model_urls, normalize_source_url
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.legacy_archiver import archive_model as legacy_archive_model
+from app.services.resource_limiter import resource_slot
 
 
 JOB_CONTEXT = get_context("spawn")
@@ -228,66 +229,69 @@ def run_archive_model_job(
     three_mf_daily_limit_cn: int = 100,
     three_mf_daily_limit_global: int = 100,
 ) -> dict[str, Any]:
-    if not _use_subprocess():
-        return legacy_archive_model(
-            url=url,
-            cookie=cookie,
-            download_dir=Path(download_dir),
-            logs_dir=Path(logs_dir),
-            existing_root=Path(existing_root) if str(existing_root or "").strip() else None,
+    with resource_slot("makerworld_page_api", detail=normalize_source_url(url)):
+        if not _use_subprocess():
+            return legacy_archive_model(
+                url=url,
+                cookie=cookie,
+                download_dir=Path(download_dir),
+                logs_dir=Path(logs_dir),
+                existing_root=Path(existing_root) if str(existing_root or "").strip() else None,
+                progress_callback=progress_callback,
+                skip_three_mf_fetch=skip_three_mf_fetch,
+                three_mf_skip_message=three_mf_skip_message,
+                profile_metadata_only=profile_metadata_only,
+                download_assets=download_assets,
+                rebuild_archive=rebuild_archive,
+                record_missing_3mf_log=record_missing_3mf_log,
+                three_mf_skip_state=three_mf_skip_state,
+                three_mf_daily_limit_cn=three_mf_daily_limit_cn,
+                three_mf_daily_limit_global=three_mf_daily_limit_global,
+            )
+        return _run_process_job(
+            _run_archive_model_entry,
+            {
+                "url": url,
+                "cookie": cookie,
+                "download_dir": download_dir,
+                "logs_dir": logs_dir,
+                "existing_root": existing_root,
+                "skip_three_mf_fetch": skip_three_mf_fetch,
+                "three_mf_skip_message": three_mf_skip_message,
+                "profile_metadata_only": profile_metadata_only,
+                "download_assets": download_assets,
+                "rebuild_archive": rebuild_archive,
+                "record_missing_3mf_log": record_missing_3mf_log,
+                "three_mf_skip_state": three_mf_skip_state,
+                "three_mf_daily_limit_cn": three_mf_daily_limit_cn,
+                "three_mf_daily_limit_global": three_mf_daily_limit_global,
+            },
             progress_callback=progress_callback,
-            skip_three_mf_fetch=skip_three_mf_fetch,
-            three_mf_skip_message=three_mf_skip_message,
-            profile_metadata_only=profile_metadata_only,
-            download_assets=download_assets,
-            rebuild_archive=rebuild_archive,
-            record_missing_3mf_log=record_missing_3mf_log,
-            three_mf_skip_state=three_mf_skip_state,
-            three_mf_daily_limit_cn=three_mf_daily_limit_cn,
-            three_mf_daily_limit_global=three_mf_daily_limit_global,
         )
-    return _run_process_job(
-        _run_archive_model_entry,
-        {
-            "url": url,
-            "cookie": cookie,
-            "download_dir": download_dir,
-            "logs_dir": logs_dir,
-            "existing_root": existing_root,
-            "skip_three_mf_fetch": skip_three_mf_fetch,
-            "three_mf_skip_message": three_mf_skip_message,
-            "profile_metadata_only": profile_metadata_only,
-            "download_assets": download_assets,
-            "rebuild_archive": rebuild_archive,
-            "record_missing_3mf_log": record_missing_3mf_log,
-            "three_mf_skip_state": three_mf_skip_state,
-            "three_mf_daily_limit_cn": three_mf_daily_limit_cn,
-            "three_mf_daily_limit_global": three_mf_daily_limit_global,
-        },
-        progress_callback=progress_callback,
-    )
 
 
 def run_discover_batch_urls_job(url: str, cookie: str) -> dict[str, Any]:
-    if not _use_subprocess():
-        return discover_batch_model_urls(url, cookie)
-    return _run_process_job(
-        _run_discover_batch_entry,
-        {
-            "url": url,
-            "cookie": cookie,
-        },
-    )
+    with resource_slot("makerworld_page_api", detail=normalize_source_url(url)):
+        if not _use_subprocess():
+            return discover_batch_model_urls(url, cookie)
+        return _run_process_job(
+            _run_discover_batch_entry,
+            {
+                "url": url,
+                "cookie": cookie,
+            },
+        )
 
 
 def run_source_deleted_check_job(url: str, cookie: str) -> bool:
-    if not _use_subprocess():
-        return _source_looks_deleted(url, cookie)
-    result = _run_process_job(
-        _run_source_deleted_entry,
-        {
-            "url": url,
-            "cookie": cookie,
-        },
-    )
-    return bool(result.get("deleted")) if isinstance(result, dict) else bool(result)
+    with resource_slot("makerworld_page_api", detail=normalize_source_url(url)):
+        if not _use_subprocess():
+            return _source_looks_deleted(url, cookie)
+        result = _run_process_job(
+            _run_source_deleted_entry,
+            {
+                "url": url,
+                "cookie": cookie,
+            },
+        )
+        return bool(result.get("deleted")) if isinstance(result, dict) else bool(result)

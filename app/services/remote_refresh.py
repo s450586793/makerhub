@@ -5,6 +5,7 @@ import os
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,7 @@ from app.services.catalog import (
 )
 from app.services.legacy_archiver import COMMENT_SCHEMA_VERSION, normalize_threaded_comments
 from app.services.process_jobs import run_archive_model_job, run_source_deleted_check_job
+from app.services.resource_limiter import resource_snapshot, resource_slot
 from app.services.task_state import TaskStateStore, is_metadata_only_missing_3mf_placeholder
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, resolve_model_instance_files
 
@@ -40,6 +42,16 @@ from app.services.three_mf import describe_three_mf_failure, normalize_makerworl
 REMOTE_REFRESH_LOG_PATH = LOGS_DIR / "remote_refresh.log"
 REMOTE_REFRESH_POLL_SECONDS = 20
 DEFAULT_REMOTE_REFRESH_CRON = "0 0 * * *"
+DEFAULT_REMOTE_REFRESH_MODEL_WORKERS = 2
+MAX_REMOTE_REFRESH_MODEL_WORKERS = 4
+
+
+def _remote_refresh_model_workers() -> int:
+    try:
+        value = int(os.environ.get("MAKERHUB_REMOTE_REFRESH_MODEL_WORKERS") or DEFAULT_REMOTE_REFRESH_MODEL_WORKERS)
+    except (TypeError, ValueError):
+        value = DEFAULT_REMOTE_REFRESH_MODEL_WORKERS
+    return max(1, min(value, MAX_REMOTE_REFRESH_MODEL_WORKERS))
 
 
 def _now() -> datetime:
@@ -549,6 +561,76 @@ def _batch_scope_message(*, eligible_total: int, remaining_total: int) -> str:
     )
 
 
+def _empty_batch_metrics() -> dict[str, Any]:
+    return {
+        "comments": 0,
+        "comment_roots": 0,
+        "replies": 0,
+        "comment_images": 0,
+        "avatar_urls": 0,
+        "shared_avatar_refs": 0,
+        "avatar_cache_hits": 0,
+        "avatar_migrated": 0,
+        "download_tasks": 0,
+        "deduped_downloads": 0,
+        "new_3mf_download_queued": 0,
+        "total_duration_ms": 0,
+        "archive_duration_ms": 0,
+        "finalize_duration_ms": 0,
+        "disk_wait_ms": 0,
+    }
+
+
+def _merge_batch_metrics(metrics: dict[str, Any], item_metrics: dict[str, Any]) -> None:
+    if not isinstance(item_metrics, dict):
+        return
+    for key in list(metrics.keys()):
+        value = item_metrics.get(key)
+        if isinstance(value, (int, float)):
+            metrics[key] = round(float(metrics.get(key) or 0) + float(value), 1)
+
+
+def _top_slow_models(items: list[dict[str, Any]], limit: int = 8) -> list[dict[str, Any]]:
+    sorted_items = sorted(
+        [item for item in items if isinstance(item, dict)],
+        key=lambda item: float(item.get("total_duration_ms") or 0),
+        reverse=True,
+    )
+    return sorted_items[: max(int(limit or 1), 1)]
+
+
+def _archive_comment_metrics(archive_result: dict[str, Any]) -> dict[str, int]:
+    stats = archive_result.get("stats") if isinstance(archive_result.get("stats"), dict) else {}
+    comments = stats.get("comments") if isinstance(stats.get("comments"), dict) else {}
+    return {
+        "comments": int(comments.get("comment_total") or 0),
+        "comment_roots": int(comments.get("comment_roots") or 0),
+        "replies": int(comments.get("reply_total") or 0),
+        "comment_images": int(comments.get("comment_images") or 0),
+        "avatar_urls": int(comments.get("avatar_urls") or 0),
+        "shared_avatar_refs": int(comments.get("shared_avatar_refs") or 0),
+        "avatar_cache_hits": int(comments.get("avatar_cache_hits") or 0) + int(comments.get("avatar_shared_reused") or 0),
+        "avatar_migrated": int(comments.get("avatar_shared_migrated") or 0),
+        "download_tasks": int(comments.get("download_tasks") or 0),
+        "deduped_downloads": int(comments.get("deduped_downloads") or 0),
+    }
+
+
+def _resource_wait_delta(start: dict[str, Any]) -> dict[str, Any]:
+    current = resource_snapshot()
+    delta: dict[str, Any] = {}
+    for name, value in current.items():
+        before = start.get(name) if isinstance(start.get(name), dict) else {}
+        delta[name] = {
+            "capacity": value.get("capacity"),
+            "active": value.get("active"),
+            "wait_count": max(int(value.get("wait_count") or 0) - int(before.get("wait_count") or 0), 0),
+            "total_wait_ms": round(float(value.get("total_wait_ms") or 0) - float(before.get("total_wait_ms") or 0), 1),
+            "max_wait_ms": value.get("max_wait_ms") or 0,
+        }
+    return delta
+
+
 def _finalize_refreshed_meta(meta_path: Path, existing_meta: dict[str, Any]) -> dict[str, Any]:
     fresh_meta = _load_json(meta_path)
     checked_at = _now_iso()
@@ -692,7 +774,9 @@ class RemoteRefreshManager:
         self._loop_lock = threading.Lock()
         self._batch_state_lock = threading.Lock()
         self._batch_launch_lock = threading.Lock()
+        self._current_items_lock = threading.Lock()
         self._batch_running = False
+        self._current_items: dict[str, dict[str, Any]] = {}
         self._thread: Optional[threading.Thread] = None
 
     def _set_batch_running(self, running: bool) -> None:
@@ -702,6 +786,34 @@ class RemoteRefreshManager:
     def _is_batch_running(self) -> bool:
         with self._batch_state_lock:
             return bool(self._batch_running)
+
+    def _reset_current_items(self) -> None:
+        with self._current_items_lock:
+            self._current_items = {}
+        self.task_store.patch_remote_refresh_state(current_item={}, current_items=[])
+
+    def _set_current_item(self, model_dir: str, item: dict[str, Any]) -> None:
+        key = str(model_dir or item.get("id") or "").strip()
+        if not key:
+            return
+        with self._current_items_lock:
+            self._current_items[key] = dict(item)
+            current_items = list(self._current_items.values())
+        self.task_store.patch_remote_refresh_state(
+            current_item=current_items[0] if current_items else {},
+            current_items=current_items,
+        )
+
+    def _remove_current_item(self, model_dir: str) -> None:
+        key = str(model_dir or "").strip()
+        with self._current_items_lock:
+            if key:
+                self._current_items.pop(key, None)
+            current_items = list(self._current_items.values())
+        self.task_store.patch_remote_refresh_state(
+            current_item=current_items[0] if current_items else {},
+            current_items=current_items,
+        )
 
     def start(self) -> None:
         self._ensure_state()
@@ -981,9 +1093,13 @@ class RemoteRefreshManager:
         refresh_config = config.remote_refresh
         normalized_cron = _validate_cron(refresh_config.cron)
         started_at = _now_iso()
+        batch_started_perf = time.perf_counter()
+        resource_wait_baseline = resource_snapshot()
         candidates, stats = self._pick_candidates()
+        workers = min(_remote_refresh_model_workers(), max(len(candidates), 1))
 
         try:
+            self._reset_current_items()
             self.task_store.patch_remote_refresh_state(
                 status="running",
                 running=True,
@@ -991,13 +1107,18 @@ class RemoteRefreshManager:
                 last_batch_total=len(candidates),
                 last_batch_succeeded=0,
                 last_batch_failed=0,
+                last_batch_skipped=0,
                 last_eligible_total=int(stats.get("eligible_total") or 0),
                 last_remaining_total=int(stats.get("remaining_total") or 0),
                 last_skipped_missing_cookie=int(stats.get("missing_cookie") or 0),
                 last_skipped_local_or_invalid=int(stats.get("local_or_invalid") or 0),
                 current_item={},
+                current_items=[],
+                last_batch_metrics=_empty_batch_metrics(),
+                last_resource_waits=_resource_wait_delta(resource_wait_baseline),
+                last_slow_models=[],
                 last_message=(
-                    f"源端刷新开始，本轮计划处理 {len(candidates)} 个模型。{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=int(stats.get('remaining_total') or 0))}"
+                    f"源端刷新开始，本轮计划处理 {len(candidates)} 个模型，并发 {workers}。{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=int(stats.get('remaining_total') or 0))}"
                     if candidates
                     else "当前没有可执行源端刷新的模型。"
                 ),
@@ -1005,16 +1126,18 @@ class RemoteRefreshManager:
             _append_remote_refresh_log(
                 "batch_started",
                 selected=len(candidates),
+                workers=workers,
                 stats=stats,
             )
             append_business_log(
                 "remote_refresh",
                 "batch_started",
                 (
-                    f"源端刷新开始，本轮计划处理 {len(candidates)} 个模型。"
+                    f"源端刷新开始，本轮计划处理 {len(candidates)} 个模型，并发 {workers}。"
                     f"{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=int(stats.get('remaining_total') or 0))}"
                 ),
                 selected=len(candidates),
+                workers=workers,
                 stats=stats,
             )
 
@@ -1043,19 +1166,54 @@ class RemoteRefreshManager:
 
             succeeded = 0
             failed = 0
+            skipped = 0
+            batch_metrics = _empty_batch_metrics()
+            slow_models: list[dict[str, Any]] = []
 
-            for index, item in enumerate(candidates, start=1):
-                result = self._refresh_one(item, index=index, total=len(candidates), config=config)
-                if result.get("ok"):
-                    succeeded += 1
-                else:
-                    failed += 1
-                processed_total = succeeded + failed
-                self.task_store.patch_remote_refresh_state(
-                    last_batch_succeeded=succeeded,
-                    last_batch_failed=failed,
-                    last_remaining_total=max(int(stats.get("eligible_total") or 0) - processed_total, 0),
-                )
+            with _temporary_proxy_env(config):
+                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="remote-refresh-model") as executor:
+                    future_map = {
+                        executor.submit(self._refresh_one, item, index=index, total=len(candidates), config=config): item
+                        for index, item in enumerate(candidates, start=1)
+                    }
+                    for future in as_completed(future_map):
+                        item = future_map[future]
+                        try:
+                            result = future.result()
+                        except Exception as exc:
+                            result = {
+                                "ok": False,
+                                "error": _sanitize_remote_refresh_message(exc, exc.__class__.__name__),
+                                "metrics": {
+                                    "title": str(item.get("title") or item.get("model_dir") or ""),
+                                    "model_dir": str(item.get("model_dir") or ""),
+                                },
+                            }
+                        if result.get("ok"):
+                            succeeded += 1
+                            if result.get("skipped"):
+                                skipped += 1
+                        else:
+                            failed += 1
+                        item_metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+                        _merge_batch_metrics(batch_metrics, item_metrics)
+                        if item_metrics:
+                            slow_models.append(item_metrics)
+                        processed_total = succeeded + failed
+                        remaining_total = max(int(stats.get("eligible_total") or 0) - processed_total, 0)
+                        self.task_store.patch_remote_refresh_state(
+                            last_batch_succeeded=succeeded,
+                            last_batch_failed=failed,
+                            last_batch_skipped=skipped,
+                            last_remaining_total=remaining_total,
+                            last_batch_metrics=batch_metrics,
+                            last_resource_waits=_resource_wait_delta(resource_wait_baseline),
+                            last_slow_models=_top_slow_models(slow_models),
+                            last_message=(
+                                f"源端刷新进行中，并发 {workers}：已完成 {processed_total}/{len(candidates)}，"
+                                f"成功 {succeeded}，失败 {failed}。"
+                            ),
+                        )
 
             finished_at = _now_iso()
             previous_state = self.task_store.load_remote_refresh_state()
@@ -1075,17 +1233,25 @@ class RemoteRefreshManager:
                 last_message=message,
                 last_batch_succeeded=succeeded,
                 last_batch_failed=failed,
+                last_batch_skipped=skipped,
                 last_eligible_total=int(stats.get("eligible_total") or 0),
                 last_remaining_total=remaining_total,
                 last_skipped_missing_cookie=int(stats.get("missing_cookie") or 0),
                 last_skipped_local_or_invalid=int(stats.get("local_or_invalid") or 0),
+                last_batch_metrics={**batch_metrics, "batch_duration_ms": round((time.perf_counter() - batch_started_perf) * 1000, 1)},
+                last_resource_waits=_resource_wait_delta(resource_wait_baseline),
+                last_slow_models=_top_slow_models(slow_models),
             )
             _append_remote_refresh_log(
                 "batch_finished",
                 succeeded=succeeded,
                 failed=failed,
+                skipped=skipped,
                 interrupted=False,
                 stats=stats,
+                metrics={**batch_metrics, "batch_duration_ms": round((time.perf_counter() - batch_started_perf) * 1000, 1)},
+                slow_models=_top_slow_models(slow_models),
+                resource_waits=_resource_wait_delta(resource_wait_baseline),
                 remaining_total=remaining_total,
             )
             append_business_log(
@@ -1094,11 +1260,16 @@ class RemoteRefreshManager:
                 message,
                 succeeded=succeeded,
                 failed=failed,
+                skipped=skipped,
                 interrupted=False,
                 stats=stats,
+                metrics={**batch_metrics, "batch_duration_ms": round((time.perf_counter() - batch_started_perf) * 1000, 1)},
+                slow_models=_top_slow_models(slow_models),
+                resource_waits=_resource_wait_delta(resource_wait_baseline),
                 remaining_total=remaining_total,
             )
         finally:
+            self._reset_current_items()
             self._set_batch_running(False)
 
     def _refresh_one(self, item: dict[str, Any], *, index: int, total: int, config) -> dict[str, Any]:
@@ -1113,15 +1284,19 @@ class RemoteRefreshManager:
             "url": origin_url,
             "status": "running",
             "progress": 0,
-            "message": f"源端刷新中 {index}/{total}",
+            "message": f"源端刷新中 {index}/{total}，等待资源",
             "updated_at": _now_iso(),
             "meta": {
                 "model_dir": model_dir,
             },
         }
-        self.task_store.patch_remote_refresh_state(current_item=current_item)
+        self._set_current_item(model_dir, current_item)
         _append_remote_refresh_log("model_started", model_dir=model_dir, title=title, url=origin_url, index=index, total=total)
 
+        model_started_perf = time.perf_counter()
+        archive_duration_ms = 0.0
+        finalize_duration_ms = 0.0
+        disk_wait_ms = 0.0
         existing_meta = _load_json(meta_path)
         if not cookie:
             message = "缺少对应站点 Cookie，已跳过源端刷新。"
@@ -1143,11 +1318,21 @@ class RemoteRefreshManager:
                 }
             )
             _append_remote_refresh_log("model_skipped", model_dir=model_dir, reason="missing_cookie")
-            return {"ok": True, "skipped": True}
+            self._remove_current_item(model_dir)
+            return {
+                "ok": True,
+                "skipped": True,
+                "metrics": {
+                    "model_dir": model_dir,
+                    "title": title,
+                    "total_duration_ms": round((time.perf_counter() - model_started_perf) * 1000, 1),
+                },
+            }
 
         def progress_callback(payload: dict[str, Any]) -> None:
-            self.task_store.patch_remote_refresh_state(
-                current_item={
+            self._set_current_item(
+                model_dir,
+                {
                     "id": model_dir,
                     "title": title,
                     "url": origin_url,
@@ -1161,7 +1346,7 @@ class RemoteRefreshManager:
                     "meta": {
                         "model_dir": model_dir,
                     },
-                }
+                },
             )
 
         try:
@@ -1173,21 +1358,22 @@ class RemoteRefreshManager:
                 if daily_limit_active
                 else "源端刷新仅检测新增 3MF，下载交给新增 3MF 下载队列。"
             )
-            with _temporary_proxy_env(config):
-                archive_result = run_archive_model_job(
-                    url=origin_url,
-                    cookie=cookie,
-                    download_dir=str(ARCHIVE_DIR),
-                    logs_dir=str(LOGS_DIR),
-                    existing_root=str(ARCHIVE_DIR),
-                    progress_callback=progress_callback,
-                    skip_three_mf_fetch=skip_three_mf_fetch,
-                    three_mf_skip_message=skip_three_mf_message,
-                    three_mf_skip_state="download_limited" if daily_limit_active else "pending_download",
-                    download_assets=False,
-                    rebuild_archive=False,
-                    record_missing_3mf_log=False,
-                )
+            archive_started_perf = time.perf_counter()
+            archive_result = run_archive_model_job(
+                url=origin_url,
+                cookie=cookie,
+                download_dir=str(ARCHIVE_DIR),
+                logs_dir=str(LOGS_DIR),
+                existing_root=str(ARCHIVE_DIR),
+                progress_callback=progress_callback,
+                skip_three_mf_fetch=skip_three_mf_fetch,
+                three_mf_skip_message=skip_three_mf_message,
+                three_mf_skip_state="download_limited" if daily_limit_active else "pending_download",
+                download_assets=False,
+                rebuild_archive=False,
+                record_missing_3mf_log=False,
+            )
+            archive_duration_ms = round((time.perf_counter() - archive_started_perf) * 1000, 1)
             limit_guard_state = limit_guard if daily_limit_active else None
             for missing_item in archive_result.get("missing_3mf") or []:
                 if str(missing_item.get("downloadState") or "").strip() != "download_limited":
@@ -1205,45 +1391,49 @@ class RemoteRefreshManager:
                         or ""
                     ),
                 )
-            finalized = _finalize_refreshed_meta(meta_path, existing_meta)
-            if not upsert_archive_snapshot_model(model_dir, reason="remote_refresh_completed"):
-                invalidate_archive_snapshot("remote_refresh_completed")
-            invalidate_model_detail_cache(model_dir)
-            model_id = str(finalized["meta"].get("id") or existing_meta.get("id") or "").strip()
-            missing_3mf_items: list[dict[str, Any]] = []
-            new_3mf_download_items: list[dict[str, Any]] = []
-            new_3mf_download_result: dict[str, Any] = {}
-            if model_id:
-                missing_3mf_items = _build_missing_3mf_items(meta_path, finalized["meta"])
-                pending_download_items, remaining_missing_items = _split_new_instance_missing_3mf_items(
-                    missing_3mf_items,
-                    finalized.get("added_instance_tokens") or set(),
-                )
-                effective_limit_guard = limit_guard_state or _read_three_mf_limit_guard()
-                can_enqueue_new_download = (
-                    bool(pending_download_items)
-                    and self.archive_manager is not None
-                    and not _is_three_mf_limit_guard_active_for_url(origin_url, effective_limit_guard)
-                )
-                if can_enqueue_new_download:
-                    new_3mf_download_result = self.archive_manager.submit_three_mf_download(
-                        origin_url,
-                        model_id=model_id,
-                        title=title,
-                        instance_ids=[
-                            str(item.get("instance_id") or "").strip()
-                            for item in pending_download_items
-                            if str(item.get("instance_id") or "").strip()
-                        ],
+            finalize_started_perf = time.perf_counter()
+            with resource_slot("disk_io", detail=model_dir) as waited_ms:
+                disk_wait_ms = round(float(waited_ms or 0), 1)
+                finalized = _finalize_refreshed_meta(meta_path, existing_meta)
+                if not upsert_archive_snapshot_model(model_dir, reason="remote_refresh_completed"):
+                    invalidate_archive_snapshot("remote_refresh_completed")
+                invalidate_model_detail_cache(model_dir)
+                model_id = str(finalized["meta"].get("id") or existing_meta.get("id") or "").strip()
+                missing_3mf_items: list[dict[str, Any]] = []
+                new_3mf_download_items: list[dict[str, Any]] = []
+                new_3mf_download_result: dict[str, Any] = {}
+                if model_id:
+                    missing_3mf_items = _build_missing_3mf_items(meta_path, finalized["meta"])
+                    pending_download_items, remaining_missing_items = _split_new_instance_missing_3mf_items(
+                        missing_3mf_items,
+                        finalized.get("added_instance_tokens") or set(),
                     )
-                    if new_3mf_download_result.get("accepted") or new_3mf_download_result.get("queued"):
-                        new_3mf_download_items = pending_download_items
-                        missing_3mf_items = remaining_missing_items
+                    effective_limit_guard = limit_guard_state or _read_three_mf_limit_guard()
+                    can_enqueue_new_download = (
+                        bool(pending_download_items)
+                        and self.archive_manager is not None
+                        and not _is_three_mf_limit_guard_active_for_url(origin_url, effective_limit_guard)
+                    )
+                    if can_enqueue_new_download:
+                        new_3mf_download_result = self.archive_manager.submit_three_mf_download(
+                            origin_url,
+                            model_id=model_id,
+                            title=title,
+                            instance_ids=[
+                                str(item.get("instance_id") or "").strip()
+                                for item in pending_download_items
+                                if str(item.get("instance_id") or "").strip()
+                            ],
+                        )
+                        if new_3mf_download_result.get("accepted") or new_3mf_download_result.get("queued"):
+                            new_3mf_download_items = pending_download_items
+                            missing_3mf_items = remaining_missing_items
 
-                self.task_store.replace_missing_3mf_for_model(
-                    model_id,
-                    missing_3mf_items,
-                )
+                    self.task_store.replace_missing_3mf_for_model(
+                        model_id,
+                        missing_3mf_items,
+                    )
+            finalize_duration_ms = round((time.perf_counter() - finalize_started_perf) * 1000, 1)
             message = _sanitize_remote_refresh_message(
                 finalized["meta"].get("remoteSync", {}).get("lastMessage") or "源端刷新完成。",
                 "源端刷新完成。",
@@ -1252,6 +1442,18 @@ class RemoteRefreshManager:
             if new_3mf_download_items:
                 change_labels.append(f"新增 3MF 下载入队 {len(new_3mf_download_items)}")
                 message = f"{message.rstrip('。')}，新增 3MF 已加入下载队列。"
+            comment_metrics = _archive_comment_metrics(archive_result)
+            total_duration_ms = round((time.perf_counter() - model_started_perf) * 1000, 1)
+            model_metrics = {
+                "model_dir": model_dir,
+                "title": title,
+                "total_duration_ms": total_duration_ms,
+                "archive_duration_ms": archive_duration_ms,
+                "finalize_duration_ms": finalize_duration_ms,
+                "disk_wait_ms": disk_wait_ms,
+                "new_3mf_download_queued": len(new_3mf_download_items),
+                **comment_metrics,
+            }
             history_item = {
                 "id": _history_id(model_dir, "success"),
                 "title": title,
@@ -1273,6 +1475,7 @@ class RemoteRefreshManager:
                     "change_summary": "，".join(change_labels),
                     "new_3mf_download_queued": len(new_3mf_download_items),
                     "new_3mf_download_task_id": str(new_3mf_download_result.get("task_id") or ""),
+                    "metrics": model_metrics,
                 },
             }
             self.task_store.append_remote_refresh_history(history_item)
@@ -1287,6 +1490,7 @@ class RemoteRefreshManager:
                 change_labels=change_labels,
                 new_3mf_download_queued=len(new_3mf_download_items),
                 new_3mf_download_task_id=str(new_3mf_download_result.get("task_id") or ""),
+                metrics=model_metrics,
             )
             append_business_log(
                 "remote_refresh",
@@ -1303,16 +1507,25 @@ class RemoteRefreshManager:
                 change_labels=change_labels,
                 new_3mf_download_queued=len(new_3mf_download_items),
                 new_3mf_download_task_id=str(new_3mf_download_result.get("task_id") or ""),
+                metrics=model_metrics,
             )
-            return {"ok": True}
+            return {"ok": True, "metrics": model_metrics}
         except Exception as exc:
-            with _temporary_proxy_env(config):
-                deleted_on_source = run_source_deleted_check_job(origin_url, cookie)
+            deleted_on_source = run_source_deleted_check_job(origin_url, cookie)
             if deleted_on_source and meta_path.exists():
                 message = "源端模型已删除，本地保留现有归档。"
-                _update_meta_refresh_error(meta_path, message, source_deleted=True)
-                invalidate_archive_snapshot("remote_refresh_mark_deleted")
-                invalidate_model_detail_cache(model_dir)
+                with resource_slot("disk_io", detail=model_dir):
+                    _update_meta_refresh_error(meta_path, message, source_deleted=True)
+                    invalidate_archive_snapshot("remote_refresh_mark_deleted")
+                    invalidate_model_detail_cache(model_dir)
+                model_metrics = {
+                    "model_dir": model_dir,
+                    "title": title,
+                    "total_duration_ms": round((time.perf_counter() - model_started_perf) * 1000, 1),
+                    "archive_duration_ms": archive_duration_ms,
+                    "finalize_duration_ms": finalize_duration_ms,
+                    "disk_wait_ms": disk_wait_ms,
+                }
                 history_item = {
                     "id": _history_id(model_dir, "source_deleted"),
                     "title": title,
@@ -1326,6 +1539,7 @@ class RemoteRefreshManager:
                         "checked_at": _now_iso(),
                         "change_labels": ["模型源端已删除"],
                         "change_summary": "模型源端已删除",
+                        "metrics": model_metrics,
                     },
                 }
                 self.task_store.append_remote_refresh_history(history_item)
@@ -1336,14 +1550,24 @@ class RemoteRefreshManager:
                     message,
                     model_dir=model_dir,
                     url=origin_url,
+                    metrics=model_metrics,
                 )
-                return {"ok": True, "source_deleted": True}
+                return {"ok": True, "source_deleted": True, "metrics": model_metrics}
 
             message = _sanitize_remote_refresh_message(exc, exc.__class__.__name__)
             if meta_path.exists():
-                _update_meta_refresh_error(meta_path, message, source_deleted=False)
-                invalidate_archive_snapshot("remote_refresh_error")
-                invalidate_model_detail_cache(model_dir)
+                with resource_slot("disk_io", detail=model_dir):
+                    _update_meta_refresh_error(meta_path, message, source_deleted=False)
+                    invalidate_archive_snapshot("remote_refresh_error")
+                    invalidate_model_detail_cache(model_dir)
+            model_metrics = {
+                "model_dir": model_dir,
+                "title": title,
+                "total_duration_ms": round((time.perf_counter() - model_started_perf) * 1000, 1),
+                "archive_duration_ms": archive_duration_ms,
+                "finalize_duration_ms": finalize_duration_ms,
+                "disk_wait_ms": disk_wait_ms,
+            }
             history_item = {
                 "id": _history_id(model_dir, "failed"),
                 "title": title,
@@ -1357,6 +1581,7 @@ class RemoteRefreshManager:
                     "checked_at": _now_iso(),
                     "change_labels": ["刷新失败"],
                     "change_summary": "刷新失败",
+                    "metrics": model_metrics,
                 },
             }
             self.task_store.append_remote_refresh_history(history_item)
@@ -1368,5 +1593,8 @@ class RemoteRefreshManager:
                 level="error",
                 model_dir=model_dir,
                 url=origin_url,
+                metrics=model_metrics,
             )
-            return {"ok": False, "error": message}
+            return {"ok": False, "error": message, "metrics": model_metrics}
+        finally:
+            self._remove_current_item(model_dir)

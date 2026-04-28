@@ -27,6 +27,7 @@ from bs4 import BeautifulSoup
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
 from app.services.cookie_utils import extract_auth_token, parse_cookie_values, sanitize_cookie_header
 from app.services.profile_rating import normalize_profile_rating
+from app.services.resource_limiter import resource_slot
 from app.services.three_mf import describe_three_mf_failure, merge_three_mf_failure, normalize_makerworld_source
 from app.services.three_mf_quota import reserve_three_mf_download_slot
 
@@ -1204,30 +1205,67 @@ def _apply_comment_image_ref(image: dict, local_name: str, rel_path: str) -> Non
     image["relPath"] = rel_path
 
 
+def _comment_resource_stats(comments: list[dict]) -> dict[str, int]:
+    items = list(_comment_tree_items(comments))
+    avatar_urls: list[str] = []
+    image_urls: list[str] = []
+    shared_avatar_refs = 0
+    local_image_refs = 0
+    for item in items:
+        author = item.get("author") if isinstance(item.get("author"), dict) else {}
+        avatar_url = str(author.get("avatarUrl") or "").strip()
+        if avatar_url:
+            avatar_urls.append(_normalize_url_value(avatar_url) or avatar_url)
+        if str(author.get("avatarRelPath") or "").strip().startswith(f"{SHARED_AVATAR_REL_DIR}/"):
+            shared_avatar_refs += 1
+        images = item.get("images") if isinstance(item.get("images"), list) else []
+        for image in images:
+            if not isinstance(image, dict):
+                continue
+            image_url = str(image.get("url") or "").strip()
+            if image_url:
+                image_urls.append(_normalize_url_value(image_url) or image_url)
+            if str(image.get("relPath") or image.get("localName") or "").strip():
+                local_image_refs += 1
+    return {
+        "comment_roots": len(comments or []),
+        "comment_total": len(items),
+        "reply_total": max(len(items) - len(comments or []), 0),
+        "avatar_urls": len(avatar_urls),
+        "unique_avatar_urls": len(set(avatar_urls)),
+        "comment_images": len(image_urls),
+        "unique_comment_image_urls": len(set(image_urls)),
+        "shared_avatar_refs": shared_avatar_refs,
+        "local_comment_image_refs": local_image_refs,
+    }
+
+
 def _download_asset_with_fresh_session(base_session: requests.Session, url: str, dest: Path) -> None:
     if dest.exists():
         return
-    if type(base_session) is not requests.Session:
-        download_file(
-            base_session,
-            url,
-            dest,
-            max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
-        )
-        return
-    with requests.Session() as asset_session:
-        asset_session.headers.update(getattr(base_session, "headers", {}) or {})
-        download_file(
-            asset_session,
-            url,
-            dest,
-            max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
-        )
+    with resource_slot("comment_assets", detail=url):
+        if type(base_session) is not requests.Session:
+            download_file(
+                base_session,
+                url,
+                dest,
+                max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+            )
+            return
+        with requests.Session() as asset_session:
+            asset_session.headers.update(getattr(base_session, "headers", {}) or {})
+            download_file(
+                asset_session,
+                url,
+                dest,
+                max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+            )
 
 
-def _download_comment_assets(tasks: list[dict], progress_callback, progress_start: int, progress_end: int) -> None:
+def _download_comment_assets(tasks: list[dict], progress_callback, progress_start: int, progress_end: int) -> dict[str, int]:
+    stats = {"completed": 0, "failed": 0}
     if not tasks:
-        return
+        return stats
     total = len(tasks)
     completed = 0
     workers = max(1, min(COMMENT_ASSET_DOWNLOAD_WORKERS, total))
@@ -1248,13 +1286,16 @@ def _download_comment_assets(tasks: list[dict], progress_callback, progress_star
             try:
                 future.result()
             except Exception as exc:
+                stats["failed"] += 1
                 log(task.get("error_message") or "评论资源下载失败，保留原始链接：", task.get("url") or "", exc)
                 continue
+            stats["completed"] += 1
             for apply_ref in task.get("apply") or []:
                 try:
                     apply_ref()
                 except Exception:
                     continue
+    return stats
 
 
 def _apply_existing_comment_assets(
@@ -1263,12 +1304,19 @@ def _apply_existing_comment_assets(
     out_dir: Path,
     *,
     migrate_avatars: bool = True,
-) -> None:
+) -> dict[str, int]:
+    stats = {
+        "avatar_existing_reused": 0,
+        "avatar_shared_reused": 0,
+        "avatar_shared_migrated": 0,
+        "comment_image_existing_reused": 0,
+    }
     for item in _comment_tree_items(comments):
         existing = existing_comment_lookup.get(str(item.get("id") or "").strip()) or {}
         existing_author = existing.get("author") if isinstance(existing.get("author"), dict) else {}
         author = item.get("author") if isinstance(item.get("author"), dict) else {}
         avatar_url = str(author.get("avatarUrl") or existing_author.get("avatarUrl") or "").strip()
+        existing_avatar_rel = str(existing_author.get("avatarRelPath") or "").strip()
         migrated_rel = (
             _copy_existing_avatar_to_shared(out_dir, avatar_url, existing_author)
             if migrate_avatars and avatar_url
@@ -1276,9 +1324,14 @@ def _apply_existing_comment_assets(
         )
         if migrated_rel:
             _apply_author_avatar_ref(author, migrated_rel)
+            if existing_avatar_rel.startswith(f"{SHARED_AVATAR_REL_DIR}/"):
+                stats["avatar_shared_reused"] += 1
+            else:
+                stats["avatar_shared_migrated"] += 1
         else:
             if str(existing_author.get("avatarLocal") or "").strip():
                 author["avatarLocal"] = str(existing_author.get("avatarLocal") or "").strip()
+                stats["avatar_existing_reused"] += 1
             if str(existing_author.get("avatarRelPath") or "").strip():
                 author["avatarRelPath"] = str(existing_author.get("avatarRelPath") or "").strip()
 
@@ -1295,8 +1348,10 @@ def _apply_existing_comment_assets(
             )
             if str(existing_image.get("localName") or "").strip():
                 image["localName"] = str(existing_image.get("localName") or "").strip()
+                stats["comment_image_existing_reused"] += 1
             if str(existing_image.get("relPath") or "").strip():
                 image["relPath"] = str(existing_image.get("relPath") or "").strip()
+    return stats
 
 
 def _comment_reply_items(node: object) -> List[dict]:
@@ -2387,7 +2442,19 @@ def collect_comments(
         )
 
     existing_comment_lookup = _build_existing_comment_lookup(existing_comments)
-    _apply_existing_comment_assets(comments, existing_comment_lookup, out_dir)
+    existing_asset_stats = _apply_existing_comment_assets(comments, existing_comment_lookup, out_dir)
+    asset_stats = {
+        **_comment_resource_stats(comments),
+        **existing_asset_stats,
+        "avatar_cache_hits": 0,
+        "comment_image_cache_hits": 0,
+        "avatar_download_tasks": 0,
+        "comment_image_download_tasks": 0,
+        "download_tasks": 0,
+        "download_completed": 0,
+        "download_failed": 0,
+        "deduped_downloads": 0,
+    }
 
     if not download_assets:
         emit_progress(progress_callback, progress_end, "评论整理完成")
@@ -2403,6 +2470,7 @@ def collect_comments(
         return {
             "count": max(comment_count, comment_total),
             "items": comments,
+            "assetStats": asset_stats,
         }
 
     avatar_tasks: dict[str, dict] = {}
@@ -2418,6 +2486,7 @@ def collect_comments(
             avatar_rel = _shared_avatar_rel_path(avatar_name)
             avatar_target = _shared_avatar_dir(out_dir) / avatar_name
             if avatar_target.exists():
+                asset_stats["avatar_cache_hits"] += 1
                 _apply_author_avatar_ref(author, avatar_rel)
             else:
                 avatar_key = avatar_rel
@@ -2447,10 +2516,12 @@ def collect_comments(
             image_target = out_dir / image_name
             normalized_image_url = _normalize_url_value(url) or url
             if image_target.exists():
+                asset_stats["comment_image_cache_hits"] += 1
                 _apply_comment_image_ref(image, image_name, image_rel)
             elif normalized_image_url in image_tasks:
-                image_tasks[normalized_image_url]["apply"].append(
-                    lambda image=image, name=image_tasks[normalized_image_url]["local_name"], rel=image_tasks[normalized_image_url]["rel_path"]: _apply_comment_image_ref(image, name, rel)
+                existing_image_task = image_tasks[normalized_image_url]
+                existing_image_task["apply"].append(
+                    lambda image=image, name=existing_image_task["local_name"], rel=existing_image_task["rel_path"]: _apply_comment_image_ref(image, name, rel)
                 )
             else:
                 image_tasks[normalized_image_url] = {
@@ -2465,7 +2536,22 @@ def collect_comments(
                 }
 
     asset_tasks = list(avatar_tasks.values()) + list(image_tasks.values())
-    _download_comment_assets(asset_tasks, progress_callback, progress_start, progress_end)
+    download_stats = _download_comment_assets(asset_tasks, progress_callback, progress_start, progress_end)
+    asset_stats["avatar_download_tasks"] = len(avatar_tasks)
+    asset_stats["comment_image_download_tasks"] = len(image_tasks)
+    asset_stats["download_tasks"] = len(asset_tasks)
+    asset_stats["download_completed"] = int(download_stats.get("completed") or 0)
+    asset_stats["download_failed"] = int(download_stats.get("failed") or 0)
+    skipped_or_reused = (
+        int(asset_stats.get("avatar_existing_reused") or 0)
+        + int(asset_stats.get("avatar_shared_reused") or 0)
+        + int(asset_stats.get("avatar_shared_migrated") or 0)
+        + int(asset_stats.get("comment_image_existing_reused") or 0)
+        + int(asset_stats.get("avatar_cache_hits") or 0)
+        + int(asset_stats.get("comment_image_cache_hits") or 0)
+    )
+    requested_resources = int(asset_stats.get("avatar_urls") or 0) + int(asset_stats.get("comment_images") or 0)
+    asset_stats["deduped_downloads"] = max(requested_resources - skipped_or_reused - len(asset_tasks), 0)
 
     emit_progress(progress_callback, progress_end, "评论整理完成")
     _log_perf(
@@ -2480,6 +2566,7 @@ def collect_comments(
     return {
         "count": max(comment_count, comment_total),
         "items": comments,
+        "assetStats": asset_stats,
     }
 
 
@@ -5276,12 +5363,13 @@ def rebuild_once(meta_path: Path, progress_callback=None, logger=None):
             meta_changed = True
         dest = instances_dir / fn
 
-        download_file(
-            REBUILD_SESSION,
-            url,
-            dest,
-            max_duration=BINARY_TRANSFER_TIMEOUT_SECONDS,
-        )
+        with resource_slot("three_mf_download", detail=dest.name):
+            download_file(
+                REBUILD_SESSION,
+                url,
+                dest,
+                max_duration=BINARY_TRANSFER_TIMEOUT_SECONDS,
+            )
         inst_files.append({
             "id": inst.get("id"),
             "title": inst.get("title") or inst.get("name") or str(inst.get("id")),
@@ -5415,6 +5503,7 @@ def archive_model(
     返回: {base_name, work_dir, missing_3mf, action}
     """
     archive_started_at = time.perf_counter()
+    timings_ms: dict[str, float] = {}
     # 采集阶段
     out_root = download_dir.resolve()
     out_root.mkdir(parents=True, exist_ok=True)
@@ -5448,7 +5537,7 @@ def archive_model(
         log(logger, "requests 页面未包含 __NEXT_DATA__，尝试 curl 回退")
         fetch_used_curl = True
         html_text = fetch_html_with_curl(fetch_url, raw_cookie_header)
-    _log_perf(
+    timings_ms["fetch_html"] = _log_perf(
         "archive.fetch_html",
         fetch_started_at,
         logger=logger,
@@ -5473,7 +5562,7 @@ def archive_model(
             log(logger, "未能从 __NEXT_DATA__ 定位 design，尝试 API 获取")
     except Exception as e:
         log(logger, "解析 __NEXT_DATA__ 失败，尝试 API 获取:", e)
-    _log_perf(
+    timings_ms["extract_next_data"] = _log_perf(
         "archive.extract_next_data",
         next_data_started_at,
         logger=logger,
@@ -5486,7 +5575,7 @@ def archive_model(
         emit_progress(progress_callback, 22, "页面数据不足，正在回退接口抓取")
         api_fallback_started_at = time.perf_counter()
         design = fetch_design_from_api(sess, raw_cookie_header, fetch_url, api_host_hint=api_host_hint)
-        _log_perf(
+        timings_ms["fetch_design_api"] = _log_perf(
             "archive.fetch_design_api",
             api_fallback_started_at,
             logger=logger,
@@ -5547,7 +5636,7 @@ def archive_model(
         download_assets=download_assets,
         existing_meta=existing_meta,
     )
-    _log_perf(
+    timings_ms["parse_summary"] = _log_perf(
         "archive.parse_summary",
         summary_started_at,
         logger=logger,
@@ -5565,7 +5654,7 @@ def archive_model(
         download_assets=download_assets,
         existing_images=existing_meta.get("designImages") if isinstance(existing_meta.get("designImages"), list) else [],
     )
-    _log_perf(
+    timings_ms["collect_design_images"] = _log_perf(
         "archive.collect_design_images",
         design_images_started_at,
         logger=logger,
@@ -5573,7 +5662,7 @@ def archive_model(
     )
     attachments_started_at = time.perf_counter()
     attachments = extract_design_attachments(design)
-    _log_perf(
+    timings_ms["extract_attachments"] = _log_perf(
         "archive.extract_attachments",
         attachments_started_at,
         logger=logger,
@@ -5592,7 +5681,7 @@ def archive_model(
         existing_comments=existing_meta.get("comments") if isinstance(existing_meta.get("comments"), list) else [],
         api_host_hint=api_host_hint,
     )
-    _log_perf(
+    timings_ms["collect_comments"] = _log_perf(
         "archive.collect_comments",
         comments_started_at,
         logger=logger,
@@ -5797,7 +5886,7 @@ def archive_model(
         f"skipped_due_limit={skipped_due_limit}",
         f"total={len(inst_list)}",
     )
-    _log_perf(
+    timings_ms["process_instances"] = _log_perf(
         "archive.process_instances",
         instance_stage_started_at,
         logger=logger,
@@ -5825,7 +5914,7 @@ def archive_model(
     meta_path = work_dir / "meta.json"
     meta_write_started_at = time.perf_counter()
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-    _log_perf("archive.write_meta", meta_write_started_at, logger=logger)
+    timings_ms["write_meta"] = _log_perf("archive.write_meta", meta_write_started_at, logger=logger)
     emit_progress(progress_callback, 78, "元数据已生成，准备落盘")
     log(logger, "已保存 meta:", meta_path)
 
@@ -5836,7 +5925,7 @@ def archive_model(
         try:
             rebuild_started_at = time.perf_counter()
             rebuild_once(meta_path, progress_callback=progress_callback, logger=logger)
-            _log_perf("archive.rebuild_once", rebuild_started_at, logger=logger)
+            timings_ms["rebuild_once"] = _log_perf("archive.rebuild_once", rebuild_started_at, logger=logger)
         except Exception as e:
             log(logger, "归档/生成本地页面失败:", e)
     else:
@@ -5857,7 +5946,7 @@ def archive_model(
 
     work_dir = meta_path.parent
     emit_progress(progress_callback, 100, "归档完成")
-    _log_perf(
+    timings_ms["total"] = _log_perf(
         "archive.total",
         archive_started_at,
         logger=logger,
@@ -5872,6 +5961,18 @@ def archive_model(
         "metadata_only_missing_3mf_count": len(missing_3mf) if profile_metadata_only else 0,
         "action": action,
         "model_id": design_id,
+        "stats": {
+            "timings_ms": timings_ms,
+            "comments": comments_bundle.get("assetStats") if isinstance(comments_bundle.get("assetStats"), dict) else {},
+            "instances": {
+                "total": len(inst_list),
+                "payload_hint": payload_hint_hits,
+                "existing_hint": existing_hint_hits,
+                "api_fetch": fetched_hint_hits,
+                "skipped_due_limit": skipped_due_limit,
+                "missing_3mf": len(missing_3mf),
+            },
+        },
     }
 
 
