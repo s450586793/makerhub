@@ -13,6 +13,7 @@ from app.core.store import JsonStore
 from app.core.settings import APP_VERSION
 from app.core.timezone import now_iso as china_now_iso
 from app.schemas.models import (
+    AdvancedRuntimeConfig,
     ArchiveRequest,
     Missing3mfCancelRequest,
     CookiePair,
@@ -627,6 +628,7 @@ def _public_config_payload(config) -> dict:
         "organizer": config.organizer.model_dump(),
         "remote_refresh": config.remote_refresh.model_dump(),
         "three_mf_limits": config.three_mf_limits.model_dump(),
+        "advanced": config.advanced.model_dump(),
         "remote_refresh_state": task_state_store.load_remote_refresh_state(),
         "paths": config.paths.model_dump(),
     }
@@ -865,6 +867,25 @@ async def save_three_mf_limits(payload: ThreeMfDownloadLimitsConfig, request: Re
         "每日 3MF 下载上限已保存。",
         cn_daily_limit=payload.cn_daily_limit,
         global_daily_limit=payload.global_daily_limit,
+    )
+    return _with_version_status(_public_config_payload(config), await _get_github_version_status(proxy_config=config.proxy))
+
+
+@router.post("/config/advanced")
+async def save_advanced_runtime(payload: AdvancedRuntimeConfig, request: Request):
+    _require_session_auth(request)
+    config = store.load()
+    config.advanced = payload
+    store.save(config)
+    append_business_log(
+        "settings",
+        "advanced_runtime_saved",
+        "高级运行参数已保存。",
+        remote_refresh_model_workers=payload.remote_refresh_model_workers,
+        makerworld_request_limit=payload.makerworld_request_limit,
+        comment_asset_download_limit=payload.comment_asset_download_limit,
+        three_mf_download_limit=payload.three_mf_download_limit,
+        disk_io_limit=payload.disk_io_limit,
     )
     return _with_version_status(_public_config_payload(config), await _get_github_version_status(proxy_config=config.proxy))
 

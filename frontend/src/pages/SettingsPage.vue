@@ -74,18 +74,6 @@
           </button>
           <span class="form-status">{{ statuses.proxy }}</span>
         </div>
-        <div class="settings-grid settings-grid--two">
-          <label class="field-card">
-            <span>国区每日 3MF 下载上限</span>
-            <input v-model.number="threeMfLimitsForm.cn_daily_limit" type="number" min="0" step="1">
-            <small class="archive-form__hint">默认 100，填 0 表示不限制；达到上限后，国区缺失 3MF 会暂停到次日 00:00。</small>
-          </label>
-          <label class="field-card">
-            <span>国际区每日 3MF 下载上限</span>
-            <input v-model.number="threeMfLimitsForm.global_daily_limit" type="number" min="0" step="1">
-            <small class="archive-form__hint">默认 100，填 0 表示不限制；达到上限后，国际区缺失 3MF 会暂停到次日 00:00。</small>
-          </label>
-        </div>
         <div class="form-footer">
           <button class="button button-primary" type="submit">保存连接设置</button>
           <span class="form-status">{{ statuses.connections }}</span>
@@ -119,6 +107,66 @@
         <div class="form-footer">
           <button class="button button-primary" type="submit">保存通知设置</button>
           <span class="form-status">{{ statuses.notifications }}</span>
+        </div>
+      </form>
+    </div>
+
+    <div v-show="activeTab === 'advanced'" class="settings-panel is-active">
+      <form class="settings-form token-card" @submit.prevent="saveAdvanced">
+        <div class="section-card__header">
+          <div>
+            <span class="eyebrow">高级</span>
+            <h2>后台任务与资源限制</h2>
+          </div>
+        </div>
+
+        <div class="settings-grid settings-grid--two">
+          <label class="field-card">
+            <span>国区每日 3MF 下载上限</span>
+            <input v-model.number="threeMfLimitsForm.cn_daily_limit" type="number" min="0" step="1">
+            <small class="archive-form__hint">默认 100，填 0 表示不限制；达到上限后，国区缺失 3MF 会暂停到次日 00:00。</small>
+          </label>
+          <label class="field-card">
+            <span>国际区每日 3MF 下载上限</span>
+            <input v-model.number="threeMfLimitsForm.global_daily_limit" type="number" min="0" step="1">
+            <small class="archive-form__hint">默认 100，填 0 表示不限制；达到上限后，国际区缺失 3MF 会暂停到次日 00:00。</small>
+          </label>
+        </div>
+
+        <div class="settings-grid settings-grid--three">
+          <label class="field-card">
+            <span>源端刷新模型并发</span>
+            <input v-model.number="advancedForm.remote_refresh_model_workers" type="number" min="1" max="4" step="1">
+            <small class="archive-form__hint">默认 2，最多 4；数值越大整轮越快，但后台占用也更高。</small>
+          </label>
+          <label class="field-card">
+            <span>MakerWorld 请求并发</span>
+            <input v-model.number="advancedForm.makerworld_request_limit" type="number" min="1" max="8" step="1">
+            <small class="archive-form__hint">默认 2，限制页面和 API 抓取同时进行的数量。</small>
+          </label>
+          <label class="field-card">
+            <span>评论资源下载并发</span>
+            <input v-model.number="advancedForm.comment_asset_download_limit" type="number" min="1" max="16" step="1">
+            <small class="archive-form__hint">默认 4，控制评论头像和评论图片下载。</small>
+          </label>
+        </div>
+
+        <div class="settings-grid settings-grid--two">
+          <label class="field-card">
+            <span>3MF 下载并发</span>
+            <input v-model.number="advancedForm.three_mf_download_limit" type="number" min="1" max="4" step="1">
+            <small class="archive-form__hint">默认 1，避免多个大文件同时下载拖慢 Web 访问。</small>
+          </label>
+          <label class="field-card">
+            <span>磁盘写入 / 索引并发</span>
+            <input v-model.number="advancedForm.disk_io_limit" type="number" min="1" max="4" step="1">
+            <small class="archive-form__hint">默认 1，限制 meta 写入、缺失 3MF 状态和快照索引更新。</small>
+          </label>
+        </div>
+
+        <div class="form-footer">
+          <button class="button button-primary" type="submit">保存高级设置</button>
+          <span class="form-status">{{ statuses.advanced }}</span>
         </div>
       </form>
     </div>
@@ -362,6 +410,7 @@ const router = useRouter();
 const tabs = [
   { key: "system", label: "系统" },
   { key: "connections", label: "连接设置" },
+  { key: "advanced", label: "高级" },
   { key: "user", label: "用户" },
   { key: "notifications", label: "通知" },
 ];
@@ -395,6 +444,13 @@ const threeMfLimitsForm = reactive({
   cn_daily_limit: 100,
   global_daily_limit: 100,
 });
+const advancedForm = reactive({
+  remote_refresh_model_workers: 2,
+  makerworld_request_limit: 2,
+  comment_asset_download_limit: 4,
+  three_mf_download_limit: 1,
+  disk_io_limit: 1,
+});
 const userForm = reactive({
   username: "admin",
   display_name: "Admin",
@@ -410,6 +466,7 @@ const statuses = reactive({
   cookie_cn: "",
   cookie_global: "",
   proxy: "",
+  advanced: "",
   notifications: "",
   user: "",
   password: "",
@@ -559,6 +616,17 @@ function normalizeDailyThreeMfLimit(value, fallback = 100) {
   return Math.max(0, Math.trunc(numeric));
 }
 
+function normalizeBoundedInt(value, fallback, min, max) {
+  if (value === "" || value === null || value === undefined) {
+    return fallback;
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return Math.min(Math.max(Math.trunc(numeric), min), max);
+}
+
 function applyConfigToForms(payload) {
   const cookies = {};
   for (const item of payload.cookies || []) {
@@ -571,6 +639,11 @@ function applyConfigToForms(payload) {
   connectionForm.https_proxy = payload.proxy?.https_proxy || "";
   threeMfLimitsForm.cn_daily_limit = normalizeDailyThreeMfLimit(payload.three_mf_limits?.cn_daily_limit);
   threeMfLimitsForm.global_daily_limit = normalizeDailyThreeMfLimit(payload.three_mf_limits?.global_daily_limit);
+  advancedForm.remote_refresh_model_workers = normalizeBoundedInt(payload.advanced?.remote_refresh_model_workers, 2, 1, 4);
+  advancedForm.makerworld_request_limit = normalizeBoundedInt(payload.advanced?.makerworld_request_limit, 2, 1, 8);
+  advancedForm.comment_asset_download_limit = normalizeBoundedInt(payload.advanced?.comment_asset_download_limit, 4, 1, 16);
+  advancedForm.three_mf_download_limit = normalizeBoundedInt(payload.advanced?.three_mf_download_limit, 1, 1, 4);
+  advancedForm.disk_io_limit = normalizeBoundedInt(payload.advanced?.disk_io_limit, 1, 1, 4);
 
   notificationsForm.enabled = Boolean(payload.notifications?.enabled);
   notificationsForm.telegram_bot_token = payload.notifications?.telegram_bot_token || "";
@@ -765,17 +838,36 @@ async function saveConnections() {
         https_proxy: connectionForm.https_proxy,
       },
     });
-    const payload = await apiRequest("/api/config/three-mf-limits", {
+    await refreshConfig();
+    statuses.connections = "连接设置已保存。";
+  } catch (error) {
+    statuses.connections = error instanceof Error ? error.message : "保存失败。";
+  }
+}
+
+async function saveAdvanced() {
+  try {
+    await apiRequest("/api/config/three-mf-limits", {
       method: "POST",
       body: {
         cn_daily_limit: normalizeDailyThreeMfLimit(threeMfLimitsForm.cn_daily_limit),
         global_daily_limit: normalizeDailyThreeMfLimit(threeMfLimitsForm.global_daily_limit),
       },
     });
+    const payload = await apiRequest("/api/config/advanced", {
+      method: "POST",
+      body: {
+        remote_refresh_model_workers: normalizeBoundedInt(advancedForm.remote_refresh_model_workers, 2, 1, 4),
+        makerworld_request_limit: normalizeBoundedInt(advancedForm.makerworld_request_limit, 2, 1, 8),
+        comment_asset_download_limit: normalizeBoundedInt(advancedForm.comment_asset_download_limit, 4, 1, 16),
+        three_mf_download_limit: normalizeBoundedInt(advancedForm.three_mf_download_limit, 1, 1, 4),
+        disk_io_limit: normalizeBoundedInt(advancedForm.disk_io_limit, 1, 1, 4),
+      },
+    });
     applyConfigPayload(payload);
-    statuses.connections = "连接设置已保存。";
+    statuses.advanced = "高级设置已保存。";
   } catch (error) {
-    statuses.connections = error instanceof Error ? error.message : "保存失败。";
+    statuses.advanced = error instanceof Error ? error.message : "保存失败。";
   }
 }
 
@@ -910,7 +1002,7 @@ async function revokeToken(tokenId) {
 }
 
 watch(() => route.query.tab, (value) => {
-  setActiveTab(typeof value === "string" ? value : "connections");
+  setActiveTab(typeof value === "string" ? value : "system");
 });
 
 onMounted(load);

@@ -19,25 +19,52 @@ RESOURCE_LIMITS = {
     "three_mf_download": _env_int("MAKERHUB_LIMIT_THREE_MF_DOWNLOADS", 1, 1, 4),
     "disk_io": _env_int("MAKERHUB_LIMIT_DISK_IO", 1, 1, 4),
 }
+_RESOURCE_LIMIT_BOUNDS = {
+    "makerworld_page_api": (1, 8),
+    "comment_assets": (1, 16),
+    "three_mf_download": (1, 4),
+    "disk_io": (1, 4),
+}
+_CONFIG_FIELD_MAP = {
+    "makerworld_request_limit": "makerworld_page_api",
+    "comment_asset_download_limit": "comment_assets",
+    "three_mf_download_limit": "three_mf_download",
+    "disk_io_limit": "disk_io",
+}
+
+
+def _clamp_limit(name: str, value: Any) -> int:
+    minimum, maximum = _RESOURCE_LIMIT_BOUNDS.get(name, (1, 64))
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        numeric = RESOURCE_LIMITS.get(name, minimum)
+    return max(min(numeric, maximum), minimum)
 
 
 class _ResourceGate:
     def __init__(self, name: str, capacity: int) -> None:
         self.name = name
         self.capacity = max(int(capacity or 1), 1)
-        self._semaphore = threading.BoundedSemaphore(self.capacity)
-        self._lock = threading.Lock()
+        self._condition = threading.Condition()
         self.active = 0
         self.wait_count = 0
         self.total_wait_ms = 0.0
         self.max_wait_ms = 0.0
 
+    def set_capacity(self, capacity: int) -> None:
+        with self._condition:
+            self.capacity = _clamp_limit(self.name, capacity)
+            self._condition.notify_all()
+
     def acquire(self) -> float:
         started_at = time.perf_counter()
-        self._semaphore.acquire()
-        wait_ms = (time.perf_counter() - started_at) * 1000
-        with self._lock:
+        with self._condition:
+            while self.active >= self.capacity:
+                self._condition.wait(timeout=1)
             self.active += 1
+        wait_ms = (time.perf_counter() - started_at) * 1000
+        with self._condition:
             if wait_ms >= 1:
                 self.wait_count += 1
                 self.total_wait_ms += wait_ms
@@ -45,12 +72,12 @@ class _ResourceGate:
         return wait_ms
 
     def release(self) -> None:
-        with self._lock:
+        with self._condition:
             self.active = max(self.active - 1, 0)
-        self._semaphore.release()
+            self._condition.notify()
 
     def snapshot(self) -> dict[str, Any]:
-        with self._lock:
+        with self._condition:
             return {
                 "capacity": self.capacity,
                 "active": self.active,
@@ -72,6 +99,24 @@ def _gate_for(name: str) -> _ResourceGate:
             gate = _ResourceGate(clean_name, RESOURCE_LIMITS.get(clean_name, 1))
             _GATES[clean_name] = gate
         return gate
+
+
+def configure_resource_limits(config: Any) -> dict[str, int]:
+    raw_config = config.model_dump() if hasattr(config, "model_dump") else config
+    if not isinstance(raw_config, dict):
+        raw_config = {}
+    changed: dict[str, int] = {}
+    with _GATES_LOCK:
+        for config_key, resource_name in _CONFIG_FIELD_MAP.items():
+            if config_key not in raw_config:
+                continue
+            next_limit = _clamp_limit(resource_name, raw_config.get(config_key))
+            RESOURCE_LIMITS[resource_name] = next_limit
+            changed[resource_name] = next_limit
+            gate = _GATES.get(resource_name)
+            if gate is not None:
+                gate.set_capacity(next_limit)
+    return changed
 
 
 @contextmanager

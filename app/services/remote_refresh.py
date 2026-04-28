@@ -46,9 +46,11 @@ DEFAULT_REMOTE_REFRESH_MODEL_WORKERS = 2
 MAX_REMOTE_REFRESH_MODEL_WORKERS = 4
 
 
-def _remote_refresh_model_workers() -> int:
+def _remote_refresh_model_workers(config: Any = None) -> int:
+    advanced = getattr(config, "advanced", None)
+    configured = getattr(advanced, "remote_refresh_model_workers", None)
     try:
-        value = int(os.environ.get("MAKERHUB_REMOTE_REFRESH_MODEL_WORKERS") or DEFAULT_REMOTE_REFRESH_MODEL_WORKERS)
+        value = int(configured if configured is not None else os.environ.get("MAKERHUB_REMOTE_REFRESH_MODEL_WORKERS") or DEFAULT_REMOTE_REFRESH_MODEL_WORKERS)
     except (TypeError, ValueError):
         value = DEFAULT_REMOTE_REFRESH_MODEL_WORKERS
     return max(1, min(value, MAX_REMOTE_REFRESH_MODEL_WORKERS))
@@ -1096,7 +1098,7 @@ class RemoteRefreshManager:
         batch_started_perf = time.perf_counter()
         resource_wait_baseline = resource_snapshot()
         candidates, stats = self._pick_candidates()
-        workers = min(_remote_refresh_model_workers(), max(len(candidates), 1))
+        workers = min(_remote_refresh_model_workers(config), max(len(candidates), 1))
 
         try:
             self._reset_current_items()

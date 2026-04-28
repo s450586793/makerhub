@@ -1,9 +1,18 @@
+import os
 from typing import List, Literal
 
 from pydantic import BaseModel, Field
 
 from app.core.security import default_admin_password_hash
 from app.core.settings import ARCHIVE_DIR, CONFIG_DIR, LOCAL_DIR, LOGS_DIR, STATE_DIR
+
+
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name) or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(min(value, maximum), minimum)
 
 
 class CookiePair(BaseModel):
@@ -144,6 +153,34 @@ class ThreeMfDownloadLimitsConfig(BaseModel):
     global_daily_limit: int = Field(default=100, ge=0, le=100000)
 
 
+class AdvancedRuntimeConfig(BaseModel):
+    remote_refresh_model_workers: int = Field(
+        default_factory=lambda: _env_int("MAKERHUB_REMOTE_REFRESH_MODEL_WORKERS", 2, 1, 4),
+        ge=1,
+        le=4,
+    )
+    makerworld_request_limit: int = Field(
+        default_factory=lambda: _env_int("MAKERHUB_LIMIT_MAKERWORLD_REQUESTS", 2, 1, 8),
+        ge=1,
+        le=8,
+    )
+    comment_asset_download_limit: int = Field(
+        default_factory=lambda: _env_int("MAKERHUB_LIMIT_COMMENT_ASSETS", 4, 1, 16),
+        ge=1,
+        le=16,
+    )
+    three_mf_download_limit: int = Field(
+        default_factory=lambda: _env_int("MAKERHUB_LIMIT_THREE_MF_DOWNLOADS", 1, 1, 4),
+        ge=1,
+        le=4,
+    )
+    disk_io_limit: int = Field(
+        default_factory=lambda: _env_int("MAKERHUB_LIMIT_DISK_IO", 1, 1, 4),
+        ge=1,
+        le=4,
+    )
+
+
 class SubscriptionSettingsConfig(BaseModel):
     default_cron: str = "0 */6 * * *"
     default_enabled: bool = True
@@ -233,4 +270,5 @@ class AppConfig(BaseModel):
     organizer: OrganizeTask = Field(default_factory=OrganizeTask)
     remote_refresh: RemoteRefreshConfig = Field(default_factory=RemoteRefreshConfig)
     three_mf_limits: ThreeMfDownloadLimitsConfig = Field(default_factory=ThreeMfDownloadLimitsConfig)
+    advanced: AdvancedRuntimeConfig = Field(default_factory=AdvancedRuntimeConfig)
     paths: RuntimePaths = Field(default_factory=RuntimePaths)

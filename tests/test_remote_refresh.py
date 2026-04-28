@@ -3,6 +3,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.core.store import JsonStore
 from app.services import remote_refresh
@@ -102,9 +103,20 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         self.assertEqual(state["last_resource_waits"]["disk_io"]["wait_count"], 1)
         self.assertEqual(state["last_slow_models"][0]["model_dir"], "m1")
 
+    def test_remote_refresh_model_workers_uses_advanced_config(self):
+        config = SimpleNamespace(
+            advanced=SimpleNamespace(remote_refresh_model_workers=3)
+        )
+        high_config = SimpleNamespace(
+            advanced=SimpleNamespace(remote_refresh_model_workers=99)
+        )
+
+        self.assertEqual(remote_refresh._remote_refresh_model_workers(config), 3)
+        self.assertEqual(remote_refresh._remote_refresh_model_workers(high_config), 4)
+
     def test_run_batch_refreshes_models_concurrently(self):
         original_workers = remote_refresh._remote_refresh_model_workers
-        remote_refresh._remote_refresh_model_workers = lambda: 2
+        remote_refresh._remote_refresh_model_workers = lambda _config=None: 2
         config = self.store.load()
         items = [
             {"model_dir": "m1", "title": "模型 1", "origin_url": "https://makerworld.com.cn/model/1", "meta_path": str(self.temp_path / "m1" / "meta.json")},
