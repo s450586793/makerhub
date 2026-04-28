@@ -2139,24 +2139,56 @@ def _fetch_comment_list_payload(
     return None
 
 
-def _comment_list_payload_total(payload: object) -> int:
-    if not isinstance(payload, dict):
+def _comment_list_node_total(node: object) -> int:
+    if not isinstance(node, dict):
         return 0
     return _comment_numeric(
-        payload.get("total")
-        or payload.get("count")
-        or payload.get("totalCount")
-        or payload.get("commentCount")
+        node.get("total")
+        or node.get("count")
+        or node.get("totalCount")
+        or node.get("commentCount")
     )
 
 
+def _comment_list_payload_total(payload: object) -> int:
+    for node in _iter_payload_dicts(payload):
+        total = _comment_list_node_total(node)
+        if total > 0:
+            return total
+    return 0
+
+
+def _comment_list_items_look_like_roots(items: object) -> bool:
+    if not isinstance(items, list):
+        return False
+    for item in items[:5]:
+        if not isinstance(item, dict):
+            continue
+        if isinstance(item.get("comment"), dict) or isinstance(item.get("ratingItem"), dict):
+            return True
+        if item.get("rootCommentId") or item.get("replyToName") or item.get("replyUser"):
+            return False
+        if (
+            (item.get("commentId") or item.get("id"))
+            and (item.get("commentContent") or item.get("content") or item.get("text"))
+        ):
+            return True
+    return False
+
+
 def _comment_list_payload_hit_count(payload: object) -> int:
-    if not isinstance(payload, dict):
-        return 0
-    for key in ("hits", "items", "list", "records", "rows", "results"):
-        value = payload.get(key)
-        if isinstance(value, list):
-            return len(value)
+    for node in _iter_payload_dicts(payload):
+        for key in ("hits", "items", "list", "records", "rows", "results"):
+            value = node.get(key)
+            if not isinstance(value, list):
+                continue
+            if (
+                key == "hits"
+                or node is payload
+                or _comment_list_node_total(node) > 0
+                or _comment_list_items_look_like_roots(value)
+            ):
+                return len(value)
     return 0
 
 

@@ -499,6 +499,45 @@ class CommentRepliesTest(unittest.TestCase):
         page_calls = [call for call in session.calls if "commentandrating" in call["url"]]
         self.assertEqual([call["params"]["offset"] for call in page_calls], [0, 2])
 
+    def test_collect_comments_accepts_wrapped_commentandrating_payload(self):
+        def payload(url, params, _headers, _timeout):
+            if "commentandrating" not in url:
+                return {}
+            offset = int(params.get("offset") or 0)
+            if offset:
+                return {"code": 0, "data": {"total": 41, "hits": []}}
+            return {
+                "code": 0,
+                "data": {
+                    "total": 41,
+                    "hits": [
+                        {
+                            "comment": {
+                                "id": "comment-1",
+                                "content": "包装在 data.hits 里的评论",
+                                "createTime": "2026-04-28 12:00:00",
+                                "replyCount": 0,
+                                "user": {"name": "用户一"},
+                            }
+                        }
+                    ],
+                },
+            }
+
+        session = self._DummySession(payload)
+
+        bundle = collect_comments(
+            {},
+            {"id": "2388805", "url": "https://makerworld.com.cn/zh/models/2388805", "commentCount": 41},
+            session,
+            Path("."),
+            download_assets=False,
+        )
+
+        self.assertEqual(bundle["count"], 41)
+        self.assertEqual(len(bundle["items"]), 1)
+        self.assertEqual(bundle["items"][0]["id"], "comment-1")
+
     def test_collect_comments_hydrates_rating_replies_from_rating_api(self):
         def payload(url, params, _headers, _timeout):
             if "commentandrating" in url:
