@@ -140,7 +140,7 @@ docker compose pull makerhub-api makerhub-web && docker compose up -d makerhub-a
 
 ### 2026-04-28
 - 版本号升级到 `v0.6.1`
-- `compose.yaml` 移除旧的 `makerhub` legacy 单容器服务，推荐安装方式和 DSM 项目 YAML 统一为 `makerhub-api` + `makerhub-web` 两个容器
+- `compose.yaml` 移除旧的 `makerhub` 单容器服务块，推荐安装方式和 DSM 项目 YAML 统一为 `makerhub-api` + `makerhub-web` 两个容器
 - README 安装示例改为完整 Compose 配置，避免示例与 DSM 实际项目内容不一致
 
 ### 2026-04-28
