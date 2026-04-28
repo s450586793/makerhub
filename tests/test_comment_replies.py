@@ -849,6 +849,40 @@ class CommentRepliesTest(unittest.TestCase):
             normalized = _normalize_comments(meta, model_root)
             self.assertEqual(normalized[0]["avatar_url"], f"/archive/{first_author['avatarRelPath']}")
 
+    def test_normalize_comments_uses_shared_avatar_url_for_replies(self):
+        model_root = Path("/tmp/makerhub-test/MW_1_Test")
+        meta = {
+            "comments": [
+                {
+                    "id": "root",
+                    "content": "主评论",
+                    "author": {
+                        "name": "A",
+                        "avatarUrl": "https://public-cdn.example.com/avatar/root.png",
+                        "avatarRelPath": "_shared/avatars/root.png",
+                    },
+                    "replies": [
+                        {
+                            "id": "reply",
+                            "content": "回复",
+                            "author": {
+                                "name": "B",
+                                "avatarUrl": "https://public-cdn.example.com/avatar/reply.png",
+                                "avatarRelPath": "_shared/avatars/reply.png",
+                            },
+                        }
+                    ],
+                }
+            ]
+        }
+
+        normalized = _normalize_comments(meta, model_root)
+
+        self.assertEqual(normalized[0]["avatar_url"], "/archive/_shared/avatars/root.png")
+        self.assertEqual(normalized[0]["replies"][0]["avatar_url"], "/archive/_shared/avatars/reply.png")
+        self.assertEqual(normalized[0]["avatar_remote_url"], "https://public-cdn.example.com/avatar/root.png")
+        self.assertEqual(normalized[0]["replies"][0]["avatar_remote_url"], "https://public-cdn.example.com/avatar/reply.png")
+
     def test_collect_comments_migrates_existing_model_avatar_to_shared_cache(self):
         class BinarySession:
             headers = {"User-Agent": "MakerHub Test"}

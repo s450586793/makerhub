@@ -1,3 +1,4 @@
+import json
 import tempfile
 import threading
 import time
@@ -113,6 +114,98 @@ class RemoteRefreshManagerTest(unittest.TestCase):
 
         self.assertEqual(remote_refresh._remote_refresh_model_workers(config), 3)
         self.assertEqual(remote_refresh._remote_refresh_model_workers(high_config), 4)
+
+    def test_refresh_one_downloads_page_and_comment_assets(self):
+        config = self.store.load()
+        config.cookies[0].cookie = "session=ok"
+        self.store.save(config)
+
+        model_root = self.temp_path / "m1"
+        model_root.mkdir()
+        meta_path = model_root / "meta.json"
+        existing_meta = {
+            "id": "1",
+            "title": "模型 1",
+            "url": "https://makerworld.com.cn/zh/models/1",
+            "comments": [],
+            "instances": [],
+            "attachments": [],
+        }
+        meta_path.write_text(json.dumps(existing_meta, ensure_ascii=False), encoding="utf-8")
+
+        calls: list[dict[str, object]] = []
+        original_job = remote_refresh.run_archive_model_job
+        original_upsert = remote_refresh.upsert_archive_snapshot_model
+        original_invalidate_snapshot = remote_refresh.invalidate_archive_snapshot
+        original_invalidate_detail = remote_refresh.invalidate_model_detail_cache
+
+        def fake_run_archive_model_job(**kwargs):
+            calls.append(dict(kwargs))
+            fresh_meta = {
+                **existing_meta,
+                "comments": [
+                    {
+                        "id": "c1",
+                        "content": "新评论",
+                        "author": {
+                            "name": "用户",
+                            "avatarUrl": "https://public-cdn.example.com/avatar/user.png",
+                            "avatarRelPath": "_shared/avatars/avatar.png",
+                        },
+                        "images": [
+                            {
+                                "url": "https://public-cdn.example.com/comment/image.jpg",
+                                "relPath": "images/comment_01_img_01.jpg",
+                            }
+                        ],
+                    }
+                ],
+                "commentCount": 1,
+            }
+            meta_path.write_text(json.dumps(fresh_meta, ensure_ascii=False), encoding="utf-8")
+            return {
+                "stats": {
+                    "comments": {
+                        "comment_total": 1,
+                        "comment_roots": 1,
+                        "reply_total": 0,
+                        "comment_images": 1,
+                        "avatar_urls": 1,
+                        "download_tasks": 2,
+                    }
+                },
+                "missing_3mf": [],
+            }
+
+        remote_refresh.run_archive_model_job = fake_run_archive_model_job
+        remote_refresh.upsert_archive_snapshot_model = lambda *_args, **_kwargs: True
+        remote_refresh.invalidate_archive_snapshot = lambda *_args, **_kwargs: None
+        remote_refresh.invalidate_model_detail_cache = lambda *_args, **_kwargs: None
+        try:
+            result = self.manager._refresh_one(
+                {
+                    "model_dir": "m1",
+                    "title": "模型 1",
+                    "origin_url": "https://makerworld.com.cn/zh/models/1",
+                    "meta_path": str(meta_path),
+                },
+                index=1,
+                total=1,
+                config=config,
+            )
+        finally:
+            remote_refresh.run_archive_model_job = original_job
+            remote_refresh.upsert_archive_snapshot_model = original_upsert
+            remote_refresh.invalidate_archive_snapshot = original_invalidate_snapshot
+            remote_refresh.invalidate_model_detail_cache = original_invalidate_detail
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(calls), 2)
+        self.assertIs(calls[0]["download_assets"], False)
+        self.assertIs(calls[0]["download_comment_assets"], False)
+        self.assertIs(calls[1]["download_assets"], True)
+        self.assertIs(calls[1]["download_comment_assets"], True)
+        self.assertEqual(result["metrics"]["download_tasks"], 2)
 
     def test_run_batch_refreshes_models_concurrently(self):
         original_workers = remote_refresh._remote_refresh_model_workers

@@ -1241,14 +1241,13 @@ def _comment_resource_stats(comments: list[dict]) -> dict[str, int]:
 
 
 def _download_asset_with_fresh_session(base_session: requests.Session, url: str, dest: Path) -> None:
-    if dest.exists():
-        return
     with resource_slot("comment_assets", detail=url):
         if type(base_session) is not requests.Session:
             download_file(
                 base_session,
                 url,
                 dest,
+                overwrite=True,
                 max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
             )
             return
@@ -1258,6 +1257,7 @@ def _download_asset_with_fresh_session(base_session: requests.Session, url: str,
                 asset_session,
                 url,
                 dest,
+                overwrite=True,
                 max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
             )
 
@@ -1317,9 +1317,10 @@ def _apply_existing_comment_assets(
         author = item.get("author") if isinstance(item.get("author"), dict) else {}
         avatar_url = str(author.get("avatarUrl") or existing_author.get("avatarUrl") or "").strip()
         existing_avatar_rel = str(existing_author.get("avatarRelPath") or "").strip()
+        existing_avatar_matches = _media_item_remote_matches(existing_author, avatar_url, url_fields=("avatarUrl", "url"))
         migrated_rel = (
             _copy_existing_avatar_to_shared(out_dir, avatar_url, existing_author)
-            if migrate_avatars and avatar_url
+            if migrate_avatars and avatar_url and existing_avatar_matches
             else None
         )
         if migrated_rel:
@@ -1329,10 +1330,10 @@ def _apply_existing_comment_assets(
             else:
                 stats["avatar_shared_migrated"] += 1
         else:
-            if str(existing_author.get("avatarLocal") or "").strip():
+            if existing_avatar_matches and str(existing_author.get("avatarLocal") or "").strip():
                 author["avatarLocal"] = str(existing_author.get("avatarLocal") or "").strip()
                 stats["avatar_existing_reused"] += 1
-            if str(existing_author.get("avatarRelPath") or "").strip():
+            if existing_avatar_matches and str(existing_author.get("avatarRelPath") or "").strip():
                 author["avatarRelPath"] = str(existing_author.get("avatarRelPath") or "").strip()
 
         existing_images = existing.get("images") if isinstance(existing.get("images"), list) else []
@@ -1346,10 +1347,15 @@ def _apply_existing_comment_assets(
                 url=str(image.get("url") or ""),
                 index=img_idx,
             )
-            if str(existing_image.get("localName") or "").strip():
+            existing_image_matches = _media_item_remote_matches(
+                existing_image,
+                str(image.get("url") or ""),
+                url_fields=("url", "originalUrl"),
+            )
+            if existing_image_matches and str(existing_image.get("localName") or "").strip():
                 image["localName"] = str(existing_image.get("localName") or "").strip()
                 stats["comment_image_existing_reused"] += 1
-            if str(existing_image.get("relPath") or "").strip():
+            if existing_image_matches and str(existing_image.get("relPath") or "").strip():
                 image["relPath"] = str(existing_image.get("relPath") or "").strip()
     return stats
 
@@ -2547,7 +2553,7 @@ def collect_comments(
             image_rel = f"images/{image_name}"
             image_target = out_dir / image_name
             normalized_image_url = _normalize_url_value(url) or url
-            if image_target.exists():
+            if image_target.exists() and (existing_rel or existing_local):
                 asset_stats["comment_image_cache_hits"] += 1
                 _apply_comment_image_ref(image, image_name, image_rel)
             elif normalized_image_url in image_tasks:
@@ -2672,8 +2678,25 @@ def parse_summary(
             index=idx,
         )
         if not download_assets:
-            rel_path = str(existing_image.get("relPath") or "").strip()
-            file_name = str(existing_image.get("fileName") or "").strip()
+            if _media_item_remote_matches(existing_image, src, url_fields=("originalUrl", "url", "src")):
+                rel_path = str(existing_image.get("relPath") or "").strip()
+                file_name = str(existing_image.get("fileName") or "").strip()
+            else:
+                rel_path = ""
+                file_name = ""
+            if rel_path:
+                img["src"] = f"./{rel_path}" if not rel_path.startswith(("./", "http://", "https://")) else rel_path
+            summary_images.append(
+                {
+                    "index": idx,
+                    "originalUrl": src,
+                    "relPath": rel_path,
+                    "fileName": file_name,
+                }
+            )
+            continue
+        if _media_item_remote_matches(existing_image, src, url_fields=("originalUrl", "url", "src")) and _media_item_local_exists(out_dir, existing_image):
+            rel_path, file_name = _existing_media_ref(existing_image)
             if rel_path:
                 img["src"] = f"./{rel_path}" if not rel_path.startswith(("./", "http://", "https://")) else rel_path
             summary_images.append(
@@ -2690,6 +2713,7 @@ def parse_summary(
                 session,
                 src,
                 out_dir / name,
+                overwrite=True,
                 max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
             )
         except Exception as exc:
@@ -2928,11 +2952,29 @@ def collect_design_images(
             index=idx,
         )
         if not download_assets:
+            if _media_item_remote_matches(existing_image, url, url_fields=("originalUrl", "url")):
+                rel_path = str(existing_image.get("relPath") or "").strip()
+                file_name = str(existing_image.get("fileName") or "").strip()
+            else:
+                rel_path = ""
+                file_name = ""
             meta = {
                 "index": idx,
                 "originalUrl": url,
-                "relPath": str(existing_image.get("relPath") or "").strip(),
-                "fileName": str(existing_image.get("fileName") or "").strip(),
+                "relPath": rel_path,
+                "fileName": file_name,
+            }
+            design_images.append(meta)
+            if cover_meta is None:
+                cover_meta = meta
+            continue
+        if _media_item_remote_matches(existing_image, url, url_fields=("originalUrl", "url")) and _media_item_local_exists(out_dir, existing_image):
+            existing_rel, existing_file = _existing_media_ref(existing_image)
+            meta = {
+                "index": idx,
+                "originalUrl": url,
+                "relPath": existing_rel,
+                "fileName": existing_file,
             }
             design_images.append(meta)
             if cover_meta is None:
@@ -2943,6 +2985,7 @@ def collect_design_images(
                 session,
                 url,
                 out_dir / fname,
+                overwrite=True,
                 max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
             )
         except Exception as exc:
@@ -3049,6 +3092,65 @@ def _normalize_url_value(value: object) -> str:
     if raw.startswith("//"):
         return f"https:{raw}"
     return raw
+
+
+def _media_item_remote_matches(item: object, url: str, *, url_fields: tuple[str, ...]) -> bool:
+    if not isinstance(item, dict):
+        return False
+    normalized_url = _normalize_url_value(url)
+    if not normalized_url:
+        return False
+    return any(_normalize_url_value(item.get(field)) == normalized_url for field in url_fields)
+
+
+def _media_item_local_path(
+    base_dir: Path,
+    item: object,
+    *,
+    rel_fields: tuple[str, ...] = ("relPath",),
+    local_fields: tuple[str, ...] = ("fileName", "localName"),
+) -> Optional[Path]:
+    if not isinstance(item, dict):
+        return None
+    model_root = base_dir.parent if base_dir.name in {"images", "file"} else base_dir
+    for field in rel_fields:
+        rel_path = str(item.get(field) or "").strip().lstrip("/")
+        if not rel_path:
+            continue
+        if rel_path.startswith(f"{SHARED_AVATAR_REL_DIR}/"):
+            return model_root.parent / rel_path
+        return model_root / rel_path
+    for field in local_fields:
+        local_name = str(item.get(field) or "").strip()
+        if local_name:
+            return base_dir / Path(local_name).name
+    return None
+
+
+def _media_item_local_exists(
+    base_dir: Path,
+    item: object,
+    *,
+    rel_fields: tuple[str, ...] = ("relPath",),
+    local_fields: tuple[str, ...] = ("fileName", "localName"),
+) -> bool:
+    path = _media_item_local_path(base_dir, item, rel_fields=rel_fields, local_fields=local_fields)
+    if path is None:
+        return False
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _existing_media_ref(item: object, *, rel_field: str = "relPath", local_field: str = "fileName") -> tuple[str, str]:
+    if not isinstance(item, dict):
+        return "", ""
+    rel_path = str(item.get(rel_field) or "").strip()
+    local_name = str(item.get(local_field) or "").strip()
+    if not rel_path and local_name:
+        rel_path = f"images/{local_name}"
+    return rel_path, local_name
 
 
 def _looks_like_instance_api_url(url: object) -> bool:
@@ -3555,26 +3657,32 @@ def collect_instance_media(
             "filaments": p.get("filaments") or [],
             "thumbnailUrl": thumb,
         }
-        if str(existing_plate.get("thumbnailRelPath") or "").strip():
+        plate_remote_matches = _media_item_remote_matches(existing_plate, thumb, url_fields=("thumbnailUrl", "url"))
+        if plate_remote_matches and str(existing_plate.get("thumbnailRelPath") or "").strip():
             record["thumbnailRelPath"] = str(existing_plate.get("thumbnailRelPath") or "").strip()
-        if str(existing_plate.get("thumbnailFile") or "").strip():
+        if plate_remote_matches and str(existing_plate.get("thumbnailFile") or "").strip():
             record["thumbnailFile"] = str(existing_plate.get("thumbnailFile") or "").strip()
         if download_assets:
             ext = pick_ext_from_url(thumb)
             fname = sanitize_filename(
                 str(existing_plate.get("thumbnailFile") or f"{base_name}_inst{inst.get('id')}_plate_{plate_index:02d}.{ext}")
             ) or f"{base_name}_inst{inst.get('id')}_plate_{plate_index:02d}.{ext}"
-            try:
-                download_file(
-                    session,
-                    thumb,
-                    out_dir / fname,
-                    max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
-                )
-                record["thumbnailRelPath"] = f"images/{fname}"
-                record["thumbnailFile"] = fname
-            except Exception as exc:
-                log("实例分盘缩略图下载失败，保留原始链接：", thumb, exc)
+            if not (
+                plate_remote_matches
+                and _media_item_local_exists(out_dir, existing_plate, rel_fields=("thumbnailRelPath",), local_fields=("thumbnailFile",))
+            ):
+                try:
+                    download_file(
+                        session,
+                        thumb,
+                        out_dir / fname,
+                        overwrite=True,
+                        max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+                    )
+                    record["thumbnailRelPath"] = f"images/{fname}"
+                    record["thumbnailFile"] = fname
+                except Exception as exc:
+                    log("实例分盘缩略图下载失败，保留原始链接：", thumb, exc)
         plate_out.append(record)
     # auxiliary pictures
     pic_idx = 1
@@ -3598,26 +3706,32 @@ def collect_instance_media(
             "url": url,
             "isRealLifePhoto": is_real,
         }
-        if str(existing_pic.get("relPath") or "").strip():
+        pic_remote_matches = _media_item_remote_matches(existing_pic, url, url_fields=("url", "originalUrl"))
+        if pic_remote_matches and str(existing_pic.get("relPath") or "").strip():
             record["relPath"] = str(existing_pic.get("relPath") or "").strip()
-        if str(existing_pic.get("fileName") or "").strip():
+        if pic_remote_matches and str(existing_pic.get("fileName") or "").strip():
             record["fileName"] = str(existing_pic.get("fileName") or "").strip()
         if download_assets:
             ext = pick_ext_from_url(url)
             fname = sanitize_filename(
                 str(existing_pic.get("fileName") or f"{base_name}_inst{inst.get('id')}_pic_{pic_idx:02d}.{ext}")
             ) or f"{base_name}_inst{inst.get('id')}_pic_{pic_idx:02d}.{ext}"
-            try:
-                download_file(
-                    session,
-                    url,
-                    out_dir / fname,
-                    max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
-                )
-                record["relPath"] = f"images/{fname}"
-                record["fileName"] = fname
-            except Exception as exc:
-                log("实例图片下载失败，保留原始链接：", url, exc)
+            if not (
+                pic_remote_matches
+                and _media_item_local_exists(out_dir, existing_pic)
+            ):
+                try:
+                    download_file(
+                        session,
+                        url,
+                        out_dir / fname,
+                        overwrite=True,
+                        max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+                    )
+                    record["relPath"] = f"images/{fname}"
+                    record["fileName"] = fname
+                except Exception as exc:
+                    log("实例图片下载失败，保留原始链接：", url, exc)
         pics_out.append(record)
         pic_idx += 1
     if not pics_out:
@@ -3633,26 +3747,32 @@ def collect_instance_media(
                 "url": cover,
                 "isRealLifePhoto": 0,
             }
-            if str(existing_pic.get("relPath") or "").strip():
+            cover_remote_matches = _media_item_remote_matches(existing_pic, cover, url_fields=("url", "originalUrl"))
+            if cover_remote_matches and str(existing_pic.get("relPath") or "").strip():
                 record["relPath"] = str(existing_pic.get("relPath") or "").strip()
-            if str(existing_pic.get("fileName") or "").strip():
+            if cover_remote_matches and str(existing_pic.get("fileName") or "").strip():
                 record["fileName"] = str(existing_pic.get("fileName") or "").strip()
             if download_assets:
                 ext = pick_ext_from_url(cover)
                 fname = sanitize_filename(
                     str(existing_pic.get("fileName") or f"{base_name}_inst{inst.get('id')}_pic_{pic_idx:02d}.{ext}")
                 ) or f"{base_name}_inst{inst.get('id')}_pic_{pic_idx:02d}.{ext}"
-                try:
-                    download_file(
-                        session,
-                        cover,
-                        out_dir / fname,
-                        max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
-                    )
-                    record["relPath"] = f"images/{fname}"
-                    record["fileName"] = fname
-                except Exception as exc:
-                    log("实例封面下载失败，保留原始链接：", cover, exc)
+                if not (
+                    cover_remote_matches
+                    and _media_item_local_exists(out_dir, existing_pic)
+                ):
+                    try:
+                        download_file(
+                            session,
+                            cover,
+                            out_dir / fname,
+                            overwrite=True,
+                            max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+                        )
+                        record["relPath"] = f"images/{fname}"
+                        record["fileName"] = fname
+                    except Exception as exc:
+                        log("实例封面下载失败，保留原始链接：", cover, exc)
             pics_out.append(record)
     return plate_out, pics_out
 
@@ -5524,6 +5644,7 @@ def archive_model(
     three_mf_skip_message: str = "",
     profile_metadata_only: bool = False,
     download_assets: bool = True,
+    download_comment_assets: Optional[bool] = None,
     rebuild_archive: bool = True,
     record_missing_3mf_log: bool = True,
     three_mf_skip_state: str = "",
@@ -5539,6 +5660,7 @@ def archive_model(
     # 采集阶段
     out_root = download_dir.resolve()
     out_root.mkdir(parents=True, exist_ok=True)
+    comment_download_assets = download_assets if download_comment_assets is None else bool(download_comment_assets)
 
     sess = requests.Session()
     sess.headers.update({
@@ -5633,26 +5755,35 @@ def archive_model(
     ensure_dir(images_dir)
 
     author = extract_author(design, html_text)
+    existing_author = existing_meta.get("author") if isinstance(existing_meta.get("author"), dict) else {}
     if author.get("avatarUrl"):
+        author_avatar_matches = _media_item_remote_matches(existing_author, author["avatarUrl"], url_fields=("avatarUrl", "url"))
         if download_assets:
-            ext = pick_ext_from_url(author["avatarUrl"])
-            fname = f"author_avatar.{ext}"
-            try:
-                download_file(
-                    sess,
-                    author["avatarUrl"],
-                    images_dir / fname,
-                    max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
-                )
-                author["avatarLocal"] = fname
-                author["avatarRelPath"] = f"images/{fname}"
-            except Exception as exc:
-                log(logger, "作者头像下载失败，保留原始链接：", author["avatarUrl"], exc)
-        else:
-            existing_author = existing_meta.get("author") if isinstance(existing_meta.get("author"), dict) else {}
-            if str(existing_author.get("avatarLocal") or "").strip():
+            if (
+                author_avatar_matches
+                and _media_item_local_exists(images_dir, existing_author, rel_fields=("avatarRelPath",), local_fields=("avatarLocal",))
+            ):
                 author["avatarLocal"] = str(existing_author.get("avatarLocal") or "").strip()
-            if str(existing_author.get("avatarRelPath") or "").strip():
+                author["avatarRelPath"] = str(existing_author.get("avatarRelPath") or "").strip()
+            else:
+                ext = pick_ext_from_url(author["avatarUrl"])
+                fname = f"author_avatar.{ext}"
+                try:
+                    download_file(
+                        sess,
+                        author["avatarUrl"],
+                        images_dir / fname,
+                        overwrite=True,
+                        max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+                    )
+                    author["avatarLocal"] = fname
+                    author["avatarRelPath"] = f"images/{fname}"
+                except Exception as exc:
+                    log(logger, "作者头像下载失败，保留原始链接：", author["avatarUrl"], exc)
+        else:
+            if author_avatar_matches and str(existing_author.get("avatarLocal") or "").strip():
+                author["avatarLocal"] = str(existing_author.get("avatarLocal") or "").strip()
+            if author_avatar_matches and str(existing_author.get("avatarRelPath") or "").strip():
                 author["avatarRelPath"] = str(existing_author.get("avatarRelPath") or "").strip()
 
     emit_progress(progress_callback, 40, "正在整理摘要与设计图片")
@@ -5694,12 +5825,71 @@ def archive_model(
     )
     attachments_started_at = time.perf_counter()
     attachments = extract_design_attachments(design)
+    existing_attachment_lookup = _build_existing_media_lookup(
+        existing_meta.get("attachments") if isinstance(existing_meta.get("attachments"), list) else [],
+        url_fields=("url", "downloadUrl"),
+    )
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+        attachment_url = str(attachment.get("url") or "").strip()
+        existing_attachment = _match_existing_media_item_from_lookup(
+            existing_attachment_lookup,
+            url=attachment_url,
+        )
+        if _media_item_remote_matches(existing_attachment, attachment_url, url_fields=("url", "downloadUrl")):
+            if str(existing_attachment.get("localName") or "").strip():
+                attachment["localName"] = str(existing_attachment.get("localName") or "").strip()
+            if str(existing_attachment.get("relPath") or "").strip():
+                attachment["relPath"] = str(existing_attachment.get("relPath") or "").strip()
     timings_ms["extract_attachments"] = _log_perf(
         "archive.extract_attachments",
         attachments_started_at,
         logger=logger,
         attachments=len(attachments),
     )
+    if download_assets and attachments:
+        attachment_download_started_at = time.perf_counter()
+        files_dir = work_dir / "file"
+        ensure_dir(files_dir)
+        for idx, attachment in enumerate(attachments, start=1):
+            if not isinstance(attachment, dict):
+                continue
+            attachment_url = str(attachment.get("url") or "").strip()
+            local_name = str(attachment.get("localName") or "").strip()
+            if not attachment_url or not local_name:
+                continue
+            existing_attachment = _match_existing_media_item_from_lookup(
+                existing_attachment_lookup,
+                url=attachment_url,
+            )
+            if (
+                _media_item_remote_matches(existing_attachment, attachment_url, url_fields=("url", "downloadUrl"))
+                and _media_item_local_exists(work_dir / "file", existing_attachment, rel_fields=("relPath",), local_fields=("localName", "fileName"))
+            ):
+                continue
+            emit_progress(
+                progress_callback,
+                50,
+                f"正在下载附件（{idx}/{len(attachments)}）",
+                {"current": idx, "total": len(attachments)},
+            )
+            try:
+                download_file(
+                    sess,
+                    attachment_url,
+                    files_dir / local_name,
+                    overwrite=True,
+                    max_duration=BINARY_TRANSFER_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                log(logger, "附件下载失败，保留原始链接：", attachment_url, exc)
+        timings_ms["download_attachments"] = _log_perf(
+            "archive.download_attachments",
+            attachment_download_started_at,
+            logger=logger,
+            attachments=len(attachments),
+        )
     comments_started_at = time.perf_counter()
     comments_bundle = collect_comments(
         next_data,
@@ -5709,7 +5899,7 @@ def archive_model(
         progress_callback=progress_callback,
         progress_start=50,
         progress_end=55,
-        download_assets=download_assets,
+        download_assets=comment_download_assets,
         existing_comments=existing_meta.get("comments") if isinstance(existing_meta.get("comments"), list) else [],
         api_host_hint=api_host_hint,
     )
@@ -5768,7 +5958,7 @@ def archive_model(
             sess,
             images_dir,
             base_name,
-            download_assets=False,
+            download_assets=download_assets,
             existing_instance=existing_inst,
         )
         hinted_name, hinted_url, hinted_api_url = _extract_instance_download_hint(inst)

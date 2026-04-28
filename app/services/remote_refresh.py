@@ -519,6 +519,250 @@ def _summary_signature(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _normalized_remote_value(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _normalized_url(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _remote_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _media_url_values(item: Any, *fields: str) -> list[str]:
+    if not isinstance(item, dict):
+        return []
+    urls: list[str] = []
+    for field in fields:
+        value = _normalized_url(item.get(field))
+        if value:
+            urls.append(value)
+    return urls
+
+
+def _comment_remote_signature(items: Any) -> list[Any]:
+    signature: list[Any] = []
+    if not isinstance(items, list):
+        return signature
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        author = item.get("author") if isinstance(item.get("author"), dict) else {}
+        images = item.get("images") if isinstance(item.get("images"), list) else []
+        signature.append(
+            {
+                "id": _normalized_remote_value(item.get("id")),
+                "content": _normalized_remote_value(item.get("content") or item.get("text")),
+                "time": _normalized_remote_value(item.get("time") or item.get("createdAt") or item.get("createTime")),
+                "reply_count": _remote_int(item.get("replyCount")),
+                "author": {
+                    "name": _normalized_remote_value(author.get("name")),
+                    "avatar": _normalized_url(author.get("avatarUrl")),
+                },
+                "images": [
+                    _media_url_values(image, "url", "originalUrl", "imageUrl", "src")
+                    for image in images
+                    if isinstance(image, dict)
+                ],
+                "replies": _comment_remote_signature(item.get("replies")),
+            }
+        )
+    return signature
+
+
+def _instance_remote_signature(items: Any) -> list[Any]:
+    signature: list[Any] = []
+    if not isinstance(items, list):
+        return signature
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        plates = item.get("plates") if isinstance(item.get("plates"), list) else []
+        pictures = item.get("pictures") if isinstance(item.get("pictures"), list) else []
+        signature.append(
+            {
+                "key": _instance_key(item),
+                "title": _normalized_remote_value(item.get("title") or item.get("name")),
+                "summary": _normalized_remote_value(item.get("summary") or item.get("summaryTranslated")),
+                "download_url": _normalized_url(item.get("downloadUrl")),
+                "api_url": _normalized_url(item.get("apiUrl")),
+                "download_state": _normalized_remote_value(item.get("downloadState")),
+                "download_message": _normalized_remote_value(item.get("downloadMessage")),
+                "profile": item.get("profileDetails") if isinstance(item.get("profileDetails"), dict) else {},
+                "plates": [
+                    {
+                        "index": _normalized_remote_value(plate.get("index")),
+                        "url": _normalized_url(plate.get("thumbnailUrl")),
+                    }
+                    for plate in plates
+                    if isinstance(plate, dict)
+                ],
+                "pictures": [
+                    {
+                        "index": _normalized_remote_value(picture.get("index")),
+                        "url": _normalized_url(picture.get("url") or picture.get("originalUrl")),
+                    }
+                    for picture in pictures
+                    if isinstance(picture, dict)
+                ],
+            }
+        )
+    return signature
+
+
+def _asset_url_signature(meta: dict[str, Any]) -> dict[str, Any]:
+    author = meta.get("author") if isinstance(meta.get("author"), dict) else {}
+    cover = meta.get("cover") if isinstance(meta.get("cover"), dict) else {}
+    instances = meta.get("instances") if isinstance(meta.get("instances"), list) else []
+    comments = meta.get("comments") if isinstance(meta.get("comments"), list) else []
+    comment_items: list[dict[str, Any]] = []
+
+    def collect_comments(items: Any) -> None:
+        if not isinstance(items, list):
+            return
+        for raw in items:
+            if not isinstance(raw, dict):
+                continue
+            comment_items.append(raw)
+            collect_comments(raw.get("replies"))
+
+    collect_comments(comments)
+    return {
+        "cover": _media_url_values(cover, "url", "originalUrl") or [_normalized_url(meta.get("coverUrl"))],
+        "author_avatar": _normalized_url(author.get("avatarUrl")),
+        "design": [
+            _media_url_values(item, "originalUrl", "url")
+            for item in meta.get("designImages") or []
+            if isinstance(item, dict)
+        ],
+        "summary": [
+            _media_url_values(item, "originalUrl", "url", "src")
+            for item in meta.get("summaryImages") or []
+            if isinstance(item, dict)
+        ],
+        "instances": [
+            {
+                "key": _instance_key(item),
+                "pictures": [
+                    _media_url_values(picture, "url", "originalUrl", "imageUrl", "src")
+                    for picture in (item.get("pictures") if isinstance(item, dict) else []) or []
+                    if isinstance(picture, dict)
+                ],
+                "plates": [
+                    _normalized_url(plate.get("thumbnailUrl"))
+                    for plate in (item.get("plates") if isinstance(item, dict) else []) or []
+                    if isinstance(plate, dict)
+                ],
+                "cover": _media_url_values(item, "cover", "coverUrl", "previewImage", "thumbnail", "thumbnailUrl") if isinstance(item, dict) else [],
+            }
+            for item in instances
+            if isinstance(item, dict)
+        ],
+        "comments": [
+            {
+                "id": _normalized_remote_value(item.get("id")),
+                "avatar": _normalized_url((item.get("author") or {}).get("avatarUrl") if isinstance(item.get("author"), dict) else ""),
+                "images": [
+                    _media_url_values(image, "url", "originalUrl", "imageUrl", "src")
+                    for image in (item.get("images") if isinstance(item.get("images"), list) else [])
+                    if isinstance(image, dict)
+                ],
+            }
+            for item in comment_items
+        ],
+        "attachments": [
+            _normalized_url(item.get("url") or item.get("downloadUrl"))
+            for item in meta.get("attachments") or []
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def _remote_content_signature(meta: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(meta, dict):
+        return {}
+    return {
+        "title": _normalized_remote_value(meta.get("title")),
+        "title_translated": _normalized_remote_value(meta.get("titleTranslated")),
+        "cover_url": _normalized_url(meta.get("coverUrl")),
+        "tags": meta.get("tags") if isinstance(meta.get("tags"), list) else [],
+        "stats": meta.get("stats") if isinstance(meta.get("stats"), dict) else {},
+        "summary": _summary_signature(meta.get("summary")),
+        "attachments": sorted(_attachment_key(item) for item in meta.get("attachments") or [] if _attachment_key(item)),
+        "instances": _instance_remote_signature(meta.get("instances")),
+        "comments": _comment_remote_signature(meta.get("comments")),
+        "assets": _asset_url_signature(meta),
+    }
+
+
+def _asset_ref_path(model_root: Path, rel_path: str = "", local_name: str = "", default_dir: str = "images") -> Optional[Path]:
+    clean_rel = str(rel_path or "").strip().lstrip("/")
+    clean_local = str(local_name or "").strip().lstrip("/")
+    if clean_rel:
+        if clean_rel.startswith("_shared/"):
+            return model_root.parent / clean_rel
+        return model_root / clean_rel
+    if clean_local:
+        return model_root / default_dir / Path(clean_local).name
+    return None
+
+
+def _has_missing_asset_refs(model_root: Path, meta: dict[str, Any]) -> bool:
+    refs: list[Path] = []
+
+    def add_ref(rel_path: Any = "", local_name: Any = "", default_dir: str = "images") -> None:
+        path = _asset_ref_path(model_root, str(rel_path or ""), str(local_name or ""), default_dir)
+        if path is not None:
+            refs.append(path)
+
+    author = meta.get("author") if isinstance(meta.get("author"), dict) else {}
+    add_ref(author.get("avatarRelPath"), author.get("avatarLocal"))
+    cover = meta.get("cover") if isinstance(meta.get("cover"), dict) else {}
+    add_ref(cover.get("relPath"), cover.get("localName"))
+    for image in meta.get("designImages") or []:
+        if isinstance(image, dict):
+            add_ref(image.get("relPath"), image.get("fileName"))
+    for image in meta.get("summaryImages") or []:
+        if isinstance(image, dict):
+            add_ref(image.get("relPath"), image.get("fileName"))
+    for instance in meta.get("instances") or []:
+        if not isinstance(instance, dict):
+            continue
+        for picture in instance.get("pictures") or []:
+            if isinstance(picture, dict):
+                add_ref(picture.get("relPath"), picture.get("fileName"))
+        for plate in instance.get("plates") or []:
+            if isinstance(plate, dict):
+                add_ref(plate.get("thumbnailRelPath"), plate.get("thumbnailFile"))
+    stack = list(meta.get("comments") if isinstance(meta.get("comments"), list) else [])
+    while stack:
+        item = stack.pop()
+        if not isinstance(item, dict):
+            continue
+        author = item.get("author") if isinstance(item.get("author"), dict) else {}
+        add_ref(author.get("avatarRelPath"), author.get("avatarLocal"))
+        for image in item.get("images") or []:
+            if isinstance(image, dict):
+                add_ref(image.get("relPath"), image.get("localName"))
+        stack.extend(item.get("replies") if isinstance(item.get("replies"), list) else [])
+    for attachment in meta.get("attachments") or []:
+        if isinstance(attachment, dict):
+            add_ref(attachment.get("relPath"), attachment.get("localName"), default_dir="file")
+
+    for path in refs:
+        try:
+            if not path.is_file():
+                return True
+        except OSError:
+            return True
+    return False
+
+
 def _build_change_labels(
     *,
     added_comments: int = 0,
@@ -526,6 +770,9 @@ def _build_change_labels(
     deleted_instances: int = 0,
     attachments_added: int = 0,
     summary_changed: bool = False,
+    assets_changed: bool = False,
+    remote_changed: bool = False,
+    missing_assets: bool = False,
 ) -> list[str]:
     labels: list[str] = []
     if added_comments > 0:
@@ -538,6 +785,12 @@ def _build_change_labels(
         labels.append(f"附件 +{attachments_added}")
     if summary_changed:
         labels.append("简介已更新")
+    if assets_changed:
+        labels.append("图片资源已更新")
+    if missing_assets:
+        labels.append("缺失资源补齐")
+    if remote_changed and not labels:
+        labels.append("远端信息已更新")
     if not labels:
         labels.append("已检查，无远端变化")
     return labels
@@ -657,6 +910,9 @@ def _finalize_refreshed_meta(meta_path: Path, existing_meta: dict[str, Any]) -> 
     added_instance_count = _count_added_items(existing_instances, fresh_instances, _instance_key)
     attachments_added = _count_added_items(existing_attachments, fresh_attachments, _attachment_key)
     summary_changed = _summary_signature(existing_meta.get("summary")) != _summary_signature(fresh_meta.get("summary"))
+    assets_changed = _asset_url_signature(existing_meta) != _asset_url_signature(fresh_meta)
+    remote_changed = _remote_content_signature(existing_meta) != _remote_content_signature(fresh_meta)
+    missing_assets = _has_missing_asset_refs(meta_path.parent, fresh_meta)
     existing_instance_keys = {
         key
         for key in (_instance_key(item) for item in existing_instances)
@@ -678,6 +934,9 @@ def _finalize_refreshed_meta(meta_path: Path, existing_meta: dict[str, Any]) -> 
         deleted_instances=deleted_instance_count,
         attachments_added=attachments_added,
         summary_changed=summary_changed,
+        assets_changed=assets_changed,
+        remote_changed=remote_changed,
+        missing_assets=missing_assets,
     )
     success_message = _build_success_message(change_labels)
 
@@ -710,6 +969,10 @@ def _finalize_refreshed_meta(meta_path: Path, existing_meta: dict[str, Any]) -> 
         "deleted_instances": deleted_instance_count,
         "attachments_added": attachments_added,
         "summary_changed": summary_changed,
+        "assets_changed": assets_changed,
+        "remote_changed": remote_changed,
+        "missing_assets": missing_assets,
+        "asset_sync_needed": bool(assets_changed or missing_assets),
         "change_labels": change_labels,
         "change_summary": "，".join(change_labels),
         "checked_at": checked_at,
@@ -1360,6 +1623,27 @@ class RemoteRefreshManager:
                 if daily_limit_active
                 else "源端刷新仅检测新增 3MF，下载交给新增 3MF 下载队列。"
             )
+
+            def update_limit_guard_from_result(result: dict[str, Any], current_guard: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+                next_guard = current_guard
+                for missing_item in result.get("missing_3mf") or []:
+                    if str(missing_item.get("downloadState") or "").strip() != "download_limited":
+                        continue
+                    if _is_three_mf_limit_guard_active_for_url(origin_url, next_guard):
+                        continue
+                    next_guard = _activate_three_mf_limit_guard(
+                        message=str(missing_item.get("downloadMessage") or ""),
+                        model_id=str(result.get("model_id") or existing_meta.get("id") or ""),
+                        model_url=origin_url,
+                        instance_id=str(
+                            missing_item.get("id")
+                            or missing_item.get("profileId")
+                            or missing_item.get("instanceId")
+                            or ""
+                        ),
+                    )
+                return next_guard
+
             archive_started_perf = time.perf_counter()
             archive_result = run_archive_model_job(
                 url=origin_url,
@@ -1372,31 +1656,61 @@ class RemoteRefreshManager:
                 three_mf_skip_message=skip_three_mf_message,
                 three_mf_skip_state="download_limited" if daily_limit_active else "pending_download",
                 download_assets=False,
+                download_comment_assets=False,
                 rebuild_archive=False,
                 record_missing_3mf_log=False,
             )
             archive_duration_ms = round((time.perf_counter() - archive_started_perf) * 1000, 1)
             limit_guard_state = limit_guard if daily_limit_active else None
-            for missing_item in archive_result.get("missing_3mf") or []:
-                if str(missing_item.get("downloadState") or "").strip() != "download_limited":
-                    continue
-                if _is_three_mf_limit_guard_active_for_url(origin_url, limit_guard_state):
-                    continue
-                limit_guard_state = _activate_three_mf_limit_guard(
-                    message=str(missing_item.get("downloadMessage") or ""),
-                    model_id=str(archive_result.get("model_id") or existing_meta.get("id") or ""),
-                    model_url=origin_url,
-                    instance_id=str(
-                        missing_item.get("id")
-                        or missing_item.get("profileId")
-                        or missing_item.get("instanceId")
-                        or ""
-                    ),
-                )
+            limit_guard_state = update_limit_guard_from_result(archive_result, limit_guard_state)
             finalize_started_perf = time.perf_counter()
             with resource_slot("disk_io", detail=model_dir) as waited_ms:
-                disk_wait_ms = round(float(waited_ms or 0), 1)
+                disk_wait_ms += round(float(waited_ms or 0), 1)
                 finalized = _finalize_refreshed_meta(meta_path, existing_meta)
+            finalize_duration_ms += round((time.perf_counter() - finalize_started_perf) * 1000, 1)
+
+            asset_sync_performed = bool(finalized.get("asset_sync_needed"))
+            if asset_sync_performed:
+                self._set_current_item(
+                    model_dir,
+                    {
+                        "id": model_dir,
+                        "title": title,
+                        "url": origin_url,
+                        "status": "running",
+                        "progress": 78,
+                        "message": "检测到远端资源变化，正在同步图片、头像和附件资源",
+                        "updated_at": _now_iso(),
+                        "meta": {"model_dir": model_dir},
+                    },
+                )
+                asset_archive_started_perf = time.perf_counter()
+                archive_result = run_archive_model_job(
+                    url=origin_url,
+                    cookie=cookie,
+                    download_dir=str(ARCHIVE_DIR),
+                    logs_dir=str(LOGS_DIR),
+                    existing_root=str(ARCHIVE_DIR),
+                    progress_callback=progress_callback,
+                    skip_three_mf_fetch=skip_three_mf_fetch,
+                    three_mf_skip_message=skip_three_mf_message,
+                    three_mf_skip_state="download_limited" if daily_limit_active else "pending_download",
+                    download_assets=True,
+                    download_comment_assets=True,
+                    rebuild_archive=False,
+                    record_missing_3mf_log=False,
+                )
+                archive_duration_ms += round((time.perf_counter() - asset_archive_started_perf) * 1000, 1)
+                limit_guard_state = update_limit_guard_from_result(archive_result, limit_guard_state)
+                finalize_started_perf = time.perf_counter()
+                with resource_slot("disk_io", detail=model_dir) as waited_ms:
+                    disk_wait_ms += round(float(waited_ms or 0), 1)
+                    finalized = _finalize_refreshed_meta(meta_path, existing_meta)
+                finalize_duration_ms += round((time.perf_counter() - finalize_started_perf) * 1000, 1)
+
+            finalize_started_perf = time.perf_counter()
+            with resource_slot("disk_io", detail=model_dir) as waited_ms:
+                disk_wait_ms += round(float(waited_ms or 0), 1)
                 if not upsert_archive_snapshot_model(model_dir, reason="remote_refresh_completed"):
                     invalidate_archive_snapshot("remote_refresh_completed")
                 invalidate_model_detail_cache(model_dir)
@@ -1435,12 +1749,21 @@ class RemoteRefreshManager:
                         model_id,
                         missing_3mf_items,
                     )
-            finalize_duration_ms = round((time.perf_counter() - finalize_started_perf) * 1000, 1)
+            finalize_duration_ms += round((time.perf_counter() - finalize_started_perf) * 1000, 1)
             message = _sanitize_remote_refresh_message(
                 finalized["meta"].get("remoteSync", {}).get("lastMessage") or "源端刷新完成。",
                 "源端刷新完成。",
             )
             change_labels = list(finalized.get("change_labels") or [])
+            if asset_sync_performed and "缺失资源补齐" not in change_labels and "图片资源已更新" not in change_labels:
+                if change_labels == ["已检查，无远端变化"]:
+                    change_labels = []
+                change_labels.append("缺失资源补齐")
+                message = _build_success_message(change_labels)
+                remote_sync = finalized["meta"].get("remoteSync") if isinstance(finalized["meta"].get("remoteSync"), dict) else {}
+                remote_sync["lastMessage"] = message
+                finalized["meta"]["remoteSync"] = remote_sync
+                _write_json(meta_path, finalized["meta"])
             if new_3mf_download_items:
                 change_labels.append(f"新增 3MF 下载入队 {len(new_3mf_download_items)}")
                 message = f"{message.rstrip('。')}，新增 3MF 已加入下载队列。"
