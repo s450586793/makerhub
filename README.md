@@ -61,7 +61,7 @@ docker compose -f compose.yaml up -d makerhub-api makerhub-web
 
 ### Compose 示例
 
-仓库内的 `compose.yaml` 已包含完整配置，核心结构如下：
+仓库内的 `compose.yaml` 已包含完整配置，内容如下：
 
 ```bash
 version: "3.8"
@@ -104,23 +104,6 @@ services:
 docker compose pull makerhub-api makerhub-web && docker compose up -d makerhub-api makerhub-web
 ```
 
-### 单容器兼容
-
-镜像仍保留单容器运行方式，适合临时测试或不想拆分的部署：
-
-```bash
-docker run -d \
-  --name makerhub \
-  -p 9042:8000 \
-  -v /volume4/docker/docker/makerhub/config:/app/config \
-  -v /volume4/docker/docker/makerhub/logs:/app/logs \
-  -v /volume4/docker/docker/makerhub/state:/app/state \
-  -v /volume2/entertainment/3D打印/makerhub:/app/archive \
-  -v /volume2/entertainment/3D打印/makerhub/local:/app/local \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  ghcr.io/s450586793/makerhub:latest
-```
-
 ## 功能概览
 
 - 首页展示台：集中展示模型总数、缺失 `3MF`、归档任务、订阅、源端刷新和本地整理等关键状态。
@@ -156,10 +139,14 @@ docker run -d \
 ## 更新记录
 
 ### 2026-04-28
+- 版本号升级到 `v0.6.1`
+- `compose.yaml` 移除旧的 `makerhub` legacy 单容器服务，推荐安装方式和 DSM 项目 YAML 统一为 `makerhub-api` + `makerhub-web` 两个容器
+- README 安装示例改为完整 Compose 配置，避免示例与 DSM 实际项目内容不一致
+
+### 2026-04-28
 - 版本号升级到 `v0.6.0`
 - Docker Compose 默认拆分为 `makerhub-web` 与 `makerhub-api`：Web 容器用 Nginx 托管 Vue 静态资源，API 容器继续负责后台任务、归档资源和接口
 - 设置页网页一键更新支持前后端分离部署：API 更新 helper 会先重建 Web 容器，再重建 API 容器
-- 保留 `makerhub` legacy 单容器服务和单容器镜像启动方式，方便旧部署回退或手动迁移
 - 设置页系统更新区增加部署模式、API 容器和 Web 容器展示，并按部署模式给出对应手动更新命令
 
 ### 2026-04-28

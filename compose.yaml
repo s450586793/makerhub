@@ -31,20 +31,3 @@ services:
     ports:
       - "9042:80"
     restart: unless-stopped
-
-  makerhub:
-    profiles:
-      - legacy
-    image: ghcr.io/s450586793/makerhub:latest
-    pull_policy: always
-    container_name: makerhub
-    ports:
-      - "9042:8000"
-    volumes:
-      - /volume4/docker/docker/makerhub/config:/app/config
-      - /volume4/docker/docker/makerhub/logs:/app/logs
-      - /volume4/docker/docker/makerhub/state:/app/state
-      - /volume2/entertainment/3D打印/makerhub:/app/archive
-      - /volume2/entertainment/3D打印/makerhub/local:/app/local
-      - /var/run/docker.sock:/var/run/docker.sock
-    restart: unless-stopped
