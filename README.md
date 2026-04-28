@@ -15,6 +15,86 @@ makerhub 是一个面向个人 NAS / DSM 部署的 MakerWorld 模型归档与管
 
 它的定位不是公开模型站，而是“个人 MakerWorld 本地资料库”。你可以归档单个模型，也可以批量归档作者页、收藏夹、合集页；可以为这些来源创建订阅并定时同步；也可以把本地已有的 `3MF` 文件导入并自动整理入库。现在设置页还内置了系统更新中心，可直接查看当前版本、线上版本、最近更新日志，并在 Docker Compose 部署下触发网页一键更新。
 
+## 部署说明
+
+### 运行目录约定
+- `/app/config`：运行配置
+- `/app/logs`：应用日志
+- `/app/state`：任务状态、JSON/SQLite 等轻量持久化数据
+- `/app/archive`：归档模型目录
+- `/app/local`：本地模型监测/整理目录
+
+### 本地启动
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+npm --prefix frontend install
+npm --prefix frontend run build
+uvicorn app.main:app --reload
+```
+
+默认情况下，本地开发环境会把运行数据写到仓库下的 `runtime/` 目录；FastAPI 会直接分发 `frontend/dist`。Docker 容器内则固定使用 `/app/config`、`/app/logs`、`/app/state`、`/app/archive`、`/app/local`。
+
+### Docker
+
+```bash
+docker build -t makerhub .
+docker run -d \
+  --name makerhub \
+  -p 9042:8000 \
+  -v /volume4/docker/docker/makerhub/config:/app/config \
+  -v /volume4/docker/docker/makerhub/logs:/app/logs \
+  -v /volume4/docker/docker/makerhub/state:/app/state \
+  -v /volume2/entertainment/3D打印/makerhub:/app/archive \
+  -v /volume2/entertainment/3D打印/makerhub/local:/app/local \
+  makerhub
+```
+
+如果希望启用设置页里的“一键更新”按钮，可额外加上：
+
+```bash
+-v /var/run/docker.sock:/var/run/docker.sock
+```
+
+### Compose
+
+当前仓库根目录的 `compose.yaml` 已默认启用设置页网页更新能力，容器会额外挂载 Docker socket，便于直接在“设置 -> 系统”里拉取新镜像并重建自己。
+
+```bash
+version: "3.8"
+
+services:
+  makerhub:
+    image: ghcr.io/s450586793/makerhub:latest
+    pull_policy: always
+    container_name: makerhub
+    ports:
+      - "9042:8000"
+    volumes:
+      - /volume4/docker/docker/makerhub/config:/app/config
+      - /volume4/docker/docker/makerhub/logs:/app/logs
+      - /volume4/docker/docker/makerhub/state:/app/state
+      - /volume2/entertainment/3D打印/makerhub:/app/archive
+      - /volume2/entertainment/3D打印/makerhub/local:/app/local
+      # 允许设置页直接触发 Docker 网页更新
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+```
+
+### 启动
+
+```bash
+docker compose -f compose.yaml up -d
+```
+
+如果没有挂载 `docker.sock`，设置页仍会显示版本信息，但“一键更新”按钮会保持不可用，并提示你继续在宿主机执行：
+
+```bash
+docker compose pull makerhub && docker compose up -d makerhub
+```
+
 ## 功能概览
 
 - 首页展示台：集中展示模型总数、缺失 `3MF`、归档任务、订阅、源端刷新和本地整理等关键状态。
@@ -35,7 +115,22 @@ makerhub 是一个面向个人 NAS / DSM 部署的 MakerWorld 模型归档与管
 - 日志：集中查看归档、订阅、源端刷新、本地整理、缺失 `3MF` 和系统错误等业务日志。
 - Docker / DSM 部署：适合通过 Docker Compose 或 Synology DSM Container Manager 部署，配置、日志、状态和归档目录分离挂载；仓库内的 `compose.yaml` 已默认打开网页更新所需的 `docker.sock` 挂载。
 
+## 设计目标
+- 复用旧项目里已经验证过的爬虫与下载逻辑
+- 重写后台结构、配置模型、任务系统和前端页面
+- 支持国内 / 国际 Cookie、HTTP 代理、模型归档、通知、缺失 3MF 重下、本地 3MF 整理
+- 详情页按目标站做高保真复刻
+
+## 当前阶段
+- 已完成 Vue 单页前端、FastAPI API 化和 Docker 多阶段打包
+- 已完成真实归档数据扫描与首页 / 模型库 / 设置 / 任务 / 详情页 API 驱动展示
+- 已完成模型库多选 / 全选 / 删除，以及设置页主题、Cookie、Token、密码管理
+- 下一步继续围绕批量归档体验、详情页高保真复刻与本地整理任务增强迭代
+
 ## 更新记录
+
+<details>
+<summary>展开 / 收起历史更新</summary>
 
 ### 2026-04-28
 - 版本号升级到 `v0.5.117`
@@ -1350,92 +1445,4 @@ makerhub 是一个面向个人 NAS / DSM 部署的 MakerWorld 模型归档与管
 - 建立 FastAPI、基础模板、Dockerfile、GHCR 工作流
 - 接入旧项目爬虫桥接层，作为后续归档能力复用入口
 
-设计目标：
-- 复用旧项目里已经验证过的爬虫与下载逻辑
-- 重写后台结构、配置模型、任务系统和前端页面
-- 支持国内 / 国际 Cookie、HTTP 代理、模型归档、通知、缺失 3MF 重下、本地 3MF 整理
-- 详情页按目标站做高保真复刻
-
-当前阶段：
-- 已完成 Vue 单页前端、FastAPI API 化和 Docker 多阶段打包
-- 已完成真实归档数据扫描与首页 / 模型库 / 设置 / 任务 / 详情页 API 驱动展示
-- 已完成模型库多选 / 全选 / 删除，以及设置页主题、Cookie、Token、密码管理
-- 下一步继续围绕批量归档体验、详情页高保真复刻与本地整理任务增强迭代
-
-运行目录约定：
-- `/app/config`：运行配置
-- `/app/logs`：应用日志
-- `/app/state`：任务状态、JSON/SQLite 等轻量持久化数据
-- `/app/archive`：归档模型目录
-- `/app/local`：本地模型监测/整理目录
-
-本地启动：
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-npm --prefix frontend install
-npm --prefix frontend run build
-uvicorn app.main:app --reload
-```
-
-默认情况下，本地开发环境会把运行数据写到仓库下的 `runtime/` 目录；FastAPI 会直接分发 `frontend/dist`。Docker 容器内则固定使用 `/app/config`、`/app/logs`、`/app/state`、`/app/archive`、`/app/local`。
-
-Docker：
-
-```bash
-docker build -t makerhub .
-docker run -d \
-  --name makerhub \
-  -p 9042:8000 \
-  -v /volume4/docker/docker/makerhub/config:/app/config \
-  -v /volume4/docker/docker/makerhub/logs:/app/logs \
-  -v /volume4/docker/docker/makerhub/state:/app/state \
-  -v /volume2/entertainment/3D打印/makerhub:/app/archive \
-  -v /volume2/entertainment/3D打印/makerhub/local:/app/local \
-  makerhub
-```
-
-如果希望启用设置页里的“一键更新”按钮，可额外加上：
-
-```bash
--v /var/run/docker.sock:/var/run/docker.sock
-```
-
-Compose：
-
-当前仓库根目录的 `compose.yaml` 已默认启用设置页网页更新能力，容器会额外挂载 Docker socket，便于直接在“设置 -> 系统”里拉取新镜像并重建自己。
-
-```bash
-version: "3.8"
-
-services:
-  makerhub:
-    image: ghcr.io/s450586793/makerhub:latest
-    pull_policy: always
-    container_name: makerhub
-    ports:
-      - "9042:8000"
-    volumes:
-      - /volume4/docker/docker/makerhub/config:/app/config
-      - /volume4/docker/docker/makerhub/logs:/app/logs
-      - /volume4/docker/docker/makerhub/state:/app/state
-      - /volume2/entertainment/3D打印/makerhub:/app/archive
-      - /volume2/entertainment/3D打印/makerhub/local:/app/local
-      # 允许设置页直接触发 Docker 网页更新
-      - /var/run/docker.sock:/var/run/docker.sock
-    restart: unless-stopped
-```
-
-启动：
-
-```bash
-docker compose -f compose.yaml up -d
-```
-
-如果没有挂载 `docker.sock`，设置页仍会显示版本信息，但“一键更新”按钮会保持不可用，并提示你继续在宿主机执行：
-
-```bash
-docker compose pull makerhub && docker compose up -d makerhub
-```
+</details>
