@@ -129,9 +129,6 @@ docker compose pull makerhub && docker compose up -d makerhub
 
 ## 更新记录
 
-<details>
-<summary>展开 / 收起历史更新</summary>
-
 ### 2026-04-28
 - 版本号升级到 `v0.5.117`
 - 设置页新增“高级”标签页，集中管理后台任务并发和资源限制
@@ -151,6 +148,9 @@ docker compose pull makerhub && docker compose up -d makerhub
 - 降低 Cloudflare 误报：页面仍包含可解析应用数据时不再提示验证拦截
 - 评论头像改为全局共享缓存 `_shared/avatars`，同一个头像 URL 不再按模型重复下载；刷新旧模型时会把已存在的模型内评论头像复制到共享头像库
 - 评论头像和评论图片下载增加单轮去重与 4 路限流，减少源端刷新时大量评论资源下载把 CPU / 网络占满的情况
+
+<details>
+<summary>展开 / 收起更早更新</summary>
 
 ### 2026-04-27
 - 版本号升级到 `v0.5.114`
