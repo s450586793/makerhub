@@ -53,8 +53,7 @@ docker compose -f compose.yaml up -d
 如果你是从旧的单容器 `makerhub` 迁移到前后端分离，先停掉旧容器释放 `9042` 端口，再启动新服务：
 
 ```bash
-docker compose -f compose.yaml stop makerhub || true
-docker compose -f compose.yaml rm -f makerhub || true
+docker rm -f makerhub || true
 docker compose -f compose.yaml pull makerhub-api makerhub-web
 docker compose -f compose.yaml up -d makerhub-api makerhub-web
 ```
@@ -63,7 +62,7 @@ docker compose -f compose.yaml up -d makerhub-api makerhub-web
 
 仓库内的 `compose.yaml` 已包含完整配置，内容如下：
 
-```bash
+```yaml
 version: "3.8"
 
 services:
@@ -83,6 +82,7 @@ services:
       - /volume4/docker/docker/makerhub/state:/app/state
       - /volume2/entertainment/3D打印/makerhub:/app/archive
       - /volume2/entertainment/3D打印/makerhub/local:/app/local
+      # 允许设置页里的“系统更新”直接通过 Docker API 重建 API 与 Web 容器
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
 
@@ -142,6 +142,7 @@ docker compose pull makerhub-api makerhub-web && docker compose up -d makerhub-a
 - 版本号升级到 `v0.6.1`
 - `compose.yaml` 移除旧的 `makerhub` 单容器服务块，推荐安装方式和 DSM 项目 YAML 统一为 `makerhub-api` + `makerhub-web` 两个容器
 - README 安装示例改为完整 Compose 配置，避免示例与 DSM 实际项目内容不一致
+- README 迁移命令改为直接清理旧 `makerhub` 容器，避免新版 compose 中不存在旧 service 时产生误导
 
 ### 2026-04-28
 - 版本号升级到 `v0.6.0`
