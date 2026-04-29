@@ -50,17 +50,16 @@
           </span>
           <span class="sidebar-version__line">
             <span class="sidebar-version__label">最新版本</span>
-            <a
+            <RouterLink
               class="sidebar-version__link"
-              :href="githubProjectUrl"
-              target="_blank"
-              rel="noreferrer noopener"
-              title="打开 makerhub GitHub 仓库"
+              :to="{ path: '/settings', query: { tab: 'system' } }"
+              title="打开系统更新设置"
+              @click="closeSidebar"
             >
               <span :class="['sidebar-version__value', appState.githubUpdateAvailable && 'is-update']">
                 {{ githubVersionText }}
               </span>
-            </a>
+            </RouterLink>
           </span>
         </div>
       </div>
@@ -93,7 +92,6 @@ import { appState, currentUser, logoutSession, refreshVersionStatus, saveThemePr
 const route = useRoute();
 const COMPACT_MEDIA_QUERY = "(max-width: 980px)";
 const VERSION_REFRESH_INTERVAL_MS = 60 * 1000;
-const githubProjectUrl = "https://github.com/s450586793/makerhub";
 const logoUrl = "/static/img/makerhub-logo.png";
 
 const user = computed(() => currentUser());

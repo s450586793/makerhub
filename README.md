@@ -144,6 +144,10 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 ## 更新记录
 
 ### 2026-04-29
+- 版本号升级到 `v0.6.11`
+- 导航栏“最新版本”链接改为打开设置页的系统更新面板，不再跳转到 GitHub 仓库
+
+### 2026-04-29
 - 版本号升级到 `v0.6.10`
 - 信息补全任务完成后不再触发模型库快照 marker 更新，避免 App 容器在 worker 连续补全时反复全库重扫，导致首页和模型库超时
 - Worker 的重型抓取子进程默认以较低 CPU 优先级运行，CPU 争用时优先保证 Web/App 响应
