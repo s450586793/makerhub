@@ -1094,9 +1094,13 @@ class RemoteRefreshManager:
             self._thread.start()
 
     def state_payload(self) -> dict:
+        if not self.background_enabled:
+            return self.task_store.load_remote_refresh_state()
         return self._ensure_state()
 
     def notify_config_updated(self) -> dict:
+        if not self.background_enabled:
+            return self.task_store.load_remote_refresh_state()
         return self._ensure_state(force_reschedule=True)
 
     def trigger_manual_refresh(self) -> dict[str, Any]:
@@ -1536,6 +1540,7 @@ class RemoteRefreshManager:
                 last_resource_waits=_resource_wait_delta(resource_wait_baseline),
                 last_slow_models=_top_slow_models(slow_models),
             )
+            invalidate_archive_snapshot("remote_refresh_batch_finished")
             _append_remote_refresh_log(
                 "batch_finished",
                 succeeded=succeeded,
@@ -1740,8 +1745,11 @@ class RemoteRefreshManager:
             finalize_started_perf = time.perf_counter()
             with resource_slot("disk_io", detail=model_dir) as waited_ms:
                 disk_wait_ms += round(float(waited_ms or 0), 1)
-                if not upsert_archive_snapshot_model(model_dir, reason="remote_refresh_completed"):
-                    invalidate_archive_snapshot("remote_refresh_completed")
+                upsert_archive_snapshot_model(
+                    model_dir,
+                    reason="remote_refresh_completed",
+                    broadcast=False,
+                )
                 invalidate_model_detail_cache(model_dir)
                 model_id = str(finalized["meta"].get("id") or existing_meta.get("id") or "").strip()
                 missing_3mf_items: list[dict[str, Any]] = []
@@ -1870,7 +1878,11 @@ class RemoteRefreshManager:
                 message = "源端模型已删除，本地保留现有归档。"
                 with resource_slot("disk_io", detail=model_dir):
                     _update_meta_refresh_error(meta_path, message, source_deleted=True)
-                    invalidate_archive_snapshot("remote_refresh_mark_deleted")
+                    upsert_archive_snapshot_model(
+                        model_dir,
+                        reason="remote_refresh_mark_deleted",
+                        broadcast=False,
+                    )
                     invalidate_model_detail_cache(model_dir)
                 model_metrics = {
                     "model_dir": model_dir,
@@ -1912,7 +1924,11 @@ class RemoteRefreshManager:
             if meta_path.exists():
                 with resource_slot("disk_io", detail=model_dir):
                     _update_meta_refresh_error(meta_path, message, source_deleted=False)
-                    invalidate_archive_snapshot("remote_refresh_error")
+                    upsert_archive_snapshot_model(
+                        model_dir,
+                        reason="remote_refresh_error",
+                        broadcast=False,
+                    )
                     invalidate_model_detail_cache(model_dir)
             model_metrics = {
                 "model_dir": model_dir,

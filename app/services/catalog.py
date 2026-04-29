@@ -166,7 +166,7 @@ def get_archive_snapshot(force: bool = False) -> dict[str, Any]:
         return snapshot
 
 
-def upsert_archive_snapshot_model(model_dir: str, reason: str = "") -> bool:
+def upsert_archive_snapshot_model(model_dir: str, reason: str = "", *, broadcast: bool = True) -> bool:
     clean_model_dir = str(model_dir or "").strip().strip("/")
     if not clean_model_dir:
         return False
@@ -207,7 +207,9 @@ def upsert_archive_snapshot_model(model_dir: str, reason: str = "") -> bool:
         _ARCHIVE_SNAPSHOT_CACHE["dirty_reason"] = ""
         _ARCHIVE_SNAPSHOT_CACHE["built_at"] = time.time()
         _ARCHIVE_SNAPSHOT_CACHE["marker_token"] = (
-            _write_archive_snapshot_marker(reason) or cached_marker_token
+            (_write_archive_snapshot_marker(reason) or cached_marker_token)
+            if broadcast
+            else cached_marker_token
         )
     return True
 
