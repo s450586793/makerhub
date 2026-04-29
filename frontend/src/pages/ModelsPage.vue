@@ -115,6 +115,7 @@ let intersectionObserver = null;
 let requestToken = 0;
 let loadMoreToken = 0;
 let deleteSettleToken = 0;
+let observerToken = 0;
 let unsubscribeArchiveEvents = null;
 let refreshWhenVisible = false;
 let locallyHiddenDeletedModelDirs = new Set();
@@ -415,7 +416,7 @@ async function waitForNextFrame() {
   });
 }
 
-function isLoadMoreTriggerNearViewport(margin = 320) {
+function isLoadMoreTriggerNearViewport(margin = 420) {
   if (typeof window === "undefined" || !loadMoreTrigger.value) {
     return false;
   }
@@ -482,10 +483,25 @@ async function loadMore() {
 }
 
 function disconnectObserver() {
+  observerToken += 1;
   if (intersectionObserver) {
     intersectionObserver.disconnect();
     intersectionObserver = null;
   }
+}
+
+async function loadMoreIfTriggerIsVisible(currentObserverToken) {
+  await nextTick();
+  await waitForNextFrame();
+  if (
+    currentObserverToken !== observerToken
+    || loadingMore.value
+    || !payload.value.has_more
+    || !isLoadMoreTriggerNearViewport()
+  ) {
+    return;
+  }
+  void loadMore();
 }
 
 function ensureObserver() {
@@ -493,15 +509,17 @@ function ensureObserver() {
   if (!loadMoreTrigger.value || loadingMore.value) {
     return;
   }
+  const currentObserverToken = ++observerToken;
   intersectionObserver = new IntersectionObserver((entries) => {
     const [entry] = entries;
     if (entry?.isIntersecting) {
       void loadMore();
     }
   }, {
-    rootMargin: "320px 0px",
+    rootMargin: "0px 0px 420px 0px",
   });
   intersectionObserver.observe(loadMoreTrigger.value);
+  void loadMoreIfTriggerIsVisible(currentObserverToken);
 }
 
 function applyFilters() {
