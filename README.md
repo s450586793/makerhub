@@ -141,6 +141,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 ## 更新记录
 
 ### 2026-04-29
+- 版本号升级到 `v0.6.4`
+- 模型库删除模型后会立即从当前列表移除，并作废正在返回的旧列表请求，避免删除成功后仍需要手动刷新页面
+- 模型库刷新请求增加缓存绕过参数，前端 API 请求默认使用 `no-store`，降低线上代理或浏览器回放旧列表的概率
+
+### 2026-04-29
 - 版本号升级到 `v0.6.3`
 - 简化 `compose.yaml` 与 README Compose 示例，只保留 App / Worker 分离必需的角色、Worker 容器名、端口和挂载配置
 - 修复归档评论接口候选地址选择：当前一个候选接口返回空评论时，会继续尝试后续 API host，避免新归档 / 订阅入库模型评论为空
@@ -155,14 +160,14 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 共享状态文件与配置写入增加跨容器文件锁和原子替换，降低 App 与 Worker 同时读写 JSON 状态时的竞争风险
 - 设置页一键更新支持 App / Worker 部署，会先更新 Worker 容器，再更新 App 容器
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-04-28
 - 版本号升级到 `v0.6.1`
 - `compose.yaml` 移除旧的 `makerhub` 单容器服务块，推荐安装方式和 DSM 项目 YAML 统一为 `makerhub-api` + `makerhub-web` 两个容器
 - README 安装示例改为完整 Compose 配置，避免示例与 DSM 实际项目内容不一致
 - README 迁移命令改为直接清理旧 `makerhub` 容器，避免新版 compose 中不存在旧 service 时产生误导
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-04-28
 - 版本号升级到 `v0.6.0`

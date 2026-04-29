@@ -34,6 +34,7 @@ export async function apiRequest(path, options = {}) {
     method = "GET",
     body = undefined,
     headers = {},
+    cache = "no-store",
     redirectOn401 = true,
   } = options;
 
@@ -54,6 +55,7 @@ export async function apiRequest(path, options = {}) {
     headers: requestHeaders,
     body: requestBody,
     credentials: "include",
+    cache,
   });
 
   if (response.status === 401 && redirectOn401) {

@@ -115,6 +115,7 @@ let intersectionObserver = null;
 let requestToken = 0;
 let unsubscribeArchiveEvents = null;
 let refreshWhenVisible = false;
+let locallyHiddenDeletedModelDirs = new Set();
 
 function syncFiltersFromRoute() {
   filters.q = typeof route.query.q === "string" ? route.query.q : "";
@@ -123,10 +124,11 @@ function syncFiltersFromRoute() {
   filters.sort = typeof route.query.sort === "string" ? route.query.sort : "collectDate";
 }
 
-function buildQuery(page = 1) {
+function buildQuery(page = 1, options = {}) {
   const query = new URLSearchParams();
   query.set("page", String(page));
   query.set("page_size", String(PAGE_SIZE));
+  if (options.cacheKey) query.set("_", String(options.cacheKey));
   if (filters.q) query.set("q", filters.q);
   if (filters.source && filters.source !== "all") query.set("source", filters.source);
   if (filters.tag) query.set("tag", filters.tag);
@@ -143,24 +145,99 @@ function buildRouteQuery() {
   };
 }
 
-async function fetchPage(page) {
-  return apiRequest(`/api/models?${buildQuery(page).toString()}`);
+async function fetchPage(page, options = {}) {
+  return apiRequest(`/api/models?${buildQuery(page, options).toString()}`);
 }
 
-async function load({ append = false } = {}) {
+function decrementCount(value, amount) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return value;
+  }
+  return Math.max(0, number - amount);
+}
+
+function decrementSourceCounts(sourceCounts = {}, removedItems = []) {
+  const nextCounts = {
+    all: Number(sourceCounts.all || 0),
+    cn: Number(sourceCounts.cn || 0),
+    global: Number(sourceCounts.global || 0),
+    local: Number(sourceCounts.local || 0),
+  };
+  for (const item of removedItems) {
+    nextCounts.all = Math.max(0, nextCounts.all - 1);
+    const source = String(item?.source || "").trim().toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(nextCounts, source)) {
+      nextCounts[source] = Math.max(0, nextCounts[source] - 1);
+    }
+  }
+  return nextCounts;
+}
+
+function shouldHideLocallyDeletedItem(item) {
+  if (filters.tag === "__local_deleted__") {
+    return false;
+  }
+  const modelDir = String(item?.model_dir || "").trim();
+  return Boolean(modelDir && locallyHiddenDeletedModelDirs.has(modelDir));
+}
+
+function suppressLocallyDeletedItems(response) {
+  const items = Array.isArray(response?.items) ? response.items : [];
+  const removedItems = items.filter((item) => shouldHideLocallyDeletedItem(item));
+  if (!removedItems.length) {
+    return response;
+  }
+  const visibleItems = items.filter((item) => !shouldHideLocallyDeletedItem(item));
+  return {
+    ...response,
+    items: visibleItems,
+    count: decrementCount(response.count, removedItems.length),
+    filtered_total: decrementCount(response.filtered_total, removedItems.length),
+    total: decrementCount(response.total, removedItems.length),
+    source_counts: decrementSourceCounts(response.source_counts, removedItems),
+  };
+}
+
+function removeModelFromCurrentPayload(modelDir) {
+  const target = String(modelDir || "").trim();
+  if (!target) {
+    return false;
+  }
+  const items = payload.value.items || [];
+  const removedItems = items.filter((item) => item.model_dir === target);
+  if (!removedItems.length) {
+    return false;
+  }
+  const nextItems = items.filter((item) => item.model_dir !== target);
+  payload.value = {
+    ...payload.value,
+    items: nextItems,
+    count: nextItems.length,
+    filtered_total: decrementCount(payload.value.filtered_total, removedItems.length),
+    total: decrementCount(payload.value.total, removedItems.length),
+    source_counts: decrementSourceCounts(payload.value.source_counts, removedItems),
+  };
+  return true;
+}
+
+async function load({ append = false, refresh = false } = {}) {
   const currentToken = ++requestToken;
   syncFiltersFromRoute();
 
   const nextPage = append ? payload.value.page + 1 : 1;
-  const response = await fetchPage(nextPage);
+  const cacheKey = refresh ? `${Date.now()}-${nextPage}` : "";
+  const response = suppressLocallyDeletedItems(await fetchPage(nextPage, { cacheKey }));
   if (currentToken !== requestToken) {
     return;
   }
 
   if (append) {
+    const mergedItems = [...payload.value.items, ...response.items];
     payload.value = {
       ...response,
-      items: [...payload.value.items, ...response.items],
+      items: mergedItems,
+      count: mergedItems.length,
     };
   } else {
     payload.value = response;
@@ -170,14 +247,16 @@ async function load({ append = false } = {}) {
   ensureObserver();
 }
 
-async function reloadVisiblePages() {
+async function reloadVisiblePages({ refresh = false } = {}) {
   const pagesToLoad = Math.max(Number(payload.value.page) || 1, 1);
   const currentToken = ++requestToken;
   syncFiltersFromRoute();
+  const cacheKeyBase = refresh ? Date.now() : "";
 
   const responses = [];
   for (let page = 1; page <= pagesToLoad; page += 1) {
-    responses.push(await fetchPage(page));
+    const cacheKey = cacheKeyBase ? `${cacheKeyBase}-${page}` : "";
+    responses.push(suppressLocallyDeletedItems(await fetchPage(page, { cacheKey })));
   }
 
   if (!responses.length || currentToken !== requestToken) {
@@ -255,8 +334,8 @@ async function restoreModelListAnchor(anchor) {
   });
 }
 
-async function refreshCurrentModelLibrary(anchor = null) {
-  await reloadVisiblePages();
+async function refreshCurrentModelLibrary(anchor = null, options = {}) {
+  await reloadVisiblePages(options);
   await restoreModelListAnchor(anchor);
 }
 
@@ -414,6 +493,9 @@ async function deleteOne(modelDir) {
   if (!model) return;
   if (!window.confirm(`确认在 MakerHub 中删除并隐藏「${model.title || modelDir}」吗？`)) return;
 
+  requestToken += 1;
+  disconnectObserver();
+  loadingMore.value = false;
   const scrollAnchor = captureModelListAnchor(modelDir);
   deleting.value = true;
   status.value = "";
@@ -423,7 +505,14 @@ async function deleteOne(modelDir) {
       body: { model_dirs: [modelDir] },
     });
     status.value = response.message || "模型已在 MakerHub 中删除并隐藏。";
-    await refreshCurrentModelLibrary(scrollAnchor);
+    if (response.success) {
+      locallyHiddenDeletedModelDirs.add(String(modelDir || "").trim());
+      removeModelFromCurrentPayload(modelDir);
+      await refreshCurrentModelLibrary(scrollAnchor, { refresh: true });
+      removeModelFromCurrentPayload(modelDir);
+    } else {
+      await refreshCurrentModelLibrary(scrollAnchor, { refresh: true });
+    }
   } catch (error) {
     status.value = error instanceof Error ? error.message : "本地删除失败。";
   } finally {
@@ -435,6 +524,7 @@ async function restoreOne(modelDir) {
   const model = findModel(modelDir);
   if (!model) return;
 
+  locallyHiddenDeletedModelDirs.delete(String(modelDir || "").trim());
   patchLocalFlag(modelDir, "deleted", false);
   status.value = "";
   try {
