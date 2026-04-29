@@ -114,6 +114,7 @@ const loadMoreTrigger = ref(null);
 let intersectionObserver = null;
 let requestToken = 0;
 let loadMoreToken = 0;
+let deleteSettleToken = 0;
 let unsubscribeArchiveEvents = null;
 let refreshWhenVisible = false;
 let locallyHiddenDeletedModelDirs = new Set();
@@ -386,19 +387,53 @@ async function restoreModelListAnchor(anchor) {
     return;
   }
   await nextTick();
-  window.requestAnimationFrame(() => {
-    const element = findModelCardElement(anchor.modelDir);
-    if (element) {
-      const delta = element.getBoundingClientRect().top - Number(anchor.top || 0);
-      if (Math.abs(delta) > 1) {
-        window.scrollBy({ top: delta, behavior: "auto" });
+  await new Promise((resolve) => {
+    window.requestAnimationFrame(() => {
+      const element = findModelCardElement(anchor.modelDir);
+      if (element) {
+        const delta = element.getBoundingClientRect().top - Number(anchor.top || 0);
+        if (Math.abs(delta) > 1) {
+          window.scrollBy({ top: delta, behavior: "auto" });
+        }
+        resolve();
+        return;
       }
-      return;
-    }
-    if (Number.isFinite(anchor.scrollY)) {
-      window.scrollTo({ top: anchor.scrollY, behavior: "auto" });
-    }
+      if (Number.isFinite(anchor.scrollY)) {
+        window.scrollTo({ top: anchor.scrollY, behavior: "auto" });
+      }
+      resolve();
+    });
   });
+}
+
+async function waitForNextFrame() {
+  if (typeof window === "undefined") {
+    return;
+  }
+  await new Promise((resolve) => {
+    window.requestAnimationFrame(() => resolve());
+  });
+}
+
+function isLoadMoreTriggerNearViewport(margin = 320) {
+  if (typeof window === "undefined" || !loadMoreTrigger.value) {
+    return false;
+  }
+  const rect = loadMoreTrigger.value.getBoundingClientRect();
+  return rect.top <= window.innerHeight + margin && rect.bottom >= -margin;
+}
+
+async function settleLoadMoreAfterDelete(routeAtDelete, currentDeleteSettleToken) {
+  await nextTick();
+  await waitForNextFrame();
+  if (route.fullPath !== routeAtDelete || currentDeleteSettleToken !== deleteSettleToken) {
+    return;
+  }
+  if (payload.value.has_more && isLoadMoreTriggerNearViewport()) {
+    await loadMore();
+    return;
+  }
+  ensureObserver();
 }
 
 async function refreshCurrentModelLibrary(anchor = null, options = {}) {
@@ -467,21 +502,6 @@ function ensureObserver() {
     rootMargin: "320px 0px",
   });
   intersectionObserver.observe(loadMoreTrigger.value);
-}
-
-async function backfillAfterDelete(routeAtDelete, anchor = null) {
-  if (route.fullPath !== routeAtDelete) {
-    return;
-  }
-  if (!payload.value.has_more) {
-    await nextTick();
-    ensureObserver();
-    return;
-  }
-  await loadMore();
-  if (route.fullPath === routeAtDelete) {
-    await restoreModelListAnchor(anchor);
-  }
 }
 
 function applyFilters() {
@@ -606,6 +626,7 @@ async function deleteOne(modelDir) {
   const cleanModelDir = String(modelDir || "").trim();
   requestToken += 1;
   loadMoreToken += 1;
+  const currentDeleteSettleToken = ++deleteSettleToken;
   disconnectObserver();
   loadingMore.value = false;
   const scrollAnchor = captureModelListAnchor(modelDir);
@@ -619,9 +640,7 @@ async function deleteOne(modelDir) {
   locallyHiddenDeletedModelDirs.add(cleanModelDir);
   removeModelFromCurrentPayload(modelDir);
   status.value = "已从当前列表隐藏，正在后台删除。";
-  await nextTick();
-  await restoreModelListAnchor(scrollAnchor);
-  void backfillAfterDelete(routeAtDelete, scrollAnchor);
+  void settleLoadMoreAfterDelete(routeAtDelete, currentDeleteSettleToken);
 
   deleting.value = true;
   try {
@@ -629,12 +648,14 @@ async function deleteOne(modelDir) {
       method: "POST",
       body: { model_dirs: [modelDir] },
     });
-    status.value = response.message || "模型已在 MakerHub 中删除并隐藏。";
-    if (route.fullPath === routeAtDelete) {
-      await refreshCurrentModelLibrary(scrollAnchor, { refresh: true });
-      removeModelFromCurrentPayload(modelDir);
+    if (!response.success) {
+      throw new Error(response.message || "没有标记任何模型。");
     }
+    status.value = response.message || "模型已在 MakerHub 中删除并隐藏。";
   } catch (error) {
+    if (currentDeleteSettleToken === deleteSettleToken) {
+      deleteSettleToken += 1;
+    }
     locallyHiddenDeletedModelDirs.delete(cleanModelDir);
     if (route.fullPath === routeAtDelete) {
       restoreModelToCurrentPayload(removedModel, originalIndex);
