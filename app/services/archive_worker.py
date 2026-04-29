@@ -39,6 +39,7 @@ BATCH_TASK_MODES = {"author_upload", "collection_models"}
 BATCH_QUEUE_LOG_PATH = LOGS_DIR / "batch_queue.log"
 MAX_BATCH_CHILD_REQUEUE_ATTEMPTS = 3
 ACTIVE_BATCH_IDLE_POLL_SECONDS = 2.0
+PROFILE_BACKFILL_TASK_COOLDOWN_SECONDS = 0.5
 COLLECTION_DETAIL_RE = re.compile(r"/(?:[a-z]{2}/)?collections/\d+(?:-[^/?#]+)?(?:[/?#]|$)", re.I)
 THREE_MF_LIMIT_GUARD_PATH = STATE_DIR / "three_mf_limit_guard.json"
 THREE_MF_LIMIT_DEFAULT_MESSAGE = "已达到 MakerWorld 每日下载上限，今日暂停自动重试。"
@@ -51,6 +52,15 @@ def _normalize_three_mf_daily_limit(value: Any, fallback: int = DEFAULT_THREE_MF
     except (TypeError, ValueError):
         return fallback
     return max(0, limit)
+
+
+def _meta_bool(meta: dict[str, Any], key: str, default: bool) -> bool:
+    if key not in meta:
+        return default
+    value = meta.get(key)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    return bool(value)
 
 
 def detect_archive_mode(url: str) -> str:
@@ -919,6 +929,10 @@ class ArchiveTaskManager:
             mode="single_model",
             meta={
                 "profile_metadata_only": True,
+                "download_assets": False,
+                "download_comment_assets": False,
+                "rebuild_archive": False,
+                "record_missing_3mf_log": False,
                 "existing_model_dir": str(model_dir or "").strip(),
                 "title": str(title or "").strip(),
             },
@@ -1457,6 +1471,8 @@ class ArchiveTaskManager:
             task = queued[0]
             task_id = task["id"]
             task_url = str(task.get("url") or "")
+            task_meta = task.get("meta") if isinstance(task.get("meta"), dict) else {}
+            profile_metadata_only = bool(task_meta.get("profile_metadata_only"))
             self.task_store.start_archive_task(task_id)
             self.task_store.update_active_task(task_id, message="正在准备归档", progress=1)
             _log_archive(
@@ -1470,9 +1486,9 @@ class ArchiveTaskManager:
             try:
                 task_mode = str(task.get("mode") or "") or detect_archive_mode(task_url)
                 if task_mode in {"author_upload", "collection_models"}:
-                    self._run_batch_task(task_id, task_url, task_mode, meta=task.get("meta") or {})
+                    self._run_batch_task(task_id, task_url, task_mode, meta=task_meta)
                 else:
-                    self._run_single_task(task_id, task_url, meta=task.get("meta") or {})
+                    self._run_single_task(task_id, task_url, meta=task_meta)
             except Exception as exc:
                 model_id = extract_model_id(task.get("url") or "")
                 if model_id:
@@ -1492,6 +1508,8 @@ class ArchiveTaskManager:
                 )
             finally:
                 self._refresh_batch_tasks()
+                if profile_metadata_only and PROFILE_BACKFILL_TASK_COOLDOWN_SECONDS > 0:
+                    time.sleep(PROFILE_BACKFILL_TASK_COOLDOWN_SECONDS)
 
     def _run_batch_task(self, task_id: str, url: str, mode: str, meta: Optional[dict] = None) -> None:
         config = self.store.load()
@@ -1725,6 +1743,15 @@ class ArchiveTaskManager:
         profile_metadata_only = bool(meta.get("profile_metadata_only"))
         missing_3mf_retry = bool(meta.get("missing_3mf_retry"))
         three_mf_download_task = bool(meta.get("three_mf_download"))
+        default_asset_download = not profile_metadata_only
+        download_assets = _meta_bool(meta, "download_assets", default_asset_download)
+        download_comment_assets = _meta_bool(
+            meta,
+            "download_comment_assets",
+            False if profile_metadata_only else download_assets,
+        )
+        rebuild_archive = _meta_bool(meta, "rebuild_archive", not profile_metadata_only)
+        record_missing_3mf_log = _meta_bool(meta, "record_missing_3mf_log", not profile_metadata_only)
         model_id = extract_model_id(url)
         limit_guard = _read_three_mf_limit_guard()
         skip_three_mf_fetch = profile_metadata_only or _is_three_mf_limit_guard_active_for_url(url, limit_guard)
@@ -1759,6 +1786,10 @@ class ArchiveTaskManager:
                 skip_three_mf_fetch=skip_three_mf_fetch,
                 three_mf_skip_message=skip_three_mf_message,
                 profile_metadata_only=profile_metadata_only,
+                download_assets=download_assets,
+                download_comment_assets=download_comment_assets,
+                rebuild_archive=rebuild_archive,
+                record_missing_3mf_log=record_missing_3mf_log,
                 three_mf_skip_state="download_limited" if skip_three_mf_fetch and not profile_metadata_only else "",
                 three_mf_daily_limit_cn=cn_daily_limit,
                 three_mf_daily_limit_global=global_daily_limit,
@@ -1808,23 +1839,26 @@ class ArchiveTaskManager:
         ):
             invalidate_archive_snapshot("archive_worker_single_task_completed")
 
+        result_name = result.get("base_name") or result.get("work_dir") or ""
+        if three_mf_download_task:
+            completion_event = "three_mf_download_completed"
+            completion_message = f"新增 3MF 下载完成：{result_name}"
+        elif profile_metadata_only:
+            completion_event = "profile_metadata_completed"
+            completion_message = f"信息补全完成：{result_name}"
+        else:
+            completion_event = "single_completed"
+            completion_message = f"归档完成：{result_name}"
+
         self.task_store.update_active_task(
             task_id,
             progress=100,
-            message=(
-                f"新增 3MF 下载完成：{result.get('base_name') or result.get('work_dir') or ''}"
-                if three_mf_download_task
-                else f"归档完成：{result.get('base_name') or result.get('work_dir') or ''}"
-            ),
+            message=completion_message,
         )
         self.task_store.complete_archive_task(task_id)
         _log_archive(
-            "three_mf_download_completed" if three_mf_download_task else "single_completed",
-            (
-                f"新增 3MF 下载完成：{result.get('base_name') or result.get('work_dir') or ''}"
-                if three_mf_download_task
-                else f"归档完成：{result.get('base_name') or result.get('work_dir') or ''}"
-            ),
+            completion_event,
+            completion_message,
             task_id=task_id,
             url=url,
             model_id=resolved_model_id,

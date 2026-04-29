@@ -2179,16 +2179,21 @@ def delete_archived_models(model_dirs: list[str]) -> dict:
 def build_tasks_payload(
     missing_fallback: Optional[list[dict]] = None,
     archive_snapshot: Optional[dict[str, Any]] = None,
+    resolve_missing_model_dirs: bool = False,
+    prune_recent_failures: bool = False,
 ) -> dict:
     store = TaskStateStore()
     archive_queue = store.load_archive_queue()
     missing_3mf = store.load_missing_3mf(fallback_items=missing_fallback)
-    snapshot = archive_snapshot or get_archive_snapshot()
-    model_dir_by_id = {
-        str(item.get("id") or "").strip(): str(item.get("model_dir") or "").strip().strip("/")
-        for item in snapshot.get("models") or []
-        if str(item.get("id") or "").strip() and str(item.get("model_dir") or "").strip()
-    }
+    needs_snapshot = archive_snapshot is not None or resolve_missing_model_dirs or prune_recent_failures
+    snapshot = archive_snapshot or (get_archive_snapshot() if needs_snapshot else None)
+    model_dir_by_id = {}
+    if resolve_missing_model_dirs and isinstance(snapshot, dict):
+        model_dir_by_id = {
+            str(item.get("id") or "").strip(): str(item.get("model_dir") or "").strip().strip("/")
+            for item in snapshot.get("models") or []
+            if str(item.get("id") or "").strip() and str(item.get("model_dir") or "").strip()
+        }
     missing_items: list[dict[str, Any]] = []
     for raw_item in missing_3mf.get("items") or []:
         item = dict(raw_item or {})
@@ -2196,11 +2201,12 @@ def build_tasks_payload(
         item["model_dir"] = str(item.get("model_dir") or model_dir_by_id.get(model_id, "")).strip().strip("/")
         missing_items.append(item)
     missing_3mf["items"] = missing_items
-    archive_queue = _prune_recent_failures(
-        archive_queue,
-        snapshot,
-        missing_3mf.get("items") or [],
-    )
+    if prune_recent_failures and isinstance(snapshot, dict):
+        archive_queue = _prune_recent_failures(
+            archive_queue,
+            snapshot,
+            missing_3mf.get("items") or [],
+        )
     organize_tasks = store.load_organize_tasks()
     remote_refresh = store.load_remote_refresh_state()
     active_organize_count = _count_active_organize_tasks(organize_tasks)
@@ -2237,6 +2243,8 @@ def build_dashboard_payload(config) -> dict:
             for item in getattr(config, "missing_3mf", [])
         ],
         archive_snapshot=archive_snapshot,
+        resolve_missing_model_dirs=True,
+        prune_recent_failures=True,
     )
     subscriptions_summary = _build_dashboard_subscriptions(config, task_store, state_payload=subscription_state)
     now = int(time.time())

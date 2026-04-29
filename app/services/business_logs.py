@@ -1,6 +1,5 @@
 import json
 import threading
-from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -107,8 +106,24 @@ def _tail_lines(path: Path, limit: int) -> list[str]:
     if not path.exists() or not path.is_file():
         return []
     max_lines = max(int(limit or 1), 1)
-    with path.open("r", encoding="utf-8", errors="replace") as handle:
-        return list(deque(handle, maxlen=max_lines))
+    chunk_size = 64 * 1024
+    data = bytearray()
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, 2)
+            position = handle.tell()
+            while position > 0 and data.count(b"\n") <= max_lines:
+                read_size = min(chunk_size, position)
+                position -= read_size
+                handle.seek(position)
+                data[:0] = handle.read(read_size)
+    except OSError:
+        return []
+
+    return [
+        line.decode("utf-8", errors="replace")
+        for line in data.splitlines()[-max_lines:]
+    ]
 
 
 def _parse_log_line(line: str, source: str) -> dict[str, Any]:

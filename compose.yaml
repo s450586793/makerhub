@@ -8,6 +8,7 @@ services:
       - "9042:8000"
     environment:
       MAKERHUB_PROCESS_ROLE: app
+      MAKERHUB_BACKGROUND_TASKS: "false"
       MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
     volumes:
       - /volume4/docker/docker/makerhub/config:/app/config
@@ -25,6 +26,7 @@ services:
     command: ["python", "-m", "app.worker"]
     environment:
       MAKERHUB_PROCESS_ROLE: worker
+      MAKERHUB_BACKGROUND_TASKS: "true"
     volumes:
       - /volume4/docker/docker/makerhub/config:/app/config
       - /volume4/docker/docker/makerhub/logs:/app/logs

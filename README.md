@@ -74,6 +74,7 @@ services:
       - "9042:8000"
     environment:
       MAKERHUB_PROCESS_ROLE: app
+      MAKERHUB_BACKGROUND_TASKS: "false"
       MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
     volumes:
       - /volume4/docker/docker/makerhub/config:/app/config
@@ -91,6 +92,7 @@ services:
     command: ["python", "-m", "app.worker"]
     environment:
       MAKERHUB_PROCESS_ROLE: worker
+      MAKERHUB_BACKGROUND_TASKS: "true"
     volumes:
       - /volume4/docker/docker/makerhub/config:/app/config
       - /volume4/docker/docker/makerhub/logs:/app/logs
@@ -139,6 +141,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 下一步继续围绕批量归档体验、详情页高保真复刻与本地整理任务增强迭代
 
 ## 更新记录
+
+### 2026-04-29
+- 版本号升级到 `v0.6.9`
+- 任务总览接口默认不再扫描全量归档快照，前端轮询只读取任务状态文件，避免后台大队列运行时把 `/api/tasks` 拖到超时
+- 现有库信息补全改为轻量元数据补全：默认不下载图片/头像/附件、不重建离线页，已入队的旧补全任务也会按轻量模式继续执行
+- 日志读取改为从日志文件末尾按块读取，日志文件变大后不再为了展示最后几百行而整文件扫描
+- Compose 明确声明 App 容器关闭后台任务、Worker 容器开启后台任务，避免角色配置缺失时把爬虫任务带回 Web 容器
 
 ### 2026-04-29
 - 版本号升级到 `v0.6.8`
