@@ -1366,6 +1366,8 @@ class TaskStateStore:
                         merged[key] = _normalize_task_item(value, "running")
                     elif not value:
                         merged[key] = {}
+                        if "current_items" not in changes:
+                            merged["current_items"] = []
                     continue
                 if key == "current_items":
                     if isinstance(value, list):

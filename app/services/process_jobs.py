@@ -184,12 +184,53 @@ def _run_process_job(
     timeout_seconds = int(idle_timeout_seconds or _job_idle_timeout_seconds())
     last_event_at = time.monotonic()
 
+    def handle_message(message: Any) -> bool:
+        nonlocal result, error_payload, last_event_at
+        if not isinstance(message, dict):
+            return False
+        last_event_at = time.monotonic()
+        event_type = str(message.get("type") or "")
+        event_payload = message.get("payload")
+
+        if event_type == "progress":
+            if callable(progress_callback) and isinstance(event_payload, dict):
+                try:
+                    progress_callback(event_payload)
+                except Exception:
+                    pass
+            return False
+
+        if event_type == "result":
+            result = event_payload
+            return True
+
+        if event_type == "error":
+            error_payload = event_payload if isinstance(event_payload, dict) else {"message": str(event_payload or "")}
+            return True
+        return False
+
+    def drain_final_messages() -> None:
+        # A spawned process can exit just before the result event becomes visible
+        # on the multiprocessing queue. Drain briefly before treating exit=0 as
+        # "no result".
+        deadline = time.monotonic() + JOB_EXIT_TIMEOUT_SECONDS
+        while result is None and error_payload is None and time.monotonic() < deadline:
+            try:
+                message = queue.get(timeout=0.2)
+            except Empty:
+                if not process.is_alive():
+                    time.sleep(0.05)
+                continue
+            if handle_message(message):
+                return
+
     try:
         while True:
             try:
                 message = queue.get(timeout=JOB_POLL_SECONDS)
             except Empty:
                 if not process.is_alive():
+                    drain_final_messages()
                     break
                 if time.monotonic() - last_event_at >= timeout_seconds:
                     error_payload = {
@@ -198,24 +239,7 @@ def _run_process_job(
                     break
                 continue
 
-            last_event_at = time.monotonic()
-            event_type = str(message.get("type") or "")
-            event_payload = message.get("payload")
-
-            if event_type == "progress":
-                if callable(progress_callback) and isinstance(event_payload, dict):
-                    try:
-                        progress_callback(event_payload)
-                    except Exception:
-                        pass
-                continue
-
-            if event_type == "result":
-                result = event_payload
-                break
-
-            if event_type == "error":
-                error_payload = event_payload if isinstance(event_payload, dict) else {"message": str(event_payload or "")}
+            if handle_message(message):
                 break
     finally:
         process.join(timeout=JOB_EXIT_TIMEOUT_SECONDS)
