@@ -141,9 +141,17 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 ## 更新记录
 
 ### 2026-04-29
+- 版本号升级到 `v0.6.5`
+- 模型库删除确认后先更新前端展示层，卡片会立即从当前列表隐藏，不再等待后端删除接口返回
+- 删除接口失败时会把刚隐藏的卡片恢复到原位置；接口慢时后台继续处理，不影响继续浏览模型库
+
+### 2026-04-29
 - 版本号升级到 `v0.6.4`
 - 模型库删除模型后会立即从当前列表移除，并作废正在返回的旧列表请求，避免删除成功后仍需要手动刷新页面
 - 模型库刷新请求增加缓存绕过参数，前端 API 请求默认使用 `no-store`，降低线上代理或浏览器回放旧列表的概率
+
+<details>
+<summary>展开 / 收起更早更新</summary>
 
 ### 2026-04-29
 - 版本号升级到 `v0.6.3`
@@ -159,9 +167,6 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 现有库信息补全改为由 API 提交请求、Worker 执行扫描和入队，避免全库扫描继续占用 App 接口进程
 - 共享状态文件与配置写入增加跨容器文件锁和原子替换，降低 App 与 Worker 同时读写 JSON 状态时的竞争风险
 - 设置页一键更新支持 App / Worker 部署，会先更新 Worker 容器，再更新 App 容器
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-04-28
 - 版本号升级到 `v0.6.1`

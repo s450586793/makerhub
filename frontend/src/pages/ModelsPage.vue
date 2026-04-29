@@ -157,6 +157,14 @@ function decrementCount(value, amount) {
   return Math.max(0, number - amount);
 }
 
+function incrementCount(value, amount) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return value;
+  }
+  return number + amount;
+}
+
 function decrementSourceCounts(sourceCounts = {}, removedItems = []) {
   const nextCounts = {
     all: Number(sourceCounts.all || 0),
@@ -169,6 +177,23 @@ function decrementSourceCounts(sourceCounts = {}, removedItems = []) {
     const source = String(item?.source || "").trim().toLowerCase();
     if (Object.prototype.hasOwnProperty.call(nextCounts, source)) {
       nextCounts[source] = Math.max(0, nextCounts[source] - 1);
+    }
+  }
+  return nextCounts;
+}
+
+function incrementSourceCounts(sourceCounts = {}, restoredItems = []) {
+  const nextCounts = {
+    all: Number(sourceCounts.all || 0),
+    cn: Number(sourceCounts.cn || 0),
+    global: Number(sourceCounts.global || 0),
+    local: Number(sourceCounts.local || 0),
+  };
+  for (const item of restoredItems) {
+    nextCounts.all += 1;
+    const source = String(item?.source || "").trim().toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(nextCounts, source)) {
+      nextCounts[source] += 1;
     }
   }
   return nextCounts;
@@ -217,6 +242,25 @@ function removeModelFromCurrentPayload(modelDir) {
     filtered_total: decrementCount(payload.value.filtered_total, removedItems.length),
     total: decrementCount(payload.value.total, removedItems.length),
     source_counts: decrementSourceCounts(payload.value.source_counts, removedItems),
+  };
+  return true;
+}
+
+function restoreModelToCurrentPayload(model, index) {
+  const target = String(model?.model_dir || "").trim();
+  if (!target || payload.value.items.some((item) => item.model_dir === target)) {
+    return false;
+  }
+  const nextItems = [...payload.value.items];
+  const safeIndex = Math.max(0, Math.min(Number(index) || 0, nextItems.length));
+  nextItems.splice(safeIndex, 0, model);
+  payload.value = {
+    ...payload.value,
+    items: nextItems,
+    count: nextItems.length,
+    filtered_total: incrementCount(payload.value.filtered_total, 1),
+    total: incrementCount(payload.value.total, 1),
+    source_counts: incrementSourceCounts(payload.value.source_counts, [model]),
   };
   return true;
 }
@@ -493,27 +537,44 @@ async function deleteOne(modelDir) {
   if (!model) return;
   if (!window.confirm(`确认在 MakerHub 中删除并隐藏「${model.title || modelDir}」吗？`)) return;
 
+  const cleanModelDir = String(modelDir || "").trim();
   requestToken += 1;
   disconnectObserver();
   loadingMore.value = false;
   const scrollAnchor = captureModelListAnchor(modelDir);
+  const originalIndex = payload.value.items.findIndex((item) => item.model_dir === modelDir);
+  const removedModel = {
+    ...model,
+    local_flags: { ...(model.local_flags || {}) },
+    subscription_flags: { ...(model.subscription_flags || {}) },
+  };
+  const routeAtDelete = route.fullPath;
+  locallyHiddenDeletedModelDirs.add(cleanModelDir);
+  removeModelFromCurrentPayload(modelDir);
+  status.value = "已从当前列表隐藏，正在后台删除。";
+  await nextTick();
+  ensureObserver();
+  await restoreModelListAnchor(scrollAnchor);
+
   deleting.value = true;
-  status.value = "";
   try {
     const response = await apiRequest("/api/models/delete", {
       method: "POST",
       body: { model_dirs: [modelDir] },
     });
     status.value = response.message || "模型已在 MakerHub 中删除并隐藏。";
-    if (response.success) {
-      locallyHiddenDeletedModelDirs.add(String(modelDir || "").trim());
-      removeModelFromCurrentPayload(modelDir);
+    if (route.fullPath === routeAtDelete) {
       await refreshCurrentModelLibrary(scrollAnchor, { refresh: true });
       removeModelFromCurrentPayload(modelDir);
-    } else {
-      await refreshCurrentModelLibrary(scrollAnchor, { refresh: true });
     }
   } catch (error) {
+    locallyHiddenDeletedModelDirs.delete(cleanModelDir);
+    if (route.fullPath === routeAtDelete) {
+      restoreModelToCurrentPayload(removedModel, originalIndex);
+      await nextTick();
+      ensureObserver();
+      await restoreModelListAnchor(scrollAnchor);
+    }
     status.value = error instanceof Error ? error.message : "本地删除失败。";
   } finally {
     deleting.value = false;
