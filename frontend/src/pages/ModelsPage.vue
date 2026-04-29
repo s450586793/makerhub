@@ -49,6 +49,7 @@
     <ModelCard
       v-for="model in payload.items"
       :key="model.model_dir"
+      :data-model-dir="model.model_dir"
       :model="model"
       @favorite="toggleFavorite"
       @printed="togglePrinted"
@@ -193,6 +194,70 @@ async function reloadVisiblePages() {
   };
   await nextTick();
   ensureObserver();
+}
+
+function findModelCardElement(modelDir) {
+  const target = String(modelDir || "");
+  if (!target || typeof document === "undefined") {
+    return null;
+  }
+  return Array.from(document.querySelectorAll("[data-model-dir]"))
+    .find((element) => element?.dataset?.modelDir === target) || null;
+}
+
+function captureModelListAnchor(modelDir) {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const items = payload.value.items || [];
+  const index = items.findIndex((item) => item.model_dir === modelDir);
+  const candidates = [
+    items[index + 1]?.model_dir,
+    items[index - 1]?.model_dir,
+    modelDir,
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    const element = findModelCardElement(candidate);
+    if (element) {
+      return {
+        modelDir: candidate,
+        top: element.getBoundingClientRect().top,
+        scrollY: window.scrollY,
+      };
+    }
+  }
+
+  return {
+    modelDir: "",
+    top: 0,
+    scrollY: window.scrollY,
+  };
+}
+
+async function restoreModelListAnchor(anchor) {
+  if (!anchor || typeof window === "undefined") {
+    return;
+  }
+  await nextTick();
+  window.requestAnimationFrame(() => {
+    const element = findModelCardElement(anchor.modelDir);
+    if (element) {
+      const delta = element.getBoundingClientRect().top - Number(anchor.top || 0);
+      if (Math.abs(delta) > 1) {
+        window.scrollBy({ top: delta, behavior: "auto" });
+      }
+      return;
+    }
+    if (Number.isFinite(anchor.scrollY)) {
+      window.scrollTo({ top: anchor.scrollY, behavior: "auto" });
+    }
+  });
+}
+
+async function refreshCurrentModelLibrary(anchor = null) {
+  await reloadVisiblePages();
+  await restoreModelListAnchor(anchor);
 }
 
 async function loadMore() {
@@ -349,6 +414,7 @@ async function deleteOne(modelDir) {
   if (!model) return;
   if (!window.confirm(`确认在 MakerHub 中删除并隐藏「${model.title || modelDir}」吗？`)) return;
 
+  const scrollAnchor = captureModelListAnchor(modelDir);
   deleting.value = true;
   status.value = "";
   try {
@@ -357,7 +423,7 @@ async function deleteOne(modelDir) {
       body: { model_dirs: [modelDir] },
     });
     status.value = response.message || "模型已在 MakerHub 中删除并隐藏。";
-    await reloadVisiblePages();
+    await refreshCurrentModelLibrary(scrollAnchor);
   } catch (error) {
     status.value = error instanceof Error ? error.message : "本地删除失败。";
   } finally {

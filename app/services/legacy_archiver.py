@@ -2082,6 +2082,7 @@ def _fetch_comment_reply_payload(
         if str(reply_kind or "").strip().lower() == "rating"
         else f"/comment/{root_comment_id}/reply"
     )
+    fallback_payload: Optional[object] = None
     for api_url in _comment_service_endpoint_candidates(
         source_url,
         reply_path,
@@ -2096,10 +2097,14 @@ def _fetch_comment_reply_payload(
         if _looks_like_html_response(response.text):
             continue
         try:
-            return response.json()
+            payload = response.json()
         except Exception:
             continue
-    return None
+        if _extract_comment_replies_from_payload(payload, root_comment_id):
+            return payload
+        if fallback_payload is None:
+            fallback_payload = payload
+    return fallback_payload
 
 
 _COMMENT_LIST_PAGE_LIMIT = 100
@@ -2125,6 +2130,7 @@ def _fetch_comment_list_payload(
         "type": 0,
         "sort": 0,
     }
+    fallback_payload: Optional[object] = None
     for api_url in _comment_service_endpoint_candidates(
         source_url,
         "/commentandrating",
@@ -2139,10 +2145,17 @@ def _fetch_comment_list_payload(
         if _looks_like_html_response(response.text):
             continue
         try:
-            return response.json()
+            payload = response.json()
         except Exception:
             continue
-    return None
+        if _extract_comment_list_items(payload):
+            return payload
+        if fallback_payload is None or (
+            _comment_list_payload_total(payload) > _comment_list_payload_total(fallback_payload)
+            or _comment_list_payload_hit_count(payload) > _comment_list_payload_hit_count(fallback_payload)
+        ):
+            fallback_payload = payload
+    return fallback_payload
 
 
 def _comment_list_node_total(node: object) -> int:

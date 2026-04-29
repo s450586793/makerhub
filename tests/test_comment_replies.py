@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from app.services import legacy_archiver
 from app.services.archive_profile_backfill import _meta_needs_profile_backfill
 from app.services.catalog import _normalize_comment_item, _normalize_comments
 from app.services.legacy_archiver import (
@@ -537,6 +538,111 @@ class CommentRepliesTest(unittest.TestCase):
         self.assertEqual(bundle["count"], 41)
         self.assertEqual(len(bundle["items"]), 1)
         self.assertEqual(bundle["items"][0]["id"], "comment-1")
+
+    def test_collect_comments_tries_next_endpoint_when_first_comment_api_is_empty(self):
+        original_candidates = legacy_archiver._comment_service_endpoint_candidates
+
+        def fake_candidates(_source_url, _path, *, api_host_hint=None):
+            return [
+                "https://empty.example.test/commentandrating",
+                "https://api.example.test/commentandrating",
+            ]
+
+        def payload(url, params, _headers, _timeout):
+            if "empty.example.test" in url:
+                return {"total": 0, "hits": []}
+            return {
+                "total": 1,
+                "hits": [
+                    {
+                        "comment": {
+                            "id": "comment-from-api-host",
+                            "content": "后一个候选接口里的评论",
+                            "createTime": "2026-04-28 12:00:00",
+                            "replyCount": 0,
+                            "user": {"name": "用户一"},
+                        }
+                    }
+                ],
+            }
+
+        session = self._DummySession(payload)
+        legacy_archiver._comment_service_endpoint_candidates = fake_candidates
+        try:
+            bundle = collect_comments(
+                {},
+                {"id": "2388805", "url": "https://makerworld.com.cn/zh/models/2388805", "commentCount": 1},
+                session,
+                Path("."),
+                download_assets=False,
+            )
+        finally:
+            legacy_archiver._comment_service_endpoint_candidates = original_candidates
+
+        self.assertEqual(len(bundle["items"]), 1)
+        self.assertEqual(bundle["items"][0]["id"], "comment-from-api-host")
+        self.assertEqual([call["url"] for call in session.calls[:2]], [
+            "https://empty.example.test/commentandrating",
+            "https://api.example.test/commentandrating",
+        ])
+
+    def test_collect_comments_tries_next_endpoint_when_first_reply_api_is_empty(self):
+        original_candidates = legacy_archiver._comment_service_endpoint_candidates
+
+        def fake_candidates(_source_url, path, *, api_host_hint=None):
+            suffix = str(path or "").strip("/")
+            return [
+                f"https://empty.example.test/{suffix}",
+                f"https://api.example.test/{suffix}",
+            ]
+
+        def payload(url, params, _headers, _timeout):
+            if "commentandrating" in url:
+                return {
+                    "total": 1,
+                    "hits": [
+                        {
+                            "comment": {
+                                "id": "root-comment",
+                                "content": "主评论",
+                                "createTime": "2026-04-28 12:00:00",
+                                "replyCount": 1,
+                                "user": {"name": "用户一"},
+                            }
+                        }
+                    ],
+                }
+            if "empty.example.test" in url:
+                return {"total": 0, "hits": []}
+            return {
+                "total": 1,
+                "hits": [
+                    {
+                        "id": "reply-from-api-host",
+                        "rootCommentId": "root-comment",
+                        "content": "后一个候选接口里的回复",
+                        "createTime": "2026-04-28 12:05:00",
+                        "replyCount": 0,
+                        "user": {"name": "用户二"},
+                    }
+                ],
+            }
+
+        session = self._DummySession(payload)
+        legacy_archiver._comment_service_endpoint_candidates = fake_candidates
+        try:
+            bundle = collect_comments(
+                {},
+                {"id": "2388805", "url": "https://makerworld.com.cn/zh/models/2388805", "commentCount": 1},
+                session,
+                Path("."),
+                download_assets=False,
+            )
+        finally:
+            legacy_archiver._comment_service_endpoint_candidates = original_candidates
+
+        self.assertEqual(len(bundle["items"]), 1)
+        self.assertEqual(bundle["items"][0]["replies"][0]["id"], "reply-from-api-host")
 
     def test_collect_comments_hydrates_rating_replies_from_rating_api(self):
         def payload(url, params, _headers, _timeout):

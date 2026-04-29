@@ -69,16 +69,12 @@ version: "3.8"
 services:
   makerhub-app:
     image: ghcr.io/s450586793/makerhub:latest
-    pull_policy: always
     container_name: makerhub-app
     ports:
       - "9042:8000"
     environment:
-      MAKERHUB_DEPLOYMENT_MODE: app-worker
       MAKERHUB_PROCESS_ROLE: app
-      MAKERHUB_BACKGROUND_TASKS: "0"
       MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
-      MAKERHUB_WORKER_IMAGE_REF: ghcr.io/s450586793/makerhub:latest
     volumes:
       - /volume4/docker/docker/makerhub/config:/app/config
       - /volume4/docker/docker/makerhub/logs:/app/logs
@@ -91,17 +87,10 @@ services:
 
   makerhub-worker:
     image: ghcr.io/s450586793/makerhub:latest
-    pull_policy: always
     container_name: makerhub-worker
     command: ["python", "-m", "app.worker"]
-    depends_on:
-      - makerhub-app
     environment:
-      MAKERHUB_DEPLOYMENT_MODE: app-worker
       MAKERHUB_PROCESS_ROLE: worker
-      MAKERHUB_BACKGROUND_TASKS: "1"
-      MAKERHUB_APP_CONTAINER_NAME: makerhub-app
-      MAKERHUB_APP_IMAGE_REF: ghcr.io/s450586793/makerhub:latest
     volumes:
       - /volume4/docker/docker/makerhub/config:/app/config
       - /volume4/docker/docker/makerhub/logs:/app/logs
@@ -151,6 +140,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-04-29
+- 版本号升级到 `v0.6.3`
+- 简化 `compose.yaml` 与 README Compose 示例，只保留 App / Worker 分离必需的角色、Worker 容器名、端口和挂载配置
+- 修复归档评论接口候选地址选择：当前一个候选接口返回空评论时，会继续尝试后续 API host，避免新归档 / 订阅入库模型评论为空
+- 模型库删除模型后会刷新当前已加载页，并恢复到删除位置附近，不再跳回列表最前面
+- 新增评论接口空响应继续探测的回归测试，覆盖顶层评论和评论回复接口
+
 ### 2026-04-28
 - 版本号升级到 `v0.6.2`
 - Docker Compose 改为 `makerhub-app` + `makerhub-worker`：App 只负责页面、API 和轻量读写，Worker 独立处理归档、订阅、源端刷新、`3MF` 下载、本地整理和信息补全
@@ -164,6 +160,9 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - `compose.yaml` 移除旧的 `makerhub` 单容器服务块，推荐安装方式和 DSM 项目 YAML 统一为 `makerhub-api` + `makerhub-web` 两个容器
 - README 安装示例改为完整 Compose 配置，避免示例与 DSM 实际项目内容不一致
 - README 迁移命令改为直接清理旧 `makerhub` 容器，避免新版 compose 中不存在旧 service 时产生误导
+
+<details>
+<summary>展开 / 收起更早更新</summary>
 
 ### 2026-04-28
 - 版本号升级到 `v0.6.0`
@@ -183,9 +182,6 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 修复 MakerWorld 评论列表接口外层包裹 `data.hits` 时，归档只保存评论总数但评论列表为空的问题
 - 评论列表分页判断会识别包裹后的 `total` / `hits`，同时避免把评论回复接口的 `data.items` 误当成顶层评论
 - 新增评论归档回归测试，覆盖包裹结构评论列表和回复接口分离场景
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-04-28
 - 版本号升级到 `v0.5.117`

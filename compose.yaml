@@ -3,16 +3,12 @@ version: "3.8"
 services:
   makerhub-app:
     image: ghcr.io/s450586793/makerhub:latest
-    pull_policy: always
     container_name: makerhub-app
     ports:
       - "9042:8000"
     environment:
-      MAKERHUB_DEPLOYMENT_MODE: app-worker
       MAKERHUB_PROCESS_ROLE: app
-      MAKERHUB_BACKGROUND_TASKS: "0"
       MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
-      MAKERHUB_WORKER_IMAGE_REF: ghcr.io/s450586793/makerhub:latest
     volumes:
       - /volume4/docker/docker/makerhub/config:/app/config
       - /volume4/docker/docker/makerhub/logs:/app/logs
@@ -25,17 +21,10 @@ services:
 
   makerhub-worker:
     image: ghcr.io/s450586793/makerhub:latest
-    pull_policy: always
     container_name: makerhub-worker
     command: ["python", "-m", "app.worker"]
-    depends_on:
-      - makerhub-app
     environment:
-      MAKERHUB_DEPLOYMENT_MODE: app-worker
       MAKERHUB_PROCESS_ROLE: worker
-      MAKERHUB_BACKGROUND_TASKS: "1"
-      MAKERHUB_APP_CONTAINER_NAME: makerhub-app
-      MAKERHUB_APP_IMAGE_REF: ghcr.io/s450586793/makerhub:latest
     volumes:
       - /volume4/docker/docker/makerhub/config:/app/config
       - /volume4/docker/docker/makerhub/logs:/app/logs
