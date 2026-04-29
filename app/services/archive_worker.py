@@ -1833,11 +1833,12 @@ class ArchiveTaskManager:
         archived_model_dir = _resolve_archive_result_model_dir(result)
         if archived_model_dir:
             invalidate_model_detail_cache(archived_model_dir)
-        if not archived_model_dir or not upsert_archive_snapshot_model(
-            archived_model_dir,
-            reason="archive_worker_single_task_completed",
-        ):
-            invalidate_archive_snapshot("archive_worker_single_task_completed")
+        if not profile_metadata_only:
+            if not archived_model_dir or not upsert_archive_snapshot_model(
+                archived_model_dir,
+                reason="archive_worker_single_task_completed",
+            ):
+                invalidate_archive_snapshot("archive_worker_single_task_completed")
 
         result_name = result.get("base_name") or result.get("work_dir") or ""
         if three_mf_download_task:

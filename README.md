@@ -93,6 +93,7 @@ services:
     environment:
       MAKERHUB_PROCESS_ROLE: worker
       MAKERHUB_BACKGROUND_TASKS: "true"
+      MAKERHUB_HEAVY_JOB_NICE: "10"
     volumes:
       - /volume4/docker/docker/makerhub/config:/app/config
       - /volume4/docker/docker/makerhub/logs:/app/logs
@@ -141,6 +142,12 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 下一步继续围绕批量归档体验、详情页高保真复刻与本地整理任务增强迭代
 
 ## 更新记录
+
+### 2026-04-29
+- 版本号升级到 `v0.6.10`
+- 信息补全任务完成后不再触发模型库快照 marker 更新，避免 App 容器在 worker 连续补全时反复全库重扫，导致首页和模型库超时
+- Worker 的重型抓取子进程默认以较低 CPU 优先级运行，CPU 争用时优先保证 Web/App 响应
+- 轻量补全模式下的设计图片阶段文案改为“整理设计图片”，避免误以为仍在下载图片
 
 ### 2026-04-29
 - 版本号升级到 `v0.6.9`

@@ -19,6 +19,7 @@ JOB_POLL_SECONDS = 0.5
 JOB_EXIT_TIMEOUT_SECONDS = 5
 DEFAULT_JOB_IDLE_TIMEOUT_SECONDS = 30 * 60
 DEFAULT_THREE_MF_DAILY_LIMIT = 100
+DEFAULT_HEAVY_JOB_NICE = 5
 
 
 def _normalize_three_mf_daily_limit(value: Any, fallback: int = DEFAULT_THREE_MF_DAILY_LIMIT) -> int:
@@ -43,6 +44,24 @@ def _job_idle_timeout_seconds() -> int:
     except (TypeError, ValueError):
         return DEFAULT_JOB_IDLE_TIMEOUT_SECONDS
     return max(value, 30)
+
+
+def _heavy_job_nice_increment() -> int:
+    try:
+        value = int(os.environ.get("MAKERHUB_HEAVY_JOB_NICE") or DEFAULT_HEAVY_JOB_NICE)
+    except (TypeError, ValueError):
+        return DEFAULT_HEAVY_JOB_NICE
+    return max(min(value, 19), 0)
+
+
+def _apply_heavy_job_niceness() -> None:
+    increment = _heavy_job_nice_increment()
+    if increment <= 0 or not hasattr(os, "nice"):
+        return
+    try:
+        os.nice(increment)
+    except OSError:
+        return
 
 
 def _source_looks_deleted(url: str, cookie: str) -> bool:
@@ -76,6 +95,8 @@ def _emit(queue, event_type: str, payload: Any) -> None:
 
 
 def _run_archive_model_entry(queue, payload: dict[str, Any]) -> None:
+    _apply_heavy_job_niceness()
+
     def progress_callback(progress_payload: dict[str, Any]) -> None:
         _emit(queue, "progress", progress_payload)
 
@@ -111,6 +132,8 @@ def _run_archive_model_entry(queue, payload: dict[str, Any]) -> None:
 
 
 def _run_discover_batch_entry(queue, payload: dict[str, Any]) -> None:
+    _apply_heavy_job_niceness()
+
     try:
         result = discover_batch_model_urls(
             str(payload.get("url") or ""),

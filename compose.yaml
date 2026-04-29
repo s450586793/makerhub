@@ -27,6 +27,7 @@ services:
     environment:
       MAKERHUB_PROCESS_ROLE: worker
       MAKERHUB_BACKGROUND_TASKS: "true"
+      MAKERHUB_HEAVY_JOB_NICE: "10"
     volumes:
       - /volume4/docker/docker/makerhub/config:/app/config
       - /volume4/docker/docker/makerhub/logs:/app/logs

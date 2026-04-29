@@ -2947,7 +2947,7 @@ def collect_design_images(
             progress_end,
             idx,
             len(pics),
-            "正在下载设计图片",
+            "正在下载设计图片" if download_assets else "正在整理设计图片",
         )
         url = ""
         if isinstance(p, str):
