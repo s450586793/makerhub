@@ -23,7 +23,7 @@ from app.services.model_attachments import (
 )
 from app.services.profile_rating import normalize_profile_rating
 from app.services.source_health import build_source_health_cards
-from app.services.task_state import SUBSCRIPTIONS_STATE_PATH, TaskStateStore
+from app.services.task_state import SUBSCRIPTIONS_STATE_PATH, TaskStateStore, compact_remote_refresh_state
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, resolve_model_instance_files
 
 
@@ -2210,7 +2210,7 @@ def build_tasks_payload(
             missing_3mf.get("items") or [],
         )
     organize_tasks = store.load_organize_tasks()
-    remote_refresh = store.load_remote_refresh_state()
+    remote_refresh = compact_remote_refresh_state(store.load_remote_refresh_state(), include_current=True)
     active_organize_count = _count_active_organize_tasks(organize_tasks)
     organize_tasks["active_count"] = active_organize_count
     organize_tasks["queued_count"] = int(organize_tasks.get("queued_count") or 0)

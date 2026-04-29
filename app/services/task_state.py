@@ -591,6 +591,32 @@ def _normalize_remote_refresh_state(payload: Any) -> dict:
     }
 
 
+def compact_remote_refresh_state(payload: Any, *, include_current: bool = True) -> dict:
+    state = _normalize_remote_refresh_state(payload)
+    compact = {
+        "status": state["status"],
+        "running": state["running"],
+        "next_run_at": state["next_run_at"],
+        "last_run_at": state["last_run_at"],
+        "last_success_at": state["last_success_at"],
+        "last_error_at": state["last_error_at"],
+        "manual_requested_at": state["manual_requested_at"],
+        "last_message": state["last_message"],
+        "last_batch_total": state["last_batch_total"],
+        "last_batch_succeeded": state["last_batch_succeeded"],
+        "last_batch_failed": state["last_batch_failed"],
+        "last_batch_skipped": state["last_batch_skipped"],
+        "last_eligible_total": state["last_eligible_total"],
+        "last_remaining_total": state["last_remaining_total"],
+        "last_skipped_missing_cookie": state["last_skipped_missing_cookie"],
+        "last_skipped_local_or_invalid": state["last_skipped_local_or_invalid"],
+    }
+    if include_current:
+        compact["current_item"] = state["current_item"]
+        compact["current_items"] = state["current_items"][:2]
+    return compact
+
+
 class TaskStateStore:
     def __init__(self) -> None:
         ensure_app_dirs()

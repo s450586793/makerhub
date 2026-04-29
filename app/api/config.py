@@ -66,7 +66,7 @@ from app.services.source_library import (
     build_state_group_models_payload,
 )
 from app.services.source_health import probe_cookie_auth_status
-from app.services.task_state import TaskStateStore
+from app.services.task_state import TaskStateStore, compact_remote_refresh_state
 from app.services.archive_worker import BATCH_TASK_MODES, detect_archive_mode
 from app.services.self_update import get_update_status, request_system_update
 
@@ -627,7 +627,10 @@ def _public_config_payload(config) -> dict:
         "remote_refresh": config.remote_refresh.model_dump(),
         "three_mf_limits": config.three_mf_limits.model_dump(),
         "advanced": config.advanced.model_dump(),
-        "remote_refresh_state": task_state_store.load_remote_refresh_state(),
+        "remote_refresh_state": compact_remote_refresh_state(
+            task_state_store.load_remote_refresh_state(),
+            include_current=False,
+        ),
         "paths": config.paths.model_dump(),
     }
 
