@@ -113,6 +113,7 @@ const loadMoreTrigger = ref(null);
 
 let intersectionObserver = null;
 let requestToken = 0;
+let loadMoreToken = 0;
 let unsubscribeArchiveEvents = null;
 let refreshWhenVisible = false;
 let locallyHiddenDeletedModelDirs = new Set();
@@ -265,8 +266,28 @@ function restoreModelToCurrentPayload(model, index) {
   return true;
 }
 
+function mergeUniqueModelItems(currentItems = [], incomingItems = []) {
+  const mergedItems = [...currentItems];
+  const seenModelDirs = new Set(
+    mergedItems.map((item) => String(item?.model_dir || "").trim()).filter(Boolean),
+  );
+  for (const item of incomingItems || []) {
+    const modelDir = String(item?.model_dir || "").trim();
+    if (!modelDir || seenModelDirs.has(modelDir)) {
+      continue;
+    }
+    seenModelDirs.add(modelDir);
+    mergedItems.push(item);
+  }
+  return mergedItems;
+}
+
 async function load({ append = false, refresh = false } = {}) {
   const currentToken = ++requestToken;
+  if (!append) {
+    loadMoreToken += 1;
+    loadingMore.value = false;
+  }
   syncFiltersFromRoute();
 
   const nextPage = append ? payload.value.page + 1 : 1;
@@ -277,7 +298,7 @@ async function load({ append = false, refresh = false } = {}) {
   }
 
   if (append) {
-    const mergedItems = [...payload.value.items, ...response.items];
+    const mergedItems = mergeUniqueModelItems(payload.value.items, response.items || []);
     payload.value = {
       ...response,
       items: mergedItems,
@@ -294,6 +315,8 @@ async function load({ append = false, refresh = false } = {}) {
 async function reloadVisiblePages({ refresh = false } = {}) {
   const pagesToLoad = Math.max(Number(payload.value.page) || 1, 1);
   const currentToken = ++requestToken;
+  loadMoreToken += 1;
+  loadingMore.value = false;
   syncFiltersFromRoute();
   const cacheKeyBase = refresh ? Date.now() : "";
 
@@ -385,13 +408,41 @@ async function refreshCurrentModelLibrary(anchor = null, options = {}) {
 
 async function loadMore() {
   if (loadingMore.value || !payload.value.has_more) {
-    return;
+    return false;
   }
+  const currentToken = ++loadMoreToken;
+  const routeAtLoad = route.fullPath;
+  const nextPage = Math.max(Number(payload.value.page) || 1, 1) + 1;
+  let failed = false;
+  disconnectObserver();
   loadingMore.value = true;
   try {
-    await load({ append: true });
+    syncFiltersFromRoute();
+    const response = suppressLocallyDeletedItems(await fetchPage(nextPage, { cacheKey: `${Date.now()}-${nextPage}` }));
+    if (currentToken !== loadMoreToken || route.fullPath !== routeAtLoad) {
+      return false;
+    }
+    const mergedItems = mergeUniqueModelItems(payload.value.items, response.items || []);
+    payload.value = {
+      ...response,
+      items: mergedItems,
+      count: mergedItems.length,
+      page: nextPage,
+    };
+    loaded.value = true;
+    return true;
+  } catch (error) {
+    failed = true;
+    status.value = error instanceof Error ? error.message : "加载更多模型失败。";
+    return false;
   } finally {
-    loadingMore.value = false;
+    if (currentToken === loadMoreToken) {
+      loadingMore.value = false;
+      await nextTick();
+      if (!failed) {
+        ensureObserver();
+      }
+    }
   }
 }
 
@@ -404,7 +455,7 @@ function disconnectObserver() {
 
 function ensureObserver() {
   disconnectObserver();
-  if (!loadMoreTrigger.value) {
+  if (!loadMoreTrigger.value || loadingMore.value) {
     return;
   }
   intersectionObserver = new IntersectionObserver((entries) => {
@@ -416,6 +467,21 @@ function ensureObserver() {
     rootMargin: "320px 0px",
   });
   intersectionObserver.observe(loadMoreTrigger.value);
+}
+
+async function backfillAfterDelete(routeAtDelete, anchor = null) {
+  if (route.fullPath !== routeAtDelete) {
+    return;
+  }
+  if (!payload.value.has_more) {
+    await nextTick();
+    ensureObserver();
+    return;
+  }
+  await loadMore();
+  if (route.fullPath === routeAtDelete) {
+    await restoreModelListAnchor(anchor);
+  }
 }
 
 function applyFilters() {
@@ -539,6 +605,7 @@ async function deleteOne(modelDir) {
 
   const cleanModelDir = String(modelDir || "").trim();
   requestToken += 1;
+  loadMoreToken += 1;
   disconnectObserver();
   loadingMore.value = false;
   const scrollAnchor = captureModelListAnchor(modelDir);
@@ -553,8 +620,8 @@ async function deleteOne(modelDir) {
   removeModelFromCurrentPayload(modelDir);
   status.value = "已从当前列表隐藏，正在后台删除。";
   await nextTick();
-  ensureObserver();
   await restoreModelListAnchor(scrollAnchor);
+  void backfillAfterDelete(routeAtDelete, scrollAnchor);
 
   deleting.value = true;
   try {
