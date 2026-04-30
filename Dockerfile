@@ -28,8 +28,11 @@ RUN mkdir -p /app/config /app/logs /app/state /app/archive /app/local
 
 COPY app ./app
 COPY VERSION ./VERSION
+COPY docker/entrypoint.sh ./docker/entrypoint.sh
 COPY frontend/package.json ./frontend/package.json
 COPY --from=frontend-build /frontend/dist ./frontend/dist
+RUN chmod +x /app/docker/entrypoint.sh
 
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["/app/docker/entrypoint.sh"]
+CMD ["app"]

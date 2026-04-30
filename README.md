@@ -73,6 +73,7 @@ services:
     ports:
       - "9042:8000"
     environment:
+      MAKERHUB_ENTRYPOINT: app
       MAKERHUB_PROCESS_ROLE: app
       MAKERHUB_BACKGROUND_TASKS: "false"
       MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
@@ -89,8 +90,8 @@ services:
   makerhub-worker:
     image: ghcr.io/s450586793/makerhub:latest
     container_name: makerhub-worker
-    command: ["python", "-m", "app.worker"]
     environment:
+      MAKERHUB_ENTRYPOINT: worker
       MAKERHUB_PROCESS_ROLE: worker
       MAKERHUB_BACKGROUND_TASKS: "true"
       MAKERHUB_HEAVY_JOB_NICE: "10"
@@ -102,6 +103,8 @@ services:
       - /volume2/entertainment/3D打印/makerhub/local:/app/local
     restart: unless-stopped
 ```
+
+`makerhub-worker` 推荐通过 `MAKERHUB_ENTRYPOINT=worker` 启动，适合 Unraid、DSM、Portainer 这类不方便填写启动命令的界面；如果只配置了 `MAKERHUB_PROCESS_ROLE=worker`，镜像也会自动进入 Worker 入口。旧版命令覆盖方式仍然兼容，但不再是推荐安装方式。
 
 如果没有挂载 `docker.sock`，设置页仍会显示版本信息，但“一键更新”按钮会保持不可用，并提示你继续在宿主机执行：
 
@@ -142,6 +145,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 下一步继续围绕批量归档体验、详情页高保真复刻与本地整理任务增强迭代
 
 ## 更新记录
+
+### 2026-04-30
+- 版本号升级到 `v0.6.15`
+- Docker 镜像新增 `MAKERHUB_ENTRYPOINT` 启动入口，`makerhub-app` 与 `makerhub-worker` 可完全通过环境变量区分角色；仅设置 `MAKERHUB_PROCESS_ROLE=worker` 时也会自动进入 Worker，不再要求 Worker 额外填写 Docker `command`
+- README 与仓库 `compose.yaml` 改为环境变量写法，方便 DSM、Unraid、Portainer 等图形化容器管理器直接部署
 
 ### 2026-04-30
 - 版本号升级到 `v0.6.14`
