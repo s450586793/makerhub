@@ -147,6 +147,12 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 ## 更新记录
 
 ### 2026-04-30
+- 版本号升级到 `v0.6.17`
+- 修复 MakerWorld 国区模型页被验证页拦截时，API 回退误接受 `id=0` 空壳数据并写入空标题 / “浏览历史”作者的问题
+- 归档、订阅与源端刷新在写入前会校验模型 ID 与当前 URL 是否一致，国区链接不再回退到国际 API，避免同数字 ID 的跨站模型污染本地库
+- 作者 HTML 兜底会跳过浏览历史、设置、通知、收藏夹等导航链接，避免把登录用户导航误识别为模型作者
+
+### 2026-04-30
 - 版本号升级到 `v0.6.16`
 - 3MF 下载链路新增默认 `5-10` 秒随机等待：获取 3MF 下载地址前会先错峰，真实下载 `.3mf` 文件前也会错峰，降低连续请求触发 MakerWorld 限流 / 验证的概率
 - 已存在的本地 3MF 文件会直接跳过，不会因为归档整理或页面重建额外等待；如需调整可用 `MAKERHUB_THREE_MF_DOWNLOAD_WAIT_MIN_SECONDS` / `MAKERHUB_THREE_MF_DOWNLOAD_WAIT_MAX_SECONDS` 环境变量覆盖
@@ -155,6 +161,9 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 版本号升级到 `v0.6.15`
 - Docker 镜像新增 `MAKERHUB_ENTRYPOINT` 启动入口，`makerhub-app` 与 `makerhub-worker` 可完全通过环境变量区分角色；仅设置 `MAKERHUB_PROCESS_ROLE=worker` 时也会自动进入 Worker，不再要求 Worker 额外填写 Docker `command`
 - README 与仓库 `compose.yaml` 改为环境变量写法，方便 DSM、Unraid、Portainer 等图形化容器管理器直接部署
+
+<details>
+<summary>展开 / 收起更早更新</summary>
 
 ### 2026-04-30
 - 版本号升级到 `v0.6.14`
@@ -197,9 +206,6 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 版本号升级到 `v0.6.7`
 - 模型库删除后不再无条件补拉下一页，也不在后端删除成功后刷新整段列表，避免确认删除后页面抖动
 - 删除后的加载更多只在底部哨兵已经进入视口附近时触发；普通位置删除只重新挂载无限滚动观察器
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-04-29
 - 版本号升级到 `v0.6.6`

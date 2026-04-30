@@ -718,6 +718,77 @@ def _parse_design_id(url: str) -> Optional[int]:
         return None
 
 
+def _coerce_positive_int(value: Any) -> Optional[int]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        text = str(value).strip()
+    except Exception:
+        return None
+    if not text:
+        return None
+    if not re.fullmatch(r"\d+", text):
+        return None
+    parsed = int(text)
+    return parsed if parsed > 0 else None
+
+
+def _extract_design_payload_id(design: dict) -> Optional[int]:
+    if not isinstance(design, dict):
+        return None
+    for key in ("id", "designId", "designID", "modelId", "modelID", "model_id"):
+        parsed = _coerce_positive_int(design.get(key))
+        if parsed:
+            return parsed
+    return None
+
+
+def _design_payload_title(design: dict) -> str:
+    if not isinstance(design, dict):
+        return ""
+    for key in ("title", "name", "modelName", "designName"):
+        value = design.get(key)
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.split())
+    return ""
+
+
+def _design_payload_error(design: object, source_url: str) -> str:
+    if not isinstance(design, dict):
+        return "源端返回内容不是模型对象"
+
+    expected_id = _parse_design_id(source_url)
+    payload_id = _extract_design_payload_id(design)
+    if not payload_id:
+        return "源端返回的模型 ID 为空或为 0"
+    if expected_id and payload_id != expected_id:
+        return f"源端返回的模型 ID 不匹配（期望 {expected_id}，实际 {payload_id}）"
+    if not _design_payload_title(design):
+        return "源端返回的模型标题为空"
+    return ""
+
+
+def _normalize_design_payload_identity(design: dict, source_url: str) -> None:
+    if not isinstance(design, dict):
+        return
+    payload_id = _extract_design_payload_id(design)
+    if payload_id:
+        design["id"] = payload_id
+    if not design.get("url"):
+        design["url"] = source_url
+
+
+def _append_api_base_candidate(bases: list[str], base: str, source: str) -> None:
+    base = str(base or "").strip().rstrip("/")
+    if not base:
+        return
+    base_source = normalize_makerworld_source(url=base)
+    if source and base_source and base_source != source:
+        return
+    if base not in bases:
+        bases.append(base)
+
+
 def _extract_api_host(html_text: str) -> Optional[str]:
     if not html_text:
         return None
@@ -786,24 +857,24 @@ def fetch_design_from_api(
     raw_cookie: str,
     url: str,
     api_host_hint: Optional[str] = None,
+    logger=None,
 ) -> Optional[dict]:
     design_id = _parse_design_id(url)
     if not design_id:
         return None
     parsed = urlparse(url)
     origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else "https://makerworld.com.cn"
-    base_candidates = []
-    if api_host_hint:
-        base_candidates.append(api_host_hint)
-    base_candidates.append(origin)
-    base_candidates.append("https://api.bambulab.cn")
-    base_candidates.append("https://api.bambulab.com")
+    source = normalize_makerworld_source(url=url)
     bases = []
-    for base in base_candidates:
-        if not base:
-            continue
-        if base not in bases:
-            bases.append(base)
+    _append_api_base_candidate(bases, api_host_hint or "", source)
+    _append_api_base_candidate(bases, origin, source)
+    if source == "global":
+        _append_api_base_candidate(bases, "https://api.bambulab.com", source)
+    elif source == "cn":
+        _append_api_base_candidate(bases, "https://api.bambulab.cn", source)
+    else:
+        _append_api_base_candidate(bases, "https://api.bambulab.cn", source)
+        _append_api_base_candidate(bases, "https://api.bambulab.com", source)
 
     path_templates = [
         "/api/v1/design-service/design/{id}",
@@ -840,6 +911,11 @@ def fetch_design_from_api(
             continue
         design = _unwrap_design_payload(payload)
         if design:
+            payload_error = _design_payload_error(design, url)
+            if payload_error:
+                log(logger, "API 返回的模型数据无效，跳过:", api_url, payload_error)
+                continue
+            _normalize_design_payload_identity(design, url)
             return design
     return None
 
@@ -2820,6 +2896,43 @@ def extract_author(design: dict, html_text: str = None):
         handle = (handle or "").lstrip("@").strip()
         return f"https://makerworld.com.cn/zh/@{handle}" if handle else ""
 
+    def _is_suspect_author_text(text: str) -> bool:
+        normalized = " ".join(str(text or "").split()).strip().lower()
+        return normalized in {
+            "浏览历史",
+            "browse history",
+            "browsing history",
+            "history",
+            "收藏夹",
+            "collections",
+            "设置",
+            "settings",
+            "通知",
+            "notifications",
+        }
+
+    def _is_suspect_author_href(href: str, text: str = "") -> bool:
+        if _is_suspect_author_text(text):
+            return True
+        raw = str(href or "").strip()
+        if not raw:
+            return False
+        parsed = urlparse(raw)
+        path = (parsed.path or raw).lower()
+        suspect_markers = (
+            "/browsing-history",
+            "/collections",
+            "/collection",
+            "/likes",
+            "/search",
+            "/settings",
+            "/notifications",
+            "/messages",
+            "/following",
+            "/followers",
+        )
+        return any(marker in path for marker in suspect_markers)
+
     creator = design.get("designCreator") or {}
     name = creator.get("name") or design.get("creatorName") or ""
     username = creator.get("username") or creator.get("handle") or design.get("creatorUsername") or ""
@@ -2833,20 +2946,26 @@ def extract_author(design: dict, html_text: str = None):
         avatar_url = cand.get("avatarUrl") or cand.get("avatar") or cand.get("headImg") or ""
     elif isinstance(cand, str) and not name:
         name = cand
+    if _is_suspect_author_text(name):
+        name = ""
     # 兜底从 design 层获取用户名
     if not username:
         username = design.get("creatorName") or design.get("creatorUsername") or username
     if url:
-        handle_from_url = _extract_author_handle(url)
-        if handle_from_url:
-            # 统一收敛到作者主页地址，避免 /upload、/browsing-history 等路径污染
-            url = _build_author_url(handle_from_url)
-            if not username:
-                username = handle_from_url
+        if _is_suspect_author_href(url, name):
+            url = ""
+            username = ""
+        else:
+            handle_from_url = _extract_author_handle(url)
+            if handle_from_url:
+                # 统一收敛到作者主页地址，避免 /upload 等路径污染
+                url = _build_author_url(handle_from_url)
+                if not username:
+                    username = handle_from_url
 
     # HTML 兜底：优先从作者链接提取 @userid
     # 若 design 中 url 被污染为 /browsing-history，也强制用 HTML 纠正。
-    suspect_url = "browsing-history" in (url or "")
+    suspect_url = _is_suspect_author_href(url, name)
     if (not url or not avatar_url or not name or suspect_url) and html_text:
         try:
             soup = BeautifulSoup(html_text, "html.parser")
@@ -2855,6 +2974,9 @@ def extract_author(design: dict, html_text: str = None):
             )
             for link in link_candidates:
                 href = link.get("href") or ""
+                link_text = (link.get_text() or "").strip()
+                if _is_suspect_author_href(href, link_text):
+                    continue
                 handle = _extract_author_handle(href)
                 if not handle:
                     continue
@@ -2864,7 +2986,7 @@ def extract_author(design: dict, html_text: str = None):
                 if not username:
                     username = handle
                 if not name:
-                    name = (link.get_text() or "").strip()
+                    name = link_text if not _is_suspect_author_text(link_text) else ""
                 if not avatar_url:
                     img = link.find("img")
                     if img and img.get("src"):
@@ -2875,8 +2997,13 @@ def extract_author(design: dict, html_text: str = None):
 
     # 最终统一为 https://makerworld.com.cn/zh/@{userid}
     final_handle = _extract_author_handle(url) or username
+    if _is_suspect_author_text(name) or _is_suspect_author_href(url, name):
+        name = ""
+        final_handle = ""
     if final_handle:
         url = _build_author_url(final_handle)
+    else:
+        url = ""
     avatar_local = f"author_avatar.{pick_ext_from_url(avatar_url)}" if avatar_url else ""
     return {
         "name": name,
@@ -5774,11 +5901,19 @@ def archive_model(
         log(logger, "疑似 Cloudflare 验证拦截，请更新 cookie 中的 cf_clearance")
 
     design = None
+    design_payload_error = ""
     next_data = {}
     next_data_started_at = time.perf_counter()
     try:
         next_data = extract_next_data(html_text)
         design = extract_design_from_next_data(next_data)
+        if design is not None:
+            design_payload_error = _design_payload_error(design, fetch_url)
+            if design_payload_error:
+                log(logger, "页面内模型数据无效，尝试 API 获取:", design_payload_error)
+                design = None
+            else:
+                _normalize_design_payload_identity(design, fetch_url)
         if design is None:
             log(logger, "未能从 __NEXT_DATA__ 定位 design，尝试 API 获取")
     except Exception as e:
@@ -5795,7 +5930,7 @@ def archive_model(
     if design is None:
         emit_progress(progress_callback, 22, "页面数据不足，正在回退接口抓取")
         api_fallback_started_at = time.perf_counter()
-        design = fetch_design_from_api(sess, raw_cookie_header, fetch_url, api_host_hint=api_host_hint)
+        design = fetch_design_from_api(sess, raw_cookie_header, fetch_url, api_host_hint=api_host_hint, logger=logger)
         timings_ms["fetch_design_api"] = _log_perf(
             "archive.fetch_design_api",
             api_fallback_started_at,
@@ -5806,6 +5941,8 @@ def archive_model(
     if design is None:
         if is_cloudflare_challenge:
             raise RuntimeError("页面被 Cloudflare 验证拦截，请更新 cookie（含 cf_clearance）后重试")
+        if design_payload_error:
+            raise RuntimeError(f"源端返回的模型数据无效：{design_payload_error}，请更新 Cookie 或完成 MakerWorld 验证后重试")
         raise RuntimeError("未能解析模型数据，请确认 cookie/页面结构")
 
     design["url"] = url
