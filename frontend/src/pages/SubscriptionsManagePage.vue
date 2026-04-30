@@ -1,9 +1,9 @@
 <template>
   <section class="page-intro page-intro--compact subscription-page-intro">
     <div>
-      <span class="eyebrow">订阅管理</span>
+      <span class="eyebrow">订阅库管理</span>
       <h1>订阅链接与同步明细</h1>
-      <p>这里保留原来的订阅管理视图，集中查看所有订阅的链接、Cron、同步状态和操作入口。</p>
+      <p>集中查看所有订阅来源的链接、Cron、同步状态和操作入口。</p>
     </div>
     <div class="subscription-page-intro__side">
       <div class="intro-stats">
@@ -21,7 +21,7 @@
         </div>
       </div>
       <div class="subscription-page-tools">
-        <RouterLink class="button button-secondary" to="/subscriptions">返回卡片</RouterLink>
+        <RouterLink class="button button-secondary" to="/subscriptions">返回订阅库</RouterLink>
         <button class="button button-secondary" type="button" @click="openSettingsDialog">订阅设置</button>
       </div>
     </div>
@@ -32,7 +32,7 @@
   <section class="library-section">
     <div class="library-section__head">
       <div>
-        <h2>订阅管理</h2>
+        <h2>订阅库管理</h2>
         <p>{{ payload.count }} 条订阅记录</p>
       </div>
     </div>

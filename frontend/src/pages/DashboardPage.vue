@@ -93,7 +93,7 @@
         <article class="dashboard-mini-card">
             <div class="dashboard-mini-card__head">
               <div>
-                <span class="dashboard-mini-card__eyebrow">订阅</span>
+                <span class="dashboard-mini-card__eyebrow">订阅库</span>
                 <h3>作者与收藏夹</h3>
               </div>
               <span :class="['count-pill', automation.subscriptions.running_count ? 'count-pill--warn' : 'count-pill--ok']">
@@ -128,7 +128,7 @@
             </div>
 
             <div class="dashboard-mini-card__footer">
-              <RouterLink class="section-link" to="/subscriptions">进入订阅页</RouterLink>
+              <RouterLink class="section-link" to="/subscriptions">进入订阅库</RouterLink>
             </div>
         </article>
 
@@ -177,8 +177,8 @@
         <article class="dashboard-mini-card">
             <div class="dashboard-mini-card__head">
               <div>
-                <span class="dashboard-mini-card__eyebrow">本地整理</span>
-                <h3>3MF 导入</h3>
+                <span class="dashboard-mini-card__eyebrow">本地库</span>
+                <h3>3MF 与本地状态</h3>
               </div>
               <span :class="['count-pill', automation.organizer.active_count ? 'count-pill--warn' : 'count-pill--ok']">
                 {{ automation.organizer.active_count || 0 }} 活跃
@@ -212,7 +212,7 @@
             </div>
 
             <div class="dashboard-mini-card__footer">
-              <RouterLink class="section-link" to="/organizer">进入本地整理页</RouterLink>
+              <RouterLink class="section-link" to="/organizer">进入本地库</RouterLink>
             </div>
         </article>
       </div>

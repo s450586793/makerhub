@@ -1,9 +1,9 @@
 <template>
   <section class="page-intro page-intro--compact subscription-page-intro">
     <div>
-      <span class="eyebrow">订阅</span>
-      <h1>订阅来源卡片</h1>
-      <p>这里直接浏览作者、合集、收藏夹和本地状态卡片。订阅链接明细、编辑和同步操作放到订阅管理页。</p>
+      <span class="eyebrow">订阅库</span>
+      <h1>订阅来源</h1>
+      <p>集中浏览作者、合集和收藏夹来源。订阅链接明细、编辑和同步操作放到订阅管理页。</p>
     </div>
     <div class="subscription-page-intro__side">
       <div class="intro-stats">
@@ -22,14 +22,14 @@
       </div>
       <div class="subscription-page-tools">
         <button class="button button-primary" type="button" @click="openCreateDialog">添加订阅</button>
-        <RouterLink class="button button-secondary" to="/subscriptions/manage">订阅管理</RouterLink>
+        <RouterLink class="button button-secondary" to="/subscriptions/manage">订阅库管理</RouterLink>
       </div>
     </div>
   </section>
 
   <p v-if="status && !createDialog.visible" class="subscription-page-status">{{ status }}</p>
 
-  <section v-for="section in payload.sections" :key="section.key" class="library-section">
+  <section v-for="section in sourceSections" :key="section.key" class="library-section">
     <div class="library-section__head">
       <div>
         <h2>{{ section.label }}</h2>
@@ -47,8 +47,7 @@
     </div>
     <section v-else class="surface empty-state subscription-inline-empty">
       <h2>{{ section.label }}为空</h2>
-      <p v-if="section.key === 'subscription_sources'">当前没有可展示的订阅来源卡片。你可以先添加作者、合集或收藏夹订阅。</p>
-      <p v-else>当前还没有命中的本地状态卡片。</p>
+      <p>当前没有可展示的订阅来源卡片。你可以先添加作者、合集或收藏夹订阅。</p>
     </section>
   </section>
 
@@ -97,7 +96,7 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { RouterLink, useRouter } from "vue-router";
 
 import CronField from "../components/CronField.vue";
@@ -121,6 +120,10 @@ const createDialog = reactive({
   cron: DEFAULT_SUBSCRIPTION_SETTINGS.default_cron,
 });
 let refreshTimer = null;
+
+const sourceSections = computed(() => (
+  payload.value.sections.filter((section) => section?.key === "subscription_sources")
+));
 
 function syncAutoRefresh() {
   const hasRunning = payload.value.items.some((item) => item.running);

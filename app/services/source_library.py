@@ -609,7 +609,7 @@ def _group_local_sources(visible_models: list[dict]) -> list[dict]:
         key="local-organizer",
         kind="local",
         card_kind="collection",
-        title="本地整理",
+        title="本地库",
         subtitle="本地 3MF 归档",
         site="local",
     )
@@ -829,7 +829,7 @@ def _group_models(store: Optional[JsonStore] = None, task_store: Optional[TaskSt
         {"key": "authors", "label": "作者", "items": _sort_source_groups(author_groups, "recent")},
         {"key": "collections", "label": "合集", "items": _sort_source_groups(collection_groups, "recent")},
         {"key": "favorites", "label": "收藏夹", "items": _sort_source_groups(favorite_groups, "recent")},
-        {"key": "locals", "label": "本地整理", "items": local_groups},
+        {"key": "locals", "label": "本地库", "items": local_groups},
         {"key": "states", "label": "状态", "items": sorted(state_groups, key=lambda item: DEFAULT_STATE_SORT_ORDER.get(str(item.get("key") or ""), 99))},
     ]
     return groups, all_models, sections

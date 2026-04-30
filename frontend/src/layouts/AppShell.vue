@@ -26,8 +26,8 @@
         <nav class="sidebar-nav">
           <RouterLink :class="navClass('/')" to="/" @click="closeSidebar">首页</RouterLink>
           <RouterLink :class="navClass('/models')" to="/models" @click="closeSidebar">模型库</RouterLink>
-          <RouterLink :class="navClass('/subscriptions')" to="/subscriptions" @click="closeSidebar">订阅</RouterLink>
-          <RouterLink :class="navClass('/organizer')" to="/organizer" @click="closeSidebar">本地整理</RouterLink>
+          <RouterLink :class="navClass('/subscriptions')" to="/subscriptions" @click="closeSidebar">订阅库</RouterLink>
+          <RouterLink :class="navClass('/organizer')" to="/organizer" @click="closeSidebar">本地库</RouterLink>
           <RouterLink :class="navClass('/remote-refresh')" to="/remote-refresh" @click="closeSidebar">源端刷新</RouterLink>
           <RouterLink :class="navClass('/tasks')" to="/tasks" @click="closeSidebar">归档任务</RouterLink>
           <RouterLink :class="navClass('/settings')" to="/settings" @click="closeSidebar">设置</RouterLink>

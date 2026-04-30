@@ -95,6 +95,17 @@
               重置筛选
             </button>
           </div>
+          <div class="logs-preset-list">
+            <button
+              v-for="preset in logPresets"
+              :key="preset.key"
+              class="button button-secondary button-small"
+              type="button"
+              @click="applyLogPreset(preset)"
+            >
+              {{ preset.label }}
+            </button>
+          </div>
         </section>
 
         <section class="logs-sidebar__section">
@@ -162,6 +173,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
 import { apiRequest } from "../lib/api";
 
@@ -173,7 +185,15 @@ const LEVEL_DEFINITIONS = [
   { key: "error", label: "ERROR", description: "失败、异常与中断" },
   { key: "success", label: "SUCCESS", description: "明确成功完成的步骤" },
 ];
+const LOG_PRESETS = [
+  { key: "organizer", label: "本地整理历史", file: "business.log", q: "organizer" },
+  { key: "subscription", label: "订阅同步", file: "business.log", q: "subscription" },
+  { key: "archive", label: "归档任务", file: "business.log", q: "archive" },
+  { key: "missing_3mf", label: "缺失 3MF", file: "business.log", q: "missing_3mf" },
+];
 
+const route = useRoute();
+const router = useRouter();
 const files = ref([]);
 const entries = ref([]);
 const selectedFile = ref("business.log");
@@ -186,6 +206,9 @@ const autoRefresh = ref(false);
 
 let refreshTimer = null;
 let searchTimer = null;
+let applyingRouteQuery = false;
+
+const logPresets = LOG_PRESETS;
 
 const fileOptions = computed(() => (
   files.value.length
@@ -301,7 +324,18 @@ function clearFilters() {
   activeLevel.value = "all";
   query.value = "";
   limit.value = 300;
+  router.replace({ path: "/logs" });
   load();
+}
+
+function applyLogPreset(preset) {
+  router.replace({
+    path: "/logs",
+    query: {
+      file: preset.file,
+      q: preset.q,
+    },
+  });
 }
 
 function toggleAutoRefresh() {
@@ -320,18 +354,44 @@ function syncAutoRefresh() {
 }
 
 watch([selectedFile, limit], () => {
+  if (applyingRouteQuery) {
+    return;
+  }
   load();
 });
 
 watch(query, () => {
+  if (applyingRouteQuery) {
+    return;
+  }
   if (searchTimer) {
     window.clearTimeout(searchTimer);
   }
   searchTimer = window.setTimeout(load, 320);
 });
 
-onMounted(() => {
+watch(() => route.fullPath, () => {
+  applyRouteQuery();
+});
+
+function applyRouteQuery() {
+  applyingRouteQuery = true;
+  const routeFile = typeof route.query.file === "string" ? route.query.file : "";
+  const routeQuery = typeof route.query.q === "string" ? route.query.q : "";
+  const routeLevel = typeof route.query.level === "string" ? route.query.level : "";
+  const routeLimit = Number(route.query.limit || 0);
+  selectedFile.value = routeFile || "business.log";
+  query.value = routeQuery;
+  activeLevel.value = routeLevel || "all";
+  if (Number.isFinite(routeLimit) && routeLimit > 0) {
+    limit.value = Math.min(Math.max(Math.trunc(routeLimit), 1), 2000);
+  }
+  applyingRouteQuery = false;
   load();
+}
+
+onMounted(() => {
+  applyRouteQuery();
 });
 
 onBeforeUnmount(() => {

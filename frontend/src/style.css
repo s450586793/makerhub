@@ -1179,6 +1179,12 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   gap: 10px;
 }
 
+.logs-preset-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .logs-levels {
   display: grid;
   gap: 10px;

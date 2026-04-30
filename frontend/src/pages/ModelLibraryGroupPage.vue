@@ -143,7 +143,7 @@ const groupLabel = computed(() => {
   if (sourceType === "author") return "作者模型列表";
   if (sourceType === "collection") return "合集模型列表";
   if (sourceType === "favorite") return "收藏夹模型列表";
-  if (sourceType === "local") return "本地整理模型列表";
+  if (sourceType === "local") return "本地库模型列表";
   return "模型列表";
 });
 

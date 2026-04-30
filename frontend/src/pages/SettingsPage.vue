@@ -2,7 +2,7 @@
   <section class="page-intro settings-page-intro">
     <div>
       <span class="eyebrow">设置</span>
-      <h1>连接、通知与用户配置</h1>
+      <h1>系统、本地整理与用户配置</h1>
     </div>
   </section>
 
@@ -107,6 +107,46 @@
         <div class="form-footer">
           <button class="button button-primary" type="submit">保存通知设置</button>
           <span class="form-status">{{ statuses.notifications }}</span>
+        </div>
+      </form>
+    </div>
+
+    <div v-show="activeTab === 'organizer'" class="settings-panel is-active">
+      <form class="settings-form token-card" @submit.prevent="saveOrganizer">
+        <div class="section-card__header">
+          <div>
+            <span class="eyebrow">本地整理</span>
+            <h2>本地 3MF 整理设置</h2>
+          </div>
+          <RouterLink class="button button-secondary button-small" to="/organizer">
+            返回本地库
+          </RouterLink>
+        </div>
+
+        <div class="settings-grid settings-grid--two">
+          <label class="field-card">
+            <span>本地整理扫描目录</span>
+            <input v-model="organizerForm.source_dir" type="text" placeholder="/app/local">
+            <small class="archive-form__hint">Worker 会从这里扫描候选 3MF 文件。</small>
+          </label>
+          <label class="field-card">
+            <span>整理目标目录</span>
+            <input v-model="organizerForm.target_dir" type="text" placeholder="/app/archive">
+            <small class="archive-form__hint">整理后的模型会写入归档库。</small>
+          </label>
+        </div>
+
+        <label class="field-card">
+          <span>整理模式</span>
+          <label class="switch">
+            <input v-model="organizerForm.move_files" type="checkbox">
+            <span>启用后移动文件；关闭后复制文件并保留原文件</span>
+          </label>
+        </label>
+
+        <div class="form-footer">
+          <button class="button button-primary" type="submit">保存本地整理设置</button>
+          <span class="form-status">{{ statuses.organizer }}</span>
         </div>
       </form>
     </div>
@@ -407,7 +447,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { RouterLink, useRoute, useRouter } from "vue-router";
 
 import SecretTextarea from "../components/SecretTextarea.vue";
 import ThemeSegment from "../components/ThemeSegment.vue";
@@ -421,6 +461,7 @@ const router = useRouter();
 const tabs = [
   { key: "system", label: "系统" },
   { key: "connections", label: "连接设置" },
+  { key: "organizer", label: "本地整理" },
   { key: "advanced", label: "高级" },
   { key: "user", label: "用户" },
   { key: "notifications", label: "通知" },
@@ -462,6 +503,11 @@ const advancedForm = reactive({
   three_mf_download_limit: 1,
   disk_io_limit: 1,
 });
+const organizerForm = reactive({
+  source_dir: "",
+  target_dir: "",
+  move_files: true,
+});
 const userForm = reactive({
   username: "admin",
   display_name: "Admin",
@@ -477,6 +523,7 @@ const statuses = reactive({
   cookie_cn: "",
   cookie_global: "",
   proxy: "",
+  organizer: "",
   advanced: "",
   notifications: "",
   user: "",
@@ -679,6 +726,9 @@ function applyConfigToForms(payload) {
   advancedForm.comment_asset_download_limit = normalizeBoundedInt(payload.advanced?.comment_asset_download_limit, 4, 1, 16);
   advancedForm.three_mf_download_limit = normalizeBoundedInt(payload.advanced?.three_mf_download_limit, 1, 1, 4);
   advancedForm.disk_io_limit = normalizeBoundedInt(payload.advanced?.disk_io_limit, 1, 1, 4);
+  organizerForm.source_dir = payload.organizer?.source_dir || "";
+  organizerForm.target_dir = payload.organizer?.target_dir || "";
+  organizerForm.move_files = payload.organizer?.move_files !== false;
 
   notificationsForm.enabled = Boolean(payload.notifications?.enabled);
   notificationsForm.telegram_bot_token = payload.notifications?.telegram_bot_token || "";
@@ -903,6 +953,19 @@ async function saveAdvanced() {
     statuses.advanced = "高级设置已保存。";
   } catch (error) {
     statuses.advanced = error instanceof Error ? error.message : "保存失败。";
+  }
+}
+
+async function saveOrganizer() {
+  try {
+    const payload = await apiRequest("/api/config/organizer", {
+      method: "POST",
+      body: { ...organizerForm },
+    });
+    applyConfigPayload(payload);
+    statuses.organizer = "本地整理设置已保存。";
+  } catch (error) {
+    statuses.organizer = error instanceof Error ? error.message : "保存失败。";
   }
 }
 

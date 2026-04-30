@@ -80,7 +80,7 @@ const routes = [
         name: "subscriptions",
         component: SubscriptionsPage,
         meta: {
-          title: "订阅 | makerhub",
+          title: "订阅库 | makerhub",
         },
       },
       {
@@ -88,7 +88,7 @@ const routes = [
         name: "subscriptions-manage",
         component: SubscriptionsManagePage,
         meta: {
-          title: "订阅管理 | makerhub",
+          title: "订阅库管理 | makerhub",
         },
       },
       {
@@ -104,7 +104,7 @@ const routes = [
         name: "organizer",
         component: OrganizerPage,
         meta: {
-          title: "整理 | makerhub",
+          title: "本地库 | makerhub",
         },
       },
       {

@@ -1,11 +1,15 @@
 <template>
   <section class="page-intro">
     <div>
-      <span class="eyebrow">本地整理</span>
-      <h1>本地整理配置</h1>
-      <p>控制 `/app/local` 的扫描来源、归档目标和移动模式。</p>
+      <span class="eyebrow">本地库</span>
+      <h1>本地库管理</h1>
+      <p>集中查看本地收藏、已打印、源端删除和本地删除状态。本地整理配置已移动到设置页。</p>
     </div>
     <div class="intro-stats organizer-intro-stats">
+      <div class="intro-stat">
+        <span>状态卡片</span>
+        <strong>{{ localStateCards.length }}</strong>
+      </div>
       <div class="intro-stat">
         <span>候选 3MF</span>
         <strong>{{ organizerTasks.detected_total || 0 }}</strong>
@@ -18,132 +22,106 @@
         <span>排队中</span>
         <strong>{{ organizerTasks.queued_count || 0 }}</strong>
       </div>
-      <div class="intro-stat">
-        <span>记录数</span>
-        <strong>{{ organizerTasks.count || 0 }}</strong>
-      </div>
     </div>
   </section>
 
-  <section class="surface organizer-layout">
-    <form class="settings-form" @submit.prevent="saveOrganizer">
-      <div class="settings-grid settings-grid--two">
-        <label class="field-card">
-          <span>本地整理扫描目录</span>
-          <input v-model="organizerForm.source_dir" type="text" placeholder="/app/local">
-        </label>
-        <label class="field-card">
-          <span>整理目标目录</span>
-          <input v-model="organizerForm.target_dir" type="text" placeholder="/app/archive">
-        </label>
+  <section class="library-section">
+    <div class="library-section__head">
+      <div>
+        <h2>本地状态</h2>
+        <p>{{ localStateCards.length }} 张卡片</p>
       </div>
-      <label class="field-card">
-        <span>整理模式</span>
-        <label class="switch">
-          <input v-model="organizerForm.move_files" type="checkbox">
-          <span>启用后移动文件，而不是复制文件</span>
-        </label>
-      </label>
-      <div class="form-footer">
-        <button class="button button-primary" type="submit">保存整理配置</button>
-        <span class="form-status">{{ status }}</span>
+      <div class="filter-actions">
+        <button class="button button-secondary button-small" type="button" :disabled="loading" @click="load">
+          {{ loading ? "刷新中..." : "刷新" }}
+        </button>
       </div>
-    </form>
+    </div>
+
+    <div v-if="localStateCards.length" class="source-library-grid">
+      <SourceLibraryCard
+        v-for="card in localStateCards"
+        :key="card.key"
+        :card="card"
+        @open="openCard"
+      />
+    </div>
+    <section v-else class="surface empty-state subscription-inline-empty">
+      <h2>本地状态为空</h2>
+      <p>当前还没有本地收藏、已打印、源端删除或本地删除模型。</p>
+    </section>
   </section>
 
   <section class="surface section-card organizer-layout">
     <div class="section-card__header">
       <div>
         <span class="eyebrow">本地整理</span>
-        <h2>本地整理任务</h2>
+        <h2>运行状态</h2>
       </div>
       <div class="filter-actions">
-        <button
-          v-if="organizerTasks.items.length"
-          class="button button-secondary button-small"
-          type="button"
-          :disabled="clearingOrganizeTasks"
-          @click="clearOrganizeTasks"
-        >
-          {{ clearingOrganizeTasks ? "清空中..." : "清空记录" }}
-        </button>
-        <button
-          class="button button-secondary button-small"
-          type="button"
-          :disabled="loadingTasks"
-          @click="load"
-        >
-          刷新
-        </button>
-        <span class="count-pill">{{ organizerTasks.running_count || 0 }} 运行中 / {{ organizerTasks.queued_count || 0 }} 排队中</span>
+        <RouterLink class="button button-secondary button-small" :to="{ path: '/settings', query: { tab: 'organizer' } }">
+          本地整理设置
+        </RouterLink>
+        <RouterLink class="button button-secondary button-small" :to="{ path: '/logs', query: { file: 'business.log', q: 'organizer' } }">
+          任务历史
+        </RouterLink>
       </div>
     </div>
-    <span class="form-status">{{ organizeStatus }}</span>
-    <p v-if="organizerTasks.detected_total" class="archive-form__hint">
-      当前检测到 {{ organizerTasks.detected_total }} 个候选 3MF
-      <template v-if="organizerTasks.detected_total > organizerTasks.items.length">
-        ，当前仅展示前 {{ organizerTasks.items.length }} 条
-      </template>
+
+    <div class="settings-grid settings-grid--three">
+      <article class="field-card system-update-detail">
+        <span>扫描目录</span>
+        <strong>{{ organizerConfig.source_dir || "/app/local" }}</strong>
+      </article>
+      <article class="field-card system-update-detail">
+        <span>目标目录</span>
+        <strong>{{ organizerConfig.target_dir || "/app/archive" }}</strong>
+      </article>
+      <article class="field-card system-update-detail">
+        <span>文件处理</span>
+        <strong>{{ organizerConfig.move_files === false ? "复制" : "移动" }}</strong>
+      </article>
+    </div>
+
+    <div class="settings-grid settings-grid--three">
+      <article class="field-card system-update-stat">
+        <span>候选 3MF</span>
+        <strong>{{ organizerTasks.detected_total || 0 }}</strong>
+        <small>扫描目录内等待整理的文件</small>
+      </article>
+      <article class="field-card system-update-stat">
+        <span>活跃任务</span>
+        <strong>{{ activeOrganizeCount }}</strong>
+        <small>{{ organizerTasks.running_count || 0 }} 运行中 / {{ organizerTasks.queued_count || 0 }} 排队中</small>
+      </article>
+      <article class="field-card system-update-stat">
+        <span>最近状态</span>
+        <strong>{{ latestOrganizeTask?.status || "空闲" }}</strong>
+        <small>{{ latestOrganizeTask?.message || "当前没有本地整理任务。" }}</small>
+      </article>
+    </div>
+
+    <p class="archive-form__hint">
+      完整本地整理任务历史已移动到日志中心；这里仅保留当前状态摘要和入口。
     </p>
-    <p v-if="organizerTasks.count > organizerTasks.items.length" class="archive-form__hint">
-      当前共 {{ organizerTasks.count }} 条整理记录，仅展示最近 {{ organizerTasks.items.length }} 条。
-    </p>
-    <div v-if="visibleOrganizeTasks.length" class="table-like">
-      <div class="table-like__row table-like__row--head">
-        <span>文件</span>
-        <span>模型目录</span>
-        <span>状态</span>
-      </div>
-      <div
-        v-for="(item, index) in visibleOrganizeTasks"
-        :key="item.id || item.fingerprint || item.source_path || `${item.source_dir}-${item.target_dir}-${index}`"
-        class="table-like__row"
-      >
-        <span>
-          <span class="missing-status">
-            <strong>{{ item.title || item.file_name || "未命名文件" }}</strong>
-            <small>{{ item.source_path || item.source_dir || "-" }}</small>
-          </span>
-        </span>
-        <span>
-          <span class="missing-status">
-            <strong>{{ item.model_dir || "-" }}</strong>
-            <small>{{ item.target_path || item.target_dir || "-" }}</small>
-          </span>
-        </span>
-        <span>
-          <span class="missing-status">
-            <strong>{{ item.status }}</strong>
-            <small>{{ item.message || "-" }}</small>
-          </span>
-        </span>
-      </div>
-    </div>
-    <div v-if="organizerTasks.items.length > organizeVisibleLimit" class="task-list-footer">
-      <button class="button button-secondary button-small" type="button" @click="organizeVisibleLimit += TASKS_PAGE_SIZE">
-        加载更多
-      </button>
-    </div>
-    <p v-else class="empty-copy">当前没有本地整理任务。</p>
   </section>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { RouterLink, useRouter } from "vue-router";
 
-import { appState, applyConfigPayload, refreshConfig } from "../lib/appState";
+import SourceLibraryCard from "../components/SourceLibraryCard.vue";
 import { apiRequest } from "../lib/api";
+import { appState, refreshConfig } from "../lib/appState";
+import { createEmptySubscriptionsPayload, normalizeSubscriptionsPayload } from "../lib/subscriptions";
 
 
-const config = computed(() => appState.config);
-const TASKS_PAGE_SIZE = 5;
 const ACTIVE_REFRESH_INTERVAL_MS = 5000;
 const IDLE_REFRESH_INTERVAL_MS = 30000;
-const status = ref("");
-const organizeStatus = ref("");
-const loadingTasks = ref(false);
-const clearingOrganizeTasks = ref(false);
-const organizeVisibleLimit = ref(TASKS_PAGE_SIZE);
+
+const router = useRouter();
+const subscriptionPayload = ref(createEmptySubscriptionsPayload());
 const organizerTasks = ref({
   items: [],
   count: 0,
@@ -151,21 +129,21 @@ const organizerTasks = ref({
   running_count: 0,
   detected_total: 0,
 });
-const organizerForm = reactive({
-  source_dir: "",
-  target_dir: "",
-  move_files: true,
-});
+const loading = ref(false);
 let refreshTimer = null;
 let disposed = false;
 
-const visibleOrganizeTasks = computed(() => organizerTasks.value.items.slice(0, organizeVisibleLimit.value));
-
-function applyConfig(payload) {
-  organizerForm.source_dir = payload?.organizer?.source_dir || "";
-  organizerForm.target_dir = payload?.organizer?.target_dir || "";
-  organizerForm.move_files = payload?.organizer?.move_files !== false;
-}
+const organizerConfig = computed(() => appState.config?.organizer || {});
+const localStateSection = computed(() => (
+  subscriptionPayload.value.sections.find((section) => section?.key === "subscription_states") || { items: [] }
+));
+const localStateCards = computed(() => (
+  Array.isArray(localStateSection.value.items) ? localStateSection.value.items : []
+));
+const activeOrganizeCount = computed(() => (
+  Number(organizerTasks.value.running_count || 0) + Number(organizerTasks.value.queued_count || 0)
+));
+const latestOrganizeTask = computed(() => organizerTasks.value.items?.[0] || null);
 
 function clearTaskTimer() {
   if (refreshTimer) {
@@ -175,10 +153,7 @@ function clearTaskTimer() {
 }
 
 function hasActiveOrganizeTasks() {
-  return Boolean(
-    Number(organizerTasks.value.running_count || 0)
-      || Number(organizerTasks.value.queued_count || 0),
-  );
+  return activeOrganizeCount.value > 0;
 }
 
 function syncTaskTimer() {
@@ -188,57 +163,53 @@ function syncTaskTimer() {
   }
   const delay = hasActiveOrganizeTasks() ? ACTIVE_REFRESH_INTERVAL_MS : IDLE_REFRESH_INTERVAL_MS;
   refreshTimer = window.setTimeout(() => {
-    void loadTasks();
+    void load({ silent: true });
   }, delay);
 }
 
-async function loadTasks() {
-  if (loadingTasks.value) {
+async function load({ silent = false } = {}) {
+  if (loading.value) {
     return;
   }
-  loadingTasks.value = true;
+  loading.value = true;
   try {
-    const payload = await apiRequest("/api/tasks");
-    organizerTasks.value = payload?.organize_tasks || organizerTasks.value;
+    const [tasksPayload, subscriptionsPayload] = await Promise.all([
+      apiRequest("/api/tasks"),
+      apiRequest("/api/subscriptions"),
+      refreshConfig(),
+    ]);
+    organizerTasks.value = tasksPayload?.organize_tasks || organizerTasks.value;
+    subscriptionPayload.value = normalizeSubscriptionsPayload(subscriptionsPayload);
+  } catch (error) {
+    if (!silent) {
+      console.error("本地库数据加载失败", error);
+    }
   } finally {
-    loadingTasks.value = false;
+    loading.value = false;
     syncTaskTimer();
   }
 }
 
-async function load() {
-  const payload = config.value || await refreshConfig();
-  applyConfig(payload);
-  await loadTasks();
-}
-
-async function saveOrganizer() {
-  try {
-    const payload = await apiRequest("/api/config/organizer", {
-      method: "POST",
-      body: { ...organizerForm },
-    });
-    applyConfigPayload(payload);
-    status.value = "整理配置已保存。";
-  } catch (error) {
-    status.value = error instanceof Error ? error.message : "保存失败。";
+function openCard(card) {
+  if (!card || !card.key) {
+    return;
   }
-}
-
-async function clearOrganizeTasks() {
-  clearingOrganizeTasks.value = true;
-  try {
-    const response = await apiRequest("/api/tasks/organize/clear", {
-      method: "POST",
+  if (card.route_kind === "state") {
+    router.push({
+      name: "model-library-state",
+      params: {
+        stateKey: String(card.key),
+      },
     });
-    organizeStatus.value = response.message || "已清空本地整理任务记录。";
-    organizeVisibleLimit.value = TASKS_PAGE_SIZE;
-    await loadTasks();
-  } catch (error) {
-    organizeStatus.value = error instanceof Error ? error.message : "清空本地整理任务记录失败。";
-  } finally {
-    clearingOrganizeTasks.value = false;
+    return;
   }
+  router.push({
+    name: "model-library-source",
+    params: {
+      sourceType: String(card.kind || ""),
+      sourceKey: String(card.key),
+    },
+  });
 }
 
 function handleVisibilityChange() {
@@ -246,7 +217,7 @@ function handleVisibilityChange() {
     clearTaskTimer();
     return;
   }
-  void loadTasks();
+  void load({ silent: true });
 }
 
 onMounted(() => {
