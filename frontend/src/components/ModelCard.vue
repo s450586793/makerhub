@@ -131,6 +131,14 @@ const props = defineProps({
     type: Object,
     required: true,
   },
+  returnTo: {
+    type: String,
+    default: "",
+  },
+  returnLabel: {
+    type: String,
+    default: "",
+  },
 });
 
 defineEmits(["favorite", "printed", "delete", "restore"]);
@@ -206,11 +214,19 @@ const deletedSourceTitle = computed(() => {
 });
 
 function goDetail() {
+  const query = {};
+  if (props.returnTo) {
+    query.return_to = props.returnTo;
+  }
+  if (props.returnLabel) {
+    query.return_label = props.returnLabel;
+  }
   router.push({
     name: "model-detail",
     params: {
       modelDir: String(props.model.model_dir || ""),
     },
+    query,
   });
 }
 

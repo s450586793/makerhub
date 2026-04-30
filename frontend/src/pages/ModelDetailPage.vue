@@ -10,7 +10,7 @@
   </section>
 
   <div v-else-if="detail" class="mw-detail-layout">
-    <RouterLink class="mw-back-link" to="/models">返回模型库</RouterLink>
+    <RouterLink class="mw-back-link" :to="detailBackTarget">{{ detailBackLabel }}</RouterLink>
 
     <section class="mw-card">
       <div class="mw-hero">
@@ -901,6 +901,23 @@ const modelDir = computed(() => {
       .join("/");
   }
   return decodeRouteValue(raw);
+});
+
+function normalizeInternalReturnPath(value) {
+  const raw = String(value || "").trim();
+  if (!raw || !raw.startsWith("/") || raw.startsWith("//")) {
+    return "/models";
+  }
+  return raw;
+}
+
+const detailBackTarget = computed(() => {
+  const returnTo = Array.isArray(route.query.return_to) ? route.query.return_to[0] : route.query.return_to;
+  return normalizeInternalReturnPath(returnTo);
+});
+const detailBackLabel = computed(() => {
+  const label = Array.isArray(route.query.return_label) ? route.query.return_label[0] : route.query.return_label;
+  return String(label || "返回模型库").trim() || "返回模型库";
 });
 
 const activeInstance = computed(() => {

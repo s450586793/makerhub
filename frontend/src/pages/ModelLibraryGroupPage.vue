@@ -68,7 +68,10 @@
     <ModelCard
       v-for="model in payload.items"
       :key="model.model_dir"
+      :data-model-dir="model.model_dir"
       :model="model"
+      :return-to="buildModelReturnTo(model.model_dir)"
+      return-label="返回模型列表"
       @favorite="toggleFavorite"
       @printed="togglePrinted"
       @delete="deleteOne"
@@ -165,13 +168,21 @@ function buildQuery(page = 1) {
   return query;
 }
 
-function buildRouteQuery() {
-  return {
+function buildRouteQuery(options = {}) {
+  const query = {
     q: filters.q || undefined,
     source: filters.source !== "all" ? filters.source : undefined,
     tag: filters.tag || undefined,
     sort: filters.sort !== "collectDate" ? filters.sort : undefined,
   };
+  const page = Number(options.page || 0);
+  if (Number.isFinite(page) && page > 1) {
+    query.page = String(Math.floor(page));
+  }
+  if (options.anchor) {
+    query.anchor = String(options.anchor);
+  }
+  return query;
 }
 
 function endpointBase() {
@@ -185,28 +196,110 @@ async function fetchPage(page) {
   return apiRequest(`${endpointBase()}?${buildQuery(page).toString()}`);
 }
 
+function mergeUniqueModelItems(currentItems = [], incomingItems = []) {
+  const mergedItems = [...currentItems];
+  const seenModelDirs = new Set(
+    mergedItems.map((item) => String(item?.model_dir || "").trim()).filter(Boolean),
+  );
+  for (const item of incomingItems || []) {
+    const modelDir = String(item?.model_dir || "").trim();
+    if (!modelDir || seenModelDirs.has(modelDir)) {
+      continue;
+    }
+    seenModelDirs.add(modelDir);
+    mergedItems.push(item);
+  }
+  return mergedItems;
+}
+
+function routePage() {
+  const rawPage = Array.isArray(route.query.page) ? route.query.page[0] : route.query.page;
+  const page = Number.parseInt(String(rawPage || ""), 10);
+  if (!Number.isFinite(page) || page <= 1) {
+    return 1;
+  }
+  return Math.min(page, 200);
+}
+
+function routeAnchor() {
+  const rawAnchor = Array.isArray(route.query.anchor) ? route.query.anchor[0] : route.query.anchor;
+  return String(rawAnchor || "").trim();
+}
+
+function findModelCardElement(modelDir) {
+  const target = String(modelDir || "");
+  if (!target || typeof document === "undefined") {
+    return null;
+  }
+  return Array.from(document.querySelectorAll("[data-model-dir]"))
+    .find((element) => element?.dataset?.modelDir === target) || null;
+}
+
+async function scrollToRouteAnchor() {
+  const anchor = routeAnchor();
+  if (!anchor || typeof window === "undefined") {
+    return;
+  }
+  await nextTick();
+  await new Promise((resolve) => {
+    window.requestAnimationFrame(() => {
+      const element = findModelCardElement(anchor);
+      if (element) {
+        element.scrollIntoView({ block: "center", behavior: "auto" });
+      }
+      resolve();
+    });
+  });
+}
+
+function buildModelReturnTo(modelDir) {
+  const page = Math.max(Number(payload.value.page) || 1, 1);
+  return router.resolve({
+    path: route.path,
+    query: buildRouteQuery({ page, anchor: modelDir }),
+  }).fullPath;
+}
+
 async function load({ append = false } = {}) {
   const currentToken = ++requestToken;
   syncFiltersFromRoute();
 
-  const nextPage = append ? payload.value.page + 1 : 1;
-  const response = await fetchPage(nextPage);
+  const nextPage = append ? payload.value.page + 1 : routePage();
+  const responses = [];
+  for (let page = append ? nextPage : 1; page <= nextPage; page += 1) {
+    responses.push(await fetchPage(page));
+  }
   if (currentToken !== requestToken) {
     return;
   }
 
+  const response = responses[responses.length - 1];
   view.value = response.view || view.value;
   if (append) {
+    const mergedItems = mergeUniqueModelItems(payload.value.items, response.items || []);
     payload.value = {
       ...response,
-      items: [...payload.value.items, ...response.items],
+      items: mergedItems,
+      count: mergedItems.length,
     };
   } else {
-    payload.value = response;
+    const mergedItems = responses.reduce(
+      (items, item) => mergeUniqueModelItems(items, item.items || []),
+      [],
+    );
+    payload.value = {
+      ...response,
+      items: mergedItems,
+      count: mergedItems.length,
+      page: nextPage,
+    };
   }
   loaded.value = true;
   await nextTick();
   ensureObserver();
+  if (!append) {
+    await scrollToRouteAnchor();
+  }
 }
 
 async function reloadVisiblePages() {

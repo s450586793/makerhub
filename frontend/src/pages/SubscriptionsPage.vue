@@ -30,13 +30,6 @@
   <p v-if="status && !createDialog.visible" class="subscription-page-status">{{ status }}</p>
 
   <section v-for="section in sourceSections" :key="section.key" class="library-section">
-    <div class="library-section__head">
-      <div>
-        <h2>{{ section.label }}</h2>
-        <p>{{ section.count }} 张卡片</p>
-      </div>
-    </div>
-
     <div v-if="section.items?.length" class="source-library-grid">
       <SourceLibraryCard
         v-for="card in section.items"

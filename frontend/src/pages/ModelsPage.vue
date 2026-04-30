@@ -51,6 +51,8 @@
       :key="model.model_dir"
       :data-model-dir="model.model_dir"
       :model="model"
+      :return-to="buildModelReturnTo(model.model_dir)"
+      return-label="返回模型库"
       @favorite="toggleFavorite"
       @printed="togglePrinted"
       @delete="deleteOne"
@@ -139,13 +141,21 @@ function buildQuery(page = 1, options = {}) {
   return query;
 }
 
-function buildRouteQuery() {
-  return {
+function buildRouteQuery(options = {}) {
+  const query = {
     q: filters.q || undefined,
     source: filters.source !== "all" ? filters.source : undefined,
     tag: filters.tag || undefined,
     sort: filters.sort !== "collectDate" ? filters.sort : undefined,
   };
+  const page = Number(options.page || 0);
+  if (Number.isFinite(page) && page > 1) {
+    query.page = String(Math.floor(page));
+  }
+  if (options.anchor) {
+    query.anchor = String(options.anchor);
+  }
+  return query;
 }
 
 async function fetchPage(page, options = {}) {
@@ -284,6 +294,45 @@ function mergeUniqueModelItems(currentItems = [], incomingItems = []) {
   return mergedItems;
 }
 
+function routePage() {
+  const rawPage = Array.isArray(route.query.page) ? route.query.page[0] : route.query.page;
+  const page = Number.parseInt(String(rawPage || ""), 10);
+  if (!Number.isFinite(page) || page <= 1) {
+    return 1;
+  }
+  return Math.min(page, 200);
+}
+
+function routeAnchor() {
+  const rawAnchor = Array.isArray(route.query.anchor) ? route.query.anchor[0] : route.query.anchor;
+  return String(rawAnchor || "").trim();
+}
+
+async function scrollToRouteAnchor() {
+  const anchor = routeAnchor();
+  if (!anchor || typeof window === "undefined") {
+    return;
+  }
+  await nextTick();
+  await new Promise((resolve) => {
+    window.requestAnimationFrame(() => {
+      const element = findModelCardElement(anchor);
+      if (element) {
+        element.scrollIntoView({ block: "center", behavior: "auto" });
+      }
+      resolve();
+    });
+  });
+}
+
+function buildModelReturnTo(modelDir) {
+  const page = Math.max(Number(payload.value.page) || 1, 1);
+  return router.resolve({
+    path: "/models",
+    query: buildRouteQuery({ page, anchor: modelDir }),
+  }).fullPath;
+}
+
 async function load({ append = false, refresh = false } = {}) {
   const currentToken = ++requestToken;
   if (!append) {
@@ -292,13 +341,18 @@ async function load({ append = false, refresh = false } = {}) {
   }
   syncFiltersFromRoute();
 
-  const nextPage = append ? payload.value.page + 1 : 1;
-  const cacheKey = refresh ? `${Date.now()}-${nextPage}` : "";
-  const response = suppressLocallyDeletedItems(await fetchPage(nextPage, { cacheKey }));
+  const nextPage = append ? payload.value.page + 1 : routePage();
+  const cacheKeyBase = refresh ? Date.now() : "";
+  const responses = [];
+  for (let page = append ? nextPage : 1; page <= nextPage; page += 1) {
+    const cacheKey = cacheKeyBase ? `${cacheKeyBase}-${page}` : "";
+    responses.push(suppressLocallyDeletedItems(await fetchPage(page, { cacheKey })));
+  }
   if (currentToken !== requestToken) {
     return;
   }
 
+  const response = responses[responses.length - 1];
   if (append) {
     const mergedItems = mergeUniqueModelItems(payload.value.items, response.items || []);
     payload.value = {
@@ -307,11 +361,23 @@ async function load({ append = false, refresh = false } = {}) {
       count: mergedItems.length,
     };
   } else {
-    payload.value = response;
+    const mergedItems = responses.reduce(
+      (items, item) => mergeUniqueModelItems(items, item.items || []),
+      [],
+    );
+    payload.value = {
+      ...response,
+      items: mergedItems,
+      count: mergedItems.length,
+      page: nextPage,
+    };
   }
   loaded.value = true;
   await nextTick();
   ensureObserver();
+  if (!append) {
+    await scrollToRouteAnchor();
+  }
 }
 
 async function reloadVisiblePages({ refresh = false } = {}) {

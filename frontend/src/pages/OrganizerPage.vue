@@ -12,20 +12,33 @@
       </div>
       <div class="intro-stat">
         <span>候选 3MF</span>
-        <strong>{{ organizerTasks.detected_total || 0 }}</strong>
+        <strong>{{ detectedTotalText }}</strong>
       </div>
       <div class="intro-stat">
         <span>运行中</span>
-        <strong>{{ organizerTasks.running_count || 0 }}</strong>
+        <strong>{{ runningCountText }}</strong>
       </div>
       <div class="intro-stat">
         <span>排队中</span>
-        <strong>{{ organizerTasks.queued_count || 0 }}</strong>
+        <strong>{{ queuedCountText }}</strong>
       </div>
     </div>
   </section>
 
-  <section class="library-section">
+  <section v-if="!initialLoaded && !loadError" class="surface empty-state subscription-inline-empty">
+    <h2>正在加载本地库</h2>
+    <p>正在读取本地整理入口和本地状态卡片。</p>
+  </section>
+
+  <section v-else-if="loadError" class="surface empty-state subscription-inline-empty">
+    <h2>本地库加载失败</h2>
+    <p>{{ loadError }}</p>
+    <button class="button button-secondary" type="button" :disabled="loading" @click="load()">
+      {{ loading ? "刷新中..." : "重新加载" }}
+    </button>
+  </section>
+
+  <section v-else class="library-section">
     <div class="library-section__head">
       <div aria-hidden="true"></div>
       <div class="filter-actions">
@@ -75,6 +88,8 @@ const organizerTasks = ref({
   detected_total: 0,
 });
 const loading = ref(false);
+const initialLoaded = ref(false);
+const loadError = ref("");
 let refreshTimer = null;
 let disposed = false;
 
@@ -113,12 +128,34 @@ const localStateCards = computed(() => (
   Array.isArray(localStateSection.value.items) ? localStateSection.value.items : []
 ));
 const localLibraryCards = computed(() => (
-  [localOrganizerCard.value, ...localStateCards.value]
+  initialLoaded.value
+    ? [localOrganizerCard.value, ...localStateCards.value]
+    : []
 ));
 const activeOrganizeCount = computed(() => (
   Number(organizerTasks.value.running_count || 0) + Number(organizerTasks.value.queued_count || 0)
 ));
-const organizerStatusText = computed(() => (activeOrganizeCount.value > 0 ? "否" : "是"));
+const organizerStatusText = computed(() => {
+  if (!initialLoaded.value && loadError.value) {
+    return "失败";
+  }
+  if (!initialLoaded.value) {
+    return "读取中";
+  }
+  return activeOrganizeCount.value > 0 ? "否" : "是";
+});
+const detectedTotalText = computed(() => (
+  !initialLoaded.value && loadError.value ? "-" :
+  !initialLoaded.value ? "..." : String(organizerTasks.value.detected_total || 0)
+));
+const runningCountText = computed(() => (
+  !initialLoaded.value && loadError.value ? "-" :
+  !initialLoaded.value ? "..." : String(organizerTasks.value.running_count || 0)
+));
+const queuedCountText = computed(() => (
+  !initialLoaded.value && loadError.value ? "-" :
+  !initialLoaded.value ? "..." : String(organizerTasks.value.queued_count || 0)
+));
 
 function clearTaskTimer() {
   if (refreshTimer) {
@@ -157,9 +194,12 @@ async function load({ silent = false } = {}) {
     sourceLibraryPayload.value = {
       sections: Array.isArray(sourceLibraryPayloadResponse?.sections) ? sourceLibraryPayloadResponse.sections : [],
     };
+    loadError.value = "";
+    initialLoaded.value = true;
   } catch (error) {
     if (!silent) {
       console.error("本地库数据加载失败", error);
+      loadError.value = error instanceof Error ? error.message : "本地库数据加载失败。";
     }
   } finally {
     loading.value = false;
