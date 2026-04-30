@@ -609,7 +609,7 @@ def _group_local_sources(visible_models: list[dict]) -> list[dict]:
         key="local-organizer",
         kind="local",
         card_kind="collection",
-        title="本地库",
+        title="本地整理",
         subtitle="本地 3MF 归档",
         site="local",
     )
