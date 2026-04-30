@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import random
 import re
 import shutil
 import sys
@@ -133,6 +134,8 @@ IMAGE_TRANSFER_TIMEOUT_SECONDS = 45
 BINARY_TRANSFER_TIMEOUT_SECONDS = 300
 CONNECT_TIMEOUT_SECONDS = 15
 READ_TIMEOUT_SECONDS = 30
+THREE_MF_DOWNLOAD_WAIT_MIN_SECONDS = 5.0
+THREE_MF_DOWNLOAD_WAIT_MAX_SECONDS = 10.0
 COMMENT_ASSET_DOWNLOAD_WORKERS = 4
 SHARED_AVATAR_REL_DIR = "_shared/avatars"
 MAKERWORLD_API_BROWSER_HEADERS = {
@@ -142,6 +145,51 @@ MAKERWORLD_API_BROWSER_HEADERS = {
     "X-BBL-App-Source": "makerworld",
     "X-BBL-Client-Name": "MakerWorld",
 }
+
+
+def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.getenv(name) or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(min(value, maximum), minimum)
+
+
+def _three_mf_download_wait_range() -> tuple[float, float]:
+    min_wait = _env_float(
+        "MAKERHUB_THREE_MF_DOWNLOAD_WAIT_MIN_SECONDS",
+        THREE_MF_DOWNLOAD_WAIT_MIN_SECONDS,
+        0.0,
+        120.0,
+    )
+    max_wait = _env_float(
+        "MAKERHUB_THREE_MF_DOWNLOAD_WAIT_MAX_SECONDS",
+        THREE_MF_DOWNLOAD_WAIT_MAX_SECONDS,
+        0.0,
+        120.0,
+    )
+    if max_wait <= 0:
+        return 0.0, 0.0
+    return min(min_wait, max_wait), max_wait
+
+
+def _three_mf_download_wait_seconds() -> float:
+    min_wait, max_wait = _three_mf_download_wait_range()
+    if max_wait <= 0:
+        return 0.0
+    if max_wait <= min_wait:
+        return max_wait
+    return random.uniform(min_wait, max_wait)
+
+
+def _wait_before_three_mf_download(reason: str = "", logger=None) -> float:
+    wait_seconds = _three_mf_download_wait_seconds()
+    if wait_seconds <= 0:
+        return 0.0
+    label = f"（{reason}）" if reason else ""
+    log(logger, f"[3MF] 随机等待 {wait_seconds:.1f}s 后继续{label}")
+    time.sleep(wait_seconds)
+    return wait_seconds
 _OFFLINE_TEMPLATE_CACHE_LOCK = threading.RLock()
 _OFFLINE_TEMPLATE_CACHE: dict[str, Any] = {
     "signature": (),
@@ -3425,6 +3473,8 @@ def fetch_instance_3mf(
         or normalize_makerworld_source(url=api_url)
         or normalize_makerworld_source(url=api_host_hint)
     )
+    if candidates:
+        _wait_before_three_mf_download(f"获取下载地址 {inst_id}")
     for candidate in candidates:
         candidate_source = source_hint or normalize_makerworld_source(url=candidate)
         try:
@@ -5528,13 +5578,17 @@ def rebuild_once(meta_path: Path, progress_callback=None, logger=None):
             meta_changed = True
         dest = instances_dir / fn
 
-        with resource_slot("three_mf_download", detail=dest.name):
-            download_file(
-                REBUILD_SESSION,
-                url,
-                dest,
-                max_duration=BINARY_TRANSFER_TIMEOUT_SECONDS,
-            )
+        if dest.exists():
+            log("存在，跳过：", dest)
+        else:
+            with resource_slot("three_mf_download", detail=dest.name):
+                _wait_before_three_mf_download(f"下载文件 {dest.name}", logger=logger)
+                download_file(
+                    REBUILD_SESSION,
+                    url,
+                    dest,
+                    max_duration=BINARY_TRANSFER_TIMEOUT_SECONDS,
+                )
         inst_files.append({
             "id": inst.get("id"),
             "title": inst.get("title") or inst.get("name") or str(inst.get("id")),

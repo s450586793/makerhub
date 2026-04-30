@@ -147,6 +147,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 ## 更新记录
 
 ### 2026-04-30
+- 版本号升级到 `v0.6.16`
+- 3MF 下载链路新增默认 `5-10` 秒随机等待：获取 3MF 下载地址前会先错峰，真实下载 `.3mf` 文件前也会错峰，降低连续请求触发 MakerWorld 限流 / 验证的概率
+- 已存在的本地 3MF 文件会直接跳过，不会因为归档整理或页面重建额外等待；如需调整可用 `MAKERHUB_THREE_MF_DOWNLOAD_WAIT_MIN_SECONDS` / `MAKERHUB_THREE_MF_DOWNLOAD_WAIT_MAX_SECONDS` 环境变量覆盖
+
+### 2026-04-30
 - 版本号升级到 `v0.6.15`
 - Docker 镜像新增 `MAKERHUB_ENTRYPOINT` 启动入口，`makerhub-app` 与 `makerhub-worker` 可完全通过环境变量区分角色；仅设置 `MAKERHUB_PROCESS_ROLE=worker` 时也会自动进入 Worker，不再要求 Worker 额外填写 Docker `command`
 - README 与仓库 `compose.yaml` 改为环境变量写法，方便 DSM、Unraid、Portainer 等图形化容器管理器直接部署
