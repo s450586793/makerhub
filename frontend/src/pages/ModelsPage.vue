@@ -52,7 +52,7 @@
       :data-model-dir="model.model_dir"
       :model="model"
       :return-to="buildModelReturnTo(model.model_dir)"
-      return-label="返回模型库"
+      return-label="返回"
       @favorite="toggleFavorite"
       @printed="togglePrinted"
       @delete="deleteOne"

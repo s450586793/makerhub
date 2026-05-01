@@ -2048,6 +2048,42 @@ def _extract_comment_count_from_sections(sections: List[object]) -> List[int]:
     return found
 
 
+def _comment_count_from_design(design: dict) -> int:
+    if not isinstance(design, dict):
+        return 0
+    counts = design.get("counts") or {}
+    return (
+        _comment_numeric(design.get("commentCount"))
+        or _comment_numeric(design.get("commentsCount"))
+        or _comment_numeric(design.get("reviewCount"))
+        or _comment_numeric(counts.get("comments"))
+    )
+
+
+def _resolved_comment_count(
+    *,
+    unique_sections: List[object],
+    next_data: dict,
+    design: dict,
+    comment_total: int,
+    page_fetch_stats: dict[str, int],
+) -> int:
+    api_total = _comment_numeric((page_fetch_stats or {}).get("total"))
+    if api_total > 0:
+        return max(api_total, comment_total)
+
+    design_count = _comment_count_from_design(design)
+    if design_count > 0:
+        return max(design_count, comment_total)
+
+    hints = _extract_comment_count_from_sections(unique_sections) if unique_sections else []
+    if not hints:
+        hints = _extract_comment_count_from_payload(next_data)
+    if hints:
+        return max(max(hints), comment_total)
+    return comment_total
+
+
 def _normalize_service_base(base: Optional[str]) -> str:
     normalized = str(base or "").strip()
     if not normalized:
@@ -2601,20 +2637,13 @@ def collect_comments(
         hydrated_replies=reply_fetch_stats.get("replies") or 0,
     )
 
-    comment_count = 0
-    hints = _extract_comment_count_from_sections(unique_sections) if unique_sections else []
-    if not hints:
-        hints = _extract_comment_count_from_payload(next_data)
-    if hints:
-        comment_count = max(hints)
-    if comment_count <= 0:
-        counts = design.get("counts") or {}
-        comment_count = (
-            _comment_numeric(design.get("commentCount"))
-            or _comment_numeric(design.get("commentsCount"))
-            or _comment_numeric(design.get("reviewCount"))
-            or _comment_numeric(counts.get("comments"))
-        )
+    comment_count = _resolved_comment_count(
+        unique_sections=unique_sections,
+        next_data=next_data,
+        design=design,
+        comment_total=comment_total,
+        page_fetch_stats=page_fetch_stats,
+    )
 
     existing_comment_lookup = _build_existing_comment_lookup(existing_comments)
     existing_asset_stats = _apply_existing_comment_assets(comments, existing_comment_lookup, out_dir)

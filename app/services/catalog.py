@@ -1548,7 +1548,8 @@ def _normalize_comment_item(item: dict, model_root: Path, depth: int = 0) -> Opt
         or ""
     )
     images = _comment_images(item, model_root)
-    if not content.strip() and not images:
+    rating = min(max(_safe_float(item.get("rating") or item.get("score") or item.get("star") or item.get("starLevel")), 0.0), 5.0)
+    if not content.strip() and not images and rating <= 0:
         return None
 
     time_value = (
@@ -1571,7 +1572,6 @@ def _normalize_comment_item(item: dict, model_root: Path, depth: int = 0) -> Opt
     author_payload = _comment_author_payload(item, model_root)
     comment_id = _comment_identity_key(item)
     root_comment_id = str(item.get("rootCommentId") or "").strip() or comment_id
-    rating = min(max(_safe_float(item.get("rating") or item.get("score") or item.get("star") or item.get("starLevel")), 0.0), 5.0)
     reply_count = max(
         len(replies),
         _safe_int(item.get("replyCount") or item.get("subCommentCount") or item.get("childrenCount")),

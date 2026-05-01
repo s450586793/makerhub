@@ -119,7 +119,7 @@
             <h2>本地 3MF 整理设置</h2>
           </div>
           <RouterLink class="button button-secondary button-small" to="/organizer">
-            返回本地库
+            返回
           </RouterLink>
         </div>
 

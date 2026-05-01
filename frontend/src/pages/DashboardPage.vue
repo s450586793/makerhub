@@ -1,8 +1,57 @@
 <template>
   <template v-if="loading">
-    <section class="surface empty-state">
-      <h2>正在加载首页数据</h2>
-      <p>请稍候。</p>
+    <section class="page-intro dashboard-hero dashboard-hero--compact dashboard-hero--loading">
+      <div class="dashboard-hero__copy">
+        <span class="eyebrow">首页</span>
+        <h1>工作台</h1>
+      </div>
+
+      <div class="dashboard-hero__status-grid">
+        <div v-for="item in dashboardLoadingStatusCards" :key="item" class="dashboard-hero__status dashboard-loading-card">
+          <span class="dashboard-loading-line dashboard-loading-line--title" />
+          <span class="dashboard-loading-line" />
+        </div>
+      </div>
+    </section>
+
+    <section class="stats-grid">
+      <article v-for="item in dashboardLoadingStatCards" :key="item" class="surface stat-card dashboard-loading-card">
+        <span class="dashboard-loading-line dashboard-loading-line--label" />
+        <strong class="dashboard-loading-line dashboard-loading-line--value" />
+        <small class="dashboard-loading-line" />
+      </article>
+    </section>
+
+    <section class="surface section-card dashboard-panel">
+      <div class="dashboard-automation-cards">
+        <article v-for="item in dashboardLoadingMiniCards" :key="item" class="dashboard-mini-card dashboard-loading-card">
+          <div class="dashboard-mini-card__head">
+            <div>
+              <span class="dashboard-loading-line dashboard-loading-line--label" />
+              <h3 class="dashboard-loading-line dashboard-loading-line--heading" />
+            </div>
+            <span class="dashboard-loading-line dashboard-loading-line--pill" />
+          </div>
+
+          <div class="dashboard-mini-card__stats">
+            <div v-for="stat in dashboardLoadingStatColumns" :key="stat" class="dashboard-mini-card__stat">
+              <span class="dashboard-loading-line dashboard-loading-line--label" />
+              <strong class="dashboard-loading-line dashboard-loading-line--value" />
+            </div>
+          </div>
+
+          <div class="dashboard-mini-card__meta">
+            <span>
+              <strong class="dashboard-loading-line dashboard-loading-line--label" />
+              <span class="dashboard-loading-line" />
+            </span>
+            <span>
+              <strong class="dashboard-loading-line dashboard-loading-line--label" />
+              <span class="dashboard-loading-line" />
+            </span>
+          </div>
+        </article>
+      </div>
     </section>
   </template>
 
@@ -266,6 +315,10 @@ const defaultAutomationOverview = {
 };
 
 const loading = ref(true);
+const dashboardLoadingStatusCards = [1, 2, 3];
+const dashboardLoadingStatCards = [1, 2, 3, 4];
+const dashboardLoadingMiniCards = [1, 2, 3, 4];
+const dashboardLoadingStatColumns = [1, 2, 3];
 const payload = ref({
   stats: [],
   system_status: [],

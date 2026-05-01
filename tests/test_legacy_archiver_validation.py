@@ -128,6 +128,28 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         self.assertEqual(author["url"], "https://makerworld.com.cn/zh/@realmaker")
         self.assertEqual(author["avatarUrl"], "https://cdn.example.com/a.png")
 
+    def test_comment_count_prefers_comment_service_total_over_page_hints(self):
+        count = legacy_archiver._resolved_comment_count(
+            unique_sections=[{"commentCount": 176}],
+            next_data={},
+            design={"commentCount": 4},
+            comment_total=2,
+            page_fetch_stats={"total": 3},
+        )
+
+        self.assertEqual(count, 3)
+
+    def test_comment_count_prefers_design_count_over_page_hints_without_service_total(self):
+        count = legacy_archiver._resolved_comment_count(
+            unique_sections=[{"commentCount": 176}],
+            next_data={},
+            design={"commentCount": 4},
+            comment_total=2,
+            page_fetch_stats={"total": 0},
+        )
+
+        self.assertEqual(count, 4)
+
 
 if __name__ == "__main__":
     unittest.main()

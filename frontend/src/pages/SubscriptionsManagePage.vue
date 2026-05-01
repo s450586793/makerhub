@@ -21,7 +21,7 @@
         </div>
       </div>
       <div class="subscription-page-tools">
-        <RouterLink class="button button-secondary" to="/subscriptions">返回订阅库</RouterLink>
+        <RouterLink class="button button-secondary" to="/subscriptions">返回</RouterLink>
         <button class="button button-secondary" type="button" @click="openSettingsDialog">订阅设置</button>
       </div>
     </div>

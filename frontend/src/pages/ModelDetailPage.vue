@@ -975,18 +975,7 @@ const detailBackTarget = computed(() => {
   return "/models";
 });
 const detailBackLabel = computed(() => {
-  const label = Array.isArray(route.query.return_label) ? route.query.return_label[0] : route.query.return_label;
-  const normalizedLabel = String(label || "").trim();
-  if (normalizedLabel) {
-    return normalizedLabel;
-  }
-  if (detailBackContext.value === "subscriptions") {
-    return "返回订阅库";
-  }
-  if (detailBackContext.value === "organizer") {
-    return "返回本地库";
-  }
-  return "返回模型库";
+  return "返回";
 });
 
 const activeInstance = computed(() => {

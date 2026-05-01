@@ -830,6 +830,56 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   justify-content: flex-end;
 }
 
+.dashboard-hero--loading,
+.dashboard-loading-card {
+  pointer-events: none;
+}
+
+.dashboard-loading-line {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: var(--space-3);
+  border: 0;
+  border-radius: var(--radius-sm);
+  display: block;
+  background: var(--color-neutral-200);
+  animation: dashboard-loading-pulse 1.2s ease-in-out infinite;
+}
+
+.dashboard-loading-line--title,
+.dashboard-loading-line--heading {
+  width: 72%;
+  height: var(--space-4);
+}
+
+.dashboard-loading-line--label {
+  width: 48%;
+  height: var(--space-2);
+}
+
+.dashboard-loading-line--value {
+  width: 56%;
+  height: var(--space-6);
+}
+
+.dashboard-loading-line--pill {
+  width: var(--space-16);
+  height: var(--space-6);
+  border-radius: var(--radius-md);
+}
+
+@keyframes dashboard-loading-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
 .cron-field {
   position: relative;
   display: grid;

@@ -68,7 +68,7 @@
       :model="model"
       :return-to="buildModelReturnTo(model.model_dir)"
       :return-context="activeNavContext"
-      return-label="返回模型列表"
+      return-label="返回"
       @favorite="toggleFavorite"
       @printed="togglePrinted"
       @delete="deleteOne"
@@ -149,7 +149,7 @@ const groupBackTarget = computed(() => (
   activeNavContext.value === "organizer" ? "/organizer" : "/subscriptions"
 ));
 const groupBackLabel = computed(() => (
-  activeNavContext.value === "organizer" ? "返回本地库" : "返回订阅库"
+  "返回"
 ));
 
 function normalizeNavContext(value) {
