@@ -139,6 +139,10 @@ const props = defineProps({
     type: String,
     default: "",
   },
+  returnContext: {
+    type: String,
+    default: "",
+  },
 });
 
 defineEmits(["favorite", "printed", "delete", "restore"]);
@@ -220,6 +224,9 @@ function goDetail() {
   }
   if (props.returnLabel) {
     query.return_label = props.returnLabel;
+  }
+  if (props.returnContext) {
+    query.return_context = props.returnContext;
   }
   router.push({
     name: "model-detail",

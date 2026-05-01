@@ -161,6 +161,9 @@ function openCard(card) {
       params: {
         stateKey: String(card.key),
       },
+      query: {
+        nav_context: "subscriptions",
+      },
     });
     return;
   }
@@ -169,6 +172,9 @@ function openCard(card) {
     params: {
       sourceType: String(card.kind || ""),
       sourceKey: String(card.key),
+    },
+    query: {
+      nav_context: "subscriptions",
     },
   });
 }

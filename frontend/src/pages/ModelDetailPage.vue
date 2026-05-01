@@ -906,18 +906,87 @@ const modelDir = computed(() => {
 function normalizeInternalReturnPath(value) {
   const raw = String(value || "").trim();
   if (!raw || !raw.startsWith("/") || raw.startsWith("//")) {
-    return "/models";
+    return "";
   }
   return raw;
 }
 
+function normalizeReturnContext(value) {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const normalized = String(raw || "").trim();
+  return ["subscriptions", "organizer"].includes(normalized) ? normalized : "";
+}
+
+function returnContextFromPath(value) {
+  const raw = normalizeInternalReturnPath(value);
+  if (!raw) {
+    return "";
+  }
+  try {
+    const url = new URL(raw, "http://makerhub.local");
+    const explicit = normalizeReturnContext(url.searchParams.get("nav_context"));
+    if (explicit) {
+      return explicit;
+    }
+    if (url.pathname.startsWith("/models/state/")) {
+      return "organizer";
+    }
+    if (url.pathname.startsWith("/models/source/local/")) {
+      return "organizer";
+    }
+    if (url.pathname.startsWith("/models/source/")) {
+      return "subscriptions";
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
+function historyBackPath() {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  return normalizeInternalReturnPath(window.history?.state?.back || "");
+}
+
+const detailBackContext = computed(() => {
+  const returnTo = Array.isArray(route.query.return_to) ? route.query.return_to[0] : route.query.return_to;
+  return normalizeReturnContext(route.query.return_context)
+    || returnContextFromPath(returnTo)
+    || returnContextFromPath(historyBackPath());
+});
 const detailBackTarget = computed(() => {
   const returnTo = Array.isArray(route.query.return_to) ? route.query.return_to[0] : route.query.return_to;
-  return normalizeInternalReturnPath(returnTo);
+  const normalizedReturnTo = normalizeInternalReturnPath(returnTo);
+  if (normalizedReturnTo) {
+    return normalizedReturnTo;
+  }
+  const normalizedHistoryBack = historyBackPath();
+  if (normalizedHistoryBack) {
+    return normalizedHistoryBack;
+  }
+  if (detailBackContext.value === "subscriptions") {
+    return "/subscriptions";
+  }
+  if (detailBackContext.value === "organizer") {
+    return "/organizer";
+  }
+  return "/models";
 });
 const detailBackLabel = computed(() => {
   const label = Array.isArray(route.query.return_label) ? route.query.return_label[0] : route.query.return_label;
-  return String(label || "返回模型库").trim() || "返回模型库";
+  const normalizedLabel = String(label || "").trim();
+  if (normalizedLabel) {
+    return normalizedLabel;
+  }
+  if (detailBackContext.value === "subscriptions") {
+    return "返回订阅库";
+  }
+  if (detailBackContext.value === "organizer") {
+    return "返回本地库";
+  }
+  return "返回模型库";
 });
 
 const activeInstance = computed(() => {

@@ -1,7 +1,7 @@
 <template>
   <section v-if="view" class="surface library-group-hero">
     <div class="library-group-hero__head">
-      <button class="button button-secondary" type="button" @click="goBack">返回订阅</button>
+      <button class="button button-secondary" type="button" @click="goBack">{{ groupBackLabel }}</button>
       <span class="library-group-hero__eyebrow">{{ groupLabel }}</span>
     </div>
     <div class="library-group-hero__body">
@@ -71,6 +71,7 @@
       :data-model-dir="model.model_dir"
       :model="model"
       :return-to="buildModelReturnTo(model.model_dir)"
+      :return-context="activeNavContext"
       return-label="返回模型列表"
       @favorite="toggleFavorite"
       @printed="togglePrinted"
@@ -149,6 +150,28 @@ const groupLabel = computed(() => {
   if (sourceType === "local") return "本地库模型列表";
   return "模型列表";
 });
+const activeNavContext = computed(() => {
+  const explicit = normalizeNavContext(route.query.nav_context);
+  if (explicit) {
+    return explicit;
+  }
+  if (route.name === "model-library-state") {
+    return "organizer";
+  }
+  return String(route.params.sourceType || "") === "local" ? "organizer" : "subscriptions";
+});
+const groupBackTarget = computed(() => (
+  activeNavContext.value === "organizer" ? "/organizer" : "/subscriptions"
+));
+const groupBackLabel = computed(() => (
+  activeNavContext.value === "organizer" ? "返回本地库" : "返回订阅库"
+));
+
+function normalizeNavContext(value) {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const normalized = String(raw || "").trim();
+  return ["subscriptions", "organizer"].includes(normalized) ? normalized : "";
+}
 
 function syncFiltersFromRoute() {
   filters.q = typeof route.query.q === "string" ? route.query.q : "";
@@ -170,6 +193,7 @@ function buildQuery(page = 1) {
 
 function buildRouteQuery(options = {}) {
   const query = {
+    nav_context: activeNavContext.value || undefined,
     q: filters.q || undefined,
     source: filters.source !== "all" ? filters.source : undefined,
     tag: filters.tag || undefined,
@@ -371,6 +395,7 @@ function applyFilters() {
 function applyFiltersIfChanged() {
   const nextQuery = buildRouteQuery();
   const currentQuery = {
+    nav_context: normalizeNavContext(route.query.nav_context) || undefined,
     q: typeof route.query.q === "string" ? route.query.q : undefined,
     source: typeof route.query.source === "string" ? route.query.source : undefined,
     tag: typeof route.query.tag === "string" ? route.query.tag : undefined,
@@ -379,6 +404,7 @@ function applyFiltersIfChanged() {
 
   if (
     currentQuery.q === nextQuery.q
+    && currentQuery.nav_context === nextQuery.nav_context
     && currentQuery.source === nextQuery.source
     && currentQuery.tag === nextQuery.tag
     && currentQuery.sort === nextQuery.sort
@@ -390,11 +416,11 @@ function applyFiltersIfChanged() {
 }
 
 function resetFilters() {
-  router.replace(route.path);
+  router.replace({ path: route.path, query: buildRouteQuery() });
 }
 
 function goBack() {
-  router.push("/subscriptions");
+  router.push(groupBackTarget.value);
 }
 
 function findModel(modelDir) {

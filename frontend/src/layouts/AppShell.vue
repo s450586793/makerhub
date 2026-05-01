@@ -93,6 +93,10 @@ const route = useRoute();
 const COMPACT_MEDIA_QUERY = "(max-width: 980px)";
 const VERSION_REFRESH_INTERVAL_MS = 60 * 1000;
 const logoUrl = "/static/img/makerhub-logo.png";
+const NAV_CONTEXT_ROOTS = {
+  subscriptions: "/subscriptions",
+  organizer: "/organizer",
+};
 
 const user = computed(() => currentUser());
 const isCompact = ref(false);
@@ -126,12 +130,75 @@ const githubVersionText = computed(() => {
   }
   return "读取中";
 });
+const activeNavRoot = computed(() => {
+  const explicit = normalizeNavContext(route.query.nav_context)
+    || normalizeNavContext(route.query.return_context)
+    || navContextFromReturnTo(route.query.return_to)
+    || navContextFromHistoryBack();
+  if (explicit) {
+    return NAV_CONTEXT_ROOTS[explicit] || "";
+  }
+  if (route.name === "model-library-state") {
+    return NAV_CONTEXT_ROOTS.organizer;
+  }
+  if (route.name === "model-library-source") {
+    return String(route.params.sourceType || "") === "local"
+      ? NAV_CONTEXT_ROOTS.organizer
+      : NAV_CONTEXT_ROOTS.subscriptions;
+  }
+  return "";
+});
 
 function navClass(prefix) {
-  const active = prefix === "/"
+  const activeRoot = activeNavRoot.value;
+  const active = activeRoot
+    ? prefix === activeRoot
+    : prefix === "/"
     ? route.path === "/"
     : route.path === prefix || route.path.startsWith(`${prefix}/`);
   return ["sidebar-nav__link", active && "is-active"];
+}
+
+function firstQueryValue(value) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function normalizeNavContext(value) {
+  const normalized = String(firstQueryValue(value) || "").trim();
+  return Object.prototype.hasOwnProperty.call(NAV_CONTEXT_ROOTS, normalized) ? normalized : "";
+}
+
+function navContextFromReturnTo(value) {
+  const raw = String(firstQueryValue(value) || "").trim();
+  if (!raw || !raw.startsWith("/") || raw.startsWith("//")) {
+    return "";
+  }
+  try {
+    const url = new URL(raw, "http://makerhub.local");
+    const explicit = normalizeNavContext(url.searchParams.get("nav_context"));
+    if (explicit) {
+      return explicit;
+    }
+    if (url.pathname.startsWith("/models/state/")) {
+      return "organizer";
+    }
+    if (url.pathname.startsWith("/models/source/local/")) {
+      return "organizer";
+    }
+    if (url.pathname.startsWith("/models/source/")) {
+      return "subscriptions";
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
+function navContextFromHistoryBack() {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  return navContextFromReturnTo(window.history?.state?.back || "");
 }
 
 async function handleThemeChange(preference) {
