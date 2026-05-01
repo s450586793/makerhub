@@ -1,26 +1,27 @@
 <template>
-  <section class="page-intro page-intro--compact subscription-page-intro">
-    <div>
+  <section class="surface surface--filters library-toolbar">
+    <div class="library-toolbar__copy">
       <span class="eyebrow">订阅库</span>
-      <h1>订阅来源</h1>
-      <p>集中浏览作者、合集和收藏夹来源。订阅链接明细、编辑和同步操作放到订阅管理页。</p>
-    </div>
-    <div class="subscription-page-intro__side">
-      <div class="intro-stats">
-        <div class="intro-stat">
-          <span>订阅总数</span>
-          <strong>{{ payload.count }}</strong>
-        </div>
-        <div class="intro-stat">
-          <span>启用中</span>
-          <strong>{{ payload.summary.enabled }}</strong>
-        </div>
-        <div class="intro-stat">
-          <span>同步中</span>
-          <strong>{{ payload.summary.running }}</strong>
-        </div>
+      <div class="library-toolbar__title-row">
+        <h1>订阅来源</h1>
       </div>
-      <div class="subscription-page-tools">
+    </div>
+    <div class="library-toolbar__side">
+      <div class="toolbar-stats">
+        <span class="toolbar-stat">
+          <em>订阅</em>
+          <strong>{{ payload.count }}</strong>
+        </span>
+        <span class="toolbar-stat">
+          <em>启用</em>
+          <strong>{{ payload.summary.enabled }}</strong>
+        </span>
+        <span class="toolbar-stat">
+          <em>同步</em>
+          <strong>{{ payload.summary.running }}</strong>
+        </span>
+      </div>
+      <div class="filter-actions">
         <button class="button button-primary" type="button" @click="openCreateDialog">添加订阅</button>
         <RouterLink class="button button-secondary" to="/subscriptions/manage">订阅库管理</RouterLink>
       </div>

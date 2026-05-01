@@ -1,26 +1,34 @@
 <template>
-  <section class="page-intro">
-    <div>
+  <section class="surface surface--filters library-toolbar">
+    <div class="library-toolbar__copy">
       <span class="eyebrow">本地库</span>
-      <h1>本地库管理</h1>
-      <p>集中查看本地 3MF 导入入口、整理配置和运行状态。</p>
+      <div class="library-toolbar__title-row">
+        <h1>本地库管理</h1>
+      </div>
     </div>
-    <div class="intro-stats organizer-intro-stats">
-      <div class="intro-stat">
-        <span>是否空闲</span>
-        <strong>{{ organizerStatusText }}</strong>
+    <div class="library-toolbar__side">
+      <div class="toolbar-stats">
+        <span class="toolbar-stat">
+          <em>空闲</em>
+          <strong>{{ organizerStatusText }}</strong>
+        </span>
+        <span class="toolbar-stat">
+          <em>候选</em>
+          <strong>{{ detectedTotalText }}</strong>
+        </span>
+        <span class="toolbar-stat">
+          <em>运行</em>
+          <strong>{{ runningCountText }}</strong>
+        </span>
+        <span class="toolbar-stat">
+          <em>排队</em>
+          <strong>{{ queuedCountText }}</strong>
+        </span>
       </div>
-      <div class="intro-stat">
-        <span>候选 3MF</span>
-        <strong>{{ detectedTotalText }}</strong>
-      </div>
-      <div class="intro-stat">
-        <span>运行中</span>
-        <strong>{{ runningCountText }}</strong>
-      </div>
-      <div class="intro-stat">
-        <span>排队中</span>
-        <strong>{{ queuedCountText }}</strong>
+      <div class="filter-actions">
+        <RouterLink class="button button-primary" :to="{ path: '/settings', query: { tab: 'organizer' } }">
+          导入
+        </RouterLink>
       </div>
     </div>
   </section>
@@ -39,15 +47,6 @@
   </section>
 
   <section v-else class="library-section">
-    <div class="library-section__head">
-      <div aria-hidden="true"></div>
-      <div class="filter-actions">
-        <RouterLink class="button button-primary button-small" :to="{ path: '/settings', query: { tab: 'organizer' } }">
-          导入
-        </RouterLink>
-      </div>
-    </div>
-
     <div v-if="localLibraryCards.length" class="source-library-grid">
       <SourceLibraryCard
         v-for="card in localLibraryCards"

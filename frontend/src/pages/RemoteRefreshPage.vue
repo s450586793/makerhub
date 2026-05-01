@@ -3,7 +3,6 @@
     <div>
       <span class="eyebrow">源端刷新</span>
       <h1>源端刷新配置</h1>
-      <p>控制远端评论、附件、打印配置与源端删除标记的分批同步节奏。</p>
     </div>
     <div class="intro-stats remote-refresh-intro-stats">
       <div class="intro-stat">
