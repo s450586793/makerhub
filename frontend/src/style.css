@@ -121,6 +121,10 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   font-size: 13px;
 }
 
+.model-grid {
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+
 .archive-form__options {
   margin-top: 14px;
   display: flex;
@@ -1484,6 +1488,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 
 .model-card--interactive {
   position: relative;
+  cursor: pointer;
 }
 
 .model-card--interactive:hover {
@@ -1704,39 +1709,6 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   font-size: 15px;
   font-weight: 800;
   letter-spacing: -0.02em;
-}
-
-.gallery-card__dates {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 6px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.gallery-card__dates span {
-  min-width: 0;
-  padding: 7px 10px;
-  border-radius: 12px;
-  display: grid;
-  gap: 1px;
-  background: var(--surface-soft);
-}
-
-.gallery-card__dates strong {
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.gallery-card__dates em {
-  font-style: normal;
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 700;
 }
 
 .gallery-card__actions {
@@ -2344,6 +2316,12 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   gap: 12px;
 }
 
+@media (max-width: 1240px) {
+  .model-grid {
+    grid-template-columns: repeat(auto-fill, minmax(188px, 1fr));
+  }
+}
+
 @media (max-width: 960px) {
   .dashboard-hero {
     flex-direction: column;
@@ -2435,6 +2413,10 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 }
 
 @media (max-width: 640px) {
+  .model-grid {
+    grid-template-columns: repeat(auto-fill, minmax(172px, 1fr));
+  }
+
   .dashboard-hero--compact {
     padding: 20px;
     gap: 16px;

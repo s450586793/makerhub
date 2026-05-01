@@ -74,11 +74,6 @@
         </span>
       </div>
 
-      <div class="gallery-card__dates">
-        <span><strong>采集</strong><em>{{ model.collect_date || "未知" }}</em></span>
-        <span><strong>发布</strong><em>{{ model.publish_date || "未知" }}</em></span>
-      </div>
-
       <div class="gallery-card__actions">
         <div class="gallery-card__local-flags">
           <button
