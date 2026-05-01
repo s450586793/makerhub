@@ -2061,6 +2061,12 @@ select:focus {
   gap: 16px;
 }
 
+.mw-head__back {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  white-space: nowrap;
+}
+
 .mw-head__author {
   min-width: 0;
   flex: 1 1 auto;

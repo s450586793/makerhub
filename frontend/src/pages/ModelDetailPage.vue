@@ -10,12 +10,12 @@
   </section>
 
   <div v-else-if="detail" class="mw-detail-layout">
-    <RouterLink class="mw-back-link" :to="detailBackTarget">{{ detailBackLabel }}</RouterLink>
-
     <section class="mw-card">
       <div class="mw-hero">
         <header class="mw-head mw-head--gallery mw-hero__head">
           <div class="mw-head__top">
+            <RouterLink class="button button-secondary mw-head__back" :to="detailBackTarget">{{ detailBackLabel }}</RouterLink>
+
             <div class="mw-head__author">
               <img
                 v-if="detail.author?.avatar_url || detail.author?.avatar_remote_url"
