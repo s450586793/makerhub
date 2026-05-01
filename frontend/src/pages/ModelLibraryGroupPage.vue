@@ -2,8 +2,50 @@
   <section v-if="view" class="surface library-group-hero">
     <div class="library-group-hero__head">
       <button class="button button-secondary" type="button" @click="goBack">{{ groupBackLabel }}</button>
-      <span class="library-group-hero__eyebrow">{{ groupLabel }}</span>
+      <form class="filter-bar library-group-filter" @submit.prevent="applyFilters">
+        <label class="filter-field filter-field--wide">
+          <input
+            v-model.trim="filters.q"
+            type="text"
+            aria-label="搜索模型"
+            placeholder="标题、作者、标签"
+            @blur="applyFiltersIfChanged"
+            @keydown.enter.prevent="applyFilters"
+          >
+        </label>
+        <label class="filter-field">
+          <select v-model="filters.source" aria-label="来源筛选" @change="applyFiltersIfChanged">
+            <option value="all">全部 ({{ payload.source_counts.all || 0 }})</option>
+            <option value="cn">国内 ({{ payload.source_counts.cn || 0 }})</option>
+            <option value="global">国际 ({{ payload.source_counts.global || 0 }})</option>
+            <option value="local">本地 ({{ payload.source_counts.local || 0 }})</option>
+          </select>
+        </label>
+        <label class="filter-field">
+          <select v-model="filters.tag" aria-label="标签筛选" @change="applyFiltersIfChanged">
+            <option value="">全部</option>
+            <option value="__favorite__">收藏</option>
+            <option value="__printed__">已打印</option>
+            <option value="__source_deleted__">源端删除</option>
+            <option value="__local_deleted__">本地删除</option>
+            <option v-for="tag in payload.tags" :key="tag" :value="tag">{{ tag }}</option>
+          </select>
+        </label>
+        <label class="filter-field">
+          <select v-model="filters.sort" aria-label="排序方式" @change="applyFiltersIfChanged">
+            <option value="collectDate">采集时间倒序</option>
+            <option value="publishDate">发布时间倒序</option>
+            <option value="downloads">下载量</option>
+            <option value="likes">点赞量</option>
+            <option value="prints">打印量</option>
+          </select>
+        </label>
+        <div class="filter-actions">
+          <button class="button button-secondary" type="button" @click="resetFilters">重置</button>
+        </div>
+      </form>
     </div>
+    <span v-if="status" class="form-status model-toolbar-inline__status library-group-hero__status">{{ status }}</span>
     <div class="library-group-hero__body">
       <div class="library-group-hero__copy">
         <h1>{{ view.title }}</h1>
@@ -16,52 +58,6 @@
         </span>
       </div>
     </div>
-  </section>
-
-  <section class="surface surface--filters">
-    <form class="filter-bar" @submit.prevent="applyFilters">
-      <label class="filter-field filter-field--wide">
-        <input
-          v-model.trim="filters.q"
-          type="text"
-          aria-label="搜索模型"
-          placeholder="标题、作者、标签"
-          @blur="applyFiltersIfChanged"
-          @keydown.enter.prevent="applyFilters"
-        >
-      </label>
-      <label class="filter-field">
-        <select v-model="filters.source" aria-label="来源筛选" @change="applyFiltersIfChanged">
-          <option value="all">全部 ({{ payload.source_counts.all || 0 }})</option>
-          <option value="cn">国内 ({{ payload.source_counts.cn || 0 }})</option>
-          <option value="global">国际 ({{ payload.source_counts.global || 0 }})</option>
-          <option value="local">本地 ({{ payload.source_counts.local || 0 }})</option>
-        </select>
-      </label>
-      <label class="filter-field">
-        <select v-model="filters.tag" aria-label="标签筛选" @change="applyFiltersIfChanged">
-          <option value="">全部</option>
-          <option value="__favorite__">收藏</option>
-          <option value="__printed__">已打印</option>
-          <option value="__source_deleted__">源端删除</option>
-          <option value="__local_deleted__">本地删除</option>
-          <option v-for="tag in payload.tags" :key="tag" :value="tag">{{ tag }}</option>
-        </select>
-      </label>
-      <label class="filter-field">
-        <select v-model="filters.sort" aria-label="排序方式" @change="applyFiltersIfChanged">
-          <option value="collectDate">采集时间倒序</option>
-          <option value="publishDate">发布时间倒序</option>
-          <option value="downloads">下载量</option>
-          <option value="likes">点赞量</option>
-          <option value="prints">打印量</option>
-        </select>
-      </label>
-      <div class="filter-actions">
-        <button class="button button-secondary" type="button" @click="resetFilters">重置</button>
-      </div>
-    </form>
-    <span v-if="status" class="form-status model-toolbar-inline__status">{{ status }}</span>
   </section>
 
   <section v-if="payload.items.length" class="model-grid">
@@ -139,17 +135,6 @@ let requestToken = 0;
 let unsubscribeArchiveEvents = null;
 let refreshWhenVisible = false;
 
-const groupLabel = computed(() => {
-  if (route.name === "model-library-state") {
-    return "状态模型列表";
-  }
-  const sourceType = String(route.params.sourceType || "");
-  if (sourceType === "author") return "作者模型列表";
-  if (sourceType === "collection") return "合集模型列表";
-  if (sourceType === "favorite") return "收藏夹模型列表";
-  if (sourceType === "local") return "本地库模型列表";
-  return "模型列表";
-});
 const activeNavContext = computed(() => {
   const explicit = normalizeNavContext(route.query.nav_context);
   if (explicit) {

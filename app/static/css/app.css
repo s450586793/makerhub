@@ -511,6 +511,7 @@ html[data-theme="dark"] .shell-visibility-toggle {
   padding: 28px 28px 56px 12px;
   display: grid;
   gap: 22px;
+  align-content: start;
 }
 
 .page-shell--full,

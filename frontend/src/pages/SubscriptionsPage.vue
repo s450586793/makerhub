@@ -30,20 +30,27 @@
 
   <p v-if="status && !createDialog.visible" class="subscription-page-status">{{ status }}</p>
 
-  <section v-for="section in sourceSections" :key="section.key" class="library-section">
-    <div v-if="section.items?.length" class="source-library-grid">
-      <SourceLibraryCard
-        v-for="card in section.items"
-        :key="card.key"
-        :card="card"
-        @open="openCard"
-      />
-    </div>
-    <section v-else class="surface empty-state subscription-inline-empty">
-      <h2>{{ section.label }}为空</h2>
-      <p>当前没有可展示的订阅来源卡片。你可以先添加作者、合集或收藏夹订阅。</p>
-    </section>
+  <section v-if="!initialLoaded" class="surface empty-state subscription-inline-empty">
+    <h2>正在加载订阅库</h2>
+    <p>正在读取订阅来源和卡片数据。</p>
   </section>
+
+  <template v-else>
+    <section v-for="section in sourceSections" :key="section.key" class="library-section">
+      <div v-if="section.items?.length" class="source-library-grid">
+        <SourceLibraryCard
+          v-for="card in section.items"
+          :key="card.key"
+          :card="card"
+          @open="openCard"
+        />
+      </div>
+      <section v-else class="surface empty-state subscription-inline-empty">
+        <h2>{{ section.label }}为空</h2>
+        <p>当前没有可展示的订阅来源卡片。你可以先添加作者、合集或收藏夹订阅。</p>
+      </section>
+    </section>
+  </template>
 
   <div
     v-if="createDialog.visible"
@@ -107,6 +114,7 @@ const router = useRouter();
 const payload = ref(createEmptySubscriptionsPayload());
 const status = ref("");
 const creating = ref(false);
+const initialLoaded = ref(false);
 const createDialog = reactive({
   visible: false,
   url: "",
@@ -143,6 +151,7 @@ async function load({ silent = false } = {}) {
   try {
     const response = await apiRequest("/api/subscriptions");
     payload.value = normalizeSubscriptionsPayload(response);
+    initialLoaded.value = true;
     syncAutoRefresh();
   } catch (error) {
     if (!silent) {
