@@ -121,6 +121,21 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   font-size: 13px;
 }
 
+.surface--filters {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.page-intro,
+.logs-hero {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
 .model-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
@@ -1550,24 +1565,23 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 }
 
 .gallery-card__makerworld-pill {
-  min-height: 30px;
-  padding: 0 11px;
+  min-height: 24px;
+  padding: 0;
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  color: #39515c;
+  color: var(--muted);
   font-size: 12px;
   font-weight: 800;
   letter-spacing: -0.01em;
-  background: linear-gradient(180deg, rgba(238, 246, 247, 0.95), rgba(232, 240, 242, 0.98));
-  border: 1px solid rgba(126, 154, 165, 0.18);
+  background: transparent;
+  border: 0;
 }
 
 .gallery-card__makerworld-pill--rating {
   color: #9b6600;
-  background: linear-gradient(180deg, rgba(255, 246, 207, 0.98), rgba(255, 238, 176, 0.98));
-  border-color: rgba(214, 159, 24, 0.2);
+  background: transparent;
 }
 
 .gallery-card__makerworld-icon {
@@ -1660,14 +1674,14 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 }
 
 .gallery-card__stats {
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  background: var(--surface-soft);
+  background: transparent;
 }
 
 .gallery-stat {
@@ -1733,7 +1747,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 .gallery-restore {
   min-height: 34px;
   padding: 0;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
@@ -1749,19 +1763,18 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 
 .gallery-flag {
   color: var(--muted);
-  background: var(--surface-soft);
+  background: transparent;
 }
 
 .gallery-flag.is-active {
   color: var(--brand-strong);
-  border-color: rgba(31, 157, 98, 0.2);
-  background: var(--brand-soft);
+  background: transparent;
 }
 
 .gallery-delete {
   flex-shrink: 0;
   color: var(--danger);
-  background: var(--danger-soft);
+  background: transparent;
 }
 
 .gallery-restore {
@@ -1772,7 +1785,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   color: var(--brand-strong);
   font-size: 13px;
   font-weight: 800;
-  background: var(--brand-soft);
+  background: transparent;
 }
 
 .gallery-restore em {
@@ -1787,11 +1800,11 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 }
 
 .gallery-delete:hover {
-  border-color: rgba(184, 71, 71, 0.24);
+  color: #d44949;
 }
 
 .gallery-restore:hover {
-  border-color: rgba(31, 157, 98, 0.24);
+  color: var(--brand);
 }
 
 .list-loader-anchor {
@@ -2459,8 +2472,8 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   }
 
   .gallery-card__makerworld-pill {
-    min-height: 28px;
-    padding: 0 10px;
+    min-height: 24px;
+    padding: 0;
     font-size: 11px;
   }
 
