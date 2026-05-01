@@ -1,29 +1,18 @@
 const STORAGE_KEY = "makerhub.theme_preference";
-const mediaQuery = typeof window !== "undefined" && window.matchMedia
-  ? window.matchMedia("(prefers-color-scheme: dark)")
-  : null;
 
 
 export function normalizeThemePreference(value) {
-  return ["light", "dark", "auto"].includes(value) ? value : "auto";
+  return "light";
 }
 
 
 export function resolveTheme(preference) {
-  const normalized = normalizeThemePreference(preference);
-  if (normalized === "light" || normalized === "dark") {
-    return normalized;
-  }
-  return mediaQuery?.matches ? "dark" : "light";
+  return "light";
 }
 
 
 export function getStoredThemePreference() {
-  try {
-    return normalizeThemePreference(window.localStorage.getItem(STORAGE_KEY) || "auto");
-  } catch {
-    return "auto";
-  }
+  return "light";
 }
 
 
@@ -42,16 +31,5 @@ export function applyTheme(preference) {
 
 
 export function startThemeObserver() {
-  if (!mediaQuery || mediaQuery.__makerhubBound) {
-    return;
-  }
-
-  const listener = () => {
-    if (document.documentElement.dataset.themePreference === "auto") {
-      applyTheme("auto");
-    }
-  };
-
-  mediaQuery.addEventListener("change", listener);
-  mediaQuery.__makerhubBound = true;
+  applyTheme("light");
 }

@@ -3097,3 +3097,257 @@ html[data-theme="dark"] .library-group-hero {
     font-size: 13px;
   }
 }
+
+body {
+  color: var(--text);
+  background: var(--bg);
+  font-size: var(--text-base);
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.site-sidebar,
+.site-sidebar__inner,
+.site-sidebar-backdrop,
+.surface,
+.page-intro,
+.stat-card,
+.model-card,
+.mini-model-card,
+.field-card,
+.task-item,
+.summary-box,
+.section-card,
+.token-card,
+.remote-refresh-card,
+.logs-hero,
+.logs-sidebar,
+.logs-stream,
+.dashboard-panel,
+.dashboard-mini-card,
+.automation-card,
+.subscription-card,
+.source-library-card,
+.library-group-hero,
+.library-group-hero__stats span,
+.source-library-card__author-shell,
+.source-library-card__preview-tile,
+.source-library-card__avatar-placeholder,
+.gallery-card,
+.gallery-card__cover,
+.gallery-card__cover .media-placeholder,
+.gallery-card__makerworld-pill,
+.gallery-card__stats,
+.gallery-flag,
+.gallery-delete,
+.gallery-restore,
+.button,
+.button-primary,
+.button-secondary,
+.button-danger,
+.brand-mark__badge,
+.count-pill,
+.source-pill,
+.tag-chip,
+.mw-chip,
+.gallery-card__source,
+.settings-tab,
+.theme-toggle,
+.theme-toggle__option,
+.user-launcher,
+.user-menu,
+.user-menu__avatar,
+.user-launcher__avatar,
+.logs-hero__icon,
+.logs-hero__chip,
+.remote-refresh-history__chip,
+.remote-refresh-history__status,
+.mw-profile-filament-chip {
+  background-image: none;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.surface,
+.stat-card,
+.model-card,
+.mini-model-card,
+.field-card,
+.task-item,
+.summary-box,
+.section-card,
+.token-card,
+.remote-refresh-card,
+.logs-sidebar,
+.logs-stream,
+.dashboard-panel,
+.dashboard-mini-card,
+.automation-card,
+.subscription-card,
+.source-library-card,
+.library-group-hero,
+.source-library-card__author-shell,
+.source-library-card__preview-tile,
+.library-group-hero__stats span,
+.user-launcher,
+.user-menu {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background-color: var(--surface);
+}
+
+.page-intro,
+.surface--filters,
+.logs-hero {
+  border-color: transparent;
+  background-color: transparent;
+}
+
+.button,
+.button-primary,
+.button-secondary,
+.button-danger,
+.filter-bar input,
+.filter-bar select,
+input,
+textarea,
+select,
+.settings-tab,
+.theme-toggle,
+.theme-toggle__option,
+.count-pill,
+.source-pill,
+.tag-chip,
+.mw-chip,
+.gallery-card__source,
+.gallery-flag,
+.gallery-delete,
+.gallery-restore,
+.subscription-toggle,
+.subscription-switch,
+.subscription-switch__track {
+  border-radius: var(--radius-md);
+}
+
+.button {
+  min-height: var(--space-10);
+  border-color: var(--border-strong);
+  box-shadow: none;
+}
+
+.button-primary {
+  border-color: var(--brand);
+  background-color: var(--brand);
+  color: #ffffff;
+}
+
+.button-primary:hover {
+  border-color: var(--brand-strong);
+  background-color: var(--brand-strong);
+}
+
+.button-secondary {
+  border-color: var(--border-strong);
+  background-color: #ffffff;
+  color: var(--text);
+}
+
+.button-secondary:hover {
+  border-color: var(--color-neutral-400);
+  background-color: var(--color-neutral-50);
+}
+
+.button-danger {
+  border-color: var(--danger);
+  background-color: var(--danger);
+  color: #ffffff;
+}
+
+input,
+textarea,
+select {
+  border: 1px solid var(--color-neutral-300);
+  background-color: #ffffff;
+  color: var(--text);
+  box-shadow: none;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--brand);
+  outline: var(--focus-outline-width) solid var(--focus-outline);
+  outline-offset: var(--focus-outline-width);
+  box-shadow: none;
+}
+
+.brand-mark__badge,
+.user-launcher__avatar,
+.user-menu__avatar,
+.logs-hero__icon {
+  border-radius: var(--radius-md);
+  background-color: var(--brand);
+  color: #ffffff;
+}
+
+.gallery-card__cover,
+.gallery-card__cover .media-placeholder,
+.source-library-card__preview-tile {
+  background-color: var(--color-neutral-100);
+}
+
+.gallery-card__makerworld-pill,
+.gallery-card__stats,
+.gallery-flag,
+.gallery-delete,
+.gallery-restore {
+  background-color: transparent;
+  border-color: transparent;
+}
+
+.gallery-card__stats {
+  padding: 0;
+}
+
+.gallery-flag:hover,
+.gallery-delete:hover,
+.gallery-restore:hover,
+.gallery-card:hover,
+.source-library-card:hover,
+.button:hover {
+  transform: none;
+}
+
+.gallery-card:hover,
+.source-library-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-1);
+}
+
+.count-pill,
+.source-pill,
+.tag-chip,
+.mw-chip,
+.gallery-card__source {
+  border: 1px solid var(--border);
+  background-color: var(--color-neutral-50);
+  color: var(--text);
+}
+
+.gallery-card__source--danger,
+.mw-chip--danger,
+.gallery-card__source--local-deleted {
+  border-color: var(--border);
+  background-color: var(--color-neutral-50);
+  color: var(--danger);
+}
