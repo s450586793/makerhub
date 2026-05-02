@@ -26,16 +26,16 @@
             </div>
             <p>{{ card.subtitle || "MakerWorld 作者" }}</p>
           </div>
-        </div>
 
-        <div class="source-library-card__stats source-library-card__stats--author">
-          <div
-            v-for="stat in displayStats"
-            :key="stat.label"
-            class="source-library-card__stat"
-          >
-            <strong>{{ formatCompact(stat.value) }}</strong>
-            <span>{{ stat.label }}</span>
+          <div class="source-library-card__stats source-library-card__stats--author">
+            <div
+              v-for="stat in displayStats"
+              :key="stat.label"
+              class="source-library-card__stat"
+            >
+              <strong>{{ formatCompact(stat.value) }}</strong>
+              <span>{{ stat.label }}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -78,16 +78,16 @@
             </div>
             <p>{{ card.subtitle || fallbackSubtitle }}</p>
           </div>
-        </div>
 
-        <div class="source-library-card__stats source-library-card__stats--collection">
-          <div
-            v-for="stat in displayStats"
-            :key="stat.label"
-            class="source-library-card__stat"
-          >
-            <strong>{{ formatCompact(stat.value) }}</strong>
-            <span>{{ stat.label }}</span>
+          <div class="source-library-card__stats source-library-card__stats--collection">
+            <div
+              v-for="stat in displayStats"
+              :key="stat.label"
+              class="source-library-card__stat"
+            >
+              <strong>{{ formatCompact(stat.value) }}</strong>
+              <span>{{ stat.label }}</span>
+            </div>
           </div>
         </div>
       </div>
