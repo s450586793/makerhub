@@ -1623,15 +1623,23 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 
 .gallery-card__body .gallery-card__title {
   margin: 0;
+  min-height: var(--space-6);
+  max-height: var(--space-6);
   color: var(--text);
   font-size: var(--text-sm);
-  line-height: 1.25;
+  line-height: var(--space-6);
   font-weight: 700;
   letter-spacing: 0;
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
   overflow: hidden;
+}
+
+.gallery-card__body .gallery-card__title.is-title-compact {
+  font-size: var(--text-xs);
+  line-height: calc(var(--space-6) / 2);
+  -webkit-line-clamp: 2;
 }
 
 .gallery-card__meta {
