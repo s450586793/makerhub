@@ -1627,60 +1627,8 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   overflow: hidden;
 }
 
-.gallery-card__makerworld-strip {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-
-.gallery-card__makerworld-pill {
-  min-height: 24px;
-  padding: 0;
-  border-radius: 999px;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: -0.01em;
-  background: transparent;
-  border: 0;
-}
-
-.gallery-card__makerworld-pill--rating {
-  color: #9b6600;
-  background: transparent;
-}
-
-.gallery-card__makerworld-icon {
-  width: 14px;
-  height: 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.gallery-card__makerworld-icon svg {
-  width: 100%;
-  height: 100%;
-  display: block;
-}
-
-.gallery-card__makerworld-value {
-  white-space: nowrap;
-}
-
-.gallery-card__makerworld-context {
-  color: var(--muted);
-  font-size: var(--text-xs);
-  line-height: 1.35;
-}
-
 .gallery-card__meta {
-  margin-top: auto;
+  margin-top: var(--space-1);
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -2530,12 +2478,6 @@ html[data-theme="dark"] .mw-profile-filament-chip {
     font-size: 15px;
   }
 
-  .gallery-card__makerworld-pill {
-    min-height: 24px;
-    padding: 0;
-    font-size: var(--text-xs);
-  }
-
   .gallery-card__meta {
     flex-wrap: wrap;
   }
@@ -2796,6 +2738,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 }
 
 .source-library-card__author-head {
+  min-height: var(--space-12);
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
@@ -2846,15 +2789,17 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 
 .source-library-card__author-copy {
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 1 1 0;
+  align-self: center;
   display: grid;
-  gap: 4px;
+  gap: 0;
 }
 
 .source-library-card__title-row {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
 }
 
 .source-library-card__title-row h2,
@@ -2863,26 +2808,26 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--text-base);
-  line-height: 1.2;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  font-size: var(--text-sm);
+  line-height: 1.15;
   color: var(--text);
 }
 
-.source-library-card__author-copy p,
-.source-library-card__collection-subtitle {
-  margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--muted);
-  font-size: var(--text-sm);
+.source-library-card__title.is-compact {
+  font-size: var(--text-xs);
+  line-height: 1.18;
 }
 
 .source-library-card__verified {
-  width: 20px;
-  height: 20px;
+  width: var(--space-5);
+  height: var(--space-5);
   border-radius: 50%;
+  flex: 0 0 var(--space-5);
   display: inline-grid;
   place-items: center;
   background: #21b36a;
@@ -3223,7 +3168,6 @@ h6 {
 .gallery-card,
 .gallery-card__cover,
 .gallery-card__cover .media-placeholder,
-.gallery-card__makerworld-pill,
 .gallery-card__stats,
 .gallery-flag,
 .gallery-delete,
@@ -3381,7 +3325,6 @@ select:focus {
   background-color: var(--color-neutral-100);
 }
 
-.gallery-card__makerworld-pill,
 .gallery-card__stats,
 .gallery-flag,
 .gallery-delete,

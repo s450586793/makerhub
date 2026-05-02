@@ -32,20 +32,6 @@
     <div class="model-card__body gallery-card__body">
       <h2 class="gallery-card__title">{{ model.title || "未命名模型" }}</h2>
 
-      <div v-if="profileSummaryItems.length" class="gallery-card__makerworld-strip" :title="profileSummaryTooltip">
-        <span
-          v-for="item in profileSummaryItems"
-          :key="item.key"
-          :class="['gallery-card__makerworld-pill', item.key === 'rating' && 'gallery-card__makerworld-pill--rating']"
-        >
-          <span class="gallery-card__makerworld-icon" aria-hidden="true" v-html="item.icon"></span>
-          <span class="gallery-card__makerworld-value">{{ item.value }}</span>
-        </span>
-      </div>
-      <div v-if="profileSummaryContext" class="gallery-card__makerworld-context">
-        {{ profileSummaryContext }}
-      </div>
-
       <div class="card-meta gallery-card__meta">
         <div class="model-author gallery-card__author">
           <img
@@ -112,8 +98,6 @@
 import { computed, ref } from "vue";
 import { useRouter } from "vue-router";
 
-import { formatProfileRating } from "../lib/helpers";
-
 
 const props = defineProps({
   model: {
@@ -139,11 +123,7 @@ defineEmits(["favorite", "printed", "delete", "restore"]);
 const router = useRouter();
 
 const icons = {
-  clock: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7.1"/><path d="M10 5.9v4.2l2.8 1.9"/></svg>',
   like: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7.4 8.2V16H4.7A1.7 1.7 0 0 1 3 14.3V9.9c0-.94.76-1.7 1.7-1.7h2.7Z"/><path d="M7.4 8.2 10 3.9c.42-.68 1.5-.38 1.5.42v2.48h2.66c1.15 0 1.99 1.1 1.68 2.2l-1.46 5.2A1.7 1.7 0 0 1 12.74 16H7.4"/></svg>',
-  plates: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4.2 6.1 10 3.4l5.8 2.7L10 8.8 4.2 6.1Z"/><path d="M4.2 10 10 12.7 15.8 10"/><path d="M4.2 13.9 10 16.6l5.8-2.7"/></svg>',
-  favorite: '<svg viewBox="0 0 20 20" fill="currentColor"><path d="m10 2.4 2.27 4.6 5.08.74-3.67 3.58.86 5.06L10 13.98l-4.54 2.4.86-5.06-3.67-3.58L7.73 7 10 2.4Z"/></svg>',
-  rating: '<svg viewBox="0 0 20 20" fill="currentColor"><path d="m10 2.5 2.3 4.65 5.14.75-3.72 3.62.88 5.12L10 14.19l-4.6 2.45.88-5.12L2.56 7.9l5.14-.75L10 2.5Z"/></svg>',
   download: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.5v8.2"/><path d="m6.8 8.8 3.2 3.2 3.2-3.2"/><path d="M4 15.3h12"/></svg>',
   favoriteOutline: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m10 16.5-1.08-.98C5.1 12.05 2.6 9.78 2.6 6.97c0-2.03 1.6-3.57 3.62-3.57 1.15 0 2.25.54 2.94 1.4.69-.86 1.79-1.4 2.94-1.4 2.02 0 3.62 1.54 3.62 3.57 0 2.81-2.5 5.08-6.32 8.56L10 16.5Z"/></svg>',
   favoriteFilled: '<svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 16.5 8.92 15.5C5.1 12.05 2.6 9.78 2.6 6.97 2.6 4.94 4.2 3.4 6.22 3.4c1.15 0 2.25.54 2.94 1.4.69-.86 1.79-1.4 2.94-1.4 2.02 0 3.62 1.54 3.62 3.57 0 2.81-2.5 5.08-6.32 8.56L10 16.5Z"/></svg>',
@@ -166,45 +146,6 @@ const sourceBadgeLabel = computed(() => {
   if (source === "local") return "本地";
   const label = String(props.model.source_label || "").trim();
   return label.replace(/^MakerWorld\s*/i, "") || "来源";
-});
-const profileSummary = computed(() => props.model.profile_summary || {});
-const profileSummaryItems = computed(() => {
-  const summary = profileSummary.value;
-  const items = [];
-  if (summary.time) {
-    items.push({ key: "time", icon: icons.clock, value: String(summary.time) });
-  }
-  if (Number(summary.plates || 0) > 0) {
-    items.push({ key: "plates", icon: icons.plates, value: `${summary.plates} 盘` });
-  }
-  if (String(summary.rating ?? "").trim()) {
-    items.push({ key: "rating", icon: icons.rating, value: formatProfileRating(summary.rating) });
-  }
-  return items;
-});
-const profileSummaryContext = computed(() => {
-  const summary = profileSummary.value;
-  const parts = [];
-  const machine = String(summary.machine || "").trim();
-  const title = String(summary.title || "").trim();
-  const modelTitle = String(props.model.title || "").trim();
-  const profileCount = Number(summary.profile_count || 0);
-
-  if (machine && machine !== "通用") {
-    parts.push(machine);
-  } else if (title && title !== modelTitle) {
-    parts.push(title);
-  }
-  if (profileCount > 1) {
-    parts.push(`共 ${profileCount} 个配置`);
-  }
-  return parts.join(" · ");
-});
-const profileSummaryTooltip = computed(() => {
-  if (profileSummaryContext.value) {
-    return `MakerWorld 打印配置摘要：${profileSummaryContext.value}`;
-  }
-  return "MakerWorld 打印配置摘要";
 });
 const deletedSourceTitle = computed(() => {
   const items = props.model.subscription_flags?.deleted_sources || [];

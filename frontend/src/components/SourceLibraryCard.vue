@@ -21,10 +21,9 @@
           </div>
           <div class="source-library-card__author-copy">
             <div class="source-library-card__title-row">
-              <h2>{{ card.title }}</h2>
+              <h2 :class="['source-library-card__title', titleIsLong && 'is-compact']">{{ card.title }}</h2>
               <span v-if="card.verified" class="source-library-card__verified" aria-hidden="true">✓</span>
             </div>
-            <p>{{ card.subtitle || "MakerWorld 作者" }}</p>
           </div>
 
           <div class="source-library-card__stats source-library-card__stats--author">
@@ -74,9 +73,8 @@
           </div>
           <div class="source-library-card__author-copy">
             <div class="source-library-card__title-row">
-              <h2>{{ card.title }}</h2>
+              <h2 :class="['source-library-card__title', titleIsLong && 'is-compact']">{{ card.title }}</h2>
             </div>
-            <p>{{ card.subtitle || fallbackSubtitle }}</p>
           </div>
 
           <div class="source-library-card__stats source-library-card__stats--collection">
@@ -131,11 +129,7 @@ defineEmits(["open"]);
 
 const titleInitial = computed(() => tileInitial(props.card.title || "M"));
 const collectionAvatarUrl = computed(() => props.card.avatar_url || props.card.cover_url || "");
-const fallbackSubtitle = computed(() => {
-  if (props.card.kind === "collection") return "MakerWorld 合集";
-  if (props.card.kind === "favorite") return "MakerWorld 收藏夹";
-  return props.card.site === "local" ? "MakerHub 本地状态" : "MakerWorld 来源";
-});
+const titleIsLong = computed(() => String(props.card.title || "").trim().length > 8);
 const previewTiles = computed(() => {
   const previews = Array.isArray(props.card.preview_models) ? props.card.preview_models.slice(0, 4) : [];
   if (!previews.length && props.card.cover_url) {
