@@ -562,24 +562,50 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   background: rgba(223, 86, 86, 0.14);
 }
 
+.dashboard-page {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.dashboard-page .stats-grid {
+  gap: var(--space-3);
+}
+
+.dashboard-page .stat-card {
+  min-height: 112px;
+  padding: var(--space-4);
+  display: grid;
+  align-content: center;
+}
+
+.dashboard-page .stat-card span,
+.dashboard-page .stat-card small {
+  font-size: var(--text-xs);
+  line-height: 1.35;
+}
+
+.dashboard-page .stat-card strong {
+  margin: var(--space-2) 0 var(--space-1);
+  font-size: var(--text-2xl);
+  line-height: 1;
+  letter-spacing: 0;
+}
+
 .dashboard-hero--compact {
-  padding: 24px 26px;
+  min-height: 82px;
+  padding: 0 var(--space-6);
   align-items: center;
-  gap: 22px;
+  gap: var(--space-4);
 }
 
 .dashboard-hero {
-  align-items: flex-start;
-  background:
-    radial-gradient(circle at top left, rgba(63, 124, 255, 0.1), transparent 30%),
-    radial-gradient(circle at right center, rgba(31, 157, 98, 0.12), transparent 34%),
-    var(--surface);
+  align-items: center;
 }
 
 .dashboard-hero__copy {
   min-width: 0;
   display: grid;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .dashboard-hero__copy p {
@@ -589,19 +615,21 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 }
 
 .dashboard-hero__status-grid {
-  width: min(520px, 100%);
+  width: min(640px, 100%);
   display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--space-2);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .dashboard-hero__status {
   min-width: 0;
-  padding: 14px 16px;
+  min-height: var(--space-16);
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 18px;
+  border-radius: var(--radius-xl);
   display: grid;
-  gap: 6px;
+  align-content: center;
+  gap: var(--space-1);
   background: var(--surface-soft);
 }
 
@@ -618,20 +646,20 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 }
 
 .dashboard-hero__status strong {
-  font-size: 13px;
+  font-size: var(--text-sm);
   line-height: 1.3;
 }
 
 .dashboard-hero__status-line {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
 .dashboard-hero__status-dot {
-  width: 9px;
-  height: 9px;
+  width: var(--space-2);
+  height: var(--space-2);
   border-radius: 999px;
   flex: 0 0 auto;
   background: #9aa4b2;
@@ -652,15 +680,14 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 .dashboard-hero__status-text,
 .dashboard-hero__status-detail {
   color: var(--muted);
-  font-size: 13px;
-  line-height: 1.4;
+  font-size: var(--text-xs);
+  line-height: 1.3;
   overflow-wrap: anywhere;
 }
 
 .dashboard-hero__status-action {
-  margin-top: 2px;
   color: var(--accent);
-  font-size: 12px;
+  font-size: var(--text-xs);
   line-height: 1.3;
   font-weight: 700;
 }
@@ -683,10 +710,14 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 }
 
 .dashboard-panel {
-  height: 100%;
+  height: auto;
+  padding: 0;
+  border: 0;
   display: grid;
-  gap: 18px;
+  gap: var(--space-4);
   align-content: start;
+  background: transparent;
+  box-shadow: none;
 }
 
 .dashboard-panel .section-card__header {
@@ -744,17 +775,19 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 
 .dashboard-automation-cards {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
   align-items: stretch;
 }
 
 .dashboard-mini-card {
-  padding: 16px 18px;
+  min-width: 0;
+  padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 20px;
+  border-radius: var(--radius-xl);
   display: grid;
-  gap: 14px;
+  gap: var(--space-3);
+  align-content: start;
   background: var(--surface-soft);
 }
 
@@ -763,67 +796,81 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-2);
+}
+
+.dashboard-mini-card__head > div {
+  min-width: 0;
+}
+
+.dashboard-mini-card .count-pill {
+  min-height: var(--space-7);
+  padding: 0 var(--space-2);
+  font-size: var(--text-xs);
 }
 
 .dashboard-mini-card__head h3 {
-  margin: 4px 0 0;
-  font-size: 18px;
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-base);
   line-height: 1.2;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dashboard-mini-card__eyebrow {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: 0;
 }
 
 .dashboard-mini-card__stats {
   display: grid;
-  gap: 10px;
+  gap: var(--space-2);
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .dashboard-mini-card__stat {
   min-width: 0;
-  padding: 12px 14px;
-  border-radius: 16px;
+  padding: var(--space-2);
+  border-radius: var(--radius-xl);
   display: grid;
-  gap: 6px;
+  gap: var(--space-1);
   background: rgba(148, 163, 184, 0.12);
 }
 
 .dashboard-mini-card__stat span {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-xs);
 }
 
 .dashboard-mini-card__stat strong {
-  font-size: 24px;
+  font-size: var(--text-xl);
   line-height: 1;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .dashboard-mini-card__meta {
   display: grid;
-  gap: 10px;
+  gap: var(--space-2);
 }
 
 .dashboard-mini-card__meta span {
   min-width: 0;
-  padding-top: 10px;
+  padding-top: var(--space-2);
   border-top: 1px solid rgba(148, 163, 184, 0.18);
   color: var(--muted);
-  font-size: 13px;
-  line-height: 1.55;
-  overflow-wrap: anywhere;
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dashboard-mini-card__meta strong {
-  margin-right: 8px;
+  margin-right: var(--space-2);
   color: var(--text);
 }
 
@@ -2376,6 +2423,10 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 @media (max-width: 1240px) {
   .model-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .dashboard-automation-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

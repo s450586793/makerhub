@@ -1,145 +1,144 @@
 <template>
-  <template v-if="loading">
-    <section class="page-intro dashboard-hero dashboard-hero--compact dashboard-hero--loading">
-      <div class="dashboard-hero__copy">
-        <span class="eyebrow">首页</span>
-        <h1>工作台</h1>
-      </div>
-
-      <div class="dashboard-hero__status-grid">
-        <div v-for="item in dashboardLoadingStatusCards" :key="item" class="dashboard-hero__status dashboard-loading-card">
-          <span class="dashboard-loading-line dashboard-loading-line--title" />
-          <span class="dashboard-loading-line" />
+  <div class="dashboard-page">
+    <template v-if="loading">
+      <section class="page-intro dashboard-hero dashboard-hero--compact dashboard-hero--loading">
+        <div class="dashboard-hero__copy">
+          <span class="eyebrow">首页</span>
         </div>
-      </div>
-    </section>
 
-    <section class="stats-grid">
-      <article v-for="item in dashboardLoadingStatCards" :key="item" class="surface stat-card dashboard-loading-card">
-        <span class="dashboard-loading-line dashboard-loading-line--label" />
-        <strong class="dashboard-loading-line dashboard-loading-line--value" />
-        <small class="dashboard-loading-line" />
-      </article>
-    </section>
-
-    <section class="surface section-card dashboard-panel">
-      <div class="dashboard-automation-cards">
-        <article v-for="item in dashboardLoadingMiniCards" :key="item" class="dashboard-mini-card dashboard-loading-card">
-          <div class="dashboard-mini-card__head">
-            <div>
-              <span class="dashboard-loading-line dashboard-loading-line--label" />
-              <h3 class="dashboard-loading-line dashboard-loading-line--heading" />
-            </div>
-            <span class="dashboard-loading-line dashboard-loading-line--pill" />
+        <div class="dashboard-hero__status-grid">
+          <div v-for="item in dashboardLoadingStatusCards" :key="item" class="dashboard-hero__status dashboard-loading-card">
+            <span class="dashboard-loading-line dashboard-loading-line--title" />
+            <span class="dashboard-loading-line" />
           </div>
+        </div>
+      </section>
 
-          <div class="dashboard-mini-card__stats">
-            <div v-for="stat in dashboardLoadingStatColumns" :key="stat" class="dashboard-mini-card__stat">
-              <span class="dashboard-loading-line dashboard-loading-line--label" />
-              <strong class="dashboard-loading-line dashboard-loading-line--value" />
-            </div>
-          </div>
-
-          <div class="dashboard-mini-card__meta">
-            <span>
-              <strong class="dashboard-loading-line dashboard-loading-line--label" />
-              <span class="dashboard-loading-line" />
-            </span>
-            <span>
-              <strong class="dashboard-loading-line dashboard-loading-line--label" />
-              <span class="dashboard-loading-line" />
-            </span>
-          </div>
+      <section class="stats-grid">
+        <article v-for="item in dashboardLoadingStatCards" :key="item" class="surface stat-card dashboard-loading-card">
+          <span class="dashboard-loading-line dashboard-loading-line--label" />
+          <strong class="dashboard-loading-line dashboard-loading-line--value" />
+          <small class="dashboard-loading-line" />
         </article>
-      </div>
-    </section>
-  </template>
+      </section>
 
-  <template v-else>
-    <section class="page-intro dashboard-hero dashboard-hero--compact">
-      <div class="dashboard-hero__copy">
-        <span class="eyebrow">首页</span>
-        <h1>工作台</h1>
-      </div>
-
-      <div class="dashboard-hero__status-grid">
-        <component
-          v-for="item in payload.system_status"
-          :key="item.key || item.title"
-          :is="item.url ? 'a' : 'div'"
-          :class="[
-            'dashboard-hero__status',
-            item.tone && `is-${item.tone}`,
-            item.url && 'dashboard-hero__status--link',
-          ]"
-          :href="item.url || undefined"
-          :target="item.url ? '_blank' : undefined"
-          :rel="item.url ? 'noreferrer noopener' : undefined"
-        >
-          <strong>{{ item.title }}</strong>
-          <div class="dashboard-hero__status-line">
-            <span :class="['dashboard-hero__status-dot', item.tone && `is-${item.tone}`]" />
-            <span class="dashboard-hero__status-text">{{ item.status }}</span>
-          </div>
-          <span v-if="item.detail" class="dashboard-hero__status-detail">{{ item.detail }}</span>
-          <span v-if="item.url && item.action_label" class="dashboard-hero__status-action">{{ item.action_label }}</span>
-        </component>
-      </div>
-    </section>
-
-    <section class="stats-grid">
-      <article v-for="card in payload.stats" :key="card.label" class="surface stat-card">
-        <span>{{ card.label }}</span>
-        <strong>{{ card.value }}</strong>
-        <small>{{ card.hint }}</small>
-      </article>
-    </section>
-
-    <section class="surface section-card dashboard-panel">
-      <div class="dashboard-automation-cards">
-        <article class="dashboard-mini-card">
-          <div class="dashboard-mini-card__head">
-            <div>
-              <span class="dashboard-mini-card__eyebrow">归档任务</span>
-              <h3>当前队列</h3>
+      <section class="surface section-card dashboard-panel">
+        <div class="dashboard-automation-cards">
+          <article v-for="item in dashboardLoadingMiniCards" :key="item" class="dashboard-mini-card dashboard-loading-card">
+            <div class="dashboard-mini-card__head">
+              <div>
+                <span class="dashboard-loading-line dashboard-loading-line--label" />
+                <h3 class="dashboard-loading-line dashboard-loading-line--heading" />
+              </div>
+              <span class="dashboard-loading-line dashboard-loading-line--pill" />
             </div>
-            <span :class="['count-pill', (payload.task_summary?.running?.length || 0) || (payload.task_summary?.queued_count || 0) ? 'count-pill--warn' : 'count-pill--ok']">
-              {{ (payload.task_summary?.running?.length || 0) + (payload.task_summary?.queued_count || 0) }} 活跃
-            </span>
-          </div>
 
-          <div class="dashboard-mini-card__stats">
-            <div class="dashboard-mini-card__stat">
-              <span>运行中</span>
-              <strong>{{ payload.task_summary?.running?.length || 0 }}</strong>
+            <div class="dashboard-mini-card__stats">
+              <div v-for="stat in dashboardLoadingStatColumns" :key="stat" class="dashboard-mini-card__stat">
+                <span class="dashboard-loading-line dashboard-loading-line--label" />
+                <strong class="dashboard-loading-line dashboard-loading-line--value" />
+              </div>
             </div>
-            <div class="dashboard-mini-card__stat">
-              <span>排队中</span>
-              <strong>{{ payload.task_summary?.queued_count || 0 }}</strong>
-            </div>
-            <div class="dashboard-mini-card__stat">
-              <span>待补 3MF</span>
-              <strong>{{ payload.task_summary?.missing_3mf_count || 0 }}</strong>
-            </div>
-          </div>
 
-          <div class="dashboard-mini-card__meta">
-            <span>
-              <strong>最近失败</strong>
-              {{ taskFailureText }}
-            </span>
-            <span>
-              <strong>待补 3MF</strong>
-              {{ taskMissingText }}
-            </span>
-          </div>
+            <div class="dashboard-mini-card__meta">
+              <span>
+                <strong class="dashboard-loading-line dashboard-loading-line--label" />
+                <span class="dashboard-loading-line" />
+              </span>
+              <span>
+                <strong class="dashboard-loading-line dashboard-loading-line--label" />
+                <span class="dashboard-loading-line" />
+              </span>
+            </div>
+          </article>
+        </div>
+      </section>
+    </template>
 
-          <div class="dashboard-mini-card__footer">
-            <RouterLink class="section-link" to="/tasks">进入任务页</RouterLink>
-          </div>
+    <template v-else>
+      <section class="page-intro dashboard-hero dashboard-hero--compact">
+        <div class="dashboard-hero__copy">
+          <span class="eyebrow">首页</span>
+        </div>
+
+        <div class="dashboard-hero__status-grid">
+          <component
+            v-for="item in payload.system_status"
+            :key="item.key || item.title"
+            :is="item.url ? 'a' : 'div'"
+            :class="[
+              'dashboard-hero__status',
+              item.tone && `is-${item.tone}`,
+              item.url && 'dashboard-hero__status--link',
+            ]"
+            :href="item.url || undefined"
+            :target="item.url ? '_blank' : undefined"
+            :rel="item.url ? 'noreferrer noopener' : undefined"
+          >
+            <strong>{{ item.title }}</strong>
+            <div class="dashboard-hero__status-line">
+              <span :class="['dashboard-hero__status-dot', item.tone && `is-${item.tone}`]" />
+              <span class="dashboard-hero__status-text">{{ item.status }}</span>
+            </div>
+            <span v-if="item.detail" class="dashboard-hero__status-detail">{{ item.detail }}</span>
+            <span v-if="item.url && item.action_label" class="dashboard-hero__status-action">{{ item.action_label }}</span>
+          </component>
+        </div>
+      </section>
+
+      <section class="stats-grid">
+        <article v-for="card in payload.stats" :key="card.label" class="surface stat-card">
+          <span>{{ card.label }}</span>
+          <strong>{{ card.value }}</strong>
+          <small>{{ card.hint }}</small>
         </article>
+      </section>
 
-        <article class="dashboard-mini-card">
+      <section class="surface section-card dashboard-panel">
+        <div class="dashboard-automation-cards">
+          <article class="dashboard-mini-card">
+            <div class="dashboard-mini-card__head">
+              <div>
+                <span class="dashboard-mini-card__eyebrow">归档任务</span>
+                <h3>当前队列</h3>
+              </div>
+              <span :class="['count-pill', (payload.task_summary?.running?.length || 0) || (payload.task_summary?.queued_count || 0) ? 'count-pill--warn' : 'count-pill--ok']">
+                {{ (payload.task_summary?.running?.length || 0) + (payload.task_summary?.queued_count || 0) }} 活跃
+              </span>
+            </div>
+
+            <div class="dashboard-mini-card__stats">
+              <div class="dashboard-mini-card__stat">
+                <span>运行中</span>
+                <strong>{{ payload.task_summary?.running?.length || 0 }}</strong>
+              </div>
+              <div class="dashboard-mini-card__stat">
+                <span>排队中</span>
+                <strong>{{ payload.task_summary?.queued_count || 0 }}</strong>
+              </div>
+              <div class="dashboard-mini-card__stat">
+                <span>待补 3MF</span>
+                <strong>{{ payload.task_summary?.missing_3mf_count || 0 }}</strong>
+              </div>
+            </div>
+
+            <div class="dashboard-mini-card__meta">
+              <span>
+                <strong>最近失败</strong>
+                {{ taskFailureText }}
+              </span>
+              <span>
+                <strong>待补 3MF</strong>
+                {{ taskMissingText }}
+              </span>
+            </div>
+
+            <div class="dashboard-mini-card__footer">
+              <RouterLink class="section-link" to="/tasks">进入任务页</RouterLink>
+            </div>
+          </article>
+
+          <article class="dashboard-mini-card">
             <div class="dashboard-mini-card__head">
               <div>
                 <span class="dashboard-mini-card__eyebrow">订阅库</span>
@@ -179,9 +178,9 @@
             <div class="dashboard-mini-card__footer">
               <RouterLink class="section-link" to="/subscriptions">进入订阅库</RouterLink>
             </div>
-        </article>
+          </article>
 
-        <article class="dashboard-mini-card">
+          <article class="dashboard-mini-card">
             <div class="dashboard-mini-card__head">
               <div>
                 <span class="dashboard-mini-card__eyebrow">源端刷新</span>
@@ -221,9 +220,9 @@
             <div class="dashboard-mini-card__footer">
               <RouterLink class="section-link" to="/remote-refresh">进入源端刷新页</RouterLink>
             </div>
-        </article>
+          </article>
 
-        <article class="dashboard-mini-card">
+          <article class="dashboard-mini-card">
             <div class="dashboard-mini-card__head">
               <div>
                 <span class="dashboard-mini-card__eyebrow">本地库</span>
@@ -263,10 +262,11 @@
             <div class="dashboard-mini-card__footer">
               <RouterLink class="section-link" to="/organizer">进入本地库</RouterLink>
             </div>
-        </article>
-      </div>
-    </section>
-  </template>
+          </article>
+        </div>
+      </section>
+    </template>
+  </div>
 </template>
 
 <script setup>
