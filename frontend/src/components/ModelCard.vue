@@ -45,49 +45,51 @@
           <span>{{ authorName }}</span>
         </div>
 
-        <div class="gallery-card__local-flags">
-          <button
-            type="button"
-            :class="['gallery-flag', model.local_flags?.favorite && 'is-active']"
-            :title="model.local_flags?.favorite ? '取消本地收藏' : '本地收藏'"
-            aria-label="本地收藏"
-            @click.stop="$emit('favorite', model.model_dir)"
-          >
-            <span aria-hidden="true" v-html="model.local_flags?.favorite ? icons.favoriteFilled : icons.favoriteOutline"></span>
-          </button>
-          <button
-            type="button"
-            :class="['gallery-flag', model.local_flags?.printed && 'is-active']"
-            :title="model.local_flags?.printed ? '取消已打印' : '标记已打印'"
-            aria-label="已打印"
-            @click.stop="$emit('printed', model.model_dir)"
-          >
-            <span aria-hidden="true" v-html="model.local_flags?.printed ? icons.printedFilled : icons.printedOutline"></span>
-          </button>
-          <button
-            v-if="model.local_flags?.deleted"
-            class="gallery-restore"
-            type="button"
-            title="恢复到模型库"
-            aria-label="恢复到模型库"
-            @click.stop="$emit('restore', model.model_dir)"
-          >
-            <span aria-hidden="true" v-html="icons.restore"></span>
-          </button>
-          <button v-else class="gallery-delete" type="button" title="在 MakerHub 中删除" aria-label="在 MakerHub 中删除" @click.stop="$emit('delete', model.model_dir)">
-            <span aria-hidden="true" v-html="icons.delete"></span>
-          </button>
-        </div>
+        <div class="gallery-card__meta-side">
+          <div class="gallery-card__stats">
+            <span class="gallery-stat">
+              <span class="gallery-stat__icon" aria-hidden="true" v-html="icons.download"></span>
+              <span class="gallery-stat__value">{{ formatCompactStat(model.stats?.downloads) }}</span>
+            </span>
+            <span class="gallery-stat">
+              <span class="gallery-stat__icon" aria-hidden="true" v-html="icons.like"></span>
+              <span class="gallery-stat__value">{{ formatCompactStat(model.stats?.likes) }}</span>
+            </span>
+          </div>
 
-        <div class="gallery-card__stats">
-          <span class="gallery-stat">
-            <span class="gallery-stat__icon" aria-hidden="true" v-html="icons.download"></span>
-            <span class="gallery-stat__value">{{ formatCompactStat(model.stats?.downloads) }}</span>
-          </span>
-          <span class="gallery-stat">
-            <span class="gallery-stat__icon" aria-hidden="true" v-html="icons.like"></span>
-            <span class="gallery-stat__value">{{ formatCompactStat(model.stats?.likes) }}</span>
-          </span>
+          <div class="gallery-card__local-flags">
+            <button
+              type="button"
+              :class="['gallery-flag', model.local_flags?.favorite && 'is-active']"
+              :title="model.local_flags?.favorite ? '取消本地收藏' : '本地收藏'"
+              aria-label="本地收藏"
+              @click.stop="$emit('favorite', model.model_dir)"
+            >
+              <span aria-hidden="true" v-html="model.local_flags?.favorite ? icons.favoriteFilled : icons.favoriteOutline"></span>
+            </button>
+            <button
+              type="button"
+              :class="['gallery-flag', model.local_flags?.printed && 'is-active']"
+              :title="model.local_flags?.printed ? '取消已打印' : '标记已打印'"
+              aria-label="已打印"
+              @click.stop="$emit('printed', model.model_dir)"
+            >
+              <span aria-hidden="true" v-html="model.local_flags?.printed ? icons.printedFilled : icons.printedOutline"></span>
+            </button>
+            <button
+              v-if="model.local_flags?.deleted"
+              class="gallery-restore"
+              type="button"
+              title="恢复到模型库"
+              aria-label="恢复到模型库"
+              @click.stop="$emit('restore', model.model_dir)"
+            >
+              <span aria-hidden="true" v-html="icons.restore"></span>
+            </button>
+            <button v-else class="gallery-delete" type="button" title="在 MakerHub 中删除" aria-label="在 MakerHub 中删除" @click.stop="$emit('delete', model.model_dir)">
+              <span aria-hidden="true" v-html="icons.delete"></span>
+            </button>
+          </div>
         </div>
       </div>
     </div>
