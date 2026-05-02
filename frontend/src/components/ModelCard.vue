@@ -1,5 +1,12 @@
 <template>
-  <article class="model-card model-card--interactive gallery-card" @click="goDetail">
+  <article
+    :class="[
+      'model-card model-card--interactive gallery-card',
+      selectMode && 'gallery-card--selectable',
+      selected && 'is-selected',
+    ]"
+    @click="handleCardClick"
+  >
     <div class="model-card__cover gallery-card__cover">
       <img
         v-if="model.cover_url"
@@ -27,6 +34,16 @@
           源已删除
         </span>
       </div>
+
+      <button
+        v-if="selectMode"
+        type="button"
+        :class="['gallery-card__select-toggle', selected && 'is-selected']"
+        :aria-label="selected ? '取消选择模型' : '选择模型'"
+        @click.stop="$emit('select', model.model_dir)"
+      >
+        <span aria-hidden="true">{{ selected ? "✓" : "" }}</span>
+      </button>
     </div>
 
     <div class="model-card__body gallery-card__body">
@@ -118,9 +135,17 @@ const props = defineProps({
     type: String,
     default: "",
   },
+  selectMode: {
+    type: Boolean,
+    default: false,
+  },
+  selected: {
+    type: Boolean,
+    default: false,
+  },
 });
 
-defineEmits(["favorite", "printed", "delete", "restore"]);
+const emit = defineEmits(["favorite", "printed", "delete", "restore", "select"]);
 
 const router = useRouter();
 
@@ -160,7 +185,11 @@ const deletedSourceTitle = computed(() => {
   return `源端已删除该模型：${items.map((item) => item.name || item.url || "未命名来源").join("、")}`;
 });
 
-function goDetail() {
+function handleCardClick() {
+  if (props.selectMode) {
+    emit("select", props.model.model_dir);
+    return;
+  }
   const query = {};
   if (props.returnTo) {
     query.return_to = props.returnTo;

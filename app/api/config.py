@@ -18,6 +18,7 @@ from app.schemas.models import (
     Missing3mfCancelRequest,
     CookiePair,
     CookieTestRequest,
+    LocalModelMergeRequest,
     Missing3mfRetryRequest,
     ModelDeleteRequest,
     ModelFlagUpdateRequest,
@@ -46,6 +47,7 @@ from app.services.crawler import LegacyCrawlerBridge
 from app.services.business_logs import append_business_log, read_log_entries
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.local_organizer import LocalOrganizerService
+from app.services.local_model_merge import merge_local_models
 from app.services.model_attachments import create_manual_attachment, delete_manual_attachment
 from app.services.remote_refresh import RemoteRefreshManager
 from app.services.request_threads import run_task_api, run_ui_io, run_web_io
@@ -1236,6 +1238,19 @@ async def update_model_deleted(payload: ModelFlagUpdateRequest, request: Request
         "flags": flags,
         "message": message,
     }
+
+
+@router.post("/local-library/merge")
+async def merge_local_library_models(payload: LocalModelMergeRequest, request: Request):
+    _require_session_auth(request)
+    return await run_task_api(
+        merge_local_models,
+        target_model_dir=payload.target_model_dir,
+        source_model_dirs=payload.source_model_dirs,
+        title=payload.title,
+        cover_from_model_dir=payload.cover_from_model_dir,
+        task_store=task_state_store,
+    )
 
 
 @router.get("/tasks")

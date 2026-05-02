@@ -915,6 +915,106 @@ def build_subscription_overview_payload(
     }
 
 
+def _local_merge_base_title(title: Any) -> str:
+    text = _normalize_text(title)
+    if not text:
+        return ""
+    text = re.sub(r"\.(3mf|stl|step|obj)$", "", text, flags=re.I).strip()
+    separators = (" - ", "-", "－", "—", "–", "_", "｜", "|")
+    for separator in separators:
+        if separator not in text:
+            continue
+        head, tail = text.rsplit(separator, 1)
+        head = head.strip()
+        tail = tail.strip()
+        if len(head) >= 4 and 1 <= len(tail) <= 16:
+            return head
+    match = re.match(r"^(.{4,}?)(?:[（(【\[][^）)】\]]{1,16}[）)】\]])$", text)
+    if match:
+        return match.group(1).strip()
+    part_match = re.match(
+        r"^(.{4,}?)(?:"
+        r"part\s*[0-9a-z]+|p[0-9]+|"
+        r"第?[一二三四五六七八九十0-9]+[号#]?|"
+        r"头部?|身体|躯干|胸部|腰部|上半身|下半身|"
+        r"左(?:手|臂|腿|脚|翼|侧)|右(?:手|臂|腿|脚|翼|侧)|"
+        r"手臂|腿部?|脚部?|武器|剑|盾|底座|支架|配件|主体|外壳|零件|部件"
+        r")$",
+        text,
+        flags=re.I,
+    )
+    if part_match:
+        return part_match.group(1).strip()
+    return ""
+
+
+def _local_merge_group_identity(model: dict[str, Any]) -> tuple[str, str]:
+    local_import = model.get("local_import") if isinstance(model.get("local_import"), dict) else {}
+    title_guess = _local_merge_base_title(model.get("title")) or str(model.get("title") or "")
+    design_model_id = _normalize_text(local_import.get("design_model_id"))
+    if design_model_id:
+        return f"design_model:{design_model_id}", title_guess
+
+    model_key = _normalize_text(local_import.get("model_key"))
+    if model_key:
+        return f"model_key:{model_key.lower()}", title_guess
+
+    base_title = _local_merge_base_title(model.get("title"))
+    if not base_title:
+        base_title = _local_merge_base_title(local_import.get("original_filename"))
+    if not base_title:
+        return "", ""
+    normalized_key = re.sub(r"[\s\-_:/|\\.,，。;；'\"`~!！?？()\[\]{}<>《》【】（）、+]+", "", base_title.lower())
+    if len(normalized_key) < 4:
+        return "", ""
+    return f"title:{normalized_key}", base_title
+
+
+def _build_local_merge_suggestions(items: list[dict]) -> list[dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+    for model in items:
+        if str(model.get("source") or "").strip().lower() != "local":
+            continue
+        if model.get("local_flags", {}).get("deleted"):
+            continue
+        group_key, group_title = _local_merge_group_identity(model)
+        if not group_key:
+            continue
+        group = groups.setdefault(
+            group_key,
+            {
+                "key": group_key,
+                "title": group_title or str(model.get("title") or ""),
+                "model_dirs": [],
+                "items": [],
+            },
+        )
+        model_dir = str(model.get("model_dir") or "").strip()
+        if not model_dir or model_dir in group["model_dirs"]:
+            continue
+        group["model_dirs"].append(model_dir)
+        group["items"].append(
+            {
+                "model_dir": model_dir,
+                "title": str(model.get("title") or model_dir),
+                "cover_url": str(model.get("cover_url") or ""),
+            }
+        )
+
+    suggestions = []
+    for group in groups.values():
+        if len(group["model_dirs"]) < 2:
+            continue
+        suggestions.append(
+            {
+                **group,
+                "count": len(group["model_dirs"]),
+            }
+        )
+    suggestions.sort(key=lambda item: (-int(item.get("count") or 0), str(item.get("title") or "")))
+    return suggestions[:8]
+
+
 def _subset_models_payload(
     items: list[dict],
     *,
@@ -972,6 +1072,7 @@ def _subset_models_payload(
     paged_items = selected[start:end]
     base_tags = _tags_from_items(base_subset)
     base_source_counts = _source_counts_from_items(base_subset)
+    merge_suggestions = _build_local_merge_suggestions(base_subset)
 
     return {
         "items": paged_items,
@@ -983,6 +1084,7 @@ def _subset_models_payload(
         "has_more": end < total_filtered,
         "tags": base_tags,
         "source_counts": base_source_counts,
+        "merge_suggestions": merge_suggestions,
         "filters": {
             "q": q,
             "source": normalized_source,

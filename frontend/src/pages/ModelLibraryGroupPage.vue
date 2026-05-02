@@ -42,10 +42,40 @@
         </label>
         <div class="filter-actions">
           <button class="button button-secondary" type="button" @click="resetFilters">重置</button>
+          <button
+            v-if="canMergeLocalModels"
+            class="button button-secondary"
+            type="button"
+            @click="toggleSelectMode"
+          >
+            {{ selectMode ? "取消选择" : "选择合并" }}
+          </button>
+          <button
+            v-if="selectMode"
+            class="button button-primary"
+            type="button"
+            :disabled="selectedCount < 2 || merging"
+            @click="openMergeDialog"
+          >
+            合并 {{ selectedCount }}
+          </button>
         </div>
       </form>
     </div>
     <span v-if="status" class="form-status model-toolbar-inline__status library-group-hero__status">{{ status }}</span>
+    <div v-if="canMergeLocalModels && mergeSuggestions.length" class="local-merge-suggestions">
+      <strong>疑似同一模型</strong>
+      <button
+        v-for="suggestion in mergeSuggestions"
+        :key="suggestion.key"
+        class="local-merge-suggestion"
+        type="button"
+        @click="applyMergeSuggestion(suggestion)"
+      >
+        <span>{{ suggestion.title }}</span>
+        <em>{{ suggestion.count }} 个</em>
+      </button>
+    </div>
     <div class="library-group-hero__body">
       <div class="library-group-hero__copy">
         <h1>{{ view.title }}</h1>
@@ -69,10 +99,13 @@
       :return-to="buildModelReturnTo(model.model_dir)"
       :return-context="activeNavContext"
       return-label="返回"
+      :select-mode="selectMode"
+      :selected="isSelected(model.model_dir)"
       @favorite="toggleFavorite"
       @printed="togglePrinted"
       @delete="deleteOne"
       @restore="restoreOne"
+      @select="toggleSelected"
     />
   </section>
 
@@ -91,6 +124,53 @@
     <h2>正在加载模型列表</h2>
     <p>稍等，正在读取当前来源下的模型。</p>
   </section>
+
+  <div
+    v-if="mergeDialog.visible"
+    class="submit-dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="local-merge-dialog-title"
+    @click="closeMergeDialog"
+  >
+    <div class="submit-dialog__panel local-merge-dialog__panel" @click.stop>
+      <h2 id="local-merge-dialog-title">合并本地模型</h2>
+      <p>合并后只保留主模型卡片，其它模型会作为主模型下的本地 3MF 配置保存。</p>
+      <form class="local-merge-dialog__form" @submit.prevent="submitMerge">
+        <label class="filter-field">
+          <span>主模型</span>
+          <select v-model="mergeDialog.targetModelDir">
+            <option v-for="model in selectedModelOptions" :key="model.model_dir" :value="model.model_dir">
+              {{ model.title || model.model_dir }}
+            </option>
+          </select>
+        </label>
+        <label class="filter-field filter-field--wide">
+          <span>合并后名称</span>
+          <input v-model.trim="mergeDialog.title" type="text" placeholder="合并后的模型名称">
+        </label>
+        <label class="filter-field">
+          <span>封面来源</span>
+          <select v-model="mergeDialog.coverFromModelDir">
+            <option v-for="model in selectedModelOptions" :key="model.model_dir" :value="model.model_dir">
+              {{ model.title || model.model_dir }}
+            </option>
+          </select>
+        </label>
+        <div class="local-merge-dialog__list">
+          <span v-for="model in selectedModelOptions" :key="model.model_dir">
+            {{ model.model_dir === mergeDialog.targetModelDir ? "主" : "并" }} {{ model.title || model.model_dir }}
+          </span>
+        </div>
+        <div class="submit-dialog__actions">
+          <button class="button button-secondary" type="button" :disabled="merging" @click="closeMergeDialog">取消</button>
+          <button class="button button-primary" type="submit" :disabled="merging || selectedModelDirs.length < 2">
+            {{ merging ? "合并中..." : "确认合并" }}
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
 </template>
 
 <script setup>
@@ -100,7 +180,7 @@ import { useRoute, useRouter } from "vue-router";
 import ModelCard from "../components/ModelCard.vue";
 import { apiRequest } from "../lib/api";
 import { subscribeArchiveCompletion } from "../lib/archiveEvents";
-import { getPageCache, setPageCache } from "../lib/pageCache";
+import { deletePageCache, deletePageCacheByPrefix, getPageCache, setPageCache } from "../lib/pageCache";
 
 
 const route = useRoute();
@@ -117,6 +197,7 @@ const payload = ref({
   has_more: false,
   tags: [],
   source_counts: { all: 0, cn: 0, global: 0, local: 0 },
+  merge_suggestions: [],
 });
 const filters = reactive({
   q: "",
@@ -130,6 +211,15 @@ const deleting = ref(false);
 const loaded = ref(false);
 const loadingMore = ref(false);
 const loadMoreTrigger = ref(null);
+const selectMode = ref(false);
+const selectedModelDirSet = ref(new Set());
+const merging = ref(false);
+const mergeDialog = reactive({
+  visible: false,
+  targetModelDir: "",
+  title: "",
+  coverFromModelDir: "",
+});
 
 let intersectionObserver = null;
 let requestToken = 0;
@@ -151,6 +241,49 @@ const groupBackTarget = computed(() => (
 ));
 const groupBackLabel = computed(() => (
   "返回"
+));
+const mergeSuggestions = computed(() => (
+  Array.isArray(payload.value.merge_suggestions) ? payload.value.merge_suggestions : []
+));
+const isLocalOrganizerGroup = computed(() => (
+  activeNavContext.value === "organizer"
+  && route.name === "model-library-source"
+  && String(route.params.sourceType || "") === "local"
+  && String(route.params.sourceKey || "") === "local-organizer"
+));
+const canMergeLocalModels = computed(() => (
+  isLocalOrganizerGroup.value
+  && (
+    payload.value.items.some((item) => String(item?.source || "").toLowerCase() === "local" && !item?.local_flags?.deleted)
+    || mergeSuggestions.value.length > 0
+  )
+));
+const selectedModelDirs = computed(() => Array.from(selectedModelDirSet.value));
+const selectedCount = computed(() => selectedModelDirs.value.length);
+const knownModelsByDir = computed(() => {
+  const models = new Map();
+  for (const model of payload.value.items || []) {
+    const modelDir = String(model?.model_dir || "").trim();
+    if (modelDir) {
+      models.set(modelDir, model);
+    }
+  }
+  for (const suggestion of mergeSuggestions.value) {
+    for (const item of suggestion.items || []) {
+      const modelDir = String(item?.model_dir || "").trim();
+      if (modelDir && !models.has(modelDir)) {
+        models.set(modelDir, item);
+      }
+    }
+  }
+  return models;
+});
+const selectedModelOptions = computed(() => (
+  selectedModelDirs.value.map((modelDir) => knownModelsByDir.value.get(modelDir) || {
+    model_dir: modelDir,
+    title: modelDir,
+    cover_url: "",
+  })
 ));
 
 function normalizeNavContext(value) {
@@ -369,7 +502,10 @@ async function reloadVisiblePages() {
   }
 
   const lastResponse = responses[responses.length - 1];
-  const mergedItems = responses.flatMap((response) => response.items || []);
+  const mergedItems = responses.reduce(
+    (items, response) => mergeUniqueModelItems(items, response.items || []),
+    [],
+  );
   view.value = lastResponse.view || view.value;
   payload.value = {
     ...lastResponse,
@@ -450,6 +586,174 @@ function resetFilters() {
 
 function goBack() {
   router.push(groupBackTarget.value);
+}
+
+function isSelected(modelDir) {
+  return selectedModelDirSet.value.has(String(modelDir || "").trim());
+}
+
+function clearSelection() {
+  selectedModelDirSet.value = new Set();
+  selectMode.value = false;
+  resetMergeDialog();
+}
+
+function toggleSelectMode() {
+  if (selectMode.value) {
+    clearSelection();
+    return;
+  }
+  selectMode.value = true;
+  status.value = "";
+}
+
+function toggleSelected(modelDir) {
+  const cleanModelDir = String(modelDir || "").trim();
+  if (!cleanModelDir || !canMergeLocalModels.value) {
+    return;
+  }
+  const model = knownModelsByDir.value.get(cleanModelDir);
+  if (model && String(model.source || "local").toLowerCase() !== "local") {
+    status.value = "只能选择本地整理导入的模型。";
+    return;
+  }
+  const nextSet = new Set(selectedModelDirSet.value);
+  if (nextSet.has(cleanModelDir)) {
+    nextSet.delete(cleanModelDir);
+  } else {
+    nextSet.add(cleanModelDir);
+  }
+  selectedModelDirSet.value = nextSet;
+  const nextDirs = Array.from(nextSet);
+  if (!nextDirs.includes(mergeDialog.targetModelDir)) {
+    mergeDialog.targetModelDir = nextDirs[0] || "";
+  }
+  if (!nextDirs.includes(mergeDialog.coverFromModelDir)) {
+    mergeDialog.coverFromModelDir = mergeDialog.targetModelDir;
+  }
+  mergeDialog.title = "";
+}
+
+function localMergeBaseTitle(title) {
+  const text = String(title || "").trim().replace(/\.(3mf|stl|step|obj)$/i, "");
+  for (const separator of [" - ", "-", "－", "—", "–", "_", "｜", "|"]) {
+    if (!text.includes(separator)) {
+      continue;
+    }
+    const index = text.lastIndexOf(separator);
+    const head = text.slice(0, index).trim();
+    const tail = text.slice(index + separator.length).trim();
+    if (head.length >= 4 && tail.length >= 1 && tail.length <= 16) {
+      return head;
+    }
+  }
+  const bracketMatch = text.match(/^(.{4,}?)(?:[（(【\[][^）)】\]]{1,16}[）)】\]])$/);
+  if (bracketMatch?.[1]) {
+    return bracketMatch[1].trim();
+  }
+  const partMatch = text.match(
+    /^(.{4,}?)(?:part\s*[0-9a-z]+|p[0-9]+|第?[一二三四五六七八九十0-9]+[号#]?|头部?|身体|躯干|胸部|腰部|上半身|下半身|左(?:手|臂|腿|脚|翼|侧)|右(?:手|臂|腿|脚|翼|侧)|手臂|腿部?|脚部?|武器|剑|盾|底座|支架|配件|主体|外壳|零件|部件)$/i,
+  );
+  if (partMatch?.[1]) {
+    return partMatch[1].trim();
+  }
+  return "";
+}
+
+function defaultMergeTitle() {
+  const selectedSet = new Set(selectedModelDirs.value);
+  const matchedSuggestion = mergeSuggestions.value.find((suggestion) => {
+    const dirs = Array.isArray(suggestion.model_dirs) ? suggestion.model_dirs : [];
+    return dirs.length === selectedSet.size && dirs.every((item) => selectedSet.has(String(item || "")));
+  });
+  if (matchedSuggestion?.title) {
+    return matchedSuggestion.title;
+  }
+  for (const model of selectedModelOptions.value) {
+    const title = localMergeBaseTitle(model.title);
+    if (title) {
+      return title;
+    }
+  }
+  return selectedModelOptions.value[0]?.title || "";
+}
+
+function applyMergeSuggestion(suggestion) {
+  const dirs = (suggestion.model_dirs || []).map((item) => String(item || "").trim()).filter(Boolean);
+  if (dirs.length < 2) {
+    return;
+  }
+  selectMode.value = true;
+  selectedModelDirSet.value = new Set(dirs);
+  mergeDialog.targetModelDir = dirs[0];
+  mergeDialog.coverFromModelDir = dirs[0];
+  mergeDialog.title = String(suggestion.title || "").trim();
+  status.value = `已选择 ${dirs.length} 个疑似同一模型。`;
+}
+
+function openMergeDialog() {
+  if (selectedCount.value < 2) {
+    status.value = "请至少选择 2 个本地模型再合并。";
+    return;
+  }
+  const dirs = selectedModelDirs.value;
+  if (!dirs.includes(mergeDialog.targetModelDir)) {
+    mergeDialog.targetModelDir = dirs[0] || "";
+  }
+  if (!dirs.includes(mergeDialog.coverFromModelDir)) {
+    mergeDialog.coverFromModelDir = mergeDialog.targetModelDir;
+  }
+  mergeDialog.title = defaultMergeTitle();
+  mergeDialog.visible = true;
+}
+
+function closeMergeDialog() {
+  mergeDialog.visible = false;
+}
+
+function resetMergeDialog() {
+  mergeDialog.visible = false;
+  mergeDialog.targetModelDir = "";
+  mergeDialog.title = "";
+  mergeDialog.coverFromModelDir = "";
+}
+
+function clearLibraryCachesAfterMerge() {
+  deletePageCache("organizer");
+  deletePageCacheByPrefix("models:");
+  deletePageCacheByPrefix("model-library-group:");
+}
+
+async function submitMerge() {
+  const targetModelDir = String(mergeDialog.targetModelDir || "").trim();
+  const sourceModelDirs = selectedModelDirs.value.filter((item) => item !== targetModelDir);
+  if (!targetModelDir || sourceModelDirs.length < 1) {
+    status.value = "请选择主模型和至少一个待合并模型。";
+    return;
+  }
+  merging.value = true;
+  status.value = "";
+  try {
+    const response = await apiRequest("/api/local-library/merge", {
+      method: "POST",
+      body: {
+        target_model_dir: targetModelDir,
+        source_model_dirs: sourceModelDirs,
+        title: mergeDialog.title,
+        cover_from_model_dir: mergeDialog.coverFromModelDir || targetModelDir,
+      },
+    });
+    status.value = response.message || "本地模型已合并。";
+    selectedModelDirSet.value = new Set();
+    selectMode.value = false;
+    resetMergeDialog();
+    clearLibraryCachesAfterMerge();
+    await reloadVisiblePages();
+  } catch (error) {
+    status.value = error instanceof Error ? error.message : "本地模型合并失败。";
+  } finally {
+    merging.value = false;
+  }
 }
 
 function findModel(modelDir) {
@@ -596,6 +900,7 @@ function formatCompact(value) {
 
 watch(() => route.fullPath, () => {
   status.value = "";
+  clearSelection();
   void hydrateGroupListFromCache();
   void load({ append: false }).catch((error) => {
     status.value = error instanceof Error ? error.message : "模型列表加载失败。";

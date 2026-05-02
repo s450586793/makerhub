@@ -1763,6 +1763,13 @@ def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[
         "publish_date": _format_date(publish_value),
         "remote_sync": _normalize_remote_sync(meta),
     }
+    if source == "local":
+        local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
+        payload["local_import"] = {
+            "model_key": str(local_import.get("modelKey") or ""),
+            "design_model_id": str(local_import.get("designModelId") or ""),
+            "original_filename": str(local_import.get("originalFilename") or ""),
+        }
     if not include_detail:
         return payload
 

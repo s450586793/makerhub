@@ -113,6 +113,13 @@ class ModelFlagUpdateRequest(BaseModel):
     value: bool = False
 
 
+class LocalModelMergeRequest(BaseModel):
+    target_model_dir: str = ""
+    source_model_dirs: List[str] = Field(default_factory=list)
+    title: str = ""
+    cover_from_model_dir: str = ""
+
+
 class Missing3mfItem(BaseModel):
     model_id: str
     title: str

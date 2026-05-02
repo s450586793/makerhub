@@ -1623,6 +1623,15 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   box-shadow: 0 24px 48px rgba(22, 33, 29, 0.14);
 }
 
+.gallery-card--selectable {
+  cursor: pointer;
+}
+
+.gallery-card--selectable.is-selected {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 var(--focus-outline-width) var(--focus-outline);
+}
+
 .gallery-card__cover {
   position: relative;
   aspect-ratio: 4 / 3;
@@ -1658,6 +1667,30 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   flex-direction: column;
   gap: var(--space-1);
   pointer-events: none;
+}
+
+.gallery-card__select-toggle {
+  position: absolute;
+  top: var(--space-3);
+  left: var(--space-3);
+  z-index: 4;
+  width: var(--space-8);
+  height: var(--space-8);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  display: inline-grid;
+  place-items: center;
+  color: var(--brand-strong);
+  font-size: var(--text-base);
+  font-weight: 800;
+  background: var(--surface-strong);
+  box-shadow: var(--shadow-1);
+}
+
+.gallery-card__select-toggle.is-selected {
+  border-color: var(--brand);
+  color: #ffffff;
+  background: var(--brand);
 }
 
 .gallery-card__body {
@@ -2798,20 +2831,20 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 }
 
 .source-library-card--author {
-  padding: var(--space-3);
+  padding: 0;
   display: grid;
   gap: var(--space-3);
 }
 
 .source-library-card--collection {
-  padding: var(--space-3);
+  padding: 0;
   display: grid;
   gap: var(--space-3);
 }
 
 .source-library-card__author-shell {
-  padding: var(--space-3);
-  border-radius: 22px;
+  padding: var(--space-4) var(--space-4) 0;
+  border-radius: 0;
   background: var(--surface-floating);
   box-shadow: none;
 }
@@ -2819,7 +2852,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 .source-library-card__author-head {
   min-height: var(--space-12);
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--space-2);
 }
 
@@ -2869,7 +2902,6 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 .source-library-card__author-copy {
   min-width: 0;
   flex: 1 1 0;
-  align-self: center;
   display: grid;
   gap: 0;
 }
@@ -2918,7 +2950,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 .source-library-card__stats {
   margin-left: auto;
   flex: 0 0 auto;
-  align-self: flex-start;
+  align-self: center;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -2954,7 +2986,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 }
 
 .source-library-card__preview-grid {
-  padding: var(--space-3);
+  padding: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-2);
@@ -2972,7 +3004,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   position: relative;
   aspect-ratio: 1.1;
   overflow: hidden;
-  border-radius: 10px;
+  border-radius: 0;
   background: var(--cover-bg);
 }
 
@@ -3170,7 +3202,7 @@ html[data-theme="dark"] .library-group-hero {
   }
 
   .source-library-card__author-shell {
-    padding: 16px 16px 10px;
+    padding: var(--space-4) var(--space-4) 0;
   }
 
   .source-library-grid {
@@ -3533,6 +3565,68 @@ select:focus {
 .library-group-hero__stats em {
   font-size: var(--text-xs);
   line-height: 1.25;
+}
+
+.local-merge-suggestions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.local-merge-suggestions strong {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.local-merge-suggestion {
+  min-height: var(--space-8);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  background: var(--surface-strong);
+  cursor: pointer;
+}
+
+.local-merge-suggestion em {
+  color: var(--brand-strong);
+  font-style: normal;
+}
+
+.local-merge-dialog__panel {
+  width: min(620px, 100%);
+  text-align: left;
+}
+
+.local-merge-dialog__form {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.local-merge-dialog__list {
+  max-height: 180px;
+  overflow: auto;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.local-merge-dialog__list span {
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--surface-soft);
 }
 
 @media (max-width: 1180px) {

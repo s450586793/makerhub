@@ -41,3 +41,25 @@ export function setPageCache(key, value) {
     updatedAt: Date.now(),
   });
 }
+
+
+export function deletePageCache(key) {
+  const normalizedKey = String(key || "").trim();
+  if (!normalizedKey) {
+    return;
+  }
+  pageCache.delete(normalizedKey);
+}
+
+
+export function deletePageCacheByPrefix(prefix) {
+  const normalizedPrefix = String(prefix || "").trim();
+  if (!normalizedPrefix) {
+    return;
+  }
+  for (const key of pageCache.keys()) {
+    if (key.startsWith(normalizedPrefix)) {
+      pageCache.delete(key);
+    }
+  }
+}
