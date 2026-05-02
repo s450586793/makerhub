@@ -157,10 +157,19 @@
             </option>
           </select>
         </label>
-        <div class="local-merge-dialog__list">
-          <span v-for="model in selectedModelOptions" :key="model.model_dir">
-            {{ model.model_dir === mergeDialog.targetModelDir ? "主" : "并" }} {{ model.title || model.model_dir }}
-          </span>
+        <div class="local-merge-dialog__selected">
+          <div class="local-merge-dialog__selected-head">
+            <span>已选模型</span>
+            <strong>{{ selectedCount }} 个</strong>
+          </div>
+          <ol class="local-merge-dialog__list">
+            <li v-for="model in selectedModelOptions" :key="model.model_dir">
+              <span :class="['local-merge-dialog__role', model.model_dir === mergeDialog.targetModelDir && 'is-target']">
+                {{ model.model_dir === mergeDialog.targetModelDir ? "主" : "并" }}
+              </span>
+              <span class="local-merge-dialog__item-title">{{ model.title || model.model_dir }}</span>
+            </li>
+          </ol>
         </div>
         <div class="submit-dialog__actions">
           <button class="button button-secondary" type="button" :disabled="merging" @click="closeMergeDialog">取消</button>
