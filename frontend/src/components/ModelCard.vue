@@ -9,6 +9,24 @@
         @error="onCoverError"
       >
       <div v-else class="media-placeholder">{{ titleInitial }}</div>
+
+      <div class="gallery-card__cover-badges">
+        <span class="gallery-card__source">{{ sourceBadgeLabel }}</span>
+        <span
+          v-if="model.local_flags?.deleted"
+          class="gallery-card__source gallery-card__source--local-deleted"
+          title="该模型已在 MakerHub 端删除，默认不会出现在模型库中。"
+        >
+          本地已删
+        </span>
+        <span
+          v-if="model.subscription_flags?.deleted_on_source"
+          class="gallery-card__source gallery-card__source--danger"
+          :title="deletedSourceTitle"
+        >
+          源已删除
+        </span>
+      </div>
     </div>
 
     <div class="model-card__body gallery-card__body">
@@ -40,41 +58,7 @@
           <span v-else class="avatar-placeholder">{{ authorInitial }}</span>
           <span>{{ authorName }}</span>
         </div>
-        <div class="gallery-card__badges">
-          <span class="gallery-card__source">{{ model.source_label }}</span>
-          <span
-            v-if="model.local_flags?.deleted"
-            class="gallery-card__source gallery-card__source--local-deleted"
-            title="该模型已在 MakerHub 端删除，默认不会出现在模型库中。"
-          >
-            本地已删
-          </span>
-          <span
-            v-if="model.subscription_flags?.deleted_on_source"
-            class="gallery-card__source gallery-card__source--danger"
-            :title="deletedSourceTitle"
-          >
-            源已删除
-          </span>
-        </div>
-      </div>
 
-      <div class="gallery-card__stats">
-        <span class="gallery-stat">
-          <span class="gallery-stat__icon" aria-hidden="true" v-html="icons.like"></span>
-          <span class="gallery-stat__value">{{ formatStat(model.stats?.likes) }}</span>
-        </span>
-        <span class="gallery-stat">
-          <span class="gallery-stat__icon" aria-hidden="true" v-html="icons.favorite"></span>
-          <span class="gallery-stat__value">{{ formatStat(model.stats?.favorites) }}</span>
-        </span>
-        <span class="gallery-stat">
-          <span class="gallery-stat__icon" aria-hidden="true" v-html="icons.download"></span>
-          <span class="gallery-stat__value">{{ formatStat(model.stats?.downloads) }}</span>
-        </span>
-      </div>
-
-      <div class="gallery-card__actions">
         <div class="gallery-card__local-flags">
           <button
             type="button"
@@ -94,21 +78,31 @@
           >
             <span aria-hidden="true" v-html="model.local_flags?.printed ? icons.printedFilled : icons.printedOutline"></span>
           </button>
+          <button
+            v-if="model.local_flags?.deleted"
+            class="gallery-restore"
+            type="button"
+            title="恢复到模型库"
+            aria-label="恢复到模型库"
+            @click.stop="$emit('restore', model.model_dir)"
+          >
+            <span aria-hidden="true" v-html="icons.restore"></span>
+          </button>
+          <button v-else class="gallery-delete" type="button" title="在 MakerHub 中删除" aria-label="在 MakerHub 中删除" @click.stop="$emit('delete', model.model_dir)">
+            <span aria-hidden="true" v-html="icons.delete"></span>
+          </button>
         </div>
-        <button
-          v-if="model.local_flags?.deleted"
-          class="gallery-restore"
-          type="button"
-          title="恢复到模型库"
-          aria-label="恢复到模型库"
-          @click.stop="$emit('restore', model.model_dir)"
-        >
-          <span aria-hidden="true" v-html="icons.restore"></span>
-          <em>恢复</em>
-        </button>
-        <button v-else class="gallery-delete" type="button" title="在 MakerHub 中删除" aria-label="在 MakerHub 中删除" @click.stop="$emit('delete', model.model_dir)">
-          <span aria-hidden="true" v-html="icons.delete"></span>
-        </button>
+
+        <div class="gallery-card__stats">
+          <span class="gallery-stat">
+            <span class="gallery-stat__icon" aria-hidden="true" v-html="icons.download"></span>
+            <span class="gallery-stat__value">{{ formatCompactStat(model.stats?.downloads) }}</span>
+          </span>
+          <span class="gallery-stat">
+            <span class="gallery-stat__icon" aria-hidden="true" v-html="icons.like"></span>
+            <span class="gallery-stat__value">{{ formatCompactStat(model.stats?.likes) }}</span>
+          </span>
+        </div>
       </div>
     </div>
   </article>
@@ -165,6 +159,14 @@ const authorAvatarSrc = ref(props.model.author?.avatar_url || "");
 const titleInitial = computed(() => String(props.model.title || "M").trim().slice(0, 1) || "M");
 const authorName = computed(() => String(props.model.author?.name || "未知作者").trim() || "未知作者");
 const authorInitial = computed(() => String(props.model.author?.name || "作").trim().slice(0, 1) || "作");
+const sourceBadgeLabel = computed(() => {
+  const source = String(props.model.source || "").trim().toLowerCase();
+  if (source === "cn") return "国内";
+  if (source === "global") return "国外";
+  if (source === "local") return "本地";
+  const label = String(props.model.source_label || "").trim();
+  return label.replace(/^MakerWorld\s*/i, "") || "来源";
+});
 const profileSummary = computed(() => props.model.profile_summary || {});
 const profileSummaryItems = computed(() => {
   const summary = profileSummary.value;
@@ -244,7 +246,17 @@ function onAuthorAvatarError() {
   }
 }
 
-function formatStat(value) {
-  return new Intl.NumberFormat("zh-CN").format(Number(value || 0));
+function formatCompactStat(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) {
+    return "0";
+  }
+  if (numeric >= 1_000_000) {
+    return `${(numeric / 1_000_000).toFixed(numeric >= 10_000_000 ? 0 : 1)} m`;
+  }
+  if (numeric >= 1_000) {
+    return `${(numeric / 1_000).toFixed(numeric >= 10_000 ? 0 : 1)} k`;
+  }
+  return new Intl.NumberFormat("zh-CN").format(numeric);
 }
 </script>

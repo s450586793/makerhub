@@ -1562,7 +1562,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 
 .gallery-card {
   height: 100%;
-  border-radius: 24px;
+  border-radius: var(--radius-xl);
   transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
 }
 
@@ -1572,8 +1572,10 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 }
 
 .gallery-card__cover {
+  position: relative;
+  aspect-ratio: 4 / 3;
   overflow: hidden;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 0;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(15, 23, 42, 0.06)),
     var(--cover-bg);
@@ -1581,6 +1583,11 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 
 .gallery-card__cover img,
 .gallery-card__cover .media-placeholder {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  object-fit: cover;
   transition: transform 0.28s ease;
 }
 
@@ -1589,18 +1596,31 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   transform: scale(1.03);
 }
 
+.gallery-card__cover-badges {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
 .gallery-card__body {
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--space-2);
 }
 
 .gallery-card__title {
   margin: 0;
-  font-size: 17px;
-  line-height: 1.45;
-  letter-spacing: -0.02em;
+  color: var(--text);
+  font-size: var(--text-sm);
+  line-height: 1.35;
+  font-weight: 700;
+  letter-spacing: 0;
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -1610,7 +1630,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 .gallery-card__makerworld-strip {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
 
@@ -1655,15 +1675,17 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 
 .gallery-card__makerworld-context {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-xs);
   line-height: 1.35;
 }
 
 .gallery-card__meta {
+  margin-top: auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  justify-content: flex-start;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
 .gallery-card__badges {
@@ -1677,6 +1699,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 .gallery-card__author {
   min-width: 0;
   flex: 1 1 auto;
+  gap: var(--space-1);
 }
 
 .gallery-card__author span:last-child {
@@ -1684,18 +1707,21 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-weight: 500;
 }
 
 .gallery-card__source {
   flex-shrink: 0;
-  min-height: 28px;
-  padding: 0 10px;
+  min-height: var(--space-6);
+  padding: 0 var(--space-2);
   border: 1px solid rgba(31, 157, 98, 0.14);
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   display: inline-flex;
   align-items: center;
   color: var(--brand-strong);
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 700;
   background: var(--brand-soft);
 }
@@ -1729,17 +1755,17 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   border-radius: 0;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  justify-content: flex-end;
+  gap: var(--space-2);
   background: transparent;
 }
 
 .gallery-stat {
   min-width: 0;
-  flex: 1 1 0;
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-1);
   white-space: nowrap;
 }
 
@@ -1770,35 +1796,27 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 
 .gallery-stat__value {
   min-width: 0;
-  font-size: 15px;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-}
-
-.gallery-card__actions {
-  margin-top: auto;
-  padding-top: 2px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: nowrap;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0;
 }
 
 .gallery-card__local-flags {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-1);
   flex-wrap: nowrap;
 }
 
 .gallery-flag,
 .gallery-delete,
 .gallery-restore {
-  min-height: 34px;
+  min-height: var(--space-7);
   padding: 0;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1808,7 +1826,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 
 .gallery-flag,
 .gallery-delete {
-  width: 34px;
+  width: var(--space-7);
 }
 
 .gallery-flag {
@@ -1829,11 +1847,11 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 
 .gallery-restore {
   flex-shrink: 0;
-  gap: 6px;
-  min-width: 72px;
-  padding: 0 12px;
+  width: var(--space-7);
+  min-width: var(--space-7);
+  padding: 0;
   color: var(--brand-strong);
-  font-size: 13px;
+  font-size: var(--text-xs);
   font-weight: 800;
   background: transparent;
 }
@@ -2441,20 +2459,11 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   }
 
   .gallery-card__meta {
-    align-items: flex-start;
-    flex-direction: column;
+    align-items: center;
+    flex-direction: row;
   }
 
-  .gallery-card__badges {
-    justify-content: flex-start;
-  }
-
-  .gallery-card__source {
-    align-self: flex-start;
-  }
-
-  .gallery-card__stats,
-  .gallery-card__actions {
+  .gallery-card__stats {
     gap: 8px;
   }
 
@@ -2524,11 +2533,19 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   .gallery-card__makerworld-pill {
     min-height: 24px;
     padding: 0;
-    font-size: 11px;
+    font-size: var(--text-xs);
+  }
+
+  .gallery-card__meta {
+    flex-wrap: wrap;
+  }
+
+  .gallery-card__author {
+    flex: 1 1 100%;
   }
 
   .gallery-stat__value {
-    font-size: 14px;
+    font-size: var(--text-xs);
   }
 
   .archive-form__options,
@@ -3399,6 +3416,12 @@ select:focus {
 .gallery-card__source {
   border: 1px solid var(--border);
   background-color: var(--color-neutral-50);
+  color: var(--text);
+}
+
+.gallery-card__cover-badges .gallery-card__source {
+  border-color: var(--border);
+  background-color: rgba(255, 255, 255, 0.9);
   color: var(--text);
 }
 
