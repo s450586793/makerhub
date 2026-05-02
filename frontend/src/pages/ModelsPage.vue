@@ -84,6 +84,7 @@ import { useRoute, useRouter } from "vue-router";
 import ModelCard from "../components/ModelCard.vue";
 import { subscribeArchiveCompletion } from "../lib/archiveEvents";
 import { apiRequest } from "../lib/api";
+import { getPageCache, setPageCache } from "../lib/pageCache";
 
 
 const route = useRoute();
@@ -308,6 +309,43 @@ function routeAnchor() {
   return String(rawAnchor || "").trim();
 }
 
+function modelListCacheKey(page = routePage()) {
+  const query = new URLSearchParams();
+  const q = typeof route.query.q === "string" ? route.query.q : "";
+  const source = typeof route.query.source === "string" ? route.query.source : "";
+  const tag = typeof route.query.tag === "string" ? route.query.tag : "";
+  const sort = typeof route.query.sort === "string" ? route.query.sort : "";
+  if (q) query.set("q", q);
+  if (source && source !== "all") query.set("source", source);
+  if (tag) query.set("tag", tag);
+  if (sort && sort !== "collectDate") query.set("sort", sort);
+  const safePage = Math.max(Number(page) || 1, 1);
+  if (safePage > 1) query.set("page", String(Math.floor(safePage)));
+  const suffix = query.toString();
+  return `models:${suffix}`;
+}
+
+function rememberModelList() {
+  setPageCache(modelListCacheKey(payload.value.page), {
+    payload: payload.value,
+  });
+}
+
+async function hydrateModelListFromCache() {
+  const cached = getPageCache(modelListCacheKey());
+  if (!cached?.payload) {
+    return false;
+  }
+  payload.value = cached.payload;
+  loaded.value = true;
+  loadingMore.value = false;
+  syncFiltersFromRoute();
+  await nextTick();
+  ensureObserver();
+  await scrollToRouteAnchor();
+  return true;
+}
+
 async function scrollToRouteAnchor() {
   const anchor = routeAnchor();
   if (!anchor || typeof window === "undefined") {
@@ -373,6 +411,7 @@ async function load({ append = false, refresh = false } = {}) {
     };
   }
   loaded.value = true;
+  rememberModelList();
   await nextTick();
   ensureObserver();
   if (!append) {
@@ -406,6 +445,7 @@ async function reloadVisiblePages({ refresh = false } = {}) {
     count: mergedItems.length,
     page: pagesToLoad,
   };
+  rememberModelList();
   await nextTick();
   ensureObserver();
 }
@@ -532,6 +572,7 @@ async function loadMore() {
       page: nextPage,
     };
     loaded.value = true;
+    rememberModelList();
     return true;
   } catch (error) {
     failed = true;
@@ -778,6 +819,7 @@ async function restoreOne(modelDir) {
 
 watch(() => route.fullPath, () => {
   status.value = "";
+  void hydrateModelListFromCache();
   void load({ append: false }).catch((error) => {
     status.value = error instanceof Error ? error.message : "模型列表加载失败。";
     loaded.value = true;
@@ -785,6 +827,7 @@ watch(() => route.fullPath, () => {
 });
 
 onMounted(async () => {
+  await hydrateModelListFromCache();
   try {
     await load({ append: false });
   } catch (error) {

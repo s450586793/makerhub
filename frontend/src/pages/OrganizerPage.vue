@@ -70,6 +70,7 @@ import { RouterLink, useRouter } from "vue-router";
 import SourceLibraryCard from "../components/SourceLibraryCard.vue";
 import { apiRequest } from "../lib/api";
 import { refreshConfig } from "../lib/appState";
+import { getPageCache, setPageCache } from "../lib/pageCache";
 
 
 const ACTIVE_REFRESH_INTERVAL_MS = 5000;
@@ -91,6 +92,25 @@ const initialLoaded = ref(false);
 const loadError = ref("");
 let refreshTimer = null;
 let disposed = false;
+
+function rememberOrganizerPage() {
+  setPageCache("organizer", {
+    sourceLibraryPayload: sourceLibraryPayload.value,
+    organizerTasks: organizerTasks.value,
+  });
+}
+
+function hydrateOrganizerPageFromCache() {
+  const cached = getPageCache("organizer");
+  if (!cached?.sourceLibraryPayload || !cached?.organizerTasks) {
+    return false;
+  }
+  sourceLibraryPayload.value = cached.sourceLibraryPayload;
+  organizerTasks.value = cached.organizerTasks;
+  loadError.value = "";
+  initialLoaded.value = true;
+  return true;
+}
 
 const localSourceSection = computed(() => (
   sourceLibraryPayload.value.sections.find((section) => section?.key === "locals") || { items: [] }
@@ -195,6 +215,7 @@ async function load({ silent = false } = {}) {
     };
     loadError.value = "";
     initialLoaded.value = true;
+    rememberOrganizerPage();
   } catch (error) {
     if (!silent) {
       console.error("本地库数据加载失败", error);
@@ -245,6 +266,7 @@ function handleVisibilityChange() {
 onMounted(() => {
   disposed = false;
   document.addEventListener("visibilitychange", handleVisibilityChange);
+  hydrateOrganizerPageFromCache();
   void load();
 });
 

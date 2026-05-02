@@ -103,6 +103,7 @@ import { RouterLink, useRouter } from "vue-router";
 import CronField from "../components/CronField.vue";
 import SourceLibraryCard from "../components/SourceLibraryCard.vue";
 import { apiRequest } from "../lib/api";
+import { getPageCache, setPageCache } from "../lib/pageCache";
 import {
   DEFAULT_SUBSCRIPTION_SETTINGS,
   createEmptySubscriptionsPayload,
@@ -126,6 +127,23 @@ let refreshTimer = null;
 const sourceSections = computed(() => (
   payload.value.sections.filter((section) => section?.key === "subscription_sources")
 ));
+
+function rememberSubscriptionsPage() {
+  setPageCache("subscriptions", {
+    payload: payload.value,
+  });
+}
+
+function hydrateSubscriptionsPageFromCache() {
+  const cached = getPageCache("subscriptions");
+  if (!cached?.payload) {
+    return false;
+  }
+  payload.value = normalizeSubscriptionsPayload(cached.payload);
+  initialLoaded.value = true;
+  syncAutoRefresh();
+  return true;
+}
 
 function syncAutoRefresh() {
   const hasRunning = payload.value.items.some((item) => item.running);
@@ -152,6 +170,7 @@ async function load({ silent = false } = {}) {
     const response = await apiRequest("/api/subscriptions");
     payload.value = normalizeSubscriptionsPayload(response);
     initialLoaded.value = true;
+    rememberSubscriptionsPage();
     syncAutoRefresh();
   } catch (error) {
     if (!silent) {
@@ -220,6 +239,7 @@ async function createSubscription() {
       },
     });
     payload.value = normalizeSubscriptionsPayload(response.subscriptions || {});
+    rememberSubscriptionsPage();
     syncAutoRefresh();
     status.value = response.message || "订阅已创建。";
     closeCreateDialog(true);
@@ -233,6 +253,7 @@ async function createSubscription() {
 }
 
 onMounted(async () => {
+  hydrateSubscriptionsPageFromCache();
   await load();
 });
 
