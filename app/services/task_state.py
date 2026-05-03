@@ -298,6 +298,7 @@ def _normalize_organize_tasks(payload: Any) -> dict:
         raw_count_trusted = False
         raw_source_dir = ""
         raw_updated_at = ""
+        raw_last_import = {}
     elif isinstance(payload, dict):
         items = payload.get("items") or payload.get("tasks") or []
         raw_detected_total = _safe_int(
@@ -311,6 +312,7 @@ def _normalize_organize_tasks(payload: Any) -> dict:
         raw_count_trusted = bool(payload.get("count_trusted"))
         raw_source_dir = str(payload.get("source_dir") or "")
         raw_updated_at = str(payload.get("updated_at") or "")
+        raw_last_import = payload.get("last_import") if isinstance(payload.get("last_import"), dict) else {}
     else:
         items = []
         raw_detected_total = 0
@@ -318,6 +320,7 @@ def _normalize_organize_tasks(payload: Any) -> dict:
         raw_count_trusted = False
         raw_source_dir = ""
         raw_updated_at = ""
+        raw_last_import = {}
 
     normalized = []
     for item in items:
@@ -376,6 +379,43 @@ def _normalize_organize_tasks(payload: Any) -> dict:
         "running_count": running_count,
         "source_dir": raw_source_dir,
         "updated_at": raw_updated_at,
+        "last_import": _normalize_local_import_payload(raw_last_import),
+    }
+
+
+def _normalize_local_import_payload(payload: Any) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+
+    raw_files = payload.get("files")
+    files: list[dict[str, Any]] = []
+    if isinstance(raw_files, list):
+        for item in raw_files:
+            if isinstance(item, dict):
+                file_name = str(item.get("file_name") or Path(str(item.get("source_path") or "")).name or "").strip()
+                source_path = str(item.get("source_path") or "").strip()
+                size = _safe_int(item.get("size"), 0)
+            else:
+                file_name = str(item or "").strip()
+                source_path = ""
+                size = 0
+            if not file_name and not source_path:
+                continue
+            files.append(
+                {
+                    "file_name": file_name,
+                    "source_path": source_path,
+                    "size": size,
+                }
+            )
+
+    uploaded_count = _safe_int(payload.get("uploaded_count"), len(files))
+    return {
+        "uploaded_at": str(payload.get("uploaded_at") or payload.get("time") or ""),
+        "uploaded_count": max(uploaded_count, len(files)),
+        "source_dir": str(payload.get("source_dir") or ""),
+        "upload_dir": str(payload.get("upload_dir") or ""),
+        "files": files,
     }
 
 

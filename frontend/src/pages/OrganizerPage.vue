@@ -30,7 +30,6 @@
           导入
         </button>
       </div>
-      <span v-if="importStatus" class="form-status organizer-import-status">{{ importStatus }}</span>
     </div>
   </section>
 
@@ -151,7 +150,6 @@ const organizerTasks = ref({
 const loading = ref(false);
 const initialLoaded = ref(false);
 const loadError = ref("");
-const importStatus = ref("");
 const importFileInput = ref(null);
 const importFiles = ref([]);
 const importDialog = reactive({
@@ -195,6 +193,7 @@ const localOrganizerCard = computed(() => {
     return {
       ...card,
       title: "本地整理",
+      recent_summary: localImportSummaryText.value,
     };
   }
   return {
@@ -211,6 +210,7 @@ const localOrganizerCard = computed(() => {
       { label: "候选", value: Number(organizerTasks.value.detected_total || 0) },
       { label: "活跃", value: activeOrganizeCount.value },
     ],
+    recent_summary: localImportSummaryText.value,
     preview_models: [],
   };
 });
@@ -246,6 +246,79 @@ const queuedCountText = computed(() => (
   !initialLoaded.value && loadError.value ? "-" :
   !initialLoaded.value ? "..." : String(organizerTasks.value.queued_count || 0)
 ));
+const localImportSummaryText = computed(() => buildLocalImportSummary(organizerTasks.value));
+
+function fileIdentitySet(files) {
+  const identities = new Set();
+  for (const item of Array.isArray(files) ? files : []) {
+    const sourcePath = String(item?.source_path || "").trim();
+    const fileName = String(item?.file_name || "").trim();
+    if (sourcePath) {
+      identities.add(`path:${sourcePath}`);
+    }
+    if (fileName) {
+      identities.add(`name:${fileName}`);
+    }
+  }
+  return identities;
+}
+
+function organizerItemMatchesImport(item, identities) {
+  if (!identities.size) {
+    return false;
+  }
+  const sourcePath = String(item?.source_path || "").trim();
+  const fileName = String(item?.file_name || "").trim();
+  return (sourcePath && identities.has(`path:${sourcePath}`)) || (fileName && identities.has(`name:${fileName}`));
+}
+
+function buildLocalImportSummary(tasks) {
+  const lastImport = tasks?.last_import && typeof tasks.last_import === "object" ? tasks.last_import : null;
+  const allItems = Array.isArray(tasks?.items) ? tasks.items : [];
+  const importFiles = Array.isArray(lastImport?.files) ? lastImport.files : [];
+  const identities = fileIdentitySet(importFiles);
+  const batchItems = identities.size ? allItems.filter((item) => organizerItemMatchesImport(item, identities)) : [];
+  const summaryItems = lastImport ? batchItems : allItems;
+  const uploadedCount = Number(lastImport?.uploaded_count || 0);
+
+  const counts = summaryItems.reduce(
+    (result, item) => {
+      const status = String(item?.status || "").trim().toLowerCase();
+      if (status === "success") {
+        result.success += 1;
+      } else if (status === "skipped") {
+        result.skipped += 1;
+      } else if (status === "failed" || status === "error") {
+        result.failed += 1;
+      } else if (status === "running" || status === "pending" || status === "queued") {
+        result.pending += 1;
+      }
+      return result;
+    },
+    { success: 0, skipped: 0, failed: 0, pending: 0 }
+  );
+
+  if (uploadedCount > 0) {
+    const parts = [`上传 ${uploadedCount}`, `新增 ${counts.success}`, `跳过 ${counts.skipped}`];
+    if (counts.failed) {
+      parts.push(`失败 ${counts.failed}`);
+    }
+    if (counts.pending || batchItems.length < uploadedCount) {
+      parts.push(`处理中 ${Math.max(counts.pending, uploadedCount - batchItems.length)}`);
+    }
+    return `最近导入：${parts.join(" / ")}`;
+  }
+
+  if (!summaryItems.length) {
+    return "";
+  }
+  const total = Number(tasks?.count || summaryItems.length || 0);
+  const parts = [`记录 ${total}`, `新增 ${counts.success}`, `跳过 ${counts.skipped}`];
+  if (counts.failed) {
+    parts.push(`失败 ${counts.failed}`);
+  }
+  return `最近整理：${parts.join(" / ")}`;
+}
 
 function clearTaskTimer() {
   if (refreshTimer) {
@@ -311,7 +384,6 @@ function resetImportDialogState({ keepFiles = false } = {}) {
 }
 
 function openImportDialog() {
-  importStatus.value = "";
   resetImportDialogState();
   importDialog.visible = true;
 }
@@ -414,11 +486,10 @@ async function submitImportFiles() {
     formData.append("files", file);
   }
   try {
-    const response = await apiRequest("/api/local-library/import", {
+    await apiRequest("/api/local-library/import", {
       method: "POST",
       body: formData,
     });
-    importStatus.value = response.message || "3MF 已上传，等待本地整理处理。";
     importDialog.visible = false;
     resetImportDialogState();
     await load({ silent: true });

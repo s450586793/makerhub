@@ -37,6 +37,7 @@
             </div>
           </div>
         </div>
+        <p v-if="card.recent_summary" class="source-library-card__summary">{{ card.recent_summary }}</p>
       </div>
 
       <div class="source-library-card__preview-grid source-library-card__preview-grid--author">
@@ -88,6 +89,7 @@
             </div>
           </div>
         </div>
+        <p v-if="card.recent_summary" class="source-library-card__summary">{{ card.recent_summary }}</p>
       </div>
 
       <div class="source-library-card__preview-grid source-library-card__preview-grid--collection">

@@ -12,8 +12,10 @@ from fastapi import UploadFile
 
 from app.core.settings import MAX_LOCAL_IMPORT_UPLOAD_BYTES, STATE_DIR
 from app.core.store import JsonStore
+from app.core.timezone import now_iso as china_now_iso
 from app.services.business_logs import append_business_log
 from app.services.legacy_archiver import sanitize_filename
+from app.services.task_state import TaskStateStore
 
 
 LOCAL_IMPORT_UPLOAD_SUBDIR = "web_uploads"
@@ -160,6 +162,21 @@ def upload_local_import_files(*, files: list[UploadFile], store: JsonStore | Non
         source_dir=source_dir.as_posix(),
         upload_dir=upload_dir.as_posix(),
         files=[item["file_name"] for item in uploaded],
+    )
+
+    task_store = TaskStateStore()
+    current_tasks = task_store.load_organize_tasks()
+    task_store.save_organize_tasks(
+        {
+            **current_tasks,
+            "last_import": {
+                "uploaded_at": china_now_iso(),
+                "uploaded_count": len(uploaded),
+                "source_dir": source_dir.as_posix(),
+                "upload_dir": upload_dir.as_posix(),
+                "files": uploaded,
+            },
+        }
     )
 
     return {

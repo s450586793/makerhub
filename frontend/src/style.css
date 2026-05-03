@@ -2990,6 +2990,18 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   line-height: 1.1;
 }
 
+.source-library-card__summary {
+  margin: var(--space-2) 0 0;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .source-library-card__preview-grid {
   padding: 0;
   display: grid;
