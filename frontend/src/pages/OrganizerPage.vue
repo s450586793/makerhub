@@ -26,10 +26,11 @@
         </span>
       </div>
       <div class="filter-actions">
-        <RouterLink class="button button-primary" :to="{ path: '/settings', query: { tab: 'organizer' } }">
+        <button class="button button-primary" type="button" @click="openImportDialog">
           导入
-        </RouterLink>
+        </button>
       </div>
+      <span v-if="importStatus" class="form-status organizer-import-status">{{ importStatus }}</span>
     </div>
   </section>
 
@@ -61,11 +62,71 @@
     </section>
   </section>
 
+  <div
+    v-if="importDialog.visible"
+    class="submit-dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="local-import-dialog-title"
+    @click="closeImportDialog"
+  >
+    <div class="submit-dialog__panel local-import-dialog__panel" @click.stop>
+      <h2 id="local-import-dialog-title">导入本地 3MF</h2>
+      <p>确认后先写入暂存区，再移动到本地整理扫描目录，并按现有本地整理流程入库。</p>
+      <div
+        :class="['local-import-dialog__dropzone', importDialog.dragging && 'is-dragging']"
+        role="button"
+        tabindex="0"
+        @click="openImportFilePicker"
+        @keydown.enter.prevent="openImportFilePicker"
+        @keydown.space.prevent="openImportFilePicker"
+        @dragenter.prevent="setImportDragging(true)"
+        @dragover.prevent="setImportDragging(true)"
+        @dragleave.prevent="setImportDragging(false)"
+        @drop.prevent="handleImportDrop"
+      >
+        <strong>拖入 3MF</strong>
+        <span>或点击选择文件</span>
+      </div>
+      <input
+        ref="importFileInput"
+        class="local-import-dialog__input"
+        type="file"
+        accept=".3mf"
+        multiple
+        @change="handleImportFileChange"
+      >
+      <div v-if="importFiles.length" class="local-import-dialog__files">
+        <div class="local-import-dialog__files-head">
+          <span>待导入</span>
+          <strong>{{ importFiles.length }} 个</strong>
+        </div>
+        <ol>
+          <li v-for="(file, index) in importFiles" :key="fileKey(file, index)">
+            <span>{{ file.name }}</span>
+            <em>{{ formatFileSize(file.size) }}</em>
+            <button type="button" :disabled="importDialog.uploading" @click="removeImportFile(index)">移除</button>
+          </li>
+        </ol>
+      </div>
+      <p v-if="importDialog.status" class="form-status local-import-dialog__status">{{ importDialog.status }}</p>
+      <p v-if="importDialog.error" class="form-status local-import-dialog__status is-error">{{ importDialog.error }}</p>
+      <div class="submit-dialog__actions">
+        <button class="button button-secondary" type="button" :disabled="importDialog.uploading" @click="closeImportDialog">
+          取消
+        </button>
+        <button class="button button-primary" type="button" :disabled="!importFiles.length || importDialog.uploading" @click="submitImportFiles">
+          {{ importDialog.uploading ? "导入中..." : "确认导入" }}
+        </button>
+      </div>
+    </div>
+  </div>
+
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { RouterLink, useRouter } from "vue-router";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { useRouter } from "vue-router";
 
 import SourceLibraryCard from "../components/SourceLibraryCard.vue";
 import { apiRequest } from "../lib/api";
@@ -90,6 +151,16 @@ const organizerTasks = ref({
 const loading = ref(false);
 const initialLoaded = ref(false);
 const loadError = ref("");
+const importStatus = ref("");
+const importFileInput = ref(null);
+const importFiles = ref([]);
+const importDialog = reactive({
+  visible: false,
+  dragging: false,
+  uploading: false,
+  status: "",
+  error: "",
+});
 let refreshTimer = null;
 let disposed = false;
 
@@ -224,6 +295,137 @@ async function load({ silent = false } = {}) {
   } finally {
     loading.value = false;
     syncTaskTimer();
+  }
+}
+
+function resetImportDialogState({ keepFiles = false } = {}) {
+  importDialog.dragging = false;
+  importDialog.status = "";
+  importDialog.error = "";
+  if (!keepFiles) {
+    importFiles.value = [];
+  }
+  if (importFileInput.value) {
+    importFileInput.value.value = "";
+  }
+}
+
+function openImportDialog() {
+  importStatus.value = "";
+  resetImportDialogState();
+  importDialog.visible = true;
+}
+
+function closeImportDialog() {
+  if (importDialog.uploading) {
+    return;
+  }
+  importDialog.visible = false;
+  resetImportDialogState();
+}
+
+function openImportFilePicker() {
+  if (importDialog.uploading) {
+    return;
+  }
+  importFileInput.value?.click();
+}
+
+function setImportDragging(value) {
+  if (importDialog.uploading) {
+    return;
+  }
+  importDialog.dragging = Boolean(value);
+}
+
+function fileKey(file, index) {
+  return `${file.name}-${file.size}-${file.lastModified}-${index}`;
+}
+
+function addImportFiles(fileList) {
+  const incoming = Array.from(fileList || []);
+  if (!incoming.length) {
+    return;
+  }
+  const currentKeys = new Set(importFiles.value.map((file) => `${file.name}-${file.size}-${file.lastModified}`));
+  const nextFiles = [...importFiles.value];
+  let skipped = 0;
+  for (const file of incoming) {
+    if (!String(file.name || "").toLowerCase().endsWith(".3mf")) {
+      skipped += 1;
+      continue;
+    }
+    const key = `${file.name}-${file.size}-${file.lastModified}`;
+    if (currentKeys.has(key)) {
+      continue;
+    }
+    currentKeys.add(key);
+    nextFiles.push(file);
+  }
+  importFiles.value = nextFiles;
+  importDialog.error = "";
+  importDialog.status = skipped ? `已跳过 ${skipped} 个非 3MF 文件。` : "";
+}
+
+function handleImportFileChange(event) {
+  addImportFiles(event.target.files);
+  event.target.value = "";
+}
+
+function handleImportDrop(event) {
+  setImportDragging(false);
+  addImportFiles(event.dataTransfer?.files);
+}
+
+function removeImportFile(index) {
+  if (importDialog.uploading) {
+    return;
+  }
+  importFiles.value = importFiles.value.filter((_, itemIndex) => itemIndex !== index);
+}
+
+function formatFileSize(value) {
+  const size = Number(value || 0);
+  if (!Number.isFinite(size) || size <= 0) {
+    return "0 B";
+  }
+  if (size >= 1024 * 1024 * 1024) {
+    return `${(size / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  }
+  if (size >= 1024 * 1024) {
+    return `${(size / 1024 / 1024).toFixed(1)} MB`;
+  }
+  if (size >= 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+  return `${size} B`;
+}
+
+async function submitImportFiles() {
+  if (!importFiles.value.length) {
+    importDialog.error = "请选择要导入的 3MF 文件。";
+    return;
+  }
+  importDialog.uploading = true;
+  importDialog.status = "";
+  importDialog.error = "";
+  const formData = new FormData();
+  for (const file of importFiles.value) {
+    formData.append("files", file);
+  }
+  try {
+    const response = await apiRequest("/api/local-library/import", {
+      method: "POST",
+      body: formData,
+    });
+    importStatus.value = response.message || "3MF 已上传，等待本地整理处理。";
+    importDialog.visible = false;
+    resetImportDialogState();
+    await load({ silent: true });
+  } catch (error) {
+    importDialog.error = error instanceof Error ? error.message : "导入失败。";
+  } finally {
+    importDialog.uploading = false;
   }
 }
 

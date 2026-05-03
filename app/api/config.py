@@ -10,7 +10,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Upload
 from fastapi.responses import StreamingResponse
 
 from app.core.store import JsonStore
-from app.core.settings import APP_VERSION
+from app.core.settings import APP_VERSION, BACKGROUND_TASKS_ENABLED
 from app.core.timezone import now_iso as china_now_iso
 from app.schemas.models import (
     AdvancedRuntimeConfig,
@@ -47,6 +47,7 @@ from app.services.crawler import LegacyCrawlerBridge
 from app.services.business_logs import append_business_log, read_log_entries
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.local_organizer import LocalOrganizerService
+from app.services.local_import_upload import upload_local_import_files
 from app.services.local_model_merge import merge_local_models
 from app.services.model_attachments import create_manual_attachment, delete_manual_attachment
 from app.services.remote_refresh import RemoteRefreshManager
@@ -1251,6 +1252,34 @@ async def merge_local_library_models(payload: LocalModelMergeRequest, request: R
         cover_from_model_dir=payload.cover_from_model_dir,
         task_store=task_state_store,
     )
+
+
+@router.post("/local-library/import")
+async def import_local_library_files(
+    request: Request,
+    files: list[UploadFile] = File(...),
+):
+    _require_session_auth(request)
+    try:
+        result = await run_task_api(
+            upload_local_import_files,
+            files=files,
+            store=store,
+        )
+        if BACKGROUND_TASKS_ENABLED:
+            try:
+                await run_task_api(local_organizer.run_once)
+                result["triggered"] = True
+            except Exception as exc:
+                result["triggered"] = False
+                result["trigger_error"] = str(exc)
+                append_business_log("organizer", "local_import_trigger_failed", str(exc), level="warning")
+        else:
+            result["triggered"] = False
+        return result
+    except ValueError as exc:
+        append_business_log("organizer", "local_import_upload_failed", str(exc), level="error")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/tasks")
