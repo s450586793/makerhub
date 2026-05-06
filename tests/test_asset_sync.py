@@ -1,8 +1,9 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from app.services.legacy_archiver import collect_design_images
+from app.services.legacy_archiver import collect_design_images, rebuild_once
 
 
 class _BinaryResponse:
@@ -118,6 +119,33 @@ class AssetSyncTest(unittest.TestCase):
             self.assertEqual(images[0]["originalUrl"], "https://cdn.example.com/design-b.jpg")
             self.assertEqual(images[0]["relPath"], "")
             self.assertEqual(images[0]["fileName"], "")
+
+    def test_rebuild_once_skips_offline_index_by_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_dir = Path(temp_dir) / "MW_1_Test"
+            model_dir.mkdir(parents=True)
+            meta_path = model_dir / "meta.json"
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "baseName": "MW_1_Test",
+                        "title": "Test",
+                        "author": {},
+                        "summary": {},
+                        "designImages": [],
+                        "instances": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            rebuild_once(meta_path)
+
+            self.assertTrue((model_dir / "meta.json").exists())
+            self.assertTrue((model_dir / "images").is_dir())
+            self.assertTrue((model_dir / "instances").is_dir())
+            self.assertTrue((model_dir / "file").is_dir())
+            self.assertFalse((model_dir / "index.html").exists())
 
 
 if __name__ == "__main__":

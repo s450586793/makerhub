@@ -5622,7 +5622,7 @@ def build_index_html(meta: dict, assets: dict = None, logger=None) -> str:
     return html
 
 
-def rebuild_once(meta_path: Path, progress_callback=None, logger=None):
+def rebuild_once(meta_path: Path, progress_callback=None, logger=None, build_offline_page: bool = False):
     rebuild_started_at = time.perf_counter()
     with meta_path.open("r", encoding="utf-8") as f:
         meta = json.load(f)
@@ -5635,7 +5635,7 @@ def rebuild_once(meta_path: Path, progress_callback=None, logger=None):
     ensure_dir(work_dir)
 
     emit_progress(progress_callback, 84, f"正在整理归档目录：{base_name}")
-    log(logger, "归档生成页面:", base_name)
+    log(logger, "归档目录整理:", base_name)
 
     # 1. 写/移动 meta.json 到目标目录，仅保留目标目录一份
     target_meta = work_dir / "meta.json"
@@ -5828,29 +5828,31 @@ def rebuild_once(meta_path: Path, progress_callback=None, logger=None):
     if meta_changed:
         target_meta.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # 7. 生成 index.html（基于 templates/model.html + static/css/js 内联）
-    design_files = sorted([p.name for p in images_dir.glob("design_*")])
-    cover_file = next(iter(images_dir.glob("cover.*")), None)
-    avatar_file = next(iter(images_dir.glob("author_avatar.*")), None)
+    if build_offline_page:
+        # Historical compatibility path. The current web detail page reads meta.json
+        # through the API, so normal archives skip this unused offline HTML work.
+        design_files = sorted([p.name for p in images_dir.glob("design_*")])
+        cover_file = next(iter(images_dir.glob("cover.*")), None)
+        avatar_file = next(iter(images_dir.glob("author_avatar.*")), None)
 
-    hero_file = screenshot_file or cover_file or (images_dir / design_files[0] if design_files else None)
-    hero_rel = hero_file.relative_to(work_dir).as_posix() if hero_file else "screenshot.png"
+        hero_file = screenshot_file or cover_file or (images_dir / design_files[0] if design_files else None)
+        hero_rel = hero_file.relative_to(work_dir).as_posix() if hero_file else "screenshot.png"
 
-    assets = {
-        "design_files": design_files,
-        "hero": f"./{hero_rel}",
-        "avatar": f"./{avatar_file.relative_to(work_dir).as_posix()}" if avatar_file else None,
-        "collected_date": china_now().strftime("%Y-%m-%d"),
-        "instance_files": inst_files,
-        "base_name": base_name,
-    }
+        assets = {
+            "design_files": design_files,
+            "hero": f"./{hero_rel}",
+            "avatar": f"./{avatar_file.relative_to(work_dir).as_posix()}" if avatar_file else None,
+            "collected_date": china_now().strftime("%Y-%m-%d"),
+            "instance_files": inst_files,
+            "base_name": base_name,
+        }
 
-    offline_page_started_at = time.perf_counter()
-    index_html = build_index_html(meta, assets, logger=logger)
-    (work_dir / "index.html").write_text(index_html, encoding="utf-8")
-    _log_perf("rebuild.build_offline_page", offline_page_started_at, logger=logger)
+        offline_page_started_at = time.perf_counter()
+        index_html = build_index_html(meta, assets, logger=logger)
+        (work_dir / "index.html").write_text(index_html, encoding="utf-8")
+        _log_perf("rebuild.build_offline_page", offline_page_started_at, logger=logger)
 
-    emit_progress(progress_callback, 98, "正在生成归档页面")
+    emit_progress(progress_callback, 98, "归档目录整理完成")
     log(logger, "完成归档:", work_dir)
     _log_perf("rebuild.total", rebuild_started_at, logger=logger, base_name=base_name)
 
@@ -5875,7 +5877,7 @@ def archive_model(
     three_mf_daily_limit_global: int = 100,
 ):
     """
-    对外主入口：采集 + 下载文件 + 生成 meta/index.html/style.css
+    对外主入口：采集 + 下载文件 + 生成 meta，并整理归档目录。
     返回: {base_name, work_dir, missing_3mf, action}
     """
     archive_started_at = time.perf_counter()
@@ -6382,9 +6384,9 @@ def archive_model(
             rebuild_once(meta_path, progress_callback=progress_callback, logger=logger)
             timings_ms["rebuild_once"] = _log_perf("archive.rebuild_once", rebuild_started_at, logger=logger)
         except Exception as e:
-            log(logger, "归档/生成本地页面失败:", e)
+            log(logger, "归档目录整理失败:", e)
     else:
-        log(logger, "已跳过归档目录整理与离线页面重建。")
+        log(logger, "已跳过归档目录整理。")
 
     # 缺失 3MF 记录（仅记录，没有下载 3mf）
     missing_3mf = [inst for inst in inst_list if not inst.get("downloadUrl")]
