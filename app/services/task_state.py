@@ -40,6 +40,12 @@ _ORGANIZER_HISTORY_COUNT_CACHE = {
     "size": 0,
     "count": 0,
 }
+_ORGANIZER_TERMINAL_LOG_CACHE = {
+    "mtime_ns": 0,
+    "size": 0,
+    "events": [],
+}
+ORGANIZER_STATUS_LOG_LOOKBACK_BYTES = 2 * 1024 * 1024
 
 
 def _looks_like_html_message(text: str) -> bool:
@@ -395,28 +401,156 @@ def _normalize_local_import_payload(payload: Any) -> dict:
                 file_name = str(item.get("file_name") or Path(str(item.get("source_path") or "")).name or "").strip()
                 source_path = str(item.get("source_path") or "").strip()
                 size = _safe_int(item.get("size"), 0)
+                status = str(item.get("status") or "").strip()
+                message = _sanitize_message_text(item.get("message") or "")
+                updated_at = str(item.get("updated_at") or "").strip()
             else:
                 file_name = str(item or "").strip()
                 source_path = ""
                 size = 0
+                status = ""
+                message = ""
+                updated_at = ""
             if not file_name and not source_path:
                 continue
-            files.append(
-                {
-                    "file_name": file_name,
-                    "source_path": source_path,
-                    "size": size,
-                }
-            )
+            file_item = {
+                "file_name": file_name,
+                "source_path": source_path,
+                "size": size,
+            }
+            if status:
+                file_item["status"] = status
+            if message:
+                file_item["message"] = message
+            if updated_at:
+                file_item["updated_at"] = updated_at
+            files.append(file_item)
+
+    uploaded_at = str(payload.get("uploaded_at") or payload.get("time") or "")
+    _apply_local_import_file_log_statuses(files, uploaded_at=uploaded_at)
 
     uploaded_count = _safe_int(payload.get("uploaded_count"), len(files))
     return {
-        "uploaded_at": str(payload.get("uploaded_at") or payload.get("time") or ""),
+        "uploaded_at": uploaded_at,
         "uploaded_count": max(uploaded_count, len(files)),
         "source_dir": str(payload.get("source_dir") or ""),
         "upload_dir": str(payload.get("upload_dir") or ""),
         "files": files,
     }
+
+
+def _organizer_event_status(event: str) -> str:
+    normalized = str(event or "").strip()
+    if normalized == "organized":
+        return "success"
+    if normalized in {"duplicate_skipped", "deleted_model_skipped"}:
+        return "skipped"
+    if normalized in {"duplicate_skip_failed", "organize_failed", "worker_timeout"}:
+        return "failed"
+    return ""
+
+
+def _organizer_event_message(payload: dict[str, Any], status: str) -> str:
+    raw_message = str(payload.get("message") or payload.get("error") or "").strip()
+    if raw_message:
+        return _sanitize_message_text(raw_message)
+    event = str(payload.get("event") or "").strip()
+    if event == "organized":
+        return "本地 3MF 已整理入库。"
+    if event == "duplicate_skipped":
+        return "本地 3MF 与模型库现有配置重复，已跳过。"
+    if event == "deleted_model_skipped":
+        return "命中 MakerHub 本地删除标记，已阻止重新入库。"
+    if status == "failed":
+        return "本地 3MF 整理失败。"
+    return ""
+
+
+def _recent_organizer_terminal_events() -> list[dict[str, Any]]:
+    try:
+        stat = ORGANIZER_LOG_PATH.stat()
+    except OSError:
+        return []
+
+    cache_mtime_ns = int(_ORGANIZER_TERMINAL_LOG_CACHE.get("mtime_ns") or 0)
+    cache_size = int(_ORGANIZER_TERMINAL_LOG_CACHE.get("size") or 0)
+    if cache_mtime_ns == int(stat.st_mtime_ns) and cache_size == int(stat.st_size):
+        return list(_ORGANIZER_TERMINAL_LOG_CACHE.get("events") or [])
+
+    events: list[dict[str, Any]] = []
+    try:
+        with ORGANIZER_LOG_PATH.open("rb") as handle:
+            start = max(int(stat.st_size) - ORGANIZER_STATUS_LOG_LOOKBACK_BYTES, 0)
+            handle.seek(start)
+            if start > 0:
+                handle.readline()
+            for raw_line in handle:
+                try:
+                    line = raw_line.decode("utf-8", errors="ignore").strip()
+                except AttributeError:
+                    line = str(raw_line or "").strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                event = str(payload.get("event") or "").strip()
+                status = _organizer_event_status(event)
+                if not status:
+                    continue
+                source = str(payload.get("source") or "").strip()
+                if not source:
+                    continue
+                events.append(
+                    {
+                        "event": event,
+                        "status": status,
+                        "source": source,
+                        "file_name": Path(source).name,
+                        "updated_at": str(payload.get("time") or ""),
+                        "message": _organizer_event_message(payload, status),
+                    }
+                )
+    except OSError:
+        return []
+
+    _ORGANIZER_TERMINAL_LOG_CACHE.update(
+        {
+            "mtime_ns": int(stat.st_mtime_ns),
+            "size": int(stat.st_size),
+            "events": events,
+        }
+    )
+    return list(events)
+
+
+def _local_import_file_matches_event(file_item: dict[str, Any], event: dict[str, Any]) -> bool:
+    source_path = str(file_item.get("source_path") or "").strip()
+    file_name = str(file_item.get("file_name") or "").strip()
+    event_source = str(event.get("source") or "").strip()
+    event_file_name = str(event.get("file_name") or Path(event_source).name or "").strip()
+
+    if source_path and event_source and source_path == event_source:
+        return True
+    return bool(file_name and event_file_name and file_name == event_file_name and not source_path)
+
+
+def _apply_local_import_file_log_statuses(files: list[dict[str, Any]], *, uploaded_at: str) -> None:
+    if not files:
+        return
+
+    uploaded_dt = parse_datetime(uploaded_at)
+    for event in _recent_organizer_terminal_events():
+        event_dt = parse_datetime(event.get("updated_at"))
+        if uploaded_dt is not None and event_dt is not None and event_dt < uploaded_dt:
+            continue
+        for file_item in files:
+            if not _local_import_file_matches_event(file_item, event):
+                continue
+            file_item["status"] = str(event.get("status") or "")
+            file_item["message"] = str(event.get("message") or "")
+            file_item["updated_at"] = str(event.get("updated_at") or "")
 
 
 def _organizer_history_count_from_log() -> int:

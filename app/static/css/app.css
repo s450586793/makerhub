@@ -72,7 +72,44 @@ html[data-theme="light"] {
 }
 
 html[data-theme="dark"] {
-  color-scheme: light;
+  color-scheme: dark;
+  --color-primary: #2fbf71;
+  --color-secondary: #a3ada6;
+  --color-neutral-50: #1e2420;
+  --color-neutral-100: #171b18;
+  --color-neutral-200: #2b332e;
+  --color-neutral-300: #3a453e;
+  --color-neutral-400: #6d7a71;
+  --color-neutral-500: #a3ada6;
+  --color-neutral-900: #f7faf7;
+  --color-success: #2fbf71;
+  --color-warning: #f59e0b;
+  --color-error: #f87171;
+  --shadow-1: 0 1px 3px rgba(0, 0, 0, 0.24);
+  --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.32);
+  --bg: #111412;
+  --bg-accent: #111412;
+  --surface: #171b18;
+  --surface-soft: #1e2420;
+  --surface-strong: #252b27;
+  --surface-glass: #171b18;
+  --surface-floating: #202621;
+  --surface-muted: #171b18;
+  --sidebar-border: #2b332e;
+  --sidebar-panel-border: #2b332e;
+  --input-bg: #121613;
+  --cover-bg: #1e2420;
+  --danger-soft: rgba(248, 113, 113, 0.12);
+  --border: #2b332e;
+  --border-strong: #3a453e;
+  --text: #f7faf7;
+  --muted: #a3ada6;
+  --brand: #2fbf71;
+  --brand-strong: #37d982;
+  --brand-soft: rgba(47, 191, 113, 0.14);
+  --danger: #f87171;
+  --focus-outline: rgba(47, 191, 113, 0.34);
+  --shadow: var(--shadow-1);
 }
 
 * {
@@ -243,8 +280,8 @@ select {
 
 html[data-theme="dark"] .sidebar-visibility-toggle,
 html[data-theme="dark"] .shell-visibility-toggle {
-  border-color: rgba(255, 255, 255, 0.1);
-  background: rgba(9, 12, 18, 0.96);
+  border-color: var(--border);
+  background: var(--surface-floating);
 }
 
 .brand-mark {
@@ -1341,9 +1378,9 @@ select:focus {
 
 .theme-toggle__option.is-active {
   color: #fff;
-  border-color: transparent;
-  background: linear-gradient(135deg, var(--brand) 0%, var(--brand-strong) 100%);
-  box-shadow: 0 12px 24px rgba(31, 157, 98, 0.24);
+  border-color: var(--brand);
+  background: var(--brand);
+  box-shadow: none;
 }
 
 .token-create-form {
@@ -4530,6 +4567,122 @@ html[data-theme="dark"] .detail-page--makerworld .mw-doc-download.is-disabled {
 
 html[data-theme="dark"] .detail-page--makerworld .lightbox__image {
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.42);
+}
+
+html[data-theme="dark"] .button-secondary,
+html[data-theme="dark"] .doc-action,
+html[data-theme="dark"] .mw-inline-link,
+html[data-theme="dark"] .mw-topbar__button,
+html[data-theme="dark"] .mw-doc-action,
+html[data-theme="dark"] .mw-doc-download,
+html[data-theme="dark"] .local-merge-suggestion,
+html[data-theme="dark"] .local-import-dialog__files button {
+  border-color: var(--border-strong);
+  background: var(--surface-strong);
+  color: var(--text);
+}
+
+html[data-theme="dark"] input,
+html[data-theme="dark"] textarea,
+html[data-theme="dark"] select,
+html[data-theme="dark"] .mw-search,
+html[data-theme="dark"] .mw-attachment-upload__input,
+html[data-theme="dark"] .mw-attachment-upload__select,
+html[data-theme="dark"] .mw-attachment-upload__file {
+  border-color: var(--border);
+  background: var(--input-bg);
+  color: var(--text);
+}
+
+html[data-theme="dark"] .detail-cover-wrap,
+html[data-theme="dark"] .detail-thumb,
+html[data-theme="dark"] .gallery-card__cover,
+html[data-theme="dark"] .gallery-card__cover .media-placeholder,
+html[data-theme="dark"] .model-card__cover,
+html[data-theme="dark"] .mini-model-card__cover,
+html[data-theme="dark"] .source-library-card__preview-tile,
+html[data-theme="dark"] .mw-gallery__cover,
+html[data-theme="dark"] .mw-gallery__thumb {
+  background: var(--cover-bg);
+}
+
+html[data-theme="dark"] .count-pill,
+html[data-theme="dark"] .source-pill,
+html[data-theme="dark"] .tag-chip,
+html[data-theme="dark"] .mw-chip,
+html[data-theme="dark"] .mw-filter-pill,
+html[data-theme="dark"] .mw-media-pill,
+html[data-theme="dark"] .mw-detail-nav__link,
+html[data-theme="dark"] .gallery-card__source,
+html[data-theme="dark"] .local-merge-dialog__role {
+  border-color: var(--border);
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+html[data-theme="dark"] .gallery-card__cover-badges .gallery-card__source,
+html[data-theme="dark"] .mw-detail-nav {
+  border-color: var(--border);
+  background: var(--surface-floating);
+  color: var(--text);
+}
+
+html[data-theme="dark"] .table-like__row--head,
+html[data-theme="dark"] .local-merge-dialog__selected,
+html[data-theme="dark"] .local-import-dialog__dropzone,
+html[data-theme="dark"] .local-import-dialog__files,
+html[data-theme="dark"] .mw-attachment-upload {
+  border-color: var(--border);
+  background: var(--surface-soft);
+}
+
+html[data-theme="dark"] .page-intro p,
+html[data-theme="dark"] .empty-copy,
+html[data-theme="dark"] .section-card p,
+html[data-theme="dark"] .meta-line,
+html[data-theme="dark"] .comment-item__body,
+html[data-theme="dark"] .field-card span,
+html[data-theme="dark"] .summary-list__item span,
+html[data-theme="dark"] .mw-origin-link,
+html[data-theme="dark"] .mw-search__icon,
+html[data-theme="dark"] .mw-search__text,
+html[data-theme="dark"] .mw-statline,
+html[data-theme="dark"] .mw-stat-row__publish,
+html[data-theme="dark"] .mw-section-card__hint,
+html[data-theme="dark"] .mw-attachment-upload__hint {
+  color: var(--muted);
+}
+
+html[data-theme="dark"] .page-intro h1,
+html[data-theme="dark"] .section-card h2,
+html[data-theme="dark"] .detail-title-block h1,
+html[data-theme="dark"] .mw-section-card__header h2,
+html[data-theme="dark"] .mw-head__identity h1,
+html[data-theme="dark"] .mw-head__avatar.avatar-placeholder,
+html[data-theme="dark"] .mw-crumb,
+html[data-theme="dark"] .local-merge-dialog__selected-head strong,
+html[data-theme="dark"] .local-import-dialog__dropzone strong,
+html[data-theme="dark"] .local-import-dialog__files-head strong,
+html[data-theme="dark"] .local-import-dialog__files li > span {
+  color: var(--text);
+}
+
+html[data-theme="dark"] .theme-toggle__option.is-active,
+html[data-theme="dark"] .mw-chip--solid,
+html[data-theme="dark"] .mw-filter-pill.is-active,
+html[data-theme="dark"] .mw-media-pill.is-active,
+html[data-theme="dark"] .local-merge-dialog__role.is-target {
+  border-color: var(--brand);
+  background: var(--brand);
+  color: #ffffff;
+}
+
+html[data-theme="dark"] .mw-chip--danger,
+html[data-theme="dark"] .gallery-card__source--danger,
+html[data-theme="dark"] .gallery-card__source--local-deleted {
+  border-color: rgba(248, 113, 113, 0.28);
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 @media (max-width: 1240px) {

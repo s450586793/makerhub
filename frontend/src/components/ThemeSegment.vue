@@ -28,5 +28,7 @@ defineEmits(["change"]);
 
 const options = [
   { value: "light", label: "浅色" },
+  { value: "dark", label: "深色" },
+  { value: "auto", label: "自动" },
 ];
 </script>

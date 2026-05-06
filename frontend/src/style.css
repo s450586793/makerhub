@@ -3405,7 +3405,7 @@ select,
 
 .button-secondary {
   border-color: var(--border-strong);
-  background-color: #ffffff;
+  background-color: var(--surface-strong);
   color: var(--text);
 }
 
@@ -3424,7 +3424,7 @@ input,
 textarea,
 select {
   border: 1px solid var(--color-neutral-300);
-  background-color: #ffffff;
+  background-color: var(--input-bg);
   color: var(--text);
   box-shadow: none;
 }
@@ -3450,7 +3450,7 @@ select:focus {
 .gallery-card__cover,
 .gallery-card__cover .media-placeholder,
 .source-library-card__preview-tile {
-  background-color: var(--color-neutral-100);
+  background-color: var(--cover-bg);
 }
 
 .gallery-card__stats,
@@ -3491,8 +3491,8 @@ select:focus {
 }
 
 .gallery-card__cover-badges .gallery-card__source {
-  border-color: rgba(17, 24, 39, 0.12);
-  background-color: rgba(255, 255, 255, 0.94);
+  border-color: var(--border);
+  background-color: var(--surface-floating);
   color: var(--text);
   box-shadow: var(--shadow-1);
 }

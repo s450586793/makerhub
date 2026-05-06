@@ -135,6 +135,7 @@ import { getPageCache, setPageCache } from "../lib/pageCache";
 
 const ACTIVE_REFRESH_INTERVAL_MS = 5000;
 const IDLE_REFRESH_INTERVAL_MS = 30000;
+const RECENT_IMPORT_PENDING_GRACE_MS = 10 * 60 * 1000;
 
 const router = useRouter();
 const sourceLibraryPayload = ref({
@@ -272,6 +273,32 @@ function organizerItemMatchesImport(item, identities) {
   return (sourcePath && identities.has(`path:${sourcePath}`)) || (fileName && identities.has(`name:${fileName}`));
 }
 
+function normalizeImportStatus(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "success" || normalized === "organized") return "success";
+  if (normalized === "skipped" || normalized === "duplicate_skipped" || normalized === "deleted_model_skipped") return "skipped";
+  if (normalized === "failed" || normalized === "error" || normalized === "organize_failed" || normalized === "worker_timeout") return "failed";
+  if (normalized === "running" || normalized === "pending" || normalized === "queued") return "pending";
+  return "";
+}
+
+function countImportStatus(result, status) {
+  const normalized = normalizeImportStatus(status);
+  if (normalized && Object.prototype.hasOwnProperty.call(result, normalized)) {
+    result[normalized] += 1;
+    return true;
+  }
+  return false;
+}
+
+function importBatchStillFresh(lastImport) {
+  const uploadedAt = Date.parse(String(lastImport?.uploaded_at || ""));
+  if (!Number.isFinite(uploadedAt)) {
+    return false;
+  }
+  return Date.now() - uploadedAt < RECENT_IMPORT_PENDING_GRACE_MS;
+}
+
 function buildLocalImportSummary(tasks) {
   const lastImport = tasks?.last_import && typeof tasks.last_import === "object" ? tasks.last_import : null;
   const allItems = Array.isArray(tasks?.items) ? tasks.items : [];
@@ -283,28 +310,29 @@ function buildLocalImportSummary(tasks) {
 
   const counts = summaryItems.reduce(
     (result, item) => {
-      const status = String(item?.status || "").trim().toLowerCase();
-      if (status === "success") {
-        result.success += 1;
-      } else if (status === "skipped") {
-        result.skipped += 1;
-      } else if (status === "failed" || status === "error") {
-        result.failed += 1;
-      } else if (status === "running" || status === "pending" || status === "queued") {
-        result.pending += 1;
-      }
+      countImportStatus(result, item?.status);
       return result;
     },
     { success: 0, skipped: 0, failed: 0, pending: 0 }
   );
+
+  if (lastImport && !batchItems.length) {
+    for (const file of importFiles) {
+      countImportStatus(counts, file?.status);
+    }
+  }
 
   if (uploadedCount > 0) {
     const parts = [`上传 ${uploadedCount}`, `新增 ${counts.success}`, `跳过 ${counts.skipped}`];
     if (counts.failed) {
       parts.push(`失败 ${counts.failed}`);
     }
-    if (counts.pending || batchItems.length < uploadedCount) {
-      parts.push(`处理中 ${Math.max(counts.pending, uploadedCount - batchItems.length)}`);
+    if (counts.pending) {
+      parts.push(`处理中 ${counts.pending}`);
+    } else if (batchItems.length < uploadedCount && importBatchStillFresh(lastImport)) {
+      parts.push(`处理中 ${uploadedCount - batchItems.length}`);
+    } else if (batchItems.length < uploadedCount && counts.success + counts.skipped + counts.failed < uploadedCount) {
+      parts.push(`待同步 ${uploadedCount - batchItems.length}`);
     }
     return `最近导入：${parts.join(" / ")}`;
   }
