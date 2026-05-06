@@ -118,6 +118,34 @@ def _extract_auth_token(raw_cookie: str) -> str:
     return extract_auth_token(raw_cookie or "")
 
 
+def _missing_3mf_failure_for_skipped_fetch(
+    *,
+    profile_metadata_only: bool = False,
+    skip_state: str = "",
+    skip_message: str = "",
+    existing_state: Any = "",
+    existing_message: Any = "",
+    fetch_url: str = "",
+) -> dict[str, str]:
+    if profile_metadata_only:
+        return {
+            "state": "missing",
+            "message": "信息补全任务会整理打印配置详情、实例展示媒体和评论回复，不下载 3MF。",
+        }
+
+    normalized_skip_state = str(skip_state or "").strip() or "pending_download"
+    if normalized_skip_state == "download_limited" and (existing_state or existing_message):
+        return {
+            "state": str(existing_state or "missing"),
+            "message": str(existing_message or "未获取到 3MF 下载地址。"),
+        }
+
+    return {
+        "state": normalized_skip_state,
+        "message": str(skip_message or "").strip() or describe_three_mf_failure(normalized_skip_state, url=fetch_url),
+    }
+
+
 def _safe_curl_command_for_log(cmd: list[str]) -> str:
     safe_args: list[str] = []
     sensitive_headers = ("cookie:", "authorization:", "token:", "x-token:", "x-access-token:")
@@ -6167,15 +6195,9 @@ def archive_model(
     }
     reserved_planned_instance_names: set[str] = set()
     three_mf_fetch_paused = bool(skip_three_mf_fetch or profile_metadata_only)
-    three_mf_paused_failure = {
-        "state": "missing" if profile_metadata_only else str(three_mf_skip_state or "download_limited"),
-        "message": (
-            "信息补全任务会整理打印配置详情、实例展示媒体和评论回复，不下载 3MF。"
-            if profile_metadata_only
-            else str(three_mf_skip_message or "").strip()
-            or describe_three_mf_failure(str(three_mf_skip_state or "download_limited"), url=fetch_url)
-        ),
-    }
+    normalized_three_mf_skip_state = str(three_mf_skip_state or "").strip()
+    if skip_three_mf_fetch and not normalized_three_mf_skip_state:
+        normalized_three_mf_skip_state = "pending_download"
     skipped_due_limit = 0
     for idx, inst in enumerate(extracted_instances, start=1):
         inst_id = inst.get("id") or inst.get("instanceId")
@@ -6219,26 +6241,28 @@ def archive_model(
         if three_mf_fetch_paused and url3mf and not existing_file_available:
             url3mf = ""
             skipped_due_limit += 1
-            if existing_inst.get("downloadState") or existing_inst.get("downloadMessage"):
-                failure_info = {
-                    "state": str(existing_inst.get("downloadState") or "missing"),
-                    "message": str(existing_inst.get("downloadMessage") or "未获取到 3MF 下载地址。"),
-                }
-            else:
-                failure_info = dict(three_mf_paused_failure)
+            failure_info = _missing_3mf_failure_for_skipped_fetch(
+                profile_metadata_only=profile_metadata_only,
+                skip_state=normalized_three_mf_skip_state,
+                skip_message=three_mf_skip_message,
+                existing_state=existing_inst.get("downloadState"),
+                existing_message=existing_inst.get("downloadMessage"),
+                fetch_url=fetch_url,
+            )
         elif hinted_url:
             payload_hint_hits += 1
         elif url3mf:
             existing_hint_hits += 1
         elif three_mf_fetch_paused:
             skipped_due_limit += 1
-            if existing_inst.get("downloadState") or existing_inst.get("downloadMessage"):
-                failure_info = {
-                    "state": str(existing_inst.get("downloadState") or "missing"),
-                    "message": str(existing_inst.get("downloadMessage") or "未获取到 3MF 下载地址。"),
-                }
-            else:
-                failure_info = dict(three_mf_paused_failure)
+            failure_info = _missing_3mf_failure_for_skipped_fetch(
+                profile_metadata_only=profile_metadata_only,
+                skip_state=normalized_three_mf_skip_state,
+                skip_message=three_mf_skip_message,
+                existing_state=existing_inst.get("downloadState"),
+                existing_message=existing_inst.get("downloadMessage"),
+                fetch_url=fetch_url,
+            )
         else:
             quota_limit = three_mf_daily_limit_global if makerworld_source == "global" else three_mf_daily_limit_cn
             quota_result = reserve_three_mf_download_slot(
@@ -6255,7 +6279,8 @@ def archive_model(
                     "message": str(quota_result.get("message") or ""),
                 }
                 three_mf_fetch_paused = True
-                three_mf_paused_failure = dict(failure_info or three_mf_paused_failure)
+                normalized_three_mf_skip_state = "download_limited"
+                three_mf_skip_message = str(failure_info.get("message") or three_mf_skip_message or "")
                 skipped_due_limit += 1
             else:
                 name3mf, url3mf, used_api_url, failure_info = fetch_instance_3mf(
@@ -6270,7 +6295,8 @@ def archive_model(
                     fetched_hint_hits += 1
                 elif str((failure_info or {}).get("state") or "").strip() == "download_limited":
                     three_mf_fetch_paused = True
-                    three_mf_paused_failure = dict(failure_info or three_mf_paused_failure)
+                    normalized_three_mf_skip_state = "download_limited"
+                    three_mf_skip_message = str((failure_info or {}).get("message") or three_mf_skip_message or "")
         failure_state = str((failure_info or {}).get("state") or "").strip()
         failure_message = str((failure_info or {}).get("message") or "").strip()
         profile_details = normalize_profile_details(inst, plates, existing_inst)

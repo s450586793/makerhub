@@ -1754,8 +1754,9 @@ class ArchiveTaskManager:
         record_missing_3mf_log = _meta_bool(meta, "record_missing_3mf_log", not profile_metadata_only)
         model_id = extract_model_id(url)
         limit_guard = _read_three_mf_limit_guard()
-        skip_three_mf_fetch = profile_metadata_only or _is_three_mf_limit_guard_active_for_url(url, limit_guard)
-        skip_three_mf_message = _three_mf_limit_message(limit_guard) if skip_three_mf_fetch and not profile_metadata_only else ""
+        daily_limit_active = _is_three_mf_limit_guard_active_for_url(url, limit_guard)
+        skip_three_mf_fetch = profile_metadata_only or daily_limit_active
+        skip_three_mf_message = _three_mf_limit_message(limit_guard) if daily_limit_active and not profile_metadata_only else ""
         if model_id and missing_3mf_retry:
             self.task_store.update_missing_3mf_status(
                 model_id=model_id,
@@ -1790,13 +1791,13 @@ class ArchiveTaskManager:
                 download_comment_assets=download_comment_assets,
                 rebuild_archive=rebuild_archive,
                 record_missing_3mf_log=record_missing_3mf_log,
-                three_mf_skip_state="download_limited" if skip_three_mf_fetch and not profile_metadata_only else "",
+                three_mf_skip_state="download_limited" if daily_limit_active and not profile_metadata_only else "",
                 three_mf_daily_limit_cn=cn_daily_limit,
                 three_mf_daily_limit_global=global_daily_limit,
             )
 
         missing_items = []
-        limit_guard_state: Optional[dict[str, Any]] = limit_guard if skip_three_mf_fetch else None
+        limit_guard_state: Optional[dict[str, Any]] = limit_guard if daily_limit_active else None
         for item in ([] if profile_metadata_only else result.get("missing_3mf") or []):
             if str(item.get("downloadState") or "").strip() == "download_limited":
                 if not _is_three_mf_limit_guard_active_for_url(url, limit_guard_state):

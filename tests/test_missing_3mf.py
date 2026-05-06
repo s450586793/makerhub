@@ -5,12 +5,36 @@ from types import SimpleNamespace
 
 import app.services.archive_worker as archive_worker_module
 import app.services.task_state as task_state_module
+from app.services.legacy_archiver import _missing_3mf_failure_for_skipped_fetch
 from app.services.archive_worker import ArchiveTaskManager
 from app.services.remote_refresh import _build_missing_3mf_items
 from app.services.task_state import METADATA_ONLY_MISSING_3MF_MESSAGE, _normalize_missing_3mf
 
 
 class Missing3mfTest(unittest.TestCase):
+    def test_skipped_refresh_does_not_reuse_stale_download_limited_state(self):
+        failure = _missing_3mf_failure_for_skipped_fetch(
+            skip_state="pending_download",
+            existing_state="download_limited",
+            existing_message="国区返回了每日下载上限，今日暂停自动重试。",
+            fetch_url="https://makerworld.com.cn/zh/models/2351687",
+        )
+
+        self.assertEqual(failure["state"], "pending_download")
+        self.assertNotIn("每日下载上限", failure["message"])
+
+    def test_active_limit_guard_can_preserve_download_limited_state(self):
+        failure = _missing_3mf_failure_for_skipped_fetch(
+            skip_state="download_limited",
+            skip_message="国区返回了每日下载上限，今日暂停自动重试。",
+            existing_state="download_limited",
+            existing_message="旧的每日下载上限消息",
+            fetch_url="https://makerworld.com.cn/zh/models/2351687",
+        )
+
+        self.assertEqual(failure["state"], "download_limited")
+        self.assertEqual(failure["message"], "旧的每日下载上限消息")
+
     def test_normalize_filters_metadata_only_placeholders(self):
         payload = {
             "items": [
