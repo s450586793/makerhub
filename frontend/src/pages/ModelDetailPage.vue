@@ -154,10 +154,10 @@
               <span class="mw-stat-pill__icon" aria-hidden="true" v-html="item.icon"></span>
               <strong class="mw-stat-pill__value">{{ formatStat(item.value) }}</strong>
             </div>
-            <span class="mw-stat-row__publish">发布于 {{ detail.publish_date || "未知时间" }}</span>
           </div>
 
           <div class="mw-statline">
+            <span class="mw-stat-row__publish">发布于 {{ detail.publish_date || "未知时间" }}</span>
             <span>采集于 {{ detail.collect_date || "未知时间" }}</span>
             <span v-if="activeInstance?.publish_date">实例上传于 {{ activeInstance.publish_date }}</span>
           </div>
