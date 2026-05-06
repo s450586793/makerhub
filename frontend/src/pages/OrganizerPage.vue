@@ -162,6 +162,7 @@ const importDialog = reactive({
 });
 let refreshTimer = null;
 let disposed = false;
+let sourceLibraryRefreshDeferred = false;
 
 function rememberOrganizerPage() {
   setPageCache("organizer", {
@@ -180,6 +181,10 @@ function hydrateOrganizerPageFromCache() {
   loadError.value = "";
   initialLoaded.value = true;
   return true;
+}
+
+function hasSourceLibraryPayload() {
+  return Array.isArray(sourceLibraryPayload.value?.sections) && sourceLibraryPayload.value.sections.length > 0;
 }
 
 const localSourceSection = computed(() => (
@@ -233,7 +238,7 @@ const organizerStatusText = computed(() => {
   if (!initialLoaded.value) {
     return "读取中";
   }
-  return activeOrganizeCount.value > 0 ? "否" : "是";
+  return hasActiveOrganizeTasks() ? "否" : "是";
 });
 const detectedTotalText = computed(() => (
   !initialLoaded.value && loadError.value ? "-" :
@@ -299,6 +304,42 @@ function importBatchStillFresh(lastImport) {
   return Date.now() - uploadedAt < RECENT_IMPORT_PENDING_GRACE_MS;
 }
 
+function recentImportStatusCounts(tasks) {
+  const lastImport = tasks?.last_import && typeof tasks.last_import === "object" ? tasks.last_import : null;
+  if (!lastImport) {
+    return { uploadedCount: 0, counts: { success: 0, skipped: 0, failed: 0, pending: 0 }, matchedCount: 0 };
+  }
+  const allItems = Array.isArray(tasks?.items) ? tasks.items : [];
+  const importFiles = Array.isArray(lastImport?.files) ? lastImport.files : [];
+  const identities = fileIdentitySet(importFiles);
+  const batchItems = identities.size ? allItems.filter((item) => organizerItemMatchesImport(item, identities)) : [];
+  const summaryItems = batchItems.length ? batchItems : importFiles;
+  const counts = summaryItems.reduce(
+    (result, item) => {
+      countImportStatus(result, item?.status);
+      return result;
+    },
+    { success: 0, skipped: 0, failed: 0, pending: 0 }
+  );
+  return {
+    uploadedCount: Number(lastImport?.uploaded_count || 0),
+    counts,
+    matchedCount: batchItems.length,
+  };
+}
+
+function hasRecentImportWork() {
+  const lastImport = organizerTasks.value?.last_import;
+  if (!lastImport || !importBatchStillFresh(lastImport)) {
+    return false;
+  }
+  const { uploadedCount, counts } = recentImportStatusCounts(organizerTasks.value);
+  if (uploadedCount <= 0) {
+    return false;
+  }
+  return counts.pending > 0 || counts.success + counts.skipped + counts.failed < uploadedCount;
+}
+
 function buildLocalImportSummary(tasks) {
   const lastImport = tasks?.last_import && typeof tasks.last_import === "object" ? tasks.last_import : null;
   const allItems = Array.isArray(tasks?.items) ? tasks.items : [];
@@ -356,7 +397,7 @@ function clearTaskTimer() {
 }
 
 function hasActiveOrganizeTasks() {
-  return activeOrganizeCount.value > 0;
+  return activeOrganizeCount.value > 0 || hasRecentImportWork();
 }
 
 function syncTaskTimer() {
@@ -364,30 +405,43 @@ function syncTaskTimer() {
   if (disposed || typeof window === "undefined" || document.hidden) {
     return;
   }
-  const delay = hasActiveOrganizeTasks() ? ACTIVE_REFRESH_INTERVAL_MS : IDLE_REFRESH_INTERVAL_MS;
+  const active = hasActiveOrganizeTasks();
+  const delay = active ? ACTIVE_REFRESH_INTERVAL_MS : IDLE_REFRESH_INTERVAL_MS;
   refreshTimer = window.setTimeout(() => {
-    void load({ silent: true });
+    void load({ silent: true, refreshLibrary: !active || !hasSourceLibraryPayload() });
   }, delay);
 }
 
-async function load({ silent = false } = {}) {
+async function load({ silent = false, refreshLibrary = true } = {}) {
   if (loading.value) {
     return;
   }
+  const includeSourceLibrary = Boolean(refreshLibrary || !hasSourceLibraryPayload());
+  if (!includeSourceLibrary) {
+    sourceLibraryRefreshDeferred = true;
+  }
   loading.value = true;
+  let shouldRefreshDeferredLibrary = false;
   try {
-    const [tasksPayload, sourceLibraryPayloadResponse] = await Promise.all([
-      apiRequest("/api/tasks"),
-      apiRequest("/api/source-library"),
-      refreshConfig(),
-    ]);
+    const requests = includeSourceLibrary
+      ? [
+          apiRequest("/api/tasks"),
+          apiRequest("/api/source-library"),
+          refreshConfig(),
+        ]
+      : [apiRequest("/api/tasks")];
+    const [tasksPayload, sourceLibraryPayloadResponse] = await Promise.all(requests);
     organizerTasks.value = tasksPayload?.organize_tasks || organizerTasks.value;
-    sourceLibraryPayload.value = {
-      sections: Array.isArray(sourceLibraryPayloadResponse?.sections) ? sourceLibraryPayloadResponse.sections : [],
-    };
+    if (includeSourceLibrary) {
+      sourceLibraryPayload.value = {
+        sections: Array.isArray(sourceLibraryPayloadResponse?.sections) ? sourceLibraryPayloadResponse.sections : [],
+      };
+      sourceLibraryRefreshDeferred = false;
+    }
     loadError.value = "";
     initialLoaded.value = true;
     rememberOrganizerPage();
+    shouldRefreshDeferredLibrary = !includeSourceLibrary && sourceLibraryRefreshDeferred && !hasActiveOrganizeTasks();
   } catch (error) {
     if (!silent) {
       console.error("本地库数据加载失败", error);
@@ -395,7 +449,11 @@ async function load({ silent = false } = {}) {
     }
   } finally {
     loading.value = false;
-    syncTaskTimer();
+    if (shouldRefreshDeferredLibrary && !disposed && typeof window !== "undefined" && !document.hidden) {
+      void load({ silent: true, refreshLibrary: true });
+    } else {
+      syncTaskTimer();
+    }
   }
 }
 
@@ -520,7 +578,7 @@ async function submitImportFiles() {
     });
     importDialog.visible = false;
     resetImportDialogState();
-    await load({ silent: true });
+    await load({ silent: true, refreshLibrary: false });
   } catch (error) {
     importDialog.error = error instanceof Error ? error.message : "导入失败。";
   } finally {
@@ -561,14 +619,14 @@ function handleVisibilityChange() {
     clearTaskTimer();
     return;
   }
-  void load({ silent: true });
+  void load({ silent: true, refreshLibrary: !hasActiveOrganizeTasks() || !hasSourceLibraryPayload() });
 }
 
 onMounted(() => {
   disposed = false;
   document.addEventListener("visibilitychange", handleVisibilityChange);
   hydrateOrganizerPageFromCache();
-  void load();
+  void load({ refreshLibrary: !hasActiveOrganizeTasks() || !hasSourceLibraryPayload() });
 });
 
 onBeforeUnmount(() => {
