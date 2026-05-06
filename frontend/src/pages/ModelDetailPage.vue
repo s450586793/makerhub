@@ -757,6 +757,7 @@ import { useRoute } from "vue-router";
 
 import { apiRequest } from "../lib/api";
 import { formatProfileRating } from "../lib/helpers";
+import { getPageCache, setPageCache } from "../lib/pageCache";
 
 
 const route = useRoute();
@@ -809,6 +810,7 @@ let railResizeObserver = null;
 
 const INITIAL_COMMENT_BATCH = 20;
 const COMMENT_REPLY_PREVIEW_COUNT = 3;
+const DETAIL_CACHE_PREFIX = "model-detail:";
 const COMMENT_CHILD_KEYS = [
   "replies",
   "children",
@@ -2418,6 +2420,63 @@ function prepareDetailPayload(payload) {
   };
 }
 
+function detailCacheKey(value = modelDir.value) {
+  const cleanValue = String(value || "").trim();
+  return cleanValue ? `${DETAIL_CACHE_PREFIX}${cleanValue}` : "";
+}
+
+function resetDetailViewState({ clearDetail = true } = {}) {
+  closeLightbox();
+  profileEntryRefs.clear();
+  clearProfileMediaStripRefs();
+  mainGalleryRail.value = createThumbRailState();
+  previewedInstanceKey.value = "";
+  popoverPlacementState.value = {};
+  commentsReady.value = false;
+  comments.value = [];
+  rawComments.value = [];
+  commentsTotal.value = 0;
+  commentsNextOffset.value = null;
+  commentsLoadingMore.value = false;
+  commentsLoadError.value = "";
+  expandedCommentReplies.value = {};
+  disconnectCommentsLoadMoreObserver();
+  if (clearDetail) {
+    detail.value = null;
+    activeInstanceKey.value = "";
+    setMainMedia("", "", "", "");
+  }
+}
+
+async function applyDetailPayload(payload, { syncHash = true, cache = true } = {}) {
+  const preparedPayload = prepareDetailPayload(payload);
+  detail.value = preparedPayload;
+  rawComments.value = Array.isArray(preparedPayload?.comments) ? preparedPayload.comments : [];
+  comments.value = prepareComments(rawComments.value);
+  commentsTotal.value = Number(preparedPayload?.comments_total || comments.value.length);
+  commentsNextOffset.value = preparedPayload?.comments_next_offset ?? null;
+  const matchedInstance = syncHash ? findInstanceByHash(preparedPayload?.instances || []) : null;
+  const initialInstance = matchedInstance || preparedPayload?.instances?.[0] || null;
+  activeInstanceKey.value = initialInstance?.instance_key || "";
+  if (matchedInstance) {
+    selectInstance(initialInstance, { syncHash: false });
+  } else if (preparedPayload?.gallery?.length) {
+    selectGallery(0);
+  } else if (initialInstance) {
+    selectInstance(initialInstance, { syncHash: false });
+  } else {
+    setMainMedia("", preparedPayload?.cover_url || "", preparedPayload?.cover_remote_url || "", preparedPayload?.title || "");
+  }
+  if (cache && preparedPayload) {
+    setPageCache(detailCacheKey(preparedPayload.model_dir || modelDir.value), {
+      detail: preparedPayload,
+    });
+  }
+  scheduleCommentsRender();
+  await nextTick();
+  syncAllThumbRails();
+}
+
 function prepareComments(items) {
   if (!Array.isArray(items)) {
     return [];
@@ -2494,14 +2553,7 @@ async function submitAttachmentUpload() {
       method: "POST",
       body: formData,
     });
-    detail.value = prepareDetailPayload(payload.detail);
-    rawComments.value = Array.isArray(payload.detail?.comments) ? payload.detail.comments : [];
-    comments.value = prepareComments(rawComments.value);
-    commentsTotal.value = Number(payload.detail?.comments_total || comments.value.length);
-    commentsNextOffset.value = payload.detail?.comments_next_offset ?? null;
-    scheduleCommentsRender();
-    await nextTick();
-    syncAllThumbRails();
+    await applyDetailPayload(payload.detail);
     attachmentUploadMessage.value = payload.message || "附件已上传。";
     resetAttachmentUploadState({ clearFeedback: false });
   } catch (error) {
@@ -2527,14 +2579,7 @@ async function removeAttachment(attachment) {
     const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/attachments/${encodeURIComponent(attachment.id)}`, {
       method: "DELETE",
     });
-    detail.value = prepareDetailPayload(payload.detail);
-    rawComments.value = Array.isArray(payload.detail?.comments) ? payload.detail.comments : [];
-    comments.value = prepareComments(rawComments.value);
-    commentsTotal.value = Number(payload.detail?.comments_total || comments.value.length);
-    commentsNextOffset.value = payload.detail?.comments_next_offset ?? null;
-    scheduleCommentsRender();
-    await nextTick();
-    syncAllThumbRails();
+    await applyDetailPayload(payload.detail);
     attachmentUploadMessage.value = payload.message || "附件已删除。";
   } catch (error) {
     attachmentUploadError.value = error instanceof Error ? error.message : "附件删除失败。";
@@ -2544,46 +2589,21 @@ async function removeAttachment(attachment) {
 }
 
 async function load() {
-  loading.value = true;
+  const cached = getPageCache(detailCacheKey());
+  const hasCachedDetail = Boolean(cached?.detail);
+  loading.value = !hasCachedDetail;
   errorMessage.value = "";
-  closeLightbox();
-  profileEntryRefs.clear();
-  clearProfileMediaStripRefs();
-  mainGalleryRail.value = createThumbRailState();
-  previewedInstanceKey.value = "";
-  popoverPlacementState.value = {};
-  commentsReady.value = false;
-  comments.value = [];
-  rawComments.value = [];
-  commentsTotal.value = 0;
-  commentsNextOffset.value = null;
-  commentsLoadingMore.value = false;
-  commentsLoadError.value = "";
-  expandedCommentReplies.value = {};
-  disconnectCommentsLoadMoreObserver();
+  resetDetailViewState({ clearDetail: !hasCachedDetail });
+  if (hasCachedDetail) {
+    await applyDetailPayload(cached.detail, { cache: false });
+  }
   try {
-    const payload = prepareDetailPayload(await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}`));
-    detail.value = payload;
-    rawComments.value = Array.isArray(payload.comments) ? payload.comments : [];
-    comments.value = prepareComments(rawComments.value);
-    commentsTotal.value = Number(payload.comments_total || comments.value.length);
-    commentsNextOffset.value = payload.comments_next_offset ?? null;
-    const initialInstance = findInstanceByHash(payload.instances || []) || payload.instances?.[0] || null;
-    activeInstanceKey.value = initialInstance?.instance_key || "";
-    if (findInstanceByHash(payload.instances || [])) {
-      selectInstance(initialInstance, { syncHash: false });
-    } else if (payload.gallery?.length) {
-      selectGallery(0);
-    } else if (initialInstance) {
-      selectInstance(initialInstance, { syncHash: false });
-    } else {
-      setMainMedia("", payload.cover_url || "", payload.cover_remote_url || "", payload.title);
-    }
-    scheduleCommentsRender();
-    await nextTick();
-    syncAllThumbRails();
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}`);
+    await applyDetailPayload(payload);
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "读取模型失败。";
+    if (!hasCachedDetail) {
+      errorMessage.value = error instanceof Error ? error.message : "读取模型失败。";
+    }
   } finally {
     loading.value = false;
   }
@@ -2592,19 +2612,7 @@ async function load() {
 watch(modelDir, (value) => {
   resetAttachmentUploadState({ keepCategory: false });
   if (!value) {
-    closeLightbox();
-    profileEntryRefs.clear();
-    clearProfileMediaStripRefs();
-    mainGalleryRail.value = createThumbRailState();
-    detail.value = null;
-    comments.value = [];
-    rawComments.value = [];
-    commentsTotal.value = 0;
-    commentsNextOffset.value = null;
-    commentsLoadingMore.value = false;
-    commentsLoadError.value = "";
-    expandedCommentReplies.value = {};
-    disconnectCommentsLoadMoreObserver();
+    resetDetailViewState();
     loading.value = false;
     errorMessage.value = "模型不存在。";
     return;

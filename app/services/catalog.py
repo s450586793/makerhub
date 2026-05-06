@@ -1616,6 +1616,19 @@ def _normalize_comments(meta: dict, model_root: Path, offset: int = 0, limit: Op
     return normalized[start : start + max(int(limit or 0), 0)]
 
 
+def _normalize_comments_page(meta: dict, model_root: Path, offset: int = 0, limit: int = DETAIL_COMMENTS_PAGE_SIZE) -> tuple[list[dict], Optional[int], int]:
+    comment_items = meta.get("comments") if isinstance(meta.get("comments"), list) else []
+    normalized = _thread_normalized_comments(comment_items, model_root)
+    safe_offset = max(int(offset or 0), 0)
+    safe_limit = max(int(limit or 0), 1)
+    items = normalized[safe_offset : safe_offset + safe_limit]
+    next_offset: Optional[int] = safe_offset + len(items)
+    if next_offset >= len(normalized):
+        next_offset = None
+    total = max(len(comment_items), _safe_int((_normalize_stats(meta) or {}).get("comments")))
+    return items, next_offset, total
+
+
 def _normalize_attachments(meta: dict, model_root: Path) -> list[dict]:
     normalized = []
     attachment_items = []
@@ -1774,10 +1787,12 @@ def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[
         return payload
 
     summary = meta.get("summary") if isinstance(meta.get("summary"), dict) else {}
-    raw_comments = meta.get("comments") if isinstance(meta.get("comments"), list) else []
-    threaded_comments = _normalize_comments(meta, model_root, offset=0, limit=None)
-    initial_comments = _normalize_comments(meta, model_root, offset=0, limit=DETAIL_COMMENTS_PAGE_SIZE)
-    total_comments = max(len(raw_comments), _safe_int(stats.get("comments")))
+    initial_comments, comments_next_offset, total_comments = _normalize_comments_page(
+        meta,
+        model_root,
+        offset=0,
+        limit=DETAIL_COMMENTS_PAGE_SIZE,
+    )
     payload.update(
         {
             "gallery": gallery,
@@ -1785,7 +1800,7 @@ def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[
             "summary_text": str(summary.get("text") or summary.get("raw") or ""),
             "comments": initial_comments,
             "comments_total": total_comments,
-            "comments_next_offset": len(initial_comments) if len(threaded_comments) > len(initial_comments) else None,
+            "comments_next_offset": comments_next_offset,
             "instances": _normalize_instances(meta, model_root),
             "attachments": _normalize_attachments(meta, model_root),
         }
@@ -2094,21 +2109,21 @@ def get_model_comments_page(model_dir: str, offset: int = 0, limit: int = DETAIL
     except (json.JSONDecodeError, OSError):
         return None
 
-    raw_comments = meta.get("comments") if isinstance(meta.get("comments"), list) else []
-    threaded_comments = _normalize_comments(meta, target, offset=0, limit=None)
     safe_offset = max(int(offset or 0), 0)
     safe_limit = max(int(limit or 0), 1)
-    items = _normalize_comments(meta, target, offset=safe_offset, limit=safe_limit)
-    next_offset = safe_offset + len(items)
-    if next_offset >= len(threaded_comments):
-        next_offset = None
+    items, next_offset, total = _normalize_comments_page(
+        meta,
+        target,
+        offset=safe_offset,
+        limit=safe_limit,
+    )
 
     return {
         "items": items,
         "offset": safe_offset,
         "limit": safe_limit,
         "next_offset": next_offset,
-        "total": max(len(raw_comments), _safe_int((_normalize_stats(meta) or {}).get("comments"))),
+        "total": total,
     }
 
 

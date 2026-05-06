@@ -4,7 +4,7 @@ from pathlib import Path
 
 from app.services import legacy_archiver
 from app.services.archive_profile_backfill import _meta_needs_profile_backfill
-from app.services.catalog import _normalize_comment_item, _normalize_comments
+from app.services.catalog import _normalize_comment_item, _normalize_comments, _normalize_comments_page
 from app.services.legacy_archiver import (
     COMMENT_SCHEMA_VERSION,
     PROFILE_DETAIL_SCHEMA_VERSION,
@@ -209,6 +209,37 @@ class CommentRepliesTest(unittest.TestCase):
         self.assertEqual(threaded[0]["replies"][0]["id"], "reply-1")
         self.assertEqual(threaded[0]["replies"][1]["id"], "reply-2")
         self.assertEqual(threaded[1]["id"], "other-root")
+
+    def test_catalog_comment_page_reports_next_offset_from_single_normalized_tree(self):
+        meta = {
+            "commentCount": 3,
+            "comments": [
+                {
+                    "commentId": "root-1",
+                    "commentContent": "第一条",
+                    "commentTime": "2026-04-23 12:00:00",
+                },
+                {
+                    "commentId": "root-2",
+                    "commentContent": "第二条",
+                    "commentTime": "2026-04-23 12:05:00",
+                },
+                {
+                    "commentId": "root-3",
+                    "commentContent": "第三条",
+                    "commentTime": "2026-04-23 12:10:00",
+                },
+            ],
+        }
+
+        first_items, first_next, total = _normalize_comments_page(meta, Path("."), offset=0, limit=2)
+        second_items, second_next, _ = _normalize_comments_page(meta, Path("."), offset=2, limit=2)
+
+        self.assertEqual([item["id"] for item in first_items], ["root-1", "root-2"])
+        self.assertEqual(first_next, 2)
+        self.assertEqual(total, 3)
+        self.assertEqual([item["id"] for item in second_items], ["root-3"])
+        self.assertIsNone(second_next)
 
     def test_catalog_threads_sequential_flattened_replies_without_root_comment_id(self):
         meta = {

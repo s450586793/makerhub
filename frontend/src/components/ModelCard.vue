@@ -117,6 +117,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
+import { setPageCache } from "../lib/pageCache";
+
 
 const props = defineProps({
   model: {
@@ -159,6 +161,7 @@ const icons = {
   delete: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 6.1h10.2"/><path d="M8.1 6.1V4.7c0-.77.63-1.4 1.4-1.4h1c.77 0 1.4.63 1.4 1.4v1.4"/><path d="m6.2 6.1.72 9a1.4 1.4 0 0 0 1.4 1.29h3.32a1.4 1.4 0 0 0 1.4-1.29l.72-9"/><path d="M8.6 8.9v4.3"/><path d="M11.4 8.9v4.3"/></svg>',
   restore: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7.2 7.3H4.1V4.2"/><path d="M4.4 7.2a6.6 6.6 0 1 1 1.1 7.1"/><path d="m4.1 7.3 2.1-2.1"/></svg>',
 };
+const DETAIL_CACHE_PREFIX = "model-detail:";
 
 const coverSrc = ref(props.model.cover_url || "");
 const authorAvatarSrc = ref(props.model.author?.avatar_url || "");
@@ -190,6 +193,7 @@ function handleCardClick() {
     emit("select", props.model.model_dir);
     return;
   }
+  primeModelDetailCache();
   const query = {};
   if (props.returnTo) {
     query.return_to = props.returnTo;
@@ -206,6 +210,34 @@ function handleCardClick() {
       modelDir: String(props.model.model_dir || ""),
     },
     query,
+  });
+}
+
+function primeModelDetailCache() {
+  const modelDir = String(props.model.model_dir || "").trim();
+  if (!modelDir) {
+    return;
+  }
+  setPageCache(`${DETAIL_CACHE_PREFIX}${modelDir}`, {
+    detail: {
+      ...props.model,
+      gallery: props.model.cover_url
+        ? [
+            {
+              url: props.model.cover_url,
+              fallback_url: props.model.cover_remote_url || "",
+              kind: "cover",
+            },
+          ]
+        : [],
+      instances: [],
+      attachments: [],
+      comments: [],
+      comments_total: 0,
+      comments_next_offset: null,
+      summary_html: "",
+      summary_text: "",
+    },
   });
 }
 
