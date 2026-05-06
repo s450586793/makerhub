@@ -2727,6 +2727,12 @@ select:focus {
   cursor: pointer;
 }
 
+.mw-profile-card--text {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  padding: 8px 10px;
+}
+
 .mw-profile-card.is-active,
 .mw-profile-card.is-previewing {
   border-color: transparent;
@@ -4307,12 +4313,31 @@ html[data-theme="dark"] .detail-page--makerworld .mw-config-panel__divider {
   background: var(--mw-border);
 }
 
-html[data-theme="dark"] .detail-page--makerworld .mw-profile-card.is-active {
-  background: #1f302a;
-  border-color: rgba(65, 199, 132, 0.38);
+html[data-theme="dark"] .detail-page--makerworld .mw-profile-list {
+  gap: 0;
+  padding: 4px 10px;
 }
 
-html[data-theme="dark"] .detail-page--makerworld .mw-profile-entry + .mw-profile-entry .mw-profile-card {
+html[data-theme="dark"] .detail-page--makerworld .mw-profile-card {
+  border-radius: 0;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-profile-card.is-previewing {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0));
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-profile-card.is-active {
+  background: linear-gradient(90deg, rgba(65, 199, 132, 0.14), rgba(65, 199, 132, 0.03));
+  border-color: transparent;
+  box-shadow: inset 3px 0 0 rgba(65, 199, 132, 0.72);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-profile-entry + .mw-profile-entry .mw-profile-card,
+html[data-theme="dark"] .detail-page--makerworld .mw-profile-list > .mw-profile-card + .mw-profile-card {
+  margin-top: 0;
   border-top-color: var(--mw-border);
 }
 
@@ -4757,6 +4782,15 @@ html[data-theme="dark"] .gallery-card__source--local-deleted {
   .mw-profile-card {
     grid-template-columns: 80px minmax(0, 1fr);
     gap: 9px;
+  }
+
+  .mw-profile-card--text {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  html[data-theme="dark"] .detail-page--makerworld .mw-profile-list {
+    gap: 0;
   }
 
   .mw-profile-card__thumb-wrap {
