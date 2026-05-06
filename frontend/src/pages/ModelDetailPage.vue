@@ -11,7 +11,7 @@
 
   <div v-else-if="detail" class="mw-detail-layout">
     <section class="mw-card">
-      <div class="mw-hero">
+      <div :class="['mw-hero', detail.gallery?.length && 'mw-hero--has-gallery-strip']">
         <header class="mw-head mw-head--gallery mw-hero__head">
           <div class="mw-head__top">
             <RouterLink class="button button-secondary mw-head__back" :to="detailBackTarget">{{ detailBackLabel }}</RouterLink>
@@ -200,7 +200,7 @@
           </div>
           <div class="mw-config-panel__divider"></div>
 
-          <div v-if="detail.instances?.length" class="mw-profile-list">
+          <div v-if="detail.instances?.length" class="mw-profile-list" @scroll="handleProfileListScroll">
             <div
               v-for="(profile, profileIndex) in detail.instances"
               :key="profile.instance_key"
@@ -262,6 +262,7 @@
                   'mw-profile-popover',
                   profilePopoverPlacement(profile, profileIndex, detail.instances.length),
                 ]"
+                :style="profilePopoverStyle(profile, profileIndex, detail.instances.length)"
               >
                 <div v-if="profile.media_resolved?.length" class="mw-profile-popover__gallery">
                   <div
@@ -1379,9 +1380,21 @@ function updateProfilePopoverPlacement(profile, entryElement = null) {
   const horizontalGap = 18;
   const estimatedPopoverWidth = Math.min(380, Math.max(window.innerWidth - 140, 260));
   const canOpenLeft = rect.left >= estimatedPopoverWidth + horizontalGap + viewportPadding;
+  const nextPlacement = canOpenLeft ? "left" : "below";
+  const popoverGap = nextPlacement === "left" ? horizontalGap : 10;
+  const left = nextPlacement === "left" ? rect.left - popoverGap - estimatedPopoverWidth : rect.left + 6;
+  const right = nextPlacement === "left" ? "auto" : Math.max(window.innerWidth - rect.right + 6, viewportPadding);
   popoverPlacementState.value = {
     ...popoverPlacementState.value,
-    [profile.instance_key]: canOpenLeft ? "left" : "below",
+    [profile.instance_key]: {
+      placement: nextPlacement,
+      top: rect.top,
+      belowTop: rect.bottom + popoverGap,
+      center: rect.top + (rect.height / 2),
+      bottom: rect.bottom,
+      left,
+      right,
+    },
   };
 }
 
@@ -1412,7 +1425,8 @@ function handleProfileEntryFocusOut(event, profile) {
 }
 
 function profilePopoverPlacement(profile, index, total) {
-  if (popoverPlacementState.value[profile?.instance_key] === "below") {
+  const state = popoverPlacementState.value[profile?.instance_key];
+  if (state?.placement === "below") {
     return "is-below";
   }
   if (index === 0) {
@@ -1422,6 +1436,36 @@ function profilePopoverPlacement(profile, index, total) {
     return "is-align-bottom";
   }
   return "";
+}
+
+function profilePopoverStyle(profile, index = 0, total = 0) {
+  const state = popoverPlacementState.value[profile?.instance_key];
+  if (!state) {
+    return {};
+  }
+  if (state.placement === "below") {
+    return {
+      top: `${Math.round(state.belowTop)}px`,
+      left: `${Math.round(state.left)}px`,
+      right: `${Math.round(state.right)}px`,
+    };
+  }
+  let top = state.center;
+  if (index === 0) {
+    top = state.top;
+  } else if (index >= total - 1) {
+    top = state.bottom;
+  }
+  return {
+    top: `${Math.round(top)}px`,
+    left: `${Math.round(state.left)}px`,
+  };
+}
+
+function handleProfileListScroll() {
+  if (previewedInstanceKey.value) {
+    closeProfilePopover(previewedInstanceKey.value, { force: true });
+  }
 }
 
 function handleHashChange() {
