@@ -2256,7 +2256,10 @@ select:focus {
   --mw-hero-media-height: 374px;
   --mw-gallery-gap: 12px;
   --mw-gallery-strip-height: 0px;
-  --mw-config-panel-height: var(--mw-hero-media-height);
+  --mw-sidebar-primary-height: var(--mw-hero-media-height);
+  --mw-sidebar-primary-gap: 14px;
+  --mw-action-strip-height: 48px;
+  --mw-config-panel-height: calc(var(--mw-sidebar-primary-height) - var(--mw-action-strip-height) - var(--mw-sidebar-primary-gap));
   display: grid;
   grid-template-columns: minmax(0, 499px) minmax(332px, 356px);
   gap: 16px;
@@ -2266,7 +2269,7 @@ select:focus {
 
 .mw-hero--has-gallery-strip {
   --mw-gallery-strip-height: 86px;
-  --mw-config-panel-height: calc(var(--mw-hero-media-height) + var(--mw-gallery-gap) + var(--mw-gallery-strip-height));
+  --mw-sidebar-primary-height: calc(var(--mw-hero-media-height) + var(--mw-gallery-gap) + var(--mw-gallery-strip-height));
 }
 
 .mw-hero__head {
@@ -2286,6 +2289,10 @@ select:focus {
 .mw-hero__sidebar {
   min-width: 0;
   align-content: start;
+}
+
+.mw-hero__sidebar {
+  grid-template-rows: minmax(0, var(--mw-config-panel-height)) var(--mw-action-strip-height) auto auto;
 }
 
 .mw-head__top {
@@ -2321,15 +2328,15 @@ select:focus {
 }
 
 .mw-hero__sidebar > .mw-stat-row {
-  order: 4;
-}
-
-.mw-hero__sidebar > .mw-statline {
   order: 5;
 }
 
-.mw-hero__sidebar > .mw-action-strip {
+.mw-hero__sidebar > .mw-statline {
   order: 6;
+}
+
+.mw-hero__sidebar > .mw-action-strip {
+  order: 4;
 }
 
 .mw-hero__sidebar > .mw-instance-panels {
@@ -2550,6 +2557,8 @@ select:focus {
 }
 
 .mw-action-strip {
+  height: var(--mw-action-strip-height);
+  min-height: var(--mw-action-strip-height);
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
@@ -4719,6 +4728,7 @@ html[data-theme="dark"] .gallery-card__source--local-deleted {
 
   .mw-hero--has-gallery-strip {
     --mw-gallery-strip-height: 90px;
+    --mw-sidebar-primary-gap: 12px;
   }
 
   .mw-hero__sidebar,
@@ -4761,6 +4771,10 @@ html[data-theme="dark"] .gallery-card__source--local-deleted {
   .mw-config-panel {
     height: auto;
     min-height: 0;
+  }
+
+  .mw-hero__sidebar {
+    grid-template-rows: none;
   }
 
   .mw-profile-list {
