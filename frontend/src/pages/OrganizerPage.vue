@@ -7,23 +7,76 @@
       </div>
     </div>
     <div class="library-toolbar__side">
-      <div class="toolbar-stats">
-        <span class="toolbar-stat">
-          <em>空闲</em>
-          <strong>{{ organizerStatusText }}</strong>
-        </span>
-        <span class="toolbar-stat">
-          <em>候选</em>
-          <strong>{{ detectedTotalText }}</strong>
-        </span>
-        <span class="toolbar-stat">
-          <em>运行</em>
-          <strong>{{ runningCountText }}</strong>
-        </span>
-        <span class="toolbar-stat">
-          <em>排队</em>
-          <strong>{{ queuedCountText }}</strong>
-        </span>
+      <div class="organizer-progress-wrap">
+        <button
+          :class="['organizer-progress-card', `is-${organizerProgressState.variant}`]"
+          type="button"
+          aria-controls="organizer-progress-popover"
+          :aria-expanded="organizerProgressOpen ? 'true' : 'false'"
+          @click.stop="toggleOrganizerProgress"
+        >
+          <span class="organizer-progress-card__head">
+            <span>本地整理</span>
+            <strong>{{ organizerProgressState.statusLabel }}</strong>
+          </span>
+          <span class="organizer-progress-card__body">
+            <span :title="organizerProgressState.title">{{ organizerProgressState.title }}</span>
+            <em>{{ organizerProgressState.progress }}%</em>
+          </span>
+          <span class="organizer-progress-bar">
+            <span :style="{ width: `${organizerProgressState.progress}%` }"></span>
+          </span>
+          <span class="organizer-progress-card__foot">
+            <span>候选 {{ detectedTotalText }}</span>
+            <span>运行 {{ runningCountText }}</span>
+            <span>排队 {{ queuedCountText }}</span>
+          </span>
+        </button>
+        <section
+          v-if="organizerProgressOpen"
+          id="organizer-progress-popover"
+          class="organizer-progress-popover"
+          @click.stop
+        >
+          <div class="organizer-progress-popover__head">
+            <div>
+              <strong>本地整理进度</strong>
+              <span>{{ organizerProgressState.subtitle }}</span>
+            </div>
+            <em :class="['organizer-progress-status', `is-${organizerProgressState.variant}`]">
+              {{ organizerProgressState.statusLabel }}
+            </em>
+          </div>
+          <div class="organizer-progress-current">
+            <div class="organizer-progress-current__head">
+              <strong :title="organizerProgressState.title">{{ organizerProgressState.title }}</strong>
+              <em>{{ organizerProgressState.progress }}%</em>
+            </div>
+            <div class="organizer-progress-bar organizer-progress-bar--large">
+              <span :style="{ width: `${organizerProgressState.progress}%` }"></span>
+            </div>
+            <p>{{ organizerProgressState.message }}</p>
+          </div>
+          <div class="organizer-progress-chips">
+            <span v-for="chip in organizerProgressChips" :key="chip.label">
+              <em>{{ chip.label }}</em>
+              <strong>{{ chip.value }}</strong>
+            </span>
+          </div>
+          <ol v-if="recentOrganizerRows.length" class="organizer-progress-list">
+            <li v-for="row in recentOrganizerRows" :key="row.key">
+              <div>
+                <strong :title="row.title">{{ row.title }}</strong>
+                <span :title="row.message">{{ row.message }}</span>
+              </div>
+              <em :class="['organizer-progress-status', `is-${row.variant}`]">
+                {{ row.statusLabel }}
+                <small v-if="row.progress > 0 && row.progress < 100">{{ row.progress }}%</small>
+              </em>
+            </li>
+          </ol>
+          <p v-else class="organizer-progress-empty">暂无本地整理记录</p>
+        </section>
       </div>
       <div class="filter-actions">
         <button class="button button-primary" type="button" @click="openImportDialog">
@@ -203,6 +256,7 @@ const importDialog = reactive({
   status: "",
   error: "",
 });
+const organizerProgressOpen = ref(false);
 let refreshTimer = null;
 let disposed = false;
 let sourceLibraryRefreshDeferred = false;
@@ -274,15 +328,6 @@ const localLibraryCards = computed(() => (
 const activeOrganizeCount = computed(() => (
   Number(organizerTasks.value.running_count || 0) + Number(organizerTasks.value.queued_count || 0)
 ));
-const organizerStatusText = computed(() => {
-  if (!initialLoaded.value && loadError.value) {
-    return "失败";
-  }
-  if (!initialLoaded.value) {
-    return "读取中";
-  }
-  return hasActiveOrganizeTasks() ? "否" : "是";
-});
 const detectedTotalText = computed(() => (
   !initialLoaded.value && loadError.value ? "-" :
   !initialLoaded.value ? "..." : String(organizerTasks.value.detected_total || 0)
@@ -296,6 +341,133 @@ const queuedCountText = computed(() => (
   !initialLoaded.value ? "..." : String(organizerTasks.value.queued_count || 0)
 ));
 const localImportSummaryText = computed(() => buildLocalImportSummary(organizerTasks.value));
+const organizeItems = computed(() => (
+  Array.isArray(organizerTasks.value?.items) ? organizerTasks.value.items : []
+));
+const sortedOrganizerItems = computed(() => (
+  [...organizeItems.value].sort((left, right) => organizerItemTimestamp(right) - organizerItemTimestamp(left))
+));
+const activeOrganizerTask = computed(() => {
+  const items = sortedOrganizerItems.value;
+  return items.find((item) => organizerStatusVariant(item?.status) === "running")
+    || items.find((item) => organizerStatusVariant(item?.status) === "queued")
+    || null;
+});
+const currentOrganizerTask = computed(() => (
+  activeOrganizerTask.value
+    || (importDialog.uploading ? currentImportSyntheticTask() : null)
+    || (hasRecentImportWork() ? recentImportSyntheticTask() : null)
+    || sortedOrganizerItems.value[0]
+    || null
+));
+const organizerProgressState = computed(() => {
+  if (loadError.value) {
+    return {
+      variant: "failed",
+      statusLabel: "加载失败",
+      title: "任务状态不可用",
+      message: loadError.value,
+      subtitle: "本地整理状态读取失败",
+      progress: 0,
+    };
+  }
+  if (!initialLoaded.value) {
+    return {
+      variant: "queued",
+      statusLabel: "读取中",
+      title: "正在读取本地整理状态",
+      message: "正在读取任务状态。",
+      subtitle: "等待任务状态返回",
+      progress: 0,
+    };
+  }
+
+  const task = currentOrganizerTask.value;
+  if (task) {
+    const variant = organizerStatusVariant(task.status);
+    return {
+      variant,
+      statusLabel: organizerStatusLabel(task.status),
+      title: organizerTaskTitle(task),
+      message: organizerTaskMessage(task),
+      subtitle: localImportSummaryText.value || organizerProgressSubtitle.value,
+      progress: organizerProgressPercent(task),
+    };
+  }
+
+  if (hasRecentImportWork()) {
+    const lastImport = organizerTasks.value?.last_import || {};
+    const uploadedCount = Number(lastImport?.uploaded_count || 0);
+    return {
+      variant: "queued",
+      statusLabel: "等待整理",
+      title: uploadedCount ? `最近上传 ${uploadedCount} 个文件` : "等待本地整理处理",
+      message: "上传文件已进入本地整理流程。",
+      subtitle: localImportSummaryText.value || organizerProgressSubtitle.value,
+      progress: 0,
+    };
+  }
+
+  return {
+    variant: "idle",
+    statusLabel: "空闲",
+    title: "没有正在整理的本地导入",
+    message: "最近没有正在运行的本地整理任务。",
+    subtitle: organizerProgressSubtitle.value,
+    progress: 0,
+  };
+});
+const organizerProgressSubtitle = computed(() => (
+  `候选 ${detectedTotalText.value} / 运行 ${runningCountText.value} / 排队 ${queuedCountText.value}`
+));
+const organizerProgressChips = computed(() => {
+  const { uploadedCount, counts } = recentImportStatusCounts(organizerTasks.value);
+  return [
+    { label: "上传", value: uploadedCount || 0 },
+    { label: "新增", value: counts.success },
+    { label: "跳过", value: counts.skipped },
+    { label: "失败", value: counts.failed },
+    { label: "处理中", value: counts.pending || activeOrganizeCount.value },
+  ];
+});
+const recentOrganizerRows = computed(() => {
+  const rows = [];
+  const seen = new Set();
+  for (const item of sortedOrganizerItems.value) {
+    const row = organizerTaskRow(item, `task-${rows.length}`);
+    if (seen.has(row.identity)) {
+      continue;
+    }
+    seen.add(row.identity);
+    rows.push(row);
+    if (rows.length >= 8) {
+      break;
+    }
+  }
+
+  const lastImport = organizerTasks.value?.last_import;
+  const importFiles = Array.isArray(lastImport?.files) ? lastImport.files : [];
+  for (const file of importFiles) {
+    if (rows.length >= 8) {
+      break;
+    }
+    const row = organizerTaskRow(
+      {
+        ...file,
+        status: file.status || (importBatchStillFresh(lastImport) ? "pending" : ""),
+        message: file.message || (importBatchStillFresh(lastImport) ? "等待本地整理处理。" : "最近上传文件。"),
+        progress: file.progress || 0,
+      },
+      `import-${rows.length}`,
+    );
+    if (seen.has(row.identity)) {
+      continue;
+    }
+    seen.add(row.identity);
+    rows.push(row);
+  }
+  return rows;
+});
 
 function fileIdentitySet(files) {
   const identities = new Set();
@@ -328,6 +500,108 @@ function normalizeImportStatus(status) {
   if (normalized === "failed" || normalized === "error" || normalized === "organize_failed" || normalized === "worker_timeout") return "failed";
   if (normalized === "running" || normalized === "pending" || normalized === "queued") return "pending";
   return "";
+}
+
+function organizerStatusVariant(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "running") return "running";
+  if (normalized === "pending" || normalized === "queued") return "queued";
+  if (normalized === "success" || normalized === "organized") return "success";
+  if (normalized === "skipped" || normalized === "duplicate_skipped" || normalized === "deleted_model_skipped") return "skipped";
+  if (normalized === "failed" || normalized === "error" || normalized === "organize_failed" || normalized === "worker_timeout" || normalized === "duplicate_skip_failed") return "failed";
+  return "idle";
+}
+
+function organizerStatusLabel(status) {
+  const variant = organizerStatusVariant(status);
+  if (variant === "running") return "整理中";
+  if (variant === "queued") return "排队中";
+  if (variant === "success") return "已完成";
+  if (variant === "skipped") return "已跳过";
+  if (variant === "failed") return "失败";
+  return "空闲";
+}
+
+function organizerProgressPercent(item) {
+  const progress = Number(item?.progress || 0);
+  if (!Number.isFinite(progress)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, Math.round(progress)));
+}
+
+function organizerItemTimestamp(item) {
+  const parsed = Date.parse(String(item?.updated_at || item?.uploaded_at || ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function organizerTaskTitle(item) {
+  const title = String(item?.title || item?.file_name || item?.source_path || "本地整理任务").trim();
+  return title || "本地整理任务";
+}
+
+function organizerTaskMessage(item) {
+  const message = String(item?.message || "").trim();
+  if (message) {
+    return message;
+  }
+  if (organizerStatusVariant(item?.status) === "running") {
+    return "正在处理本地导入文件。";
+  }
+  if (organizerStatusVariant(item?.status) === "queued") {
+    return "等待本地整理处理。";
+  }
+  if (organizerStatusVariant(item?.status) === "success") {
+    return "本地整理已完成。";
+  }
+  if (organizerStatusVariant(item?.status) === "skipped") {
+    return "该文件已跳过。";
+  }
+  if (organizerStatusVariant(item?.status) === "failed") {
+    return "本地整理失败。";
+  }
+  return "暂无进度消息。";
+}
+
+function organizerTaskRow(item, fallbackKey) {
+  const identity = String(item?.id || item?.fingerprint || item?.source_path || item?.file_name || fallbackKey);
+  const progress = organizerProgressPercent(item);
+  return {
+    key: `${identity}-${fallbackKey}`,
+    identity,
+    title: organizerTaskTitle(item),
+    message: organizerTaskMessage(item),
+    progress,
+    variant: organizerStatusVariant(item?.status),
+    statusLabel: organizerStatusLabel(item?.status),
+  };
+}
+
+function currentImportSyntheticTask() {
+  const count = importFiles.value.length;
+  const first = importFiles.value[0];
+  const firstName = first ? importItemPath(first).split("/").filter(Boolean).pop() : "";
+  return {
+    id: "local-import-uploading",
+    title: count > 1 ? `${firstName || "本地导入"} 等 ${count} 项` : firstName || "本地导入",
+    status: "running",
+    progress: 5,
+    message: "正在上传并准备本地整理。",
+  };
+}
+
+function recentImportSyntheticTask() {
+  const lastImport = organizerTasks.value?.last_import || {};
+  const files = Array.isArray(lastImport?.files) ? lastImport.files : [];
+  const uploadedCount = Number(lastImport?.uploaded_count || files.length || 0);
+  const firstName = String(files[0]?.file_name || files[0]?.source_path || "").split("/").filter(Boolean).pop();
+  return {
+    id: "local-import-recent",
+    title: uploadedCount > 1 ? `${firstName || "本地上传"} 等 ${uploadedCount} 项` : firstName || "本地上传",
+    status: "pending",
+    progress: 0,
+    message: "上传文件已进入本地整理流程。",
+  };
 }
 
 function countImportStatus(result, status) {
@@ -440,7 +714,7 @@ function clearTaskTimer() {
 }
 
 function hasActiveOrganizeTasks() {
-  return activeOrganizeCount.value > 0 || hasRecentImportWork();
+  return importDialog.uploading || activeOrganizeCount.value > 0 || hasRecentImportWork();
 }
 
 function syncTaskTimer() {
@@ -516,6 +790,7 @@ function resetImportDialogState({ keepFiles = false } = {}) {
 }
 
 function openImportDialog() {
+  closeOrganizerProgressPopover();
   resetImportDialogState();
   importDialog.visible = true;
 }
@@ -733,6 +1008,8 @@ async function submitImportFiles() {
   importDialog.uploading = true;
   importDialog.status = "";
   importDialog.error = "";
+  organizerProgressOpen.value = true;
+  syncTaskTimer();
   const formData = new FormData();
   for (const item of importFiles.value) {
     formData.append("files", item.file);
@@ -781,6 +1058,14 @@ function openCard(card) {
   });
 }
 
+function toggleOrganizerProgress() {
+  organizerProgressOpen.value = !organizerProgressOpen.value;
+}
+
+function closeOrganizerProgressPopover() {
+  organizerProgressOpen.value = false;
+}
+
 function handleVisibilityChange() {
   if (document.hidden) {
     clearTaskTimer();
@@ -791,6 +1076,7 @@ function handleVisibilityChange() {
 
 onMounted(() => {
   disposed = false;
+  document.addEventListener("click", closeOrganizerProgressPopover);
   document.addEventListener("visibilitychange", handleVisibilityChange);
   hydrateOrganizerPageFromCache();
   void load({ refreshLibrary: !hasActiveOrganizeTasks() || !hasSourceLibraryPayload() });
@@ -799,6 +1085,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   disposed = true;
   clearTaskTimer();
+  document.removeEventListener("click", closeOrganizerProgressPopover);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
 });
 </script>

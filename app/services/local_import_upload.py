@@ -611,6 +611,56 @@ def _update_last_import(
     )
 
 
+def _package_source_summary(entries: list[dict[str, Any]]) -> str:
+    package_source = ", ".join(
+        str(item.get("relative_path") or item.get("file_name") or "")
+        for item in entries[:3]
+    )
+    if len(entries) > 3:
+        package_source = f"{package_source} 等 {len(entries)} 项"
+    return package_source
+
+
+def _package_task_id(staging_dir: Path) -> str:
+    return hashlib.sha1(f"local-package:{staging_dir.resolve()}".encode("utf-8")).hexdigest()[:16]
+
+
+def _upsert_package_progress(
+    *,
+    task_store: TaskStateStore,
+    task_id: str,
+    title: str,
+    source_dir: str,
+    library_root: Path,
+    package_source: str,
+    status: str,
+    message: str,
+    progress: int,
+    model_root: Path | None = None,
+) -> None:
+    model_dir = _model_root_string(model_root) if model_root else ""
+    target_path = (model_root / "meta.json").as_posix() if model_root else ""
+    task_store.upsert_organize_task(
+        {
+            "id": task_id,
+            "title": title,
+            "file_name": title,
+            "source_dir": source_dir,
+            "target_dir": library_root.as_posix(),
+            "source_path": package_source,
+            "target_path": target_path,
+            "model_dir": model_dir,
+            "status": status,
+            "message": message,
+            "progress": max(0, min(100, int(progress or 0))),
+            "updated_at": china_now_iso(),
+            "move_files": False,
+            "fingerprint": f"local-package:{task_id}",
+        },
+        limit=50,
+    )
+
+
 def _upload_legacy_3mf_files(
     *,
     entries: list[dict[str, Any]],
@@ -707,17 +757,65 @@ def _import_package_files(
     library_root.mkdir(parents=True, exist_ok=True)
 
     staging_dir = _new_staging_dir()
+    task_id = _package_task_id(staging_dir)
+    title = _package_title(entries)
+    package_source = _package_source_summary(entries)
+    source_dir_text = source_dir.as_posix() if str(source_dir) != "." else ""
     model_root: Path | None = None
     try:
+        _upsert_package_progress(
+            task_store=task_store,
+            task_id=task_id,
+            title=title,
+            source_dir=source_dir_text,
+            library_root=library_root,
+            package_source=package_source,
+            status="running",
+            message="正在上传到暂存区。",
+            progress=10,
+        )
         staged = _stage_package_uploads(entries, staging_dir)
+        _upsert_package_progress(
+            task_store=task_store,
+            task_id=task_id,
+            title=title,
+            source_dir=source_dir_text,
+            library_root=library_root,
+            package_source=package_source,
+            status="running",
+            message="正在解压并展开文件。",
+            progress=30,
+        )
         expanded = _expand_package_archives(staged, staging_dir)
+        _upsert_package_progress(
+            task_store=task_store,
+            task_id=task_id,
+            title=title,
+            source_dir=source_dir_text,
+            library_root=library_root,
+            package_source=package_source,
+            status="running",
+            message="正在按文件类型分类并去重。",
+            progress=55,
+        )
         classified = _classify_package_files(expanded)
         model_items, duplicate_items = _dedupe_model_files(classified["models"])
         if not model_items:
             raise ValueError("没有找到可导入的 STL / 3MF / STEP / OBJ 模型文件。")
 
-        title = _package_title(entries)
         model_root = _prepare_model_root(library_root, title)
+        _upsert_package_progress(
+            task_store=task_store,
+            task_id=task_id,
+            title=title,
+            source_dir=source_dir_text,
+            library_root=library_root,
+            package_source=package_source,
+            status="running",
+            message="正在写入模型目录。",
+            progress=75,
+            model_root=model_root,
+        )
         instances_dir = model_root / "instances"
         images_dir = model_root / "images"
         attachments_dir = model_root / "attachments"
@@ -764,9 +862,6 @@ def _import_package_files(
                 }
             )
 
-        package_source = ", ".join(str(item.get("relative_path") or item.get("file_name") or "") for item in entries[:3])
-        if len(entries) > 3:
-            package_source = f"{package_source} 等 {len(entries)} 项"
         meta = _build_package_meta(
             model_root=model_root,
             title=title,
@@ -779,7 +874,19 @@ def _import_package_files(
         )
         meta_path = model_root / "meta.json"
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
+    except Exception as exc:
+        _upsert_package_progress(
+            task_store=task_store,
+            task_id=task_id,
+            title=title,
+            source_dir=source_dir_text,
+            library_root=library_root,
+            package_source=package_source,
+            status="failed",
+            message=str(exc) or "本地模型包导入失败。",
+            progress=0,
+            model_root=model_root,
+        )
         if model_root and model_root.exists():
             shutil.rmtree(model_root, ignore_errors=True)
         raise
@@ -798,29 +905,22 @@ def _import_package_files(
             "model_dir": model_dir,
         }
     ]
-    task_store.upsert_organize_task(
-        {
-            "id": hashlib.sha1(f"local-package:{model_root.resolve()}".encode("utf-8")).hexdigest()[:16],
-            "title": title,
-            "file_name": title,
-            "source_dir": source_dir.as_posix() if str(source_dir) != "." else "",
-            "target_dir": library_root.as_posix(),
-            "source_path": package_source,
-            "target_path": (model_root / "meta.json").as_posix(),
-            "model_dir": model_dir,
-            "status": "success",
-            "message": "本地模型包已导入。",
-            "progress": 100,
-            "updated_at": china_now_iso(),
-            "move_files": False,
-            "fingerprint": f"local-package:{model_root.resolve()}",
-        },
-        limit=50,
+    _upsert_package_progress(
+        task_store=task_store,
+        task_id=task_id,
+        title=title,
+        source_dir=source_dir_text,
+        library_root=library_root,
+        package_source=package_source,
+        status="success",
+        message="本地模型包已导入。",
+        progress=100,
+        model_root=model_root,
     )
     _update_last_import(
         task_store=task_store,
         uploaded=uploaded,
-        source_dir=source_dir.as_posix() if str(source_dir) != "." else "",
+        source_dir=source_dir_text,
         upload_dir=model_root.as_posix(),
     )
     _remove_organizer_index_cache()

@@ -22,7 +22,18 @@ class FakeTaskStore:
         return self.payload
 
     def upsert_organize_task(self, item, limit=50):
-        items = [item, *list(self.payload.get("items") or [])]
+        target_id = item.get("id") or item.get("fingerprint") or item.get("source_path")
+        items = []
+        replaced = False
+        for existing in list(self.payload.get("items") or []):
+            current_id = existing.get("id") or existing.get("fingerprint") or existing.get("source_path")
+            if current_id == target_id:
+                items.append(item)
+                replaced = True
+            else:
+                items.append(existing)
+        if not replaced:
+            items.insert(0, item)
         self.payload = {**self.payload, "items": items[:limit], "count": len(items)}
         return self.payload
 
@@ -95,6 +106,12 @@ class LocalImportUploadTest(unittest.TestCase):
             meta_path = archive_root / result["model_dir"] / "meta.json"
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             self.assertEqual(meta["localImport"]["duplicateFileCount"], 1)
+            self.assertEqual(len(task_store.payload["items"]), 1)
+            task_item = task_store.payload["items"][0]
+            self.assertEqual(task_item["title"], "Mai")
+            self.assertEqual(task_item["status"], "success")
+            self.assertEqual(task_item["progress"], 100)
+            self.assertEqual(task_item["message"], "本地模型包已导入。")
 
     def test_direct_3mf_mixed_with_other_file_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "3MF 请单独导入"):
