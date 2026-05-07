@@ -294,7 +294,7 @@ const localOrganizerCard = computed(() => {
     return {
       ...card,
       title: "本地整理",
-      recent_summary: localImportSummaryText.value,
+      recent_summary: "",
     };
   }
   return {
@@ -311,7 +311,7 @@ const localOrganizerCard = computed(() => {
       { label: "候选", value: Number(organizerTasks.value.detected_total || 0) },
       { label: "活跃", value: activeOrganizeCount.value },
     ],
-    recent_summary: localImportSummaryText.value,
+    recent_summary: "",
     preview_models: [],
   };
 });
