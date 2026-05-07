@@ -232,6 +232,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 
 .library-toolbar__copy {
   min-width: 0;
+  flex: 1 1 auto;
   display: flex;
   align-items: center;
   gap: 16px;
@@ -257,17 +258,22 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 
 .library-toolbar__side {
   min-width: 0;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 14px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+}
+
+.library-toolbar__side .filter-actions {
+  flex: 0 0 auto;
 }
 
 .organizer-progress-wrap {
   position: relative;
-  width: min(380px, 100%);
-  flex: 0 1 380px;
+  width: clamp(300px, 24vw, 380px);
+  flex: 0 0 clamp(300px, 24vw, 380px);
 }
 
 .organizer-progress-card {
@@ -2885,38 +2891,33 @@ html[data-theme="dark"] .organizer-progress-popover {
   }
 
   .library-toolbar {
-    align-items: flex-start;
-    flex-direction: column;
+    align-items: center;
+    flex-direction: row;
   }
 
   .library-toolbar__copy,
-  .library-toolbar__side,
-  .organizer-progress-wrap {
-    width: 100%;
+  .library-toolbar__side {
+    width: auto;
   }
 
   .library-toolbar__copy {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 8px;
+    align-items: center;
+    flex-direction: row;
+    gap: 16px;
   }
 
   .library-toolbar__side {
-    justify-content: stretch;
-  }
-
-  .library-toolbar__side .filter-actions,
-  .library-toolbar__side .filter-actions > * {
-    width: 100%;
+    justify-content: flex-end;
   }
 
   .organizer-progress-wrap {
-    flex-basis: auto;
+    width: clamp(280px, 38vw, 360px);
+    flex-basis: clamp(280px, 38vw, 360px);
   }
 
   .organizer-progress-popover {
-    left: 0;
-    right: auto;
+    left: auto;
+    right: 0;
   }
 
   .subscription-page-intro__side {
@@ -4131,7 +4132,43 @@ select:focus {
   }
 }
 
-@media (max-width: 520px) {
+@media (max-width: 720px) {
+  .library-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .library-toolbar__copy,
+  .library-toolbar__side,
+  .organizer-progress-wrap {
+    width: 100%;
+  }
+
+  .library-toolbar__copy {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .library-toolbar__side {
+    justify-content: stretch;
+    flex-wrap: wrap;
+  }
+
+  .library-toolbar__side .filter-actions,
+  .library-toolbar__side .filter-actions > * {
+    width: 100%;
+  }
+
+  .organizer-progress-wrap {
+    flex-basis: auto;
+  }
+
+  .organizer-progress-popover {
+    left: 0;
+    right: auto;
+  }
+
   .organizer-progress-card__foot {
     gap: 8px;
   }

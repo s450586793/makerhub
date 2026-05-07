@@ -27,9 +27,7 @@
             <span :style="{ width: `${organizerProgressState.progress}%` }"></span>
           </span>
           <span class="organizer-progress-card__foot">
-            <span>候选 {{ detectedTotalText }}</span>
-            <span>运行 {{ runningCountText }}</span>
-            <span>排队 {{ queuedCountText }}</span>
+            <span>{{ organizerProgressFooterText }}</span>
           </span>
         </button>
         <section
@@ -357,7 +355,6 @@ const currentOrganizerTask = computed(() => (
   activeOrganizerTask.value
     || (importDialog.uploading ? currentImportSyntheticTask() : null)
     || (hasRecentImportWork() ? recentImportSyntheticTask() : null)
-    || sortedOrganizerItems.value[0]
     || null
 ));
 const organizerProgressState = computed(() => {
@@ -395,19 +392,6 @@ const organizerProgressState = computed(() => {
     };
   }
 
-  if (hasRecentImportWork()) {
-    const lastImport = organizerTasks.value?.last_import || {};
-    const uploadedCount = Number(lastImport?.uploaded_count || 0);
-    return {
-      variant: "queued",
-      statusLabel: "等待整理",
-      title: uploadedCount ? `最近上传 ${uploadedCount} 个文件` : "等待本地整理处理",
-      message: "上传文件已进入本地整理流程。",
-      subtitle: localImportSummaryText.value || organizerProgressSubtitle.value,
-      progress: 0,
-    };
-  }
-
   return {
     variant: "idle",
     statusLabel: "空闲",
@@ -420,6 +404,26 @@ const organizerProgressState = computed(() => {
 const organizerProgressSubtitle = computed(() => (
   `候选 ${detectedTotalText.value} / 运行 ${runningCountText.value} / 排队 ${queuedCountText.value}`
 ));
+const organizerProgressFooterText = computed(() => {
+  if (!initialLoaded.value && !loadError.value) {
+    return "正在读取任务状态";
+  }
+  if (loadError.value) {
+    return "任务状态读取失败";
+  }
+  if (importDialog.uploading) {
+    return "正在上传并准备整理";
+  }
+  const running = Number(organizerTasks.value.running_count || 0);
+  const queued = Number(organizerTasks.value.queued_count || 0);
+  if (running > 0 || queued > 0) {
+    return `运行 ${running} / 排队 ${queued}`;
+  }
+  if (hasRecentImportWork()) {
+    return "等待本地整理处理";
+  }
+  return "当前无运行任务";
+});
 const organizerProgressChips = computed(() => {
   const { uploadedCount, counts } = recentImportStatusCounts(organizerTasks.value);
   return [
