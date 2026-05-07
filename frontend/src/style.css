@@ -270,20 +270,60 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   flex: 0 0 auto;
 }
 
+.toolbar-stats {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.toolbar-stat {
+  min-width: 76px;
+  height: 46px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--surface-strong);
+  white-space: nowrap;
+}
+
+.toolbar-stat em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.toolbar-stat strong {
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1;
+}
+
 .organizer-progress-wrap {
   position: relative;
-  width: clamp(300px, 24vw, 380px);
-  flex: 0 0 clamp(300px, 24vw, 380px);
+  width: clamp(260px, 22vw, 340px);
+  flex: 0 0 clamp(260px, 22vw, 340px);
 }
 
 .organizer-progress-card {
   width: 100%;
-  min-height: 74px;
-  padding: 10px 12px;
+  height: 46px;
+  min-height: 46px;
+  padding: 7px 12px 6px;
   border: 1px solid var(--border);
   border-radius: 8px;
   display: grid;
-  gap: 7px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) 4px;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 5px;
   background: var(--surface-strong);
   color: var(--text);
   cursor: pointer;
@@ -308,9 +348,27 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   gap: 10px;
 }
 
+.organizer-progress-card__head {
+  grid-column: 1;
+  grid-row: 1;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.organizer-progress-card__body {
+  grid-column: 2;
+  grid-row: 1;
+  justify-content: flex-end;
+  gap: 0;
+}
+
+.organizer-progress-card__body > span,
+.organizer-progress-card__foot {
+  display: none;
+}
+
 .organizer-progress-card__head span,
 .organizer-progress-popover__head span,
-.organizer-progress-card__foot,
 .organizer-progress-current p,
 .organizer-progress-list span,
 .organizer-progress-empty {
@@ -355,10 +413,16 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 }
 
 .organizer-progress-bar {
+  grid-column: 1 / -1;
+  grid-row: 2;
   height: 6px;
   border-radius: 999px;
   overflow: hidden;
   background: color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.organizer-progress-card > .organizer-progress-bar {
+  height: 4px;
 }
 
 .organizer-progress-bar span {
