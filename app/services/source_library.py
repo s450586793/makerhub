@@ -642,7 +642,8 @@ def _group_state_cards(all_models: list[dict], visible_models: list[dict]) -> li
         elif kind == "printed":
             matched = [item for item in visible_models if item.get("local_flags", {}).get("printed")]
         elif kind == "source_deleted":
-            matched = [item for item in visible_models if item.get("subscription_flags", {}).get("deleted_on_source")]
+            base_models = all_models
+            matched = [item for item in all_models if item.get("subscription_flags", {}).get("deleted_on_source")]
         else:
             base_models = all_models
             matched = [item for item in all_models if item.get("local_flags", {}).get("deleted")]
@@ -1037,7 +1038,7 @@ def _subset_models_payload(
     if normalized_tag == "__local_deleted__":
         selected = [item for item in all_subset if item.get("local_flags", {}).get("deleted")]
     elif normalized_tag == "__source_deleted__":
-        selected = [item for item in base_subset if item.get("subscription_flags", {}).get("deleted_on_source")]
+        selected = [item for item in all_subset if item.get("subscription_flags", {}).get("deleted_on_source")]
 
     if normalized_query:
         selected = [
@@ -1155,7 +1156,7 @@ def build_state_group_models_payload(
         sort_key=sort_key,
         page=page,
         page_size=page_size,
-        default_include_deleted=str(group.get("key") or "") == "local_deleted",
+        default_include_deleted=str(group.get("key") or "") in {"local_deleted", "source_deleted"},
     )
     payload["view"] = group
     return payload

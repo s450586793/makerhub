@@ -43,6 +43,29 @@ class SourceLibraryTest(unittest.TestCase):
         self.assertEqual(payload["source_counts"]["local"], 1)
         self.assertEqual([item["model_dir"] for item in payload["items"]], ["deleted-local", "deleted-cn"])
 
+    def test_source_deleted_state_group_includes_soft_deleted_models(self):
+        groups = {
+            "source_deleted": {
+                "key": "source_deleted",
+                "route_kind": "state",
+                "model_dirs": ["source-deleted-visible", "source-deleted-hidden"],
+            }
+        }
+        visible = _model("source-deleted-visible", source="cn")
+        visible["local_flags"]["deleted"] = False
+        hidden = _model("source-deleted-hidden", source="cn")
+        for item in (visible, hidden):
+            item["subscription_flags"]["deleted_on_source"] = True
+        all_models = [visible, hidden]
+
+        with patch("app.services.source_library._group_models", return_value=(groups, all_models, [])):
+            payload = build_state_group_models_payload("source_deleted")
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["filtered_total"], 2)
+        self.assertEqual(payload["source_counts"]["all"], 2)
+        self.assertEqual([item["model_dir"] for item in payload["items"]], ["source-deleted-visible", "source-deleted-hidden"])
+
     def test_dashboard_source_deleted_count_uses_archived_models(self):
         items = [
             {"model_dir": "marked", "subscription_flags": {"deleted_on_source": True}},
