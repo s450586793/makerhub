@@ -147,6 +147,10 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 ## 更新记录
 
 ### 2026-05-07
+- 版本号升级到 `v0.6.53`
+- 打印配置摘要统一清理 MakerWorld 富文本标签，避免配置弹层里直接显示 `<p>`、`&nbsp;` 等 HTML 代码
+
+### 2026-05-07
 - 版本号升级到 `v0.6.52`
 - 模型详情页打印配置弹层移除冗余的“查看配置”按钮和已下载状态说明，减少每个 3MF 配置下方的重复信息
 

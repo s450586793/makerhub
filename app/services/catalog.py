@@ -605,6 +605,15 @@ def _rewrite_summary_html(model_root: Path, html: str) -> str:
     return str(soup)
 
 
+def _html_to_plain_text(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    soup = BeautifulSoup(raw, "html.parser")
+    text = soup.get_text(" ", strip=True)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _normalize_stats(meta: dict) -> dict:
     stats = meta.get("stats") or meta.get("counts") or {}
     return {
@@ -830,7 +839,7 @@ def _normalize_instance_overview(item: dict) -> dict:
         "rating": rating,
         "download_count": _safe_int(item.get("downloadCount")),
         "print_count": _safe_int(item.get("printCount")),
-        "summary": str(item.get("summary") or item.get("summaryTranslated") or ""),
+        "summary": _html_to_plain_text(item.get("summary") or item.get("summaryTranslated") or ""),
         "profile_details": profile_details,
     }
 

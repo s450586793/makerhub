@@ -41,6 +41,14 @@ class ProfileRatingTest(unittest.TestCase):
 
         self.assertEqual(overview["time"], "5.7 h")
 
+    def test_normalizes_instance_summary_html_to_plain_text(self):
+        overview = _normalize_instance_overview({
+            "name": "Html summary profile",
+            "summary": "<p>经过计算&nbsp;中间部分可以打印。</p><p>第二段<br>继续说明</p>",
+        })
+
+        self.assertEqual(overview["summary"], "经过计算 中间部分可以打印。 第二段 继续说明")
+
     def test_normalizes_legacy_filament_weights_for_catalog(self):
         details = _normalize_profile_details({
             "profileDetails": {
