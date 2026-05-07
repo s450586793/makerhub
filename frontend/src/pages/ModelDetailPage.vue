@@ -174,7 +174,6 @@
             <span
               v-else
               class="mw-download-button mw-download-button--hero is-disabled"
-              :title="heroDownloadStatus"
             >
               {{ heroDownloadLabel }}
             </span>
@@ -361,15 +360,6 @@
                   {{ profile.summary || "该打印配置可单独查看图集、分盘图片与 3MF 状态。" }}
                 </p>
 
-                <div class="mw-profile-popover__actions">
-                  <button class="button button-secondary button-small" type="button" @click="selectInstance(profile)">
-                    查看配置
-                  </button>
-                </div>
-
-                <p v-if="profile.file_status_message" class="mw-profile-popover__note">
-                  {{ profile.file_status_message }}
-                </p>
                 <p v-if="profile.source_deleted_message" class="mw-profile-popover__note">
                   {{ profile.source_deleted_message }}
                 </p>
@@ -1083,10 +1073,6 @@ const heroDownloadHref = computed(() => {
     return activeInstance.value.file_url;
   }
   return "";
-});
-
-const heroDownloadStatus = computed(() => {
-  return activeInstance.value?.file_status_message || "3MF 还未获取到";
 });
 
 const heroDownloadLabel = computed(() => {

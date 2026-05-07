@@ -3071,17 +3071,6 @@ select:focus {
   line-height: 1.5;
 }
 
-.mw-profile-popover__actions {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
-  gap: 8px;
-}
-
-.mw-profile-popover__actions .button,
-.mw-profile-popover__actions .mw-download-button {
-  width: 100%;
-}
-
 .mw-profile-popover__note {
   margin: 0;
   color: #6b7280;
@@ -5200,8 +5189,7 @@ html[data-theme="dark"] .gallery-card__source--local-deleted {
     height: 100%;
   }
 
-  .mw-profile-popover__stats,
-  .mw-profile-popover__actions {
+  .mw-profile-popover__stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
