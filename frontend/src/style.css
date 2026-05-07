@@ -3738,6 +3738,13 @@ select:focus {
   line-height: 1.25;
 }
 
+.local-import-dialog__pickers {
+  margin-top: var(--space-3);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 .local-import-dialog__input {
   display: none;
 }

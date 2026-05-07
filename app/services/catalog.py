@@ -984,10 +984,12 @@ def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
             if isinstance(resolved_path, Path)
             else Path(str(item.get("fileName") or "")).name
         )
+        file_suffix = Path(file_name).suffix.lower().lstrip(".")
+        file_kind = str(item.get("fileKind") or file_suffix.upper() or "文件").strip()
         file_ref = f"instances/{file_name}" if file_name else ""
         file_url = _existing_local_asset_url(model_root, file_ref) if file_ref else None
         if file_url:
-            file_status_message = "3MF 已获取完成，可直接下载。"
+            file_status_message = f"{file_kind} 已获取完成，可直接下载。"
         elif item.get("downloadState") or item.get("downloadMessage"):
             file_status_message = describe_three_mf_failure(
                 item.get("downloadState"),
@@ -1026,6 +1028,8 @@ def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
                 "media": media_items,
                 "file_url": file_url,
                 "file_name": file_name or str(item.get("name") or ""),
+                "file_kind": file_kind,
+                "download_label": f"下载 {file_kind}",
                 "file_available": bool(file_url),
                 "file_status_message": file_status_message,
                 "source_deleted": bool(item.get("sourceDeleted", False)),

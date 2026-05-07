@@ -1258,15 +1258,18 @@ async def merge_local_library_models(payload: LocalModelMergeRequest, request: R
 async def import_local_library_files(
     request: Request,
     files: list[UploadFile] = File(...),
+    paths: list[str] = Form(default=[]),
 ):
     _require_session_auth(request)
     try:
         result = await run_task_api(
             upload_local_import_files,
             files=files,
+            paths=paths,
             store=store,
+            task_store=task_state_store,
         )
-        if BACKGROUND_TASKS_ENABLED:
+        if BACKGROUND_TASKS_ENABLED and result.get("trigger_organizer", True):
             try:
                 await run_task_api(local_organizer.run_once)
                 result["triggered"] = True

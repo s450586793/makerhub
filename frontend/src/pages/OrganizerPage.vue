@@ -70,8 +70,8 @@
     @click="closeImportDialog"
   >
     <div class="submit-dialog__panel local-import-dialog__panel" @click.stop>
-      <h2 id="local-import-dialog-title">导入本地 3MF</h2>
-      <p>确认后先写入暂存区，再移动到本地整理扫描目录，并按现有本地整理流程入库。</p>
+      <h2 id="local-import-dialog-title">导入本地模型</h2>
+      <p>3MF 会沿用本地整理流程；STL、zip、文件夹会按文件类型生成本地模型。</p>
       <div
         :class="['local-import-dialog__dropzone', importDialog.dragging && 'is-dragging']"
         role="button"
@@ -84,16 +84,33 @@
         @dragleave.prevent="setImportDragging(false)"
         @drop.prevent="handleImportDrop"
       >
-        <strong>拖入 3MF</strong>
-        <span>或点击选择文件</span>
+        <strong>拖入文件或文件夹</strong>
+        <span>3MF / STL / zip / 图片 / PDF</span>
+      </div>
+      <div class="local-import-dialog__pickers">
+        <button class="button button-secondary button-small" type="button" :disabled="importDialog.uploading" @click="openImportFilePicker">
+          选择文件
+        </button>
+        <button class="button button-secondary button-small" type="button" :disabled="importDialog.uploading" @click="openImportFolderPicker">
+          选择文件夹
+        </button>
       </div>
       <input
         ref="importFileInput"
         class="local-import-dialog__input"
         type="file"
-        accept=".3mf"
+        :accept="LOCAL_IMPORT_ACCEPT"
         multiple
         @change="handleImportFileChange"
+      >
+      <input
+        ref="importFolderInput"
+        class="local-import-dialog__input"
+        type="file"
+        :accept="LOCAL_IMPORT_ACCEPT"
+        webkitdirectory
+        multiple
+        @change="handleImportFolderChange"
       >
       <div v-if="importFiles.length" class="local-import-dialog__files">
         <div class="local-import-dialog__files-head">
@@ -101,9 +118,9 @@
           <strong>{{ importFiles.length }} 个</strong>
         </div>
         <ol>
-          <li v-for="(file, index) in importFiles" :key="fileKey(file, index)">
-            <span>{{ file.name }}</span>
-            <em>{{ formatFileSize(file.size) }}</em>
+          <li v-for="(item, index) in importFiles" :key="fileKey(item, index)">
+            <span :title="importItemPath(item)">{{ importItemPath(item) }}</span>
+            <em>{{ formatFileSize(item.file?.size) }}</em>
             <button type="button" :disabled="importDialog.uploading" @click="removeImportFile(index)">移除</button>
           </li>
         </ol>
@@ -136,6 +153,31 @@ import { getPageCache, setPageCache } from "../lib/pageCache";
 const ACTIVE_REFRESH_INTERVAL_MS = 5000;
 const IDLE_REFRESH_INTERVAL_MS = 30000;
 const RECENT_IMPORT_PENDING_GRACE_MS = 10 * 60 * 1000;
+const LOCAL_IMPORT_ACCEPT = [
+  ".3mf",
+  ".stl",
+  ".step",
+  ".stp",
+  ".obj",
+  ".zip",
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".webp",
+  ".gif",
+  ".bmp",
+  ".avif",
+  ".pdf",
+  ".txt",
+  ".md",
+  ".markdown",
+  ".html",
+  ".htm",
+  ".mp4",
+  ".mov",
+  ".webm",
+].join(",");
+const LOCAL_IMPORT_SUPPORTED_SUFFIXES = new Set(LOCAL_IMPORT_ACCEPT.split(","));
 
 const router = useRouter();
 const sourceLibraryPayload = ref({
@@ -152,6 +194,7 @@ const loading = ref(false);
 const initialLoaded = ref(false);
 const loadError = ref("");
 const importFileInput = ref(null);
+const importFolderInput = ref(null);
 const importFiles = ref([]);
 const importDialog = reactive({
   visible: false,
@@ -467,6 +510,9 @@ function resetImportDialogState({ keepFiles = false } = {}) {
   if (importFileInput.value) {
     importFileInput.value.value = "";
   }
+  if (importFolderInput.value) {
+    importFolderInput.value.value = "";
+  }
 }
 
 function openImportDialog() {
@@ -489,6 +535,13 @@ function openImportFilePicker() {
   importFileInput.value?.click();
 }
 
+function openImportFolderPicker() {
+  if (importDialog.uploading) {
+    return;
+  }
+  importFolderInput.value?.click();
+}
+
 function setImportDragging(value) {
   if (importDialog.uploading) {
     return;
@@ -496,33 +549,73 @@ function setImportDragging(value) {
   importDialog.dragging = Boolean(value);
 }
 
-function fileKey(file, index) {
-  return `${file.name}-${file.size}-${file.lastModified}-${index}`;
+function normalizeImportPath(file, explicitPath = "") {
+  return String(explicitPath || file?.webkitRelativePath || file?.name || "").replace(/\\/g, "/").replace(/^\/+/, "");
 }
 
-function addImportFiles(fileList) {
-  const incoming = Array.from(fileList || []);
+function importItemPath(item) {
+  return item?.relativePath || item?.file?.name || "";
+}
+
+function fileKey(item, index) {
+  const file = item?.file || item;
+  return `${importItemPath(item)}-${file?.size || 0}-${file?.lastModified || 0}-${index}`;
+}
+
+function importSuffix(path) {
+  const match = String(path || "").toLowerCase().match(/\.[^.\/]+$/);
+  return match ? match[0] : "";
+}
+
+function isSupportedImportFile(file, relativePath = "") {
+  const suffix = importSuffix(relativePath || file?.name || "");
+  return LOCAL_IMPORT_SUPPORTED_SUFFIXES.has(suffix);
+}
+
+function validateImportSelection(items) {
+  const hasFolderItem = items.some((item) => importItemPath(item).includes("/"));
+  const hasZip = items.some((item) => importSuffix(importItemPath(item)) === ".zip");
+  const has3mf = items.some((item) => importSuffix(importItemPath(item)) === ".3mf");
+  if (!hasFolderItem && !hasZip && has3mf && items.some((item) => importSuffix(importItemPath(item)) !== ".3mf")) {
+    return "3MF 请单独导入；包含图片、说明、STL 或 zip 时，请打包为 zip 或选择文件夹。";
+  }
+  return "";
+}
+
+function addImportFileItems(items) {
+  const incoming = Array.from(items || []);
   if (!incoming.length) {
     return;
   }
-  const currentKeys = new Set(importFiles.value.map((file) => `${file.name}-${file.size}-${file.lastModified}`));
+  const currentKeys = new Set(importFiles.value.map((item) => `${importItemPath(item)}-${item.file.size}-${item.file.lastModified}`));
   const nextFiles = [...importFiles.value];
   let skipped = 0;
-  for (const file of incoming) {
-    if (!String(file.name || "").toLowerCase().endsWith(".3mf")) {
+  for (const item of incoming) {
+    const file = item?.file || item;
+    const relativePath = normalizeImportPath(file, item?.relativePath || "");
+    if (!isSupportedImportFile(file, relativePath)) {
       skipped += 1;
       continue;
     }
-    const key = `${file.name}-${file.size}-${file.lastModified}`;
+    const key = `${relativePath || file.name}-${file.size}-${file.lastModified}`;
     if (currentKeys.has(key)) {
       continue;
     }
     currentKeys.add(key);
-    nextFiles.push(file);
+    nextFiles.push({ file, relativePath: relativePath || file.name });
   }
+  const selectionError = validateImportSelection(nextFiles);
   importFiles.value = nextFiles;
-  importDialog.error = "";
-  importDialog.status = skipped ? `已跳过 ${skipped} 个非 3MF 文件。` : "";
+  importDialog.error = selectionError;
+  importDialog.status = skipped ? `已跳过 ${skipped} 个暂不支持的文件。` : "";
+}
+
+function addImportFiles(fileList, { fromFolder = false } = {}) {
+  const incoming = Array.from(fileList || []).map((file) => ({
+    file,
+    relativePath: normalizeImportPath(file, fromFolder ? file.webkitRelativePath : ""),
+  }));
+  addImportFileItems(incoming);
 }
 
 function handleImportFileChange(event) {
@@ -530,9 +623,77 @@ function handleImportFileChange(event) {
   event.target.value = "";
 }
 
-function handleImportDrop(event) {
+function handleImportFolderChange(event) {
+  addImportFiles(event.target.files, { fromFolder: true });
+  event.target.value = "";
+}
+
+function readEntryFile(entry) {
+  return new Promise((resolve) => {
+    entry.file(
+      (file) => resolve(file),
+      () => resolve(null),
+    );
+  });
+}
+
+function readDirectoryBatch(reader) {
+  return new Promise((resolve) => {
+    reader.readEntries(
+      (entries) => resolve(Array.from(entries || [])),
+      () => resolve([]),
+    );
+  });
+}
+
+async function collectEntryFiles(entry, basePath = "") {
+  if (!entry) {
+    return [];
+  }
+  const entryPath = `${basePath}${entry.name || ""}`;
+  if (entry.isFile) {
+    const file = await readEntryFile(entry);
+    return file ? [{ file, relativePath: entryPath || file.name }] : [];
+  }
+  if (!entry.isDirectory || typeof entry.createReader !== "function") {
+    return [];
+  }
+  const reader = entry.createReader();
+  const collected = [];
+  while (true) {
+    const batch = await readDirectoryBatch(reader);
+    if (!batch.length) {
+      break;
+    }
+    for (const child of batch) {
+      collected.push(...await collectEntryFiles(child, `${entryPath}/`));
+    }
+  }
+  return collected;
+}
+
+async function collectDroppedFiles(dataTransfer) {
+  const items = Array.from(dataTransfer?.items || []);
+  const entries = items
+    .map((item) => (typeof item.webkitGetAsEntry === "function" ? item.webkitGetAsEntry() : null))
+    .filter(Boolean);
+  if (!entries.length) {
+    return Array.from(dataTransfer?.files || []).map((file) => ({
+      file,
+      relativePath: normalizeImportPath(file),
+    }));
+  }
+  const collected = [];
+  for (const entry of entries) {
+    collected.push(...await collectEntryFiles(entry));
+  }
+  return collected;
+}
+
+async function handleImportDrop(event) {
   setImportDragging(false);
-  addImportFiles(event.dataTransfer?.files);
+  const droppedFiles = await collectDroppedFiles(event.dataTransfer);
+  addImportFileItems(droppedFiles);
 }
 
 function removeImportFile(index) {
@@ -561,15 +722,21 @@ function formatFileSize(value) {
 
 async function submitImportFiles() {
   if (!importFiles.value.length) {
-    importDialog.error = "请选择要导入的 3MF 文件。";
+    importDialog.error = "请选择要导入的文件。";
+    return;
+  }
+  const selectionError = validateImportSelection(importFiles.value);
+  if (selectionError) {
+    importDialog.error = selectionError;
     return;
   }
   importDialog.uploading = true;
   importDialog.status = "";
   importDialog.error = "";
   const formData = new FormData();
-  for (const file of importFiles.value) {
-    formData.append("files", file);
+  for (const item of importFiles.value) {
+    formData.append("files", item.file);
+    formData.append("paths", importItemPath(item));
   }
   try {
     await apiRequest("/api/local-library/import", {

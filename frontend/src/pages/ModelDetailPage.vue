@@ -1080,12 +1080,12 @@ const heroDownloadLabel = computed(() => {
     return "选择打印配置";
   }
   if (activeInstance.value.file_available && activeInstance.value.file_url) {
-    return "下载 3MF";
+    return activeInstance.value.download_label || `下载 ${activeInstance.value.file_kind || "文件"}`;
   }
   if (activeInstance.value.file_name) {
-    return "3MF 还未获取到";
+    return activeInstance.value.file_status_message || `${activeInstance.value.file_kind || "文件"} 还未获取到`;
   }
-  return "当前没有 3MF";
+  return "当前没有模型文件";
 });
 
 function createThumbRailState() {
