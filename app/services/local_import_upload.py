@@ -292,6 +292,7 @@ def _extract_zip_file(
     item: dict[str, Any],
     extraction_root: Path,
     extracted_total: list[int],
+    skipped_archives: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     zip_path = Path(item["path"])
     source_relative = str(item.get("relative_path") or zip_path.name)
@@ -302,7 +303,16 @@ def _extract_zip_file(
     try:
         archive = zipfile.ZipFile(zip_path)
     except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
-        raise ValueError(f"ZIP 文件无法读取：{Path(source_relative).name}") from exc
+        if depth <= 0:
+            raise ValueError(f"ZIP 文件无法读取：{Path(source_relative).name}") from exc
+        skipped_archives.append(
+            {
+                "file_name": Path(source_relative).name,
+                "relative_path": source_relative,
+                "reason": "ZIP 文件无法读取",
+            }
+        )
+        return []
 
     with archive:
         for info in sorted(archive.infolist(), key=lambda value: value.filename):
@@ -336,21 +346,22 @@ def _extract_zip_file(
     return extracted
 
 
-def _expand_package_archives(staged: list[dict[str, Any]], staging_dir: Path) -> list[dict[str, Any]]:
+def _expand_package_archives(staged: list[dict[str, Any]], staging_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     extraction_root = staging_dir / "extracted"
     pending = list(staged)
     expanded: list[dict[str, Any]] = []
     extracted_total = [0]
+    skipped_archives: list[dict[str, Any]] = []
 
     while pending:
         item = pending.pop(0)
         suffix = Path(str(item.get("file_name") or "")).suffix.lower()
         depth = int(item.get("archive_depth") or 0)
         if suffix == ".zip" and depth < LOCAL_IMPORT_MAX_ZIP_DEPTH:
-            pending.extend(_extract_zip_file(item, extraction_root, extracted_total))
+            pending.extend(_extract_zip_file(item, extraction_root, extracted_total, skipped_archives))
             continue
         expanded.append(item)
-    return expanded
+    return expanded, skipped_archives
 
 
 def _classify_package_files(items: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -484,6 +495,7 @@ def _build_package_meta(
     package_source: str,
     model_files: list[dict[str, Any]],
     duplicate_files: list[dict[str, Any]],
+    skipped_archives: list[dict[str, Any]],
     image_paths: list[str],
     attachments: list[dict[str, Any]],
     description_text: str,
@@ -578,6 +590,8 @@ def _build_package_meta(
             "modelFileCount": len(model_files),
             "duplicateFileCount": len(duplicate_files),
             "duplicateFiles": duplicate_files[:50],
+            "skippedArchiveCount": len(skipped_archives),
+            "skippedArchives": skipped_archives[:50],
         },
     }
 
@@ -786,7 +800,7 @@ def _import_package_files(
             message="正在解压并展开文件。",
             progress=30,
         )
-        expanded = _expand_package_archives(staged, staging_dir)
+        expanded, skipped_archives = _expand_package_archives(staged, staging_dir)
         _upsert_package_progress(
             task_store=task_store,
             task_id=task_id,
@@ -868,6 +882,7 @@ def _import_package_files(
             package_source=package_source,
             model_files=copied_models,
             duplicate_files=duplicate_items,
+            skipped_archives=skipped_archives,
             image_paths=image_paths,
             attachments=attachments,
             description_text=description_text,
@@ -934,6 +949,7 @@ def _import_package_files(
         model_dir=model_dir,
         model_file_count=len(model_items),
         duplicate_file_count=len(duplicate_items),
+        skipped_zip_count=len(skipped_archives),
         image_count=len(image_paths),
         attachment_count=len(attachments),
     )
@@ -946,6 +962,7 @@ def _import_package_files(
         "model_dir": model_dir,
         "model_file_count": len(model_items),
         "duplicate_file_count": len(duplicate_items),
+        "skipped_zip_count": len(skipped_archives),
         "image_count": len(image_paths),
         "attachment_count": len(attachments),
         "uploaded": uploaded,

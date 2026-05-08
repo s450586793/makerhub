@@ -113,6 +113,56 @@ class LocalImportUploadTest(unittest.TestCase):
             self.assertEqual(task_item["progress"], 100)
             self.assertEqual(task_item["message"], "本地模型包已导入。")
 
+    def test_nested_zip_import_skips_unreadable_child_zip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            archive_root = root / "archive"
+            source_root = root / "source"
+            state_root = root / "state"
+            archive_root.mkdir()
+            source_root.mkdir()
+            state_root.mkdir()
+
+            good_child = _zip_bytes({"engine/part.stl": b"solid engine\nendsolid engine\n"})
+            package = _zip_bytes(
+                {
+                    "readme.txt": "发动机模型合集".encode("utf-8"),
+                    "good.zip": good_child,
+                    "bad.zip": b"not a zip",
+                }
+            )
+            store = SimpleNamespace(
+                load=lambda: SimpleNamespace(
+                    organizer=SimpleNamespace(source_dir=source_root.as_posix(), target_dir=archive_root.as_posix())
+                )
+            )
+            task_store = FakeTaskStore()
+
+            with patch.object(local_import_upload, "ARCHIVE_DIR", archive_root), \
+                patch.object(local_import_upload, "ORGANIZER_LIBRARY_INDEX_CACHE_PATH", state_root / "organizer_library_index.json"), \
+                patch.object(local_import_upload, "append_business_log"), \
+                patch.object(local_import_upload, "invalidate_archive_snapshot"), \
+                patch.object(catalog, "ARCHIVE_DIR", archive_root):
+                result = local_import_upload.upload_local_import_files(
+                    files=[_upload("Engines.zip", package)],
+                    paths=["Engines.zip"],
+                    store=store,
+                    task_store=task_store,
+                )
+                detail = catalog.get_model_detail(result["model_dir"])
+
+            self.assertEqual(result["mode"], "package")
+            self.assertEqual(result["model_file_count"], 1)
+            self.assertEqual(result["skipped_zip_count"], 1)
+            self.assertIsNotNone(detail)
+            self.assertEqual(len(detail["instances"]), 1)
+
+            meta_path = archive_root / result["model_dir"] / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            self.assertEqual(meta["localImport"]["skippedArchiveCount"], 1)
+            self.assertEqual(meta["localImport"]["skippedArchives"][0]["file_name"], "bad.zip")
+            self.assertIn("ZIP 文件无法读取", meta["localImport"]["skippedArchives"][0]["reason"])
+
     def test_direct_3mf_mixed_with_other_file_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "3MF 请单独导入"):
             local_import_upload.upload_local_import_files(

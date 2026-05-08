@@ -146,6 +146,10 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-05-08
+- 版本号升级到 `v0.6.61`
+- 本地导入支持外层 zip 内包含多个子 zip 的合集包；内层子 zip 无法读取时会跳过并记录，不再中断整个导入流程
+
 ### 2026-05-07
 - 版本号升级到 `v0.6.60`
 - 本地导入默认单文件上限从 `1GB` 提升到 `4GB`，支持导入约 2GB 的 zip 模型包；手动附件上传仍保持独立的 `128MB` 默认限制
