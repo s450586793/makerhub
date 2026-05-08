@@ -4107,6 +4107,10 @@ select:focus {
   gap: var(--space-2);
 }
 
+.local-import-dialog__files--skipped li {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 .local-import-dialog__files li > span {
   min-width: 0;
   overflow: hidden;
@@ -4123,6 +4127,10 @@ select:focus {
   font-style: normal;
   line-height: 1.25;
   white-space: nowrap;
+}
+
+.local-import-dialog__files.local-import-dialog__files--skipped em {
+  color: var(--color-warning);
 }
 
 .local-import-dialog__files button {

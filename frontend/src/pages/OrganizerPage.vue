@@ -176,6 +176,18 @@
           </li>
         </ol>
       </div>
+      <div v-if="importSkippedFiles.length" class="local-import-dialog__files local-import-dialog__files--skipped">
+        <div class="local-import-dialog__files-head">
+          <span>已跳过</span>
+          <strong>{{ importSkippedFiles.length }} 个</strong>
+        </div>
+        <ol>
+          <li v-for="(item, index) in importSkippedFiles" :key="skippedFileKey(item, index)">
+            <span :title="item.path">{{ item.path }}</span>
+            <em>{{ item.reason }}</em>
+          </li>
+        </ol>
+      </div>
       <p v-if="importDialog.status" class="form-status local-import-dialog__status">{{ importDialog.status }}</p>
       <p v-if="importDialog.error" class="form-status local-import-dialog__status is-error">{{ importDialog.error }}</p>
       <div class="submit-dialog__actions">
@@ -247,6 +259,7 @@ const loadError = ref("");
 const importFileInput = ref(null);
 const importFolderInput = ref(null);
 const importFiles = ref([]);
+const importSkippedFiles = ref([]);
 const importDialog = reactive({
   visible: false,
   dragging: false,
@@ -784,6 +797,7 @@ function resetImportDialogState({ keepFiles = false } = {}) {
   importDialog.error = "";
   if (!keepFiles) {
     importFiles.value = [];
+    importSkippedFiles.value = [];
   }
   if (importFileInput.value) {
     importFileInput.value.value = "";
@@ -841,6 +855,10 @@ function fileKey(item, index) {
   return `${importItemPath(item)}-${file?.size || 0}-${file?.lastModified || 0}-${index}`;
 }
 
+function skippedFileKey(item, index) {
+  return `${item?.path || "skipped"}-${item?.size || 0}-${item?.lastModified || 0}-${index}`;
+}
+
 function importSuffix(path) {
   const match = String(path || "").toLowerCase().match(/\.[^.\/]+$/);
   return match ? match[0] : "";
@@ -867,13 +885,24 @@ function addImportFileItems(items) {
     return;
   }
   const currentKeys = new Set(importFiles.value.map((item) => `${importItemPath(item)}-${item.file.size}-${item.file.lastModified}`));
+  const skippedKeys = new Set(importSkippedFiles.value.map((item) => `${item.path}-${item.size}-${item.lastModified}`));
   const nextFiles = [...importFiles.value];
-  let skipped = 0;
+  const nextSkippedFiles = [...importSkippedFiles.value];
   for (const item of incoming) {
     const file = item?.file || item;
     const relativePath = normalizeImportPath(file, item?.relativePath || "");
     if (!isSupportedImportFile(file, relativePath)) {
-      skipped += 1;
+      const path = relativePath || file.name || "未命名文件";
+      const key = `${path}-${file.size || 0}-${file.lastModified || 0}`;
+      if (!skippedKeys.has(key)) {
+        skippedKeys.add(key);
+        nextSkippedFiles.push({
+          path,
+          size: file.size || 0,
+          lastModified: file.lastModified || 0,
+          reason: "暂不支持",
+        });
+      }
       continue;
     }
     const key = `${relativePath || file.name}-${file.size}-${file.lastModified}`;
@@ -885,8 +914,9 @@ function addImportFileItems(items) {
   }
   const selectionError = validateImportSelection(nextFiles);
   importFiles.value = nextFiles;
+  importSkippedFiles.value = nextSkippedFiles;
   importDialog.error = selectionError;
-  importDialog.status = skipped ? `已跳过 ${skipped} 个暂不支持的文件。` : "";
+  importDialog.status = nextSkippedFiles.length ? `已跳过 ${nextSkippedFiles.length} 个暂不支持的文件。` : "";
 }
 
 function addImportFiles(fileList, { fromFolder = false } = {}) {
@@ -1012,6 +1042,7 @@ async function submitImportFiles() {
   importDialog.uploading = true;
   importDialog.status = "";
   importDialog.error = "";
+  importDialog.visible = false;
   organizerProgressOpen.value = true;
   syncTaskTimer();
   const formData = new FormData();
@@ -1028,6 +1059,7 @@ async function submitImportFiles() {
     resetImportDialogState();
     await load({ silent: true, refreshLibrary: false });
   } catch (error) {
+    importDialog.visible = true;
     importDialog.error = error instanceof Error ? error.message : "导入失败。";
   } finally {
     importDialog.uploading = false;
