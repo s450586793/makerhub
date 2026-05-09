@@ -55,6 +55,14 @@
                 <span class="mw-crumb__sep">&gt;</span>
                 <span class="mw-crumb">{{ crumb }}</span>
               </template>
+              <button
+                v-if="isLocalModel"
+                class="button button-secondary button-small mw-local-edit-trigger"
+                type="button"
+                @click="openLocalEditDialog"
+              >
+                编辑本地模型
+              </button>
             </div>
           </div>
         </header>
@@ -482,12 +490,29 @@
         </form>
       </article>
 
-      <article id="detail-comments" class="mw-section-card">
+      <article v-if="showCommentsSection" id="detail-comments" class="mw-section-card">
         <div class="mw-section-card__header mw-comment-section__header">
           <div>
             <h2>评论 &amp; 评分 ({{ commentsTotal }})</h2>
           </div>
         </div>
+
+        <div v-if="commentArchiveMismatch" class="mw-comment-sync-notice">
+          <div class="mw-comment-sync-notice__body">
+            <strong>评论归档不完整</strong>
+            <span>源端记录 {{ formatStat(commentsTotal) }} 条，本地已归档 {{ formatStat(commentsArchivedTotal) }} 条。</span>
+          </div>
+          <button
+            class="button button-primary button-small"
+            type="button"
+            :disabled="sourceBackfillLoading"
+            @click="submitSourceBackfill"
+          >
+            {{ sourceBackfillLoading ? "已提交" : "补全评论" }}
+          </button>
+        </div>
+        <p v-if="sourceBackfillMessage" class="mw-source-backfill-status is-success">{{ sourceBackfillMessage }}</p>
+        <p v-if="sourceBackfillError" class="mw-source-backfill-status is-error">{{ sourceBackfillError }}</p>
 
         <div class="mw-comment-toolbar">
           <div class="mw-comment-toolbar__sorts">
@@ -739,6 +764,94 @@
         <img class="lightbox__image" :src="lightbox.src" :alt="lightbox.alt || '预览图片'">
       </div>
     </div>
+
+    <div
+      v-if="localEditDialog.open"
+      class="submit-dialog mw-local-edit-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="local-edit-dialog-title"
+      @click="closeLocalEditDialog"
+    >
+      <div class="submit-dialog__panel mw-local-edit-dialog__panel" @click.stop>
+        <div class="mw-local-edit-dialog__header">
+          <div>
+            <h2 id="local-edit-dialog-title">编辑本地模型</h2>
+            <p>维护描述、图册和模型文件。</p>
+          </div>
+          <button class="button button-secondary button-small" type="button" @click="closeLocalEditDialog">关闭</button>
+        </div>
+
+        <form class="mw-local-edit-block" @submit.prevent="submitLocalDescription">
+          <label class="mw-local-edit-label" for="local-model-description">描述</label>
+          <textarea
+            id="local-model-description"
+            v-model="localEditDialog.description"
+            class="mw-local-edit-textarea"
+            rows="7"
+          ></textarea>
+          <div class="mw-local-edit-actions">
+            <button class="button button-primary button-small" type="submit" :disabled="localEditBusy">
+              保存描述
+            </button>
+          </div>
+        </form>
+
+        <section class="mw-local-edit-block">
+          <div class="mw-local-edit-block__head">
+            <h3>模型文件</h3>
+            <label class="button button-secondary button-small mw-local-edit-picker">
+              <input type="file" multiple accept=".3mf,.stl,.step,.stp,.obj" @change="onLocalModelFilesChange">
+              <span>添加文件</span>
+            </label>
+          </div>
+          <div v-if="detail.instances?.length" class="mw-local-edit-list">
+            <article v-for="profile in detail.instances" :key="profile.instance_key" class="mw-local-edit-row">
+              <div>
+                <strong>{{ profile.title || profile.file_name || "模型文件" }}</strong>
+                <span>{{ profile.file_kind || "文件" }} · {{ profile.file_name || "未命名" }}</span>
+              </div>
+              <button
+                class="button button-secondary button-small mw-doc-action--danger"
+                type="button"
+                :disabled="localEditBusy || detail.instances.length <= 1"
+                @click="deleteLocalModelFile(profile)"
+              >
+                删除
+              </button>
+            </article>
+          </div>
+          <p v-else class="empty-copy">当前没有模型文件。</p>
+        </section>
+
+        <section class="mw-local-edit-block">
+          <div class="mw-local-edit-block__head">
+            <h3>图册图片</h3>
+            <label class="button button-secondary button-small mw-local-edit-picker">
+              <input type="file" multiple accept="image/*" @change="onLocalModelImagesChange">
+              <span>添加图片</span>
+            </label>
+          </div>
+          <div v-if="editableGallery.length" class="mw-local-edit-gallery">
+            <article v-for="image in editableGallery" :key="image.rel_path || image.url" class="mw-local-edit-image">
+              <img :src="image.url" :alt="detail.title || '图册图片'">
+              <button
+                class="button button-secondary button-small mw-doc-action--danger"
+                type="button"
+                :disabled="localEditBusy || !image.rel_path"
+                @click="deleteLocalModelImage(image)"
+              >
+                删除
+              </button>
+            </article>
+          </div>
+          <p v-else class="empty-copy">当前没有图册图片。</p>
+        </section>
+
+        <p v-if="localEditDialog.message" class="mw-local-edit-status is-success">{{ localEditDialog.message }}</p>
+        <p v-if="localEditDialog.error" class="mw-local-edit-status is-error">{{ localEditDialog.error }}</p>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -781,9 +894,20 @@ const commentsReady = ref(false);
 const comments = shallowRef([]);
 const rawComments = shallowRef([]);
 const commentsTotal = ref(0);
+const commentsArchivedTotal = ref(0);
 const commentsNextOffset = ref(null);
 const commentsLoadingMore = ref(false);
 const commentsLoadError = ref("");
+const sourceBackfillLoading = ref(false);
+const sourceBackfillMessage = ref("");
+const sourceBackfillError = ref("");
+const localEditBusy = ref(false);
+const localEditDialog = ref({
+  open: false,
+  description: "",
+  message: "",
+  error: "",
+});
 const commentSortKey = ref("hot");
 const commentsLoadMoreTrigger = ref(null);
 const commentsAutoLoadSupported = ref(false);
@@ -861,11 +985,16 @@ const attachmentCategories = [
   { value: "other", label: "其他附件" },
 ];
 
-const detailSections = [
-  { id: "detail-description", label: "描述" },
-  { id: "detail-docs", label: "文档" },
-  { id: "detail-comments", label: "评论" },
-];
+const detailSections = computed(() => {
+  const sections = [
+    { id: "detail-description", label: "描述" },
+    { id: "detail-docs", label: "文档" },
+  ];
+  if (showCommentsSection.value) {
+    sections.push({ id: "detail-comments", label: "评论" });
+  }
+  return sections;
+});
 const commentSortOptions = [
   { value: "hot", label: "热门" },
   { value: "likes", label: "最多点赞" },
@@ -882,6 +1011,19 @@ function decodeRouteValue(value) {
     return decodeURIComponent(raw);
   } catch {
     return raw;
+  }
+}
+
+function decodeArchivePath(value) {
+  const raw = String(value || "").trim();
+  if (!raw.startsWith("/archive/")) {
+    return "";
+  }
+  const withoutPrefix = raw.slice("/archive/".length).split("#", 1)[0].split("?", 1)[0];
+  try {
+    return decodeURIComponent(withoutPrefix);
+  } catch {
+    return withoutPrefix;
   }
 }
 
@@ -1035,38 +1177,71 @@ const hasMoreComments = computed(() => {
   return commentsReady.value && commentsNextOffset.value !== null;
 });
 
-const actionStats = computed(() => [
-  {
-    key: "downloads",
-    label: "下载",
-    value: detail.value?.stats?.downloads || 0,
-    icon: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.6v8.1"/><path d="m6.9 8.8 3.1 3.2 3.1-3.2"/><path d="M4.2 15.4h11.6"/></svg>',
-  },
-  {
-    key: "likes",
-    label: "点赞",
-    value: detail.value?.stats?.likes || 0,
-    icon: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M7.4 8.2V16H4.7A1.7 1.7 0 0 1 3 14.3V9.9c0-.94.76-1.7 1.7-1.7h2.7Z"/><path d="M7.4 8.2 10 3.9c.42-.68 1.5-.38 1.5.42v2.48h2.66c1.15 0 1.99 1.1 1.68 2.2l-1.46 5.2A1.7 1.7 0 0 1 12.74 16H7.4"/></svg>',
-  },
-  {
-    key: "favorites",
-    label: "收藏",
-    value: detail.value?.stats?.favorites || 0,
-    icon: '<svg viewBox="0 0 20 20" fill="currentColor"><path d="m10 2.4 2.27 4.6 5.08.74-3.67 3.58.86 5.06L10 13.98l-4.54 2.4.86-5.06-3.67-3.58L7.73 7 10 2.4Z"/></svg>',
-  },
-  {
-    key: "comments",
-    label: "评论",
-    value: detail.value?.stats?.comments || 0,
-    icon: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M4.1 5.4A2.4 2.4 0 0 1 6.5 3h7a2.4 2.4 0 0 1 2.4 2.4v5.2a2.4 2.4 0 0 1-2.4 2.4H9l-3.9 3v-3H6.5a2.4 2.4 0 0 1-2.4-2.4V5.4Z"/></svg>',
-  },
-  {
-    key: "prints",
-    label: "打印",
-    value: detail.value?.stats?.prints || 0,
-    icon: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M6 7.2V3.8h8v3.4"/><path d="M5.1 15.8h9.8v-4.7H5.1v4.7Z"/><path d="M4.3 7.2h11.4A1.3 1.3 0 0 1 17 8.5v3.1h-2.1"/><path d="M3 11.6V8.5a1.3 1.3 0 0 1 1.3-1.3"/><circle cx="14.3" cy="9.2" r=".7" fill="currentColor" stroke="none"/></svg>',
-  },
-]);
+const isLocalModel = computed(() => String(detail.value?.source || "").toLowerCase() === "local");
+
+const showCommentsSection = computed(() => !isLocalModel.value);
+
+const sourceBackfillAvailable = computed(() => {
+  return ["cn", "global"].includes(String(detail.value?.source || "").toLowerCase()) && Boolean(detail.value?.origin_url);
+});
+
+const commentArchiveMismatch = computed(() => {
+  return sourceBackfillAvailable.value && commentsTotal.value > 0 && commentsTotal.value !== commentsArchivedTotal.value;
+});
+
+const editableGallery = computed(() => {
+  if (!isLocalModel.value || !Array.isArray(detail.value?.gallery)) {
+    return [];
+  }
+  return detail.value.gallery.map((image) => {
+    const url = String(image?.url || "");
+    const archivePath = decodeArchivePath(url);
+    const currentModelDir = String(detail.value?.model_dir || modelDir.value || "").replace(/^\/+|\/+$/g, "");
+    const relPath = currentModelDir && archivePath.startsWith(`${currentModelDir}/`)
+      ? archivePath.slice(currentModelDir.length + 1)
+      : archivePath;
+    return {
+      ...image,
+      rel_path: relPath,
+    };
+  }).filter((image) => image.rel_path);
+});
+
+const actionStats = computed(() => {
+  const items = [
+    {
+      key: "downloads",
+      label: "下载",
+      value: detail.value?.stats?.downloads || 0,
+      icon: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.6v8.1"/><path d="m6.9 8.8 3.1 3.2 3.1-3.2"/><path d="M4.2 15.4h11.6"/></svg>',
+    },
+    {
+      key: "likes",
+      label: "点赞",
+      value: detail.value?.stats?.likes || 0,
+      icon: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M7.4 8.2V16H4.7A1.7 1.7 0 0 1 3 14.3V9.9c0-.94.76-1.7 1.7-1.7h2.7Z"/><path d="M7.4 8.2 10 3.9c.42-.68 1.5-.38 1.5.42v2.48h2.66c1.15 0 1.99 1.1 1.68 2.2l-1.46 5.2A1.7 1.7 0 0 1 12.74 16H7.4"/></svg>',
+    },
+    {
+      key: "favorites",
+      label: "收藏",
+      value: detail.value?.stats?.favorites || 0,
+      icon: '<svg viewBox="0 0 20 20" fill="currentColor"><path d="m10 2.4 2.27 4.6 5.08.74-3.67 3.58.86 5.06L10 13.98l-4.54 2.4.86-5.06-3.67-3.58L7.73 7 10 2.4Z"/></svg>',
+    },
+    {
+      key: "comments",
+      label: "评论",
+      value: detail.value?.stats?.comments || 0,
+      icon: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M4.1 5.4A2.4 2.4 0 0 1 6.5 3h7a2.4 2.4 0 0 1 2.4 2.4v5.2a2.4 2.4 0 0 1-2.4 2.4H9l-3.9 3v-3H6.5a2.4 2.4 0 0 1-2.4-2.4V5.4Z"/></svg>',
+    },
+    {
+      key: "prints",
+      label: "打印",
+      value: detail.value?.stats?.prints || 0,
+      icon: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M6 7.2V3.8h8v3.4"/><path d="M5.1 15.8h9.8v-4.7H5.1v4.7Z"/><path d="M4.3 7.2h11.4A1.3 1.3 0 0 1 17 8.5v3.1h-2.1"/><path d="M3 11.6V8.5a1.3 1.3 0 0 1 1.3-1.3"/><circle cx="14.3" cy="9.2" r=".7" fill="currentColor" stroke="none"/></svg>',
+    },
+  ];
+  return isLocalModel.value ? items.filter((item) => item.key !== "comments") : items;
+});
 
 const heroDownloadHref = computed(() => {
   if (activeInstance.value?.file_available && activeInstance.value?.file_url) {
@@ -2421,6 +2596,143 @@ function resetAttachmentUploadState(options = {}) {
   }
 }
 
+function resetLocalEditFeedback() {
+  localEditDialog.value.message = "";
+  localEditDialog.value.error = "";
+}
+
+function openLocalEditDialog() {
+  if (!isLocalModel.value) {
+    return;
+  }
+  localEditDialog.value = {
+    open: true,
+    description: detail.value?.summary_text || "",
+    message: "",
+    error: "",
+  };
+}
+
+function closeLocalEditDialog() {
+  if (localEditBusy.value) {
+    return;
+  }
+  localEditDialog.value.open = false;
+}
+
+async function submitLocalDescription() {
+  if (!isLocalModel.value || localEditBusy.value) {
+    return;
+  }
+  localEditBusy.value = true;
+  resetLocalEditFeedback();
+  try {
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/local/description`, {
+      method: "PATCH",
+      body: {
+        description: localEditDialog.value.description,
+      },
+    });
+    await applyDetailPayload(payload.detail);
+    localEditDialog.value.description = payload.detail?.summary_text || localEditDialog.value.description;
+    localEditDialog.value.message = payload.message || "描述已更新。";
+  } catch (error) {
+    localEditDialog.value.error = error instanceof Error ? error.message : "描述保存失败。";
+  } finally {
+    localEditBusy.value = false;
+  }
+}
+
+async function uploadLocalEditFiles(endpoint, files, fallbackMessage) {
+  if (!isLocalModel.value || localEditBusy.value || !files.length) {
+    return;
+  }
+  localEditBusy.value = true;
+  resetLocalEditFeedback();
+  const formData = new FormData();
+  for (const file of files) {
+    formData.append("files", file);
+  }
+  try {
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/local/${endpoint}`, {
+      method: "POST",
+      body: formData,
+    });
+    await applyDetailPayload(payload.detail);
+    localEditDialog.value.message = payload.message || fallbackMessage;
+  } catch (error) {
+    localEditDialog.value.error = error instanceof Error ? error.message : "上传失败。";
+  } finally {
+    localEditBusy.value = false;
+  }
+}
+
+async function onLocalModelFilesChange(event) {
+  const files = [...(event.target.files || [])];
+  event.target.value = "";
+  await uploadLocalEditFiles("files", files, "模型文件已添加。");
+}
+
+async function onLocalModelImagesChange(event) {
+  const files = [...(event.target.files || [])];
+  event.target.value = "";
+  await uploadLocalEditFiles("images", files, "图片已添加。");
+}
+
+async function deleteLocalModelFile(profile) {
+  if (!isLocalModel.value || localEditBusy.value || !profile?.instance_key) {
+    return;
+  }
+  if ((detail.value?.instances?.length || 0) <= 1) {
+    localEditDialog.value.error = "至少保留一个模型文件。";
+    return;
+  }
+  if (!window.confirm(`确认删除模型文件“${profile.file_name || profile.title || "未命名"}”吗？`)) {
+    return;
+  }
+  localEditBusy.value = true;
+  resetLocalEditFeedback();
+  try {
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/local/files`, {
+      method: "DELETE",
+      body: {
+        instance_key: profile.instance_key,
+      },
+    });
+    await applyDetailPayload(payload.detail);
+    localEditDialog.value.message = payload.message || "模型文件已删除。";
+  } catch (error) {
+    localEditDialog.value.error = error instanceof Error ? error.message : "模型文件删除失败。";
+  } finally {
+    localEditBusy.value = false;
+  }
+}
+
+async function deleteLocalModelImage(image) {
+  if (!isLocalModel.value || localEditBusy.value || !image?.rel_path) {
+    return;
+  }
+  if (!window.confirm("确认删除这张图册图片吗？")) {
+    return;
+  }
+  localEditBusy.value = true;
+  resetLocalEditFeedback();
+  try {
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/local/images`, {
+      method: "DELETE",
+      body: {
+        rel_path: image.rel_path,
+      },
+    });
+    await applyDetailPayload(payload.detail);
+    localEditDialog.value.message = payload.message || "图片已删除。";
+  } catch (error) {
+    localEditDialog.value.error = error instanceof Error ? error.message : "图片删除失败。";
+  } finally {
+    localEditBusy.value = false;
+  }
+}
+
 function prepareDetailPayload(payload) {
   if (!payload || typeof payload !== "object") {
     return payload;
@@ -2466,9 +2778,22 @@ function resetDetailViewState({ clearDetail = true } = {}) {
   comments.value = [];
   rawComments.value = [];
   commentsTotal.value = 0;
+  commentsArchivedTotal.value = 0;
   commentsNextOffset.value = null;
   commentsLoadingMore.value = false;
   commentsLoadError.value = "";
+  sourceBackfillLoading.value = false;
+  sourceBackfillMessage.value = "";
+  sourceBackfillError.value = "";
+  if (clearDetail) {
+    localEditDialog.value = {
+      open: false,
+      description: "",
+      message: "",
+      error: "",
+    };
+    localEditBusy.value = false;
+  }
   expandedCommentReplies.value = {};
   disconnectCommentsLoadMoreObserver();
   if (clearDetail) {
@@ -2484,6 +2809,7 @@ async function applyDetailPayload(payload, { syncHash = true, cache = true } = {
   rawComments.value = Array.isArray(preparedPayload?.comments) ? preparedPayload.comments : [];
   comments.value = prepareComments(rawComments.value);
   commentsTotal.value = Number(preparedPayload?.comments_total || comments.value.length);
+  commentsArchivedTotal.value = Number(preparedPayload?.comments_archived_total ?? commentsTotal.value);
   commentsNextOffset.value = preparedPayload?.comments_next_offset ?? null;
   const matchedInstance = syncHash ? findInstanceByHash(preparedPayload?.instances || []) : null;
   const initialInstance = matchedInstance || preparedPayload?.instances?.[0] || null;
@@ -2546,11 +2872,32 @@ async function loadMoreComments() {
     rawComments.value = [...rawComments.value, ...(Array.isArray(payload.items) ? payload.items : [])];
     comments.value = prepareComments(rawComments.value);
     commentsTotal.value = Number(payload.total || commentsTotal.value || comments.value.length);
+    commentsArchivedTotal.value = Number(payload.archived_total ?? commentsArchivedTotal.value ?? comments.value.length);
     commentsNextOffset.value = payload.next_offset ?? null;
   } catch (error) {
     commentsLoadError.value = error instanceof Error ? error.message : "评论加载失败。";
   } finally {
     commentsLoadingMore.value = false;
+  }
+}
+
+async function submitSourceBackfill() {
+  if (!sourceBackfillAvailable.value || sourceBackfillLoading.value) {
+    return;
+  }
+  sourceBackfillLoading.value = true;
+  sourceBackfillMessage.value = "";
+  sourceBackfillError.value = "";
+  try {
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/source-backfill`, {
+      method: "POST",
+      body: {},
+    });
+    sourceBackfillMessage.value = payload.message || "补全任务已加入队列。";
+  } catch (error) {
+    sourceBackfillError.value = error instanceof Error ? error.message : "补全任务提交失败。";
+  } finally {
+    sourceBackfillLoading.value = false;
   }
 }
 
@@ -2706,9 +3053,14 @@ onBeforeUnmount(() => {
   comments.value = [];
   rawComments.value = [];
   commentsTotal.value = 0;
+  commentsArchivedTotal.value = 0;
   commentsNextOffset.value = null;
   commentsLoadingMore.value = false;
   commentsLoadError.value = "";
+  sourceBackfillLoading.value = false;
+  sourceBackfillMessage.value = "";
+  sourceBackfillError.value = "";
+  localEditBusy.value = false;
   expandedCommentReplies.value = {};
   disconnectCommentsLoadMoreObserver();
   if (commentsRenderFrame && typeof window !== "undefined") {

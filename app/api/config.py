@@ -18,6 +18,9 @@ from app.schemas.models import (
     Missing3mfCancelRequest,
     CookiePair,
     CookieTestRequest,
+    LocalModelDescriptionUpdateRequest,
+    LocalModelFileDeleteRequest,
+    LocalModelImageDeleteRequest,
     LocalModelMergeRequest,
     Missing3mfRetryRequest,
     ModelDeleteRequest,
@@ -48,6 +51,13 @@ from app.services.business_logs import append_business_log, read_log_entries
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.local_organizer import LocalOrganizerService
 from app.services.local_import_upload import upload_local_import_files
+from app.services.local_model_edit import (
+    add_local_model_file,
+    add_local_model_image,
+    delete_local_model_file,
+    delete_local_model_image,
+    update_local_model_description,
+)
 from app.services.local_model_merge import merge_local_models
 from app.services.model_attachments import create_manual_attachment, delete_manual_attachment
 from app.services.remote_refresh import RemoteRefreshManager
@@ -1018,6 +1028,49 @@ async def get_model_detail_comments(
     return payload
 
 
+@router.post("/models/{model_dir:path}/source-backfill")
+async def backfill_model_source_metadata(model_dir: str, request: Request):
+    _require_session_auth(request)
+
+    def _submit_backfill() -> dict:
+        detail = get_model_detail(model_dir, include_detail=True)
+        if detail is None:
+            raise ValueError("模型不存在。")
+
+        source = str(detail.get("source") or "").strip().lower()
+        origin_url = str(detail.get("origin_url") or "").strip()
+        if source not in {"cn", "global"} or not origin_url:
+            raise ValueError("本地模型或缺少源端链接，无法补全源端信息。")
+
+        response = crawler.manager.submit_profile_metadata_backfill(
+            origin_url,
+            model_dir=str(detail.get("model_dir") or model_dir),
+            title=str(detail.get("title") or model_dir),
+        )
+        append_business_log(
+            "model",
+            "source_backfill_requested",
+            response.get("message") or "源端信息补全已提交。",
+            accepted=bool(response.get("accepted")),
+            queued=bool(response.get("queued")),
+            model_dir=str(detail.get("model_dir") or model_dir),
+            url=origin_url,
+            task_id=response.get("task_id"),
+        )
+        return {
+            **response,
+            "success": bool(response.get("accepted") or response.get("queued")),
+            "model_dir": str(detail.get("model_dir") or model_dir),
+        }
+
+    try:
+        return await run_task_api(_submit_backfill)
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 404 if "不存在" in message else 400
+        raise HTTPException(status_code=status_code, detail=message) from exc
+
+
 @router.get("/models/{model_dir:path}")
 async def get_model_detail_data(model_dir: str):
     detail = await run_web_io(get_model_detail, model_dir)
@@ -1094,6 +1147,183 @@ async def remove_model_attachment(model_dir: str, attachment_id: str, request: R
         "removed": removed,
         "detail": detail,
         "message": "附件已删除。",
+    }
+
+
+@router.patch("/models/{model_dir:path}/local/description")
+async def update_local_model_description_data(
+    model_dir: str,
+    payload: LocalModelDescriptionUpdateRequest,
+    request: Request,
+):
+    _require_session_auth(request)
+    try:
+        def _update_and_load_detail():
+            result = update_local_model_description(model_dir, payload.description)
+            return result, get_model_detail(model_dir)
+
+        result, detail = await run_task_api(_update_and_load_detail)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if detail is None:
+        raise HTTPException(status_code=404, detail="模型不存在。")
+
+    append_business_log(
+        "model",
+        "local_model_description_updated",
+        "本地模型描述已更新。",
+        model_dir=model_dir,
+    )
+    return {
+        "success": True,
+        "result": result,
+        "detail": detail,
+        "message": "描述已更新。",
+    }
+
+
+@router.post("/models/{model_dir:path}/local/files")
+async def upload_local_model_files(
+    model_dir: str,
+    request: Request,
+    files: list[UploadFile] = File(...),
+):
+    _require_session_auth(request)
+    uploaded = []
+    try:
+        def _upload_and_load_detail():
+            items = [add_local_model_file(model_dir, file) for file in files]
+            return items, get_model_detail(model_dir)
+
+        uploaded, detail = await run_task_api(_upload_and_load_detail)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        for file in files:
+            await file.close()
+
+    if detail is None:
+        raise HTTPException(status_code=404, detail="模型不存在。")
+
+    append_business_log(
+        "model",
+        "local_model_files_uploaded",
+        "本地模型文件已上传。",
+        model_dir=model_dir,
+        count=len(uploaded),
+    )
+    return {
+        "success": True,
+        "items": uploaded,
+        "detail": detail,
+        "message": f"已添加 {len(uploaded)} 个模型文件。",
+    }
+
+
+@router.delete("/models/{model_dir:path}/local/files")
+async def remove_local_model_file(
+    model_dir: str,
+    payload: LocalModelFileDeleteRequest,
+    request: Request,
+):
+    _require_session_auth(request)
+    try:
+        def _remove_and_load_detail():
+            removed_item = delete_local_model_file(model_dir, payload.instance_key)
+            return removed_item, get_model_detail(model_dir)
+
+        removed, detail = await run_task_api(_remove_and_load_detail)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if detail is None:
+        raise HTTPException(status_code=404, detail="模型不存在。")
+
+    append_business_log(
+        "model",
+        "local_model_file_deleted",
+        "本地模型文件已删除。",
+        model_dir=model_dir,
+        instance_key=payload.instance_key,
+    )
+    return {
+        "success": True,
+        "removed": removed,
+        "detail": detail,
+        "message": "模型文件已删除。",
+    }
+
+
+@router.post("/models/{model_dir:path}/local/images")
+async def upload_local_model_images(
+    model_dir: str,
+    request: Request,
+    files: list[UploadFile] = File(...),
+):
+    _require_session_auth(request)
+    uploaded = []
+    try:
+        def _upload_and_load_detail():
+            items = [add_local_model_image(model_dir, file) for file in files]
+            return items, get_model_detail(model_dir)
+
+        uploaded, detail = await run_task_api(_upload_and_load_detail)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        for file in files:
+            await file.close()
+
+    if detail is None:
+        raise HTTPException(status_code=404, detail="模型不存在。")
+
+    append_business_log(
+        "model",
+        "local_model_images_uploaded",
+        "本地模型图片已上传。",
+        model_dir=model_dir,
+        count=len(uploaded),
+    )
+    return {
+        "success": True,
+        "items": uploaded,
+        "detail": detail,
+        "message": f"已添加 {len(uploaded)} 张图片。",
+    }
+
+
+@router.delete("/models/{model_dir:path}/local/images")
+async def remove_local_model_image(
+    model_dir: str,
+    payload: LocalModelImageDeleteRequest,
+    request: Request,
+):
+    _require_session_auth(request)
+    try:
+        def _remove_and_load_detail():
+            removed_item = delete_local_model_image(model_dir, payload.rel_path)
+            return removed_item, get_model_detail(model_dir)
+
+        removed, detail = await run_task_api(_remove_and_load_detail)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if detail is None:
+        raise HTTPException(status_code=404, detail="模型不存在。")
+
+    append_business_log(
+        "model",
+        "local_model_image_deleted",
+        "本地模型图片已删除。",
+        model_dir=model_dir,
+        rel_path=payload.rel_path,
+    )
+    return {
+        "success": True,
+        "removed": removed,
+        "detail": detail,
+        "message": "图片已删除。",
     }
 
 

@@ -1629,7 +1629,22 @@ def _normalize_comments(meta: dict, model_root: Path, offset: int = 0, limit: Op
     return normalized[start : start + max(int(limit or 0), 0)]
 
 
-def _normalize_comments_page(meta: dict, model_root: Path, offset: int = 0, limit: int = DETAIL_COMMENTS_PAGE_SIZE) -> tuple[list[dict], Optional[int], int]:
+def _count_normalized_comment_tree(items: list[dict]) -> int:
+    total = 0
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        total += 1
+        total += _count_normalized_comment_tree(_normalized_comment_replies(item))
+    return total
+
+
+def _normalize_comments_page_detail(
+    meta: dict,
+    model_root: Path,
+    offset: int = 0,
+    limit: int = DETAIL_COMMENTS_PAGE_SIZE,
+) -> tuple[list[dict], Optional[int], int, int]:
     comment_items = meta.get("comments") if isinstance(meta.get("comments"), list) else []
     normalized = _thread_normalized_comments(comment_items, model_root)
     safe_offset = max(int(offset or 0), 0)
@@ -1639,6 +1654,16 @@ def _normalize_comments_page(meta: dict, model_root: Path, offset: int = 0, limi
     if next_offset >= len(normalized):
         next_offset = None
     total = max(len(comment_items), _safe_int((_normalize_stats(meta) or {}).get("comments")))
+    return items, next_offset, total, _count_normalized_comment_tree(normalized)
+
+
+def _normalize_comments_page(meta: dict, model_root: Path, offset: int = 0, limit: int = DETAIL_COMMENTS_PAGE_SIZE) -> tuple[list[dict], Optional[int], int]:
+    items, next_offset, total, _archived_total = _normalize_comments_page_detail(
+        meta,
+        model_root,
+        offset=offset,
+        limit=limit,
+    )
     return items, next_offset, total
 
 
@@ -1800,7 +1825,7 @@ def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[
         return payload
 
     summary = meta.get("summary") if isinstance(meta.get("summary"), dict) else {}
-    initial_comments, comments_next_offset, total_comments = _normalize_comments_page(
+    initial_comments, comments_next_offset, total_comments, archived_comments_total = _normalize_comments_page_detail(
         meta,
         model_root,
         offset=0,
@@ -1813,6 +1838,7 @@ def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[
             "summary_text": str(summary.get("text") or summary.get("raw") or ""),
             "comments": initial_comments,
             "comments_total": total_comments,
+            "comments_archived_total": archived_comments_total,
             "comments_next_offset": comments_next_offset,
             "instances": _normalize_instances(meta, model_root),
             "attachments": _normalize_attachments(meta, model_root),
@@ -2124,7 +2150,7 @@ def get_model_comments_page(model_dir: str, offset: int = 0, limit: int = DETAIL
 
     safe_offset = max(int(offset or 0), 0)
     safe_limit = max(int(limit or 0), 1)
-    items, next_offset, total = _normalize_comments_page(
+    items, next_offset, total, archived_total = _normalize_comments_page_detail(
         meta,
         target,
         offset=safe_offset,
@@ -2137,6 +2163,7 @@ def get_model_comments_page(model_dir: str, offset: int = 0, limit: int = DETAIL
         "limit": safe_limit,
         "next_offset": next_offset,
         "total": total,
+        "archived_total": archived_total,
     }
 
 

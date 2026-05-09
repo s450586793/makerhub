@@ -150,6 +150,43 @@ class LegacyArchiverValidationTest(unittest.TestCase):
 
         self.assertEqual(count, 4)
 
+    def test_choose_archive_base_name_prefers_existing_model_dir(self):
+        class _FakeDir:
+            def __init__(self, name, root=None):
+                self.name = name
+                self._root = root or self
+
+            def resolve(self):
+                return self
+
+            def __truediv__(self, child):
+                return _FakeDir(str(child), root=self._root if self is not self._root else self)
+
+            def exists(self):
+                return self.name == "MW_2475775_旧标题"
+
+            def is_dir(self):
+                return self.exists()
+
+            def relative_to(self, _root):
+                return self
+
+            def as_posix(self):
+                return self.name
+
+            def glob(self, _pattern):
+                return []
+
+        base_name, action = legacy_archiver.choose_archive_base_name(
+            2475775,
+            "新标题",
+            existing_root=_FakeDir("archive"),
+            existing_model_dir="MW_2475775_旧标题",
+        )
+
+        self.assertEqual(base_name, "MW_2475775_旧标题")
+        self.assertEqual(action, "updated")
+
 
 if __name__ == "__main__":
     unittest.main()

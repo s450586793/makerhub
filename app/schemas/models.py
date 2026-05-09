@@ -120,6 +120,18 @@ class LocalModelMergeRequest(BaseModel):
     cover_from_model_dir: str = ""
 
 
+class LocalModelDescriptionUpdateRequest(BaseModel):
+    description: str = ""
+
+
+class LocalModelFileDeleteRequest(BaseModel):
+    instance_key: str = ""
+
+
+class LocalModelImageDeleteRequest(BaseModel):
+    rel_path: str = ""
+
+
 class Missing3mfItem(BaseModel):
     model_id: str
     title: str

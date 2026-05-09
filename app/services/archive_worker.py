@@ -1740,6 +1740,7 @@ class ArchiveTaskManager:
             raise RuntimeError("未找到可用 Cookie，请先到设置页配置对应站点 Cookie。")
 
         meta = meta if isinstance(meta, dict) else {}
+        existing_model_dir = str(meta.get("existing_model_dir") or "").strip().strip("/")
         profile_metadata_only = bool(meta.get("profile_metadata_only"))
         missing_3mf_retry = bool(meta.get("missing_3mf_retry"))
         three_mf_download_task = bool(meta.get("three_mf_download"))
@@ -1794,6 +1795,7 @@ class ArchiveTaskManager:
                 three_mf_skip_state="download_limited" if daily_limit_active and not profile_metadata_only else "",
                 three_mf_daily_limit_cn=cn_daily_limit,
                 three_mf_daily_limit_global=global_daily_limit,
+                existing_model_dir=existing_model_dir,
             )
 
         missing_items = []

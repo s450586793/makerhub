@@ -1,10 +1,12 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app.services import legacy_archiver
 from app.services.archive_profile_backfill import _meta_needs_profile_backfill
-from app.services.catalog import _normalize_comment_item, _normalize_comments, _normalize_comments_page
+from app.services.catalog import _normalize_comment_item, _normalize_comments, _normalize_comments_page, _normalize_model
 from app.services.legacy_archiver import (
     COMMENT_SCHEMA_VERSION,
     PROFILE_DETAIL_SCHEMA_VERSION,
@@ -240,6 +242,75 @@ class CommentRepliesTest(unittest.TestCase):
         self.assertEqual(total, 3)
         self.assertEqual([item["id"] for item in second_items], ["root-3"])
         self.assertIsNone(second_next)
+
+    def test_catalog_comment_page_total_can_exceed_archived_comments(self):
+        meta = {
+            "commentCount": 4,
+            "comments": [
+                {
+                    "commentId": "root-comment",
+                    "commentContent": "主评论",
+                    "commentTime": "2026-04-23 12:00:00",
+                    "replyCount": 1,
+                    "replies": [
+                        {
+                            "commentId": "reply-comment",
+                            "commentContent": "回复",
+                            "commentTime": "2026-04-23 12:05:00",
+                        }
+                    ],
+                }
+            ],
+        }
+
+        items, next_offset, total = _normalize_comments_page(meta, Path("."), offset=0, limit=20)
+
+        self.assertEqual(total, 4)
+        self.assertIsNone(next_offset)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(len(items[0]["replies"]), 1)
+
+    def test_catalog_detail_reports_archived_comment_tree_total(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir).resolve()
+            model_root = root / "MW_2475775_Test"
+            model_root.mkdir()
+            meta_path = model_root / "meta.json"
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "source": "mw_cn",
+                        "url": "https://makerworld.com.cn/zh/models/2475775",
+                        "id": "2475775",
+                        "title": "Test",
+                        "commentCount": 4,
+                        "comments": [
+                            {
+                                "commentId": "root-comment",
+                                "commentContent": "主评论",
+                                "commentTime": "2026-04-23 12:00:00",
+                                "replyCount": 1,
+                                "replies": [
+                                    {
+                                        "commentId": "reply-comment",
+                                        "commentContent": "回复",
+                                        "commentTime": "2026-04-23 12:05:00",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with patch("app.services.catalog.ARCHIVE_DIR", root):
+                detail = _normalize_model(meta_path, include_detail=True)
+
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail["comments_total"], 4)
+        self.assertEqual(detail["comments_archived_total"], 2)
 
     def test_catalog_threads_sequential_flattened_replies_without_root_comment_id(self):
         meta = {

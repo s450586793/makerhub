@@ -4828,7 +4828,12 @@ def move_or_replace(src: Path, dst: Path, label: str):
     return True
 
 
-def choose_archive_base_name(design_id: int, title: str, existing_root: Optional[Path] = None) -> tuple[str, str]:
+def choose_archive_base_name(
+    design_id: int,
+    title: str,
+    existing_root: Optional[Path] = None,
+    existing_model_dir: str = "",
+) -> tuple[str, str]:
     desired = f"MW_{design_id}_{sanitize_filename(title or 'model')}"
     if existing_root is None:
         return desired, "created"
@@ -4836,6 +4841,19 @@ def choose_archive_base_name(design_id: int, title: str, existing_root: Optional
         root = existing_root.resolve()
     except Exception:
         root = existing_root
+
+    clean_existing_model_dir = str(existing_model_dir or "").strip().strip("/")
+    if clean_existing_model_dir:
+        existing_dir = (root / clean_existing_model_dir).resolve()
+        try:
+            existing_dir.relative_to(root)
+        except ValueError:
+            existing_dir = root / clean_existing_model_dir
+        if existing_dir.exists() and existing_dir.is_dir():
+            try:
+                return existing_dir.relative_to(root).as_posix(), "updated"
+            except ValueError:
+                return clean_existing_model_dir, "updated"
 
     exact_dir = root / desired
     if exact_dir.exists() and exact_dir.is_dir():
@@ -5903,6 +5921,7 @@ def archive_model(
     three_mf_skip_state: str = "",
     three_mf_daily_limit_cn: int = 100,
     three_mf_daily_limit_global: int = 100,
+    existing_model_dir: str = "",
 ):
     """
     对外主入口：采集 + 下载文件 + 生成 meta，并整理归档目录。
@@ -6011,7 +6030,12 @@ def archive_model(
     if design_id is None:
         raise RuntimeError("未获取到模型 ID")
     title = design.get("title") or "model"
-    base_name, action = choose_archive_base_name(design_id, title, existing_root=existing_root)
+    base_name, action = choose_archive_base_name(
+        design_id,
+        title,
+        existing_root=existing_root,
+        existing_model_dir=existing_model_dir,
+    )
     work_dir = out_root / base_name
     existing_meta = load_existing_meta(work_dir) if action == "updated" else {}
     images_dir = work_dir / "images"

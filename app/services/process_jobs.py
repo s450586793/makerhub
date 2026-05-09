@@ -118,6 +118,7 @@ def _run_archive_model_entry(queue, payload: dict[str, Any]) -> None:
             three_mf_skip_state=str(payload.get("three_mf_skip_state") or ""),
             three_mf_daily_limit_cn=_normalize_three_mf_daily_limit(payload.get("three_mf_daily_limit_cn")),
             three_mf_daily_limit_global=_normalize_three_mf_daily_limit(payload.get("three_mf_daily_limit_global")),
+            existing_model_dir=str(payload.get("existing_model_dir") or ""),
         )
         _emit(queue, "result", result)
     except Exception as exc:
@@ -277,6 +278,7 @@ def run_archive_model_job(
     three_mf_skip_state: str = "",
     three_mf_daily_limit_cn: int = 100,
     three_mf_daily_limit_global: int = 100,
+    existing_model_dir: str = "",
 ) -> dict[str, Any]:
     with resource_slot("makerworld_page_api", detail=normalize_source_url(url)):
         if not _use_subprocess():
@@ -297,6 +299,7 @@ def run_archive_model_job(
                 three_mf_skip_state=three_mf_skip_state,
                 three_mf_daily_limit_cn=three_mf_daily_limit_cn,
                 three_mf_daily_limit_global=three_mf_daily_limit_global,
+                existing_model_dir=existing_model_dir,
             )
         return _run_process_job(
             _run_archive_model_entry,
@@ -316,6 +319,7 @@ def run_archive_model_job(
                 "three_mf_skip_state": three_mf_skip_state,
                 "three_mf_daily_limit_cn": three_mf_daily_limit_cn,
                 "three_mf_daily_limit_global": three_mf_daily_limit_global,
+                "existing_model_dir": existing_model_dir,
             },
             progress_callback=progress_callback,
         )
