@@ -6,6 +6,7 @@ import json
 import mimetypes
 import os
 import shutil
+import subprocess
 import threading
 import time
 import zipfile
@@ -33,9 +34,11 @@ LOCAL_IMPORT_HASH_CHUNK_SIZE_BYTES = 1024 * 1024
 LOCAL_IMPORT_HASH_PAUSE_EVERY_BYTES = 8 * 1024 * 1024
 LOCAL_IMPORT_HASH_PAUSE_SECONDS = 0.01
 LOCAL_IMPORT_MAX_ZIP_DEPTH = 3
+LOCAL_IMPORT_MAX_ARCHIVE_DEPTH = LOCAL_IMPORT_MAX_ZIP_DEPTH
 LOCAL_IMPORT_MAX_EXTRACTED_BYTES = MAX_LOCAL_IMPORT_UPLOAD_BYTES * 4
 ORGANIZER_LIBRARY_INDEX_CACHE_PATH = STATE_DIR / "organizer_library_index.json"
 
+PACKAGE_ARCHIVE_SUFFIXES = {".zip", ".rar"}
 MODEL_SUFFIXES = {".3mf", ".stl", ".step", ".stp", ".obj"}
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif"}
 TEXT_SUFFIXES = {".txt", ".md", ".markdown", ".html", ".htm"}
@@ -230,9 +233,9 @@ def _package_title(entries: list[dict[str, Any]]) -> str:
     if folder_roots and len(set(folder_roots)) == 1:
         return folder_roots[0]
 
-    zip_entries = [item for item in entries if str(item.get("suffix") or "").lower() == ".zip"]
-    if len(zip_entries) == 1:
-        return Path(str(zip_entries[0].get("file_name") or "本地模型")).stem
+    archive_entries = [item for item in entries if str(item.get("suffix") or "").lower() in PACKAGE_ARCHIVE_SUFFIXES]
+    if len(archive_entries) == 1:
+        return Path(str(archive_entries[0].get("file_name") or "本地模型")).stem
 
     model_entries = [item for item in entries if str(item.get("suffix") or "").lower() in MODEL_SUFFIXES]
     if len(model_entries) == 1:
@@ -302,6 +305,14 @@ def _copy_zip_member(archive: zipfile.ZipFile, info: zipfile.ZipInfo, target_pat
     return written
 
 
+def _archive_type_label(suffix: str) -> str:
+    return "RAR" if str(suffix or "").lower() == ".rar" else "ZIP"
+
+
+def _archive_unreadable_reason(suffix: str) -> str:
+    return f"{_archive_type_label(suffix)} 文件无法读取"
+
+
 def _extract_zip_file(
     item: dict[str, Any],
     extraction_root: Path,
@@ -318,12 +329,12 @@ def _extract_zip_file(
         archive = zipfile.ZipFile(zip_path)
     except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
         if depth <= 0:
-            raise ValueError(f"ZIP 文件无法读取：{Path(source_relative).name}") from exc
+            raise ValueError(f"{_archive_unreadable_reason('.zip')}：{Path(source_relative).name}") from exc
         skipped_archives.append(
             {
                 "file_name": Path(source_relative).name,
                 "relative_path": source_relative,
-                "reason": "ZIP 文件无法读取",
+                "reason": _archive_unreadable_reason(".zip"),
             }
         )
         return []
@@ -360,6 +371,117 @@ def _extract_zip_file(
     return extracted
 
 
+def _extract_rar_with_bsdtar(rar_path: Path, destination: Path) -> None:
+    executable = shutil.which("bsdtar")
+    if not executable:
+        raise RuntimeError("RAR 解包工具不可用")
+
+    destination.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        [executable, "-xf", str(rar_path), "-C", str(destination)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        message = " ".join((result.stderr or result.stdout or "").split()).strip()
+        raise RuntimeError(message or "RAR 解包失败")
+
+
+def _copy_extracted_archive_file(source_path: Path, target_path: Path) -> int:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    size = source_path.stat().st_size
+    temp_path = target_path.with_name(f".{target_path.name}.{os.getpid()}.{threading.get_ident()}.{uuid4().hex[:8]}.copying")
+    try:
+        shutil.copy2(source_path, temp_path)
+        temp_path.replace(target_path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        target_path.unlink(missing_ok=True)
+        raise
+    return size
+
+
+def _extract_rar_file(
+    item: dict[str, Any],
+    extraction_root: Path,
+    extracted_total: list[int],
+    skipped_archives: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rar_path = Path(item["path"])
+    source_relative = str(item.get("relative_path") or rar_path.name)
+    depth = int(item.get("archive_depth") or 0)
+    rar_stem = sanitize_filename(Path(source_relative).stem) or "rar"
+    temp_dir = extraction_root.parent / f".{rar_stem}.{uuid4().hex[:8]}.rar_extracting"
+    extracted: list[dict[str, Any]] = []
+
+    try:
+        _extract_rar_with_bsdtar(rar_path, temp_dir)
+    except Exception as exc:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        if depth <= 0:
+            raise ValueError(f"{_archive_unreadable_reason('.rar')}：{Path(source_relative).name}") from exc
+        skipped_archives.append(
+            {
+                "file_name": Path(source_relative).name,
+                "relative_path": source_relative,
+                "reason": _archive_unreadable_reason(".rar"),
+            }
+        )
+        return []
+
+    try:
+        for source_path in sorted(temp_dir.rglob("*")):
+            if source_path.is_symlink() or not source_path.is_file():
+                continue
+            try:
+                raw_relative = source_path.relative_to(temp_dir).as_posix()
+            except ValueError:
+                continue
+            member_relative = _normalize_relative_path(raw_relative, source_path.name or "file")
+            if _is_ignored_relative_path(member_relative):
+                continue
+
+            size = int(source_path.stat().st_size)
+            if size <= 0:
+                continue
+            if size > MAX_LOCAL_IMPORT_UPLOAD_BYTES:
+                raise ValueError(f"RAR 内文件过大：{Path(member_relative).name}")
+            extracted_total[0] += size
+            if extracted_total[0] > LOCAL_IMPORT_MAX_EXTRACTED_BYTES:
+                raise ValueError("RAR 解压后的文件总量过大。")
+
+            target_path = _unique_relative_destination(extraction_root, f"{rar_stem}/{member_relative}")
+            copied_size = _copy_extracted_archive_file(source_path, target_path)
+            if copied_size <= 0:
+                continue
+            extracted.append(
+                {
+                    "path": target_path,
+                    "file_name": target_path.name,
+                    "relative_path": f"{source_relative}!/{member_relative}",
+                    "size": copied_size,
+                    "archive_depth": depth + 1,
+                }
+            )
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    return extracted
+
+
+def _extract_package_archive_file(
+    item: dict[str, Any],
+    extraction_root: Path,
+    extracted_total: list[int],
+    skipped_archives: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    suffix = Path(str(item.get("file_name") or "")).suffix.lower()
+    if suffix == ".rar":
+        return _extract_rar_file(item, extraction_root, extracted_total, skipped_archives)
+    return _extract_zip_file(item, extraction_root, extracted_total, skipped_archives)
+
+
 def _expand_package_archives(staged: list[dict[str, Any]], staging_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     extraction_root = staging_dir / "extracted"
     pending = list(staged)
@@ -371,8 +493,8 @@ def _expand_package_archives(staged: list[dict[str, Any]], staging_dir: Path) ->
         item = pending.pop(0)
         suffix = Path(str(item.get("file_name") or "")).suffix.lower()
         depth = int(item.get("archive_depth") or 0)
-        if suffix == ".zip" and depth < LOCAL_IMPORT_MAX_ZIP_DEPTH:
-            pending.extend(_extract_zip_file(item, extraction_root, extracted_total, skipped_archives))
+        if suffix in PACKAGE_ARCHIVE_SUFFIXES and depth < LOCAL_IMPORT_MAX_ARCHIVE_DEPTH:
+            pending.extend(_extract_package_archive_file(item, extraction_root, extracted_total, skipped_archives))
             continue
         expanded.append(item)
     return expanded, skipped_archives
@@ -997,7 +1119,7 @@ def upload_local_import_files(
     if not entries:
         raise ValueError("请选择要导入的文件。")
     if _has_direct_3mf_mix(entries):
-        raise ValueError("3MF 请单独导入；包含图片、说明、STL 或 zip 时，请打包为 zip 或选择文件夹。")
+        raise ValueError("3MF 请单独导入；包含图片、说明、STL、zip 或 rar 时，请打包为 zip/rar 或选择文件夹。")
 
     store = store or JsonStore()
     task_store = task_store or TaskStateStore()

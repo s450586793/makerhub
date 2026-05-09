@@ -122,7 +122,7 @@
   >
     <div class="submit-dialog__panel local-import-dialog__panel" @click.stop>
       <h2 id="local-import-dialog-title">导入本地模型</h2>
-      <p>3MF 会沿用本地整理流程；STL、zip、文件夹会按文件类型生成本地模型。</p>
+      <p>3MF 会沿用本地整理流程；STL、zip、rar、文件夹会按文件类型生成本地模型。</p>
       <div
         :class="['local-import-dialog__dropzone', importDialog.dragging && 'is-dragging']"
         role="button"
@@ -136,7 +136,7 @@
         @drop.prevent="handleImportDrop"
       >
         <strong>拖入文件或文件夹</strong>
-        <span>3MF / STL / zip / 图片 / PDF</span>
+        <span>3MF / STL / zip / rar / 图片 / PDF</span>
       </div>
       <div class="local-import-dialog__pickers">
         <button class="button button-secondary button-small" type="button" :disabled="importDialog.uploading" @click="openImportFilePicker">
@@ -223,6 +223,7 @@ const LOCAL_IMPORT_ACCEPT = [
   ".stp",
   ".obj",
   ".zip",
+  ".rar",
   ".jpg",
   ".jpeg",
   ".png",
@@ -231,6 +232,18 @@ const LOCAL_IMPORT_ACCEPT = [
   ".bmp",
   ".avif",
   ".pdf",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".xlsm",
+  ".xlsb",
+  ".xlt",
+  ".xltx",
+  ".xltm",
+  ".csv",
+  ".tsv",
+  ".ods",
   ".txt",
   ".md",
   ".markdown",
@@ -239,6 +252,8 @@ const LOCAL_IMPORT_ACCEPT = [
   ".mp4",
   ".mov",
   ".webm",
+  ".avi",
+  ".mkv",
 ].join(",");
 const LOCAL_IMPORT_SUPPORTED_SUFFIXES = new Set(LOCAL_IMPORT_ACCEPT.split(","));
 
@@ -871,10 +886,10 @@ function isSupportedImportFile(file, relativePath = "") {
 
 function validateImportSelection(items) {
   const hasFolderItem = items.some((item) => importItemPath(item).includes("/"));
-  const hasZip = items.some((item) => importSuffix(importItemPath(item)) === ".zip");
+  const hasArchive = items.some((item) => [".zip", ".rar"].includes(importSuffix(importItemPath(item))));
   const has3mf = items.some((item) => importSuffix(importItemPath(item)) === ".3mf");
-  if (!hasFolderItem && !hasZip && has3mf && items.some((item) => importSuffix(importItemPath(item)) !== ".3mf")) {
-    return "3MF 请单独导入；包含图片、说明、STL 或 zip 时，请打包为 zip 或选择文件夹。";
+  if (!hasFolderItem && !hasArchive && has3mf && items.some((item) => importSuffix(importItemPath(item)) !== ".3mf")) {
+    return "3MF 请单独导入；包含图片、说明、STL、zip 或 rar 时，请打包为 zip/rar 或选择文件夹。";
   }
   return "";
 }

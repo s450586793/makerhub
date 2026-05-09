@@ -50,6 +50,20 @@ def _zip_bytes(files: dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
+def _fake_rar_extractor(files_by_archive: dict[str, dict[str, bytes]]):
+    def _extract(rar_path: Path, destination: Path) -> None:
+        files = files_by_archive.get(Path(rar_path).name)
+        if files is None:
+            raise RuntimeError("fake rar unreadable")
+        destination.mkdir(parents=True, exist_ok=True)
+        for name, data in files.items():
+            target = destination / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+
+    return _extract
+
+
 class LocalImportUploadTest(unittest.TestCase):
     def test_zip_import_classifies_assets_and_dedupes_stl_by_hash(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -164,6 +178,107 @@ class LocalImportUploadTest(unittest.TestCase):
             self.assertEqual(meta["localImport"]["skippedArchiveCount"], 1)
             self.assertEqual(meta["localImport"]["skippedArchives"][0]["file_name"], "bad.zip")
             self.assertIn("ZIP 文件无法读取", meta["localImport"]["skippedArchives"][0]["reason"])
+
+    def test_rar_import_classifies_extracted_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            archive_root = root / "archive"
+            source_root = root / "source"
+            state_root = root / "state"
+            archive_root.mkdir()
+            source_root.mkdir()
+            state_root.mkdir()
+
+            store = SimpleNamespace(
+                load=lambda: SimpleNamespace(
+                    organizer=SimpleNamespace(source_dir=source_root.as_posix(), target_dir=archive_root.as_posix())
+                )
+            )
+            task_store = FakeTaskStore()
+            fake_extract = _fake_rar_extractor(
+                {
+                    "Luffy.rar": {
+                        "Luffy/body.stl": b"solid body\nendsolid body\n",
+                        "Luffy/cover.png": b"fake-png",
+                        "Luffy/readme.txt": "路飞模型".encode("utf-8"),
+                    }
+                }
+            )
+
+            with patch.object(local_import_upload, "ARCHIVE_DIR", archive_root), \
+                patch.object(local_import_upload, "ORGANIZER_LIBRARY_INDEX_CACHE_PATH", state_root / "organizer_library_index.json"), \
+                patch.object(local_import_upload, "_extract_rar_with_bsdtar", fake_extract), \
+                patch.object(local_import_upload, "append_business_log"), \
+                patch.object(local_import_upload, "invalidate_archive_snapshot"), \
+                patch.object(catalog, "ARCHIVE_DIR", archive_root):
+                result = local_import_upload.upload_local_import_files(
+                    files=[_upload("Luffy.rar", b"fake-rar")],
+                    paths=["Luffy.rar"],
+                    store=store,
+                    task_store=task_store,
+                )
+                detail = catalog.get_model_detail(result["model_dir"])
+
+            self.assertEqual(result["mode"], "package")
+            self.assertEqual(result["model_file_count"], 1)
+            self.assertEqual(result["image_count"], 1)
+            self.assertIsNotNone(detail)
+            self.assertEqual(detail["title"], "Luffy")
+            self.assertEqual(detail["summary_text"], "路飞模型")
+            self.assertEqual(detail["instances"][0]["file_kind"], "STL")
+
+    def test_nested_rar_import_skips_unreadable_child_rar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            archive_root = root / "archive"
+            source_root = root / "source"
+            state_root = root / "state"
+            archive_root.mkdir()
+            source_root.mkdir()
+            state_root.mkdir()
+
+            package = _zip_bytes(
+                {
+                    "readme.txt": "合集".encode("utf-8"),
+                    "good.rar": b"fake good rar",
+                    "bad.rar": b"fake bad rar",
+                }
+            )
+            store = SimpleNamespace(
+                load=lambda: SimpleNamespace(
+                    organizer=SimpleNamespace(source_dir=source_root.as_posix(), target_dir=archive_root.as_posix())
+                )
+            )
+            task_store = FakeTaskStore()
+            fake_extract = _fake_rar_extractor(
+                {
+                    "good.rar": {
+                        "engine/part.stl": b"solid engine\nendsolid engine\n",
+                    }
+                }
+            )
+
+            with patch.object(local_import_upload, "ARCHIVE_DIR", archive_root), \
+                patch.object(local_import_upload, "ORGANIZER_LIBRARY_INDEX_CACHE_PATH", state_root / "organizer_library_index.json"), \
+                patch.object(local_import_upload, "_extract_rar_with_bsdtar", fake_extract), \
+                patch.object(local_import_upload, "append_business_log"), \
+                patch.object(local_import_upload, "invalidate_archive_snapshot"), \
+                patch.object(catalog, "ARCHIVE_DIR", archive_root):
+                result = local_import_upload.upload_local_import_files(
+                    files=[_upload("Engines.zip", package)],
+                    paths=["Engines.zip"],
+                    store=store,
+                    task_store=task_store,
+                )
+
+            self.assertEqual(result["mode"], "package")
+            self.assertEqual(result["model_file_count"], 1)
+            self.assertEqual(result["skipped_zip_count"], 1)
+            meta_path = archive_root / result["model_dir"] / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            self.assertEqual(meta["localImport"]["skippedArchiveCount"], 1)
+            self.assertEqual(meta["localImport"]["skippedArchives"][0]["file_name"], "bad.rar")
+            self.assertIn("RAR 文件无法读取", meta["localImport"]["skippedArchives"][0]["reason"])
 
     def test_direct_3mf_mixed_with_other_file_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "3MF 请单独导入"):

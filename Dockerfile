@@ -19,7 +19,7 @@ ENV MAKERHUB_ARCHIVE_DIR=/app/archive
 ENV MAKERHUB_LOCAL_DIR=/app/local
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends curl libarchive-tools \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

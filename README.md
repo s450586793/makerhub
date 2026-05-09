@@ -147,6 +147,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 ## 更新记录
 
 ### 2026-05-09
+- 版本号升级到 `v0.6.67`
+- 本地导入支持 `.rar` 压缩包，文件夹、zip 内嵌 rar 也会继续展开；无法读取的内层 rar 会记录为跳过项，不中断整个导入
+- Docker 镜像新增 `libarchive-tools`，保证线上容器可用 `bsdtar` 解包 rar；前端导入白名单同步补齐 rar、Office、表格和常见视频后缀
+
+### 2026-05-09
 - 版本号升级到 `v0.6.66`
 - 修复评论补全后仍显示虚高评论数的问题：当 MakerWorld 评论接口明确返回 0 条时，不再回退使用页面提示或旧元数据里的评论数
 - 本地导入文件夹或 zip 时，`.xlsm`、`.xlsb`、`.xlt`、`.xltx`、`.xltm`、`.ods`、`.tsv` 等表格文件会作为附件导入
