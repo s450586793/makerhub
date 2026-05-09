@@ -1223,6 +1223,19 @@ class TaskStateStore:
 
         return self._update_archive_queue(_mutate)
 
+    def clear_archive_recent_failures(self) -> dict:
+        cleared_count = 0
+
+        def _mutate(payload: dict) -> dict:
+            nonlocal cleared_count
+            cleared_count = len(payload.get("recent_failures") or [])
+            payload["recent_failures"] = []
+            return payload
+
+        queue = self._update_archive_queue(_mutate)
+        queue["cleared_count"] = cleared_count
+        return queue
+
     def merge_missing_3mf_items(self, items: list[dict]) -> dict:
         def _mutate(payload: dict) -> dict:
             existing = list(payload.get("items") or [])

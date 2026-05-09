@@ -1525,6 +1525,30 @@ async def get_tasks_data():
     return await run_ui_io(_tasks_payload)
 
 
+@router.post("/tasks/recent-failures/clear")
+async def clear_recent_archive_failures(request: Request):
+    _require_session_auth(request)
+
+    def _clear_payload() -> dict:
+        queue = task_state_store.clear_archive_recent_failures()
+        config = store.load()
+        fallback_items = [item.model_dump() for item in config.missing_3mf]
+        payload = build_tasks_payload(missing_fallback=fallback_items)
+        payload["cleared_count"] = int(queue.get("cleared_count") or 0)
+        payload["message"] = "已清除最近失败记录。"
+        payload["success"] = True
+        return payload
+
+    result = await run_task_api(_clear_payload)
+    append_business_log(
+        "archive",
+        "recent_failures_cleared",
+        result.get("message") or "最近失败记录已清除。",
+        cleared_count=result.get("cleared_count"),
+    )
+    return result
+
+
 @router.get("/remote-refresh")
 async def get_remote_refresh_data():
     def _remote_refresh_payload() -> dict:

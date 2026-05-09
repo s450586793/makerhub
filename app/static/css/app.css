@@ -1514,6 +1514,18 @@ select:focus {
   min-width: 0;
 }
 
+.task-column__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.task-column__heading h3 {
+  margin: 0;
+}
+
 .task-item {
   padding: 16px;
   border-radius: var(--radius-lg);

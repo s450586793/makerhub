@@ -154,7 +154,19 @@
           <p v-else class="empty-copy">当前没有排队中的任务。</p>
         </div>
         <div class="task-column">
-          <h3>最近失败</h3>
+          <div class="task-column__heading">
+            <h3>最近失败</h3>
+            <button
+              v-if="payload.archive_queue.recent_failures.length"
+              class="button button-secondary button-small"
+              type="button"
+              :disabled="clearingRecentFailures"
+              @click="clearRecentFailures"
+            >
+              {{ clearingRecentFailures ? "清除中..." : "清除" }}
+            </button>
+          </div>
+          <span v-if="recentFailureStatus" class="form-status">{{ recentFailureStatus }}</span>
           <div v-if="visibleFailureTasks.length">
             <div
               v-for="item in visibleFailureTasks"
@@ -309,6 +321,8 @@ const missingStatus = ref("");
 const submittingArchive = ref(false);
 const confirmingArchiveMode = ref("");
 const pendingMissingActionKey = ref("");
+const clearingRecentFailures = ref(false);
+const recentFailureStatus = ref("");
 let refreshTimer = null;
 let loadingTasks = false;
 let disposed = false;
@@ -434,6 +448,9 @@ async function load() {
   loadingTasks = true;
   try {
     payload.value = await apiRequest("/api/tasks");
+    if (payload.value.archive_queue.recent_failures.length) {
+      recentFailureStatus.value = "";
+    }
   } finally {
     loadingTasks = false;
     syncAutoRefresh();
@@ -548,6 +565,30 @@ async function retryMissing(item) {
     missingStatus.value = error instanceof Error ? error.message : "重试失败。";
   } finally {
     pendingMissingActionKey.value = "";
+  }
+}
+
+async function clearRecentFailures() {
+  if (!payload.value.archive_queue.recent_failures.length) {
+    return;
+  }
+  if (!window.confirm("确认清除最近失败记录吗？这不会取消正在运行或排队的任务。")) {
+    return;
+  }
+
+  clearingRecentFailures.value = true;
+  recentFailureStatus.value = "";
+  try {
+    const response = await apiRequest("/api/tasks/recent-failures/clear", {
+      method: "POST",
+    });
+    payload.value = response;
+    failureVisibleLimit.value = TASKS_PAGE_SIZE;
+    recentFailureStatus.value = response.message || "已清除最近失败记录。";
+  } catch (error) {
+    recentFailureStatus.value = error instanceof Error ? error.message : "清除失败。";
+  } finally {
+    clearingRecentFailures.value = false;
   }
 }
 
