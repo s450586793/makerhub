@@ -150,6 +150,17 @@ class LegacyArchiverValidationTest(unittest.TestCase):
 
         self.assertEqual(count, 4)
 
+    def test_comment_count_uses_explicit_empty_comment_service_total(self):
+        count = legacy_archiver._resolved_comment_count(
+            unique_sections=[{"commentCount": 176}],
+            next_data={},
+            design={"commentCount": 4},
+            comment_total=0,
+            page_fetch_stats={"total": 0, "total_known": True},
+        )
+
+        self.assertEqual(count, 0)
+
     def test_choose_archive_base_name_prefers_existing_model_dir(self):
         class _FakeDir:
             def __init__(self, name, root=None):

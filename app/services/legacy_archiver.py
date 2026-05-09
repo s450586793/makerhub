@@ -2094,10 +2094,11 @@ def _resolved_comment_count(
     next_data: dict,
     design: dict,
     comment_total: int,
-    page_fetch_stats: dict[str, int],
+    page_fetch_stats: dict[str, object],
 ) -> int:
+    api_total_known = bool((page_fetch_stats or {}).get("total_known"))
     api_total = _comment_numeric((page_fetch_stats or {}).get("total"))
-    if api_total > 0:
+    if api_total > 0 or api_total_known:
         return max(api_total, comment_total)
 
     design_count = _comment_count_from_design(design)
@@ -2365,6 +2366,21 @@ def _comment_list_payload_total(payload: object) -> int:
     return 0
 
 
+def _comment_list_payload_declares_empty(payload: object) -> bool:
+    for node in _iter_payload_dicts(payload):
+        if not isinstance(node, dict):
+            continue
+        if not any(key in node for key in ("total", "count", "totalCount", "commentCount")):
+            continue
+        if _comment_list_node_total(node) != 0:
+            continue
+        for key in ("hits", "items", "list", "records", "rows", "results"):
+            value = node.get(key)
+            if isinstance(value, list) and not value:
+                return True
+    return False
+
+
 def _comment_list_items_look_like_roots(items: object) -> bool:
     if not isinstance(items, list):
         return False
@@ -2436,6 +2452,7 @@ def _fetch_paginated_comment_list(
     fetched_comments: List[dict] = []
     offset = 0
     total = 0
+    total_known = False
     pages = 0
     seen_offsets: set[int] = set()
     list_started_at = time.perf_counter()
@@ -2456,7 +2473,10 @@ def _fetch_paginated_comment_list(
             break
 
         hit_count = _comment_list_payload_hit_count(payload)
-        total = max(total, _comment_list_payload_total(payload))
+        payload_total = _comment_list_payload_total(payload)
+        if payload_total > 0 or _comment_list_payload_declares_empty(payload):
+            total_known = True
+            total = max(total, payload_total)
         if hit_count <= 0 and total <= 0:
             break
         page_items = _extract_comment_list_items(payload)
@@ -2484,8 +2504,9 @@ def _fetch_paginated_comment_list(
         pages=pages,
         roots=len(fetched_comments),
         total=total,
+        total_known=total_known,
     )
-    return comments, {"pages": pages, "roots": len(fetched_comments), "total": total}
+    return comments, {"pages": pages, "roots": len(fetched_comments), "total": total, "total_known": total_known}
 
 
 def _hydrate_missing_comment_replies(

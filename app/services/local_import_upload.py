@@ -40,7 +40,21 @@ MODEL_SUFFIXES = {".3mf", ".stl", ".step", ".stp", ".obj"}
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif"}
 TEXT_SUFFIXES = {".txt", ".md", ".markdown", ".html", ".htm"}
 VIDEO_SUFFIXES = {".mp4", ".mov", ".webm", ".avi", ".mkv"}
-DOCUMENT_SUFFIXES = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv"}
+DOCUMENT_SUFFIXES = {
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".xlsm",
+    ".xlsb",
+    ".xlt",
+    ".xltx",
+    ".xltm",
+    ".csv",
+    ".tsv",
+    ".ods",
+}
 ATTACHMENT_SUFFIXES = VIDEO_SUFFIXES | DOCUMENT_SUFFIXES
 IGNORED_FILE_NAMES = {".ds_store", "thumbs.db", "desktop.ini"}
 IGNORED_PATH_PARTS = {"__macosx"}

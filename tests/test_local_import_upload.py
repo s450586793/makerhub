@@ -70,6 +70,7 @@ class LocalImportUploadTest(unittest.TestCase):
                     "Mai/cover.jpg": b"fake-jpeg",
                     "Mai/readme.txt": "这是模型说明".encode("utf-8"),
                     "Mai/manual.pdf": b"%PDF-1.7\n",
+                    "Mai/bom.xlsm": b"macro workbook",
                 }
             )
             store = SimpleNamespace(
@@ -99,9 +100,10 @@ class LocalImportUploadTest(unittest.TestCase):
             self.assertEqual(len(detail["instances"]), 2)
             self.assertEqual([item["file_kind"] for item in detail["instances"]], ["STL", "STL"])
             self.assertEqual(detail["summary_text"], "这是模型说明")
-            self.assertEqual(len(detail["attachments"]), 1)
-            self.assertEqual(detail["attachments"][0]["ext"], "pdf")
-            self.assertTrue(detail["attachments"][0]["url"].endswith("/attachments/manual.pdf"))
+            self.assertEqual(len(detail["attachments"]), 2)
+            attachment_by_ext = {item["ext"]: item for item in detail["attachments"]}
+            self.assertTrue(attachment_by_ext["pdf"]["url"].endswith("/attachments/manual.pdf"))
+            self.assertTrue(attachment_by_ext["xlsm"]["url"].endswith("/attachments/bom.xlsm"))
 
             meta_path = archive_root / result["model_dir"] / "meta.json"
             meta = json.loads(meta_path.read_text(encoding="utf-8"))

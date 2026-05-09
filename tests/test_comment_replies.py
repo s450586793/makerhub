@@ -641,6 +641,30 @@ class CommentRepliesTest(unittest.TestCase):
         self.assertEqual(len(bundle["items"]), 1)
         self.assertEqual(bundle["items"][0]["id"], "comment-1")
 
+    def test_collect_comments_uses_explicit_empty_commentandrating_payload(self):
+        def payload(url, _params, _headers, _timeout):
+            if "commentandrating" not in url:
+                return {}
+            return {
+                "total": 0,
+                "hits": [],
+                "firstReply": {"type": 0, "ratingItem": None, "comment": None},
+                "pinnedRemarks": None,
+            }
+
+        session = self._DummySession(payload)
+
+        bundle = collect_comments(
+            {},
+            {"id": "2475775", "url": "https://makerworld.com.cn/zh/models/2475775", "commentCount": 432},
+            session,
+            Path("."),
+            download_assets=False,
+        )
+
+        self.assertEqual(bundle["count"], 0)
+        self.assertEqual(bundle["items"], [])
+
     def test_collect_comments_tries_next_endpoint_when_first_comment_api_is_empty(self):
         original_candidates = legacy_archiver._comment_service_endpoint_candidates
 

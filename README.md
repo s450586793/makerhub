@@ -147,6 +147,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 ## 更新记录
 
 ### 2026-05-09
+- 版本号升级到 `v0.6.66`
+- 修复评论补全后仍显示虚高评论数的问题：当 MakerWorld 评论接口明确返回 0 条时，不再回退使用页面提示或旧元数据里的评论数
+- 本地导入文件夹或 zip 时，`.xlsm`、`.xlsb`、`.xlt`、`.xltx`、`.xltm`、`.ods`、`.tsv` 等表格文件会作为附件导入
+
+### 2026-05-09
 - 版本号升级到 `v0.6.65`
 - 任务页“最近失败”新增清除按钮，只清空近期失败展示记录，不影响运行中、排队中或缺失 3MF 任务
 
