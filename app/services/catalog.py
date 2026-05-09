@@ -1,4 +1,5 @@
 import hashlib
+import html
 import json
 import mimetypes
 import re
@@ -1717,8 +1718,53 @@ def _normalize_source(meta: dict, relative_dir: Path) -> str:
     return "local"
 
 
+def _sample_cover_lines(title: str) -> list[str]:
+    clean_title = re.sub(r"\s+", " ", str(title or "Makerhub")).strip() or "Makerhub"
+    max_chars = 14
+    lines: list[str] = []
+    remaining = clean_title
+    while remaining and len(lines) < 3:
+        if len(remaining) <= max_chars:
+            lines.append(remaining)
+            remaining = ""
+            break
+        split_at = max(
+            remaining.rfind(" ", 0, max_chars + 1),
+            remaining.rfind("-", 0, max_chars + 1),
+            remaining.rfind("_", 0, max_chars + 1),
+        )
+        if split_at < max_chars // 2:
+            split_at = max_chars
+        line = remaining[:split_at].strip(" -_")
+        if line:
+            lines.append(line)
+        remaining = remaining[split_at:].strip(" -_")
+    if remaining and lines:
+        lines[-1] = f"{lines[-1][: max_chars - 1]}…"
+    return lines or ["Makerhub"]
+
+
 def _sample_cover(title: str) -> str:
-    return f"https://placehold.co/960x960/f3f4f6/111827?text={quote(title or 'Makerhub')}"
+    lines = _sample_cover_lines(title)
+    line_height = 56
+    start_y = 480 - ((len(lines) - 1) * line_height / 2)
+    text_nodes = "\n".join(
+        (
+            f'<text x="480" y="{start_y + index * line_height:.0f}" '
+            'text-anchor="middle" dominant-baseline="middle">'
+            f"{html.escape(line)}</text>"
+        )
+        for index, line in enumerate(lines)
+    )
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 960">
+  <rect width="960" height="960" fill="#f3f4f6"/>
+  <circle cx="480" cy="360" r="112" fill="#e5e7eb"/>
+  <path d="M430 350h100v20H430zM420 392h120v20H420zM448 434h64v20h-64z" fill="#9ca3af"/>
+  <g fill="#111827" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif" font-size="42" font-weight="700">
+    {text_nodes}
+  </g>
+</svg>"""
+    return f"data:image/svg+xml;charset=utf-8,{quote(svg)}"
 
 
 def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[dict]:
