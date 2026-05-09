@@ -398,16 +398,16 @@
         </div>
         <div v-if="detail.summary_html" class="rich-content" v-html="detail.summary_html"></div>
         <p v-else class="empty-copy">{{ detail.summary_text || "当前没有描述内容。" }}</p>
-        <div v-if="detail.tags?.length" class="mw-tag-wall">
-          <span v-for="tag in detail.tags" :key="tag" class="mw-chip mw-chip--tag">{{ tag }}</span>
+        <div v-if="visibleDetailTags.length" class="mw-tag-wall">
+          <span v-for="tag in visibleDetailTags" :key="tag" class="mw-chip mw-chip--tag">{{ tag }}</span>
         </div>
       </article>
 
-      <article id="detail-docs" class="mw-section-card mw-section-card--docs">
+      <article v-if="showDocsSection" id="detail-docs" class="mw-section-card mw-section-card--docs">
         <div class="mw-section-card__header">
           <div class="mw-section-card__heading">
             <h2>文档 ({{ detail.attachments?.length || 0 }})</h2>
-            <p class="mw-section-card__hint">可以在这里补传组装图、说明书或其他附件。</p>
+            <p v-if="!isLocalModel" class="mw-section-card__hint">可以在这里补传组装图、说明书或其他附件。</p>
           </div>
         </div>
         <div v-if="attachmentGroups.length" class="mw-doc-groups">
@@ -459,9 +459,9 @@
             </div>
           </section>
         </div>
-        <p v-else class="empty-copy">当前没有同步到文档附件，你可以在下方上传组装图或说明文件。</p>
+        <p v-else-if="!isLocalModel" class="empty-copy">当前没有同步到文档附件，你可以在下方上传组装图或说明文件。</p>
 
-        <form class="mw-attachment-upload" @submit.prevent="submitAttachmentUpload">
+        <form v-if="!isLocalModel" class="mw-attachment-upload" @submit.prevent="submitAttachmentUpload">
           <div class="mw-attachment-upload__fields">
             <select v-model="attachmentForm.category" class="mw-attachment-upload__select">
               <option v-for="item in attachmentCategories" :key="item.value" :value="item.value">{{ item.label }}</option>
@@ -988,8 +988,10 @@ const attachmentCategories = [
 const detailSections = computed(() => {
   const sections = [
     { id: "detail-description", label: "描述" },
-    { id: "detail-docs", label: "文档" },
   ];
+  if (showDocsSection.value) {
+    sections.push({ id: "detail-docs", label: "文档" });
+  }
   if (showCommentsSection.value) {
     sections.push({ id: "detail-comments", label: "评论" });
   }
@@ -1119,7 +1121,7 @@ const activeInstance = computed(() => {
 
 const headCrumbs = computed(() => {
   const crumbs = [];
-  for (const tag of detail.value?.tags || []) {
+  for (const tag of visibleDetailTags.value) {
     const label = String(tag || "").trim();
     if (!label || crumbs.includes(label)) {
       continue;
@@ -1130,6 +1132,14 @@ const headCrumbs = computed(() => {
     }
   }
   return crumbs;
+});
+
+const visibleDetailTags = computed(() => {
+  const tags = Array.isArray(detail.value?.tags) ? detail.value.tags : [];
+  if (!isLocalModel.value) {
+    return tags;
+  }
+  return tags.filter((tag) => String(tag || "").trim() !== "本地导入");
 });
 
 const deletedSourceTitle = computed(() => {
@@ -1164,6 +1174,10 @@ const attachmentGroups = computed(() => {
     groups.get(label).push(item);
   }
   return [...groups.entries()].map(([label, items]) => ({ label, items }));
+});
+
+const showDocsSection = computed(() => {
+  return !isLocalModel.value || attachmentGroups.value.length > 0;
 });
 
 const visibleComments = computed(() => {
