@@ -147,6 +147,10 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 ## 更新记录
 
 ### 2026-05-09
+- 版本号升级到 `v0.6.68`
+- 本地导入完成后会立即刷新本地库来源卡片和前端列表缓存，避免“本地整理”卡片仍显示旧快照、需要手动刷新页面
+
+### 2026-05-09
 - 版本号升级到 `v0.6.67`
 - 本地导入支持 `.rar` 压缩包，文件夹、zip 内嵌 rar 也会继续展开；无法读取的内层 rar 会记录为跳过项，不中断整个导入
 - Docker 镜像新增 `libarchive-tools`，保证线上容器可用 `bsdtar` 解包 rar；前端导入白名单同步补齐 rar、Office、表格和常见视频后缀

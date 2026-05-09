@@ -210,7 +210,7 @@ import { useRouter } from "vue-router";
 import SourceLibraryCard from "../components/SourceLibraryCard.vue";
 import { apiRequest } from "../lib/api";
 import { refreshConfig } from "../lib/appState";
-import { getPageCache, setPageCache } from "../lib/pageCache";
+import { deletePageCache, deletePageCacheByPrefix, getPageCache, setPageCache } from "../lib/pageCache";
 
 
 const ACTIVE_REFRESH_INTERVAL_MS = 5000;
@@ -763,6 +763,9 @@ function syncTaskTimer() {
 
 async function load({ silent = false, refreshLibrary = true } = {}) {
   if (loading.value) {
+    if (refreshLibrary) {
+      sourceLibraryRefreshDeferred = true;
+    }
     return;
   }
   const includeSourceLibrary = Boolean(refreshLibrary || !hasSourceLibraryPayload());
@@ -804,6 +807,12 @@ async function load({ silent = false, refreshLibrary = true } = {}) {
       syncTaskTimer();
     }
   }
+}
+
+function clearLibraryCachesAfterImport() {
+  deletePageCache("organizer");
+  deletePageCacheByPrefix("models:");
+  deletePageCacheByPrefix("model-library-group:");
 }
 
 function resetImportDialogState({ keepFiles = false } = {}) {
@@ -1070,10 +1079,14 @@ async function submitImportFiles() {
       method: "POST",
       body: formData,
     });
+    importDialog.uploading = false;
     importDialog.visible = false;
     resetImportDialogState();
-    await load({ silent: true, refreshLibrary: false });
+    clearLibraryCachesAfterImport();
+    clearTaskTimer();
+    await load({ silent: true, refreshLibrary: true });
   } catch (error) {
+    importDialog.uploading = false;
     importDialog.visible = true;
     importDialog.error = error instanceof Error ? error.message : "导入失败。";
   } finally {
