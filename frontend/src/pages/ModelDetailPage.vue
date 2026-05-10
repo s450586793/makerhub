@@ -194,6 +194,13 @@
             >
               原始链接
             </a>
+            <button
+              class="mw-inline-link mw-inline-link--ghost"
+              type="button"
+              @click="openShareDialog"
+            >
+              分享
+            </button>
           </div>
 
           <aside class="mw-config-panel">
@@ -853,12 +860,19 @@
       </div>
     </div>
   </div>
+
+  <ShareDialog
+    :visible="shareDialogVisible"
+    :model-dirs="shareDialogModelDirs"
+    @close="closeShareDialog"
+  />
 </template>
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onErrorCaptured, onMounted, ref, shallowRef, watch } from "vue";
 import { useRoute } from "vue-router";
 
+import ShareDialog from "../components/ShareDialog.vue";
 import { apiRequest } from "../lib/api";
 import { formatProfileRating } from "../lib/helpers";
 import { getPageCache, setPageCache } from "../lib/pageCache";
@@ -901,6 +915,7 @@ const commentsLoadError = ref("");
 const sourceBackfillLoading = ref(false);
 const sourceBackfillMessage = ref("");
 const sourceBackfillError = ref("");
+const shareDialogVisible = ref(false);
 const localEditBusy = ref(false);
 const localEditDialog = ref({
   open: false,
@@ -1039,6 +1054,7 @@ const modelDir = computed(() => {
   }
   return decodeRouteValue(raw);
 });
+const shareDialogModelDirs = computed(() => (modelDir.value ? [modelDir.value] : []));
 
 function normalizeInternalReturnPath(value) {
   const raw = String(value || "").trim();
@@ -2920,6 +2936,14 @@ function onAttachmentFileChange(event) {
   attachmentForm.value.file = file || null;
   attachmentUploadMessage.value = "";
   attachmentUploadError.value = "";
+}
+
+function openShareDialog() {
+  shareDialogVisible.value = true;
+}
+
+function closeShareDialog() {
+  shareDialogVisible.value = false;
 }
 
 async function submitAttachmentUpload() {

@@ -457,6 +457,9 @@ def _subscription_state_map(task_store: TaskStateStore) -> dict[str, dict[str, A
 def _task_key_lookup(models: list[dict]) -> dict[str, dict]:
     lookup: dict[str, dict] = {}
     for model in models:
+        if str(model.get("source") or "").strip().lower() == "local":
+            continue
+
         model_id = _normalize_text(model.get("id"))
         origin_url = normalize_source_url(str(model.get("origin_url") or ""))
         if model_id:

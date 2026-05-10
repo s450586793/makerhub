@@ -43,15 +43,32 @@
         <div class="filter-actions">
           <button class="button button-secondary" type="button" @click="resetFilters">重置</button>
           <button
-            v-if="canMergeLocalModels"
             class="button button-secondary"
             type="button"
             @click="toggleSelectMode"
           >
-            {{ selectMode ? "取消选择" : "选择合并" }}
+            {{ selectMode ? "取消选择" : "选择" }}
           </button>
           <button
             v-if="selectMode"
+            class="button button-secondary"
+            type="button"
+            :disabled="!payload.items.length"
+            @click="selectLoadedModels"
+          >
+            全选当前
+          </button>
+          <button
+            v-if="selectMode"
+            class="button button-primary"
+            type="button"
+            :disabled="selectedCount < 1"
+            @click="openShareDialog"
+          >
+            分享 {{ selectedCount }}
+          </button>
+          <button
+            v-if="selectMode && canMergeLocalModels"
             class="button button-primary"
             type="button"
             :disabled="selectedCount < 2 || merging"
@@ -180,6 +197,12 @@
       </form>
     </div>
   </div>
+
+  <ShareDialog
+    :visible="shareDialogVisible"
+    :model-dirs="selectedModelDirs"
+    @close="closeShareDialog"
+  />
 </template>
 
 <script setup>
@@ -187,6 +210,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useRoute, useRouter } from "vue-router";
 
 import ModelCard from "../components/ModelCard.vue";
+import ShareDialog from "../components/ShareDialog.vue";
 import { apiRequest } from "../lib/api";
 import { subscribeArchiveCompletion } from "../lib/archiveEvents";
 import { deletePageCache, deletePageCacheByPrefix, getPageCache, setPageCache } from "../lib/pageCache";
@@ -222,6 +246,7 @@ const loadingMore = ref(false);
 const loadMoreTrigger = ref(null);
 const selectMode = ref(false);
 const selectedModelDirSet = ref(new Set());
+const shareDialogVisible = ref(false);
 const merging = ref(false);
 const mergeDialog = reactive({
   visible: false,
@@ -618,11 +643,11 @@ function toggleSelectMode() {
 
 function toggleSelected(modelDir) {
   const cleanModelDir = String(modelDir || "").trim();
-  if (!cleanModelDir || !canMergeLocalModels.value) {
+  if (!cleanModelDir) {
     return;
   }
   const model = knownModelsByDir.value.get(cleanModelDir);
-  if (model && String(model.source || "local").toLowerCase() !== "local") {
+  if (canMergeLocalModels.value && model && String(model.source || "local").toLowerCase() !== "local") {
     status.value = "只能选择本地整理导入的模型。";
     return;
   }
@@ -641,6 +666,30 @@ function toggleSelected(modelDir) {
     mergeDialog.coverFromModelDir = mergeDialog.targetModelDir;
   }
   mergeDialog.title = "";
+}
+
+function selectLoadedModels() {
+  const selectable = (payload.value.items || []).filter((item) => {
+    if (!canMergeLocalModels.value) {
+      return true;
+    }
+    return String(item?.source || "").toLowerCase() === "local";
+  });
+  selectedModelDirSet.value = new Set(
+    selectable.map((item) => String(item?.model_dir || "").trim()).filter(Boolean),
+  );
+}
+
+function openShareDialog() {
+  if (selectedCount.value < 1) {
+    status.value = "请先选择要分享的模型。";
+    return;
+  }
+  shareDialogVisible.value = true;
+}
+
+function closeShareDialog() {
+  shareDialogVisible.value = false;
 }
 
 function localMergeBaseTitle(title) {

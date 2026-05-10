@@ -426,6 +426,8 @@ class ArchiveTaskManager:
         snapshot = get_archive_snapshot()
         lookup: dict[str, dict[str, str]] = {}
         for item in snapshot.get("models") or []:
+            if str(item.get("source") or "").strip().lower() == "local":
+                continue
             model_dir = str(item.get("model_dir") or "").strip().strip("/")
             if not model_dir or model_dir not in deleted_dirs:
                 continue

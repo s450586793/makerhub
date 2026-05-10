@@ -1,17 +1,27 @@
 import asyncio
 import base64
+import copy
+import hashlib
+import hmac
 import json
+import mimetypes
+import os
 import re
+import secrets
 import time
+import uuid
+from datetime import timedelta
 from multiprocessing import Process
+from pathlib import Path
+from urllib.parse import urljoin, urlparse
 
 import requests
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from app.core.store import JsonStore
-from app.core.settings import APP_VERSION, BACKGROUND_TASKS_ENABLED
-from app.core.timezone import now_iso as china_now_iso
+from app.core.settings import APP_VERSION, ARCHIVE_DIR, BACKGROUND_TASKS_ENABLED, STATE_DIR
+from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
 from app.schemas.models import (
     AdvancedRuntimeConfig,
     ArchiveRequest,
@@ -28,6 +38,10 @@ from app.schemas.models import (
     NotificationConfig,
     ProxyConfig,
     RemoteRefreshConfig,
+    ShareCreateRequest,
+    ShareOptions,
+    ShareReceiveRequest,
+    SharingConfig,
     SubscriptionCreateRequest,
     SubscriptionSettingsUpdate,
     SubscriptionUpdateRequest,
@@ -72,6 +86,7 @@ from app.services.archive_profile_backfill import (
     read_profile_backfill_status,
     write_profile_backfill_status,
 )
+from app.services.batch_discovery import extract_model_id, normalize_source_url
 from app.services.subscriptions import SubscriptionManager
 from app.services.source_library import (
     build_source_group_models_payload,
@@ -136,6 +151,886 @@ github_changelog_cache = {
     "source": "",
     "last_success_at": "",
 }
+
+SHARES_STATE_PATH = STATE_DIR / "model_shares.json"
+SHARE_CODE_PREFIX = "MHSHARE1."
+MODEL_FILE_SUFFIX_ALIASES = {
+    "3mf": {"3mf"},
+    "stl": {"stl"},
+    "step": {"step", "stp"},
+    "obj": {"obj"},
+}
+ATTACHMENT_FILE_SUFFIX_ALIASES = {
+    "pdf": {"pdf"},
+    "excel": {"xls", "xlsx", "xlsm", "xlsb", "xlt", "xltx", "xltm", "csv", "tsv", "ods"},
+}
+
+
+def _read_shares_state() -> dict:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    if not SHARES_STATE_PATH.exists():
+        return {"items": []}
+    try:
+        payload = json.loads(SHARES_STATE_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"items": []}
+    if not isinstance(payload, dict):
+        return {"items": []}
+    items = payload.get("items")
+    if not isinstance(items, list):
+        payload["items"] = []
+    return payload
+
+
+def _write_shares_state(payload: dict) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    temp_path = SHARES_STATE_PATH.with_name(f"{SHARES_STATE_PATH.name}.{os.getpid()}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(SHARES_STATE_PATH)
+
+
+def _share_token_hash(token: str) -> str:
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+
+def _base64url_encode_json(payload: dict) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _base64url_decode_json(value: str) -> dict:
+    text = str(value or "").strip()
+    padding = "=" * (-len(text) % 4)
+    try:
+        raw = base64.urlsafe_b64decode((text + padding).encode("ascii"))
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise ValueError("分享码格式无效。") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("分享码格式无效。")
+    return payload
+
+
+def _encode_share_code(*, base_url: str, share_id: str, token: str) -> str:
+    return f"{SHARE_CODE_PREFIX}{_base64url_encode_json({'base_url': base_url, 'share_id': share_id, 'token': token})}"
+
+
+def _decode_share_code(value: str) -> dict:
+    text = str(value or "").strip()
+    if text.startswith(SHARE_CODE_PREFIX):
+        payload = _base64url_decode_json(text[len(SHARE_CODE_PREFIX):])
+    else:
+        payload = _base64url_decode_json(text)
+    base_url = _normalize_public_base_url(str(payload.get("base_url") or ""))
+    share_id = str(payload.get("share_id") or "").strip()
+    token = str(payload.get("token") or "").strip()
+    if not base_url or not share_id or not token:
+        raise ValueError("分享码缺少必要信息。")
+    return {"base_url": base_url, "share_id": share_id, "token": token}
+
+
+def _normalize_share_options(options: ShareOptions | SharingConfig | dict | None) -> dict:
+    if options is None:
+        raw: dict = {}
+    elif isinstance(options, (ShareOptions, SharingConfig)):
+        raw = options.model_dump()
+    elif isinstance(options, dict):
+        raw = dict(options)
+    else:
+        raw = {}
+
+    try:
+        expires_days = int(raw.get("expires_days") or raw.get("default_expires_days") or 7)
+    except (TypeError, ValueError):
+        expires_days = 7
+    expires_days = min(max(expires_days, 1), 90)
+    model_types = _normalize_allowed_labels(
+        raw.get("model_file_types"),
+        aliases=MODEL_FILE_SUFFIX_ALIASES,
+        default_labels=["3mf", "stl", "step", "obj"],
+    )
+    attachment_types = _normalize_allowed_labels(
+        raw.get("attachment_file_types"),
+        aliases=ATTACHMENT_FILE_SUFFIX_ALIASES,
+        default_labels=["pdf", "excel"],
+    )
+    return {
+        "expires_days": expires_days,
+        "include_images": bool(raw.get("include_images", True)),
+        "include_model_files": bool(raw.get("include_model_files", True)),
+        "model_file_types": model_types,
+        "include_attachments": bool(raw.get("include_attachments", True)),
+        "attachment_file_types": attachment_types,
+        "include_comments": bool(raw.get("include_comments", True)),
+    }
+
+
+def _normalize_allowed_labels(value: object, *, aliases: dict[str, set[str]], default_labels: list[str]) -> list[str]:
+    labels: list[str] = []
+    raw_items = value if isinstance(value, list) else default_labels
+    for item in raw_items:
+        label = str(item or "").strip().lower().lstrip(".")
+        if label in aliases and label not in labels:
+            labels.append(label)
+    return labels or list(default_labels)
+
+
+def _allowed_suffixes(labels: list[str], aliases: dict[str, set[str]]) -> set[str]:
+    suffixes: set[str] = set()
+    for label in labels:
+        suffixes.update(aliases.get(str(label or "").lower(), set()))
+    return suffixes
+
+
+def _clean_relative_path(value: str) -> str:
+    text = str(value or "").strip().split("#", 1)[0].split("?", 1)[0].strip().lstrip("/")
+    if not text or text.startswith(("http://", "https://", "data:", "//")):
+        return ""
+    path = Path(text)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        return ""
+    return path.as_posix()
+
+
+def _relative_refs_from_value(value: object) -> set[str]:
+    refs: set[str] = set()
+    if isinstance(value, str):
+        ref = _clean_relative_path(value)
+        if ref:
+            refs.add(ref)
+        return refs
+    if isinstance(value, dict):
+        for key in (
+            "relPath",
+            "localName",
+            "fileName",
+            "path",
+            "thumbnailLocal",
+            "thumbnailFile",
+            "thumbnailRelPath",
+            "avatarLocal",
+            "avatarRelPath",
+            "avatar",
+        ):
+            if key in value:
+                refs.update(_relative_refs_from_value(value.get(key)))
+    return refs
+
+
+def _resolve_model_file(model_root: Path, rel_path: str) -> Path | None:
+    clean_ref = _clean_relative_path(rel_path)
+    if not clean_ref:
+        return None
+    model_root_resolved = model_root.resolve()
+    candidates = [(model_root / clean_ref).resolve()]
+    if "/" not in clean_ref:
+        candidates.extend(
+            [
+                (model_root / "instances" / clean_ref).resolve(),
+                (model_root / "images" / clean_ref).resolve(),
+                (model_root / "attachments" / clean_ref).resolve(),
+            ]
+        )
+    for candidate in candidates:
+        try:
+            candidate.relative_to(model_root_resolved)
+        except ValueError:
+            continue
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
+def _add_share_file(
+    *,
+    files: list[dict],
+    path_to_id: dict[str, str],
+    model_root: Path,
+    rel_path: str,
+    role: str,
+    source_model_dir: str,
+) -> str:
+    path = _resolve_model_file(model_root, rel_path)
+    if path is None:
+        return ""
+    path_key = path.resolve().as_posix()
+    if path_key in path_to_id:
+        return path_to_id[path_key]
+    file_id = f"f{len(files) + 1:04d}"
+    rel_to_model = path.resolve().relative_to(model_root.resolve()).as_posix()
+    stat = path.stat()
+    files.append(
+        {
+            "id": file_id,
+            "role": role,
+            "source_model_dir": source_model_dir,
+            "rel_path": rel_to_model,
+            "name": path.name,
+            "size": int(stat.st_size),
+            "mime_type": mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+        }
+    )
+    path_to_id[path_key] = file_id
+    return file_id
+
+
+def _rewrite_file_refs(
+    value: object,
+    *,
+    model_root: Path,
+    source_model_dir: str,
+    files: list[dict],
+    path_to_id: dict[str, str],
+    allowed_suffixes: set[str] | None = None,
+    role: str,
+) -> object:
+    if isinstance(value, list):
+        return [
+            _rewrite_file_refs(
+                item,
+                model_root=model_root,
+                source_model_dir=source_model_dir,
+                files=files,
+                path_to_id=path_to_id,
+                allowed_suffixes=allowed_suffixes,
+                role=role,
+            )
+            for item in value
+        ]
+    if not isinstance(value, dict):
+        return value
+
+    item = copy.deepcopy(value)
+    for key, raw_value in list(item.items()):
+        if not isinstance(raw_value, str):
+            continue
+        if key == "fileName" and role != "attachment":
+            continue
+        for rel_ref in _relative_refs_from_value({key: raw_value}):
+            suffix = Path(rel_ref).suffix.lower().lstrip(".")
+            if allowed_suffixes is not None and suffix not in allowed_suffixes:
+                continue
+            file_id = _add_share_file(
+                files=files,
+                path_to_id=path_to_id,
+                model_root=model_root,
+                rel_path=rel_ref,
+                role=role,
+                source_model_dir=source_model_dir,
+            )
+            if file_id:
+                item[f"{key}ShareFileId"] = file_id
+    return item
+
+
+def _filter_attachment_item(item: dict, allowed_suffixes: set[str]) -> bool:
+    ref_name = str(item.get("localName") or item.get("relPath") or item.get("fileName") or item.get("name") or "")
+    suffix = Path(ref_name).suffix.lower().lstrip(".")
+    return suffix in allowed_suffixes or (suffix and suffix in allowed_suffixes)
+
+
+def _build_share_model_entry(
+    *,
+    model_dir: str,
+    options: dict,
+    files: list[dict],
+    path_to_id: dict[str, str],
+) -> dict:
+    clean_model_dir = str(model_dir or "").strip().strip("/")
+    if not clean_model_dir:
+        raise ValueError("模型目录不能为空。")
+    model_root = (ARCHIVE_DIR / clean_model_dir).resolve()
+    try:
+        model_root.relative_to(ARCHIVE_DIR.resolve())
+    except ValueError as exc:
+        raise ValueError("非法模型路径。") from exc
+    meta_path = model_root / "meta.json"
+    if not meta_path.exists():
+        raise ValueError(f"模型不存在：{clean_model_dir}")
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValueError(f"模型元数据无法读取：{clean_model_dir}") from exc
+
+    shared_meta = copy.deepcopy(meta)
+    model_file_suffixes = _allowed_suffixes(options["model_file_types"], MODEL_FILE_SUFFIX_ALIASES)
+    attachment_suffixes = _allowed_suffixes(options["attachment_file_types"], ATTACHMENT_FILE_SUFFIX_ALIASES)
+
+    if options["include_images"]:
+        for key in ("cover",):
+            refs = _relative_refs_from_value(shared_meta.get(key))
+            for rel_ref in refs:
+                _add_share_file(
+                    files=files,
+                    path_to_id=path_to_id,
+                    model_root=model_root,
+                    rel_path=rel_ref,
+                    role="image",
+                    source_model_dir=clean_model_dir,
+                )
+        for key in ("designImages", "summaryImages"):
+            shared_meta[key] = _rewrite_file_refs(
+                shared_meta.get(key) if isinstance(shared_meta.get(key), list) else [],
+                model_root=model_root,
+                source_model_dir=clean_model_dir,
+                files=files,
+                path_to_id=path_to_id,
+                role="image",
+            )
+        author = shared_meta.get("author") if isinstance(shared_meta.get("author"), dict) else {}
+        shared_meta["author"] = _rewrite_file_refs(
+            author,
+            model_root=model_root,
+            source_model_dir=clean_model_dir,
+            files=files,
+            path_to_id=path_to_id,
+            role="image",
+        )
+    else:
+        shared_meta["cover"] = ""
+        shared_meta["coverUrl"] = ""
+        shared_meta["designImages"] = []
+        shared_meta["summaryImages"] = []
+        if isinstance(shared_meta.get("author"), dict):
+            for key in ("avatarLocal", "avatarRelPath", "avatar", "avatarUrl"):
+                shared_meta["author"][key] = ""
+
+    instances = shared_meta.get("instances") if isinstance(shared_meta.get("instances"), list) else []
+    next_instances = []
+    if options["include_model_files"]:
+        for instance in instances:
+            if not isinstance(instance, dict):
+                continue
+            next_instance = copy.deepcopy(instance)
+            file_name = Path(str(next_instance.get("fileName") or next_instance.get("name") or "")).name
+            suffix = Path(file_name).suffix.lower().lstrip(".")
+            if not file_name or suffix not in model_file_suffixes:
+                continue
+            file_id = _add_share_file(
+                files=files,
+                path_to_id=path_to_id,
+                model_root=model_root,
+                rel_path=f"instances/{file_name}",
+                role="model",
+                source_model_dir=clean_model_dir,
+            )
+            if not file_id:
+                continue
+            next_instance["shareFileId"] = file_id
+            if options["include_images"]:
+                next_instance["pictures"] = _rewrite_file_refs(
+                    next_instance.get("pictures") if isinstance(next_instance.get("pictures"), list) else [],
+                    model_root=model_root,
+                    source_model_dir=clean_model_dir,
+                    files=files,
+                    path_to_id=path_to_id,
+                    role="image",
+                )
+                next_instance = _rewrite_file_refs(
+                    next_instance,
+                    model_root=model_root,
+                    source_model_dir=clean_model_dir,
+                    files=files,
+                    path_to_id=path_to_id,
+                    role="image",
+                )
+            else:
+                next_instance["pictures"] = []
+                next_instance["thumbnailLocal"] = ""
+                next_instance["thumbnailUrl"] = ""
+            next_instances.append(next_instance)
+    shared_meta["instances"] = next_instances
+
+    if options["include_attachments"]:
+        attachments = shared_meta.get("attachments") if isinstance(shared_meta.get("attachments"), list) else []
+        next_attachments = []
+        for attachment in attachments:
+            if not isinstance(attachment, dict) or not _filter_attachment_item(attachment, attachment_suffixes):
+                continue
+            next_attachment = _rewrite_file_refs(
+                attachment,
+                model_root=model_root,
+                source_model_dir=clean_model_dir,
+                files=files,
+                path_to_id=path_to_id,
+                allowed_suffixes=attachment_suffixes,
+                role="attachment",
+            )
+            next_attachments.append(next_attachment)
+        shared_meta["attachments"] = next_attachments
+    else:
+        shared_meta["attachments"] = []
+
+    if not options["include_comments"]:
+        shared_meta["comments"] = []
+        stats = shared_meta.get("stats") if isinstance(shared_meta.get("stats"), dict) else {}
+        stats["comments"] = 0
+        shared_meta["stats"] = stats
+
+    local_import = shared_meta.get("localImport") if isinstance(shared_meta.get("localImport"), dict) else {}
+    shared_meta["sharedImportSource"] = {
+        "sourceModelDir": clean_model_dir,
+        "sourceModelId": str(shared_meta.get("id") or local_import.get("designModelId") or ""),
+        "sourceUrl": str(shared_meta.get("url") or ""),
+        "title": str(shared_meta.get("title") or clean_model_dir),
+    }
+    return {
+        "model_dir": clean_model_dir,
+        "title": str(shared_meta.get("title") or clean_model_dir),
+        "id": str(shared_meta.get("id") or local_import.get("designModelId") or ""),
+        "origin_url": str(shared_meta.get("url") or ""),
+        "source": str(shared_meta.get("source") or ""),
+        "meta": shared_meta,
+        "file_ids": [item["id"] for item in files if item.get("source_model_dir") == clean_model_dir],
+    }
+
+
+def _find_share_record(share_id: str) -> dict | None:
+    clean_id = str(share_id or "").strip()
+    if not clean_id:
+        return None
+    for item in _read_shares_state().get("items") or []:
+        if isinstance(item, dict) and str(item.get("id") or "") == clean_id:
+            return item
+    return None
+
+
+def _validate_share_record(share_id: str, token: str) -> dict:
+    record = _find_share_record(share_id)
+    if not record:
+        raise ValueError("分享不存在或已被清除。")
+    if not hmac.compare_digest(str(record.get("token_hash") or ""), _share_token_hash(token)):
+        raise ValueError("分享 token 无效。")
+    expires_at = parse_datetime(record.get("expires_at"))
+    if expires_at is not None and expires_at < china_now():
+        raise ValueError("分享已过期。")
+    return record
+
+
+def _manifest_from_record(record: dict, token: str) -> dict:
+    public_files = []
+    for file_item in record.get("files") or []:
+        if not isinstance(file_item, dict):
+            continue
+        public_files.append(
+            {
+                "id": str(file_item.get("id") or ""),
+                "role": str(file_item.get("role") or ""),
+                "source_model_dir": str(file_item.get("source_model_dir") or ""),
+                "rel_path": str(file_item.get("rel_path") or ""),
+                "name": str(file_item.get("name") or ""),
+                "size": int(file_item.get("size") or 0),
+                "mime_type": str(file_item.get("mime_type") or "application/octet-stream"),
+                "url": f"/api/public/shares/{record.get('id')}/files/{file_item.get('id')}?token={token}",
+            }
+        )
+    return {
+        "share_id": str(record.get("id") or ""),
+        "created_at": str(record.get("created_at") or ""),
+        "expires_at": str(record.get("expires_at") or ""),
+        "options": record.get("options") if isinstance(record.get("options"), dict) else {},
+        "models": record.get("models") if isinstance(record.get("models"), list) else [],
+        "files": public_files,
+    }
+
+
+def _fetch_share_manifest(share_code: str) -> tuple[dict, dict]:
+    decoded = _decode_share_code(share_code)
+    manifest_url = urljoin(
+        f"{decoded['base_url']}/",
+        f"api/public/shares/{decoded['share_id']}/manifest?token={decoded['token']}",
+    )
+    response = requests.get(manifest_url, timeout=(8, 30), headers={"Accept": "application/json"})
+    if response.status_code != 200:
+        raise ValueError(f"读取分享失败：HTTP {response.status_code}")
+    try:
+        manifest = response.json()
+    except ValueError as exc:
+        raise ValueError("分享 manifest 不是有效 JSON。") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError("分享 manifest 格式无效。")
+    return decoded, manifest
+
+
+def _normalize_duplicate_hash(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text if ":" in text else f"sha256:{text}"
+
+
+def _collect_meta_duplicate_keys(meta: dict) -> dict[str, set[str]]:
+    keys = {"model_ids": set(), "urls": set(), "shared_sources": set(), "file_hashes": set()}
+    model_id = str(meta.get("id") or "").strip()
+    local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
+    if not model_id:
+        model_id = str(local_import.get("designModelId") or "").strip()
+    if model_id:
+        keys["model_ids"].add(model_id)
+    origin_url = str(meta.get("url") or "").strip()
+    if origin_url:
+        keys["urls"].add(origin_url)
+        normalized_origin_url = normalize_source_url(origin_url)
+        if normalized_origin_url:
+            keys["urls"].add(normalized_origin_url)
+        origin_model_id = extract_model_id(origin_url)
+        if origin_model_id:
+            keys["model_ids"].add(origin_model_id)
+    shared_source = meta.get("sharedImportSource") if isinstance(meta.get("sharedImportSource"), dict) else {}
+    source_model_id = str(shared_source.get("sourceModelId") or "").strip()
+    source_url = str(shared_source.get("sourceUrl") or "").strip()
+    source_dir = str(shared_source.get("sourceModelDir") or "").strip()
+    if source_model_id:
+        keys["model_ids"].add(source_model_id)
+        keys["shared_sources"].add(f"model:{source_model_id}")
+    if source_url:
+        keys["urls"].add(source_url)
+        normalized_source_url = normalize_source_url(source_url)
+        if normalized_source_url:
+            keys["urls"].add(normalized_source_url)
+            keys["shared_sources"].add(f"url:{normalized_source_url}")
+        source_url_model_id = extract_model_id(source_url)
+        if source_url_model_id:
+            keys["model_ids"].add(source_url_model_id)
+            keys["shared_sources"].add(f"model:{source_url_model_id}")
+        keys["shared_sources"].add(f"url:{source_url}")
+    if source_dir:
+        keys["shared_sources"].add(f"dir:{source_dir}")
+    for hash_value in (
+        local_import.get("configFingerprint"),
+        local_import.get("fileHash"),
+    ):
+        normalized = _normalize_duplicate_hash(hash_value)
+        if normalized:
+            keys["file_hashes"].add(normalized)
+    for instance in meta.get("instances") or []:
+        if not isinstance(instance, dict):
+            continue
+        profile_id = str(instance.get("profileId") or instance.get("profile_id") or "").strip()
+        if profile_id:
+            keys["file_hashes"].add(f"design_profile:{profile_id}")
+        inst_import = instance.get("localImport") if isinstance(instance.get("localImport"), dict) else {}
+        for hash_value in (
+            inst_import.get("configFingerprint"),
+            inst_import.get("fileHash"),
+        ):
+            normalized = _normalize_duplicate_hash(hash_value)
+            if normalized:
+                keys["file_hashes"].add(normalized)
+    return keys
+
+
+def _build_library_duplicate_index() -> dict[str, dict[str, dict]]:
+    index = {"model_ids": {}, "urls": {}, "shared_sources": {}, "file_hashes": {}}
+    archive_root = ARCHIVE_DIR.resolve()
+
+    def add_key(bucket: str, key: str, payload: dict) -> None:
+        clean_key = str(key or "").strip()
+        if clean_key:
+            index[bucket].setdefault(clean_key, payload)
+
+    for meta_path in sorted(ARCHIVE_DIR.rglob("meta.json")):
+        try:
+            model_root = meta_path.parent.resolve()
+            model_dir = model_root.relative_to(archive_root).as_posix()
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        title = str(meta.get("title") or model_dir)
+        source = str(meta.get("source") or "")
+        payload = {"model_dir": model_dir, "title": title, "source": source}
+        keys = _collect_meta_duplicate_keys(meta)
+        for bucket, values in keys.items():
+            for key in values:
+                add_key(bucket, key, payload)
+
+    subscription_state = task_state_store.load_subscriptions_state()
+    for state_item in subscription_state.get("items") or []:
+        if not isinstance(state_item, dict):
+            continue
+        subscription_id = str(state_item.get("id") or "").strip()
+        payload = {
+            "model_dir": "",
+            "title": "订阅跟踪模型",
+            "source": "subscription",
+            "subscription_id": subscription_id,
+        }
+        for source_item in (state_item.get("current_items") or []) + (state_item.get("tracked_items") or []):
+            if not isinstance(source_item, dict):
+                continue
+            model_id = str(source_item.get("model_id") or "").strip()
+            source_url = normalize_source_url(str(source_item.get("url") or ""))
+            task_key = str(source_item.get("task_key") or "").strip()
+            if not model_id and task_key.startswith("model:"):
+                model_id = task_key.split(":", 1)[1].strip()
+            if not model_id and source_url:
+                model_id = extract_model_id(source_url)
+            add_key("model_ids", model_id, payload)
+            add_key("shared_sources", f"model:{model_id}" if model_id else "", payload)
+            add_key("urls", source_url, payload)
+            add_key("shared_sources", f"url:{source_url}" if source_url else "", payload)
+            add_key("urls", task_key if task_key.startswith(("http://", "https://", "/")) else "", payload)
+    return index
+
+
+def _find_manifest_duplicates(manifest: dict) -> list[dict]:
+    duplicate_index = _build_library_duplicate_index()
+    duplicates: list[dict] = []
+    seen: set[str] = set()
+    for model in manifest.get("models") or []:
+        if not isinstance(model, dict):
+            continue
+        meta = model.get("meta") if isinstance(model.get("meta"), dict) else {}
+        model_title = str(model.get("title") or meta.get("title") or "")
+        keys = _collect_meta_duplicate_keys(meta)
+        for bucket, values in keys.items():
+            for key in values:
+                match = duplicate_index.get(bucket, {}).get(key)
+                if not match:
+                    continue
+                duplicate_key = f"{model_title}|{bucket}|{key}|{match.get('model_dir')}"
+                if duplicate_key in seen:
+                    continue
+                seen.add(duplicate_key)
+                duplicates.append(
+                    {
+                        "share_title": model_title,
+                        "reason": bucket,
+                        "key": key,
+                        "existing_model_dir": match.get("model_dir") or "",
+                        "existing_title": match.get("title") or match.get("model_dir") or "",
+                        "existing_source": match.get("source") or "",
+                    }
+                )
+    return duplicates
+
+
+def _safe_share_filename(filename: str, fallback: str = "file") -> str:
+    raw = Path(str(filename or "").strip()).name
+    suffix = Path(raw).suffix.lower() or Path(fallback).suffix.lower()
+    stem = Path(raw).stem.strip() or Path(fallback).stem or "file"
+    safe_stem = re.sub(r"[^\w()\-\u4e00-\u9fff]+", "_", stem, flags=re.UNICODE).strip("._") or "file"
+    safe_suffix = re.sub(r"[^.\w]+", "", suffix)[:16]
+    return f"{safe_stem}{safe_suffix}"
+
+
+def _safe_share_relative_path(rel_path: str, fallback_name: str = "file") -> Path:
+    clean_ref = _clean_relative_path(rel_path)
+    if not clean_ref:
+        return Path(_safe_share_filename(fallback_name))
+    parts = []
+    raw_parts = list(Path(clean_ref).parts)
+    for index, part in enumerate(raw_parts):
+        if index == len(raw_parts) - 1:
+            parts.append(_safe_share_filename(part, fallback=fallback_name))
+        else:
+            safe_part = re.sub(r"[^\w()\-\u4e00-\u9fff]+", "_", str(part or ""), flags=re.UNICODE).strip("._")
+            parts.append(safe_part or "files")
+    return Path(*parts)
+
+
+def _unique_share_destination(path: Path) -> Path:
+    candidate = path
+    stem = path.stem
+    suffix = path.suffix
+    index = 2
+    while candidate.exists():
+        candidate = path.with_name(f"{stem}_{index}{suffix}")
+        index += 1
+    return candidate
+
+
+def _share_file_lookup(manifest: dict) -> dict[str, dict]:
+    return {
+        str(item.get("id") or ""): item
+        for item in manifest.get("files") or []
+        if isinstance(item, dict) and str(item.get("id") or "")
+    }
+
+
+def _download_share_file(base_url: str, file_item: dict, target_path: Path) -> tuple[int, str]:
+    file_url = str(file_item.get("url") or "")
+    if not file_url:
+        raise ValueError("分享文件缺少下载地址。")
+    url = urljoin(f"{base_url}/", file_url.lstrip("/"))
+    response = requests.get(url, timeout=(8, 120), stream=True)
+    if response.status_code != 200:
+        raise ValueError(f"下载分享文件失败：HTTP {response.status_code}")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    total_size = 0
+    temp_path = target_path.with_name(f"{target_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temp_path.open("wb") as handle:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if not chunk:
+                    continue
+                total_size += len(chunk)
+                digest.update(chunk)
+                handle.write(chunk)
+        temp_path.replace(target_path)
+    finally:
+        response.close()
+        temp_path.unlink(missing_ok=True)
+    return total_size, digest.hexdigest()
+
+
+def _replace_share_file_refs(value: object, file_id_to_rel: dict[str, str]) -> object:
+    if isinstance(value, list):
+        return [_replace_share_file_refs(item, file_id_to_rel) for item in value]
+    if not isinstance(value, dict):
+        return value
+    item = copy.deepcopy(value)
+    local_ref_keys = {
+        "relPath",
+        "localName",
+        "path",
+        "thumbnailLocal",
+        "thumbnailFile",
+        "thumbnailRelPath",
+        "avatarLocal",
+        "avatarRelPath",
+        "avatar",
+    }
+    for key, raw_value in list(item.items()):
+        if key not in local_ref_keys or not isinstance(raw_value, str):
+            continue
+        explicit_file_id = str(item.get(f"{key}ShareFileId") or "")
+        if explicit_file_id and explicit_file_id in file_id_to_rel:
+            continue
+        clean_ref = _clean_relative_path(raw_value)
+        if not clean_ref:
+            continue
+        for file_id, rel_path in file_id_to_rel.items():
+            if Path(rel_path).name == Path(clean_ref).name:
+                item[key] = rel_path
+                break
+    for key in list(item.keys()):
+        if not key.endswith("ShareFileId"):
+            continue
+        original_key = key[: -len("ShareFileId")]
+        file_id = str(item.get(key) or "")
+        rel_path = file_id_to_rel.get(file_id)
+        if rel_path:
+            item[original_key] = rel_path
+        item.pop(key, None)
+    for key, raw in list(item.items()):
+        if isinstance(raw, (dict, list)):
+            item[key] = _replace_share_file_refs(raw, file_id_to_rel)
+    return item
+
+
+def _import_share_manifest(*, decoded: dict, manifest: dict) -> dict:
+    duplicates = _find_manifest_duplicates(manifest)
+    if duplicates:
+        return {
+            "success": False,
+            "imported": [],
+            "duplicates": duplicates,
+            "message": "本地已存在分享中的模型，已停止导入。",
+        }
+
+    file_lookup = _share_file_lookup(manifest)
+    imported: list[dict] = []
+    now_iso = china_now_iso()
+    for model_index, model in enumerate(manifest.get("models") or [], start=1):
+        if not isinstance(model, dict):
+            continue
+        meta = copy.deepcopy(model.get("meta") if isinstance(model.get("meta"), dict) else {})
+        title = str(meta.get("title") or model.get("title") or f"分享模型 {model_index}").strip()
+        base_dir_name = _safe_share_filename(title, fallback=f"shared-{model_index}")
+        model_root = _unique_share_destination(ARCHIVE_DIR / "local" / "shared" / base_dir_name)
+        model_root.mkdir(parents=True, exist_ok=False)
+        (model_root / "instances").mkdir(parents=True, exist_ok=True)
+        (model_root / "images").mkdir(parents=True, exist_ok=True)
+        (model_root / "attachments").mkdir(parents=True, exist_ok=True)
+        file_id_to_rel: dict[str, str] = {}
+        for file_id in model.get("file_ids") or []:
+            file_item = file_lookup.get(str(file_id or ""))
+            if not file_item:
+                continue
+            target_rel = _safe_share_relative_path(
+                str(file_item.get("rel_path") or ""),
+                fallback_name=str(file_item.get("name") or file_id),
+            )
+            target = _unique_share_destination(model_root / target_rel)
+            size, digest = _download_share_file(decoded["base_url"], file_item, target)
+            rel_path = target.relative_to(model_root).as_posix()
+            file_id_to_rel[str(file_id)] = rel_path
+            file_item["downloaded_size"] = size
+            file_item["sha256"] = digest
+        meta = _replace_share_file_refs(meta, file_id_to_rel)
+        if isinstance(meta.get("cover"), str):
+            clean_cover = _clean_relative_path(meta.get("cover"))
+            if clean_cover and not (model_root / clean_cover).exists():
+                for rel_path in file_id_to_rel.values():
+                    if Path(rel_path).name == Path(clean_cover).name:
+                        meta["cover"] = rel_path
+                        break
+        instances = meta.get("instances") if isinstance(meta.get("instances"), list) else []
+        for instance in instances:
+            if not isinstance(instance, dict):
+                continue
+            share_file_id = str(instance.pop("shareFileId", "") or "")
+            rel_path = file_id_to_rel.get(share_file_id)
+            if rel_path:
+                instance["fileName"] = Path(rel_path).name
+                local_import = instance.get("localImport") if isinstance(instance.get("localImport"), dict) else {}
+                local_import.update(
+                    {
+                        "sourcePath": rel_path,
+                        "originalFilename": Path(rel_path).name,
+                        "organizedAt": now_iso,
+                        "moveFiles": False,
+                        "shareId": manifest.get("share_id") or "",
+                        "shareSourceBaseUrl": decoded["base_url"],
+                    }
+                )
+                instance["localImport"] = local_import
+        meta["source"] = "local"
+        meta["url"] = ""
+        meta["collectDate"] = now_iso
+        meta["update_time"] = now_iso
+        tags = meta.get("tags") if isinstance(meta.get("tags"), list) else []
+        if "分享导入" not in tags:
+            tags.append("分享导入")
+        meta["tags"] = tags
+        shared_source = meta.get("sharedImportSource") if isinstance(meta.get("sharedImportSource"), dict) else {}
+        shared_source.update(
+            {
+                "shareId": manifest.get("share_id") or "",
+                "shareSourceBaseUrl": decoded["base_url"],
+                "importedAt": now_iso,
+            }
+        )
+        meta["sharedImportSource"] = shared_source
+        local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
+        local_import.update(
+            {
+                "sourcePath": f"makerhub-share:{manifest.get('share_id') or ''}",
+                "originalFilename": title,
+                "organizedAt": now_iso,
+                "moveFiles": False,
+                "shareId": manifest.get("share_id") or "",
+                "shareSourceBaseUrl": decoded["base_url"],
+                "designModelId": str(shared_source.get("sourceModelId") or meta.get("id") or ""),
+                "modelFileCount": len(instances),
+            }
+        )
+        meta["localImport"] = local_import
+        (model_root / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        model_dir = model_root.relative_to(ARCHIVE_DIR.resolve()).as_posix()
+        invalidate_model_detail_cache(model_dir)
+        imported.append({"model_dir": model_dir, "title": title})
+    if imported:
+        invalidate_archive_snapshot("share_import")
+    return {
+        "success": bool(imported),
+        "imported": imported,
+        "duplicates": [],
+        "message": f"已导入 {len(imported)} 个分享模型。" if imported else "分享中没有可导入模型。",
+    }
+
 MW_BROWSER_HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
@@ -146,6 +1041,7 @@ MW_BROWSER_HEADERS = {
     "X-BBL-App-Source": "makerworld",
     "X-BBL-Client-Name": "MakerWorld",
 }
+MAKERHUB_PUBLIC_PING_PATH = "/api/public/makerhub/ping"
 MW_BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -494,6 +1390,63 @@ def _safe_error_message(exc: Exception) -> str:
     return text[:400]
 
 
+def _normalize_public_base_url(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = urlparse(text)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("公开访问地址必须以 http:// 或 https:// 开头。")
+    return text.rstrip("/")
+
+
+def _public_ping_url(base_url: str) -> str:
+    normalized = _normalize_public_base_url(base_url)
+    return urljoin(f"{normalized}/", MAKERHUB_PUBLIC_PING_PATH.lstrip("/"))
+
+
+def _run_public_base_url_test(base_url: str) -> dict:
+    normalized = _normalize_public_base_url(base_url)
+    if not normalized:
+        raise ValueError("请先填写公开访问地址。")
+
+    ping_url = _public_ping_url(normalized)
+    session = _make_test_session()
+    started = time.perf_counter()
+    try:
+        response = session.get(
+            ping_url,
+            timeout=(6, 12),
+            allow_redirects=True,
+        )
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+        content_type = str(response.headers.get("Content-Type") or "")
+        if response.status_code != 200:
+            raise ValueError(f"公开检测接口返回 HTTP {response.status_code}。")
+        if "application/json" not in content_type.lower():
+            raise ValueError("公开检测接口没有返回 JSON，可能反代到了错误页面。")
+        payload = response.json()
+        if not bool(payload.get("makerhub")):
+            raise ValueError("公开检测接口不是 MakerHub 响应。")
+        version = str(payload.get("app_version") or "")
+        return {
+            "ok": True,
+            "message": f"公开访问地址可用，检测到 MakerHub v{version or 'unknown'}。",
+            "base_url": normalized,
+            "ping_url": ping_url,
+            "final_url": str(response.url or ping_url),
+            "status_code": int(response.status_code),
+            "elapsed_ms": elapsed_ms,
+            "app_version": version,
+        }
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"公开访问地址不可用：{_safe_error_message(exc)}") from exc
+    finally:
+        session.close()
+
+
 def _make_test_session() -> requests.Session:
     session = requests.Session()
     session.headers.update(
@@ -625,6 +1578,7 @@ def _public_config_payload(config) -> dict:
         "cookies": [item.model_dump() for item in config.cookies],
         "proxy": config.proxy.model_dump(),
         "notifications": config.notifications.model_dump(),
+        "sharing": config.sharing.model_dump(),
         "user": {
             "username": config.user.username,
             "display_name": config.user.display_name,
@@ -681,6 +1635,54 @@ async def get_bootstrap(request: Request):
         "theme_preference": config.user.theme_preference if identity else "",
     }
     return _with_version_status(payload, await _get_github_version_status(proxy_config=config.proxy))
+
+
+@router.get("/public/makerhub/ping")
+async def public_makerhub_ping():
+    return {
+        "makerhub": True,
+        "app_version": APP_VERSION,
+    }
+
+
+@router.get("/public/shares/{share_id}/manifest")
+async def public_share_manifest(share_id: str, token: str = Query("")):
+    try:
+        record = await run_ui_io(_validate_share_record, share_id, token)
+        return await run_ui_io(_manifest_from_record, record, token)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/public/shares/{share_id}/files/{file_id}")
+async def public_share_file(share_id: str, file_id: str, token: str = Query("")):
+    try:
+        record = await run_ui_io(_validate_share_record, share_id, token)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    file_item = next(
+        (
+            item for item in record.get("files") or []
+            if isinstance(item, dict) and str(item.get("id") or "") == str(file_id or "")
+        ),
+        None,
+    )
+    if not file_item:
+        raise HTTPException(status_code=404, detail="分享文件不存在。")
+    source_model_dir = str(file_item.get("source_model_dir") or "").strip().strip("/")
+    rel_path = str(file_item.get("rel_path") or "").strip().lstrip("/")
+    target = (ARCHIVE_DIR / source_model_dir / rel_path).resolve()
+    try:
+        target.relative_to((ARCHIVE_DIR / source_model_dir).resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="分享文件路径无效。") from exc
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="分享文件不存在。")
+    return FileResponse(
+        target,
+        media_type=str(file_item.get("mime_type") or "application/octet-stream"),
+        filename=str(file_item.get("name") or target.name),
+    )
 
 
 @router.get("/config")
@@ -810,6 +1812,206 @@ async def save_notifications(payload: NotificationConfig, request: Request):
     append_business_log("settings", "notifications_saved", "通知配置已保存。", enabled=payload.enabled)
     saved = store.save(config)
     return _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
+
+
+@router.post("/config/sharing")
+async def save_sharing(payload: SharingConfig, request: Request):
+    _require_session_auth(request)
+    config = store.load()
+    try:
+        normalized_url = _normalize_public_base_url(payload.public_base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    options = _normalize_share_options(payload)
+    config.sharing = SharingConfig(
+        public_base_url=normalized_url,
+        default_expires_days=options["expires_days"],
+        include_images=options["include_images"],
+        include_model_files=options["include_model_files"],
+        model_file_types=options["model_file_types"],
+        include_attachments=options["include_attachments"],
+        attachment_file_types=options["attachment_file_types"],
+        include_comments=options["include_comments"],
+    )
+    append_business_log(
+        "settings",
+        "sharing_saved",
+        "模型分享配置已保存。",
+        public_base_url=normalized_url,
+    )
+    saved = store.save(config)
+    return _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
+
+
+@router.post("/config/sharing/test")
+async def test_sharing(payload: SharingConfig, request: Request):
+    _require_session_auth(request)
+    try:
+        result = await run_task_api(_run_public_base_url_test, payload.public_base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    append_business_log(
+        "settings",
+        "sharing_public_url_tested",
+        result.get("message") or "模型分享公开访问地址检测完成。",
+        ok=bool(result.get("ok")),
+        public_base_url=result.get("base_url") or payload.public_base_url,
+        ping_url=result.get("ping_url") or "",
+        status_code=int(result.get("status_code") or 0),
+        elapsed_ms=result.get("elapsed_ms"),
+    )
+    return result
+
+
+@router.get("/config/sharing/check")
+async def check_sharing_public_url(request: Request):
+    _require_session_auth(request)
+    config = await run_ui_io(store.load)
+    try:
+        return await run_task_api(_run_public_base_url_test, config.sharing.public_base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/sharing/create")
+async def create_model_share(payload: ShareCreateRequest, request: Request):
+    _require_session_auth(request)
+
+    def _create_payload() -> dict:
+        config = store.load()
+        base_url = _normalize_public_base_url(config.sharing.public_base_url)
+        if not base_url:
+            raise ValueError("请先到设置 -> 模型分享 配置公开访问地址。")
+        _run_public_base_url_test(base_url)
+        options = _normalize_share_options(payload.options)
+        model_dirs = []
+        seen_dirs = set()
+        for item in payload.model_dirs or []:
+            clean_item = str(item or "").strip().strip("/")
+            if clean_item and clean_item not in seen_dirs:
+                model_dirs.append(clean_item)
+                seen_dirs.add(clean_item)
+        if not model_dirs:
+            raise ValueError("请选择要分享的模型。")
+        share_id = uuid.uuid4().hex
+        token = secrets.token_urlsafe(32)
+        now_dt = china_now()
+        expires_at = now_dt + timedelta(days=options["expires_days"])
+        files: list[dict] = []
+        path_to_id: dict[str, str] = {}
+        models = [
+            _build_share_model_entry(
+                model_dir=model_dir,
+                options=options,
+                files=files,
+                path_to_id=path_to_id,
+            )
+            for model_dir in model_dirs
+        ]
+        record = {
+            "id": share_id,
+            "token_hash": _share_token_hash(token),
+            "created_at": now_dt.isoformat(timespec="seconds"),
+            "expires_at": expires_at.isoformat(timespec="seconds"),
+            "options": options,
+            "models": models,
+            "files": files,
+        }
+        state = _read_shares_state()
+        state["items"] = [
+            item for item in state.get("items") or []
+            if isinstance(item, dict) and parse_datetime(item.get("expires_at")) not in (None,)
+            and parse_datetime(item.get("expires_at")) >= now_dt
+        ]
+        state["items"].append(record)
+        _write_shares_state(state)
+        share_code = _encode_share_code(base_url=base_url, share_id=share_id, token=token)
+        return {
+            "success": True,
+            "share_id": share_id,
+            "share_code": share_code,
+            "expires_at": record["expires_at"],
+            "model_count": len(models),
+            "file_count": len(files),
+            "message": f"已生成 {len(models)} 个模型的分享码。",
+        }
+
+    try:
+        result = await run_task_api(_create_payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    append_business_log(
+        "sharing",
+        "share_created",
+        result.get("message") or "模型分享码已生成。",
+        share_id=result.get("share_id") or "",
+        model_count=int(result.get("model_count") or 0),
+        file_count=int(result.get("file_count") or 0),
+    )
+    return result
+
+
+@router.post("/sharing/receive/preview")
+async def preview_model_share(payload: ShareReceiveRequest, request: Request):
+    _require_session_auth(request)
+
+    def _preview_payload() -> dict:
+        decoded, manifest = _fetch_share_manifest(payload.share_code)
+        duplicates = _find_manifest_duplicates(manifest)
+        models = manifest.get("models") if isinstance(manifest.get("models"), list) else []
+        files = manifest.get("files") if isinstance(manifest.get("files"), list) else []
+        return {
+            "success": True,
+            "can_import": not duplicates,
+            "duplicate_count": len(duplicates),
+            "duplicates": duplicates,
+            "manifest": {
+                "share_id": str(manifest.get("share_id") or decoded.get("share_id") or ""),
+                "base_url": decoded["base_url"],
+                "created_at": str(manifest.get("created_at") or ""),
+                "expires_at": str(manifest.get("expires_at") or ""),
+                "model_count": len(models),
+                "file_count": len(files),
+                "models": [
+                    {
+                        "title": str(item.get("title") or (item.get("meta") or {}).get("title") or ""),
+                        "id": str(item.get("id") or ""),
+                        "origin_url": str(item.get("origin_url") or ""),
+                        "file_count": len(item.get("file_ids") or []),
+                    }
+                    for item in models
+                    if isinstance(item, dict)
+                ],
+            },
+            "message": "分享可导入。" if not duplicates else "本地已存在分享中的模型，不能重复导入。",
+        }
+
+    try:
+        return await run_task_api(_preview_payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/sharing/receive/import")
+async def import_model_share(payload: ShareReceiveRequest, request: Request):
+    _require_session_auth(request)
+
+    def _import_payload() -> dict:
+        decoded, manifest = _fetch_share_manifest(payload.share_code)
+        return _import_share_manifest(decoded=decoded, manifest=manifest)
+
+    try:
+        result = await run_task_api(_import_payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    append_business_log(
+        "sharing",
+        "share_imported" if result.get("success") else "share_import_skipped_duplicate",
+        result.get("message") or "分享导入已处理。",
+        imported_count=len(result.get("imported") or []),
+        duplicate_count=len(result.get("duplicates") or []),
+    )
+    return result
 
 
 @router.post("/config/user")

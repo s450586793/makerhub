@@ -151,6 +151,120 @@
       </form>
     </div>
 
+    <div v-show="activeTab === 'sharing'" class="settings-panel is-active">
+      <form class="settings-form token-card" @submit.prevent="saveSharing">
+        <div class="section-card__header">
+          <div>
+            <span class="eyebrow">模型分享</span>
+            <h2>MakerHub 分享地址</h2>
+          </div>
+        </div>
+
+        <label class="field-card">
+          <span>公开访问地址</span>
+          <input v-model.trim="sharingForm.public_base_url" type="url" placeholder="https://makerhub.example.com">
+          <small class="archive-form__hint">分享码会让接收方 MakerHub 从这个地址拉取模型快照；请填写对方机器可访问的域名、DDNS、内网穿透或局域网地址。</small>
+        </label>
+
+        <div class="settings-grid settings-grid--two">
+          <label class="field-card">
+            <span>默认有效期</span>
+            <input v-model.number="sharingForm.default_expires_days" type="number" min="1" max="90" step="1">
+          </label>
+          <label class="field-card">
+            <span>默认内容</span>
+            <div class="share-settings-checks">
+              <label class="switch"><input v-model="sharingForm.include_images" type="checkbox"><span>图片</span></label>
+              <label class="switch"><input v-model="sharingForm.include_model_files" type="checkbox"><span>模型文件</span></label>
+              <label class="switch"><input v-model="sharingForm.include_attachments" type="checkbox"><span>附件</span></label>
+              <label class="switch"><input v-model="sharingForm.include_comments" type="checkbox"><span>评论</span></label>
+            </div>
+          </label>
+        </div>
+
+        <div class="settings-grid settings-grid--two">
+          <label class="field-card">
+            <span>模型文件类型</span>
+            <div class="share-settings-chips">
+              <label v-for="item in shareModelFileOptions" :key="item.value">
+                <input v-model="sharingForm.model_file_types" type="checkbox" :value="item.value" :disabled="!sharingForm.include_model_files">
+                <em>{{ item.label }}</em>
+              </label>
+            </div>
+          </label>
+          <label class="field-card">
+            <span>附件类型</span>
+            <div class="share-settings-chips">
+              <label v-for="item in shareAttachmentOptions" :key="item.value">
+                <input v-model="sharingForm.attachment_file_types" type="checkbox" :value="item.value" :disabled="!sharingForm.include_attachments">
+                <em>{{ item.label }}</em>
+              </label>
+            </div>
+          </label>
+        </div>
+
+        <div class="settings-inline-actions">
+          <button class="button button-secondary" type="button" :disabled="testing.sharing" @click="testSharing">
+            {{ testing.sharing ? "检测中..." : "检测公开访问" }}
+          </button>
+          <span class="form-status">{{ statuses.sharing_test }}</span>
+        </div>
+
+        <div class="form-footer">
+          <button class="button button-primary" type="submit">保存分享设置</button>
+          <span class="form-status">{{ statuses.sharing }}</span>
+        </div>
+      </form>
+
+      <form class="settings-form token-card share-receive-card" @submit.prevent="previewShareCode">
+        <div class="section-card__header">
+          <div>
+            <span class="eyebrow">接收分享</span>
+            <h2>导入分享码</h2>
+          </div>
+        </div>
+        <label class="field-card">
+          <span>分享码</span>
+          <textarea v-model.trim="shareReceive.code" rows="5" placeholder="粘贴对方 MakerHub 生成的分享码"></textarea>
+        </label>
+        <div class="settings-inline-actions">
+          <button class="button button-secondary" type="submit" :disabled="shareReceive.loadingPreview">
+            {{ shareReceive.loadingPreview ? "预览中..." : "预览分享" }}
+          </button>
+          <button
+            class="button button-primary"
+            type="button"
+            :disabled="!shareReceive.preview?.can_import || shareReceive.importing"
+            @click="importShareCode"
+          >
+            {{ shareReceive.importing ? "导入中..." : "确认导入" }}
+          </button>
+          <span class="form-status">{{ statuses.share_receive }}</span>
+        </div>
+        <div v-if="shareReceive.preview" class="share-preview">
+          <div class="share-preview__head">
+            <strong>{{ shareReceive.preview.manifest?.model_count || 0 }} 个模型</strong>
+            <span>{{ shareReceive.preview.manifest?.file_count || 0 }} 个文件</span>
+            <em :class="shareReceive.preview.can_import ? 'is-ok' : 'is-error'">
+              {{ shareReceive.preview.can_import ? "可导入" : "发现重复" }}
+            </em>
+          </div>
+          <ol v-if="shareReceive.preview.manifest?.models?.length" class="share-preview__list">
+            <li v-for="model in shareReceive.preview.manifest.models" :key="`${model.title}-${model.id}`">
+              <span>{{ model.title || model.id || "未命名模型" }}</span>
+              <em>{{ model.file_count || 0 }} 个文件</em>
+            </li>
+          </ol>
+          <ol v-if="shareReceive.preview.duplicates?.length" class="share-preview__list share-preview__list--duplicates">
+            <li v-for="item in shareReceive.preview.duplicates" :key="`${item.share_title}-${item.existing_model_dir}-${item.key}`">
+              <span>{{ item.share_title || "分享模型" }} 已存在</span>
+              <em>{{ item.existing_title || item.existing_model_dir }}</em>
+            </li>
+          </ol>
+        </div>
+      </form>
+    </div>
+
     <div v-show="activeTab === 'advanced'" class="settings-panel is-active">
       <form class="settings-form token-card" @submit.prevent="saveAdvanced">
         <div class="section-card__header">
@@ -462,6 +576,7 @@ const tabs = [
   { key: "system", label: "系统" },
   { key: "connections", label: "连接设置" },
   { key: "organizer", label: "本地整理" },
+  { key: "sharing", label: "模型分享" },
   { key: "advanced", label: "高级" },
   { key: "user", label: "用户" },
   { key: "notifications", label: "通知" },
@@ -508,6 +623,32 @@ const organizerForm = reactive({
   target_dir: "",
   move_files: true,
 });
+const shareModelFileOptions = [
+  { value: "3mf", label: "3MF" },
+  { value: "stl", label: "STL" },
+  { value: "step", label: "STEP" },
+  { value: "obj", label: "OBJ" },
+];
+const shareAttachmentOptions = [
+  { value: "pdf", label: "PDF" },
+  { value: "excel", label: "Excel" },
+];
+const sharingForm = reactive({
+  public_base_url: "",
+  default_expires_days: 7,
+  include_images: true,
+  include_model_files: true,
+  model_file_types: ["3mf", "stl", "step", "obj"],
+  include_attachments: true,
+  attachment_file_types: ["pdf", "excel"],
+  include_comments: true,
+});
+const shareReceive = reactive({
+  code: "",
+  loadingPreview: false,
+  importing: false,
+  preview: null,
+});
 const userForm = reactive({
   username: "admin",
   display_name: "Admin",
@@ -524,6 +665,9 @@ const statuses = reactive({
   cookie_global: "",
   proxy: "",
   organizer: "",
+  sharing: "",
+  sharing_test: "",
+  share_receive: "",
   advanced: "",
   notifications: "",
   user: "",
@@ -537,6 +681,7 @@ const testing = reactive({
   cookie_cn: false,
   cookie_global: false,
   proxy: false,
+  sharing: false,
 });
 let systemUpdateTimer = null;
 let profileBackfillTimer = null;
@@ -729,6 +874,18 @@ function applyConfigToForms(payload) {
   organizerForm.source_dir = payload.organizer?.source_dir || "";
   organizerForm.target_dir = payload.organizer?.target_dir || "";
   organizerForm.move_files = payload.organizer?.move_files !== false;
+  sharingForm.public_base_url = payload.sharing?.public_base_url || "";
+  sharingForm.default_expires_days = normalizeBoundedInt(payload.sharing?.default_expires_days, 7, 1, 90);
+  sharingForm.include_images = payload.sharing?.include_images !== false;
+  sharingForm.include_model_files = payload.sharing?.include_model_files !== false;
+  sharingForm.model_file_types = Array.isArray(payload.sharing?.model_file_types) && payload.sharing.model_file_types.length
+    ? [...payload.sharing.model_file_types]
+    : ["3mf", "stl", "step", "obj"];
+  sharingForm.include_attachments = payload.sharing?.include_attachments !== false;
+  sharingForm.attachment_file_types = Array.isArray(payload.sharing?.attachment_file_types) && payload.sharing.attachment_file_types.length
+    ? [...payload.sharing.attachment_file_types]
+    : ["pdf", "excel"];
+  sharingForm.include_comments = payload.sharing?.include_comments !== false;
 
   notificationsForm.enabled = Boolean(payload.notifications?.enabled);
   notificationsForm.telegram_bot_token = payload.notifications?.telegram_bot_token || "";
@@ -969,6 +1126,19 @@ async function saveOrganizer() {
   }
 }
 
+async function saveSharing() {
+  try {
+    const payload = await apiRequest("/api/config/sharing", {
+      method: "POST",
+      body: { ...sharingForm },
+    });
+    applyConfigPayload(payload);
+    statuses.sharing = "分享设置已保存。";
+  } catch (error) {
+    statuses.sharing = error instanceof Error ? error.message : "保存失败。";
+  }
+}
+
 function buildProxyPayload() {
   return {
     enabled: connectionForm.proxy_enabled,
@@ -1012,6 +1182,66 @@ async function testProxy() {
     statuses.proxy = error instanceof Error ? error.message : "测试失败。";
   } finally {
     testing.proxy = false;
+  }
+}
+
+async function testSharing() {
+  testing.sharing = true;
+  statuses.sharing_test = "";
+  try {
+    const response = await apiRequest("/api/config/sharing/test", {
+      method: "POST",
+      body: { ...sharingForm },
+    });
+    statuses.sharing_test = response.message || "公开访问地址可用。";
+  } catch (error) {
+    statuses.sharing_test = error instanceof Error ? error.message : "检测失败。";
+  } finally {
+    testing.sharing = false;
+  }
+}
+
+async function previewShareCode() {
+  if (!shareReceive.code) {
+    statuses.share_receive = "请先粘贴分享码。";
+    return;
+  }
+  shareReceive.loadingPreview = true;
+  shareReceive.preview = null;
+  statuses.share_receive = "";
+  try {
+    const response = await apiRequest("/api/sharing/receive/preview", {
+      method: "POST",
+      body: { share_code: shareReceive.code },
+    });
+    shareReceive.preview = response;
+    statuses.share_receive = response.message || "分享预览完成。";
+  } catch (error) {
+    statuses.share_receive = error instanceof Error ? error.message : "分享预览失败。";
+  } finally {
+    shareReceive.loadingPreview = false;
+  }
+}
+
+async function importShareCode() {
+  if (!shareReceive.preview?.can_import) {
+    statuses.share_receive = "分享中存在重复模型，不能导入。";
+    return;
+  }
+  shareReceive.importing = true;
+  statuses.share_receive = "";
+  try {
+    const response = await apiRequest("/api/sharing/receive/import", {
+      method: "POST",
+      body: { share_code: shareReceive.code },
+    });
+    statuses.share_receive = response.message || "分享已导入。";
+    shareReceive.preview = null;
+    shareReceive.code = "";
+  } catch (error) {
+    statuses.share_receive = error instanceof Error ? error.message : "分享导入失败。";
+  } finally {
+    shareReceive.importing = false;
   }
 }
 

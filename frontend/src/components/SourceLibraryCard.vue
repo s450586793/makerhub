@@ -3,9 +3,21 @@
     :class="[
       'source-library-card',
       card.card_kind === 'author' ? 'source-library-card--author' : 'source-library-card--collection',
+      selectMode && 'source-library-card--selectable',
+      selected && 'is-selected',
     ]"
-    @click="$emit('open', card)"
+    @click="handleCardClick"
   >
+    <button
+      v-if="selectMode"
+      type="button"
+      :class="['source-library-card__select-toggle', selected && 'is-selected']"
+      :aria-label="selected ? '取消选择来源' : '选择来源'"
+      @click.stop="$emit('select', card)"
+    >
+      <span aria-hidden="true">{{ selected ? "✓" : "" }}</span>
+    </button>
+
     <template v-if="card.card_kind === 'author'">
       <div class="source-library-card__author-shell">
         <div class="source-library-card__author-head">
@@ -125,9 +137,17 @@ const props = defineProps({
     type: Object,
     required: true,
   },
+  selectMode: {
+    type: Boolean,
+    default: false,
+  },
+  selected: {
+    type: Boolean,
+    default: false,
+  },
 });
 
-defineEmits(["open"]);
+const emit = defineEmits(["open", "select"]);
 
 const titleInitial = computed(() => tileInitial(props.card.title || "M"));
 const collectionAvatarUrl = computed(() => props.card.avatar_url || props.card.cover_url || "");
@@ -172,5 +192,13 @@ function formatCompact(value) {
 function tileInitial(value) {
   const text = String(value || "").trim();
   return text.slice(0, 1) || "M";
+}
+
+function handleCardClick() {
+  if (props.selectMode) {
+    emit("select", props.card);
+    return;
+  }
+  emit("open", props.card);
 }
 </script>

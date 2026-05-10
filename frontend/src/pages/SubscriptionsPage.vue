@@ -23,6 +23,27 @@
       </div>
       <div class="filter-actions">
         <button class="button button-primary" type="button" @click="openCreateDialog">添加订阅</button>
+        <button class="button button-secondary" type="button" @click="toggleSelectMode">
+          {{ selectMode ? "取消选择" : "选择" }}
+        </button>
+        <button
+          v-if="selectMode"
+          class="button button-secondary"
+          type="button"
+          :disabled="!shareableCards.length"
+          @click="selectAllShareableCards"
+        >
+          全选当前
+        </button>
+        <button
+          v-if="selectMode"
+          class="button button-primary"
+          type="button"
+          :disabled="selectedModelDirs.length < 1"
+          @click="openShareDialog"
+        >
+          分享 {{ selectedModelDirs.length }}
+        </button>
         <RouterLink class="button button-secondary" to="/subscriptions/manage">订阅库管理</RouterLink>
       </div>
     </div>
@@ -42,7 +63,10 @@
           v-for="card in section.items"
           :key="card.key"
           :card="card"
+          :select-mode="selectMode"
+          :selected="isCardSelected(card)"
           @open="openCard"
+          @select="toggleCardSelected"
         />
       </div>
       <section v-else class="surface empty-state subscription-inline-empty">
@@ -94,6 +118,12 @@
       </form>
     </div>
   </div>
+
+  <ShareDialog
+    :visible="shareDialogVisible"
+    :model-dirs="selectedModelDirs"
+    @close="closeShareDialog"
+  />
 </template>
 
 <script setup>
@@ -101,6 +131,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { RouterLink, useRouter } from "vue-router";
 
 import CronField from "../components/CronField.vue";
+import ShareDialog from "../components/ShareDialog.vue";
 import SourceLibraryCard from "../components/SourceLibraryCard.vue";
 import { apiRequest } from "../lib/api";
 import { getPageCache, setPageCache } from "../lib/pageCache";
@@ -116,6 +147,9 @@ const payload = ref(createEmptySubscriptionsPayload());
 const status = ref("");
 const creating = ref(false);
 const initialLoaded = ref(false);
+const selectMode = ref(false);
+const selectedCardKeySet = ref(new Set());
+const shareDialogVisible = ref(false);
 const createDialog = reactive({
   visible: false,
   url: "",
@@ -127,6 +161,30 @@ let refreshTimer = null;
 const sourceSections = computed(() => (
   payload.value.sections.filter((section) => section?.key === "subscription_sources")
 ));
+const shareableCards = computed(() => (
+  sourceSections.value
+    .flatMap((section) => section.items || [])
+    .filter((card) => Array.isArray(card?.model_dirs) && card.model_dirs.length)
+));
+const selectedModelDirs = computed(() => {
+  const selectedKeys = selectedCardKeySet.value;
+  const modelDirs = [];
+  const seen = new Set();
+  for (const card of shareableCards.value) {
+    if (!selectedKeys.has(String(card.key || ""))) {
+      continue;
+    }
+    for (const modelDir of card.model_dirs || []) {
+      const cleanModelDir = String(modelDir || "").trim();
+      if (!cleanModelDir || seen.has(cleanModelDir)) {
+        continue;
+      }
+      seen.add(cleanModelDir);
+      modelDirs.push(cleanModelDir);
+    }
+  }
+  return modelDirs;
+});
 
 function rememberSubscriptionsPage() {
   setPageCache("subscriptions", {
@@ -205,6 +263,51 @@ function openCard(card) {
       nav_context: "subscriptions",
     },
   });
+}
+
+function toggleSelectMode() {
+  if (selectMode.value) {
+    selectMode.value = false;
+    selectedCardKeySet.value = new Set();
+    return;
+  }
+  selectMode.value = true;
+  status.value = "";
+}
+
+function isCardSelected(card) {
+  return selectedCardKeySet.value.has(String(card?.key || ""));
+}
+
+function toggleCardSelected(card) {
+  const key = String(card?.key || "").trim();
+  if (!key || !Array.isArray(card?.model_dirs) || !card.model_dirs.length) {
+    status.value = "这个来源下当前没有可分享的已归档模型。";
+    return;
+  }
+  const nextSet = new Set(selectedCardKeySet.value);
+  if (nextSet.has(key)) {
+    nextSet.delete(key);
+  } else {
+    nextSet.add(key);
+  }
+  selectedCardKeySet.value = nextSet;
+}
+
+function selectAllShareableCards() {
+  selectedCardKeySet.value = new Set(shareableCards.value.map((card) => String(card.key || "")).filter(Boolean));
+}
+
+function openShareDialog() {
+  if (!selectedModelDirs.value.length) {
+    status.value = "请先选择要分享的订阅来源。";
+    return;
+  }
+  shareDialogVisible.value = true;
+}
+
+function closeShareDialog() {
+  shareDialogVisible.value = false;
 }
 
 function openCreateDialog() {

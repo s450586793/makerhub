@@ -40,6 +40,17 @@ class NotificationConfig(BaseModel):
     webhook_url: str = ""
 
 
+class SharingConfig(BaseModel):
+    public_base_url: str = ""
+    default_expires_days: int = Field(default=7, ge=1, le=90)
+    include_images: bool = True
+    include_model_files: bool = True
+    model_file_types: List[str] = Field(default_factory=lambda: ["3mf", "stl", "step", "obj"])
+    include_attachments: bool = True
+    attachment_file_types: List[str] = Field(default_factory=lambda: ["pdf", "excel"])
+    include_comments: bool = True
+
+
 class UserProfile(BaseModel):
     username: str = "admin"
     display_name: str = "Admin"
@@ -111,6 +122,25 @@ class ModelDeleteRequest(BaseModel):
 class ModelFlagUpdateRequest(BaseModel):
     model_dir: str = ""
     value: bool = False
+
+
+class ShareOptions(BaseModel):
+    expires_days: int = Field(default=7, ge=1, le=90)
+    include_images: bool = True
+    include_model_files: bool = True
+    model_file_types: List[str] = Field(default_factory=lambda: ["3mf", "stl", "step", "obj"])
+    include_attachments: bool = True
+    attachment_file_types: List[str] = Field(default_factory=lambda: ["pdf", "excel"])
+    include_comments: bool = True
+
+
+class ShareCreateRequest(BaseModel):
+    model_dirs: List[str] = Field(default_factory=list)
+    options: ShareOptions = Field(default_factory=ShareOptions)
+
+
+class ShareReceiveRequest(BaseModel):
+    share_code: str = ""
 
 
 class LocalModelMergeRequest(BaseModel):
@@ -281,6 +311,7 @@ class AppConfig(BaseModel):
     ])
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
     notifications: NotificationConfig = Field(default_factory=NotificationConfig)
+    sharing: SharingConfig = Field(default_factory=SharingConfig)
     user: UserProfile = Field(default_factory=UserProfile)
     api_tokens: List[ApiTokenRecord] = Field(default_factory=list)
     subscriptions: List[SubscriptionRecord] = Field(default_factory=list)

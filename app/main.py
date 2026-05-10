@@ -144,7 +144,7 @@ async def auth_guard(request: Request, call_next):
         response = await call_next(request)
         return _apply_cache_headers(path, response)
 
-    if path == "/api/bootstrap":
+    if path == "/api/bootstrap" or path.startswith("/api/public/"):
         response = await call_next(request)
         return _apply_cache_headers(path, response)
 

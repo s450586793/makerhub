@@ -116,6 +116,9 @@ def _compose_archive_snapshot(models: list[dict]) -> dict[str, Any]:
     archived_urls: set[str] = set()
 
     for model in ordered_models:
+        if str(model.get("source") or "").strip().lower() == "local":
+            continue
+
         model_id = str(model.get("id") or "").strip()
         if model_id:
             archived_model_ids.add(model_id)

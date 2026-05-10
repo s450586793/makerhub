@@ -40,6 +40,27 @@
       </label>
       <div class="filter-actions">
         <button class="button button-secondary" type="button" @click="resetFilters">重置</button>
+        <button class="button button-secondary" type="button" @click="toggleSelectMode">
+          {{ selectMode ? "取消选择" : "选择" }}
+        </button>
+        <button
+          v-if="selectMode"
+          class="button button-secondary"
+          type="button"
+          :disabled="!payload.items.length"
+          @click="selectLoadedModels"
+        >
+          全选当前
+        </button>
+        <button
+          v-if="selectMode"
+          class="button button-primary"
+          type="button"
+          :disabled="selectedCount < 1"
+          @click="openShareDialog"
+        >
+          分享 {{ selectedCount }}
+        </button>
       </div>
     </form>
     <span v-if="status" class="form-status model-toolbar-inline__status">{{ status }}</span>
@@ -53,10 +74,13 @@
       :model="model"
       :return-to="buildModelReturnTo(model.model_dir)"
       return-label="返回"
+      :select-mode="selectMode"
+      :selected="isSelected(model.model_dir)"
       @favorite="toggleFavorite"
       @printed="togglePrinted"
       @delete="deleteOne"
       @restore="restoreOne"
+      @select="toggleSelected"
     />
   </section>
 
@@ -75,13 +99,20 @@
     <h2>正在加载模型库</h2>
     <p>稍等，正在读取当前模型列表。</p>
   </section>
+
+  <ShareDialog
+    :visible="shareDialogVisible"
+    :model-dirs="selectedModelDirs"
+    @close="closeShareDialog"
+  />
 </template>
 
 <script setup>
-import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import ModelCard from "../components/ModelCard.vue";
+import ShareDialog from "../components/ShareDialog.vue";
 import { subscribeArchiveCompletion } from "../lib/archiveEvents";
 import { apiRequest } from "../lib/api";
 import { getPageCache, setPageCache } from "../lib/pageCache";
@@ -113,6 +144,9 @@ const loaded = ref(false);
 const deleting = ref(false);
 const loadingMore = ref(false);
 const loadMoreTrigger = ref(null);
+const selectMode = ref(false);
+const selectedModelDirSet = ref(new Set());
+const shareDialogVisible = ref(false);
 
 let intersectionObserver = null;
 let requestToken = 0;
@@ -122,6 +156,9 @@ let observerToken = 0;
 let unsubscribeArchiveEvents = null;
 let refreshWhenVisible = false;
 let locallyHiddenDeletedModelDirs = new Set();
+
+const selectedModelDirs = computed(() => Array.from(selectedModelDirSet.value));
+const selectedCount = computed(() => selectedModelDirs.value.length);
 
 function syncFiltersFromRoute() {
   filters.q = typeof route.query.q === "string" ? route.query.q : "";
@@ -656,6 +693,54 @@ function applyFiltersIfChanged() {
 
 function resetFilters() {
   router.replace("/models");
+}
+
+function isSelected(modelDir) {
+  return selectedModelDirSet.value.has(String(modelDir || "").trim());
+}
+
+function toggleSelectMode() {
+  if (selectMode.value) {
+    selectMode.value = false;
+    selectedModelDirSet.value = new Set();
+    return;
+  }
+  selectMode.value = true;
+  status.value = "";
+}
+
+function toggleSelected(modelDir) {
+  const cleanModelDir = String(modelDir || "").trim();
+  if (!cleanModelDir) {
+    return;
+  }
+  const nextSet = new Set(selectedModelDirSet.value);
+  if (nextSet.has(cleanModelDir)) {
+    nextSet.delete(cleanModelDir);
+  } else {
+    nextSet.add(cleanModelDir);
+  }
+  selectedModelDirSet.value = nextSet;
+}
+
+function selectLoadedModels() {
+  selectedModelDirSet.value = new Set(
+    (payload.value.items || [])
+      .map((item) => String(item?.model_dir || "").trim())
+      .filter(Boolean),
+  );
+}
+
+function openShareDialog() {
+  if (selectedCount.value < 1) {
+    status.value = "请先选择要分享的模型。";
+    return;
+  }
+  shareDialogVisible.value = true;
+}
+
+function closeShareDialog() {
+  shareDialogVisible.value = false;
 }
 
 function findModel(modelDir) {
