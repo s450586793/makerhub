@@ -690,6 +690,62 @@ def _share_record_summary(record: dict, *, base_url: str = "") -> dict:
     }
 
 
+def _active_share_model_conflicts(state: dict, model_dirs: list[str], now_dt) -> list[dict]:
+    requested_dirs = {str(item or "").strip().strip("/") for item in model_dirs if str(item or "").strip().strip("/")}
+    if not requested_dirs:
+        return []
+    conflicts: list[dict] = []
+    for item in state.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        expires_at = parse_datetime(item.get("expires_at"))
+        if expires_at is None or expires_at < now_dt:
+            continue
+        matched_models = []
+        for model in item.get("models") or []:
+            if not isinstance(model, dict):
+                continue
+            model_dir = str(model.get("model_dir") or "").strip().strip("/")
+            if model_dir not in requested_dirs:
+                continue
+            matched_models.append(
+                {
+                    "model_dir": model_dir,
+                    "title": str(model.get("title") or (model.get("meta") or {}).get("title") or model_dir),
+                }
+            )
+        if matched_models:
+            conflicts.append(
+                {
+                    "share_id": str(item.get("id") or ""),
+                    "created_at": str(item.get("created_at") or ""),
+                    "expires_at": str(item.get("expires_at") or ""),
+                    "code_available": bool(str(item.get("token") or "").strip()),
+                    "models": matched_models,
+                }
+            )
+    return conflicts
+
+
+def _active_share_conflict_message(conflicts: list[dict]) -> str:
+    names = []
+    seen = set()
+    for conflict in conflicts:
+        for model in conflict.get("models") or []:
+            title = str(model.get("title") or model.get("model_dir") or "模型").strip()
+            if title and title not in seen:
+                names.append(title)
+                seen.add(title)
+    if not names:
+        names = ["所选模型"]
+    preview_names = "、".join(names[:3]) + (f" 等 {len(names)} 个模型" if len(names) > 3 else "")
+    if any(conflict.get("code_available") for conflict in conflicts):
+        action = "请到设置 -> 模型分享 -> 已分享列表复制分享码，或撤销后重新生成。"
+    else:
+        action = "旧分享记录无法重新复制分享码，请到设置 -> 模型分享 -> 已分享列表撤销后再重新生成。"
+    return f"{preview_names} 已经在分享有效期内，不能重复生成分享码。{action}"
+
+
 def _fetch_share_manifest(share_code: str) -> tuple[dict, dict]:
     decoded = _decode_share_code(share_code)
     manifest_url = urljoin(
@@ -1959,9 +2015,28 @@ async def create_model_share(payload: ShareCreateRequest, request: Request):
                 seen_dirs.add(clean_item)
         if not model_dirs:
             raise ValueError("请选择要分享的模型。")
+        state = _read_shares_state()
         share_id = uuid.uuid4().hex
         token = secrets.token_urlsafe(32)
         now_dt = china_now()
+        state["items"] = [
+            item for item in state.get("items") or []
+            if isinstance(item, dict) and parse_datetime(item.get("expires_at")) not in (None,)
+            and parse_datetime(item.get("expires_at")) >= now_dt
+        ]
+        conflicts = _active_share_model_conflicts(state, model_dirs, now_dt)
+        if conflicts:
+            conflict_message = _active_share_conflict_message(conflicts)
+            append_business_log(
+                "sharing",
+                "share_duplicate_blocked",
+                conflict_message,
+                level="warning",
+                model_dirs=model_dirs,
+                conflict_count=len(conflicts),
+                share_ids=[item.get("share_id") or "" for item in conflicts],
+            )
+            raise ValueError(conflict_message)
         expires_at = now_dt + timedelta(days=options["expires_days"])
         files: list[dict] = []
         path_to_id: dict[str, str] = {}
@@ -1984,12 +2059,6 @@ async def create_model_share(payload: ShareCreateRequest, request: Request):
             "models": models,
             "files": files,
         }
-        state = _read_shares_state()
-        state["items"] = [
-            item for item in state.get("items") or []
-            if isinstance(item, dict) and parse_datetime(item.get("expires_at")) not in (None,)
-            and parse_datetime(item.get("expires_at")) >= now_dt
-        ]
         state["items"].append(record)
         _write_shares_state(state)
         share_code = _encode_share_code(base_url=base_url, share_id=share_id, token=token)
