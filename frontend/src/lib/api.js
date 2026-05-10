@@ -82,3 +82,97 @@ export async function apiRequest(path, options = {}) {
 
   return payload;
 }
+
+export function apiUploadRequest(path, options = {}) {
+  const {
+    method = "POST",
+    body = undefined,
+    headers = {},
+    redirectOn401 = true,
+    onProgress = null,
+    onUploadComplete = null,
+  } = options;
+
+  return new Promise((resolve, reject) => {
+    const requestHeaders = new Headers(headers);
+    let requestBody = body;
+
+    if (body !== undefined && body !== null && !(body instanceof FormData) && typeof body !== "string") {
+      requestHeaders.set("Content-Type", "application/json");
+      requestBody = JSON.stringify(body);
+    }
+
+    if (!requestHeaders.has("Accept")) {
+      requestHeaders.set("Accept", "application/json");
+    }
+
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, path, true);
+    xhr.withCredentials = true;
+
+    for (const [key, value] of requestHeaders.entries()) {
+      xhr.setRequestHeader(key, value);
+    }
+
+    xhr.upload.onprogress = (event) => {
+      if (typeof onProgress !== "function") {
+        return;
+      }
+      onProgress({
+        loaded: event.loaded,
+        total: event.lengthComputable ? event.total : 0,
+        lengthComputable: event.lengthComputable,
+        percent: event.lengthComputable && event.total > 0
+          ? Math.max(0, Math.min(100, (event.loaded / event.total) * 100))
+          : 0,
+      });
+    };
+
+    xhr.upload.onload = () => {
+      if (typeof onUploadComplete === "function") {
+        onUploadComplete();
+      }
+    };
+
+    xhr.onerror = () => reject(new Error("网络请求失败。"));
+    xhr.onabort = () => reject(new Error("上传已取消。"));
+    xhr.ontimeout = () => reject(new Error("请求超时。"));
+
+    xhr.onload = () => {
+      try {
+        if (xhr.status === 401 && redirectOn401) {
+          const next = encodeURIComponent(buildRedirectTarget());
+          window.location.assign(`/login?next=${next}`);
+          reject(new Error("未登录。"));
+          return;
+        }
+
+        if (xhr.status === 204) {
+          resolve(null);
+          return;
+        }
+
+        const contentType = xhr.getResponseHeader("Content-Type") || "";
+        const responseText = xhr.responseText || "";
+        let payload = responseText;
+        if (contentType.includes("application/json")) {
+          payload = responseText ? JSON.parse(responseText) : null;
+        }
+
+        if (xhr.status < 200 || xhr.status >= 300) {
+          const detail = typeof payload === "object" && payload !== null
+            ? payload.detail || payload.message
+            : payload;
+          reject(new Error(sanitizeApiError(detail)));
+          return;
+        }
+
+        resolve(payload);
+      } catch (error) {
+        reject(error);
+      }
+    };
+
+    xhr.send(requestBody);
+  });
+}

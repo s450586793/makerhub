@@ -208,7 +208,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import SourceLibraryCard from "../components/SourceLibraryCard.vue";
-import { apiRequest } from "../lib/api";
+import { apiRequest, apiUploadRequest } from "../lib/api";
 import { refreshConfig } from "../lib/appState";
 import { deletePageCache, deletePageCacheByPrefix, getPageCache, setPageCache } from "../lib/pageCache";
 
@@ -216,6 +216,9 @@ import { deletePageCache, deletePageCacheByPrefix, getPageCache, setPageCache } 
 const ACTIVE_REFRESH_INTERVAL_MS = 5000;
 const IDLE_REFRESH_INTERVAL_MS = 30000;
 const RECENT_IMPORT_PENDING_GRACE_MS = 10 * 60 * 1000;
+const IMPORT_PROGRESS_STORAGE_KEY = "makerhub:local-import-progress";
+const IMPORT_PROGRESS_STALE_MS = 30 * 60 * 1000;
+const IMPORT_UPLOAD_PROGRESS_CAP = 92;
 const LOCAL_IMPORT_ACCEPT = [
   ".3mf",
   ".stl",
@@ -281,6 +284,23 @@ const importDialog = reactive({
   uploading: false,
   status: "",
   error: "",
+});
+const importUploadProgress = reactive({
+  visible: false,
+  fromStorage: false,
+  id: "",
+  phase: "idle",
+  status: "",
+  title: "",
+  fileCount: 0,
+  fileNames: [],
+  progress: 0,
+  uploadPercent: 0,
+  loaded: 0,
+  total: 0,
+  message: "",
+  startedAt: 0,
+  updatedAt: 0,
 });
 const organizerProgressOpen = ref(false);
 let refreshTimer = null;
@@ -380,8 +400,8 @@ const activeOrganizerTask = computed(() => {
     || null;
 });
 const currentOrganizerTask = computed(() => (
-  activeOrganizerTask.value
-    || (importDialog.uploading ? currentImportSyntheticTask() : null)
+  (importUploadProgress.visible ? currentImportSyntheticTask() : null)
+    || activeOrganizerTask.value
     || (hasRecentImportWork() ? recentImportSyntheticTask() : null)
     || null
 ));
@@ -439,8 +459,11 @@ const organizerProgressFooterText = computed(() => {
   if (loadError.value) {
     return "任务状态读取失败";
   }
-  if (importDialog.uploading) {
-    return "正在上传并准备整理";
+  if (importUploadProgressIsActive()) {
+    if (importUploadProgress.phase === "uploading") {
+      return "正在上传到服务器";
+    }
+    return "正在等待本地整理";
   }
   const running = Number(organizerTasks.value.running_count || 0);
   const queued = Number(organizerTasks.value.queued_count || 0);
@@ -454,6 +477,15 @@ const organizerProgressFooterText = computed(() => {
 });
 const organizerProgressChips = computed(() => {
   const { uploadedCount, counts } = recentImportStatusCounts(organizerTasks.value);
+  if (importUploadProgress.visible) {
+    return [
+      { label: "上传", value: importUploadProgress.phase === "uploading" ? `${Math.round(importUploadProgress.uploadPercent || 0)}%` : "完成" },
+      { label: "文件", value: importUploadProgress.fileCount || 0 },
+      { label: "大小", value: importUploadProgress.total ? formatFileSize(importUploadProgress.total) : "-" },
+      { label: "阶段", value: importUploadPhaseLabel(importUploadProgress.phase) },
+      { label: "状态", value: organizerStatusLabel(importUploadProgress.status) },
+    ];
+  }
   return [
     { label: "上传", value: uploadedCount || 0 },
     { label: "新增", value: counts.success },
@@ -567,6 +599,11 @@ function organizerItemTimestamp(item) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function organizerItemUpdatedAfter(item, timestamp) {
+  const itemTimestamp = organizerItemTimestamp(item);
+  return Number.isFinite(itemTimestamp) && itemTimestamp >= Number(timestamp || 0) - 1000;
+}
+
 function organizerTaskTitle(item) {
   const title = String(item?.title || item?.file_name || item?.source_path || "本地整理任务").trim();
   return title || "本地整理任务";
@@ -609,17 +646,192 @@ function organizerTaskRow(item, fallbackKey) {
   };
 }
 
-function currentImportSyntheticTask() {
-  const count = importFiles.value.length;
-  const first = importFiles.value[0];
+function applyImportUploadProgress(next = {}) {
+  const now = Date.now();
+  Object.assign(importUploadProgress, {
+    ...next,
+    updatedAt: now,
+  });
+  persistImportUploadProgress();
+}
+
+function resetImportUploadProgress({ clearStorage = true } = {}) {
+  Object.assign(importUploadProgress, {
+    visible: false,
+    fromStorage: false,
+    id: "",
+    phase: "idle",
+    status: "",
+    title: "",
+    fileCount: 0,
+    fileNames: [],
+    progress: 0,
+    uploadPercent: 0,
+    loaded: 0,
+    total: 0,
+    message: "",
+    startedAt: 0,
+    updatedAt: 0,
+  });
+  if (clearStorage) {
+    clearImportUploadProgressStorage();
+  }
+}
+
+function importUploadProgressIsActive() {
+  return importUploadProgress.visible && !["success", "failed", "idle"].includes(String(importUploadProgress.phase || ""));
+}
+
+function importUploadPhaseLabel(phase) {
+  const normalized = String(phase || "").trim();
+  if (normalized === "uploading") return "上传";
+  if (normalized === "processing") return "整理";
+  if (normalized === "syncing") return "同步";
+  if (normalized === "success") return "完成";
+  if (normalized === "failed") return "失败";
+  return "等待";
+}
+
+function importUploadStatusFromPhase(phase) {
+  const normalized = String(phase || "").trim();
+  if (normalized === "success") return "success";
+  if (normalized === "failed") return "failed";
+  if (normalized === "syncing") return "queued";
+  return "running";
+}
+
+function importUploadTitleFromItems(items) {
+  const selected = Array.isArray(items) ? items : [];
+  const first = selected[0];
   const firstName = first ? importItemPath(first).split("/").filter(Boolean).pop() : "";
+  return selected.length > 1 ? `${firstName || "本地导入"} 等 ${selected.length} 项` : firstName || "本地导入";
+}
+
+function importUploadPayloadFromItems(items) {
+  const selected = Array.isArray(items) ? items : [];
+  const fileNames = selected.map((item) => importItemPath(item)).filter(Boolean).slice(0, 20);
+  const total = selected.reduce((sum, item) => sum + Number(item?.file?.size || 0), 0);
+  const now = Date.now();
   return {
-    id: "local-import-uploading",
-    title: count > 1 ? `${firstName || "本地导入"} 等 ${count} 项` : firstName || "本地导入",
+    visible: true,
+    fromStorage: false,
+    id: `local-import-${now}`,
+    phase: "uploading",
     status: "running",
-    progress: 5,
-    message: "正在上传并准备本地整理。",
+    title: importUploadTitleFromItems(selected),
+    fileCount: selected.length,
+    fileNames,
+    progress: 0,
+    uploadPercent: 0,
+    loaded: 0,
+    total,
+    message: "正在上传到服务器。",
+    startedAt: now,
+    updatedAt: now,
   };
+}
+
+function currentImportSyntheticTask() {
+  const status = importUploadProgress.status || importUploadStatusFromPhase(importUploadProgress.phase);
+  return {
+    id: importUploadProgress.id || "local-import-uploading",
+    title: importUploadProgress.title || importUploadTitleFromItems(importFiles.value),
+    status,
+    progress: importUploadProgress.progress || 0,
+    message: importUploadProgress.message || "正在上传并准备本地整理。",
+    updated_at: importUploadProgress.updatedAt ? new Date(importUploadProgress.updatedAt).toISOString() : "",
+  };
+}
+
+function safeReadImportUploadStorage() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const raw = window.sessionStorage.getItem(IMPORT_PROGRESS_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistImportUploadProgress() {
+  if (typeof window === "undefined") {
+    return;
+  }
+  if (!importUploadProgress.visible) {
+    clearImportUploadProgressStorage();
+    return;
+  }
+  try {
+    window.sessionStorage.setItem(
+      IMPORT_PROGRESS_STORAGE_KEY,
+      JSON.stringify({
+        id: importUploadProgress.id,
+        phase: importUploadProgress.phase,
+        status: importUploadProgress.status,
+        title: importUploadProgress.title,
+        fileCount: importUploadProgress.fileCount,
+        fileNames: importUploadProgress.fileNames,
+        progress: importUploadProgress.progress,
+        uploadPercent: importUploadProgress.uploadPercent,
+        loaded: importUploadProgress.loaded,
+        total: importUploadProgress.total,
+        message: importUploadProgress.message,
+        startedAt: importUploadProgress.startedAt,
+        updatedAt: importUploadProgress.updatedAt,
+      }),
+    );
+  } catch {
+    // sessionStorage can be unavailable in private contexts; the live UI still works.
+  }
+}
+
+function clearImportUploadProgressStorage() {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.sessionStorage.removeItem(IMPORT_PROGRESS_STORAGE_KEY);
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function restoreImportUploadProgress() {
+  const stored = safeReadImportUploadStorage();
+  if (!stored || !stored.updatedAt) {
+    return false;
+  }
+  if (Date.now() - Number(stored.updatedAt || 0) > IMPORT_PROGRESS_STALE_MS) {
+    clearImportUploadProgressStorage();
+    return false;
+  }
+  const phase = String(stored.phase || "syncing");
+  if (["success", "failed", "idle"].includes(phase)) {
+    clearImportUploadProgressStorage();
+    return false;
+  }
+  const storedProgress = Math.max(0, Math.min(IMPORT_UPLOAD_PROGRESS_CAP, Number(stored.progress || 0)));
+  Object.assign(importUploadProgress, {
+    visible: true,
+    fromStorage: true,
+    id: String(stored.id || "local-import-restored"),
+    phase: "syncing",
+    status: "queued",
+    title: String(stored.title || "本地导入"),
+    fileCount: Number(stored.fileCount || 0),
+    fileNames: Array.isArray(stored.fileNames) ? stored.fileNames : [],
+    progress: storedProgress,
+    uploadPercent: Number(stored.uploadPercent || 100),
+    loaded: Number(stored.loaded || 0),
+    total: Number(stored.total || 0),
+    message: "页面已恢复，正在同步本地整理结果。",
+    startedAt: Number(stored.startedAt || stored.updatedAt || Date.now()),
+    updatedAt: Number(stored.updatedAt || Date.now()),
+  });
+  organizerProgressOpen.value = true;
+  return true;
 }
 
 function recentImportSyntheticTask() {
@@ -675,6 +887,11 @@ function recentImportStatusCounts(tasks) {
     counts,
     matchedCount: batchItems.length,
   };
+}
+
+function lastImportUpdatedAfter(lastImport, timestamp) {
+  const uploadedAt = Date.parse(String(lastImport?.uploaded_at || ""));
+  return Number.isFinite(uploadedAt) && uploadedAt >= Number(timestamp || 0) - 1000;
 }
 
 function hasRecentImportWork() {
@@ -746,7 +963,7 @@ function clearTaskTimer() {
 }
 
 function hasActiveOrganizeTasks() {
-  return importDialog.uploading || activeOrganizeCount.value > 0 || hasRecentImportWork();
+  return importUploadProgressIsActive() || activeOrganizeCount.value > 0 || hasRecentImportWork();
 }
 
 function syncTaskTimer() {
@@ -784,6 +1001,7 @@ async function load({ silent = false, refreshLibrary = true } = {}) {
       : [apiRequest("/api/tasks")];
     const [tasksPayload, sourceLibraryPayloadResponse] = await Promise.all(requests);
     organizerTasks.value = tasksPayload?.organize_tasks || organizerTasks.value;
+    reconcileImportUploadProgress();
     if (includeSourceLibrary) {
       sourceLibraryPayload.value = {
         sections: Array.isArray(sourceLibraryPayloadResponse?.sections) ? sourceLibraryPayloadResponse.sections : [],
@@ -807,6 +1025,58 @@ async function load({ silent = false, refreshLibrary = true } = {}) {
       syncTaskTimer();
     }
   }
+}
+
+function reconcileImportUploadProgress() {
+  if (!importUploadProgress.visible) {
+    return;
+  }
+  const lastImport = organizerTasks.value?.last_import;
+  if (
+    lastImport
+    && lastImportUpdatedAfter(lastImport, importUploadProgress.startedAt)
+    && !hasRecentImportWork()
+    && importUploadProgress.phase === "syncing"
+  ) {
+    resetImportUploadProgress();
+    return;
+  }
+  const currentTitle = String(importUploadProgress.title || "").trim();
+  const matchingTask = sortedOrganizerItems.value.find((item) => {
+    if (!organizerItemUpdatedAfter(item, importUploadProgress.startedAt)) {
+      return false;
+    }
+    const itemTitle = String(item?.title || item?.file_name || "").trim();
+    if (currentTitle && itemTitle && (itemTitle === currentTitle || currentTitle.startsWith(itemTitle) || itemTitle.startsWith(currentTitle))) {
+      return true;
+    }
+    const itemName = String(item?.source_path || "").split("/").filter(Boolean).pop();
+    return currentTitle && itemName && currentTitle.includes(itemName);
+  });
+  if (!matchingTask) {
+    return;
+  }
+  const variant = organizerStatusVariant(matchingTask.status);
+  if (variant === "success" || variant === "skipped") {
+    resetImportUploadProgress();
+    return;
+  }
+  if (variant === "failed") {
+    applyImportUploadProgress({
+      phase: "failed",
+      status: "failed",
+      progress: organizerProgressPercent(matchingTask),
+      message: organizerTaskMessage(matchingTask),
+    });
+    clearImportUploadProgressStorage();
+    return;
+  }
+  applyImportUploadProgress({
+    phase: "processing",
+    status: matchingTask.status || "running",
+    progress: Math.max(importUploadProgress.progress || 0, organizerProgressPercent(matchingTask)),
+    message: organizerTaskMessage(matchingTask),
+  });
 }
 
 function clearLibraryCachesAfterImport() {
@@ -1068,6 +1338,7 @@ async function submitImportFiles() {
   importDialog.error = "";
   importDialog.visible = false;
   organizerProgressOpen.value = true;
+  applyImportUploadProgress(importUploadPayloadFromItems(importFiles.value));
   syncTaskTimer();
   const formData = new FormData();
   for (const item of importFiles.value) {
@@ -1075,22 +1346,66 @@ async function submitImportFiles() {
     formData.append("paths", importItemPath(item));
   }
   try {
-    await apiRequest("/api/local-library/import", {
+    const result = await apiUploadRequest("/api/local-library/import", {
       method: "POST",
       body: formData,
+      onProgress: ({ loaded, total, percent, lengthComputable }) => {
+        const knownTotal = total || importUploadProgress.total || 0;
+        const fallbackPercent = knownTotal > 0 ? (loaded / knownTotal) * 100 : 0;
+        const uploadPercent = lengthComputable ? percent : fallbackPercent;
+        const cappedProgress = Math.max(1, Math.min(IMPORT_UPLOAD_PROGRESS_CAP, Math.round(uploadPercent * IMPORT_UPLOAD_PROGRESS_CAP / 100)));
+        applyImportUploadProgress({
+          phase: "uploading",
+          status: "running",
+          uploadPercent: Math.max(0, Math.min(100, uploadPercent || 0)),
+          loaded,
+          total: knownTotal,
+          progress: cappedProgress,
+          message: knownTotal
+            ? `正在上传到服务器：${formatFileSize(loaded)} / ${formatFileSize(knownTotal)}`
+            : "正在上传到服务器。",
+        });
+      },
+      onUploadComplete: () => {
+        applyImportUploadProgress({
+          phase: "processing",
+          status: "running",
+          uploadPercent: 100,
+          progress: Math.max(importUploadProgress.progress || 0, IMPORT_UPLOAD_PROGRESS_CAP),
+          loaded: importUploadProgress.total || importUploadProgress.loaded,
+          message: "上传完成，服务器正在解压并整理入库。",
+        });
+      },
     });
     importDialog.uploading = false;
     importDialog.visible = false;
+    applyImportUploadProgress({
+      phase: "success",
+      status: "success",
+      progress: 100,
+      uploadPercent: 100,
+      message: result?.message || "本地导入已完成。",
+    });
+    clearImportUploadProgressStorage();
     resetImportDialogState();
     clearLibraryCachesAfterImport();
     clearTaskTimer();
     await load({ silent: true, refreshLibrary: true });
+    resetImportUploadProgress();
   } catch (error) {
     importDialog.uploading = false;
     importDialog.visible = true;
     importDialog.error = error instanceof Error ? error.message : "导入失败。";
+    applyImportUploadProgress({
+      phase: "failed",
+      status: "failed",
+      progress: importUploadProgress.progress || 0,
+      message: importDialog.error,
+    });
+    clearImportUploadProgressStorage();
   } finally {
     importDialog.uploading = false;
+    syncTaskTimer();
   }
 }
 
@@ -1143,6 +1458,7 @@ onMounted(() => {
   document.addEventListener("click", closeOrganizerProgressPopover);
   document.addEventListener("visibilitychange", handleVisibilityChange);
   hydrateOrganizerPageFromCache();
+  restoreImportUploadProgress();
   void load({ refreshLibrary: !hasActiveOrganizeTasks() || !hasSourceLibraryPayload() });
 });
 
