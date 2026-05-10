@@ -157,14 +157,12 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   gap: var(--space-3);
 }
 
-.share-dialog__checks,
 .share-settings-checks {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
 }
 
-.share-dialog__chips,
 .share-settings-chips {
   display: flex;
   flex-wrap: wrap;
@@ -172,14 +170,12 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   gap: var(--space-2);
 }
 
-.share-dialog__chips > span,
 .share-settings-chips > span {
   flex: 0 0 100%;
   color: var(--muted);
   font-size: var(--text-xs);
 }
 
-.share-dialog__chips label,
 .share-settings-chips label {
   min-height: 32px;
   padding: 0 10px;
@@ -191,7 +187,6 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   background: var(--surface-soft);
 }
 
-.share-dialog__chips em,
 .share-settings-chips em {
   color: var(--text);
   font-size: var(--text-xs);
