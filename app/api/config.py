@@ -340,6 +340,10 @@ def _decode_share_code(value: str) -> dict:
     return {"base_url": base_url, "share_id": share_id, "token": token, "access_code": access_code}
 
 
+def _share_receive_remote_error(action: str) -> ValueError:
+    return ValueError(f"{action}失败：无法连接分享端，请确认分享码仍有效且分享端公开访问地址可用。")
+
+
 def _normalize_share_options(options: ShareOptions | SharingConfig | dict | None) -> dict:
     if options is None:
         raw: dict = {}
@@ -898,7 +902,10 @@ def _fetch_share_manifest(share_code: str) -> tuple[dict, dict]:
             f"{decoded['base_url']}/",
             f"api/public/shares/{decoded['share_id']}/manifest?token={decoded['token']}",
         )
-    response = requests.get(manifest_url, timeout=(8, 30), headers={"Accept": "application/json"})
+    try:
+        response = requests.get(manifest_url, timeout=(8, 30), headers={"Accept": "application/json"})
+    except requests.RequestException:
+        raise _share_receive_remote_error("读取分享") from None
     if response.status_code != 200:
         raise ValueError(f"读取分享失败：HTTP {response.status_code}")
     try:
@@ -1121,7 +1128,11 @@ def _download_share_file(base_url: str, file_item: dict, target_path: Path) -> t
     if not file_url:
         raise ValueError("分享文件缺少下载地址。")
     url = urljoin(f"{base_url}/", file_url.lstrip("/"))
-    response = requests.get(url, timeout=(8, 120), stream=True)
+    response = None
+    try:
+        response = requests.get(url, timeout=(8, 120), stream=True)
+    except requests.RequestException:
+        raise _share_receive_remote_error("下载分享文件") from None
     if response.status_code != 200:
         raise ValueError(f"下载分享文件失败：HTTP {response.status_code}")
     target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1137,8 +1148,11 @@ def _download_share_file(base_url: str, file_item: dict, target_path: Path) -> t
                 digest.update(chunk)
                 handle.write(chunk)
         temp_path.replace(target_path)
+    except requests.RequestException:
+        raise _share_receive_remote_error("下载分享文件") from None
     finally:
-        response.close()
+        if response is not None:
+            response.close()
         temp_path.unlink(missing_ok=True)
     return total_size, digest.hexdigest()
 
@@ -2409,7 +2423,6 @@ async def preview_model_share(payload: ShareReceiveRequest, request: Request):
             "duplicates": duplicates,
             "manifest": {
                 "share_id": str(manifest.get("share_id") or decoded.get("share_id") or ""),
-                "base_url": decoded["base_url"],
                 "created_at": str(manifest.get("created_at") or ""),
                 "expires_at": str(manifest.get("expires_at") or ""),
                 "model_count": len(models),

@@ -147,6 +147,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 ## 更新记录
 
 ### 2026-05-11
+- 版本号升级到 `v0.6.79`
+- 接收分享码时不再把解码后的公开访问地址、旧 token 或访问码暴露到预览响应、网络异常文本和异常链中
+- 业务日志敏感字段遮罩扩展到分享码、访问码、分享 URL、manifest URL 和公开访问地址，并补充对应测试
+
+### 2026-05-11
 - 版本号升级到 `v0.6.78`
 - 升级 `requests` 到 `2.33.0`、`python-multipart` 到 `0.0.27`，修复 GitHub Dependabot 报出的 4 个后端依赖漏洞提醒
 

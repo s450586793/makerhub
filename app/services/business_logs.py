@@ -9,7 +9,20 @@ from app.core.timezone import from_timestamp as china_from_timestamp, now_iso as
 
 BUSINESS_LOG_NAME = "business.log"
 BUSINESS_LOG_PATH = LOGS_DIR / BUSINESS_LOG_NAME
-SENSITIVE_KEY_PARTS = ("cookie", "token", "password", "passwd", "secret", "authorization")
+SENSITIVE_KEY_PARTS = (
+    "cookie",
+    "token",
+    "password",
+    "passwd",
+    "secret",
+    "authorization",
+    "bearer",
+    "base_url",
+    "share_code",
+    "access_code",
+    "manifest_url",
+    "share_url",
+)
 _LOG_LOCK = threading.Lock()
 
 
@@ -19,7 +32,13 @@ def _now_iso() -> str:
 
 def _is_sensitive_key(key: str) -> bool:
     lowered = str(key or "").lower()
-    return any(part in lowered for part in SENSITIVE_KEY_PARTS)
+    compact = lowered.replace("_", "").replace("-", "").replace(".", "")
+    for part in SENSITIVE_KEY_PARTS:
+        part_text = str(part or "").lower()
+        part_compact = part_text.replace("_", "").replace("-", "").replace(".", "")
+        if part_text in lowered or part_compact in compact:
+            return True
+    return False
 
 
 def _safe_value(value: Any, *, key: str = "") -> Any:
