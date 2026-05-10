@@ -13,7 +13,7 @@ import uuid
 from datetime import timedelta
 from multiprocessing import Process
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 
 import requests
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
@@ -155,6 +155,12 @@ github_changelog_cache = {
 
 SHARES_STATE_PATH = STATE_DIR / "model_shares.json"
 SHARE_CODE_PREFIX = "MHSHARE1."
+SHARE_CODE_COMPACT_PREFIX = "MHS1."
+SHARE_CODE_OBSCURED_PREFIX = "MH3."
+SHARE_CODE_TINY_PREFIX = "MH2|"
+SHARE_CODE_TINY_SCHEMES = {"h": "http", "s": "https"}
+SHARE_CODE_TINY_SCHEME_CODES = {"http": "h", "https": "s"}
+SHARE_CODE_TINY_SEPARATOR = "\x1f"
 MODEL_FILE_SUFFIX_ALIASES = {
     "3mf": {"3mf"},
     "stl": {"stl"},
@@ -194,12 +200,16 @@ def _share_token_hash(token: str) -> str:
     return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
 
 
-def _base64url_encode_json(payload: dict) -> str:
+def _share_access_code_hash(code: str) -> str:
+    return hashlib.sha256(f"makerhub-share-access:{code}".encode("utf-8")).hexdigest()
+
+
+def _base64url_encode_json(payload) -> str:
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
-def _base64url_decode_json(value: str) -> dict:
+def _base64url_decode_value(value: str):
     text = str(value or "").strip()
     padding = "=" * (-len(text) % 4)
     try:
@@ -207,27 +217,127 @@ def _base64url_decode_json(value: str) -> dict:
         payload = json.loads(raw.decode("utf-8"))
     except Exception as exc:
         raise ValueError("分享码格式无效。") from exc
+    return payload
+
+
+def _base64url_decode_json(value: str) -> dict:
+    payload = _base64url_decode_value(value)
     if not isinstance(payload, dict):
         raise ValueError("分享码格式无效。")
     return payload
 
 
-def _encode_share_code(*, base_url: str, share_id: str, token: str) -> str:
-    return f"{SHARE_CODE_PREFIX}{_base64url_encode_json({'base_url': base_url, 'share_id': share_id, 'token': token})}"
+def _new_share_id() -> str:
+    return secrets.token_urlsafe(6)
+
+
+def _new_share_token() -> str:
+    return secrets.token_urlsafe(12)
+
+
+def _new_share_access_code() -> str:
+    return secrets.token_urlsafe(12)
+
+
+def _ensure_share_access_code(record: dict) -> tuple[str, bool]:
+    access_code = str(record.get("access_code") or "").strip()
+    generated = False
+    if not access_code:
+        access_code = _new_share_access_code()
+        record["access_code"] = access_code
+        generated = True
+    access_hash = str(record.get("access_code_hash") or "").strip()
+    expected_hash = _share_access_code_hash(access_code)
+    if not hmac.compare_digest(access_hash, expected_hash):
+        record["access_code_hash"] = expected_hash
+        generated = True
+    return access_code, generated
+
+
+def _encode_obscured_share_payload(*, scheme_code: str, base_ref: str, access_code: str) -> str:
+    payload = SHARE_CODE_TINY_SEPARATOR.join([scheme_code, base_ref, access_code]).encode("utf-8")
+    return base64.b85encode(payload).decode("ascii")
+
+
+def _decode_obscured_share_payload(value: str) -> tuple[str, str, str]:
+    try:
+        raw = base64.b85decode(str(value or "").encode("ascii")).decode("utf-8")
+    except Exception as exc:
+        raise ValueError("分享码格式无效。") from exc
+    parts = raw.split(SHARE_CODE_TINY_SEPARATOR)
+    if len(parts) != 3:
+        raise ValueError("分享码格式无效。")
+    return parts[0], parts[1], parts[2]
+
+
+def _encode_share_code(*, base_url: str, share_id: str = "", token: str = "", access_code: str = "") -> str:
+    normalized_base_url = _normalize_public_base_url(base_url)
+    clean_access_code = str(access_code or "").strip()
+    if not clean_access_code:
+        raise ValueError("分享记录缺少访问码。")
+    parsed = urlparse(normalized_base_url)
+    scheme_code = SHARE_CODE_TINY_SCHEME_CODES.get(parsed.scheme)
+    if not scheme_code or not parsed.netloc:
+        raise ValueError("公开访问地址必须以 http:// 或 https:// 开头。")
+    base_ref = f"{parsed.netloc}{parsed.path.rstrip('/')}"
+    if parsed.params:
+        base_ref = f"{base_ref};{parsed.params}"
+    if parsed.query:
+        base_ref = f"{base_ref}?{parsed.query}"
+    payload = _encode_obscured_share_payload(
+        scheme_code=scheme_code,
+        base_ref=base_ref,
+        access_code=clean_access_code,
+    )
+    return f"{SHARE_CODE_OBSCURED_PREFIX}{payload}"
 
 
 def _decode_share_code(value: str) -> dict:
     text = str(value or "").strip()
-    if text.startswith(SHARE_CODE_PREFIX):
+    if text.startswith(SHARE_CODE_OBSCURED_PREFIX):
+        scheme_code, base_ref, access_code = _decode_obscured_share_payload(text[len(SHARE_CODE_OBSCURED_PREFIX):])
+        scheme = SHARE_CODE_TINY_SCHEMES.get(scheme_code)
+        if not scheme or not base_ref:
+            raise ValueError("分享码格式无效。")
+        base_url = _normalize_public_base_url(f"{scheme}://{base_ref}")
+        share_id = ""
+        token = ""
+        access_code = str(access_code or "").strip()
+    elif text.startswith(SHARE_CODE_TINY_PREFIX):
+        parts = text.split("|", 4)
+        if len(parts) != 5:
+            raise ValueError("分享码格式无效。")
+        scheme = SHARE_CODE_TINY_SCHEMES.get(parts[1])
+        base_ref = unquote(parts[2]).strip()
+        share_id = str(parts[3] or "").strip()
+        token = str(parts[4] or "").strip()
+        if not scheme or not base_ref:
+            raise ValueError("分享码格式无效。")
+        base_url = _normalize_public_base_url(f"{scheme}://{base_ref}")
+        access_code = ""
+    elif text.startswith(SHARE_CODE_COMPACT_PREFIX):
+        payload = _base64url_decode_value(text[len(SHARE_CODE_COMPACT_PREFIX):])
+        if not isinstance(payload, list) or len(payload) < 3:
+            raise ValueError("分享码格式无效。")
+        base_url = _normalize_public_base_url(str(payload[0] or ""))
+        share_id = str(payload[1] or "").strip()
+        token = str(payload[2] or "").strip()
+        access_code = ""
+    elif text.startswith(SHARE_CODE_PREFIX):
         payload = _base64url_decode_json(text[len(SHARE_CODE_PREFIX):])
+        base_url = _normalize_public_base_url(str(payload.get("base_url") or ""))
+        share_id = str(payload.get("share_id") or "").strip()
+        token = str(payload.get("token") or "").strip()
+        access_code = ""
     else:
         payload = _base64url_decode_json(text)
-    base_url = _normalize_public_base_url(str(payload.get("base_url") or ""))
-    share_id = str(payload.get("share_id") or "").strip()
-    token = str(payload.get("token") or "").strip()
-    if not base_url or not share_id or not token:
+        base_url = _normalize_public_base_url(str(payload.get("base_url") or ""))
+        share_id = str(payload.get("share_id") or "").strip()
+        token = str(payload.get("token") or "").strip()
+        access_code = ""
+    if not base_url or (not access_code and (not share_id or not token)):
         raise ValueError("分享码缺少必要信息。")
-    return {"base_url": base_url, "share_id": share_id, "token": token}
+    return {"base_url": base_url, "share_id": share_id, "token": token, "access_code": access_code}
 
 
 def _normalize_share_options(options: ShareOptions | SharingConfig | dict | None) -> dict:
@@ -612,6 +722,21 @@ def _find_share_record(share_id: str) -> dict | None:
     return None
 
 
+def _find_share_record_by_access_code(access_code: str) -> dict | None:
+    access_hash = _share_access_code_hash(str(access_code or "").strip())
+    if not access_hash:
+        return None
+    for item in _read_shares_state().get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        if hmac.compare_digest(str(item.get("access_code_hash") or ""), access_hash):
+            return item
+        legacy_code = str(item.get("access_code") or "").strip()
+        if legacy_code and hmac.compare_digest(legacy_code, str(access_code or "").strip()):
+            return item
+    return None
+
+
 def _validate_share_record(share_id: str, token: str) -> dict:
     record = _find_share_record(share_id)
     if not record:
@@ -624,8 +749,22 @@ def _validate_share_record(share_id: str, token: str) -> dict:
     return record
 
 
-def _manifest_from_record(record: dict, token: str) -> dict:
+def _validate_share_record_by_access_code(access_code: str) -> dict:
+    clean_code = str(access_code or "").strip()
+    if not clean_code:
+        raise ValueError("分享访问码无效。")
+    record = _find_share_record_by_access_code(clean_code)
+    if not record:
+        raise ValueError("分享不存在或已被清除。")
+    expires_at = parse_datetime(record.get("expires_at"))
+    if expires_at is not None and expires_at < china_now():
+        raise ValueError("分享已过期。")
+    return record
+
+
+def _manifest_from_record(record: dict, token: str = "", access_code: str = "") -> dict:
     public_files = []
+    access_query = f"access={quote(str(access_code or ''), safe='')}" if str(access_code or "").strip() else f"token={token}"
     for file_item in record.get("files") or []:
         if not isinstance(file_item, dict):
             continue
@@ -638,7 +777,7 @@ def _manifest_from_record(record: dict, token: str) -> dict:
                 "name": str(file_item.get("name") or ""),
                 "size": int(file_item.get("size") or 0),
                 "mime_type": str(file_item.get("mime_type") or "application/octet-stream"),
-                "url": f"/api/public/shares/{record.get('id')}/files/{file_item.get('id')}?token={token}",
+                "url": f"/api/public/shares/{record.get('id')}/files/{file_item.get('id')}?{access_query}",
             }
         )
     return {
@@ -660,8 +799,9 @@ def _share_record_summary(record: dict, *, base_url: str = "") -> dict:
     expired = expires_at_dt is not None and expires_at_dt < china_now()
     share_code = ""
     token = str(record.get("token") or "").strip()
-    if share_id and token and base_url:
-        share_code = _encode_share_code(base_url=base_url, share_id=share_id, token=token)
+    access_code = str(record.get("access_code") or "").strip()
+    if share_id and base_url and access_code:
+        share_code = _encode_share_code(base_url=base_url, access_code=access_code)
     return {
         "id": share_id,
         "created_at": str(record.get("created_at") or ""),
@@ -748,10 +888,16 @@ def _active_share_conflict_message(conflicts: list[dict]) -> str:
 
 def _fetch_share_manifest(share_code: str) -> tuple[dict, dict]:
     decoded = _decode_share_code(share_code)
-    manifest_url = urljoin(
-        f"{decoded['base_url']}/",
-        f"api/public/shares/{decoded['share_id']}/manifest?token={decoded['token']}",
-    )
+    if decoded.get("access_code"):
+        manifest_url = urljoin(
+            f"{decoded['base_url']}/",
+            f"api/public/share-access/{quote(decoded['access_code'], safe='')}/manifest",
+        )
+    else:
+        manifest_url = urljoin(
+            f"{decoded['base_url']}/",
+            f"api/public/shares/{decoded['share_id']}/manifest?token={decoded['token']}",
+        )
     response = requests.get(manifest_url, timeout=(8, 30), headers={"Accept": "application/json"})
     if response.status_code != 200:
         raise ValueError(f"读取分享失败：HTTP {response.status_code}")
@@ -1776,12 +1922,26 @@ async def public_share_manifest(share_id: str, token: str = Query("")):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.get("/public/shares/{share_id}/files/{file_id}")
-async def public_share_file(share_id: str, file_id: str, token: str = Query("")):
+@router.get("/public/share-access/{access_code}/manifest")
+async def public_share_access_manifest(access_code: str):
     try:
-        record = await run_ui_io(_validate_share_record, share_id, token)
+        record = await run_ui_io(_validate_share_record_by_access_code, access_code)
+        return await run_ui_io(_manifest_from_record, record, "", access_code)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/public/shares/{share_id}/files/{file_id}")
+async def public_share_file(share_id: str, file_id: str, token: str = Query(""), access: str = Query("")):
+    try:
+        if str(access or "").strip():
+            record = await run_ui_io(_validate_share_record_by_access_code, access)
+        else:
+            record = await run_ui_io(_validate_share_record, share_id, token)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if str(record.get("id") or "") != str(share_id or ""):
+        raise HTTPException(status_code=404, detail="分享文件不存在。")
     file_item = next(
         (
             item for item in record.get("files") or []
@@ -2016,8 +2176,8 @@ async def create_model_share(payload: ShareCreateRequest, request: Request):
         if not model_dirs:
             raise ValueError("请选择要分享的模型。")
         state = _read_shares_state()
-        share_id = uuid.uuid4().hex
-        token = secrets.token_urlsafe(32)
+        share_id = _new_share_id()
+        token = _new_share_token()
         now_dt = china_now()
         state["items"] = [
             item for item in state.get("items") or []
@@ -2059,9 +2219,10 @@ async def create_model_share(payload: ShareCreateRequest, request: Request):
             "models": models,
             "files": files,
         }
+        access_code, _ = _ensure_share_access_code(record)
         state["items"].append(record)
         _write_shares_state(state)
-        share_code = _encode_share_code(base_url=base_url, share_id=share_id, token=token)
+        share_code = _encode_share_code(base_url=base_url, access_code=access_code)
         return {
             "success": True,
             "share_id": share_id,
@@ -2109,6 +2270,57 @@ async def list_model_shares(request: Request):
         }
 
     return await run_ui_io(_list_payload)
+
+
+@router.post("/sharing/shares/{share_id}/code")
+async def ensure_model_share_code(share_id: str, request: Request):
+    _require_session_auth(request)
+
+    def _code_payload() -> dict:
+        config = store.load()
+        base_url = _normalize_public_base_url(config.sharing.public_base_url)
+        if not base_url:
+            raise ValueError("请先到设置 -> 模型分享 配置公开访问地址。")
+        clean_id = str(share_id or "").strip()
+        state = _read_shares_state()
+        items = [item for item in state.get("items") or [] if isinstance(item, dict)]
+        target = next((item for item in items if str(item.get("id") or "") == clean_id), None)
+        if not target:
+            raise ValueError("分享记录不存在。")
+        expires_at = parse_datetime(target.get("expires_at"))
+        if expires_at is not None and expires_at < china_now():
+            raise ValueError("分享已过期，请清理或重新分享。")
+        token = str(target.get("token") or "").strip()
+        generated = False
+        if not token:
+            token = _new_share_token()
+            target["token"] = token
+            target["token_hash"] = _share_token_hash(token)
+            generated = True
+        access_code, access_generated = _ensure_share_access_code(target)
+        generated = generated or access_generated
+        if generated:
+            _write_shares_state({"items": items})
+        share_code = _encode_share_code(base_url=base_url, access_code=access_code)
+        return {
+            "success": True,
+            "share_id": clean_id,
+            "share_code": share_code,
+            "generated": generated,
+            "message": "分享码已生成。" if generated else "分享码已读取。",
+        }
+
+    try:
+        result = await run_ui_io(_code_payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    append_business_log(
+        "sharing",
+        "share_code_generated" if result.get("generated") else "share_code_accessed",
+        result.get("message") or "分享码已处理。",
+        share_id=result.get("share_id") or "",
+    )
+    return result
 
 
 @router.delete("/sharing/shares/{share_id}")

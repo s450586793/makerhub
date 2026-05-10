@@ -163,35 +163,33 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   gap: var(--space-2);
 }
 
-.share-settings-chips {
-  display: flex;
-  flex-wrap: wrap;
+.share-settings-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.35fr) minmax(150px, 0.42fr) minmax(330px, 1fr);
+  gap: var(--space-3);
+  align-items: stretch;
+}
+
+.share-expiry-field {
+  min-width: 0;
+}
+
+.share-expiry-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-2);
 }
 
-.share-settings-chips > span {
-  flex: 0 0 100%;
+.share-expiry-input em {
   color: var(--muted);
-  font-size: var(--text-xs);
-}
-
-.share-settings-chips label {
-  min-height: 32px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--surface-soft);
-}
-
-.share-settings-chips em {
-  color: var(--text);
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
   font-style: normal;
   font-weight: 700;
+}
+
+.share-settings-hint {
+  margin: -6px 0 0;
 }
 
 .share-dialog__code {
@@ -3831,6 +3829,10 @@ html[data-theme="dark"] .library-group-hero {
 
   .shared-list-item__actions {
     width: 100%;
+  }
+
+  .share-settings-row {
+    grid-template-columns: 1fr;
   }
 }
 

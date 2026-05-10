@@ -235,10 +235,10 @@
               <button
                 class="button button-secondary button-small"
                 type="button"
-                :disabled="!item.share_code"
+                :disabled="sharedShareCopyingId === item.id"
                 @click="copyManagedShareCode(item)"
               >
-                复制分享码
+                {{ sharedShareCopyingId === item.id ? "处理中..." : "复制分享码" }}
               </button>
               <button
                 class="button button-danger button-small"
@@ -263,16 +263,17 @@
           </div>
         </div>
 
-        <label class="field-card">
-          <span>公开访问地址</span>
-          <input v-model.trim="sharingForm.public_base_url" type="url" placeholder="https://makerhub.example.com">
-          <small class="archive-form__hint">分享码会让接收方 MakerHub 从这个地址拉取模型快照；请填写对方机器可访问的域名、DDNS、内网穿透或局域网地址。</small>
-        </label>
-
-        <div class="settings-grid settings-grid--two">
+        <div class="share-settings-row">
           <label class="field-card">
+            <span>公开访问地址</span>
+            <input v-model.trim="sharingForm.public_base_url" type="url" placeholder="https://makerhub.example.com">
+          </label>
+          <label class="field-card share-expiry-field">
             <span>默认有效期</span>
-            <input v-model.number="sharingForm.default_expires_days" type="number" min="1" max="90" step="1">
+            <div class="share-expiry-input">
+              <input v-model.number="sharingForm.default_expires_days" type="number" min="1" max="90" step="1">
+              <em>天</em>
+            </div>
           </label>
           <label class="field-card">
             <span>默认内容</span>
@@ -284,27 +285,7 @@
             </div>
           </label>
         </div>
-
-        <div class="settings-grid settings-grid--two">
-          <label class="field-card">
-            <span>模型文件类型</span>
-            <div class="share-settings-chips">
-              <label v-for="item in shareModelFileOptions" :key="item.value">
-                <input v-model="sharingForm.model_file_types" type="checkbox" :value="item.value" :disabled="!sharingForm.include_model_files">
-                <em>{{ item.label }}</em>
-              </label>
-            </div>
-          </label>
-          <label class="field-card">
-            <span>附件类型</span>
-            <div class="share-settings-chips">
-              <label v-for="item in shareAttachmentOptions" :key="item.value">
-                <input v-model="sharingForm.attachment_file_types" type="checkbox" :value="item.value" :disabled="!sharingForm.include_attachments">
-                <em>{{ item.label }}</em>
-              </label>
-            </div>
-          </label>
-        </div>
+        <p class="archive-form__hint share-settings-hint">分享码会让接收方 MakerHub 从公开访问地址拉取模型快照；请填写对方机器可访问的域名、DDNS、内网穿透或局域网地址。</p>
 
         <div class="settings-inline-actions">
           <button class="button button-secondary" type="button" :disabled="testing.sharing" @click="testSharing">
@@ -644,6 +625,7 @@ const newToken = ref("");
 const tokenItems = ref([]);
 const sharedShares = ref([]);
 const sharedSharesLoading = ref(false);
+const sharedShareCopyingId = ref("");
 const sharedShareRevokingId = ref("");
 const systemUpdate = ref(defaultSystemUpdateState());
 const systemUpdateLoading = ref(false);
@@ -681,16 +663,6 @@ const organizerForm = reactive({
   target_dir: "",
   move_files: true,
 });
-const shareModelFileOptions = [
-  { value: "3mf", label: "3MF" },
-  { value: "stl", label: "STL" },
-  { value: "step", label: "STEP" },
-  { value: "obj", label: "OBJ" },
-];
-const shareAttachmentOptions = [
-  { value: "pdf", label: "PDF" },
-  { value: "excel", label: "Excel" },
-];
 const sharingForm = reactive({
   public_base_url: "",
   default_expires_days: 7,
@@ -1402,30 +1374,47 @@ async function importShareCode() {
 }
 
 async function copyManagedShareCode(item) {
-  if (!item?.share_code) {
-    statuses.share_manage = "这个分享是旧记录，无法重新生成原分享码；可以撤销后重新分享。";
+  if (!item?.id) {
     return;
   }
+  sharedShareCopyingId.value = item.id;
+  statuses.share_manage = "";
+  let shareCode = item.share_code || "";
   try {
+    if (!shareCode) {
+      const response = await apiRequest(`/api/sharing/shares/${encodeURIComponent(item.id)}/code`, {
+        method: "POST",
+      });
+      shareCode = response.share_code || "";
+      if (shareCode) {
+        item.share_code = shareCode;
+      }
+    }
+    if (!shareCode) {
+      statuses.share_manage = "分享码生成失败。";
+      return;
+    }
     if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(item.share_code);
+      await navigator.clipboard.writeText(shareCode);
       statuses.share_manage = "分享码已复制。";
       return;
     }
-  } catch {
-    // Fall through to the textarea-based copy path below.
+    const textarea = document.createElement("textarea");
+    textarea.value = shareCode;
+    textarea.setAttribute("readonly", "readonly");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.select();
+    textarea.setSelectionRange(0, shareCode.length);
+    const copied = document.execCommand("copy");
+    document.body.removeChild(textarea);
+    statuses.share_manage = copied ? "分享码已复制。" : "浏览器阻止了复制，请打开分享弹窗重新生成后手动复制。";
+  } catch (error) {
+    statuses.share_manage = error instanceof Error ? error.message : "复制分享码失败。";
+  } finally {
+    sharedShareCopyingId.value = "";
   }
-  const textarea = document.createElement("textarea");
-  textarea.value = item.share_code;
-  textarea.setAttribute("readonly", "readonly");
-  textarea.style.position = "fixed";
-  textarea.style.left = "-9999px";
-  document.body.appendChild(textarea);
-  textarea.select();
-  textarea.setSelectionRange(0, item.share_code.length);
-  const copied = document.execCommand("copy");
-  document.body.removeChild(textarea);
-  statuses.share_manage = copied ? "分享码已复制。" : "浏览器阻止了复制，请打开分享弹窗重新生成后手动复制。";
 }
 
 async function revokeManagedShare(item) {

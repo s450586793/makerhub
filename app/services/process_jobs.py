@@ -1,4 +1,6 @@
+import json
 import os
+import tempfile
 import time
 import traceback
 from multiprocessing import get_context
@@ -94,6 +96,75 @@ def _emit(queue, event_type: str, payload: Any) -> None:
         pass
 
 
+def _json_safe_payload(payload: Any) -> Any:
+    try:
+        json.dumps(payload, ensure_ascii=False)
+        return payload
+    except TypeError:
+        return json.loads(json.dumps(payload, ensure_ascii=False, default=str))
+
+
+def _job_result_path(payload: dict[str, Any]) -> Optional[Path]:
+    raw_path = str(payload.get("__job_result_path") or "").strip()
+    if not raw_path:
+        return None
+    try:
+        return Path(raw_path)
+    except (TypeError, ValueError):
+        return None
+
+
+def _write_job_result_file(payload: dict[str, Any], event_type: str, event_payload: Any) -> bool:
+    result_path = _job_result_path(payload)
+    if result_path is None:
+        return False
+    envelope = {
+        "type": event_type,
+        "payload": _json_safe_payload(event_payload),
+    }
+    temp_path = result_path.with_name(f"{result_path.name}.{os.getpid()}.tmp")
+    try:
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path.write_text(json.dumps(envelope, ensure_ascii=False), encoding="utf-8")
+        os.replace(temp_path, result_path)
+        return True
+    finally:
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except OSError:
+            pass
+
+
+def _emit_finished(queue, payload: dict[str, Any], event_type: str, event_payload: Any) -> None:
+    try:
+        if _write_job_result_file(payload, event_type, event_payload):
+            _emit(queue, "finished", {"type": event_type})
+            return
+    except Exception as exc:
+        event_type = "error"
+        event_payload = {
+            "message": f"后台任务结果写入失败：{exc}",
+            "traceback": traceback.format_exc(),
+        }
+    _emit(queue, event_type, event_payload)
+
+
+def _read_job_result_file(result_path: Optional[Path]) -> Optional[dict[str, Any]]:
+    if result_path is None or not result_path.exists():
+        return None
+    try:
+        envelope = json.loads(result_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    event_type = str(envelope.get("type") or "")
+    if event_type not in {"result", "error"}:
+        return None
+    return {"type": event_type, "payload": envelope.get("payload")}
+
+
 def _run_archive_model_entry(queue, payload: dict[str, Any]) -> None:
     _apply_heavy_job_niceness()
 
@@ -120,10 +191,11 @@ def _run_archive_model_entry(queue, payload: dict[str, Any]) -> None:
             three_mf_daily_limit_global=_normalize_three_mf_daily_limit(payload.get("three_mf_daily_limit_global")),
             existing_model_dir=str(payload.get("existing_model_dir") or ""),
         )
-        _emit(queue, "result", result)
+        _emit_finished(queue, payload, "result", result)
     except Exception as exc:
-        _emit(
+        _emit_finished(
             queue,
+            payload,
             "error",
             {
                 "message": str(exc),
@@ -140,10 +212,11 @@ def _run_discover_batch_entry(queue, payload: dict[str, Any]) -> None:
             str(payload.get("url") or ""),
             str(payload.get("cookie") or ""),
         )
-        _emit(queue, "result", result)
+        _emit_finished(queue, payload, "result", result)
     except Exception as exc:
-        _emit(
+        _emit_finished(
             queue,
+            payload,
             "error",
             {
                 "message": str(exc),
@@ -158,10 +231,11 @@ def _run_source_deleted_entry(queue, payload: dict[str, Any]) -> None:
             str(payload.get("url") or ""),
             str(payload.get("cookie") or ""),
         )
-        _emit(queue, "result", {"deleted": bool(result)})
+        _emit_finished(queue, payload, "result", {"deleted": bool(result)})
     except Exception as exc:
-        _emit(
+        _emit_finished(
             queue,
+            payload,
             "error",
             {
                 "message": str(exc),
@@ -178,7 +252,16 @@ def _run_process_job(
     idle_timeout_seconds: Optional[int] = None,
 ) -> Any:
     queue = JOB_CONTEXT.Queue()
-    process = JOB_CONTEXT.Process(target=target, args=(queue, payload), daemon=True)
+    result_fd, result_file = tempfile.mkstemp(prefix="makerhub_job_result_", suffix=".json")
+    os.close(result_fd)
+    result_path = Path(result_file)
+    try:
+        result_path.unlink()
+    except OSError:
+        pass
+    process_payload = dict(payload)
+    process_payload["__job_result_path"] = str(result_path)
+    process = JOB_CONTEXT.Process(target=target, args=(queue, process_payload), daemon=True)
     process.start()
     result: Any = None
     error_payload: Optional[dict[str, Any]] = None
@@ -208,7 +291,18 @@ def _run_process_job(
         if event_type == "error":
             error_payload = event_payload if isinstance(event_payload, dict) else {"message": str(event_payload or "")}
             return True
+        if event_type == "finished":
+            file_message = _read_job_result_file(result_path)
+            if file_message is not None:
+                return handle_message(file_message)
+            return False
         return False
+
+    def load_result_file() -> bool:
+        file_message = _read_job_result_file(result_path)
+        if file_message is None:
+            return False
+        return handle_message(file_message)
 
     def drain_final_messages() -> None:
         # A spawned process can exit just before the result event becomes visible
@@ -216,6 +310,8 @@ def _run_process_job(
         # "no result".
         deadline = time.monotonic() + JOB_EXIT_TIMEOUT_SECONDS
         while result is None and error_payload is None and time.monotonic() < deadline:
+            if load_result_file():
+                return
             try:
                 message = queue.get(timeout=0.2)
             except Empty:
@@ -247,8 +343,14 @@ def _run_process_job(
         if process.is_alive():
             process.kill()
             process.join(timeout=JOB_EXIT_TIMEOUT_SECONDS)
+        if result is None and error_payload is None:
+            load_result_file()
         queue.close()
         queue.join_thread()
+        try:
+            result_path.unlink()
+        except OSError:
+            pass
 
     if error_payload is not None:
         message = str(error_payload.get("message") or "后台任务执行失败。").strip() or "后台任务执行失败。"
