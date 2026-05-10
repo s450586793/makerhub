@@ -11,7 +11,7 @@
       <h2 id="share-dialog-title">分享模型</h2>
       <p>本次会生成一个静态分享码，接收方导入前会先检查是否重复。</p>
 
-      <div class="share-dialog__summary">
+      <div v-if="showCount" class="share-dialog__summary">
         <span>已选模型</span>
         <strong>{{ modelDirs.length }} 个</strong>
       </div>
@@ -22,7 +22,7 @@
 
         <div v-if="shareCode" class="share-dialog__code">
           <span>分享码</span>
-          <textarea :value="shareCode" readonly rows="4"></textarea>
+          <textarea ref="shareCodeTextarea" :value="shareCode" readonly rows="4"></textarea>
           <button class="button button-secondary button-small" type="button" @click="copyShareCode">复制分享码</button>
         </div>
 
@@ -51,6 +51,10 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  showCount: {
+    type: Boolean,
+    default: true,
+  },
 });
 
 defineEmits(["close"]);
@@ -59,6 +63,7 @@ const submitting = ref(false);
 const status = ref("");
 const error = ref("");
 const shareCode = ref("");
+const shareCodeTextarea = ref(null);
 
 function resetDialog() {
   status.value = "";
@@ -90,11 +95,27 @@ async function copyShareCode() {
   if (!shareCode.value) {
     return;
   }
+  error.value = "";
   try {
-    await navigator.clipboard.writeText(shareCode.value);
+    if (navigator.clipboard?.writeText && window.isSecureContext) {
+      await navigator.clipboard.writeText(shareCode.value);
+    } else {
+      const textarea = shareCodeTextarea.value;
+      if (!textarea) {
+        throw new Error("textarea missing");
+      }
+      textarea.focus();
+      textarea.select();
+      textarea.setSelectionRange(0, shareCode.value.length);
+      if (!document.execCommand("copy")) {
+        throw new Error("execCommand copy failed");
+      }
+    }
     status.value = "分享码已复制。";
   } catch (err) {
-    error.value = "复制失败，请手动选择分享码。";
+    shareCodeTextarea.value?.focus();
+    shareCodeTextarea.value?.select();
+    error.value = "复制失败，已选中分享码，请按 Ctrl/Cmd+C 手动复制。";
   }
 }
 

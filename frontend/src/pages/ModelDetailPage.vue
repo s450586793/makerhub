@@ -864,6 +864,7 @@
   <ShareDialog
     :visible="shareDialogVisible"
     :model-dirs="shareDialogModelDirs"
+    :show-count="false"
     @close="closeShareDialog"
   />
 </template>
