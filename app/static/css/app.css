@@ -2569,10 +2569,9 @@ select:focus {
 }
 
 .mw-action-strip {
-  height: var(--mw-action-strip-height);
   min-height: var(--mw-action-strip-height);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 12px;
   align-items: stretch;
 }
@@ -2584,6 +2583,7 @@ select:focus {
 }
 
 .mw-inline-link--ghost {
+  min-width: 92px;
   min-height: 48px;
   padding: 0 18px;
   border-radius: 6px;
@@ -5461,7 +5461,11 @@ html[data-theme="dark"] .gallery-card__source--local-deleted {
   }
 
   .mw-action-strip {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mw-action-strip .mw-download-button--hero {
+    grid-column: 1 / -1;
   }
 
   .mw-detail-nav {
