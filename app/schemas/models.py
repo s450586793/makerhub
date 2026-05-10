@@ -143,6 +143,10 @@ class ShareReceiveRequest(BaseModel):
     share_code: str = ""
 
 
+class ShareDeleteExpiredRequest(BaseModel):
+    include_expired: bool = False
+
+
 class LocalModelMergeRequest(BaseModel):
     target_model_dir: str = ""
     source_model_dirs: List[str] = Field(default_factory=list)

@@ -39,6 +39,7 @@ from app.schemas.models import (
     ProxyConfig,
     RemoteRefreshConfig,
     ShareCreateRequest,
+    ShareDeleteExpiredRequest,
     ShareOptions,
     ShareReceiveRequest,
     SharingConfig,
@@ -374,6 +375,22 @@ def _add_share_file(
     return file_id
 
 
+def _share_file_counts(files: list[dict], source_model_dir: str = "") -> dict:
+    counts = {"total": 0, "model": 0, "image": 0, "attachment": 0, "other": 0}
+    clean_model_dir = str(source_model_dir or "").strip().strip("/")
+    for file_item in files or []:
+        if not isinstance(file_item, dict):
+            continue
+        if clean_model_dir and str(file_item.get("source_model_dir") or "").strip().strip("/") != clean_model_dir:
+            continue
+        role = str(file_item.get("role") or "").strip().lower()
+        if role not in {"model", "image", "attachment"}:
+            role = "other"
+        counts["total"] += 1
+        counts[role] += 1
+    return counts
+
+
 def _rewrite_file_refs(
     value: object,
     *,
@@ -630,7 +647,46 @@ def _manifest_from_record(record: dict, token: str) -> dict:
         "expires_at": str(record.get("expires_at") or ""),
         "options": record.get("options") if isinstance(record.get("options"), dict) else {},
         "models": record.get("models") if isinstance(record.get("models"), list) else [],
+        "file_counts": _share_file_counts(public_files),
         "files": public_files,
+    }
+
+
+def _share_record_summary(record: dict, *, base_url: str = "") -> dict:
+    share_id = str(record.get("id") or "")
+    files = record.get("files") if isinstance(record.get("files"), list) else []
+    models = record.get("models") if isinstance(record.get("models"), list) else []
+    expires_at_dt = parse_datetime(record.get("expires_at"))
+    expired = expires_at_dt is not None and expires_at_dt < china_now()
+    share_code = ""
+    token = str(record.get("token") or "").strip()
+    if share_id and token and base_url:
+        share_code = _encode_share_code(base_url=base_url, share_id=share_id, token=token)
+    return {
+        "id": share_id,
+        "created_at": str(record.get("created_at") or ""),
+        "expires_at": str(record.get("expires_at") or ""),
+        "expired": expired,
+        "options": record.get("options") if isinstance(record.get("options"), dict) else {},
+        "model_count": len(models),
+        "file_count": len(files),
+        "file_counts": _share_file_counts(files),
+        "share_code": share_code,
+        "code_available": bool(share_code),
+        "models": [
+            {
+                "title": str(item.get("title") or (item.get("meta") or {}).get("title") or ""),
+                "id": str(item.get("id") or ""),
+                "model_dir": str(item.get("model_dir") or ""),
+                "origin_url": str(item.get("origin_url") or ""),
+                "file_count": _share_file_counts(files, str(item.get("model_dir") or "")).get("total", 0),
+                "model_file_count": _share_file_counts(files, str(item.get("model_dir") or "")).get("model", 0),
+                "image_count": _share_file_counts(files, str(item.get("model_dir") or "")).get("image", 0),
+                "attachment_count": _share_file_counts(files, str(item.get("model_dir") or "")).get("attachment", 0),
+            }
+            for item in models
+            if isinstance(item, dict)
+        ],
     }
 
 
@@ -775,34 +831,44 @@ def _build_library_duplicate_index() -> dict[str, dict[str, dict]]:
 
 def _find_manifest_duplicates(manifest: dict) -> list[dict]:
     duplicate_index = _build_library_duplicate_index()
-    duplicates: list[dict] = []
-    seen: set[str] = set()
+    duplicates_by_match: dict[str, dict] = {}
     for model in manifest.get("models") or []:
         if not isinstance(model, dict):
             continue
         meta = model.get("meta") if isinstance(model.get("meta"), dict) else {}
         model_title = str(model.get("title") or meta.get("title") or "")
+        model_id = str(model.get("id") or meta.get("id") or "")
         keys = _collect_meta_duplicate_keys(meta)
         for bucket, values in keys.items():
             for key in values:
                 match = duplicate_index.get(bucket, {}).get(key)
                 if not match:
                     continue
-                duplicate_key = f"{model_title}|{bucket}|{key}|{match.get('model_dir')}"
-                if duplicate_key in seen:
+                duplicate_key = "|".join(
+                    [
+                        model_id,
+                        model_title,
+                        str(match.get("model_dir") or ""),
+                        str(match.get("subscription_id") or ""),
+                        str(match.get("title") or ""),
+                    ]
+                )
+                existing = duplicates_by_match.get(duplicate_key)
+                if existing:
+                    existing.setdefault("reasons", []).append(bucket)
                     continue
-                seen.add(duplicate_key)
-                duplicates.append(
+                duplicates_by_match[duplicate_key] = (
                     {
                         "share_title": model_title,
                         "reason": bucket,
+                        "reasons": [bucket],
                         "key": key,
                         "existing_model_dir": match.get("model_dir") or "",
                         "existing_title": match.get("title") or match.get("model_dir") or "",
                         "existing_source": match.get("source") or "",
                     }
                 )
-    return duplicates
+    return list(duplicates_by_match.values())
 
 
 def _safe_share_filename(filename: str, fallback: str = "file") -> str:
@@ -1910,6 +1976,7 @@ async def create_model_share(payload: ShareCreateRequest, request: Request):
         ]
         record = {
             "id": share_id,
+            "token": token,
             "token_hash": _share_token_hash(token),
             "created_at": now_dt.isoformat(timespec="seconds"),
             "expires_at": expires_at.isoformat(timespec="seconds"),
@@ -1933,6 +2000,7 @@ async def create_model_share(payload: ShareCreateRequest, request: Request):
             "expires_at": record["expires_at"],
             "model_count": len(models),
             "file_count": len(files),
+            "file_counts": _share_file_counts(files),
             "message": f"已生成 {len(models)} 个模型的分享码。",
         }
 
@@ -1951,6 +2019,98 @@ async def create_model_share(payload: ShareCreateRequest, request: Request):
     return result
 
 
+@router.get("/sharing/shares")
+async def list_model_shares(request: Request):
+    _require_session_auth(request)
+
+    def _list_payload() -> dict:
+        config = store.load()
+        base_url = _normalize_public_base_url(config.sharing.public_base_url)
+        state = _read_shares_state()
+        items = [
+            _share_record_summary(item, base_url=base_url)
+            for item in state.get("items") or []
+            if isinstance(item, dict)
+        ]
+        items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+        return {
+            "success": True,
+            "items": items,
+            "count": len(items),
+        }
+
+    return await run_ui_io(_list_payload)
+
+
+@router.delete("/sharing/shares/{share_id}")
+async def revoke_model_share(share_id: str, request: Request):
+    _require_session_auth(request)
+
+    def _delete_payload() -> dict:
+        clean_id = str(share_id or "").strip()
+        state = _read_shares_state()
+        items = [item for item in state.get("items") or [] if isinstance(item, dict)]
+        next_items = [item for item in items if str(item.get("id") or "") != clean_id]
+        if len(next_items) == len(items):
+            raise ValueError("分享记录不存在。")
+        state["items"] = next_items
+        _write_shares_state(state)
+        return {
+            "success": True,
+            "message": "分享已撤销。",
+            "items": [_share_record_summary(item) for item in next_items],
+            "count": len(next_items),
+        }
+
+    try:
+        result = await run_ui_io(_delete_payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    append_business_log("sharing", "share_revoked", "模型分享已撤销。", share_id=share_id)
+    return result
+
+
+@router.post("/sharing/shares/cleanup")
+async def cleanup_model_shares(payload: ShareDeleteExpiredRequest, request: Request):
+    _require_session_auth(request)
+
+    def _cleanup_payload() -> dict:
+        if not payload.include_expired:
+            raise ValueError("请选择要清理的分享记录。")
+        state = _read_shares_state()
+        now_dt = china_now()
+        items = [item for item in state.get("items") or [] if isinstance(item, dict)]
+        next_items = []
+        removed_count = 0
+        for item in items:
+            expires_at = parse_datetime(item.get("expires_at"))
+            if expires_at is not None and expires_at < now_dt:
+                removed_count += 1
+                continue
+            next_items.append(item)
+        state["items"] = next_items
+        _write_shares_state(state)
+        return {
+            "success": True,
+            "message": f"已清理 {removed_count} 条过期分享。",
+            "removed_count": removed_count,
+            "items": [_share_record_summary(item) for item in next_items],
+            "count": len(next_items),
+        }
+
+    try:
+        result = await run_ui_io(_cleanup_payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    append_business_log(
+        "sharing",
+        "share_expired_cleaned",
+        result.get("message") or "过期分享已清理。",
+        removed_count=int(result.get("removed_count") or 0),
+    )
+    return result
+
+
 @router.post("/sharing/receive/preview")
 async def preview_model_share(payload: ShareReceiveRequest, request: Request):
     _require_session_auth(request)
@@ -1960,6 +2120,7 @@ async def preview_model_share(payload: ShareReceiveRequest, request: Request):
         duplicates = _find_manifest_duplicates(manifest)
         models = manifest.get("models") if isinstance(manifest.get("models"), list) else []
         files = manifest.get("files") if isinstance(manifest.get("files"), list) else []
+        file_counts = _share_file_counts(files)
         return {
             "success": True,
             "can_import": not duplicates,
@@ -1972,12 +2133,16 @@ async def preview_model_share(payload: ShareReceiveRequest, request: Request):
                 "expires_at": str(manifest.get("expires_at") or ""),
                 "model_count": len(models),
                 "file_count": len(files),
+                "file_counts": file_counts,
                 "models": [
                     {
                         "title": str(item.get("title") or (item.get("meta") or {}).get("title") or ""),
                         "id": str(item.get("id") or ""),
                         "origin_url": str(item.get("origin_url") or ""),
-                        "file_count": len(item.get("file_ids") or []),
+                        "file_count": _share_file_counts(files, str(item.get("model_dir") or "")).get("total", 0),
+                        "model_file_count": _share_file_counts(files, str(item.get("model_dir") or "")).get("model", 0),
+                        "image_count": _share_file_counts(files, str(item.get("model_dir") or "")).get("image", 0),
+                        "attachment_count": _share_file_counts(files, str(item.get("model_dir") or "")).get("attachment", 0),
                     }
                     for item in models
                     if isinstance(item, dict)

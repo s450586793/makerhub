@@ -271,6 +271,88 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   background: rgba(223, 86, 86, 0.08);
 }
 
+.shared-list-card {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.shared-list {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  display: grid;
+  background: var(--surface);
+}
+
+.shared-list-item {
+  min-width: 0;
+  padding: var(--space-3);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+}
+
+.shared-list-item:last-child {
+  border-bottom: 0;
+}
+
+.shared-list-item__main {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.shared-list-item__title,
+.shared-list-item__meta,
+.shared-list-item__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.shared-list-item__title strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shared-list-item__status {
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--success) 32%, transparent);
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  color: var(--success);
+  font-size: var(--text-xs);
+  font-weight: 800;
+}
+
+.shared-list-item__status.is-expired {
+  border-color: color-mix(in srgb, var(--danger) 32%, transparent);
+  color: var(--danger);
+}
+
+.shared-list-item__meta span,
+.shared-list-item p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.shared-list-item p {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .source-library-card--selectable {
   position: relative;
   cursor: pointer;
@@ -3742,6 +3824,14 @@ html[data-theme="dark"] .library-group-hero {
   .library-group-hero__copy p {
     font-size: 13px;
   }
+
+  .shared-list-item {
+    grid-template-columns: 1fr;
+  }
+
+  .shared-list-item__actions {
+    width: 100%;
+  }
 }
 
 body {
@@ -3793,6 +3883,7 @@ h6 {
 .gallery-card__cover,
 .gallery-card__cover .media-placeholder,
 .gallery-card__stats,
+.shared-list,
 .gallery-flag,
 .gallery-delete,
 .gallery-restore,

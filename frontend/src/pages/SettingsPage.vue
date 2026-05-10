@@ -152,11 +152,114 @@
     </div>
 
     <div v-show="activeTab === 'sharing'" class="settings-panel is-active">
+      <form class="settings-form token-card share-receive-card" @submit.prevent="previewShareCode">
+        <div class="section-card__header">
+          <div>
+            <span class="eyebrow">接收分享</span>
+            <h2>导入分享码</h2>
+          </div>
+        </div>
+        <label class="field-card">
+          <span>分享码</span>
+          <textarea v-model.trim="shareReceive.code" rows="5" placeholder="粘贴对方 MakerHub 生成的分享码"></textarea>
+        </label>
+        <div class="settings-inline-actions">
+          <button class="button button-secondary" type="submit" :disabled="shareReceive.loadingPreview">
+            {{ shareReceive.loadingPreview ? "预览中..." : "预览分享" }}
+          </button>
+          <button
+            class="button button-primary"
+            type="button"
+            :disabled="!shareReceive.preview?.can_import || shareReceive.importing"
+            @click="importShareCode"
+          >
+            {{ shareReceive.importing ? "导入中..." : "确认导入" }}
+          </button>
+          <span class="form-status">{{ statuses.share_receive }}</span>
+        </div>
+        <div v-if="shareReceive.preview" class="share-preview">
+          <div class="share-preview__head">
+            <strong>{{ shareReceive.preview.manifest?.model_count || 0 }} 个模型</strong>
+            <span>{{ formatShareFileCounts(shareReceive.preview.manifest?.file_counts) }}</span>
+            <em :class="shareReceive.preview.can_import ? 'is-ok' : 'is-error'">
+              {{ shareReceive.preview.can_import ? "可导入" : "发现重复" }}
+            </em>
+          </div>
+          <ol v-if="shareReceive.preview.manifest?.models?.length" class="share-preview__list">
+            <li v-for="model in shareReceive.preview.manifest.models" :key="`${model.title}-${model.id}`">
+              <span>{{ model.title || model.id || "未命名模型" }}</span>
+              <em>{{ formatModelShareCounts(model) }}</em>
+            </li>
+          </ol>
+          <ol v-if="shareReceive.preview.duplicates?.length" class="share-preview__list share-preview__list--duplicates">
+            <li v-for="item in shareReceive.preview.duplicates" :key="`${item.share_title}-${item.existing_model_dir}-${item.key}`">
+              <span>{{ item.share_title || "分享模型" }} 已存在</span>
+              <em>{{ item.existing_title || item.existing_model_dir }}</em>
+            </li>
+          </ol>
+        </div>
+      </form>
+
+      <section class="token-card shared-list-card">
+        <div class="section-card__header">
+          <div>
+            <span class="eyebrow">已分享</span>
+            <h2>分享记录</h2>
+          </div>
+          <div class="settings-inline-actions">
+            <button class="button button-secondary button-small" type="button" :disabled="sharedSharesLoading" @click="loadSharedShares">
+              {{ sharedSharesLoading ? "刷新中..." : "刷新" }}
+            </button>
+            <button class="button button-secondary button-small" type="button" :disabled="sharedSharesLoading || !expiredShareCount" @click="cleanupExpiredShares">
+              清理过期
+            </button>
+          </div>
+        </div>
+        <div v-if="sharedShares.length" class="shared-list">
+          <article v-for="item in sharedShares" :key="item.id" class="shared-list-item">
+            <div class="shared-list-item__main">
+              <div class="shared-list-item__title">
+                <strong>{{ shareRecordTitle(item) }}</strong>
+                <span :class="['shared-list-item__status', item.expired && 'is-expired']">
+                  {{ item.expired ? "已过期" : "有效中" }}
+                </span>
+              </div>
+              <div class="shared-list-item__meta">
+                <span>{{ item.model_count || 0 }} 个模型</span>
+                <span>{{ formatShareFileCounts(item.file_counts) }}</span>
+                <span>到期 {{ formatShareDate(item.expires_at) }}</span>
+              </div>
+              <p>{{ shareRecordModelNames(item) }}</p>
+            </div>
+            <div class="shared-list-item__actions">
+              <button
+                class="button button-secondary button-small"
+                type="button"
+                :disabled="!item.share_code"
+                @click="copyManagedShareCode(item)"
+              >
+                复制分享码
+              </button>
+              <button
+                class="button button-danger button-small"
+                type="button"
+                :disabled="sharedShareRevokingId === item.id"
+                @click="revokeManagedShare(item)"
+              >
+                {{ sharedShareRevokingId === item.id ? "撤销中..." : "撤销" }}
+              </button>
+            </div>
+          </article>
+        </div>
+        <p v-else class="empty-copy">当前还没有已分享的模型。</p>
+        <span class="form-status">{{ statuses.share_manage }}</span>
+      </section>
+
       <form class="settings-form token-card" @submit.prevent="saveSharing">
         <div class="section-card__header">
           <div>
             <span class="eyebrow">模型分享</span>
-            <h2>MakerHub 分享地址</h2>
+            <h2>分享设置</h2>
           </div>
         </div>
 
@@ -213,54 +316,6 @@
         <div class="form-footer">
           <button class="button button-primary" type="submit">保存分享设置</button>
           <span class="form-status">{{ statuses.sharing }}</span>
-        </div>
-      </form>
-
-      <form class="settings-form token-card share-receive-card" @submit.prevent="previewShareCode">
-        <div class="section-card__header">
-          <div>
-            <span class="eyebrow">接收分享</span>
-            <h2>导入分享码</h2>
-          </div>
-        </div>
-        <label class="field-card">
-          <span>分享码</span>
-          <textarea v-model.trim="shareReceive.code" rows="5" placeholder="粘贴对方 MakerHub 生成的分享码"></textarea>
-        </label>
-        <div class="settings-inline-actions">
-          <button class="button button-secondary" type="submit" :disabled="shareReceive.loadingPreview">
-            {{ shareReceive.loadingPreview ? "预览中..." : "预览分享" }}
-          </button>
-          <button
-            class="button button-primary"
-            type="button"
-            :disabled="!shareReceive.preview?.can_import || shareReceive.importing"
-            @click="importShareCode"
-          >
-            {{ shareReceive.importing ? "导入中..." : "确认导入" }}
-          </button>
-          <span class="form-status">{{ statuses.share_receive }}</span>
-        </div>
-        <div v-if="shareReceive.preview" class="share-preview">
-          <div class="share-preview__head">
-            <strong>{{ shareReceive.preview.manifest?.model_count || 0 }} 个模型</strong>
-            <span>{{ shareReceive.preview.manifest?.file_count || 0 }} 个文件</span>
-            <em :class="shareReceive.preview.can_import ? 'is-ok' : 'is-error'">
-              {{ shareReceive.preview.can_import ? "可导入" : "发现重复" }}
-            </em>
-          </div>
-          <ol v-if="shareReceive.preview.manifest?.models?.length" class="share-preview__list">
-            <li v-for="model in shareReceive.preview.manifest.models" :key="`${model.title}-${model.id}`">
-              <span>{{ model.title || model.id || "未命名模型" }}</span>
-              <em>{{ model.file_count || 0 }} 个文件</em>
-            </li>
-          </ol>
-          <ol v-if="shareReceive.preview.duplicates?.length" class="share-preview__list share-preview__list--duplicates">
-            <li v-for="item in shareReceive.preview.duplicates" :key="`${item.share_title}-${item.existing_model_dir}-${item.key}`">
-              <span>{{ item.share_title || "分享模型" }} 已存在</span>
-              <em>{{ item.existing_title || item.existing_model_dir }}</em>
-            </li>
-          </ol>
         </div>
       </form>
     </div>
@@ -587,6 +642,9 @@ const themePreference = ref("auto");
 const tokenName = ref("");
 const newToken = ref("");
 const tokenItems = ref([]);
+const sharedShares = ref([]);
+const sharedSharesLoading = ref(false);
+const sharedShareRevokingId = ref("");
 const systemUpdate = ref(defaultSystemUpdateState());
 const systemUpdateLoading = ref(false);
 const systemUpdateSubmitting = ref(false);
@@ -668,6 +726,7 @@ const statuses = reactive({
   sharing: "",
   sharing_test: "",
   share_receive: "",
+  share_manage: "",
   advanced: "",
   notifications: "",
   user: "",
@@ -706,6 +765,7 @@ const githubVersionText = computed(() => {
   }
   return "读取中";
 });
+const expiredShareCount = computed(() => sharedShares.value.filter((item) => item.expired).length);
 const systemUpdateStatusLabel = computed(() => {
   const labelMap = {
     idle: "空闲",
@@ -854,6 +914,79 @@ function normalizeBoundedInt(value, fallback, min, max) {
   return Math.min(Math.max(Math.trunc(numeric), min), max);
 }
 
+function formatShareFileCounts(counts) {
+  const payload = counts && typeof counts === "object" ? counts : {};
+  const total = Number(payload.total || 0);
+  const model = Number(payload.model || 0);
+  const image = Number(payload.image || 0);
+  const attachment = Number(payload.attachment || 0);
+  const parts = [`${total} 个文件`];
+  if (model) {
+    parts.push(`${model} 个模型文件`);
+  }
+  if (image) {
+    parts.push(`${image} 张图片`);
+  }
+  if (attachment) {
+    parts.push(`${attachment} 个附件`);
+  }
+  return parts.join(" · ");
+}
+
+function formatModelShareCounts(model) {
+  const modelFiles = Number(model?.model_file_count || 0);
+  const images = Number(model?.image_count || 0);
+  const attachments = Number(model?.attachment_count || 0);
+  const parts = [];
+  if (modelFiles) {
+    parts.push(`${modelFiles} 个模型文件`);
+  }
+  if (images) {
+    parts.push(`${images} 张图片`);
+  }
+  if (attachments) {
+    parts.push(`${attachments} 个附件`);
+  }
+  return parts.length ? parts.join(" · ") : `${Number(model?.file_count || 0)} 个文件`;
+}
+
+function formatShareDate(value) {
+  if (!value) {
+    return "-";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return String(value);
+  }
+  return parsed.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function shareRecordTitle(item) {
+  const models = Array.isArray(item?.models) ? item.models : [];
+  const firstTitle = models[0]?.title || models[0]?.id || "";
+  if (!firstTitle) {
+    return item?.id ? `分享 ${item.id.slice(0, 8)}` : "未命名分享";
+  }
+  if (models.length <= 1) {
+    return firstTitle;
+  }
+  return `${firstTitle} 等 ${models.length} 个模型`;
+}
+
+function shareRecordModelNames(item) {
+  const models = Array.isArray(item?.models) ? item.models : [];
+  if (!models.length) {
+    return "没有模型信息";
+  }
+  return models.map((model) => model.title || model.id || "未命名模型").slice(0, 4).join("、")
+    + (models.length > 4 ? ` 等 ${models.length} 个` : "");
+}
+
 function applyConfigToForms(payload) {
   const cookies = {};
   for (const item of payload.cookies || []) {
@@ -908,12 +1041,35 @@ function setActiveTab(tab) {
     loadSystemUpdateStatus({ force: true });
     loadProfileBackfillStatus({ silent: true });
   }
+  if (activeTab.value === "sharing" && !sharedSharesLoading.value) {
+    loadSharedShares({ silent: true });
+  }
 }
 
 async function load() {
   const payload = config.value || await refreshConfig();
   applyConfigToForms(payload);
   setActiveTab(typeof route.query.tab === "string" ? route.query.tab : "system");
+}
+
+async function loadSharedShares(options = {}) {
+  const { silent = false } = options;
+  if (!silent) {
+    sharedSharesLoading.value = true;
+    statuses.share_manage = "";
+  }
+  try {
+    const payload = await apiRequest("/api/sharing/shares");
+    sharedShares.value = Array.isArray(payload.items) ? payload.items : [];
+  } catch (error) {
+    if (!silent) {
+      statuses.share_manage = error instanceof Error ? error.message : "读取分享记录失败。";
+    }
+  } finally {
+    if (!silent) {
+      sharedSharesLoading.value = false;
+    }
+  }
 }
 
 function clearSystemUpdateTimer() {
@@ -1242,6 +1398,79 @@ async function importShareCode() {
     statuses.share_receive = error instanceof Error ? error.message : "分享导入失败。";
   } finally {
     shareReceive.importing = false;
+  }
+}
+
+async function copyManagedShareCode(item) {
+  if (!item?.share_code) {
+    statuses.share_manage = "这个分享是旧记录，无法重新生成原分享码；可以撤销后重新分享。";
+    return;
+  }
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(item.share_code);
+      statuses.share_manage = "分享码已复制。";
+      return;
+    }
+  } catch {
+    // Fall through to the textarea-based copy path below.
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = item.share_code;
+  textarea.setAttribute("readonly", "readonly");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  textarea.setSelectionRange(0, item.share_code.length);
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  statuses.share_manage = copied ? "分享码已复制。" : "浏览器阻止了复制，请打开分享弹窗重新生成后手动复制。";
+}
+
+async function revokeManagedShare(item) {
+  if (!item?.id) {
+    return;
+  }
+  if (!window.confirm(`确认撤销“${shareRecordTitle(item)}”这个分享吗？撤销后对方将不能再通过这个分享码导入。`)) {
+    return;
+  }
+  sharedShareRevokingId.value = item.id;
+  statuses.share_manage = "";
+  try {
+    await apiRequest(`/api/sharing/shares/${encodeURIComponent(item.id)}`, {
+      method: "DELETE",
+    });
+    statuses.share_manage = "分享已撤销。";
+    await loadSharedShares({ silent: true });
+  } catch (error) {
+    statuses.share_manage = error instanceof Error ? error.message : "撤销分享失败。";
+  } finally {
+    sharedShareRevokingId.value = "";
+  }
+}
+
+async function cleanupExpiredShares() {
+  if (!expiredShareCount.value) {
+    statuses.share_manage = "当前没有过期分享。";
+    return;
+  }
+  if (!window.confirm(`确认清理 ${expiredShareCount.value} 条过期分享记录吗？`)) {
+    return;
+  }
+  sharedSharesLoading.value = true;
+  statuses.share_manage = "";
+  try {
+    const payload = await apiRequest("/api/sharing/shares/cleanup", {
+      method: "POST",
+      body: { include_expired: true },
+    });
+    statuses.share_manage = payload.message || "过期分享已清理。";
+    await loadSharedShares({ silent: true });
+  } catch (error) {
+    statuses.share_manage = error instanceof Error ? error.message : "清理过期分享失败。";
+  } finally {
+    sharedSharesLoading.value = false;
   }
 }
 
