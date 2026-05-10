@@ -147,6 +147,10 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 ## 更新记录
 
 ### 2026-05-11
+- 版本号升级到 `v0.6.78`
+- 升级 `requests` 到 `2.33.0`、`python-multipart` 到 `0.0.27`，修复 GitHub Dependabot 报出的 4 个后端依赖漏洞提醒
+
+### 2026-05-11
 - 版本号升级到 `v0.6.77`
 - 分享码改为新版 `MH3` 乱码格式，不再明文暴露公开访问地址，也不再把真实分享 token 放进分享码；旧版 `MHS1` / `MHSHARE1` / `MH2` 仍兼容导入
 - 已分享列表的“复制分享码”支持为旧分享记录补生成访问码，按钮只在处理时临时禁用，避免旧记录复制按钮不可点
