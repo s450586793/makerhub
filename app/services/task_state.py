@@ -364,6 +364,10 @@ def _normalize_organize_tasks(payload: Any) -> dict:
                 "move_files": bool(item.get("move_files", item.get("move", True))),
                 "fingerprint": str(item.get("fingerprint") or ""),
                 "snapshot_ready": snapshot_ready,
+                "kind": str(item.get("kind") or ""),
+                "staging_dir": str(item.get("staging_dir") or ""),
+                "package_source": str(item.get("package_source") or ""),
+                "package_title": str(item.get("package_title") or ""),
             }
         )
 

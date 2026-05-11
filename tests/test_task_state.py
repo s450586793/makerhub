@@ -109,6 +109,29 @@ class OrganizeTaskStateTest(unittest.TestCase):
         self.assertTrue(items["old"]["snapshot_ready"])
         self.assertFalse(items["running"]["snapshot_ready"])
 
+    def test_normalize_preserves_local_package_import_metadata(self):
+        payload = {
+            "items": [
+                {
+                    "id": "pkg-1",
+                    "title": "Demo",
+                    "status": "queued",
+                    "kind": "local_package_import",
+                    "staging_dir": "/app/state/import_uploads/demo",
+                    "package_source": "Demo.zip",
+                    "package_title": "Demo",
+                }
+            ],
+        }
+
+        normalized = _normalize_organize_tasks(payload)
+        item = normalized["items"][0]
+
+        self.assertEqual(item["kind"], "local_package_import")
+        self.assertEqual(item["staging_dir"], "/app/state/import_uploads/demo")
+        self.assertEqual(item["package_source"], "Demo.zip")
+        self.assertEqual(item["package_title"], "Demo")
+
 
 class ArchiveQueueStateTest(unittest.TestCase):
     def test_clear_recent_failures_preserves_active_and_queued_tasks(self):

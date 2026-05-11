@@ -1419,15 +1419,17 @@ async function submitImportFiles() {
     importDialog.uploading = false;
     importDialog.visible = false;
     const resultSkipped = result?.duplicate || (Array.isArray(result?.uploaded) && result.uploaded.some((item) => normalizeImportStatus(item?.status) === "skipped"));
-    const snapshotReady = Boolean(result?.snapshot_ready || resultSkipped);
+    const resultQueued = Boolean(result?.queued || (Array.isArray(result?.uploaded) && result.uploaded.some((item) => normalizeImportStatus(item?.status) === "queued")));
+    const snapshotReady = Boolean(result?.snapshot_ready || resultSkipped) && !resultQueued;
     applyImportUploadProgress({
+      id: result?.task_id || importUploadProgress.id,
       phase: resultSkipped ? "skipped" : (snapshotReady ? "success" : "syncing"),
-      status: resultSkipped ? "skipped" : (snapshotReady ? "success" : "running"),
+      status: resultSkipped ? "skipped" : (snapshotReady ? "success" : "queued"),
       progress: resultSkipped || snapshotReady ? 100 : 96,
       uploadPercent: 100,
       message: resultSkipped
         ? (result?.message || "本地导入已跳过。")
-        : (snapshotReady ? (result?.message || "本地导入已完成。") : "本地整理已写入，正在刷新本地库列表。"),
+        : (snapshotReady ? (result?.message || "本地导入已完成。") : (result?.message || "已上传，后台正在整理本地模型包。")),
     });
     if (resultSkipped || snapshotReady) {
       clearImportUploadProgressStorage();

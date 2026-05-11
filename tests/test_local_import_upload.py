@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.services import catalog, local_import_upload
+from app.services import catalog, local_import_upload, local_organizer
 
 
 class FakeTaskStore:
@@ -65,6 +65,50 @@ def _fake_rar_extractor(files_by_archive: dict[str, dict[str, bytes]]):
 
 
 class LocalImportUploadTest(unittest.TestCase):
+    def test_organizer_run_once_processes_queued_package_import(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            archive_root = root / "archive"
+            source_root = root / "source"
+            state_root = root / "state"
+            archive_root.mkdir()
+            source_root.mkdir()
+            state_root.mkdir()
+
+            package = _zip_bytes({"Demo/body.stl": b"solid body\nendsolid body\n"})
+            store = SimpleNamespace(
+                load=lambda: SimpleNamespace(
+                    organizer=SimpleNamespace(source_dir=source_root.as_posix(), target_dir=archive_root.as_posix(), move_files=False)
+                )
+            )
+            task_store = FakeTaskStore()
+
+            with patch.object(local_import_upload, "ARCHIVE_DIR", archive_root), \
+                patch.object(local_import_upload, "ORGANIZER_LIBRARY_INDEX_CACHE_PATH", state_root / "organizer_library_index.json"), \
+                patch.object(local_import_upload, "append_business_log"), \
+                patch.object(local_import_upload, "invalidate_archive_snapshot"), \
+                patch.object(local_organizer, "ARCHIVE_DIR", archive_root), \
+                patch.object(local_organizer, "ORGANIZER_LIBRARY_INDEX_CACHE_PATH", state_root / "organizer_library_index.json"), \
+                patch.object(local_organizer, "append_business_log"), \
+                patch.object(local_organizer, "_append_organizer_log"), \
+                patch.object(catalog, "ARCHIVE_DIR", archive_root):
+                queued = local_import_upload.upload_local_import_files(
+                    files=[_upload("Demo.zip", package)],
+                    paths=["Demo.zip"],
+                    store=store,
+                    task_store=task_store,
+                )
+                service = local_organizer.LocalOrganizerService(store=store, task_store=task_store)
+                service.run_once()
+                detail = catalog.get_model_detail("LOCAL_Demo")
+
+            self.assertTrue(queued["queued"])
+            self.assertIsNotNone(detail)
+            self.assertEqual(detail["title"], "Demo")
+            task_item = task_store.payload["items"][0]
+            self.assertEqual(task_item["status"], "success")
+            self.assertEqual(task_item["kind"], "local_package_import")
+
     def test_zip_import_classifies_assets_and_dedupes_stl_by_hash(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
@@ -99,9 +143,21 @@ class LocalImportUploadTest(unittest.TestCase):
                 patch.object(local_import_upload, "append_business_log"), \
                 patch.object(local_import_upload, "invalidate_archive_snapshot"), \
                 patch.object(catalog, "ARCHIVE_DIR", archive_root):
-                result = local_import_upload.upload_local_import_files(
+                queued = local_import_upload.upload_local_import_files(
                     files=[_upload("Mai.zip", package)],
                     paths=["Mai.zip"],
+                    store=store,
+                    task_store=task_store,
+                )
+                self.assertTrue(queued["queued"])
+                self.assertFalse(queued["trigger_organizer"])
+                self.assertFalse((archive_root / "LOCAL_Mai").exists())
+                queued_task = task_store.payload["items"][0]
+                self.assertEqual(queued_task["status"], "queued")
+                self.assertEqual(queued_task["kind"], "local_package_import")
+                self.assertTrue(Path(queued_task["staging_dir"]).exists())
+                result = local_import_upload.run_queued_package_import_task(
+                    queued_task,
                     store=store,
                     task_store=task_store,
                 )
@@ -159,9 +215,15 @@ class LocalImportUploadTest(unittest.TestCase):
                 patch.object(local_import_upload, "append_business_log"), \
                 patch.object(local_import_upload, "invalidate_archive_snapshot"), \
                 patch.object(catalog, "ARCHIVE_DIR", archive_root):
-                result = local_import_upload.upload_local_import_files(
+                queued = local_import_upload.upload_local_import_files(
                     files=[_upload("Engines.zip", package)],
                     paths=["Engines.zip"],
+                    store=store,
+                    task_store=task_store,
+                )
+                self.assertTrue(queued["queued"])
+                result = local_import_upload.run_queued_package_import_task(
+                    task_store.payload["items"][0],
                     store=store,
                     task_store=task_store,
                 )
@@ -211,9 +273,15 @@ class LocalImportUploadTest(unittest.TestCase):
                 patch.object(local_import_upload, "append_business_log"), \
                 patch.object(local_import_upload, "invalidate_archive_snapshot"), \
                 patch.object(catalog, "ARCHIVE_DIR", archive_root):
-                result = local_import_upload.upload_local_import_files(
+                queued = local_import_upload.upload_local_import_files(
                     files=[_upload("Luffy.rar", b"fake-rar")],
                     paths=["Luffy.rar"],
+                    store=store,
+                    task_store=task_store,
+                )
+                self.assertTrue(queued["queued"])
+                result = local_import_upload.run_queued_package_import_task(
+                    task_store.payload["items"][0],
                     store=store,
                     task_store=task_store,
                 )
@@ -264,9 +332,15 @@ class LocalImportUploadTest(unittest.TestCase):
                 patch.object(local_import_upload, "append_business_log"), \
                 patch.object(local_import_upload, "invalidate_archive_snapshot"), \
                 patch.object(catalog, "ARCHIVE_DIR", archive_root):
-                result = local_import_upload.upload_local_import_files(
+                queued = local_import_upload.upload_local_import_files(
                     files=[_upload("Engines.zip", package)],
                     paths=["Engines.zip"],
+                    store=store,
+                    task_store=task_store,
+                )
+                self.assertTrue(queued["queued"])
+                result = local_import_upload.run_queued_package_import_task(
+                    task_store.payload["items"][0],
                     store=store,
                     task_store=task_store,
                 )
@@ -334,9 +408,15 @@ class LocalImportUploadTest(unittest.TestCase):
                 patch.object(local_import_upload, "append_business_log"), \
                 patch.object(local_import_upload, "invalidate_archive_snapshot"), \
                 patch.object(catalog, "ARCHIVE_DIR", archive_root):
-                result = local_import_upload.upload_local_import_files(
+                queued = local_import_upload.upload_local_import_files(
                     files=[_upload("leg_table.stl", existing_stl)],
                     paths=["leg_table.stl"],
+                    store=store,
+                    task_store=task_store,
+                )
+                self.assertTrue(queued["queued"])
+                result = local_import_upload.run_queued_package_import_task(
+                    task_store.payload["items"][0],
                     store=store,
                     task_store=task_store,
                 )

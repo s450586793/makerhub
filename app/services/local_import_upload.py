@@ -298,6 +298,37 @@ def _stage_package_uploads(entries: list[dict[str, Any]], staging_dir: Path) -> 
     return staged
 
 
+def _staged_upload_entries(staging_dir: Path) -> list[dict[str, Any]]:
+    upload_root = staging_dir / "uploads"
+    if not upload_root.exists():
+        return []
+
+    staged: list[dict[str, Any]] = []
+    for path in sorted(upload_root.rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            relative_path = path.relative_to(upload_root).as_posix()
+        except ValueError:
+            relative_path = path.name
+        if _is_ignored_relative_path(relative_path):
+            continue
+        try:
+            size = int(path.stat().st_size)
+        except OSError:
+            continue
+        staged.append(
+            {
+                "path": path,
+                "file_name": path.name,
+                "relative_path": relative_path,
+                "size": size,
+                "archive_depth": 0,
+            }
+        )
+    return staged
+
+
 def _copy_zip_member(archive: zipfile.ZipFile, info: zipfile.ZipInfo, target_path: Path) -> int:
     written = 0
     target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -896,6 +927,10 @@ def _package_task_id(staging_dir: Path) -> str:
     return hashlib.sha1(f"local-package:{staging_dir.resolve()}".encode("utf-8")).hexdigest()[:16]
 
 
+def _package_task_fingerprint(task_id: str) -> str:
+    return f"local-package:{task_id}"
+
+
 def _upsert_package_progress(
     *,
     task_store: TaskStateStore,
@@ -910,8 +945,17 @@ def _upsert_package_progress(
     model_root: Path | None = None,
     model_dir_override: str = "",
     snapshot_ready: bool = False,
+    staging_dir: Path | None = None,
+    preserve_task_metadata: bool = False,
 ) -> None:
     model_dir = str(model_dir_override or "").strip() or (_model_root_string(model_root) if model_root else "")
+    existing_task: dict[str, Any] = {}
+    if preserve_task_metadata:
+        task_fingerprint = _package_task_fingerprint(task_id)
+        for item in task_store.load_organize_tasks().get("items") or []:
+            if str(item.get("id") or "") == task_id or str(item.get("fingerprint") or "") == task_fingerprint:
+                existing_task = item
+                break
     target_path = (model_root / "meta.json").as_posix() if model_root else ""
     task_store.upsert_organize_task(
         {
@@ -928,11 +972,117 @@ def _upsert_package_progress(
             "progress": max(0, min(100, int(progress or 0))),
             "updated_at": china_now_iso(),
             "move_files": False,
-            "fingerprint": f"local-package:{task_id}",
+            "fingerprint": _package_task_fingerprint(task_id),
             "snapshot_ready": snapshot_ready,
+            "kind": str(existing_task.get("kind") or ("local_package_import" if staging_dir else "")),
+            "staging_dir": str(existing_task.get("staging_dir") or (staging_dir.as_posix() if staging_dir else "")),
+            "package_source": str(existing_task.get("package_source") or package_source),
+            "package_title": str(existing_task.get("package_title") or title),
         },
         limit=50,
     )
+
+
+def _queue_package_import_files(
+    *,
+    entries: list[dict[str, Any]],
+    store: JsonStore,
+    task_store: TaskStateStore,
+) -> dict[str, Any]:
+    config = store.load()
+    target_raw = str(config.organizer.target_dir or "").strip()
+    if not target_raw:
+        raise ValueError("请先在设置里配置本地整理目标目录。")
+    source_dir = Path(str(config.organizer.source_dir or "")).expanduser()
+    library_root = Path(target_raw).expanduser()
+
+    staging_dir = _new_staging_dir()
+    task_id = _package_task_id(staging_dir)
+    title = _package_title(entries)
+    package_source = _package_source_summary(entries)
+    source_dir_text = source_dir.as_posix() if str(source_dir) != "." else ""
+    try:
+        staged = _stage_package_uploads(entries, staging_dir)
+    except Exception:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
+
+    uploaded = [
+        {
+            "file_name": str(item.get("file_name") or Path(str(item.get("relative_path") or "")).name or title),
+            "source_path": str(item.get("relative_path") or item.get("file_name") or ""),
+            "size": int(item.get("size") or 0),
+            "status": "queued",
+            "message": "已上传，等待后台本地整理。",
+        }
+        for item in staged
+    ]
+    task_store.upsert_organize_task(
+        {
+            "id": task_id,
+            "title": title,
+            "file_name": title,
+            "source_dir": source_dir_text,
+            "target_dir": library_root.as_posix(),
+            "source_path": package_source,
+            "target_path": "",
+            "model_dir": "",
+            "status": "queued",
+            "message": "已上传，等待后台本地整理。",
+            "progress": 10,
+            "updated_at": china_now_iso(),
+            "move_files": False,
+            "fingerprint": _package_task_fingerprint(task_id),
+            "snapshot_ready": False,
+            "kind": "local_package_import",
+            "staging_dir": staging_dir.as_posix(),
+            "package_source": package_source,
+            "package_title": title,
+        },
+        limit=50,
+    )
+    _update_last_import(
+        task_store=task_store,
+        uploaded=uploaded or [
+            {
+                "file_name": title,
+                "source_path": package_source,
+                "size": 0,
+                "status": "queued",
+                "message": "已上传，等待后台本地整理。",
+            }
+        ],
+        source_dir=source_dir_text,
+        upload_dir=staging_dir.as_posix(),
+    )
+    append_business_log(
+        "organizer",
+        "local_import_package_queued",
+        "本地模型包已上传，等待后台整理。",
+        title=title,
+        task_id=task_id,
+        file_count=len(staged),
+        staging_dir=staging_dir.as_posix(),
+    )
+    return {
+        "success": True,
+        "mode": "package",
+        "queued": True,
+        "trigger_organizer": False,
+        "task_id": task_id,
+        "message": f"已上传本地模型包：{title}，正在后台整理。",
+        "snapshot_ready": False,
+        "uploaded": [
+            {
+                "file_name": title,
+                "source_path": package_source,
+                "target_path": "",
+                "size": sum(int(item.get("size") or 0) for item in staged),
+                "status": "queued",
+                "message": "已上传，等待后台本地整理。",
+            }
+        ],
+    }
 
 
 def _upload_legacy_3mf_files(
@@ -1016,9 +1166,12 @@ def _upload_legacy_3mf_files(
     }
 
 
-def _import_package_files(
+def _run_package_import_from_staging(
     *,
-    entries: list[dict[str, Any]],
+    staging_dir: Path,
+    task_id: str,
+    title: str,
+    package_source: str,
     store: JsonStore,
     task_store: TaskStateStore,
 ) -> dict[str, Any]:
@@ -1030,12 +1183,9 @@ def _import_package_files(
     library_root = Path(target_raw).expanduser()
     library_root.mkdir(parents=True, exist_ok=True)
 
-    staging_dir = _new_staging_dir()
-    task_id = _package_task_id(staging_dir)
-    title = _package_title(entries)
-    package_source = _package_source_summary(entries)
     source_dir_text = source_dir.as_posix() if str(source_dir) != "." else ""
     model_root: Path | None = None
+    cleanup_staging = False
     try:
         _upsert_package_progress(
             task_store=task_store,
@@ -1047,8 +1197,12 @@ def _import_package_files(
             status="running",
             message="正在上传到暂存区。",
             progress=10,
+            staging_dir=staging_dir,
+            preserve_task_metadata=True,
         )
-        staged = _stage_package_uploads(entries, staging_dir)
+        staged = _staged_upload_entries(staging_dir)
+        if not staged:
+            raise ValueError("上传文件为空。")
         _upsert_package_progress(
             task_store=task_store,
             task_id=task_id,
@@ -1059,6 +1213,8 @@ def _import_package_files(
             status="running",
             message="正在解压并展开文件。",
             progress=30,
+            staging_dir=staging_dir,
+            preserve_task_metadata=True,
         )
         expanded, skipped_archives = _expand_package_archives(staged, staging_dir)
         _upsert_package_progress(
@@ -1071,6 +1227,8 @@ def _import_package_files(
             status="running",
             message="正在按文件类型分类并去重。",
             progress=55,
+            staging_dir=staging_dir,
+            preserve_task_metadata=True,
         )
         classified = _classify_package_files(expanded)
         model_items, duplicate_items = _dedupe_model_files(classified["models"])
@@ -1090,6 +1248,8 @@ def _import_package_files(
                 message=message,
                 progress=100,
                 model_dir_override=str(existing_duplicates[0].get("model_dir") or ""),
+                staging_dir=staging_dir,
+                preserve_task_metadata=True,
             )
             append_business_log(
                 "organizer",
@@ -1099,6 +1259,7 @@ def _import_package_files(
                 duplicate_count=len(existing_duplicates),
                 duplicates=existing_duplicates[:20],
             )
+            shutil.rmtree(staging_dir, ignore_errors=True)
             return {
                 "success": False,
                 "mode": "package",
@@ -1132,6 +1293,8 @@ def _import_package_files(
             message="正在写入模型目录。",
             progress=75,
             model_root=model_root,
+            staging_dir=staging_dir,
+            preserve_task_metadata=True,
         )
         instances_dir = model_root / "instances"
         images_dir = model_root / "images"
@@ -1192,6 +1355,7 @@ def _import_package_files(
         )
         meta_path = model_root / "meta.json"
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        cleanup_staging = True
     except Exception as exc:
         _upsert_package_progress(
             task_store=task_store,
@@ -1204,12 +1368,15 @@ def _import_package_files(
             message=str(exc) or "本地模型包导入失败。",
             progress=0,
             model_root=model_root,
+            staging_dir=staging_dir,
+            preserve_task_metadata=True,
         )
         if model_root and model_root.exists():
             shutil.rmtree(model_root, ignore_errors=True)
         raise
     finally:
-        shutil.rmtree(staging_dir, ignore_errors=True)
+        if cleanup_staging:
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
     model_dir = _model_root_string(model_root)
     uploaded = [
@@ -1234,6 +1401,8 @@ def _import_package_files(
         message="本地模型包已写入，正在刷新列表快照。",
         progress=96,
         model_root=model_root,
+        staging_dir=staging_dir,
+        preserve_task_metadata=True,
     )
     _update_last_import(
         task_store=task_store,
@@ -1259,6 +1428,7 @@ def _import_package_files(
         progress=100,
         model_root=model_root,
         snapshot_ready=snapshot_ready,
+        preserve_task_metadata=True,
     )
 
     append_business_log(
@@ -1291,6 +1461,28 @@ def _import_package_files(
     }
 
 
+def run_queued_package_import_task(
+    task: dict[str, Any],
+    *,
+    store: JsonStore | None = None,
+    task_store: TaskStateStore | None = None,
+) -> dict[str, Any]:
+    staging_dir = Path(str(task.get("staging_dir") or "")).expanduser()
+    if not staging_dir:
+        raise ValueError("本地导入暂存目录不存在。")
+    task_id = str(task.get("id") or "").strip() or _package_task_id(staging_dir)
+    title = str(task.get("package_title") or task.get("title") or staging_dir.name).strip() or "本地模型导入"
+    package_source = str(task.get("package_source") or task.get("source_path") or title).strip() or title
+    return _run_package_import_from_staging(
+        staging_dir=staging_dir,
+        task_id=task_id,
+        title=title,
+        package_source=package_source,
+        store=store or JsonStore(),
+        task_store=task_store or TaskStateStore(),
+    )
+
+
 def upload_local_import_files(
     *,
     files: list[UploadFile],
@@ -1311,4 +1503,4 @@ def upload_local_import_files(
     task_store = task_store or TaskStateStore()
     if _is_legacy_3mf_batch(entries):
         return _upload_legacy_3mf_files(entries=entries, store=store, task_store=task_store)
-    return _import_package_files(entries=entries, store=store, task_store=task_store)
+    return _queue_package_import_files(entries=entries, store=store, task_store=task_store)

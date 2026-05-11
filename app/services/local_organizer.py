@@ -15,10 +15,11 @@ from typing import Any, Optional
 
 from app.core.settings import ARCHIVE_DIR, LOGS_DIR, STATE_DIR
 from app.core.store import JsonStore
-from app.core.timezone import from_timestamp as china_from_timestamp, now_iso as china_now_iso
+from app.core.timezone import from_timestamp as china_from_timestamp, now_iso as china_now_iso, parse_datetime
 from app.services.business_logs import append_business_log
 from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot, upsert_archive_snapshot_model
 from app.services.legacy_archiver import sanitize_filename
+from app.services.local_import_upload import run_queued_package_import_task
 from app.services.task_state import TaskStateStore
 
 
@@ -266,6 +267,11 @@ class LocalOrganizerService:
         library_root = self._resolve_library_root(target_dir)
         library_root.mkdir(parents=True, exist_ok=True)
 
+        package_task = self._next_package_import_task()
+        if package_task:
+            self._process_package_import_task(package_task)
+            return
+
         try:
             source_resolved = source_dir.resolve()
             library_resolved = library_root.resolve()
@@ -420,6 +426,96 @@ class LocalOrganizerService:
                 "source_dir": source_dir.as_posix(),
                 "updated_at": now_iso,
             }
+        )
+
+    def _next_package_import_task(self) -> Optional[dict[str, Any]]:
+        payload = self.task_store.load_organize_tasks()
+        for item in payload.get("items") or []:
+            if str(item.get("kind") or "").strip() != "local_package_import":
+                continue
+            status = str(item.get("status") or "").strip().lower()
+            if status in {"pending", "queued"}:
+                return item
+            if status == "running":
+                parsed_at = parse_datetime(item.get("updated_at"))
+                if parsed_at is None or time.time() - parsed_at.timestamp() >= ORGANIZER_WORKER_TIMEOUT_SECONDS:
+                    return {
+                        **item,
+                        "status": "queued",
+                        "message": "检测到上次本地包整理中断，已重新加入队列。",
+                        "progress": 10,
+                        "updated_at": _now_iso(),
+                    }
+        return None
+
+    def _process_package_import_task(self, task: dict[str, Any]) -> None:
+        task_id = str(task.get("id") or "").strip()
+        if not task_id:
+            return
+        staging_dir = Path(str(task.get("staging_dir") or "")).expanduser()
+        if not staging_dir.exists():
+            self.task_store.upsert_organize_task(
+                {
+                    **task,
+                    "status": "failed",
+                    "message": "本地导入暂存文件已不存在，请重新上传。",
+                    "progress": 0,
+                    "updated_at": _now_iso(),
+                },
+                limit=ORGANIZER_TASK_LIMIT,
+            )
+            _append_organizer_log("package_import_missing_staging", task_id=task_id, staging_dir=staging_dir.as_posix())
+            return
+
+        running_task = {
+            **task,
+            "status": "running",
+            "message": "后台正在整理本地模型包。",
+            "progress": max(10, _safe_int(task.get("progress"), 10)),
+            "updated_at": _now_iso(),
+        }
+        self.task_store.upsert_organize_task(running_task, limit=ORGANIZER_TASK_LIMIT)
+        _append_organizer_log(
+            "package_import_started",
+            task_id=task_id,
+            title=str(task.get("title") or ""),
+            staging_dir=staging_dir.as_posix(),
+        )
+        try:
+            run_queued_package_import_task(running_task, store=self.store, task_store=self.task_store)
+        except Exception as exc:
+            self.task_store.upsert_organize_task(
+                {
+                    **running_task,
+                    "status": "failed",
+                    "message": str(exc) or "本地模型包导入失败。",
+                    "progress": 0,
+                    "updated_at": _now_iso(),
+                },
+                limit=ORGANIZER_TASK_LIMIT,
+            )
+            _append_organizer_log(
+                "package_import_failed",
+                task_id=task_id,
+                title=str(task.get("title") or ""),
+                staging_dir=staging_dir.as_posix(),
+                error=str(exc),
+            )
+            append_business_log(
+                "organizer",
+                "local_import_package_failed",
+                str(exc) or "本地模型包导入失败。",
+                level="error",
+                task_id=task_id,
+                title=str(task.get("title") or ""),
+            )
+            return
+
+        _append_organizer_log(
+            "package_import_done",
+            task_id=task_id,
+            title=str(task.get("title") or ""),
+            staging_dir=staging_dir.as_posix(),
         )
 
     def process_candidate(
