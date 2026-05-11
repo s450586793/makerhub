@@ -100,6 +100,28 @@ class LocalModelEditTest(unittest.TestCase):
             self.assertIn("1<br", detail["summary_html"])
             self.assertIn("2<br", detail["summary_html"])
 
+    def test_update_metadata_changes_title_and_description(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_root = Path(tmp).resolve()
+            model_root = self._write_local_model(archive_root)
+
+            with patch.object(local_model_edit, "ARCHIVE_DIR", archive_root), \
+                patch.object(catalog, "ARCHIVE_DIR", archive_root):
+                result = local_model_edit.update_local_model_metadata(
+                    "LOCAL_Test",
+                    title="新的标题",
+                    description="一\n二",
+                )
+                detail = catalog.get_model_detail("LOCAL_Test")
+
+            self.assertEqual(result["title"], "新的标题")
+            self.assertEqual(detail["title"], "新的标题")
+            self.assertEqual(detail["summary_text"], "一\n二")
+            self.assertIn("一<br", detail["summary_html"])
+            self.assertTrue(model_root.exists())
+            meta = json.loads((model_root / "meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(meta["title"], "新的标题")
+
     def test_set_local_model_cover_image_reorders_gallery_and_instances(self):
         with tempfile.TemporaryDirectory() as tmp:
             archive_root = Path(tmp).resolve()

@@ -430,6 +430,10 @@ class LocalImportUploadTest(unittest.TestCase):
             task_item = task_store.payload["items"][0]
             self.assertEqual(task_item["status"], "skipped")
             self.assertEqual(task_item["model_dir"], "LOCAL_leg_table")
+            last_import = task_store.payload["last_import"]
+            self.assertEqual(last_import["uploaded_count"], 1)
+            self.assertEqual(last_import["files"][0]["status"], "skipped")
+            self.assertIn("本地库已存在相同模型文件", last_import["files"][0]["message"])
 
     def test_direct_3mf_mixed_with_other_file_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "3MF 请单独导入"):

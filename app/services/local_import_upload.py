@@ -923,6 +923,27 @@ def _package_source_summary(entries: list[dict[str, Any]]) -> str:
     return package_source
 
 
+def _package_uploaded_entries_from_staged(
+    staged: list[dict[str, Any]],
+    *,
+    status: str = "",
+    message: str = "",
+) -> list[dict[str, Any]]:
+    uploaded: list[dict[str, Any]] = []
+    for item in staged:
+        entry = {
+            "file_name": str(item.get("file_name") or Path(str(item.get("relative_path") or "")).name or ""),
+            "source_path": str(item.get("relative_path") or item.get("file_name") or ""),
+            "size": int(item.get("size") or 0),
+        }
+        if status:
+            entry["status"] = status
+        if message:
+            entry["message"] = message
+        uploaded.append(entry)
+    return uploaded
+
+
 def _package_task_id(staging_dir: Path) -> str:
     return hashlib.sha1(f"local-package:{staging_dir.resolve()}".encode("utf-8")).hexdigest()[:16]
 
@@ -1007,16 +1028,11 @@ def _queue_package_import_files(
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise
 
-    uploaded = [
-        {
-            "file_name": str(item.get("file_name") or Path(str(item.get("relative_path") or "")).name or title),
-            "source_path": str(item.get("relative_path") or item.get("file_name") or ""),
-            "size": int(item.get("size") or 0),
-            "status": "queued",
-            "message": "已上传，等待后台本地整理。",
-        }
-        for item in staged
-    ]
+    uploaded = _package_uploaded_entries_from_staged(
+        staged,
+        status="queued",
+        message="已上传，等待后台本地整理。",
+    )
     task_store.upsert_organize_task(
         {
             "id": task_id,
@@ -1237,6 +1253,11 @@ def _run_package_import_from_staging(
         existing_duplicates = _find_existing_model_file_duplicates(model_items, library_root)
         if existing_duplicates:
             message = _format_existing_duplicate_message(existing_duplicates)
+            skipped_uploads = _package_uploaded_entries_from_staged(
+                staged,
+                status="skipped",
+                message=message,
+            )
             _upsert_package_progress(
                 task_store=task_store,
                 task_id=task_id,
@@ -1259,6 +1280,20 @@ def _run_package_import_from_staging(
                 duplicate_count=len(existing_duplicates),
                 duplicates=existing_duplicates[:20],
             )
+            _update_last_import(
+                task_store=task_store,
+                uploaded=skipped_uploads or [
+                    {
+                        "file_name": title,
+                        "source_path": package_source,
+                        "size": sum(int(item.get("size") or 0) for item in model_items),
+                        "status": "skipped",
+                        "message": message,
+                    }
+                ],
+                source_dir=source_dir_text,
+                upload_dir=staging_dir.as_posix(),
+            )
             shutil.rmtree(staging_dir, ignore_errors=True)
             return {
                 "success": False,
@@ -1268,17 +1303,7 @@ def _run_package_import_from_staging(
                 "message": message,
                 "duplicates": existing_duplicates,
                 "duplicate_count": len(existing_duplicates),
-                "uploaded": [
-                    {
-                        "file_name": title,
-                        "source_path": package_source,
-                        "target_path": "",
-                        "size": sum(int(item.get("size") or 0) for item in model_items),
-                        "status": "skipped",
-                        "message": message,
-                        "model_dir": str(existing_duplicates[0].get("model_dir") or ""),
-                    }
-                ],
+                "uploaded": skipped_uploads,
             }
 
         model_root = _prepare_model_root(library_root, title)

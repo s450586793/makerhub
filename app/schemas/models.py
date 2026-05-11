@@ -158,6 +158,11 @@ class LocalModelDescriptionUpdateRequest(BaseModel):
     description: str = ""
 
 
+class LocalModelMetadataUpdateRequest(BaseModel):
+    title: str = ""
+    description: str = ""
+
+
 class LocalModelFileDeleteRequest(BaseModel):
     instance_key: str = ""
 

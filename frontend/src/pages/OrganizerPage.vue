@@ -17,7 +17,7 @@
         >
           <span class="organizer-progress-card__head">
             <span>本地整理</span>
-            <strong>{{ organizerProgressState.statusLabel }}</strong>
+            <strong :title="organizerProgressState.message">{{ organizerProgressState.message }}</strong>
           </span>
           <span class="organizer-progress-card__body">
             <span :title="organizerProgressState.title">{{ organizerProgressState.title }}</span>
@@ -44,16 +44,6 @@
             <em :class="['organizer-progress-status', `is-${organizerProgressState.variant}`]">
               {{ organizerProgressState.statusLabel }}
             </em>
-          </div>
-          <div class="organizer-progress-current">
-            <div class="organizer-progress-current__head">
-              <strong :title="organizerProgressState.title">{{ organizerProgressState.title }}</strong>
-              <em>{{ organizerProgressState.progress }}%</em>
-            </div>
-            <div class="organizer-progress-bar organizer-progress-bar--large">
-              <span :style="{ width: `${organizerProgressState.progress}%` }"></span>
-            </div>
-            <p>{{ organizerProgressState.message }}</p>
           </div>
           <div class="organizer-progress-chips">
             <span v-for="chip in organizerProgressChips" :key="chip.label">
@@ -218,7 +208,8 @@ const IDLE_REFRESH_INTERVAL_MS = 30000;
 const RECENT_IMPORT_PENDING_GRACE_MS = 10 * 60 * 1000;
 const IMPORT_PROGRESS_STORAGE_KEY = "makerhub:local-import-progress";
 const IMPORT_PROGRESS_STALE_MS = 30 * 60 * 1000;
-const IMPORT_UPLOAD_PROGRESS_CAP = 92;
+const IMPORT_UPLOAD_PROGRESS_CAP = 35;
+const IMPORT_PROCESS_PROGRESS_START = IMPORT_UPLOAD_PROGRESS_CAP;
 const LOCAL_IMPORT_ACCEPT = [
   ".3mf",
   ".stl",
@@ -440,7 +431,7 @@ const organizerProgressState = computed(() => {
       title: organizerTaskTitle(task),
       message: organizerTaskMessage(task),
       subtitle: localImportSummaryText.value || organizerProgressSubtitle.value,
-      progress: organizerProgressPercent(task),
+      progress: displayOrganizerProgressPercent(task),
     };
   }
 
@@ -484,7 +475,7 @@ const organizerProgressChips = computed(() => {
   if (importUploadProgress.visible) {
     const matchedTask = currentImportOrganizerTask.value;
     return [
-      { label: "上传", value: importUploadProgress.phase === "uploading" ? `${Math.round(importUploadProgress.uploadPercent || 0)}%` : "完成" },
+      { label: "总进度", value: `${Math.round(importUploadProgress.progress || 0)}%` },
       { label: "文件", value: importUploadProgress.fileCount || 0 },
       { label: "大小", value: importUploadProgress.total ? formatFileSize(importUploadProgress.total) : "-" },
       { label: "阶段", value: matchedTask ? "整理" : importUploadPhaseLabel(importUploadProgress.phase) },
@@ -585,6 +576,10 @@ function organizerStatusVariant(status) {
   return "idle";
 }
 
+function organizerStatusIsTerminal(status) {
+  return ["success", "skipped", "failed"].includes(organizerStatusVariant(status));
+}
+
 function organizerStatusLabel(status) {
   const variant = organizerStatusVariant(status);
   if (variant === "running") return "整理中";
@@ -603,6 +598,20 @@ function organizerProgressPercent(item) {
   return Math.max(0, Math.min(100, Math.round(progress)));
 }
 
+function combinedImportProgress(processProgress = 0) {
+  const safeProcessProgress = Math.max(0, Math.min(100, Number(processProgress || 0)));
+  const mapped = IMPORT_PROCESS_PROGRESS_START + ((100 - IMPORT_PROCESS_PROGRESS_START) * safeProcessProgress / 100);
+  return Math.max(IMPORT_PROCESS_PROGRESS_START, Math.min(100, Math.round(mapped)));
+}
+
+function displayOrganizerProgressPercent(item) {
+  const progress = organizerProgressPercent(item);
+  if (importUploadProgress.visible && currentImportOrganizerTask.value === item) {
+    return combinedImportProgress(progress);
+  }
+  return progress;
+}
+
 function organizerItemTimestamp(item) {
   const parsed = Date.parse(String(item?.updated_at || item?.uploaded_at || ""));
   return Number.isFinite(parsed) ? parsed : 0;
@@ -617,8 +626,21 @@ function findCurrentImportOrganizerTask() {
   if (!importUploadProgress.visible) {
     return null;
   }
+  const currentId = String(importUploadProgress.id || "").trim();
   const currentTitle = String(importUploadProgress.title || "").trim();
   return sortedOrganizerItems.value.find((item) => {
+    const itemId = String(item?.id || "").trim();
+    const fingerprint = String(item?.fingerprint || "").trim();
+    if (
+      currentId
+      && (
+        itemId === currentId
+        || fingerprint === currentId
+        || fingerprint === `local-package:${currentId}`
+      )
+    ) {
+      return true;
+    }
     if (!organizerItemUpdatedAfter(item, importUploadProgress.startedAt)) {
       return false;
     }
@@ -661,7 +683,7 @@ function organizerTaskMessage(item) {
 
 function organizerTaskRow(item, fallbackKey) {
   const identity = String(item?.id || item?.fingerprint || item?.source_path || item?.file_name || fallbackKey);
-  const progress = organizerProgressPercent(item);
+  const progress = displayOrganizerProgressPercent(item);
   return {
     key: `${identity}-${fallbackKey}`,
     identity,
@@ -841,7 +863,7 @@ function restoreImportUploadProgress() {
     clearImportUploadProgressStorage();
     return false;
   }
-  const storedProgress = Math.max(0, Math.min(IMPORT_UPLOAD_PROGRESS_CAP, Number(stored.progress || 0)));
+  const storedProgress = Math.max(0, Math.min(99, Number(stored.progress || 0)));
   Object.assign(importUploadProgress, {
     visible: true,
     fromStorage: true,
@@ -894,6 +916,19 @@ function importBatchStillFresh(lastImport) {
   return Date.now() - uploadedAt < RECENT_IMPORT_PENDING_GRACE_MS;
 }
 
+function findLastImportPackageTask(tasks) {
+  const lastImport = tasks?.last_import && typeof tasks.last_import === "object" ? tasks.last_import : null;
+  const uploadDir = String(lastImport?.upload_dir || "").trim();
+  if (!uploadDir) {
+    return null;
+  }
+  const matches = (Array.isArray(tasks?.items) ? tasks.items : []).filter((item) => (
+    String(item?.kind || "") === "local_package_import"
+    && String(item?.staging_dir || "").trim() === uploadDir
+  ));
+  return matches.sort((left, right) => organizerItemTimestamp(right) - organizerItemTimestamp(left))[0] || null;
+}
+
 function recentImportStatusCounts(tasks) {
   const lastImport = tasks?.last_import && typeof tasks.last_import === "object" ? tasks.last_import : null;
   if (!lastImport) {
@@ -901,6 +936,21 @@ function recentImportStatusCounts(tasks) {
   }
   const allItems = Array.isArray(tasks?.items) ? tasks.items : [];
   const importFiles = Array.isArray(lastImport?.files) ? lastImport.files : [];
+  const uploadedCount = Number(lastImport?.uploaded_count || importFiles.length || 0);
+  const packageTask = findLastImportPackageTask(tasks);
+  const packageVariant = organizerStatusVariant(packageTask?.status);
+  if (packageTask && organizerStatusIsTerminal(packageTask.status) && uploadedCount > 0) {
+    return {
+      uploadedCount,
+      counts: {
+        success: packageVariant === "success" ? uploadedCount : 0,
+        skipped: packageVariant === "skipped" ? uploadedCount : 0,
+        failed: packageVariant === "failed" ? uploadedCount : 0,
+        pending: 0,
+      },
+      matchedCount: uploadedCount,
+    };
+  }
   const identities = fileIdentitySet(importFiles);
   const batchItems = identities.size ? allItems.filter((item) => organizerItemMatchesImport(item, identities)) : [];
   const summaryItems = batchItems.length ? batchItems : importFiles;
@@ -912,7 +962,7 @@ function recentImportStatusCounts(tasks) {
     { success: 0, skipped: 0, failed: 0, pending: 0 }
   );
   return {
-    uploadedCount: Number(lastImport?.uploaded_count || 0),
+    uploadedCount,
     counts,
     matchedCount: batchItems.length,
   };
@@ -942,9 +992,11 @@ function buildLocalImportSummary(tasks) {
   const identities = fileIdentitySet(importFiles);
   const batchItems = identities.size ? allItems.filter((item) => organizerItemMatchesImport(item, identities)) : [];
   const summaryItems = lastImport ? batchItems : allItems;
-  const uploadedCount = Number(lastImport?.uploaded_count || 0);
+  const recentCounts = lastImport ? recentImportStatusCounts(tasks) : null;
+  const uploadedCount = recentCounts?.uploadedCount ?? Number(lastImport?.uploaded_count || 0);
+  const matchedCount = recentCounts?.matchedCount ?? batchItems.length;
 
-  const counts = summaryItems.reduce(
+  const counts = recentCounts?.counts || summaryItems.reduce(
     (result, item) => {
       countImportStatus(result, item?.status);
       return result;
@@ -952,23 +1004,24 @@ function buildLocalImportSummary(tasks) {
     { success: 0, skipped: 0, failed: 0, pending: 0 }
   );
 
-  if (lastImport && !batchItems.length) {
+  if (lastImport && !recentCounts && !batchItems.length) {
     for (const file of importFiles) {
       countImportStatus(counts, file?.status);
     }
   }
 
   if (uploadedCount > 0) {
+    const finishedCount = counts.success + counts.skipped + counts.failed;
     const parts = [`上传 ${uploadedCount}`, `新增 ${counts.success}`, `跳过 ${counts.skipped}`];
     if (counts.failed) {
       parts.push(`失败 ${counts.failed}`);
     }
     if (counts.pending) {
       parts.push(`处理中 ${counts.pending}`);
-    } else if (batchItems.length < uploadedCount && importBatchStillFresh(lastImport)) {
-      parts.push(`处理中 ${uploadedCount - batchItems.length}`);
-    } else if (batchItems.length < uploadedCount && counts.success + counts.skipped + counts.failed < uploadedCount) {
-      parts.push(`待同步 ${uploadedCount - batchItems.length}`);
+    } else if (finishedCount < uploadedCount && matchedCount < uploadedCount && importBatchStillFresh(lastImport)) {
+      parts.push(`处理中 ${uploadedCount - matchedCount}`);
+    } else if (finishedCount < uploadedCount && matchedCount < uploadedCount) {
+      parts.push(`待同步 ${uploadedCount - matchedCount}`);
     }
     return `最近导入：${parts.join(" / ")}`;
   }
@@ -1081,7 +1134,7 @@ function reconcileImportUploadProgress() {
       applyImportUploadProgress({
         phase: "syncing",
         status: "running",
-        progress: Math.max(importUploadProgress.progress || 0, 96),
+        progress: Math.max(importUploadProgress.progress || 0, combinedImportProgress(96)),
         message: "本地整理已写入，正在刷新本地库列表。",
       });
       return;
@@ -1093,7 +1146,7 @@ function reconcileImportUploadProgress() {
     applyImportUploadProgress({
       phase: "failed",
       status: "failed",
-      progress: organizerProgressPercent(matchingTask),
+      progress: combinedImportProgress(organizerProgressPercent(matchingTask)),
       message: organizerTaskMessage(matchingTask),
     });
     clearImportUploadProgressStorage();
@@ -1102,7 +1155,7 @@ function reconcileImportUploadProgress() {
   applyImportUploadProgress({
     phase: "processing",
     status: matchingTask.status || "running",
-    progress: Math.max(importUploadProgress.progress || 0, organizerProgressPercent(matchingTask)),
+    progress: Math.max(importUploadProgress.progress || 0, combinedImportProgress(organizerProgressPercent(matchingTask))),
     message: organizerTaskMessage(matchingTask),
   });
 }
@@ -1410,9 +1463,9 @@ async function submitImportFiles() {
           phase: "processing",
           status: "running",
           uploadPercent: 100,
-          progress: Math.max(importUploadProgress.progress || 0, IMPORT_UPLOAD_PROGRESS_CAP),
+          progress: Math.max(importUploadProgress.progress || 0, IMPORT_PROCESS_PROGRESS_START),
           loaded: importUploadProgress.total || importUploadProgress.loaded,
-          message: "上传完成，服务器正在解压并整理入库。",
+          message: "上传完成，等待后台本地整理。",
         });
       },
     });
@@ -1425,7 +1478,7 @@ async function submitImportFiles() {
       id: result?.task_id || importUploadProgress.id,
       phase: resultSkipped ? "skipped" : (snapshotReady ? "success" : "syncing"),
       status: resultSkipped ? "skipped" : (snapshotReady ? "success" : "queued"),
-      progress: resultSkipped || snapshotReady ? 100 : 96,
+      progress: resultSkipped || snapshotReady ? 100 : IMPORT_PROCESS_PROGRESS_START,
       uploadPercent: 100,
       message: resultSkipped
         ? (result?.message || "本地导入已跳过。")

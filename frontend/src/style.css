@@ -601,8 +601,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 
 .organizer-progress-card__head,
 .organizer-progress-card__body,
-.organizer-progress-card__foot,
-.organizer-progress-current__head {
+.organizer-progress-card__foot {
   min-width: 0;
   display: flex;
   align-items: center;
@@ -615,6 +614,17 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   grid-row: 1;
   justify-content: flex-start;
   gap: 8px;
+}
+
+.organizer-progress-card__head span {
+  flex: 0 0 auto;
+}
+
+.organizer-progress-card__head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .organizer-progress-card__body {
@@ -631,7 +641,6 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 
 .organizer-progress-card__head span,
 .organizer-progress-popover__head span,
-.organizer-progress-current p,
 .organizer-progress-list span,
 .organizer-progress-empty {
   color: var(--muted);
@@ -645,7 +654,6 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 }
 
 .organizer-progress-card__body span,
-.organizer-progress-current__head strong,
 .organizer-progress-list strong {
   min-width: 0;
   overflow: hidden;
@@ -659,8 +667,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   font-weight: 800;
 }
 
-.organizer-progress-card__body em,
-.organizer-progress-current__head em {
+.organizer-progress-card__body em {
   flex: 0 0 auto;
   color: var(--text);
   font-size: 13px;
@@ -785,23 +792,6 @@ html[data-theme="dark"] .organizer-progress-status.is-queued {
   font-weight: 800;
 }
 
-.organizer-progress-current {
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  display: grid;
-  gap: 9px;
-  background: var(--surface);
-}
-
-.organizer-progress-bar--large {
-  height: 8px;
-}
-
-.organizer-progress-current p {
-  margin: 0;
-}
-
 .organizer-progress-chips {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -871,7 +861,6 @@ html[data-theme="dark"] .organizer-progress-status.is-queued {
 }
 
 html[data-theme="dark"] .organizer-progress-card,
-html[data-theme="dark"] .organizer-progress-current,
 html[data-theme="dark"] .organizer-progress-chips span {
   background: var(--surface-strong);
 }

@@ -188,6 +188,22 @@ def update_local_model_description(model_dir: str, description: str) -> dict[str
     return {"description": clean_text}
 
 
+def update_local_model_metadata(model_dir: str, *, title: str, description: str) -> dict[str, Any]:
+    model_root, meta = _resolve_local_model_root(model_dir)
+    clean_title = str(title or "").strip()
+    if not clean_title:
+        raise ValueError("标题不能为空。")
+    clean_text = str(description or "").strip()
+    summary = meta.get("summary") if isinstance(meta.get("summary"), dict) else {}
+    summary["text"] = clean_text
+    summary["raw"] = clean_text
+    summary["html"] = _summary_html_from_text(clean_text)
+    meta["title"] = clean_title
+    meta["summary"] = summary
+    _write_meta(model_root, meta)
+    return {"title": clean_title, "description": clean_text}
+
+
 def add_local_model_file(model_dir: str, upload: UploadFile, title: str = "") -> dict[str, Any]:
     model_root, meta = _resolve_local_model_root(model_dir)
     original_filename = _safe_filename(upload.filename or "", fallback="model.3mf")

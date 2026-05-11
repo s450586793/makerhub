@@ -32,6 +32,7 @@ from app.schemas.models import (
     LocalModelFileDeleteRequest,
     LocalModelImageCoverRequest,
     LocalModelImageDeleteRequest,
+    LocalModelMetadataUpdateRequest,
     LocalModelMergeRequest,
     Missing3mfRetryRequest,
     ModelDeleteRequest,
@@ -74,6 +75,7 @@ from app.services.local_model_edit import (
     delete_local_model_image,
     set_local_model_cover_image,
     update_local_model_description,
+    update_local_model_metadata,
 )
 from app.services.local_model_merge import merge_local_models
 from app.services.model_attachments import create_manual_attachment, delete_manual_attachment
@@ -2843,6 +2845,44 @@ async def update_local_model_description_data(
         "result": result,
         "detail": detail,
         "message": "描述已更新。",
+    }
+
+
+@router.patch("/models/{model_dir:path}/local/metadata")
+async def update_local_model_metadata_data(
+    model_dir: str,
+    payload: LocalModelMetadataUpdateRequest,
+    request: Request,
+):
+    _require_session_auth(request)
+    try:
+        def _update_and_load_detail():
+            result = update_local_model_metadata(
+                model_dir,
+                title=payload.title,
+                description=payload.description,
+            )
+            return result, get_model_detail(model_dir)
+
+        result, detail = await run_task_api(_update_and_load_detail)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if detail is None:
+        raise HTTPException(status_code=404, detail="模型不存在。")
+
+    append_business_log(
+        "model",
+        "local_model_metadata_updated",
+        "本地模型信息已更新。",
+        model_dir=model_dir,
+        title=result.get("title"),
+    )
+    return {
+        "success": True,
+        "result": result,
+        "detail": detail,
+        "message": "模型信息已更新。",
     }
 
 

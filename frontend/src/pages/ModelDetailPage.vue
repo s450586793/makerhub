@@ -61,7 +61,7 @@
                 type="button"
                 @click="openLocalEditDialog"
               >
-                编辑本地模型
+                编辑
               </button>
             </div>
           </div>
@@ -791,13 +791,22 @@
       <div class="submit-dialog__panel mw-local-edit-dialog__panel" @click.stop>
         <div class="mw-local-edit-dialog__header">
           <div>
-            <h2 id="local-edit-dialog-title">编辑本地模型</h2>
-            <p>维护描述、图册和模型文件。</p>
+            <h2 id="local-edit-dialog-title">编辑</h2>
+            <p>维护标题、描述、图册和模型文件。</p>
           </div>
           <button class="button button-secondary button-small" type="button" @click="closeLocalEditDialog">关闭</button>
         </div>
 
-        <form class="mw-local-edit-block" @submit.prevent="submitLocalDescription">
+        <form class="mw-local-edit-block" @submit.prevent="submitLocalMetadata">
+          <label class="mw-local-edit-label" for="local-model-title">标题</label>
+          <input
+            id="local-model-title"
+            v-model="localEditDialog.title"
+            class="mw-local-edit-input"
+            type="text"
+            maxlength="180"
+            autocomplete="off"
+          >
           <label class="mw-local-edit-label" for="local-model-description">描述</label>
           <textarea
             id="local-model-description"
@@ -807,7 +816,7 @@
           ></textarea>
           <div class="mw-local-edit-actions">
             <button class="button button-primary button-small" type="submit" :disabled="localEditBusy">
-              保存描述
+              保存
             </button>
           </div>
         </form>
@@ -940,6 +949,7 @@ const shareDialogVisible = ref(false);
 const localEditBusy = ref(false);
 const localEditDialog = ref({
   open: false,
+  title: "",
   description: "",
   message: "",
   error: "",
@@ -2667,6 +2677,7 @@ function openLocalEditDialog() {
   }
   localEditDialog.value = {
     open: true,
+    title: detail.value?.title || "",
     description: detail.value?.summary_text || "",
     message: "",
     error: "",
@@ -2680,24 +2691,26 @@ function closeLocalEditDialog() {
   localEditDialog.value.open = false;
 }
 
-async function submitLocalDescription() {
+async function submitLocalMetadata() {
   if (!isLocalModel.value || localEditBusy.value) {
     return;
   }
   localEditBusy.value = true;
   resetLocalEditFeedback();
   try {
-    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/local/description`, {
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/local/metadata`, {
       method: "PATCH",
       body: {
+        title: localEditDialog.value.title,
         description: localEditDialog.value.description,
       },
     });
     await applyDetailPayload(payload.detail);
+    localEditDialog.value.title = payload.detail?.title || localEditDialog.value.title;
     localEditDialog.value.description = payload.detail?.summary_text || localEditDialog.value.description;
-    localEditDialog.value.message = payload.message || "描述已更新。";
+    localEditDialog.value.message = payload.message || "模型信息已更新。";
   } catch (error) {
-    localEditDialog.value.error = error instanceof Error ? error.message : "描述保存失败。";
+    localEditDialog.value.error = error instanceof Error ? error.message : "保存失败。";
   } finally {
     localEditBusy.value = false;
   }
@@ -2870,6 +2883,7 @@ function resetDetailViewState({ clearDetail = true } = {}) {
   if (clearDetail) {
     localEditDialog.value = {
       open: false,
+      title: "",
       description: "",
       message: "",
       error: "",
