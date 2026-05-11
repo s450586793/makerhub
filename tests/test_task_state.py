@@ -93,6 +93,22 @@ class OrganizeTaskStateTest(unittest.TestCase):
         self.assertEqual(files[0]["status"], "success")
         self.assertEqual(files[1]["status"], "skipped")
 
+    def test_normalize_preserves_snapshot_ready_and_backfills_legacy_success(self):
+        payload = {
+            "items": [
+                {"id": "new", "status": "success", "snapshot_ready": False},
+                {"id": "old", "status": "success"},
+                {"id": "running", "status": "running"},
+            ],
+        }
+
+        normalized = _normalize_organize_tasks(payload)
+        items = {item["id"]: item for item in normalized["items"]}
+
+        self.assertFalse(items["new"]["snapshot_ready"])
+        self.assertTrue(items["old"]["snapshot_ready"])
+        self.assertFalse(items["running"]["snapshot_ready"])
+
 
 class ArchiveQueueStateTest(unittest.TestCase):
     def test_clear_recent_failures_preserves_active_and_queued_tasks(self):

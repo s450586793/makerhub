@@ -444,6 +444,14 @@
                   >
                     打开
                   </a>
+                  <a
+                    :class="['button button-secondary button-small mw-doc-action', !attachmentDownloadUrl(attachment) && 'is-disabled']"
+                    :href="attachmentDownloadUrl(attachment) || undefined"
+                    :download="attachmentDownloadName(attachment)"
+                    :rel="attachmentDownloadUrl(attachment) ? 'noreferrer' : undefined"
+                  >
+                    下载
+                  </a>
                   <button
                     v-if="attachment.is_image && attachmentDownloadUrl(attachment)"
                     class="button button-secondary button-small mw-doc-action"
@@ -842,14 +850,26 @@
           <div v-if="editableGallery.length" class="mw-local-edit-gallery">
             <article v-for="image in editableGallery" :key="image.rel_path || image.url" class="mw-local-edit-image">
               <img :src="image.url" :alt="detail.title || '图册图片'">
-              <button
-                class="button button-secondary button-small mw-doc-action--danger"
-                type="button"
-                :disabled="localEditBusy || !image.rel_path"
-                @click="deleteLocalModelImage(image)"
-              >
-                删除
-              </button>
+              <div class="mw-local-edit-image__actions">
+                <span v-if="image.is_cover" class="mw-local-edit-cover-badge">封面</span>
+                <button
+                  v-else
+                  class="button button-secondary button-small"
+                  type="button"
+                  :disabled="localEditBusy || !image.rel_path"
+                  @click="setLocalModelCoverImage(image)"
+                >
+                  设为封面
+                </button>
+                <button
+                  class="button button-secondary button-small mw-doc-action--danger"
+                  type="button"
+                  :disabled="localEditBusy || !image.rel_path"
+                  @click="deleteLocalModelImage(image)"
+                >
+                  删除
+                </button>
+              </div>
             </article>
           </div>
           <p v-else class="empty-copy">当前没有图册图片。</p>
@@ -1224,16 +1244,21 @@ const editableGallery = computed(() => {
   if (!isLocalModel.value || !Array.isArray(detail.value?.gallery)) {
     return [];
   }
+  const coverArchivePath = decodeArchivePath(detail.value?.cover_url || "");
+  const currentModelDir = String(detail.value?.model_dir || modelDir.value || "").replace(/^\/+|\/+$/g, "");
+  const coverRelPath = currentModelDir && coverArchivePath.startsWith(`${currentModelDir}/`)
+    ? coverArchivePath.slice(currentModelDir.length + 1)
+    : coverArchivePath;
   return detail.value.gallery.map((image) => {
     const url = String(image?.url || "");
     const archivePath = decodeArchivePath(url);
-    const currentModelDir = String(detail.value?.model_dir || modelDir.value || "").replace(/^\/+|\/+$/g, "");
     const relPath = currentModelDir && archivePath.startsWith(`${currentModelDir}/`)
       ? archivePath.slice(currentModelDir.length + 1)
       : archivePath;
     return {
       ...image,
       rel_path: relPath,
+      is_cover: Boolean(coverRelPath && relPath === coverRelPath),
     };
   }).filter((image) => image.rel_path);
 });
@@ -1982,6 +2007,10 @@ function filamentChipStyle(filament) {
 
 function attachmentDownloadUrl(attachment) {
   return attachment?.url || attachment?.fallback_url || "";
+}
+
+function attachmentDownloadName(attachment) {
+  return String(attachment?.name || attachment?.id || "attachment").trim() || "attachment";
 }
 
 function attachmentExtLabel(attachment) {
@@ -2759,6 +2788,28 @@ async function deleteLocalModelImage(image) {
     localEditDialog.value.message = payload.message || "图片已删除。";
   } catch (error) {
     localEditDialog.value.error = error instanceof Error ? error.message : "图片删除失败。";
+  } finally {
+    localEditBusy.value = false;
+  }
+}
+
+async function setLocalModelCoverImage(image) {
+  if (!isLocalModel.value || localEditBusy.value || !image?.rel_path || image.is_cover) {
+    return;
+  }
+  localEditBusy.value = true;
+  resetLocalEditFeedback();
+  try {
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/local/images/cover`, {
+      method: "PATCH",
+      body: {
+        rel_path: image.rel_path,
+      },
+    });
+    await applyDetailPayload(payload.detail);
+    localEditDialog.value.message = payload.message || "封面图已更新。";
+  } catch (error) {
+    localEditDialog.value.error = error instanceof Error ? error.message : "封面图更新失败。";
   } finally {
     localEditBusy.value = false;
   }

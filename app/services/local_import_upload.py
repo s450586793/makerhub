@@ -21,7 +21,7 @@ from app.core.settings import ARCHIVE_DIR, MAX_LOCAL_IMPORT_UPLOAD_BYTES, STATE_
 from app.core.store import JsonStore
 from app.core.timezone import from_timestamp as china_from_timestamp, now_iso as china_now_iso
 from app.services.business_logs import append_business_log
-from app.services.catalog import invalidate_archive_snapshot
+from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot, upsert_archive_snapshot_model
 from app.services.legacy_archiver import sanitize_filename
 from app.services.task_state import TaskStateStore
 
@@ -33,6 +33,7 @@ LOCAL_IMPORT_STAGING_TTL_SECONDS = 24 * 60 * 60
 LOCAL_IMPORT_HASH_CHUNK_SIZE_BYTES = 1024 * 1024
 LOCAL_IMPORT_HASH_PAUSE_EVERY_BYTES = 8 * 1024 * 1024
 LOCAL_IMPORT_HASH_PAUSE_SECONDS = 0.01
+LOCAL_IMPORT_SNAPSHOT_WAIT_SECONDS = 8
 LOCAL_IMPORT_MAX_ZIP_DEPTH = 3
 LOCAL_IMPORT_MAX_ARCHIVE_DEPTH = LOCAL_IMPORT_MAX_ZIP_DEPTH
 LOCAL_IMPORT_MAX_EXTRACTED_BYTES = MAX_LOCAL_IMPORT_UPLOAD_BYTES * 4
@@ -153,7 +154,7 @@ def _new_staging_dir() -> Path:
     return staging_dir
 
 
-def _copy_upload_to_staging(upload: UploadFile, staging_path: Path) -> int:
+def _copy_upload_to_staging(upload: UploadFile, staging_path: Path, label: str = "") -> int:
     total_size = 0
     temp_path = staging_path.with_name(f".{staging_path.name}.{os.getpid()}.{threading.get_ident()}.uploading")
     upload.file.seek(0)
@@ -168,7 +169,8 @@ def _copy_upload_to_staging(upload: UploadFile, staging_path: Path) -> int:
                     raise ValueError("上传文件过大。")
                 output_file.write(chunk)
         if total_size <= 0:
-            raise ValueError("上传文件为空。")
+            file_label = Path(str(label or upload.filename or staging_path.name or "未命名文件")).name
+            raise ValueError(f"上传文件为空：{file_label}")
         temp_path.replace(staging_path)
     except Exception:
         temp_path.unlink(missing_ok=True)
@@ -250,6 +252,22 @@ def _model_root_string(model_root: Path) -> str:
         return model_root.name
 
 
+def _confirm_model_visible_in_snapshot(model_dir: str) -> bool:
+    clean_model_dir = str(model_dir or "").strip().strip("/")
+    if not clean_model_dir:
+        return False
+
+    deadline = time.monotonic() + LOCAL_IMPORT_SNAPSHOT_WAIT_SECONDS
+    while True:
+        snapshot = get_archive_snapshot(force=True)
+        for item in snapshot.get("models") or []:
+            if str(item.get("model_dir") or "").strip().strip("/") == clean_model_dir:
+                return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.2)
+
+
 def _prepare_model_root(library_root: Path, title: str) -> Path:
     stem = sanitize_filename(str(title or "").strip()) or "local_model"
     base_name = f"LOCAL_{stem}"
@@ -267,7 +285,7 @@ def _stage_package_uploads(entries: list[dict[str, Any]], staging_dir: Path) -> 
     staged: list[dict[str, Any]] = []
     for entry in entries:
         target_path = _unique_relative_destination(upload_root, str(entry.get("relative_path") or entry.get("file_name") or "file"))
-        size = _copy_upload_to_staging(entry["upload"], target_path)
+        size = _copy_upload_to_staging(entry["upload"], target_path, str(entry.get("relative_path") or entry.get("file_name") or ""))
         staged.append(
             {
                 "path": target_path,
@@ -562,6 +580,109 @@ def _dedupe_model_files(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any
     return kept, duplicates
 
 
+def _normalize_local_import_hash(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text if ":" in text else f"sha256:{text}"
+
+
+def _existing_local_file_hashes(library_root: Path) -> dict[str, dict[str, str]]:
+    existing: dict[str, dict[str, str]] = {}
+    if not library_root.exists():
+        return existing
+
+    for meta_path in sorted(library_root.rglob("meta.json")):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+
+        model_root = meta_path.parent
+        model_dir = _model_root_string(model_root)
+        model_title = str(meta.get("title") or model_root.name)
+        instances = meta.get("instances") if isinstance(meta.get("instances"), list) else []
+        for instance in instances:
+            if not isinstance(instance, dict):
+                continue
+            local_import = instance.get("localImport") if isinstance(instance.get("localImport"), dict) else {}
+            for raw_hash in (local_import.get("configFingerprint"), local_import.get("fileHash")):
+                key = _normalize_local_import_hash(raw_hash)
+                if not key:
+                    continue
+                existing.setdefault(
+                    key,
+                    {
+                        "model_dir": model_dir,
+                        "model_title": model_title,
+                        "instance_title": str(instance.get("title") or instance.get("name") or instance.get("fileName") or ""),
+                        "file_name": str(instance.get("fileName") or instance.get("name") or ""),
+                    },
+                )
+
+        local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
+        for raw_hash in (local_import.get("configFingerprint"), local_import.get("fileHash")):
+            key = _normalize_local_import_hash(raw_hash)
+            if not key:
+                continue
+            existing.setdefault(
+                key,
+                {
+                    "model_dir": model_dir,
+                    "model_title": model_title,
+                    "instance_title": "",
+                    "file_name": "",
+                },
+            )
+
+    return existing
+
+
+def _find_existing_model_file_duplicates(model_items: list[dict[str, Any]], library_root: Path) -> list[dict[str, Any]]:
+    existing = _existing_local_file_hashes(library_root)
+    if not existing:
+        return []
+
+    duplicates: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in model_items:
+        digest = str(item.get("sha256") or "").strip()
+        key = _normalize_local_import_hash(digest)
+        if not key:
+            continue
+        match = existing.get(key)
+        if not match:
+            continue
+        marker = (key, str(match.get("model_dir") or ""))
+        if marker in seen:
+            continue
+        seen.add(marker)
+        duplicates.append(
+            {
+                "file_name": str(item.get("file_name") or Path(str(item.get("path") or "")).name),
+                "relative_path": str(item.get("relative_path") or item.get("file_name") or ""),
+                "sha256": digest,
+                "model_dir": str(match.get("model_dir") or ""),
+                "model_title": str(match.get("model_title") or match.get("model_dir") or ""),
+                "instance_title": str(match.get("instance_title") or ""),
+                "existing_file_name": str(match.get("file_name") or ""),
+            }
+        )
+    return duplicates
+
+
+def _format_existing_duplicate_message(duplicates: list[dict[str, Any]]) -> str:
+    if not duplicates:
+        return "本地库已存在相同模型文件，已停止导入。"
+    first = duplicates[0]
+    model_label = str(first.get("model_title") or first.get("model_dir") or "已有模型")
+    file_label = str(first.get("file_name") or "模型文件")
+    suffix = f" 等 {len(duplicates)} 个文件" if len(duplicates) > 1 else ""
+    return f"本地库已存在相同模型文件：{file_label}{suffix}，命中模型：{model_label}。已停止导入。"
+
+
 def _description_text_from_item(item: dict[str, Any] | None) -> str:
     if not item:
         return ""
@@ -600,7 +721,7 @@ def _summary_html_from_text(text: str) -> str:
     paragraphs = [part.strip() for part in clean.split("\n\n") if part.strip()]
     if not paragraphs:
         paragraphs = [clean]
-    return "".join(f"<p>{html.escape(part)}</p>" for part in paragraphs)
+    return "".join(f"<p>{html.escape(part).replace(chr(10), '<br>')}</p>" for part in paragraphs)
 
 
 def _copy_item_to_dir(item: dict[str, Any], target_dir: Path) -> Path:
@@ -787,8 +908,10 @@ def _upsert_package_progress(
     message: str,
     progress: int,
     model_root: Path | None = None,
+    model_dir_override: str = "",
+    snapshot_ready: bool = False,
 ) -> None:
-    model_dir = _model_root_string(model_root) if model_root else ""
+    model_dir = str(model_dir_override or "").strip() or (_model_root_string(model_root) if model_root else "")
     target_path = (model_root / "meta.json").as_posix() if model_root else ""
     task_store.upsert_organize_task(
         {
@@ -806,6 +929,7 @@ def _upsert_package_progress(
             "updated_at": china_now_iso(),
             "move_files": False,
             "fingerprint": f"local-package:{task_id}",
+            "snapshot_ready": snapshot_ready,
         },
         limit=50,
     )
@@ -835,7 +959,7 @@ def _upload_legacy_3mf_files(
     try:
         for upload, filename in prepared:
             staging_path = _unique_destination(staging_dir, filename)
-            size = _copy_upload_to_staging(upload, staging_path)
+            size = _copy_upload_to_staging(upload, staging_path, filename)
             staged.append(
                 {
                     "file_name": filename,
@@ -952,6 +1076,49 @@ def _import_package_files(
         model_items, duplicate_items = _dedupe_model_files(classified["models"])
         if not model_items:
             raise ValueError("没有找到可导入的 STL / 3MF / STEP / OBJ 模型文件。")
+        existing_duplicates = _find_existing_model_file_duplicates(model_items, library_root)
+        if existing_duplicates:
+            message = _format_existing_duplicate_message(existing_duplicates)
+            _upsert_package_progress(
+                task_store=task_store,
+                task_id=task_id,
+                title=title,
+                source_dir=source_dir_text,
+                library_root=library_root,
+                package_source=package_source,
+                status="skipped",
+                message=message,
+                progress=100,
+                model_dir_override=str(existing_duplicates[0].get("model_dir") or ""),
+            )
+            append_business_log(
+                "organizer",
+                "local_import_package_duplicate_skipped",
+                message,
+                title=title,
+                duplicate_count=len(existing_duplicates),
+                duplicates=existing_duplicates[:20],
+            )
+            return {
+                "success": False,
+                "mode": "package",
+                "trigger_organizer": False,
+                "duplicate": True,
+                "message": message,
+                "duplicates": existing_duplicates,
+                "duplicate_count": len(existing_duplicates),
+                "uploaded": [
+                    {
+                        "file_name": title,
+                        "source_path": package_source,
+                        "target_path": "",
+                        "size": sum(int(item.get("size") or 0) for item in model_items),
+                        "status": "skipped",
+                        "message": message,
+                        "model_dir": str(existing_duplicates[0].get("model_dir") or ""),
+                    }
+                ],
+            }
 
         model_root = _prepare_model_root(library_root, title)
         _upsert_package_progress(
@@ -1063,9 +1230,9 @@ def _import_package_files(
         source_dir=source_dir_text,
         library_root=library_root,
         package_source=package_source,
-        status="success",
-        message="本地模型包已导入。",
-        progress=100,
+        status="running",
+        message="本地模型包已写入，正在刷新列表快照。",
+        progress=96,
         model_root=model_root,
     )
     _update_last_import(
@@ -1076,6 +1243,23 @@ def _import_package_files(
     )
     _remove_organizer_index_cache()
     invalidate_archive_snapshot("local_import_package")
+    upsert_archive_snapshot_model(model_dir, "local_import_package", broadcast=True)
+    snapshot_ready = _confirm_model_visible_in_snapshot(model_dir)
+    if not snapshot_ready:
+        raise RuntimeError("本地模型包已写入，但列表快照刷新超时。请稍后刷新本地库。")
+    _upsert_package_progress(
+        task_store=task_store,
+        task_id=task_id,
+        title=title,
+        source_dir=source_dir_text,
+        library_root=library_root,
+        package_source=package_source,
+        status="success",
+        message="本地模型包已导入。",
+        progress=100,
+        model_root=model_root,
+        snapshot_ready=snapshot_ready,
+    )
 
     append_business_log(
         "organizer",
@@ -1083,6 +1267,7 @@ def _import_package_files(
         "本地模型包已导入。",
         title=title,
         model_dir=model_dir,
+        snapshot_ready=snapshot_ready,
         model_file_count=len(model_items),
         duplicate_file_count=len(duplicate_items),
         skipped_zip_count=len(skipped_archives),
@@ -1096,6 +1281,7 @@ def _import_package_files(
         "trigger_organizer": False,
         "message": f"已导入本地模型包：{title}",
         "model_dir": model_dir,
+        "snapshot_ready": snapshot_ready,
         "model_file_count": len(model_items),
         "duplicate_file_count": len(duplicate_items),
         "skipped_zip_count": len(skipped_archives),

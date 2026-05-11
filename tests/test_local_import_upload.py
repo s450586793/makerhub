@@ -280,6 +280,77 @@ class LocalImportUploadTest(unittest.TestCase):
             self.assertEqual(meta["localImport"]["skippedArchives"][0]["file_name"], "bad.rar")
             self.assertIn("RAR 文件无法读取", meta["localImport"]["skippedArchives"][0]["reason"])
 
+    def test_package_import_skips_when_model_file_already_exists_in_local_library(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            archive_root = root / "archive"
+            source_root = root / "source"
+            state_root = root / "state"
+            archive_root.mkdir()
+            source_root.mkdir()
+            state_root.mkdir()
+
+            store = SimpleNamespace(
+                load=lambda: SimpleNamespace(
+                    organizer=SimpleNamespace(source_dir=source_root.as_posix(), target_dir=archive_root.as_posix())
+                )
+            )
+            task_store = FakeTaskStore()
+
+            existing_stl = b"solid leg\nendsolid leg\n"
+            digest_path = root / "digest.stl"
+            digest_path.write_bytes(existing_stl)
+            digest = local_import_upload._sha256_file(digest_path)
+            existing_root = archive_root / "LOCAL_leg_table"
+            (existing_root / "instances").mkdir(parents=True)
+            (existing_root / "instances" / "leg_table.stl").write_bytes(existing_stl)
+            (existing_root / "meta.json").write_text(
+                json.dumps(
+                    {
+                        "title": "leg_table",
+                        "source": "local",
+                        "instances": [
+                            {
+                                "title": "leg_table",
+                                "fileName": "leg_table.stl",
+                                "localImport": {
+                                    "fileHash": digest,
+                                    "configFingerprint": f"sha256:{digest}",
+                                },
+                            }
+                        ],
+                        "localImport": {
+                            "modelFileCount": 1,
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(local_import_upload, "ARCHIVE_DIR", archive_root), \
+                patch.object(local_import_upload, "ORGANIZER_LIBRARY_INDEX_CACHE_PATH", state_root / "organizer_library_index.json"), \
+                patch.object(local_import_upload, "append_business_log"), \
+                patch.object(local_import_upload, "invalidate_archive_snapshot"), \
+                patch.object(catalog, "ARCHIVE_DIR", archive_root):
+                result = local_import_upload.upload_local_import_files(
+                    files=[_upload("leg_table.stl", existing_stl)],
+                    paths=["leg_table.stl"],
+                    store=store,
+                    task_store=task_store,
+                )
+
+            self.assertFalse(result["success"])
+            self.assertTrue(result["duplicate"])
+            self.assertEqual(result["duplicate_count"], 1)
+            self.assertIn("本地库已存在相同模型文件", result["message"])
+            self.assertFalse((archive_root / "LOCAL_leg_table_2").exists())
+            self.assertEqual(len(list(archive_root.glob("LOCAL_leg_table*"))), 1)
+            task_item = task_store.payload["items"][0]
+            self.assertEqual(task_item["status"], "skipped")
+            self.assertEqual(task_item["model_dir"], "LOCAL_leg_table")
+
     def test_direct_3mf_mixed_with_other_file_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "3MF 请单独导入"):
             local_import_upload.upload_local_import_files(
@@ -291,6 +362,31 @@ class LocalImportUploadTest(unittest.TestCase):
                 store=SimpleNamespace(),
                 task_store=FakeTaskStore(),
             )
+
+    def test_empty_upload_reports_filename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            archive_root = root / "archive"
+            source_root = root / "source"
+            state_root = root / "state"
+            archive_root.mkdir()
+            source_root.mkdir()
+            state_root.mkdir()
+            store = SimpleNamespace(
+                load=lambda: SimpleNamespace(
+                    organizer=SimpleNamespace(source_dir=source_root.as_posix(), target_dir=archive_root.as_posix())
+                )
+            )
+
+            with patch.object(local_import_upload, "ARCHIVE_DIR", archive_root), \
+                patch.object(local_import_upload, "ORGANIZER_LIBRARY_INDEX_CACHE_PATH", state_root / "organizer_library_index.json"):
+                with self.assertRaisesRegex(ValueError, "上传文件为空：empty.stl"):
+                    local_import_upload.upload_local_import_files(
+                        files=[_upload("empty.stl", b"")],
+                        paths=["empty.stl"],
+                        store=store,
+                        task_store=FakeTaskStore(),
+                    )
 
 
 if __name__ == "__main__":

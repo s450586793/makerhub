@@ -27,7 +27,7 @@ def _summary_html_from_text(text: str) -> str:
     paragraphs = [part.strip() for part in clean.split("\n\n") if part.strip()]
     if not paragraphs:
         paragraphs = [clean]
-    return "".join(f"<p>{html.escape(part)}</p>" for part in paragraphs)
+    return "".join(f"<p>{html.escape(part).replace(chr(10), '<br>')}</p>" for part in paragraphs)
 
 
 def _safe_filename(filename: str, fallback: str = "file") -> str:
@@ -315,6 +315,41 @@ def add_local_model_image(model_dir: str, upload: UploadFile) -> dict[str, Any]:
             instance["thumbnailLocal"] = rel_path
     _write_meta(model_root, meta)
     return image_item
+
+
+def set_local_model_cover_image(model_dir: str, rel_path: str) -> dict[str, Any]:
+    model_root, meta = _resolve_local_model_root(model_dir)
+    target_ref = str(rel_path or "").strip().lstrip("/")
+    if not target_ref:
+        raise ValueError("图片不存在。")
+
+    images = meta.get("designImages") if isinstance(meta.get("designImages"), list) else []
+    selected: Any = None
+    remaining: list[Any] = []
+    for item in images:
+        if selected is None and target_ref in _relative_file_refs(item):
+            selected = item
+            continue
+        remaining.append(item)
+    if selected is None:
+        raise ValueError("图片不存在。")
+
+    selected_item = dict(selected) if isinstance(selected, dict) else {"relPath": target_ref}
+    selected_item["relPath"] = target_ref
+    ordered_images = [selected_item, *remaining]
+    meta["cover"] = target_ref
+    meta["designImages"] = ordered_images
+    for instance in meta.get("instances") or []:
+        if not isinstance(instance, dict):
+            continue
+        instance["thumbnailLocal"] = target_ref
+        instance["pictures"] = [
+            {"relPath": str(item.get("relPath") or target_ref)}
+            for item in ordered_images
+            if isinstance(item, dict) and str(item.get("relPath") or "").strip()
+        ]
+    _write_meta(model_root, meta)
+    return selected_item
 
 
 def delete_local_model_image(model_dir: str, rel_path: str) -> dict[str, Any]:

@@ -586,11 +586,25 @@ def _extract_tags(meta: dict) -> list[str]:
     return result
 
 
-def _rewrite_summary_html(model_root: Path, html: str) -> str:
+def _rewrite_summary_html(model_root: Path, html: str, *, preserve_text_newlines: bool = False) -> str:
     if not html:
         return ""
 
     soup = BeautifulSoup(html, "html.parser")
+    if preserve_text_newlines:
+        for p_tag in soup.find_all("p"):
+            for text_node in list(p_tag.find_all(string=True, recursive=True)):
+                if "\n" not in str(text_node):
+                    continue
+                parts = str(text_node).split("\n")
+                replacements: list[Any] = []
+                for index, part in enumerate(parts):
+                    if index > 0:
+                        replacements.append(soup.new_tag("br"))
+                    if part:
+                        replacements.append(part)
+                if replacements:
+                    text_node.replace_with(*replacements)
 
     for tag in soup.find_all(src=True):
         raw = str(tag.get("src") or "").strip()
@@ -1883,7 +1897,11 @@ def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[
     payload.update(
         {
             "gallery": gallery,
-            "summary_html": _rewrite_summary_html(model_root, str(summary.get("html") or "")),
+            "summary_html": _rewrite_summary_html(
+                model_root,
+                str(summary.get("html") or ""),
+                preserve_text_newlines=source == "local",
+            ),
             "summary_text": str(summary.get("text") or summary.get("raw") or ""),
             "comments": initial_comments,
             "comments_total": total_comments,

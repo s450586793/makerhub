@@ -399,8 +399,12 @@ const activeOrganizerTask = computed(() => {
     || items.find((item) => organizerStatusVariant(item?.status) === "queued")
     || null;
 });
+const currentImportOrganizerTask = computed(() => (
+  importUploadProgress.visible ? findCurrentImportOrganizerTask() : null
+));
 const currentOrganizerTask = computed(() => (
-  (importUploadProgress.visible ? currentImportSyntheticTask() : null)
+  currentImportOrganizerTask.value
+    || (importUploadProgress.visible ? currentImportSyntheticTask() : null)
     || activeOrganizerTask.value
     || (hasRecentImportWork() ? recentImportSyntheticTask() : null)
     || null
@@ -478,12 +482,13 @@ const organizerProgressFooterText = computed(() => {
 const organizerProgressChips = computed(() => {
   const { uploadedCount, counts } = recentImportStatusCounts(organizerTasks.value);
   if (importUploadProgress.visible) {
+    const matchedTask = currentImportOrganizerTask.value;
     return [
       { label: "上传", value: importUploadProgress.phase === "uploading" ? `${Math.round(importUploadProgress.uploadPercent || 0)}%` : "完成" },
       { label: "文件", value: importUploadProgress.fileCount || 0 },
       { label: "大小", value: importUploadProgress.total ? formatFileSize(importUploadProgress.total) : "-" },
-      { label: "阶段", value: importUploadPhaseLabel(importUploadProgress.phase) },
-      { label: "状态", value: organizerStatusLabel(importUploadProgress.status) },
+      { label: "阶段", value: matchedTask ? "整理" : importUploadPhaseLabel(importUploadProgress.phase) },
+      { label: "状态", value: matchedTask ? organizerStatusLabel(matchedTask.status) : organizerStatusLabel(importUploadProgress.status) },
     ];
   }
   return [
@@ -511,9 +516,13 @@ const recentOrganizerRows = computed(() => {
 
   const lastImport = organizerTasks.value?.last_import;
   const importFiles = Array.isArray(lastImport?.files) ? lastImport.files : [];
+  const matchedImportTask = currentImportOrganizerTask.value;
   for (const file of importFiles) {
     if (rows.length >= 8) {
       break;
+    }
+    if (matchedImportTask && organizerItemMatchesImport(matchedImportTask, fileIdentitySet([file]))) {
+      continue;
     }
     const row = organizerTaskRow(
       {
@@ -604,6 +613,24 @@ function organizerItemUpdatedAfter(item, timestamp) {
   return Number.isFinite(itemTimestamp) && itemTimestamp >= Number(timestamp || 0) - 1000;
 }
 
+function findCurrentImportOrganizerTask() {
+  if (!importUploadProgress.visible) {
+    return null;
+  }
+  const currentTitle = String(importUploadProgress.title || "").trim();
+  return sortedOrganizerItems.value.find((item) => {
+    if (!organizerItemUpdatedAfter(item, importUploadProgress.startedAt)) {
+      return false;
+    }
+    const itemTitle = String(item?.title || item?.file_name || "").trim();
+    if (currentTitle && itemTitle && (itemTitle === currentTitle || currentTitle.startsWith(itemTitle) || itemTitle.startsWith(currentTitle))) {
+      return true;
+    }
+    const itemName = String(item?.source_path || "").split("/").filter(Boolean).pop();
+    return currentTitle && itemName && currentTitle.includes(itemName);
+  }) || null;
+}
+
 function organizerTaskTitle(item) {
   const title = String(item?.title || item?.file_name || item?.source_path || "本地整理任务").trim();
   return title || "本地整理任务";
@@ -679,7 +706,7 @@ function resetImportUploadProgress({ clearStorage = true } = {}) {
 }
 
 function importUploadProgressIsActive() {
-  return importUploadProgress.visible && !["success", "failed", "idle"].includes(String(importUploadProgress.phase || ""));
+  return importUploadProgress.visible && !["success", "skipped", "failed", "idle"].includes(String(importUploadProgress.phase || ""));
 }
 
 function importUploadPhaseLabel(phase) {
@@ -688,6 +715,7 @@ function importUploadPhaseLabel(phase) {
   if (normalized === "processing") return "整理";
   if (normalized === "syncing") return "同步";
   if (normalized === "success") return "完成";
+  if (normalized === "skipped") return "跳过";
   if (normalized === "failed") return "失败";
   return "等待";
 }
@@ -695,6 +723,7 @@ function importUploadPhaseLabel(phase) {
 function importUploadStatusFromPhase(phase) {
   const normalized = String(phase || "").trim();
   if (normalized === "success") return "success";
+  if (normalized === "skipped") return "skipped";
   if (normalized === "failed") return "failed";
   if (normalized === "syncing") return "queued";
   return "running";
@@ -1032,32 +1061,31 @@ function reconcileImportUploadProgress() {
     return;
   }
   const lastImport = organizerTasks.value?.last_import;
+  const matchingTask = findCurrentImportOrganizerTask();
   if (
     lastImport
     && lastImportUpdatedAfter(lastImport, importUploadProgress.startedAt)
     && !hasRecentImportWork()
     && importUploadProgress.phase === "syncing"
+    && (!matchingTask || organizerStatusVariant(matchingTask.status) !== "success" || matchingTask.snapshot_ready)
   ) {
     resetImportUploadProgress();
     return;
   }
-  const currentTitle = String(importUploadProgress.title || "").trim();
-  const matchingTask = sortedOrganizerItems.value.find((item) => {
-    if (!organizerItemUpdatedAfter(item, importUploadProgress.startedAt)) {
-      return false;
-    }
-    const itemTitle = String(item?.title || item?.file_name || "").trim();
-    if (currentTitle && itemTitle && (itemTitle === currentTitle || currentTitle.startsWith(itemTitle) || itemTitle.startsWith(currentTitle))) {
-      return true;
-    }
-    const itemName = String(item?.source_path || "").split("/").filter(Boolean).pop();
-    return currentTitle && itemName && currentTitle.includes(itemName);
-  });
   if (!matchingTask) {
     return;
   }
   const variant = organizerStatusVariant(matchingTask.status);
   if (variant === "success" || variant === "skipped") {
+    if (!matchingTask?.snapshot_ready && variant === "success") {
+      applyImportUploadProgress({
+        phase: "syncing",
+        status: "running",
+        progress: Math.max(importUploadProgress.progress || 0, 96),
+        message: "本地整理已写入，正在刷新本地库列表。",
+      });
+      return;
+    }
     resetImportUploadProgress();
     return;
   }
@@ -1163,6 +1191,16 @@ function isSupportedImportFile(file, relativePath = "") {
   return LOCAL_IMPORT_SUPPORTED_SUFFIXES.has(suffix);
 }
 
+function skippedImportReason(file, relativePath = "") {
+  if (Number(file?.size || 0) <= 0) {
+    return "空文件";
+  }
+  if (!isSupportedImportFile(file, relativePath)) {
+    return "暂不支持";
+  }
+  return "";
+}
+
 function validateImportSelection(items) {
   const hasFolderItem = items.some((item) => importItemPath(item).includes("/"));
   const hasArchive = items.some((item) => [".zip", ".rar"].includes(importSuffix(importItemPath(item))));
@@ -1185,7 +1223,8 @@ function addImportFileItems(items) {
   for (const item of incoming) {
     const file = item?.file || item;
     const relativePath = normalizeImportPath(file, item?.relativePath || "");
-    if (!isSupportedImportFile(file, relativePath)) {
+    const skippedReason = skippedImportReason(file, relativePath);
+    if (skippedReason) {
       const path = relativePath || file.name || "未命名文件";
       const key = `${path}-${file.size || 0}-${file.lastModified || 0}`;
       if (!skippedKeys.has(key)) {
@@ -1194,7 +1233,7 @@ function addImportFileItems(items) {
           path,
           size: file.size || 0,
           lastModified: file.lastModified || 0,
-          reason: "暂不支持",
+          reason: skippedReason,
         });
       }
       continue;
@@ -1210,7 +1249,7 @@ function addImportFileItems(items) {
   importFiles.value = nextFiles;
   importSkippedFiles.value = nextSkippedFiles;
   importDialog.error = selectionError;
-  importDialog.status = nextSkippedFiles.length ? `已跳过 ${nextSkippedFiles.length} 个暂不支持的文件。` : "";
+  importDialog.status = nextSkippedFiles.length ? `已跳过 ${nextSkippedFiles.length} 个空文件或暂不支持的文件。` : "";
 }
 
 function addImportFiles(fileList, { fromFolder = false } = {}) {
@@ -1379,19 +1418,29 @@ async function submitImportFiles() {
     });
     importDialog.uploading = false;
     importDialog.visible = false;
+    const resultSkipped = result?.duplicate || (Array.isArray(result?.uploaded) && result.uploaded.some((item) => normalizeImportStatus(item?.status) === "skipped"));
+    const snapshotReady = Boolean(result?.snapshot_ready || resultSkipped);
     applyImportUploadProgress({
-      phase: "success",
-      status: "success",
-      progress: 100,
+      phase: resultSkipped ? "skipped" : (snapshotReady ? "success" : "syncing"),
+      status: resultSkipped ? "skipped" : (snapshotReady ? "success" : "running"),
+      progress: resultSkipped || snapshotReady ? 100 : 96,
       uploadPercent: 100,
-      message: result?.message || "本地导入已完成。",
+      message: resultSkipped
+        ? (result?.message || "本地导入已跳过。")
+        : (snapshotReady ? (result?.message || "本地导入已完成。") : "本地整理已写入，正在刷新本地库列表。"),
     });
-    clearImportUploadProgressStorage();
+    if (resultSkipped || snapshotReady) {
+      clearImportUploadProgressStorage();
+    } else {
+      persistImportUploadProgress();
+    }
     resetImportDialogState();
     clearLibraryCachesAfterImport();
     clearTaskTimer();
     await load({ silent: true, refreshLibrary: true });
-    resetImportUploadProgress();
+    if (resultSkipped || snapshotReady) {
+      resetImportUploadProgress();
+    }
   } catch (error) {
     importDialog.uploading = false;
     importDialog.visible = true;

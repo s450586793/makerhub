@@ -17,7 +17,7 @@ from app.core.settings import ARCHIVE_DIR, LOGS_DIR, STATE_DIR
 from app.core.store import JsonStore
 from app.core.timezone import from_timestamp as china_from_timestamp, now_iso as china_now_iso
 from app.services.business_logs import append_business_log
-from app.services.catalog import invalidate_archive_snapshot
+from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot, upsert_archive_snapshot_model
 from app.services.legacy_archiver import sanitize_filename
 from app.services.task_state import TaskStateStore
 
@@ -35,6 +35,7 @@ ORGANIZER_HASH_CHUNK_SIZE_BYTES = 512 * 1024
 ORGANIZER_HASH_PAUSE_EVERY_BYTES = 4 * 1024 * 1024
 ORGANIZER_HASH_PAUSE_SECONDS = 0.02
 ORGANIZER_PREVIEW_LIMIT = 6
+ORGANIZER_SNAPSHOT_WAIT_SECONDS = 8
 PREVIEW_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 ORGANIZER_IGNORED_DIR_NAMES = {"_duplicates", "_failed", "_skipped"}
 ORGANIZER_VISIBLE_QUEUE_LIMIT = ORGANIZER_TASK_LIMIT
@@ -44,6 +45,22 @@ ORGANIZER_DAEMON_ENV = "MAKERHUB_LOCAL_ORGANIZER_DAEMON"
 
 def _now_iso() -> str:
     return china_now_iso()
+
+
+def _confirm_model_visible_in_snapshot(model_dir: str) -> bool:
+    clean_model_dir = str(model_dir or "").strip().strip("/")
+    if not clean_model_dir:
+        return False
+
+    deadline = time.monotonic() + ORGANIZER_SNAPSHOT_WAIT_SECONDS
+    while True:
+        snapshot = get_archive_snapshot(force=True)
+        for item in snapshot.get("models") or []:
+            if str(item.get("model_dir") or "").strip().strip("/") == clean_model_dir:
+                return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.2)
 
 
 def _append_organizer_log(event: str, **payload) -> None:
@@ -1396,6 +1413,11 @@ class LocalOrganizerService:
                 encoding="utf-8",
             )
             invalidate_archive_snapshot("local_organizer_success")
+            model_dir = self._model_dir_string(model_root)
+            upsert_archive_snapshot_model(model_dir, "local_organizer_success", broadcast=True)
+            snapshot_ready = _confirm_model_visible_in_snapshot(model_dir)
+            if not snapshot_ready:
+                raise RuntimeError("本地模型已写入，但列表快照刷新超时。请稍后刷新本地库。")
 
             self.task_store.upsert_organize_task(
                 {
@@ -1412,7 +1434,8 @@ class LocalOrganizerService:
                     "updated_at": _now_iso(),
                     "move_files": move_files,
                     "fingerprint": fingerprint,
-                    "model_dir": self._model_dir_string(model_root),
+                    "model_dir": model_dir,
+                    "snapshot_ready": snapshot_ready,
                 },
                 limit=ORGANIZER_TASK_LIMIT,
             )
@@ -1420,9 +1443,10 @@ class LocalOrganizerService:
                 "organized",
                 source=source_path_text,
                 target=str(target_file),
-                model_dir=self._model_dir_string(model_root),
+                model_dir=model_dir,
                 move_files=move_files,
                 reused_model=bool(matched_model),
+                snapshot_ready=snapshot_ready,
             )
             return {
                 "model_root": model_root,

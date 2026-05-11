@@ -52,7 +52,7 @@ class LocalModelEditTest(unittest.TestCase):
             model_root = self._write_local_model(archive_root)
             with patch.object(local_model_edit, "ARCHIVE_DIR", archive_root), \
                 patch.object(catalog, "ARCHIVE_DIR", archive_root):
-                local_model_edit.update_local_model_description("LOCAL_Test", "新描述\n\n第二段")
+                local_model_edit.update_local_model_description("LOCAL_Test", "1\n2\n\n3\n4")
                 added_file = local_model_edit.add_local_model_file(
                     "LOCAL_Test",
                     _upload("extra.3mf", b"3mf-data"),
@@ -63,7 +63,9 @@ class LocalModelEditTest(unittest.TestCase):
                 )
                 detail = catalog.get_model_detail("LOCAL_Test")
 
-                self.assertEqual(detail["summary_text"], "新描述\n\n第二段")
+                self.assertEqual(detail["summary_text"], "1\n2\n\n3\n4")
+                self.assertIn("1<br", detail["summary_html"])
+                self.assertIn("3<br", detail["summary_html"])
                 self.assertEqual(len(detail["instances"]), 2)
                 self.assertTrue((model_root / "instances" / "extra.3mf").exists())
                 self.assertTrue((model_root / "images" / "side.png").exists())
@@ -78,6 +80,50 @@ class LocalModelEditTest(unittest.TestCase):
             self.assertEqual(len(detail["gallery"]), 1)
             self.assertFalse((model_root / "instances" / "extra.3mf").exists())
             self.assertFalse((model_root / "images" / "side.png").exists())
+
+    def test_saved_description_html_newlines_render_after_reload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_root = Path(tmp).resolve()
+            model_root = self._write_local_model(archive_root)
+            meta_path = model_root / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["summary"] = {
+                "text": "1\n2\n3",
+                "html": "<p>1\n2\n3</p>",
+            }
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+            with patch.object(catalog, "ARCHIVE_DIR", archive_root):
+                detail = catalog.get_model_detail("LOCAL_Test")
+
+            self.assertEqual(detail["summary_text"], "1\n2\n3")
+            self.assertIn("1<br", detail["summary_html"])
+            self.assertIn("2<br", detail["summary_html"])
+
+    def test_set_local_model_cover_image_reorders_gallery_and_instances(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_root = Path(tmp).resolve()
+            model_root = self._write_local_model(archive_root)
+            (model_root / "images" / "side.png").write_bytes(b"png-data")
+            meta_path = model_root / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["designImages"].append({"relPath": "images/side.png"})
+            meta["instances"][0]["pictures"].append({"relPath": "images/side.png"})
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+            with patch.object(local_model_edit, "ARCHIVE_DIR", archive_root), \
+                patch.object(catalog, "ARCHIVE_DIR", archive_root):
+                updated = local_model_edit.set_local_model_cover_image("LOCAL_Test", "images/side.png")
+                detail = catalog.get_model_detail("LOCAL_Test")
+
+            self.assertEqual(updated["relPath"], "images/side.png")
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            self.assertEqual(meta["cover"], "images/side.png")
+            self.assertEqual(meta["designImages"][0]["relPath"], "images/side.png")
+            self.assertEqual(meta["instances"][0]["thumbnailLocal"], "images/side.png")
+            self.assertEqual(meta["instances"][0]["pictures"][0]["relPath"], "images/side.png")
+            self.assertTrue(detail["cover_url"].endswith("/LOCAL_Test/images/side.png"))
+            self.assertTrue(detail["gallery"][0]["url"].endswith("/LOCAL_Test/images/side.png"))
 
     def test_rejects_non_local_model(self):
         with tempfile.TemporaryDirectory() as tmp:

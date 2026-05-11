@@ -343,6 +343,10 @@ def _normalize_organize_tasks(payload: Any) -> dict:
             continue
         if not isinstance(item, dict):
             continue
+        status = str(item.get("status") or "pending")
+        snapshot_ready = bool(item.get("snapshot_ready", False))
+        if "snapshot_ready" not in item and status.strip().lower() in {"success", "organized"}:
+            snapshot_ready = True
         normalized.append(
             {
                 "id": str(item.get("id") or item.get("task_id") or ""),
@@ -353,12 +357,13 @@ def _normalize_organize_tasks(payload: Any) -> dict:
                 "source_path": str(item.get("source_path") or ""),
                 "target_path": str(item.get("target_path") or ""),
                 "model_dir": str(item.get("model_dir") or ""),
-                "status": str(item.get("status") or "pending"),
+                "status": status,
                 "message": str(item.get("message") or item.get("detail") or ""),
                 "progress": int(item.get("progress") or item.get("percent") or 0),
                 "updated_at": str(item.get("updated_at") or item.get("time") or ""),
                 "move_files": bool(item.get("move_files", item.get("move", True))),
                 "fingerprint": str(item.get("fingerprint") or ""),
+                "snapshot_ready": snapshot_ready,
             }
         )
 

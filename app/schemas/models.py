@@ -166,6 +166,10 @@ class LocalModelImageDeleteRequest(BaseModel):
     rel_path: str = ""
 
 
+class LocalModelImageCoverRequest(BaseModel):
+    rel_path: str = ""
+
+
 class Missing3mfItem(BaseModel):
     model_id: str
     title: str

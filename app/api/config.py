@@ -30,6 +30,7 @@ from app.schemas.models import (
     CookieTestRequest,
     LocalModelDescriptionUpdateRequest,
     LocalModelFileDeleteRequest,
+    LocalModelImageCoverRequest,
     LocalModelImageDeleteRequest,
     LocalModelMergeRequest,
     Missing3mfRetryRequest,
@@ -71,6 +72,7 @@ from app.services.local_model_edit import (
     add_local_model_image,
     delete_local_model_file,
     delete_local_model_image,
+    set_local_model_cover_image,
     update_local_model_description,
 )
 from app.services.local_model_merge import merge_local_models
@@ -2985,6 +2987,40 @@ async def remove_local_model_image(
         "removed": removed,
         "detail": detail,
         "message": "图片已删除。",
+    }
+
+
+@router.patch("/models/{model_dir:path}/local/images/cover")
+async def update_local_model_cover_image(
+    model_dir: str,
+    payload: LocalModelImageCoverRequest,
+    request: Request,
+):
+    _require_session_auth(request)
+    try:
+        def _update_and_load_detail():
+            updated_item = set_local_model_cover_image(model_dir, payload.rel_path)
+            return updated_item, get_model_detail(model_dir)
+
+        updated, detail = await run_task_api(_update_and_load_detail)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if detail is None:
+        raise HTTPException(status_code=404, detail="模型不存在。")
+
+    append_business_log(
+        "model",
+        "local_model_cover_updated",
+        "本地模型封面已更新。",
+        model_dir=model_dir,
+        rel_path=payload.rel_path,
+    )
+    return {
+        "success": True,
+        "item": updated,
+        "detail": detail,
+        "message": "封面图已更新。",
     }
 
 
