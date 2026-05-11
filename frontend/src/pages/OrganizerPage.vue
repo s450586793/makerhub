@@ -456,7 +456,7 @@ const organizerProgressFooterText = computed(() => {
   }
   if (importUploadProgressIsActive()) {
     if (importUploadProgress.phase === "uploading") {
-      return "正在上传到服务器";
+      return "上传中";
     }
     return "正在等待本地整理";
   }
@@ -776,7 +776,7 @@ function importUploadPayloadFromItems(items) {
     uploadPercent: 0,
     loaded: 0,
     total,
-    message: "正在上传到服务器。",
+    message: "上传中。",
     startedAt: now,
     updatedAt: now,
   };
@@ -1454,8 +1454,8 @@ async function submitImportFiles() {
           total: knownTotal,
           progress: cappedProgress,
           message: knownTotal
-            ? `正在上传到服务器：${formatFileSize(loaded)} / ${formatFileSize(knownTotal)}`
-            : "正在上传到服务器。",
+            ? `上传中：${formatFileSize(loaded)} / ${formatFileSize(knownTotal)}`
+            : "上传中。",
         });
       },
       onUploadComplete: () => {
