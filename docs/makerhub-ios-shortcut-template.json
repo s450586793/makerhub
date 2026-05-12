@@ -13,17 +13,13 @@
     {
       "action": "如果",
       "condition": "PublicBaseUrl 不为空",
-      "then_sets": {
-        "UploadBaseUrl": "${PublicBaseUrl}"
-      },
-      "otherwise_sets": {
-        "UploadBaseUrl": "${LanBaseUrl}"
-      }
+      "then_uses": "PublicBaseUrl",
+      "otherwise_uses": "LanBaseUrl"
     },
     {
       "action": "获取 URL 内容",
       "method": "GET",
-      "url": "${UploadBaseUrl}/api/mobile-import/ping-ipv4?token=${MakerHubToken}",
+      "url": "${SelectedBaseUrl}/api/mobile-import/ping-ipv4?token=${MakerHubToken}",
       "expect": "makerhub:ok"
     },
     {
@@ -44,7 +40,7 @@
     {
       "action": "获取 URL 内容",
       "method": "POST",
-      "url": "${UploadBaseUrl}/api/mobile-import/raw-ipv4?token=${MakerHubToken}",
+      "url": "${SelectedBaseUrl}/api/mobile-import/raw-ipv4?token=${MakerHubToken}",
       "headers": {
         "X-MakerHub-Filename": "${FileName}"
       },

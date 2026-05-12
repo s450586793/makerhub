@@ -5,9 +5,8 @@
 ## MakerHub 设置
 
 1. 打开 `设置 -> 本地整理 -> 移动端导入`。
-2. 填入局域网地址，例如 `http://192.168.1.20:1111`。
-3. 如果需要在外网使用，填入公网地址，例如 `https://makerhub.example.com`；不填公网地址时快捷指令会走局域网。
-4. 点击 `生成 Token`，完整 Token 只显示一次。
+2. 点击 `生成 Token`，完整 Token 只显示一次。
+3. 把 Token 填入手机快捷指令。局域网地址和公网地址也只在手机快捷指令里填写，MakerHub 网页端不保存这两个地址。
 
 ## 快捷指令变量
 
@@ -23,12 +22,12 @@
 
 ## 动作流程
 
-1. 判断 `PublicBaseUrl` 是否为空。
-   - 有填写公网地址时，把 `UploadBaseUrl` 设置为 `PublicBaseUrl`
-   - 没有填写公网地址时，把 `UploadBaseUrl` 设置为 `LanBaseUrl`
+1. 判断 `PublicBaseUrl` 是否包含 `http`。
+   - 有填写公网地址时，后续请求直接使用 `PublicBaseUrl`
+   - 没有填写公网地址时，后续请求直接使用 `LanBaseUrl`
 
 2. `获取 URL 内容`
-   - URL: `UploadBaseUrl` + `/api/mobile-import/ping-ipv4?token=` + `MakerHubToken`
+   - URL: 选定地址 + `/api/mobile-import/ping-ipv4?token=` + `MakerHubToken`
    - 方法: `GET`
    - 返回内容需要包含 `makerhub:ok`
 
@@ -41,7 +40,7 @@
    - 保存为变量 `FileName`
 
 5. `获取 URL 内容`
-   - URL: `UploadBaseUrl` + `/api/mobile-import/raw-ipv4?token=` + `MakerHubToken`
+   - URL: 选定地址 + `/api/mobile-import/raw-ipv4?token=` + `MakerHubToken`
    - 方法: `POST`
    - 请求头:
      - `X-MakerHub-Filename` = `FileName`

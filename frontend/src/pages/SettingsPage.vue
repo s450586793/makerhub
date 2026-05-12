@@ -150,7 +150,7 @@
         </div>
       </form>
 
-      <form class="settings-form token-card" @submit.prevent="saveMobileImportSettings">
+      <section class="settings-form token-card">
         <div class="section-card__header">
           <div>
             <span class="eyebrow">移动端导入</span>
@@ -164,19 +164,6 @@
               生成 Token
             </button>
           </div>
-        </div>
-
-        <div class="settings-grid settings-grid--two">
-          <label class="field-card">
-            <span>局域网地址</span>
-            <input v-model.trim="mobileImportForm.lan_base_url" type="url" placeholder="http://192.168.1.20:1111">
-            <small class="archive-form__hint">未填写公网地址时，快捷指令会使用这个地址。</small>
-          </label>
-          <label class="field-card">
-            <span>公网地址</span>
-            <input v-model.trim="mobileImportForm.public_base_url" type="url">
-            <small class="archive-form__hint">填了公网就走公网；不填才走局域网，例如 https://makerhub.example.com。</small>
-          </label>
         </div>
 
         <div class="mobile-import-status-grid">
@@ -201,7 +188,8 @@
           <strong>快捷指令流程</strong>
           <ol>
             <li>接收共享表单里的文件。</li>
-            <li>如果填写了公网地址就使用公网，否则使用局域网。</li>
+            <li>在手机快捷指令里填写 Token、局域网地址和公网地址。</li>
+            <li>如果手机快捷指令里填写了公网地址就使用公网，否则使用局域网。</li>
             <li>用 Token 请求选定地址的 <code>/api/mobile-import/ping-ipv4</code>。</li>
             <li>地址可用后，把文件上传到 <code>/api/mobile-import/raw-ipv4</code>。</li>
             <li>上传成功提示“已上传”，选定地址不可用提示“网络不通”。</li>
@@ -209,13 +197,12 @@
         </div>
 
         <div class="settings-inline-actions">
-          <button class="button button-primary" type="submit">保存移动端导入设置</button>
           <button class="button button-secondary" type="button" :disabled="!mobileImportEnabled" @click="disableMobileImport">
             停用 Token
           </button>
           <span class="form-status">{{ statuses.mobile_import }}</span>
         </div>
-      </form>
+      </section>
     </div>
 
     <div v-show="activeTab === 'sharing'" class="settings-panel is-active">
@@ -731,10 +718,6 @@ const organizerForm = reactive({
   target_dir: "",
   move_files: true,
 });
-const mobileImportForm = reactive({
-  lan_base_url: "",
-  public_base_url: "",
-});
 const sharingForm = reactive({
   public_base_url: "",
   default_expires_days: 7,
@@ -1070,8 +1053,6 @@ function applyConfigToForms(payload) {
   organizerForm.source_dir = payload.organizer?.source_dir || "";
   organizerForm.target_dir = payload.organizer?.target_dir || "";
   organizerForm.move_files = payload.organizer?.move_files !== false;
-  mobileImportForm.lan_base_url = payload.mobile_import?.lan_base_url || "";
-  mobileImportForm.public_base_url = payload.mobile_import?.public_base_url || "";
   mobileImportToken.value = "";
   sharingForm.public_base_url = payload.sharing?.public_base_url || "";
   sharingForm.default_expires_days = normalizeBoundedInt(payload.sharing?.default_expires_days, 7, 1, 90);
@@ -1348,18 +1329,14 @@ async function saveOrganizer() {
   }
 }
 
-function normalizeBaseUrl(value) {
-  return String(value || "").trim().replace(/\/+$/, "");
-}
-
 function buildShortcutConfigText() {
   const lines = [
     "MakerHub iOS 快捷指令配置",
     `Token: ${mobileImportToken.value || "<在 MakerHub 设置里生成后粘贴>"}`,
-    `局域网地址: ${normalizeBaseUrl(mobileImportForm.lan_base_url) || "<例如 http://192.168.1.20:1111>"}`,
-    `公网地址: ${normalizeBaseUrl(mobileImportForm.public_base_url) || "<留空则走局域网>"}`,
+    "局域网地址: <在手机快捷指令里填写，例如 http://192.168.1.20:1111>",
+    "公网地址: <在手机快捷指令里填写；留空则走局域网>",
     "",
-    "流程: 如果填写了公网地址就使用公网，否则使用局域网；先 GET 选定地址 /api/mobile-import/ping-ipv4?token=Token；可用后 POST 文件到 /api/mobile-import/raw-ipv4?token=Token；选定地址不可用提示 网络不通；上传成功提示 已上传。",
+    "流程: 在手机快捷指令里填写 Token、局域网地址、公网地址；如果公网地址有值就使用公网，否则使用局域网；先 GET 选定地址 /api/mobile-import/ping-ipv4?token=Token；可用后 POST 文件到 /api/mobile-import/raw-ipv4?token=Token；选定地址不可用提示 网络不通；上传成功提示 已上传。",
   ];
   return lines.join("\n");
 }
@@ -1389,20 +1366,6 @@ async function copyShortcutConfig() {
     statuses.mobile_import = copied ? "快捷指令配置已复制。" : "浏览器阻止复制，请手动复制配置。";
   } catch (error) {
     statuses.mobile_import = error instanceof Error ? error.message : "复制失败。";
-  }
-}
-
-async function saveMobileImportSettings() {
-  statuses.mobile_import = "";
-  try {
-    const payload = await apiRequest("/api/config/mobile-import", {
-      method: "POST",
-      body: { ...mobileImportForm },
-    });
-    applyConfigPayload(payload);
-    statuses.mobile_import = "移动端导入设置已保存。";
-  } catch (error) {
-    statuses.mobile_import = error instanceof Error ? error.message : "保存失败。";
   }
 }
 

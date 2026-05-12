@@ -41,7 +41,6 @@ from app.schemas.models import (
     LocalModelMergeRequest,
     Missing3mfRetryRequest,
     MobileImportConfig,
-    MobileImportSettingsUpdate,
     MobileImportTokenResetRequest,
     ModelDeleteRequest,
     ModelFlagUpdateRequest,
@@ -1694,16 +1693,6 @@ def _normalize_public_base_url(value: str) -> str:
     return text.rstrip("/")
 
 
-def _normalize_mobile_base_url(value: str, label: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    parsed = urlparse(text)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError(f"{label}必须以 http:// 或 https:// 开头。")
-    return text.rstrip("/")
-
-
 def _public_ping_url(base_url: str) -> str:
     normalized = _normalize_public_base_url(base_url)
     return urljoin(f"{normalized}/", MAKERHUB_PUBLIC_PING_PATH.lstrip("/"))
@@ -1885,8 +1874,6 @@ def _public_config_payload(config) -> dict:
         "sharing": config.sharing.model_dump(),
         "mobile_import": {
             "enabled": bool(config.mobile_import.enabled),
-            "lan_base_url": config.mobile_import.lan_base_url,
-            "public_base_url": config.mobile_import.public_base_url,
             "token_prefix": config.mobile_import.token_prefix,
             "created_at": config.mobile_import.created_at,
             "last_used_at": config.mobile_import.last_used_at,
@@ -2672,12 +2659,9 @@ async def save_organizer(payload: OrganizeTask, request: Request):
 async def reset_mobile_import_token(payload: MobileImportTokenResetRequest, request: Request):
     _require_session_auth(request)
     config = store.load()
-    current = config.mobile_import
     raw_token = _generate_mobile_import_token()
     config.mobile_import = MobileImportConfig(
         enabled=bool(payload.enabled),
-        lan_base_url=current.lan_base_url,
-        public_base_url=current.public_base_url,
         token_prefix=raw_token[:12],
         token_hash=hash_api_token(raw_token),
         created_at=china_now_iso(),
@@ -2696,28 +2680,6 @@ async def reset_mobile_import_token(payload: MobileImportTokenResetRequest, requ
         "token": raw_token,
         "message": "移动端导入 Token 已生成。",
     }
-
-
-@router.post("/config/mobile-import")
-async def save_mobile_import_settings(payload: MobileImportSettingsUpdate, request: Request):
-    _require_session_auth(request)
-    config = store.load()
-    try:
-        lan_base_url = _normalize_mobile_base_url(payload.lan_base_url, "局域网地址")
-        public_base_url = _normalize_mobile_base_url(payload.public_base_url, "公网地址")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    config.mobile_import.lan_base_url = lan_base_url
-    config.mobile_import.public_base_url = public_base_url
-    saved = store.save(config)
-    append_business_log(
-        "settings",
-        "mobile_import_settings_saved",
-        "移动端导入配置已保存。",
-        has_lan_base_url=bool(lan_base_url),
-        has_public_base_url=bool(public_base_url),
-    )
-    return _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
 
 
 @router.post("/config/mobile-import/disable")

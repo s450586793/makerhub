@@ -53,8 +53,6 @@ class SharingConfig(BaseModel):
 
 class MobileImportConfig(BaseModel):
     enabled: bool = False
-    lan_base_url: str = ""
-    public_base_url: str = ""
     token_prefix: str = ""
     token_hash: str = ""
     created_at: str = ""
@@ -120,11 +118,6 @@ class ApiTokenCreateRequest(BaseModel):
 
 class MobileImportTokenResetRequest(BaseModel):
     enabled: bool = True
-
-
-class MobileImportSettingsUpdate(BaseModel):
-    lan_base_url: str = ""
-    public_base_url: str = ""
 
 
 class ArchiveRequest(BaseModel):
