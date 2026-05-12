@@ -368,6 +368,7 @@ def _normalize_organize_tasks(payload: Any) -> dict:
                 "staging_dir": str(item.get("staging_dir") or ""),
                 "package_source": str(item.get("package_source") or ""),
                 "package_title": str(item.get("package_title") or ""),
+                "meta": item.get("meta") if isinstance(item.get("meta"), dict) else {},
             }
         )
 

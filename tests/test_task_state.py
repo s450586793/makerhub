@@ -120,6 +120,7 @@ class OrganizeTaskStateTest(unittest.TestCase):
                     "staging_dir": "/app/state/import_uploads/demo",
                     "package_source": "Demo.zip",
                     "package_title": "Demo",
+                    "meta": {"content_length": "1024", "received_bytes": 512},
                 }
             ],
         }
@@ -131,6 +132,8 @@ class OrganizeTaskStateTest(unittest.TestCase):
         self.assertEqual(item["staging_dir"], "/app/state/import_uploads/demo")
         self.assertEqual(item["package_source"], "Demo.zip")
         self.assertEqual(item["package_title"], "Demo")
+        self.assertEqual(item["meta"]["content_length"], "1024")
+        self.assertEqual(item["meta"]["received_bytes"], 512)
 
 
 class ArchiveQueueStateTest(unittest.TestCase):

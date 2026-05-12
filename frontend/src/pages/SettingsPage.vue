@@ -175,7 +175,7 @@
           <article class="field-card system-update-stat">
             <span>快捷指令提示</span>
             <strong>成功显示“已上传”</strong>
-            <small>选定地址不可用时显示“网络不通”。</small>
+            <small>地址不可用时 iOS 会显示请求失败。</small>
           </article>
         </div>
 
@@ -188,11 +188,10 @@
           <strong>快捷指令流程</strong>
           <ol>
             <li>接收共享表单里的文件。</li>
-            <li>在手机快捷指令里填写 Token、局域网地址和公网地址。</li>
-            <li>如果手机快捷指令里填写了公网地址就使用公网，否则使用局域网。</li>
+            <li>在手机快捷指令里填写 Token 和 MakerHub 地址。</li>
             <li>用 Token 请求选定地址的 <code>/api/mobile-import/ping-ipv4</code>。</li>
             <li>地址可用后，把文件上传到 <code>/api/mobile-import/raw-ipv4</code>。</li>
-            <li>上传成功提示“已上传”，选定地址不可用提示“网络不通”。</li>
+            <li>上传成功提示“已上传”，地址不可用时 iOS 会显示请求失败。</li>
           </ol>
         </div>
 
@@ -1333,10 +1332,9 @@ function buildShortcutConfigText() {
   const lines = [
     "MakerHub iOS 快捷指令配置",
     `Token: ${mobileImportToken.value || "<在 MakerHub 设置里生成后粘贴>"}`,
-    "局域网地址: <在手机快捷指令里填写，例如 http://192.168.1.20:1111>",
-    "公网地址: <在手机快捷指令里填写；留空则走局域网>",
+    "MakerHub 地址: <在手机快捷指令里填写，例如 http://192.168.1.20:1111 或 https://你的公网地址>",
     "",
-    "流程: 在手机快捷指令里填写 Token、局域网地址、公网地址；如果公网地址有值就使用公网，否则使用局域网；先 GET 选定地址 /api/mobile-import/ping-ipv4?token=Token；可用后 POST 文件到 /api/mobile-import/raw-ipv4?token=Token；选定地址不可用提示 网络不通；上传成功提示 已上传。",
+    "流程: 从共享表单接收文件；先 GET MakerHub 地址 /api/mobile-import/ping-ipv4?token=Token；可用后 POST 文件到 /api/mobile-import/raw-ipv4?token=Token；上传成功提示 已上传。",
   ];
   return lines.join("\n");
 }

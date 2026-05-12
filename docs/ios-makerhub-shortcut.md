@@ -6,43 +6,36 @@
 
 1. 打开 `设置 -> 本地整理 -> 移动端导入`。
 2. 点击 `生成 Token`，完整 Token 只显示一次。
-3. 把 Token 填入手机快捷指令。局域网地址和公网地址也只在手机快捷指令里填写，MakerHub 网页端不保存这两个地址。
+3. 把 Token 和 MakerHub 地址填入手机快捷指令。MakerHub 地址可以是局域网地址，也可以是公网地址，不要以 `/` 结尾。
 
 ## 快捷指令变量
 
 新建 iOS 快捷指令，名称建议为 `推送到 MakerHub`，开启 `在共享表单中显示`，接收类型选择 `文件`。
 
-在快捷指令开头放 3 个 `文本` 动作，并分别改名为：
+在快捷指令开头放 2 个 `文本` 动作，并分别改名为：
 
 | 变量 | 内容 |
 | --- | --- |
 | `MakerHubToken` | MakerHub 设置页生成的 `mhi_...` Token |
-| `LanBaseUrl` | 局域网地址，不要以 `/` 结尾；默认留空 |
-| `PublicBaseUrl` | 公网地址，不要以 `/` 结尾；不需要公网时留空 |
+| `MakerHubBaseUrl` | MakerHub 地址，不要以 `/` 结尾；例如 `http://192.168.1.20:1111` 或公网地址 |
 
 ## 动作流程
 
-1. 判断 `PublicBaseUrl` 是否包含 `http`。
-   - 有填写公网地址时，后续请求直接使用 `PublicBaseUrl`
-   - 没有填写公网地址时，后续请求直接使用 `LanBaseUrl`
-
-如果选定地址不包含 `http`，快捷指令会提示 `地址未填写` 并停止，避免误请求示例地址后超时。
+1. 从共享表单接收文件。直接运行快捷指令而不从微信或文件 App 分享文件时，上传体会为空。
 
 2. `获取 URL 内容`
-   - URL: 选定地址 + `/api/mobile-import/ping-ipv4?token=` + `MakerHubToken`
+   - URL: `MakerHubBaseUrl` + `/api/mobile-import/ping-ipv4?token=` + `MakerHubToken`
    - 方法: `GET`
    - 返回内容需要包含 `makerhub:ok`
 
-3. 如果探测结果不包含 `makerhub:ok`：
-   - `显示提醒`: `网络不通`
-   - `停止此快捷指令`
+3. 地址不可用或 Token 错误时，iOS 会显示请求失败或 MakerHub 会拒绝上传。
 
 4. `获取名称`
    - 输入: `快捷指令输入`
    - 保存为变量 `FileName`
 
 5. `获取 URL 内容`
-   - URL: 选定地址 + `/api/mobile-import/raw-ipv4?token=` + `MakerHubToken`
+   - URL: `MakerHubBaseUrl` + `/api/mobile-import/raw-ipv4?token=` + `MakerHubToken`
    - 方法: `POST`
    - 请求头:
      - `X-MakerHub-Filename` = `FileName`
@@ -60,4 +53,4 @@
 - `POST /api/mobile-import/raw-ipv4?token=...`: 给 iOS 快捷指令用的简化单文件上传接口。
 - `POST /api/mobile-import`: 仍保留网页/脚本使用的 multipart 批量上传入口。
 
-快捷指令不会在局域网和公网之间自动重试：填了公网地址就走公网，没填公网地址就走局域网。选定地址不可用时提示 `网络不通`；文件已推送给 MakerHub 后提示 `已上传`，后续整理进度在 MakerHub 的本地整理进度卡片里查看。
+文件已推送给 MakerHub 后提示 `已上传`，后续整理进度在 MakerHub 的本地整理进度卡片里查看。

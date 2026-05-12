@@ -386,7 +386,8 @@ const sortedOrganizerItems = computed(() => (
 ));
 const activeOrganizerTask = computed(() => {
   const items = sortedOrganizerItems.value;
-  return items.find((item) => organizerStatusVariant(item?.status) === "running")
+  return items.find((item) => isMobileImportTask(item) && organizerStatusVariant(item?.status) === "running")
+    || items.find((item) => organizerStatusVariant(item?.status) === "running")
     || items.find((item) => organizerStatusVariant(item?.status) === "queued")
     || null;
 });
@@ -427,7 +428,7 @@ const organizerProgressState = computed(() => {
     const variant = organizerStatusVariant(task.status);
     return {
       variant,
-      statusLabel: organizerStatusLabel(task.status),
+      statusLabel: organizerTaskStatusLabel(task),
       title: organizerTaskTitle(task),
       message: organizerTaskMessage(task),
       subtitle: localImportSummaryText.value || organizerProgressSubtitle.value,
@@ -454,6 +455,10 @@ const organizerProgressFooterText = computed(() => {
   if (loadError.value) {
     return "任务状态读取失败";
   }
+  const task = currentOrganizerTask.value;
+  if (isMobileImportTask(task) && organizerProgressPercent(task) < IMPORT_PROCESS_PROGRESS_START) {
+    return "上传中";
+  }
   if (importUploadProgressIsActive()) {
     if (importUploadProgress.phase === "uploading") {
       return "上传中";
@@ -479,7 +484,16 @@ const organizerProgressChips = computed(() => {
       { label: "文件", value: importUploadProgress.fileCount || 0 },
       { label: "大小", value: importUploadProgress.total ? formatFileSize(importUploadProgress.total) : "-" },
       { label: "阶段", value: matchedTask ? "整理" : importUploadPhaseLabel(importUploadProgress.phase) },
-      { label: "状态", value: matchedTask ? organizerStatusLabel(matchedTask.status) : organizerStatusLabel(importUploadProgress.status) },
+      { label: "状态", value: matchedTask ? organizerTaskStatusLabel(matchedTask) : organizerStatusLabel(importUploadProgress.status) },
+    ];
+  }
+  const activeTask = currentOrganizerTask.value;
+  if (isMobileImportTask(activeTask)) {
+    return [
+      { label: "总进度", value: `${displayOrganizerProgressPercent(activeTask)}%` },
+      { label: "文件", value: 1 },
+      { label: "阶段", value: organizerProgressPercent(activeTask) < IMPORT_PROCESS_PROGRESS_START ? "上传" : "整理" },
+      { label: "状态", value: organizerTaskStatusLabel(activeTask) },
     ];
   }
   return [
@@ -590,6 +604,17 @@ function organizerStatusLabel(status) {
   return "空闲";
 }
 
+function isMobileImportTask(item) {
+  return String(item?.kind || "") === "mobile_import_upload";
+}
+
+function organizerTaskStatusLabel(item) {
+  if (isMobileImportTask(item) && organizerProgressPercent(item) < IMPORT_PROCESS_PROGRESS_START) {
+    return "上传中";
+  }
+  return organizerStatusLabel(item?.status);
+}
+
 function organizerProgressPercent(item) {
   const progress = Number(item?.progress || 0);
   if (!Number.isFinite(progress)) {
@@ -606,6 +631,9 @@ function combinedImportProgress(processProgress = 0) {
 
 function displayOrganizerProgressPercent(item) {
   const progress = organizerProgressPercent(item);
+  if (isMobileImportTask(item)) {
+    return progress;
+  }
   if (importUploadProgress.visible && currentImportOrganizerTask.value === item) {
     return combinedImportProgress(progress);
   }
@@ -637,6 +665,7 @@ function findCurrentImportOrganizerTask() {
         itemId === currentId
         || fingerprint === currentId
         || fingerprint === `local-package:${currentId}`
+        || item?.package_source === `local-package:${currentId}`
       )
     ) {
       return true;
@@ -662,6 +691,11 @@ function organizerTaskMessage(item) {
   const message = String(item?.message || "").trim();
   if (message) {
     return message;
+  }
+  if (isMobileImportTask(item)) {
+    return organizerProgressPercent(item) < IMPORT_PROCESS_PROGRESS_START
+      ? "移动端上传中。"
+      : "移动端上传已进入本地整理流程。";
   }
   if (organizerStatusVariant(item?.status) === "running") {
     return "正在处理本地导入文件。";
@@ -691,7 +725,7 @@ function organizerTaskRow(item, fallbackKey) {
     message: organizerTaskMessage(item),
     progress,
     variant: organizerStatusVariant(item?.status),
-    statusLabel: organizerStatusLabel(item?.status),
+    statusLabel: organizerTaskStatusLabel(item),
   };
 }
 

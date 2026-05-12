@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import HTTPException
+from fastapi import UploadFile
 
 from app.api import config as config_api
 from app.core.security import hash_api_token
@@ -64,6 +65,31 @@ class MobileImportTokenTest(unittest.TestCase):
         upload, filename = config_api._mobile_raw_upload_file(b"Rar!\x1a\x07\x01\x00", "wechat-upload")
         self.assertEqual(filename, "wechat-upload.rar")
         self.assertEqual(upload.filename, filename)
+
+    def test_mobile_background_marks_upload_task_and_triggers_package(self):
+        upload = UploadFile(file=BytesIO(b"solid makerhub\nendsolid makerhub\n"), filename="demo.stl")
+        result = {
+            "success": True,
+            "mode": "package",
+            "queued": True,
+            "trigger_organizer": False,
+            "task_id": "pkg-1",
+            "uploaded": [{"file_name": "demo.stl", "status": "queued"}],
+        }
+
+        with patch.object(config_api, "upload_local_import_files", return_value=result), \
+            patch.object(config_api, "BACKGROUND_TASKS_ENABLED", True), \
+            patch.object(config_api.local_organizer, "run_once") as run_once, \
+            patch.object(config_api.task_state_store, "upsert_organize_task") as upsert_task:
+            config_api._run_mobile_import_background([upload], ["demo.stl"], "mobile-1")
+
+        run_once.assert_called_once()
+        payload = upsert_task.call_args_list[0].args[0]
+        self.assertEqual(payload["id"], "mobile-1")
+        self.assertEqual(payload["kind"], "mobile_import_upload")
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(payload["progress"], 100)
+        self.assertEqual(payload["package_source"], "local-package:pkg-1")
 
 
 if __name__ == "__main__":

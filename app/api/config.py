@@ -17,15 +17,17 @@ from datetime import timedelta
 from io import BytesIO
 from multiprocessing import Process
 from pathlib import Path
+from tempfile import SpooledTemporaryFile
 from urllib.parse import quote, unquote, urljoin, urlparse
 
 import requests
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
+from starlette.requests import ClientDisconnect
 
 from app.core.store import JsonStore
 from app.core.security import hash_api_token
-from app.core.settings import APP_VERSION, ARCHIVE_DIR, BACKGROUND_TASKS_ENABLED, STATE_DIR
+from app.core.settings import APP_VERSION, ARCHIVE_DIR, BACKGROUND_TASKS_ENABLED, MAX_LOCAL_IMPORT_UPLOAD_BYTES, STATE_DIR
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
 from app.schemas.models import (
     AdvancedRuntimeConfig,
@@ -1996,7 +1998,61 @@ async def _run_mobile_import_upload(files: list[UploadFile], paths: list[str]) -
     }
 
 
-def _run_mobile_import_background(files: list[UploadFile], paths: list[str]) -> None:
+def _mobile_import_clean_name(paths: list[str]) -> str:
+    return Path(str(paths[0] if paths else "wechat-upload")).name or "wechat-upload"
+
+
+def _finish_mobile_import_progress(
+    *,
+    mobile_task_id: str,
+    paths: list[str],
+    result: dict,
+) -> None:
+    if not mobile_task_id:
+        return
+
+    clean_name = _mobile_import_clean_name(paths)
+    task_id = str(result.get("task_id") or "").strip()
+    skipped = bool(result.get("duplicate")) or any(
+        str(item.get("status") or "").strip().lower() in {"skipped", "duplicate_skipped"}
+        for item in (result.get("uploaded") or [])
+        if isinstance(item, dict)
+    )
+    snapshot_ready = bool(result.get("snapshot_ready"))
+    if skipped:
+        status = "skipped"
+        progress = 100
+        message = str(result.get("message") or "移动端上传已跳过。")
+    elif snapshot_ready:
+        status = "success"
+        progress = 100
+        message = str(result.get("message") or "移动端导入已完成。")
+    else:
+        status = "success"
+        progress = 100
+        message = "移动端上传完成，已进入本地整理流程。"
+
+    task_state_store.upsert_organize_task(
+        {
+            "id": mobile_task_id,
+            "title": clean_name,
+            "file_name": clean_name,
+            "source_path": f"mobile-import/{clean_name}",
+            "status": status,
+            "message": message,
+            "progress": progress,
+            "updated_at": china_now_iso(),
+            "fingerprint": f"mobile-import:{mobile_task_id}",
+            "snapshot_ready": snapshot_ready,
+            "kind": "mobile_import_upload",
+            "package_source": f"local-package:{task_id}" if task_id else "mobile-import",
+            "package_title": clean_name,
+        },
+        limit=50,
+    )
+
+
+def _run_mobile_import_background(files: list[UploadFile], paths: list[str], mobile_task_id: str = "") -> None:
     try:
         result = upload_local_import_files(
             files=files,
@@ -2004,7 +2060,15 @@ def _run_mobile_import_background(files: list[UploadFile], paths: list[str]) -> 
             store=store,
             task_store=task_state_store,
         )
-        if BACKGROUND_TASKS_ENABLED and result.get("trigger_organizer", True):
+        _finish_mobile_import_progress(
+            mobile_task_id=mobile_task_id,
+            paths=paths,
+            result=result,
+        )
+        should_trigger_organizer = bool(result.get("trigger_organizer", True)) or bool(
+            result.get("queued") and result.get("mode") == "package"
+        )
+        if BACKGROUND_TASKS_ENABLED and should_trigger_organizer:
             try:
                 local_organizer.run_once()
             except Exception as exc:
@@ -2017,14 +2081,40 @@ def _run_mobile_import_background(files: list[UploadFile], paths: list[str]) -> 
             mode=result.get("mode") or "",
         )
     except Exception as exc:
+        if mobile_task_id:
+            clean_name = _mobile_import_clean_name(paths)
+            task_state_store.upsert_organize_task(
+                {
+                    "id": mobile_task_id,
+                    "title": clean_name,
+                    "file_name": clean_name,
+                    "source_path": f"mobile-import/{clean_name}",
+                    "status": "failed",
+                    "message": str(exc) or "移动端上传处理失败。",
+                    "progress": 0,
+                    "updated_at": china_now_iso(),
+                    "fingerprint": f"mobile-import:{mobile_task_id}",
+                    "snapshot_ready": False,
+                    "kind": "mobile_import_upload",
+                    "package_source": "mobile-import",
+                    "package_title": clean_name,
+                },
+                limit=50,
+            )
         append_business_log("organizer", "mobile_import_upload_failed", str(exc), level="error")
 
 
-def _infer_mobile_upload_suffix(raw_body: bytes) -> str:
-    head = raw_body[:512]
+def _infer_mobile_upload_suffix_from_file(file_obj, size_bytes: int) -> str:
+    try:
+        file_obj.seek(0)
+        head = file_obj.read(512)
+    except OSError:
+        head = b""
+
     if head.startswith(b"PK\x03\x04"):
         try:
-            with zipfile.ZipFile(BytesIO(raw_body)) as archive:
+            file_obj.seek(0)
+            with zipfile.ZipFile(file_obj) as archive:
                 names = [str(item.filename or "").lower() for item in archive.infolist()]
             if any(name.endswith(".model") or name.startswith("3d/") for name in names):
                 return ".3mf"
@@ -2035,23 +2125,231 @@ def _infer_mobile_upload_suffix(raw_body: bytes) -> str:
         return ".rar"
     if head[:5].lower() == b"solid":
         return ".stl"
-    if len(raw_body) >= 84:
+    if len(head) >= 84:
         try:
-            triangle_count = int.from_bytes(raw_body[80:84], "little")
+            triangle_count = int.from_bytes(head[80:84], "little")
             expected_size = 84 + triangle_count * 50
-            if triangle_count > 0 and expected_size == len(raw_body):
+            if triangle_count > 0 and expected_size == int(size_bytes or 0):
                 return ".stl"
         except Exception:
             pass
     return ""
 
 
-def _mobile_raw_upload_file(raw_body: bytes, filename: str) -> tuple[UploadFile, str]:
+def _infer_mobile_upload_suffix(raw_body: bytes) -> str:
+    return _infer_mobile_upload_suffix_from_file(BytesIO(raw_body), len(raw_body))
+
+
+def _mobile_raw_upload_from_file(file_obj, filename: str, size_bytes: int) -> tuple[UploadFile, str]:
     clean_name = Path(str(filename or "").strip()).name or "wechat-upload"
     if not Path(clean_name).suffix:
-        clean_name = f"{clean_name}{_infer_mobile_upload_suffix(raw_body)}"
-    upload = UploadFile(file=BytesIO(raw_body), filename=clean_name)
+        clean_name = f"{clean_name}{_infer_mobile_upload_suffix_from_file(file_obj, size_bytes)}"
+    file_obj.seek(0)
+    upload = UploadFile(file=file_obj, filename=clean_name)
     return upload, clean_name
+
+
+def _mobile_raw_upload_file(raw_body: bytes, filename: str) -> tuple[UploadFile, str]:
+    spool = SpooledTemporaryFile(max_size=64 * 1024 * 1024, mode="w+b")
+    spool.write(raw_body)
+    return _mobile_raw_upload_from_file(spool, filename, len(raw_body))
+
+
+def _safe_int_value(value: object, default: int = 0) -> int:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _mobile_import_task_id(channel: str, filename: str, content_length: str) -> str:
+    seed = f"{channel}:{filename}:{content_length}:{time.time_ns()}:{uuid.uuid4().hex}"
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
+
+
+def _upsert_mobile_import_progress(
+    *,
+    task_id: str,
+    filename: str,
+    channel: str,
+    status: str,
+    message: str,
+    progress: int,
+    content_length: str = "",
+    received_bytes: int = 0,
+) -> None:
+    clean_name = Path(str(filename or "").strip()).name or "wechat-upload"
+    task_state_store.upsert_organize_task(
+        {
+            "id": task_id,
+            "title": clean_name,
+            "file_name": clean_name,
+            "source_dir": "mobile-import",
+            "target_dir": "",
+            "source_path": f"mobile-import/{clean_name}",
+            "target_path": "",
+            "model_dir": "",
+            "status": status,
+            "message": message,
+            "progress": max(0, min(100, int(progress or 0))),
+            "updated_at": china_now_iso(),
+            "move_files": False,
+            "fingerprint": f"mobile-import:{task_id}",
+            "snapshot_ready": False,
+            "kind": "mobile_import_upload",
+            "staging_dir": "",
+            "package_source": f"mobile-import/{channel}",
+            "package_title": clean_name,
+            "meta": {
+                "channel": channel,
+                "content_length": content_length,
+                "received_bytes": received_bytes,
+            },
+        },
+        limit=50,
+    )
+
+
+async def _read_mobile_raw_upload_file(
+    request: Request,
+    *,
+    task_id: str,
+    channel: str,
+    filename: str,
+    content_length: str,
+) -> tuple[UploadFile, str]:
+    spool = SpooledTemporaryFile(max_size=64 * 1024 * 1024, mode="w+b")
+    received = 0
+    log_step = 5 * 1024 * 1024
+    next_log_at = log_step
+    started_at = time.perf_counter()
+    try:
+        async for chunk in request.stream():
+            if not chunk:
+                continue
+            received += len(chunk)
+            if received > MAX_LOCAL_IMPORT_UPLOAD_BYTES:
+                spool.close()
+                append_business_log(
+                    "organizer",
+                    "mobile_import_raw_too_large",
+                    "移动端原始文件超过上传限制。",
+                    level="warning",
+                    channel=channel,
+                    filename=filename,
+                    received_bytes=received,
+                    max_bytes=MAX_LOCAL_IMPORT_UPLOAD_BYTES,
+                )
+                _upsert_mobile_import_progress(
+                    task_id=task_id,
+                    filename=filename,
+                    channel=channel,
+                    status="failed",
+                    message="移动端上传文件过大。",
+                    progress=0,
+                    content_length=content_length,
+                    received_bytes=received,
+                )
+                raise HTTPException(status_code=413, detail="上传文件过大。")
+            spool.write(chunk)
+            if received >= next_log_at:
+                elapsed_ms = round((time.perf_counter() - started_at) * 1000, 1)
+                total_size = _safe_int_value(content_length, 0)
+                progress = 5
+                if total_size > 0:
+                    progress = max(5, min(34, int((received / total_size) * 35)))
+                append_business_log(
+                    "organizer",
+                    "mobile_import_raw_progress",
+                    "移动端原始文件请求体接收中。",
+                    channel=channel,
+                    filename=filename,
+                    received_bytes=received,
+                    content_length=content_length,
+                    elapsed_ms=elapsed_ms,
+                )
+                _upsert_mobile_import_progress(
+                    task_id=task_id,
+                    filename=filename,
+                    channel=channel,
+                    status="running",
+                    message=f"移动端上传中：{received / 1024 / 1024:.1f} MB 已接收。",
+                    progress=progress,
+                    content_length=content_length,
+                    received_bytes=received,
+                )
+                while next_log_at <= received:
+                    next_log_at += log_step
+    except ClientDisconnect as exc:
+        spool.close()
+        elapsed_ms = round((time.perf_counter() - started_at) * 1000, 1)
+        append_business_log(
+            "organizer",
+            "mobile_import_raw_disconnected",
+            "移动端原始文件上传连接已断开。",
+            level="warning",
+            channel=channel,
+            filename=filename,
+            received_bytes=received,
+            content_length=content_length,
+            elapsed_ms=elapsed_ms,
+        )
+        _upsert_mobile_import_progress(
+            task_id=task_id,
+            filename=filename,
+            channel=channel,
+            status="failed",
+            message="移动端上传连接已断开。",
+            progress=0,
+            content_length=content_length,
+            received_bytes=received,
+        )
+        raise HTTPException(status_code=400, detail="上传连接已断开。") from exc
+    elapsed_ms = round((time.perf_counter() - started_at) * 1000, 1)
+    if received <= 0:
+        spool.close()
+        append_business_log(
+            "organizer",
+            "mobile_import_raw_empty",
+            "移动端原始文件上传为空。",
+            level="warning",
+            channel=channel,
+            filename=filename,
+            content_length=content_length,
+            elapsed_ms=elapsed_ms,
+        )
+        _upsert_mobile_import_progress(
+            task_id=task_id,
+            filename=filename,
+            channel=channel,
+            status="failed",
+            message="上传文件为空。",
+            progress=0,
+            content_length=content_length,
+            received_bytes=0,
+        )
+        raise HTTPException(status_code=400, detail="上传文件为空。")
+    append_business_log(
+        "organizer",
+        "mobile_import_raw_received",
+        "移动端原始文件请求体已接收。",
+        channel=channel,
+        filename=filename,
+        size_bytes=received,
+        content_length=content_length,
+        elapsed_ms=elapsed_ms,
+    )
+    _upsert_mobile_import_progress(
+        task_id=task_id,
+        filename=filename,
+        channel=channel,
+        status="queued",
+        message="移动端上传完成，等待后台本地整理。",
+        progress=35,
+        content_length=content_length,
+        received_bytes=received,
+    )
+    return _mobile_raw_upload_from_file(spool, filename, received)
 
 
 @router.get("/bootstrap")
@@ -3471,6 +3769,17 @@ async def mobile_import_raw_ipv4_file(request: Request, background_tasks: Backgr
         or ""
     ).strip() or "wechat-upload"
     content_length = str(request.headers.get("content-length") or "").strip()
+    mobile_task_id = _mobile_import_task_id("ipv4", filename, content_length)
+    _upsert_mobile_import_progress(
+        task_id=mobile_task_id,
+        filename=filename,
+        channel="ipv4",
+        status="running",
+        message="移动端上传开始。",
+        progress=1,
+        content_length=content_length,
+        received_bytes=0,
+    )
     append_business_log(
         "organizer",
         "mobile_import_raw_started",
@@ -3478,22 +3787,21 @@ async def mobile_import_raw_ipv4_file(request: Request, background_tasks: Backgr
         channel="ipv4",
         filename=filename,
         content_length=content_length,
+        task_id=mobile_task_id,
     )
-    raw_body = await request.body()
-    append_business_log(
-        "organizer",
-        "mobile_import_raw_received",
-        "移动端原始文件请求体已接收。",
+    upload, filename = await _read_mobile_raw_upload_file(
+        request,
+        task_id=mobile_task_id,
         channel="ipv4",
         filename=filename,
-        size_bytes=len(raw_body),
+        content_length=content_length,
     )
-    upload, filename = _mobile_raw_upload_file(raw_body, filename)
-    background_tasks.add_task(_run_mobile_import_background, [upload], [filename])
+    background_tasks.add_task(_run_mobile_import_background, [upload], [filename], mobile_task_id)
     return {
         "success": True,
         "message": "已上传",
         "background": True,
+        "task_id": mobile_task_id,
     }
 
 
@@ -3520,18 +3828,49 @@ async def mobile_import_raw_file(request: Request, background_tasks: BackgroundT
         or request.query_params.get("filename")
         or ""
     ).strip() or "wechat-upload"
-    raw_body = await request.body()
-    upload, filename = _mobile_raw_upload_file(raw_body, filename)
+    content_length = str(request.headers.get("content-length") or "").strip()
+    mobile_task_id = _mobile_import_task_id("bearer", filename, content_length)
+    _upsert_mobile_import_progress(
+        task_id=mobile_task_id,
+        filename=filename,
+        channel="bearer",
+        status="running",
+        message="移动端上传开始。",
+        progress=1,
+        content_length=content_length,
+        received_bytes=0,
+    )
+    append_business_log(
+        "organizer",
+        "mobile_import_raw_started",
+        "移动端原始文件上传开始。",
+        channel="bearer",
+        filename=filename,
+        content_length=content_length,
+        task_id=mobile_task_id,
+    )
+    upload, filename = await _read_mobile_raw_upload_file(
+        request,
+        task_id=mobile_task_id,
+        channel="bearer",
+        filename=filename,
+        content_length=content_length,
+    )
     background = str(request.query_params.get("background") or request.headers.get("X-MakerHub-Background") or "").strip().lower()
     if background in {"1", "true", "yes", "on"}:
-        background_tasks.add_task(_run_mobile_import_background, [upload], [filename])
+        background_tasks.add_task(_run_mobile_import_background, [upload], [filename], mobile_task_id)
         return {
             "success": True,
             "message": "已上传",
             "background": True,
+            "task_id": mobile_task_id,
         }
     try:
-        return await _run_mobile_import_upload([upload], [filename])
+        result = await _run_mobile_import_upload([upload], [filename])
+        return {
+            **result,
+            "task_id": mobile_task_id,
+        }
     except ValueError as exc:
         append_business_log("organizer", "mobile_import_upload_failed", str(exc), level="error")
         raise HTTPException(status_code=400, detail=str(exc)) from exc

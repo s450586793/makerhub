@@ -6,37 +6,18 @@
   },
   "variables": {
     "MakerHubToken": "在 MakerHub 设置 -> 本地整理 -> 移动端导入里生成",
-    "LanBaseUrl": "",
-    "PublicBaseUrl": ""
+    "MakerHubBaseUrl": ""
   },
   "flow": [
     {
-      "action": "如果",
-      "condition": "PublicBaseUrl 不为空",
-      "then_uses": "PublicBaseUrl",
-      "otherwise_uses": "LanBaseUrl"
-    },
-    {
-      "action": "如果",
-      "condition": "选定地址不包含 http",
-      "then": [
-        { "action": "显示提醒", "text": "地址未填写" },
-        { "action": "停止此快捷指令" }
-      ]
+      "action": "接收共享表单输入",
+      "input": "快捷指令输入"
     },
     {
       "action": "获取 URL 内容",
       "method": "GET",
-      "url": "${SelectedBaseUrl}/api/mobile-import/ping-ipv4?token=${MakerHubToken}",
+      "url": "${MakerHubBaseUrl}/api/mobile-import/ping-ipv4?token=${MakerHubToken}",
       "expect": "makerhub:ok"
-    },
-    {
-      "action": "如果",
-      "condition": "探测结果不包含 makerhub:ok",
-      "then": [
-        { "action": "显示提醒", "text": "网络不通" },
-        { "action": "停止此快捷指令" }
-      ]
     },
     {
       "action": "获取名称",
@@ -48,7 +29,7 @@
     {
       "action": "获取 URL 内容",
       "method": "POST",
-      "url": "${SelectedBaseUrl}/api/mobile-import/raw-ipv4?token=${MakerHubToken}",
+      "url": "${MakerHubBaseUrl}/api/mobile-import/raw-ipv4?token=${MakerHubToken}",
       "headers": {
         "X-MakerHub-Filename": "${FileName}"
       },
@@ -64,5 +45,5 @@
     "probe": "/api/mobile-import/ping-ipv4?token=...",
     "upload": "/api/mobile-import/raw-ipv4?token=..."
   },
-  "network_rule": "填了公网地址就走公网；没填公网地址就走局域网。"
+  "network_rule": "在 MakerHub 地址里填写当前手机能访问的局域网或公网地址；地址不可用时由 iOS 显示请求失败。"
 }
