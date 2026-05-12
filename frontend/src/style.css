@@ -188,6 +188,38 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   font-weight: 700;
 }
 
+.mobile-import-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.mobile-import-shortcut {
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: var(--space-2);
+  background: var(--surface-soft);
+}
+
+.mobile-import-shortcut strong {
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+
+.mobile-import-shortcut ol {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+.mobile-import-shortcut code {
+  color: var(--text);
+}
+
 .share-settings-hint {
   margin: -6px 0 0;
 }
@@ -3821,6 +3853,10 @@ html[data-theme="dark"] .library-group-hero {
   }
 
   .share-settings-row {
+    grid-template-columns: 1fr;
+  }
+
+  .mobile-import-status-grid {
     grid-template-columns: 1fr;
   }
 }

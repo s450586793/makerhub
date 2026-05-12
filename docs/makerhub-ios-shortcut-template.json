@@ -1,0 +1,64 @@
+{
+  "name": "推送到 MakerHub",
+  "share_sheet": {
+    "enabled": true,
+    "accepts": ["文件"]
+  },
+  "variables": {
+    "MakerHubToken": "在 MakerHub 设置 -> 本地整理 -> 移动端导入里生成",
+    "LanBaseUrl": "例如 http://192.168.1.20:1111",
+    "PublicBaseUrl": ""
+  },
+  "flow": [
+    {
+      "action": "如果",
+      "condition": "PublicBaseUrl 不为空",
+      "then_sets": {
+        "UploadBaseUrl": "${PublicBaseUrl}"
+      },
+      "otherwise_sets": {
+        "UploadBaseUrl": "${LanBaseUrl}"
+      }
+    },
+    {
+      "action": "获取 URL 内容",
+      "method": "GET",
+      "url": "${UploadBaseUrl}/api/mobile-import/ping-ipv4?token=${MakerHubToken}",
+      "expect": "makerhub:ok"
+    },
+    {
+      "action": "如果",
+      "condition": "探测结果不包含 makerhub:ok",
+      "then": [
+        { "action": "显示提醒", "text": "网络不通" },
+        { "action": "停止此快捷指令" }
+      ]
+    },
+    {
+      "action": "获取名称",
+      "input": "快捷指令输入",
+      "sets": {
+        "FileName": "获取名称的结果"
+      }
+    },
+    {
+      "action": "获取 URL 内容",
+      "method": "POST",
+      "url": "${UploadBaseUrl}/api/mobile-import/raw-ipv4?token=${MakerHubToken}",
+      "headers": {
+        "X-MakerHub-Filename": "${FileName}"
+      },
+      "request_body": "文件",
+      "file": "快捷指令输入"
+    },
+    {
+      "action": "显示通知",
+      "text": "已上传"
+    }
+  ],
+  "makerhub_endpoints": {
+    "probe": "/api/mobile-import/ping-ipv4?token=...",
+    "upload": "/api/mobile-import/raw-ipv4?token=..."
+  },
+  "network_rule": "填了公网地址就走公网；没填公网地址就走局域网。"
+}

@@ -51,6 +51,16 @@ class SharingConfig(BaseModel):
     include_comments: bool = True
 
 
+class MobileImportConfig(BaseModel):
+    enabled: bool = False
+    lan_base_url: str = ""
+    public_base_url: str = ""
+    token_prefix: str = ""
+    token_hash: str = ""
+    created_at: str = ""
+    last_used_at: str = ""
+
+
 class UserProfile(BaseModel):
     username: str = "admin"
     display_name: str = "Admin"
@@ -106,6 +116,15 @@ class PasswordChangeRequest(BaseModel):
 
 class ApiTokenCreateRequest(BaseModel):
     name: str = ""
+
+
+class MobileImportTokenResetRequest(BaseModel):
+    enabled: bool = True
+
+
+class MobileImportSettingsUpdate(BaseModel):
+    lan_base_url: str = ""
+    public_base_url: str = ""
 
 
 class ArchiveRequest(BaseModel):
@@ -325,6 +344,7 @@ class AppConfig(BaseModel):
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
     notifications: NotificationConfig = Field(default_factory=NotificationConfig)
     sharing: SharingConfig = Field(default_factory=SharingConfig)
+    mobile_import: MobileImportConfig = Field(default_factory=MobileImportConfig)
     user: UserProfile = Field(default_factory=UserProfile)
     api_tokens: List[ApiTokenRecord] = Field(default_factory=list)
     subscriptions: List[SubscriptionRecord] = Field(default_factory=list)

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import base64
 import copy
@@ -10,16 +12,19 @@ import re
 import secrets
 import time
 import uuid
+import zipfile
 from datetime import timedelta
+from io import BytesIO
 from multiprocessing import Process
 from pathlib import Path
 from urllib.parse import quote, unquote, urljoin, urlparse
 
 import requests
-from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from app.core.store import JsonStore
+from app.core.security import hash_api_token
 from app.core.settings import APP_VERSION, ARCHIVE_DIR, BACKGROUND_TASKS_ENABLED, STATE_DIR
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
 from app.schemas.models import (
@@ -35,6 +40,9 @@ from app.schemas.models import (
     LocalModelMetadataUpdateRequest,
     LocalModelMergeRequest,
     Missing3mfRetryRequest,
+    MobileImportConfig,
+    MobileImportSettingsUpdate,
+    MobileImportTokenResetRequest,
     ModelDeleteRequest,
     ModelFlagUpdateRequest,
     NotificationConfig,
@@ -1686,6 +1694,16 @@ def _normalize_public_base_url(value: str) -> str:
     return text.rstrip("/")
 
 
+def _normalize_mobile_base_url(value: str, label: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = urlparse(text)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"{label}必须以 http:// 或 https:// 开头。")
+    return text.rstrip("/")
+
+
 def _public_ping_url(base_url: str) -> str:
     normalized = _normalize_public_base_url(base_url)
     return urljoin(f"{normalized}/", MAKERHUB_PUBLIC_PING_PATH.lstrip("/"))
@@ -1865,6 +1883,14 @@ def _public_config_payload(config) -> dict:
         "proxy": config.proxy.model_dump(),
         "notifications": config.notifications.model_dump(),
         "sharing": config.sharing.model_dump(),
+        "mobile_import": {
+            "enabled": bool(config.mobile_import.enabled),
+            "lan_base_url": config.mobile_import.lan_base_url,
+            "public_base_url": config.mobile_import.public_base_url,
+            "token_prefix": config.mobile_import.token_prefix,
+            "created_at": config.mobile_import.created_at,
+            "last_used_at": config.mobile_import.last_used_at,
+        },
         "user": {
             "username": config.user.username,
             "display_name": config.user.display_name,
@@ -1909,6 +1935,132 @@ def _require_session_auth(request: Request) -> None:
     identity = getattr(request.state, "auth_identity", None) or {}
     if identity.get("kind") != "session":
         raise HTTPException(status_code=403, detail="此操作需要登录会话。")
+
+
+def _extract_bearer_token(request: Request) -> str:
+    auth_header = str(request.headers.get("Authorization") or "").strip()
+    if auth_header.lower().startswith("bearer "):
+        return auth_header[7:].strip()
+    custom = str(request.headers.get("X-Mobile-Import-Token") or request.headers.get("X-API-Token") or request.headers.get("X-Token") or "").strip()
+    if custom:
+        return custom
+    return str(request.query_params.get("token") or "").strip()
+
+
+def _validate_mobile_import_token(raw_token: str) -> None:
+    token_hash = hash_api_token(raw_token)
+    config = store.load()
+    mobile_import = config.mobile_import
+    if (
+        not mobile_import.enabled
+        or not mobile_import.token_hash
+        or not raw_token
+        or not hmac.compare_digest(str(mobile_import.token_hash), token_hash)
+    ):
+        raise HTTPException(status_code=401, detail="移动端导入 Token 无效。")
+
+
+def _generate_mobile_import_token() -> str:
+    return f"mhi_{secrets.token_urlsafe(24)}"
+
+
+def _require_mobile_import_token(request: Request) -> None:
+    raw_token = _extract_bearer_token(request)
+    _validate_mobile_import_token(raw_token)
+    config = store.load()
+    mobile_import = config.mobile_import
+    mobile_import.last_used_at = china_now_iso()
+    config.mobile_import = mobile_import
+    store.save(config)
+
+
+async def _run_mobile_import_upload(files: list[UploadFile], paths: list[str]) -> dict:
+    result = await run_task_api(
+        upload_local_import_files,
+        files=files,
+        paths=paths,
+        store=store,
+        task_store=task_state_store,
+    )
+    if BACKGROUND_TASKS_ENABLED and result.get("trigger_organizer", True):
+        try:
+            await run_task_api(local_organizer.run_once)
+            result["triggered"] = True
+        except Exception as exc:
+            result["triggered"] = False
+            result["trigger_error"] = str(exc)
+            append_business_log("organizer", "mobile_import_trigger_failed", str(exc), level="warning")
+    else:
+        result["triggered"] = False
+    append_business_log(
+        "organizer",
+        "mobile_import_uploaded",
+        "移动端文件已上传。",
+        uploaded_count=len(result.get("uploaded") or []),
+        mode=result.get("mode") or "",
+    )
+    return {
+        **result,
+        "message": result.get("message") or "已上传",
+    }
+
+
+def _run_mobile_import_background(files: list[UploadFile], paths: list[str]) -> None:
+    try:
+        result = upload_local_import_files(
+            files=files,
+            paths=paths,
+            store=store,
+            task_store=task_state_store,
+        )
+        if BACKGROUND_TASKS_ENABLED and result.get("trigger_organizer", True):
+            try:
+                local_organizer.run_once()
+            except Exception as exc:
+                append_business_log("organizer", "mobile_import_trigger_failed", str(exc), level="warning")
+        append_business_log(
+            "organizer",
+            "mobile_import_uploaded",
+            "移动端文件已上传。",
+            uploaded_count=len(result.get("uploaded") or []),
+            mode=result.get("mode") or "",
+        )
+    except Exception as exc:
+        append_business_log("organizer", "mobile_import_upload_failed", str(exc), level="error")
+
+
+def _infer_mobile_upload_suffix(raw_body: bytes) -> str:
+    head = raw_body[:512]
+    if head.startswith(b"PK\x03\x04"):
+        try:
+            with zipfile.ZipFile(BytesIO(raw_body)) as archive:
+                names = [str(item.filename or "").lower() for item in archive.infolist()]
+            if any(name.endswith(".model") or name.startswith("3d/") for name in names):
+                return ".3mf"
+        except Exception:
+            pass
+        return ".zip"
+    if head.startswith(b"Rar!\x1a\x07"):
+        return ".rar"
+    if head[:5].lower() == b"solid":
+        return ".stl"
+    if len(raw_body) >= 84:
+        try:
+            triangle_count = int.from_bytes(raw_body[80:84], "little")
+            expected_size = 84 + triangle_count * 50
+            if triangle_count > 0 and expected_size == len(raw_body):
+                return ".stl"
+        except Exception:
+            pass
+    return ""
+
+
+def _mobile_raw_upload_file(raw_body: bytes, filename: str) -> tuple[UploadFile, str]:
+    clean_name = Path(str(filename or "").strip()).name or "wechat-upload"
+    if not Path(clean_name).suffix:
+        clean_name = f"{clean_name}{_infer_mobile_upload_suffix(raw_body)}"
+    upload = UploadFile(file=BytesIO(raw_body), filename=clean_name)
+    return upload, clean_name
 
 
 @router.get("/bootstrap")
@@ -2513,6 +2665,68 @@ async def save_organizer(payload: OrganizeTask, request: Request):
         move_files=payload.move_files,
     )
     saved = store.save(config)
+    return _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
+
+
+@router.post("/config/mobile-import/token")
+async def reset_mobile_import_token(payload: MobileImportTokenResetRequest, request: Request):
+    _require_session_auth(request)
+    config = store.load()
+    current = config.mobile_import
+    raw_token = _generate_mobile_import_token()
+    config.mobile_import = MobileImportConfig(
+        enabled=bool(payload.enabled),
+        lan_base_url=current.lan_base_url,
+        public_base_url=current.public_base_url,
+        token_prefix=raw_token[:12],
+        token_hash=hash_api_token(raw_token),
+        created_at=china_now_iso(),
+        last_used_at="",
+    )
+    saved = store.save(config)
+    append_business_log(
+        "settings",
+        "mobile_import_token_reset",
+        "移动端导入 Token 已生成。",
+        enabled=config.mobile_import.enabled,
+        token_prefix=config.mobile_import.token_prefix,
+    )
+    return {
+        **_with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy)),
+        "token": raw_token,
+        "message": "移动端导入 Token 已生成。",
+    }
+
+
+@router.post("/config/mobile-import")
+async def save_mobile_import_settings(payload: MobileImportSettingsUpdate, request: Request):
+    _require_session_auth(request)
+    config = store.load()
+    try:
+        lan_base_url = _normalize_mobile_base_url(payload.lan_base_url, "局域网地址")
+        public_base_url = _normalize_mobile_base_url(payload.public_base_url, "公网地址")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    config.mobile_import.lan_base_url = lan_base_url
+    config.mobile_import.public_base_url = public_base_url
+    saved = store.save(config)
+    append_business_log(
+        "settings",
+        "mobile_import_settings_saved",
+        "移动端导入配置已保存。",
+        has_lan_base_url=bool(lan_base_url),
+        has_public_base_url=bool(public_base_url),
+    )
+    return _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
+
+
+@router.post("/config/mobile-import/disable")
+async def disable_mobile_import(request: Request):
+    _require_session_auth(request)
+    config = store.load()
+    config.mobile_import.enabled = False
+    saved = store.save(config)
+    append_business_log("settings", "mobile_import_disabled", "移动端导入 Token 已停用。")
     return _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
 
 
@@ -3249,6 +3463,91 @@ async def import_local_library_files(
         return result
     except ValueError as exc:
         append_business_log("organizer", "local_import_upload_failed", str(exc), level="error")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/mobile-import/ping")
+async def mobile_import_ping(request: Request):
+    _require_mobile_import_token(request)
+    return {
+        "success": True,
+        "message": "OK",
+        "app": "makerhub",
+        "app_version": APP_VERSION,
+    }
+
+
+@router.get("/mobile-import/ping-ipv4")
+async def mobile_import_ping_ipv4(token: str = Query("")):
+    try:
+        _validate_mobile_import_token(token)
+    except HTTPException:
+        return "makerhub:unauthorized"
+    return "makerhub:ok"
+
+
+@router.post("/mobile-import/raw-ipv4")
+async def mobile_import_raw_ipv4_file(request: Request, background_tasks: BackgroundTasks, token: str = Query("")):
+    try:
+        _validate_mobile_import_token(token)
+    except HTTPException:
+        return {
+            "success": False,
+            "message": "移动端导入 Token 无效。",
+        }
+    filename = str(
+        request.headers.get("X-MakerHub-Filename")
+        or request.headers.get("X-Filename")
+        or request.query_params.get("filename")
+        or ""
+    ).strip() or "wechat-upload"
+    raw_body = await request.body()
+    upload, filename = _mobile_raw_upload_file(raw_body, filename)
+    background_tasks.add_task(_run_mobile_import_background, [upload], [filename])
+    return {
+        "success": True,
+        "message": "已上传",
+        "background": True,
+    }
+
+
+@router.post("/mobile-import")
+async def mobile_import_files(
+    request: Request,
+    files: list[UploadFile] = File(...),
+    paths: list[str] = Form(default=[]),
+):
+    _require_mobile_import_token(request)
+    try:
+        return await _run_mobile_import_upload(files, paths)
+    except ValueError as exc:
+        append_business_log("organizer", "mobile_import_upload_failed", str(exc), level="error")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/mobile-import/raw")
+async def mobile_import_raw_file(request: Request, background_tasks: BackgroundTasks):
+    _require_mobile_import_token(request)
+    filename = str(
+        request.headers.get("X-MakerHub-Filename")
+        or request.headers.get("X-Filename")
+        or request.query_params.get("filename")
+        or ""
+    ).strip() or "wechat-upload"
+    raw_body = await request.body()
+    upload, filename = _mobile_raw_upload_file(raw_body, filename)
+    background = str(request.query_params.get("background") or request.headers.get("X-MakerHub-Background") or "").strip().lower()
+    if background in {"1", "true", "yes", "on"}:
+        background_tasks.add_task(_run_mobile_import_background, [upload], [filename])
+        return {
+            "success": True,
+            "message": "已上传",
+            "background": True,
+        }
+    try:
+        return await _run_mobile_import_upload([upload], [filename])
+    except ValueError as exc:
+        append_business_log("organizer", "mobile_import_upload_failed", str(exc), level="error")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

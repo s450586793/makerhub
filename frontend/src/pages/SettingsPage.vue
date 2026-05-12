@@ -149,6 +149,73 @@
           <span class="form-status">{{ statuses.organizer }}</span>
         </div>
       </form>
+
+      <form class="settings-form token-card" @submit.prevent="saveMobileImportSettings">
+        <div class="section-card__header">
+          <div>
+            <span class="eyebrow">移动端导入</span>
+            <h2>iOS 快捷指令</h2>
+          </div>
+          <div class="settings-inline-actions">
+            <button class="button button-secondary button-small" type="button" @click="copyShortcutConfig">
+              复制配置
+            </button>
+            <button class="button button-primary button-small" type="button" @click="resetMobileImportToken">
+              生成 Token
+            </button>
+          </div>
+        </div>
+
+        <div class="settings-grid settings-grid--two">
+          <label class="field-card">
+            <span>局域网地址</span>
+            <input v-model.trim="mobileImportForm.lan_base_url" type="url" placeholder="http://192.168.1.20:1111">
+            <small class="archive-form__hint">未填写公网地址时，快捷指令会使用这个地址。</small>
+          </label>
+          <label class="field-card">
+            <span>公网地址</span>
+            <input v-model.trim="mobileImportForm.public_base_url" type="url">
+            <small class="archive-form__hint">填了公网就走公网；不填才走局域网，例如 https://makerhub.example.com。</small>
+          </label>
+        </div>
+
+        <div class="mobile-import-status-grid">
+          <article class="field-card system-update-stat">
+            <span>Token 状态</span>
+            <strong>{{ mobileImportTokenStatus }}</strong>
+            <small>{{ mobileImportTokenMeta }}</small>
+          </article>
+          <article class="field-card system-update-stat">
+            <span>快捷指令提示</span>
+            <strong>成功显示“已上传”</strong>
+            <small>选定地址不可用时显示“网络不通”。</small>
+          </article>
+        </div>
+
+        <div v-if="mobileImportToken" class="token-output">
+          <strong>新 Token</strong>
+          <code>{{ mobileImportToken }}</code>
+        </div>
+
+        <div class="mobile-import-shortcut">
+          <strong>快捷指令流程</strong>
+          <ol>
+            <li>接收共享表单里的文件。</li>
+            <li>如果填写了公网地址就使用公网，否则使用局域网。</li>
+            <li>用 Token 请求选定地址的 <code>/api/mobile-import/ping-ipv4</code>。</li>
+            <li>地址可用后，把文件上传到 <code>/api/mobile-import/raw-ipv4</code>。</li>
+            <li>上传成功提示“已上传”，选定地址不可用提示“网络不通”。</li>
+          </ol>
+        </div>
+
+        <div class="settings-inline-actions">
+          <button class="button button-primary" type="submit">保存移动端导入设置</button>
+          <button class="button button-secondary" type="button" :disabled="!mobileImportEnabled" @click="disableMobileImport">
+            停用 Token
+          </button>
+          <span class="form-status">{{ statuses.mobile_import }}</span>
+        </div>
+      </form>
     </div>
 
     <div v-show="activeTab === 'sharing'" class="settings-panel is-active">
@@ -623,6 +690,7 @@ const themePreference = ref("auto");
 const tokenName = ref("");
 const newToken = ref("");
 const tokenItems = ref([]);
+const mobileImportToken = ref("");
 const sharedShares = ref([]);
 const sharedSharesLoading = ref(false);
 const sharedShareCopyingId = ref("");
@@ -663,6 +731,10 @@ const organizerForm = reactive({
   target_dir: "",
   move_files: true,
 });
+const mobileImportForm = reactive({
+  lan_base_url: "",
+  public_base_url: "",
+});
 const sharingForm = reactive({
   public_base_url: "",
   default_expires_days: 7,
@@ -695,6 +767,7 @@ const statuses = reactive({
   cookie_global: "",
   proxy: "",
   organizer: "",
+  mobile_import: "",
   sharing: "",
   sharing_test: "",
   share_receive: "",
@@ -779,6 +852,24 @@ const changelogSummaryText = computed(() => {
     return `线上 README 更新记录，最近检查时间 ${systemUpdate.value.github_changelog_checked_at}`;
   }
   return "会优先读取 GitHub 仓库 README 中的最新更新记录。";
+});
+const mobileImportEnabled = computed(() => Boolean(config.value?.mobile_import?.enabled));
+const mobileImportTokenStatus = computed(() => {
+  if (mobileImportEnabled.value) {
+    return "已启用";
+  }
+  if (config.value?.mobile_import?.token_prefix) {
+    return "已停用";
+  }
+  return "未生成";
+});
+const mobileImportTokenMeta = computed(() => {
+  const mobileImport = config.value?.mobile_import || {};
+  if (!mobileImport.token_prefix) {
+    return "生成后只显示一次完整 Token。";
+  }
+  const used = mobileImport.last_used_at ? `最近使用：${mobileImport.last_used_at}` : "最近使用：未使用";
+  return `${mobileImport.token_prefix}... / ${used}`;
 });
 const profileBackfillStats = computed(() => {
   const result = profileBackfill.value.last_result || {};
@@ -979,6 +1070,9 @@ function applyConfigToForms(payload) {
   organizerForm.source_dir = payload.organizer?.source_dir || "";
   organizerForm.target_dir = payload.organizer?.target_dir || "";
   organizerForm.move_files = payload.organizer?.move_files !== false;
+  mobileImportForm.lan_base_url = payload.mobile_import?.lan_base_url || "";
+  mobileImportForm.public_base_url = payload.mobile_import?.public_base_url || "";
+  mobileImportToken.value = "";
   sharingForm.public_base_url = payload.sharing?.public_base_url || "";
   sharingForm.default_expires_days = normalizeBoundedInt(payload.sharing?.default_expires_days, 7, 1, 90);
   sharingForm.include_images = payload.sharing?.include_images !== false;
@@ -1251,6 +1345,99 @@ async function saveOrganizer() {
     statuses.organizer = "本地整理设置已保存。";
   } catch (error) {
     statuses.organizer = error instanceof Error ? error.message : "保存失败。";
+  }
+}
+
+function normalizeBaseUrl(value) {
+  return String(value || "").trim().replace(/\/+$/, "");
+}
+
+function buildShortcutConfigText() {
+  const lines = [
+    "MakerHub iOS 快捷指令配置",
+    `Token: ${mobileImportToken.value || "<在 MakerHub 设置里生成后粘贴>"}`,
+    `局域网地址: ${normalizeBaseUrl(mobileImportForm.lan_base_url) || "<例如 http://192.168.1.20:1111>"}`,
+    `公网地址: ${normalizeBaseUrl(mobileImportForm.public_base_url) || "<留空则走局域网>"}`,
+    "",
+    "流程: 如果填写了公网地址就使用公网，否则使用局域网；先 GET 选定地址 /api/mobile-import/ping-ipv4?token=Token；可用后 POST 文件到 /api/mobile-import/raw-ipv4?token=Token；选定地址不可用提示 网络不通；上传成功提示 已上传。",
+  ];
+  return lines.join("\n");
+}
+
+async function copyText(value) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(value);
+    return true;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "readonly");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  textarea.setSelectionRange(0, value.length);
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  return copied;
+}
+
+async function copyShortcutConfig() {
+  statuses.mobile_import = "";
+  try {
+    const copied = await copyText(buildShortcutConfigText());
+    statuses.mobile_import = copied ? "快捷指令配置已复制。" : "浏览器阻止复制，请手动复制配置。";
+  } catch (error) {
+    statuses.mobile_import = error instanceof Error ? error.message : "复制失败。";
+  }
+}
+
+async function saveMobileImportSettings() {
+  statuses.mobile_import = "";
+  try {
+    const payload = await apiRequest("/api/config/mobile-import", {
+      method: "POST",
+      body: { ...mobileImportForm },
+    });
+    applyConfigPayload(payload);
+    statuses.mobile_import = "移动端导入设置已保存。";
+  } catch (error) {
+    statuses.mobile_import = error instanceof Error ? error.message : "保存失败。";
+  }
+}
+
+async function resetMobileImportToken() {
+  if (config.value?.mobile_import?.token_prefix && !window.confirm("生成新 Token 会让旧快捷指令失效。确定继续吗？")) {
+    return;
+  }
+  statuses.mobile_import = "";
+  try {
+    const payload = await apiRequest("/api/config/mobile-import/token", {
+      method: "POST",
+      body: { enabled: true },
+    });
+    mobileImportToken.value = payload.token || "";
+    applyConfigPayload(payload);
+    statuses.mobile_import = "Token 已生成。请把新 Token 填入 iOS 快捷指令。";
+  } catch (error) {
+    statuses.mobile_import = error instanceof Error ? error.message : "生成 Token 失败。";
+  }
+}
+
+async function disableMobileImport() {
+  if (!window.confirm("停用后，手机快捷指令将无法继续上传文件。确定停用吗？")) {
+    return;
+  }
+  statuses.mobile_import = "";
+  try {
+    const payload = await apiRequest("/api/config/mobile-import/disable", {
+      method: "POST",
+    });
+    mobileImportToken.value = "";
+    applyConfigPayload(payload);
+    statuses.mobile_import = "移动端导入 Token 已停用。";
+  } catch (error) {
+    statuses.mobile_import = error instanceof Error ? error.message : "停用失败。";
   }
 }
 

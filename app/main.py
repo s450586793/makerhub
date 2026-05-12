@@ -17,6 +17,7 @@ from app.core.settings import (
     BACKGROUND_TASKS_ENABLED,
     FRONTEND_DIST_DIR,
     MAX_MANUAL_ATTACHMENT_BYTES,
+    MAX_LOCAL_IMPORT_UPLOAD_BYTES,
     PROCESS_ROLE,
     ROOT_DIR,
     ensure_app_dirs,
@@ -115,7 +116,13 @@ async def shutdown_thread_pools() -> None:
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
     path = request.url.path
-    if request.method == "POST" and path.startswith("/api/models/") and path.endswith("/attachments"):
+    if (
+        request.method == "POST"
+        and (
+            (path.startswith("/api/models/") and path.endswith("/attachments"))
+            or path == "/api/mobile-import/raw"
+        )
+    ):
         content_length = str(request.headers.get("content-length") or "").strip()
         if not content_length:
             return JSONResponse({"detail": "上传请求缺少 Content-Length。"}, status_code=411)
@@ -123,7 +130,11 @@ async def auth_guard(request: Request, call_next):
             body_size = int(content_length)
         except ValueError:
             return JSONResponse({"detail": "上传请求大小无效。"}, status_code=400)
-        if body_size > MAX_MANUAL_ATTACHMENT_BYTES:
+        if path == "/api/mobile-import/raw":
+            max_upload_bytes = MAX_LOCAL_IMPORT_UPLOAD_BYTES
+        else:
+            max_upload_bytes = MAX_MANUAL_ATTACHMENT_BYTES
+        if body_size > max_upload_bytes:
             return JSONResponse({"detail": "上传文件过大。"}, status_code=413)
 
     if path.startswith("/static") or path.startswith("/assets"):
@@ -144,7 +155,7 @@ async def auth_guard(request: Request, call_next):
         response = await call_next(request)
         return _apply_cache_headers(path, response)
 
-    if path == "/api/bootstrap" or path.startswith("/api/public/"):
+    if path == "/api/bootstrap" or path.startswith("/api/public/") or path == "/api/mobile-import" or path.startswith("/api/mobile-import/"):
         response = await call_next(request)
         return _apply_cache_headers(path, response)
 
