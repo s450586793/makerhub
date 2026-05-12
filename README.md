@@ -147,6 +147,10 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 ## 更新记录
 
 ### 2026-05-13
+- iOS 快捷指令改为从共享输入读取原文件名，再通过 `X-MakerHub-Filename` 传给移动端导入接口，避免微信推送的 STL / zip / rar 被统一命名为 `wechat-upload`
+- 移动端导入进度隐藏 `wechat-upload` 兜底名，旧快捷指令或异常分享来源未传原名时显示为“移动端导入”；快捷指令说明里的公网示例改为 `example.com`，避免暴露真实部署地址
+
+### 2026-05-13
 - 移动端 raw 上传接入本地库右上角“本地整理”进度卡，`0-35%` 展示快捷指令上传阶段，上传完成后继续由后台本地整理任务接棒展示进度
 - 移动端 raw 上传改为流式接收并写入临时文件，超过 `MAKERHUB_MAX_LOCAL_IMPORT_UPLOAD_BYTES` 会立即失败，避免大文件上传占用过多内存
 - 本地整理任务状态保留移动端上传任务元数据，并新增测试覆盖快捷指令上传任务衔接、包整理触发和任务状态归一化
@@ -1117,7 +1121,7 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ### 2026-04-19
 - 版本号升级到 `v0.5.21`
-- 将 `POST /api/admin/archive/repair-3mf` 改为后台任务模式：接口现在会立即返回，不再因为 `test.ace-station.top:1111` 的反代超时而中断全库修复
+- 将 `POST /api/admin/archive/repair-3mf` 改为后台任务模式：接口现在会立即返回，不再因为反代超时而中断全库修复
 - 新增 `GET /api/admin/archive/repair-3mf` 状态接口，可查看当前是否仍在修复、开始/结束时间、最近一次修复结果与错误信息
 - 修复完成后仍会写入业务日志，便于在公网部署场景下确认全库 `3MF` 映射修复是否已经真正落盘
 

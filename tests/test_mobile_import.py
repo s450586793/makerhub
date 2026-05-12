@@ -66,6 +66,11 @@ class MobileImportTokenTest(unittest.TestCase):
         self.assertEqual(filename, "wechat-upload.rar")
         self.assertEqual(upload.filename, filename)
 
+    def test_mobile_import_display_name_hides_shortcut_fallback(self):
+        self.assertEqual(config_api._mobile_import_clean_name(["wechat-upload"]), "移动端导入")
+        self.assertEqual(config_api._mobile_import_clean_name(["wechat-upload.stl"]), "wechat-upload.stl")
+        self.assertEqual(config_api._mobile_import_clean_name(["demo.stl"]), "demo.stl")
+
     def test_mobile_background_marks_upload_task_and_triggers_package(self):
         upload = UploadFile(file=BytesIO(b"solid makerhub\nendsolid makerhub\n"), filename="demo.stl")
         result = {

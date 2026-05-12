@@ -1999,7 +1999,10 @@ async def _run_mobile_import_upload(files: list[UploadFile], paths: list[str]) -
 
 
 def _mobile_import_clean_name(paths: list[str]) -> str:
-    return Path(str(paths[0] if paths else "wechat-upload")).name or "wechat-upload"
+    raw_name = str(paths[0] if paths else "").strip()
+    if raw_name and raw_name != "wechat-upload":
+        return Path(raw_name).name or raw_name
+    return "移动端导入"
 
 
 def _finish_mobile_import_progress(
@@ -2178,7 +2181,10 @@ def _upsert_mobile_import_progress(
     content_length: str = "",
     received_bytes: int = 0,
 ) -> None:
-    clean_name = Path(str(filename or "").strip()).name or "wechat-upload"
+    raw_name = str(filename or "").strip()
+    clean_name = Path(raw_name).name or "移动端导入"
+    if clean_name == "wechat-upload":
+        clean_name = "移动端导入"
     task_state_store.upsert_organize_task(
         {
             "id": task_id,
