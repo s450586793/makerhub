@@ -147,6 +147,12 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 ## 更新记录
 
 ### 2026-05-12
+- 版本号升级到 `v0.6.86`
+- 移动端导入接口补充诊断日志：`ping-ipv4` 成功会刷新最近使用时间并记录探测成功，`raw-ipv4` 会记录上传开始和请求体接收完成，便于排查 iOS 快捷指令超时卡在地址、反代还是上传阶段
+- `/api/mobile-import/raw-ipv4` 纳入本地导入上传大小保护，使用 `MAKERHUB_MAX_LOCAL_IMPORT_UPLOAD_BYTES` 上限，避免移动端 raw 上传绕过体积限制
+- 重新生成 iOS 快捷指令：局域网地址和公网地址默认都为空，未填写任何可用地址时直接提示 `地址未填写`，不再请求示例局域网地址导致超时
+
+### 2026-05-12
 - 版本号升级到 `v0.6.85`
 - 移动端导入设置页改为只生成和管理 iOS 快捷指令 Token，不再保存局域网地址 / 公网地址；这两个地址只在手机快捷指令里填写，避免 web 端和手机端配置混淆
 - 重新生成 iOS 快捷指令文件，去掉容易丢值的 `UploadBaseUrl` 中间变量，公网分支和局域网分支会直接拼接完整接口地址，修复运行时出现 `无效的 URL：/api/mobile-import/ping-ipv4?token=` 的问题

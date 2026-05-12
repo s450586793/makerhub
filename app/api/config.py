@@ -1954,6 +1954,10 @@ def _generate_mobile_import_token() -> str:
 def _require_mobile_import_token(request: Request) -> None:
     raw_token = _extract_bearer_token(request)
     _validate_mobile_import_token(raw_token)
+    _mark_mobile_import_used()
+
+
+def _mark_mobile_import_used() -> None:
     config = store.load()
     mobile_import = config.mobile_import
     mobile_import.last_used_at = china_now_iso()
@@ -3445,6 +3449,8 @@ async def mobile_import_ping_ipv4(token: str = Query("")):
         _validate_mobile_import_token(token)
     except HTTPException:
         return "makerhub:unauthorized"
+    _mark_mobile_import_used()
+    append_business_log("organizer", "mobile_import_ping", "移动端导入地址探测成功。", channel="ipv4")
     return "makerhub:ok"
 
 
@@ -3457,13 +3463,31 @@ async def mobile_import_raw_ipv4_file(request: Request, background_tasks: Backgr
             "success": False,
             "message": "移动端导入 Token 无效。",
         }
+    _mark_mobile_import_used()
     filename = str(
         request.headers.get("X-MakerHub-Filename")
         or request.headers.get("X-Filename")
         or request.query_params.get("filename")
         or ""
     ).strip() or "wechat-upload"
+    content_length = str(request.headers.get("content-length") or "").strip()
+    append_business_log(
+        "organizer",
+        "mobile_import_raw_started",
+        "移动端原始文件上传开始。",
+        channel="ipv4",
+        filename=filename,
+        content_length=content_length,
+    )
     raw_body = await request.body()
+    append_business_log(
+        "organizer",
+        "mobile_import_raw_received",
+        "移动端原始文件请求体已接收。",
+        channel="ipv4",
+        filename=filename,
+        size_bytes=len(raw_body),
+    )
     upload, filename = _mobile_raw_upload_file(raw_body, filename)
     background_tasks.add_task(_run_mobile_import_background, [upload], [filename])
     return {

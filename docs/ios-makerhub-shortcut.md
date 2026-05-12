@@ -17,7 +17,7 @@
 | 变量 | 内容 |
 | --- | --- |
 | `MakerHubToken` | MakerHub 设置页生成的 `mhi_...` Token |
-| `LanBaseUrl` | 局域网地址，不要以 `/` 结尾 |
+| `LanBaseUrl` | 局域网地址，不要以 `/` 结尾；默认留空 |
 | `PublicBaseUrl` | 公网地址，不要以 `/` 结尾；不需要公网时留空 |
 
 ## 动作流程
@@ -25,6 +25,8 @@
 1. 判断 `PublicBaseUrl` 是否包含 `http`。
    - 有填写公网地址时，后续请求直接使用 `PublicBaseUrl`
    - 没有填写公网地址时，后续请求直接使用 `LanBaseUrl`
+
+如果选定地址不包含 `http`，快捷指令会提示 `地址未填写` 并停止，避免误请求示例地址后超时。
 
 2. `获取 URL 内容`
    - URL: 选定地址 + `/api/mobile-import/ping-ipv4?token=` + `MakerHubToken`

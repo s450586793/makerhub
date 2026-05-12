@@ -6,7 +6,7 @@
   },
   "variables": {
     "MakerHubToken": "在 MakerHub 设置 -> 本地整理 -> 移动端导入里生成",
-    "LanBaseUrl": "例如 http://192.168.1.20:1111",
+    "LanBaseUrl": "",
     "PublicBaseUrl": ""
   },
   "flow": [
@@ -15,6 +15,14 @@
       "condition": "PublicBaseUrl 不为空",
       "then_uses": "PublicBaseUrl",
       "otherwise_uses": "LanBaseUrl"
+    },
+    {
+      "action": "如果",
+      "condition": "选定地址不包含 http",
+      "then": [
+        { "action": "显示提醒", "text": "地址未填写" },
+        { "action": "停止此快捷指令" }
+      ]
     },
     {
       "action": "获取 URL 内容",

@@ -121,21 +121,23 @@ async def auth_guard(request: Request, call_next):
         and (
             (path.startswith("/api/models/") and path.endswith("/attachments"))
             or path == "/api/mobile-import/raw"
+            or path == "/api/mobile-import/raw-ipv4"
         )
     ):
         content_length = str(request.headers.get("content-length") or "").strip()
-        if not content_length:
+        if not content_length and path != "/api/mobile-import/raw-ipv4":
             return JSONResponse({"detail": "上传请求缺少 Content-Length。"}, status_code=411)
-        try:
-            body_size = int(content_length)
-        except ValueError:
-            return JSONResponse({"detail": "上传请求大小无效。"}, status_code=400)
-        if path == "/api/mobile-import/raw":
-            max_upload_bytes = MAX_LOCAL_IMPORT_UPLOAD_BYTES
-        else:
-            max_upload_bytes = MAX_MANUAL_ATTACHMENT_BYTES
-        if body_size > max_upload_bytes:
-            return JSONResponse({"detail": "上传文件过大。"}, status_code=413)
+        if content_length:
+            try:
+                body_size = int(content_length)
+            except ValueError:
+                return JSONResponse({"detail": "上传请求大小无效。"}, status_code=400)
+            if path in {"/api/mobile-import/raw", "/api/mobile-import/raw-ipv4"}:
+                max_upload_bytes = MAX_LOCAL_IMPORT_UPLOAD_BYTES
+            else:
+                max_upload_bytes = MAX_MANUAL_ATTACHMENT_BYTES
+            if body_size > max_upload_bytes:
+                return JSONResponse({"detail": "上传文件过大。"}, status_code=413)
 
     if path.startswith("/static") or path.startswith("/assets"):
         response = await call_next(request)
