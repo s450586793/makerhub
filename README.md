@@ -162,6 +162,9 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - `/api/mobile-import/raw-ipv4` 纳入本地导入上传大小保护，使用 `MAKERHUB_MAX_LOCAL_IMPORT_UPLOAD_BYTES` 上限，避免移动端 raw 上传绕过体积限制
 - 重新生成 iOS 快捷指令：局域网地址和公网地址默认都为空，未填写任何可用地址时直接提示 `地址未填写`，不再请求示例局域网地址导致超时
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-12
 - 版本号升级到 `v0.6.85`
 - 移动端导入设置页改为只生成和管理 iOS 快捷指令 Token，不再保存局域网地址 / 公网地址；这两个地址只在手机快捷指令里填写，避免 web 端和手机端配置混淆
@@ -498,9 +501,6 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 订阅库只展示作者、合集和收藏夹订阅来源，本地收藏、已打印、源端删除、本地删除 4 类状态卡片移动到本地库
 - 本地整理扫描目录、目标目录和移动 / 复制模式配置移动到 `设置 -> 本地整理`，本地库页面只保留状态摘要和入口
 - 日志中心新增常用筛选入口，本地整理任务历史从本地库跳转到日志中心查看
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-04-30
 - 版本号升级到 `v0.6.17`
