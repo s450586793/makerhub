@@ -16,7 +16,6 @@ from app.core.settings import ARCHIVE_DIR, CONFIG_PATH, STATE_DIR
 from app.core.store import JsonStore
 from app.core.timezone import from_timestamp as china_from_timestamp, parse_timestamp as china_parse_timestamp
 from app.services.batch_discovery import extract_model_id, normalize_source_url
-from app.services.local_model_preview import ensure_local_model_preview
 from app.services.model_attachments import (
     ATTACHMENT_CATEGORY_LABELS,
     MANUAL_ATTACHMENTS_RELATIVE_DIR,
@@ -1786,12 +1785,6 @@ def _sample_cover(title: str) -> str:
 
 
 def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[dict]:
-    try:
-        if ensure_local_model_preview(meta_path.parent):
-            invalidate_archive_snapshot("local_stl_preview_generated")
-    except Exception:
-        pass
-
     try:
         meta = _read_json(meta_path)
     except (json.JSONDecodeError, OSError):
