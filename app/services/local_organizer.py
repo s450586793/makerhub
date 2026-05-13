@@ -42,6 +42,7 @@ ORGANIZER_IGNORED_DIR_NAMES = {"_duplicates", "_failed", "_skipped"}
 ORGANIZER_VISIBLE_QUEUE_LIMIT = ORGANIZER_TASK_LIMIT
 ORGANIZER_PROCESS_MODE_ENV = "MAKERHUB_LOCAL_ORGANIZER_MODE"
 ORGANIZER_DAEMON_ENV = "MAKERHUB_LOCAL_ORGANIZER_DAEMON"
+ORGANIZER_TERMINAL_STATUSES = {"success", "skipped"}
 
 
 def _now_iso() -> str:
@@ -82,8 +83,20 @@ def _append_organizer_log(event: str, **payload) -> None:
         "organize_failed",
         "invalid_config",
         "backlog_limited",
+        "candidate_terminal_source_moved",
+        "candidate_terminal_source_cleanup_failed",
     }:
-        level = "error" if event in {"worker_timeout", "duplicate_skip_failed", "organize_failed", "invalid_config"} else "info"
+        level = (
+            "error"
+            if event in {
+                "worker_timeout",
+                "duplicate_skip_failed",
+                "organize_failed",
+                "invalid_config",
+                "candidate_terminal_source_cleanup_failed",
+            }
+            else "info"
+        )
         message_map = {
             "worker_started": "本地整理 worker 已启动。",
             "worker_timeout": "本地整理 worker 超时，已终止。",
@@ -95,6 +108,8 @@ def _append_organizer_log(event: str, **payload) -> None:
             "organize_failed": "本地 3MF 整理失败。",
             "invalid_config": "本地整理配置无效。",
             "backlog_limited": "本地整理检测到积压，按单任务限流处理。",
+            "candidate_terminal_source_moved": "已清理完成状态下残留的本地整理源文件。",
+            "candidate_terminal_source_cleanup_failed": "清理完成状态下残留的本地整理源文件失败。",
         }
         append_business_log("organizer", event, message_map.get(event, event), level=level, **payload)
 
@@ -291,16 +306,16 @@ class LocalOrganizerService:
             pass
 
         candidates = self._iter_candidates(source_dir)
-        self._sync_candidate_queue(
+        actionable_candidates = self._sync_candidate_queue(
             candidates=candidates,
             source_dir=source_dir,
             library_root=library_root,
             move_files=bool(organizer.move_files),
         )
-        if not candidates:
+        if not actionable_candidates:
             return
 
-        pending_count = len(candidates)
+        pending_count = len(actionable_candidates)
         if pending_count > ORGANIZER_MAX_FILES_PER_CYCLE:
             _append_organizer_log(
                 "backlog_limited",
@@ -309,7 +324,7 @@ class LocalOrganizerService:
                 processing_limit=ORGANIZER_MAX_FILES_PER_CYCLE,
             )
 
-        candidate = candidates[0]
+        candidate = actionable_candidates[0]
         self._spawn_worker(
             source_path=candidate,
             source_dir=source_dir,
@@ -324,7 +339,7 @@ class LocalOrganizerService:
         source_dir: Path,
         library_root: Path,
         move_files: bool,
-    ) -> None:
+    ) -> list[Path]:
         existing_payload = self.task_store.load_organize_tasks()
         existing_items = list(existing_payload.get("items") or [])
         existing_by_key: dict[str, dict[str, Any]] = {}
@@ -341,15 +356,25 @@ class LocalOrganizerService:
         visible_candidates = candidates[: max(int(ORGANIZER_VISIBLE_QUEUE_LIMIT or 0), 1)]
         queued_items: list[dict[str, Any]] = []
         matched_keys: set[str] = set()
+        actionable_candidates: list[Path] = []
 
         for source_path in visible_candidates:
             fingerprint = self._fingerprint(source_path)
             task_id = _task_id_from_fingerprint(fingerprint) if fingerprint else ""
             existing = {}
-            for key in (fingerprint, task_id, source_path.as_posix()):
+            for key in (fingerprint, task_id):
                 if key and key in existing_by_key:
                     existing = existing_by_key[key]
                     break
+            if not existing:
+                source_existing = existing_by_key.get(source_path.as_posix()) or {}
+                source_status = str(source_existing.get("status") or "").strip().lower()
+                source_matches_current = (
+                    bool(fingerprint and str(source_existing.get("fingerprint") or "") == fingerprint)
+                    or bool(task_id and str(source_existing.get("id") or "") == task_id)
+                )
+                if source_existing and (source_status not in ORGANIZER_TERMINAL_STATUSES or source_matches_current):
+                    existing = source_existing
 
             status = str(existing.get("status") or "").strip().lower()
             if status == "running":
@@ -362,6 +387,15 @@ class LocalOrganizerService:
                 }
             elif status in {"success", "skipped"}:
                 entry = dict(existing)
+                moved_to = self._move_terminal_source_file(
+                    source_path=source_path,
+                    source_dir=source_dir,
+                    move_files=move_files,
+                    existing=entry,
+                )
+                if moved_to:
+                    entry["target_path"] = moved_to
+                    entry["updated_at"] = now_iso
             else:
                 entry = {
                     "id": task_id,
@@ -384,6 +418,8 @@ class LocalOrganizerService:
                     "fingerprint": fingerprint,
                 }
 
+            if status not in ORGANIZER_TERMINAL_STATUSES:
+                actionable_candidates.append(source_path)
             if not entry.get("updated_at"):
                 entry["updated_at"] = now_iso
             entry["source_dir"] = source_dir.as_posix()
@@ -427,6 +463,7 @@ class LocalOrganizerService:
                 "updated_at": now_iso,
             }
         )
+        return actionable_candidates
 
     def _next_package_import_task(self) -> Optional[dict[str, Any]]:
         payload = self.task_store.load_organize_tasks()
@@ -541,7 +578,22 @@ class LocalOrganizerService:
             return
 
         existing = known_by_fingerprint.get(fingerprint) or {}
-        if str(existing.get("status") or "").lower() in {"success", "skipped"}:
+        if str(existing.get("status") or "").lower() in ORGANIZER_TERMINAL_STATUSES:
+            moved_to = self._move_terminal_source_file(
+                source_path=source_path,
+                source_dir=source_dir,
+                move_files=move_files,
+                existing=existing,
+            )
+            if moved_to:
+                self.task_store.upsert_organize_task(
+                    {
+                        **existing,
+                        "target_path": moved_to,
+                        "updated_at": _now_iso(),
+                    },
+                    limit=ORGANIZER_TASK_LIMIT,
+                )
             _append_organizer_log(
                 "candidate_ignored_existing",
                 source=source_path.as_posix(),
@@ -712,6 +764,52 @@ class LocalOrganizerService:
             source=source_path_text,
             return_code=return_code,
         )
+
+    def _move_terminal_source_file(
+        self,
+        *,
+        source_path: Path,
+        source_dir: Path,
+        move_files: bool,
+        existing: dict[str, Any],
+    ) -> str:
+        if not move_files or not source_path.exists() or not source_path.is_file():
+            return ""
+
+        status = str(existing.get("status") or "").strip().lower()
+        if status not in ORGANIZER_TERMINAL_STATUSES:
+            return ""
+
+        message = str(existing.get("message") or "")
+        target_path_text = str(existing.get("target_path") or "")
+        duplicate_hint = status == "skipped" and (
+            "重复" in message
+            or "/_duplicates/" in target_path_text.replace("\\", "/")
+            or target_path_text.replace("\\", "/").endswith("/_duplicates")
+        )
+        destination_dir = source_dir / ("_duplicates" if duplicate_hint else "_skipped")
+
+        try:
+            destination_dir.mkdir(parents=True, exist_ok=True)
+            target = self._ensure_unique_filename(destination_dir, source_path.name)
+            shutil.move(str(source_path), str(target))
+        except Exception as exc:
+            _append_organizer_log(
+                "candidate_terminal_source_cleanup_failed",
+                source=source_path.as_posix(),
+                status=status,
+                error=str(exc),
+            )
+            return ""
+
+        target_path = target.as_posix()
+        _append_organizer_log(
+            "candidate_terminal_source_moved",
+            source=source_path.as_posix(),
+            moved_to=target_path,
+            status=status,
+        )
+        return target_path
 
     def _spawn_worker(
         self,

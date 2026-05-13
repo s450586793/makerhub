@@ -153,6 +153,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 ## 更新记录
 
 ### 2026-05-13
+- 修复移动端 3MF 导入命中已有配置后源文件残留在扫描目录的问题，重复文件会自动移入 `_duplicates`，避免本地整理 worker 反复启动造成“卡住”的假象
+- 本地整理队列不再用旧的同路径 skipped 记录误拦新上传文件，新文件会按新的指纹重新排队处理
+- 新增本地整理回归测试，覆盖重复源文件清理和同名新文件重新入队
+
+### 2026-05-13
 - README 新增 iOS「推送到 MakerHub」签名快捷指令下载入口，GitHub 页面可直接下载 `docs/推送到 MakerHub.signed.shortcut`
 - 更新记录默认只展开最新 3 段，其余历史记录放入折叠区，减少 GitHub 页面底部占用
 
@@ -160,14 +165,14 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - iOS 快捷指令改为从共享输入读取原文件名，再通过 `X-MakerHub-Filename` 传给移动端导入接口，避免微信推送的 STL / zip / rar 被统一命名为 `wechat-upload`
 - 移动端导入进度隐藏 `wechat-upload` 兜底名，旧快捷指令或异常分享来源未传原名时显示为“移动端导入”；快捷指令说明里的公网示例改为 `example.com`，避免暴露真实部署地址
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-13
 - 移动端 raw 上传接入本地库右上角“本地整理”进度卡，`0-35%` 展示快捷指令上传阶段，上传完成后继续由后台本地整理任务接棒展示进度
 - 移动端 raw 上传改为流式接收并写入临时文件，超过 `MAKERHUB_MAX_LOCAL_IMPORT_UPLOAD_BYTES` 会立即失败，避免大文件上传占用过多内存
 - 本地整理任务状态保留移动端上传任务元数据，并新增测试覆盖快捷指令上传任务衔接、包整理触发和任务状态归一化
 - 重新生成 iOS 快捷指令：POST 文件体绑定到共享表单输入，避免微信/文件 App 分享后服务端收到空文件
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-12
 - 版本号升级到 `v0.6.86`
