@@ -80,10 +80,10 @@
               >
               <div v-else class="media-placeholder media-placeholder--large">{{ detail.title.slice(0, 1) }}</div>
               <button
-                v-if="currentMedia.src"
+                v-if="activeModelPreviewFile"
                 class="mw-gallery__preview"
                 type="button"
-                @click="openLightbox(currentMedia.src, currentMedia.alt || detail.title)"
+                @click="openModelPreview"
               >
                 <span class="mw-gallery__preview-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="currentColor">
@@ -781,6 +781,53 @@
     </div>
 
     <div
+      v-if="modelPreview.open"
+      class="model-preview-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="model-preview-title"
+      @click="closeModelPreview"
+    >
+      <div class="model-preview-dialog__panel" @click.stop>
+        <header class="model-preview-dialog__header">
+          <div class="model-preview-dialog__title">
+            <span>3D 预览</span>
+            <strong id="model-preview-title">{{ modelPreview.title || detail.title }}</strong>
+          </div>
+          <div class="model-preview-dialog__actions">
+            <button
+              class="button button-secondary button-small model-preview-dialog__reset"
+              type="button"
+              :disabled="modelPreview.loading || Boolean(modelPreview.error)"
+              @click="resetModelPreviewCamera"
+            >
+              重置视角
+            </button>
+            <button
+              class="button button-secondary button-small model-preview-dialog__close"
+              type="button"
+              aria-label="关闭 3D 预览"
+              @click="closeModelPreview"
+            >
+              关闭
+            </button>
+          </div>
+        </header>
+        <div ref="modelPreviewStageRef" class="model-preview-dialog__stage">
+          <canvas ref="modelPreviewCanvasRef" class="model-preview-dialog__canvas"></canvas>
+          <div v-if="modelPreview.loading" class="model-preview-dialog__state">
+            <strong>正在加载 3D 模型</strong>
+            <span>请稍候。</span>
+          </div>
+          <div v-else-if="modelPreview.error" class="model-preview-dialog__state model-preview-dialog__state--error">
+            <strong>3D 预览加载失败</strong>
+            <span>{{ modelPreview.error }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div
       v-if="localEditDialog.open"
       class="submit-dialog mw-local-edit-dialog"
       role="dialog"
@@ -925,6 +972,15 @@ const lightbox = ref({
   src: "",
   alt: "预览图片",
 });
+const modelPreview = ref({
+  open: false,
+  loading: false,
+  error: "",
+  fileUrl: "",
+  title: "",
+});
+const modelPreviewCanvasRef = ref(null);
+const modelPreviewStageRef = ref(null);
 const attachmentFileInput = ref(null);
 const attachmentUploading = ref(false);
 const attachmentUploadMessage = ref("");
@@ -968,6 +1024,16 @@ let hoverPopoverMediaListener = null;
 let commentsRenderFrame = 0;
 let commentsLoadMoreObserver = null;
 let railResizeObserver = null;
+let modelPreviewFrame = 0;
+let modelPreviewRenderer = null;
+let modelPreviewScene = null;
+let modelPreviewCamera = null;
+let modelPreviewControls = null;
+let modelPreviewMesh = null;
+let modelPreviewGrid = null;
+let modelPreviewResizeObserver = null;
+let modelPreviewHome = null;
+let modelPreviewRequestId = 0;
 
 const INITIAL_COMMENT_BATCH = 20;
 const COMMENT_REPLY_PREVIEW_COUNT = 3;
@@ -1164,6 +1230,19 @@ const detailBackLabel = computed(() => {
 
 const activeInstance = computed(() => {
   return detail.value?.instances?.find((item) => item.instance_key === activeInstanceKey.value) || null;
+});
+
+const activeModelPreviewFile = computed(() => {
+  const instance = activeInstance.value;
+  if (!instance?.file_available || !instance.file_url) {
+    return null;
+  }
+  const kind = String(instance.file_kind || "").trim().toUpperCase();
+  const name = String(instance.file_name || "").trim().toLowerCase();
+  if (kind === "STL" || kind === "OBJ" || kind === "3MF" || name.endsWith(".stl") || name.endsWith(".obj") || name.endsWith(".3mf")) {
+    return instance;
+  }
+  return null;
 });
 
 const headCrumbs = computed(() => {
@@ -1718,6 +1797,7 @@ function handleWindowPointerDown(event) {
 
 function handleWindowResize() {
   syncAllThumbRails();
+  resizeModelPreviewRenderer();
   if (!previewedInstanceKey.value || !detail.value?.instances?.length) {
     return;
   }
@@ -1765,7 +1845,324 @@ function closeLightbox() {
     src: "",
     alt: "预览图片",
   };
+  if (typeof document !== "undefined" && !modelPreview.value.open) {
+    document.body.classList.remove("is-lightbox-open");
+  }
+}
+
+function disposeModelPreviewScene() {
+  if (modelPreviewFrame && typeof window !== "undefined") {
+    window.cancelAnimationFrame(modelPreviewFrame);
+  }
+  modelPreviewFrame = 0;
+  if (modelPreviewResizeObserver) {
+    modelPreviewResizeObserver.disconnect();
+    modelPreviewResizeObserver = null;
+  }
+  if (modelPreviewControls) {
+    modelPreviewControls.dispose();
+    modelPreviewControls = null;
+  }
+  if (modelPreviewMesh) {
+    disposeModelPreviewObject(modelPreviewMesh);
+    modelPreviewMesh = null;
+  }
+  if (modelPreviewGrid) {
+    if (modelPreviewGrid.geometry) {
+      modelPreviewGrid.geometry.dispose();
+    }
+    if (modelPreviewGrid.material) {
+      modelPreviewGrid.material.dispose();
+    }
+    modelPreviewGrid = null;
+  }
+  if (modelPreviewRenderer) {
+    modelPreviewRenderer.dispose();
+    modelPreviewRenderer = null;
+  }
+  modelPreviewScene = null;
+  modelPreviewCamera = null;
+  modelPreviewHome = null;
+}
+
+function disposeModelPreviewMaterial(material) {
+  if (Array.isArray(material)) {
+    for (const item of material) {
+      disposeModelPreviewMaterial(item);
+    }
+    return;
+  }
+  if (!material) {
+    return;
+  }
+  for (const value of Object.values(material)) {
+    if (value?.isTexture) {
+      value.dispose();
+    }
+  }
+  material.dispose?.();
+}
+
+function disposeModelPreviewObject(object) {
+  if (!object) {
+    return;
+  }
+  object.traverse?.((item) => {
+    if (item.geometry) {
+      item.geometry.dispose();
+    }
+    disposeModelPreviewMaterial(item.material);
+  });
+  if (object.geometry) {
+    object.geometry.dispose();
+  }
+  disposeModelPreviewMaterial(object.material);
+}
+
+function resizeModelPreviewRenderer() {
+  const stage = modelPreviewStageRef.value;
+  if (!stage || !modelPreviewRenderer || !modelPreviewCamera) {
+    return;
+  }
+  const width = Math.max(1, stage.clientWidth || 1);
+  const height = Math.max(1, stage.clientHeight || 1);
+  modelPreviewRenderer.setSize(width, height, false);
+  modelPreviewCamera.aspect = width / height;
+  modelPreviewCamera.updateProjectionMatrix();
+  modelPreviewRenderer.render(modelPreviewScene, modelPreviewCamera);
+}
+
+function frameModelPreviewObject(THREE, object) {
+  const box = new THREE.Box3().setFromObject(object);
+  const size = new THREE.Vector3();
+  const center = new THREE.Vector3();
+  box.getSize(size);
+  box.getCenter(center);
+  object.position.sub(center);
+
+  const maxDim = Math.max(size.x, size.y, size.z, 1);
+  const distance = maxDim * 1.7;
+  const near = Math.max(distance / 100, 0.01);
+  const far = Math.max(distance * 12, 1000);
+  modelPreviewCamera.near = near;
+  modelPreviewCamera.far = far;
+  modelPreviewCamera.position.set(maxDim * 1.18, maxDim * 1.05, maxDim * 1.45);
+  modelPreviewCamera.updateProjectionMatrix();
+
+  if (modelPreviewControls) {
+    modelPreviewControls.target.set(0, 0, 0);
+    modelPreviewControls.minDistance = maxDim * 0.22;
+    modelPreviewControls.maxDistance = maxDim * 8;
+    modelPreviewControls.update();
+  }
+  modelPreviewHome = {
+    position: modelPreviewCamera.position.clone(),
+    target: new THREE.Vector3(0, 0, 0),
+  };
+
+  if (modelPreviewGrid) {
+    modelPreviewGrid.scale.setScalar(maxDim / 10);
+    modelPreviewGrid.position.y = -size.y / 2;
+  }
+}
+
+function resetModelPreviewCamera() {
+  if (!modelPreviewHome || !modelPreviewCamera || !modelPreviewControls) {
+    return;
+  }
+  modelPreviewCamera.position.copy(modelPreviewHome.position);
+  modelPreviewControls.target.copy(modelPreviewHome.target);
+  modelPreviewControls.update();
+}
+
+function startModelPreviewLoop() {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const render = () => {
+    if (!modelPreviewRenderer || !modelPreviewScene || !modelPreviewCamera) {
+      modelPreviewFrame = 0;
+      return;
+    }
+    modelPreviewControls?.update();
+    modelPreviewRenderer.render(modelPreviewScene, modelPreviewCamera);
+    modelPreviewFrame = window.requestAnimationFrame(render);
+  };
+  if (!modelPreviewFrame) {
+    modelPreviewFrame = window.requestAnimationFrame(render);
+  }
+}
+
+function normalizeModelPreviewObject(THREE, object) {
+  object.updateMatrixWorld(true);
+  object.traverse?.((item) => {
+    if (item?.isMesh) {
+      if (item.geometry && !item.geometry.getAttribute("normal")) {
+        item.geometry.computeVertexNormals();
+      }
+      if (!item.material) {
+        item.material = new THREE.MeshStandardMaterial({
+          color: 0xdfe7ef,
+          roughness: 0.55,
+          metalness: 0.04,
+        });
+      }
+      item.castShadow = false;
+      item.receiveShadow = false;
+    }
+  });
+  return object;
+}
+
+async function loadModelPreviewObject(THREE, fileUrl, fileName) {
+  const name = String(fileName || fileUrl || "").toLowerCase();
+  if (name.endsWith(".3mf")) {
+    const { ThreeMFLoader } = await import("three/examples/jsm/loaders/3MFLoader.js");
+    const loader = new ThreeMFLoader();
+    return normalizeModelPreviewObject(THREE, await loader.loadAsync(fileUrl));
+  }
+  if (name.endsWith(".obj")) {
+    const { OBJLoader } = await import("three/examples/jsm/loaders/OBJLoader.js");
+    const loader = new OBJLoader();
+    const object = await loader.loadAsync(fileUrl);
+    object.traverse((item) => {
+      if (item?.isMesh) {
+        item.material = new THREE.MeshStandardMaterial({
+          color: 0xdfe7ef,
+          roughness: 0.55,
+          metalness: 0.04,
+        });
+      }
+    });
+    return normalizeModelPreviewObject(THREE, object);
+  }
+  const { STLLoader } = await import("three/examples/jsm/loaders/STLLoader.js");
+  const loader = new STLLoader();
+  const geometry = await loader.loadAsync(fileUrl);
+  geometry.computeVertexNormals();
+  const material = new THREE.MeshStandardMaterial({
+    color: 0xdfe7ef,
+    roughness: 0.55,
+    metalness: 0.04,
+  });
+  return new THREE.Mesh(geometry, material);
+}
+
+async function mountModelPreviewScene(fileUrl, requestId) {
+  const stage = modelPreviewStageRef.value;
+  const canvas = modelPreviewCanvasRef.value;
+  if (!stage || !canvas) {
+    throw new Error("预览窗口还未准备好。");
+  }
+  disposeModelPreviewScene();
+
+  const THREE = await import("three");
+  const { OrbitControls } = await import("three/examples/jsm/controls/OrbitControls.js");
+  if (requestId !== modelPreviewRequestId || !modelPreview.value.open) {
+    return false;
+  }
+
+  modelPreviewRenderer = new THREE.WebGLRenderer({
+    antialias: true,
+    alpha: true,
+    canvas,
+  });
+  modelPreviewRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  modelPreviewRenderer.outputColorSpace = THREE.SRGBColorSpace;
+
+  modelPreviewScene = new THREE.Scene();
+  modelPreviewScene.background = new THREE.Color(0x111827);
+  modelPreviewCamera = new THREE.PerspectiveCamera(45, 1, 0.01, 1000);
+
+  const ambient = new THREE.HemisphereLight(0xffffff, 0x26313f, 2.2);
+  modelPreviewScene.add(ambient);
+  const keyLight = new THREE.DirectionalLight(0xffffff, 2.3);
+  keyLight.position.set(3, 5, 4);
+  modelPreviewScene.add(keyLight);
+  const fillLight = new THREE.DirectionalLight(0x9fd4ff, 0.85);
+  fillLight.position.set(-4, 2, -3);
+  modelPreviewScene.add(fillLight);
+  modelPreviewGrid = new THREE.GridHelper(10, 20, 0x4b5563, 0x273244);
+  modelPreviewGrid.material.transparent = true;
+  modelPreviewGrid.material.opacity = 0.32;
+  modelPreviewScene.add(modelPreviewGrid);
+
+  modelPreviewControls = new OrbitControls(modelPreviewCamera, canvas);
+  modelPreviewControls.enableDamping = true;
+  modelPreviewControls.dampingFactor = 0.08;
+  modelPreviewControls.screenSpacePanning = false;
+
+  resizeModelPreviewRenderer();
+  const object = await loadModelPreviewObject(THREE, fileUrl, modelPreview.value.title);
+  if (requestId !== modelPreviewRequestId || !modelPreview.value.open) {
+    disposeModelPreviewObject(object);
+    disposeModelPreviewScene();
+    return false;
+  }
+  modelPreviewMesh = object;
+  modelPreviewScene.add(object);
+  frameModelPreviewObject(THREE, object);
+  resizeModelPreviewRenderer();
+
+  if (typeof ResizeObserver !== "undefined") {
+    modelPreviewResizeObserver = new ResizeObserver(() => resizeModelPreviewRenderer());
+    modelPreviewResizeObserver.observe(stage);
+  }
+  startModelPreviewLoop();
+  return true;
+}
+
+async function openModelPreview() {
+  const previewFile = activeModelPreviewFile.value;
+  if (!previewFile?.file_url) {
+    return;
+  }
+  modelPreview.value = {
+    open: true,
+    loading: true,
+    error: "",
+    fileUrl: previewFile.file_url,
+    title: previewFile.title || previewFile.file_name || detail.value?.title || "3D 模型",
+  };
   if (typeof document !== "undefined") {
+    document.body.classList.add("is-lightbox-open");
+  }
+  const requestId = ++modelPreviewRequestId;
+  await nextTick();
+  try {
+    const mounted = await mountModelPreviewScene(previewFile.file_url, requestId);
+    if (!mounted || requestId !== modelPreviewRequestId) {
+      return;
+    }
+    modelPreview.value = {
+      ...modelPreview.value,
+      loading: false,
+      error: "",
+    };
+  } catch (error) {
+    if (requestId !== modelPreviewRequestId) {
+      return;
+    }
+    disposeModelPreviewScene();
+    modelPreview.value = {
+      ...modelPreview.value,
+      loading: false,
+      error: error instanceof Error ? error.message : "无法读取该 STL 文件。",
+    };
+  }
+}
+
+function closeModelPreview() {
+  modelPreviewRequestId += 1;
+  disposeModelPreviewScene();
+  modelPreview.value = {
+    open: false,
+    loading: false,
+    error: "",
+    fileUrl: "",
+    title: "",
+  };
+  if (typeof document !== "undefined" && !lightbox.value.open) {
     document.body.classList.remove("is-lightbox-open");
   }
 }
@@ -1773,6 +2170,8 @@ function closeLightbox() {
 function handleWindowKeydown(event) {
   if (event.key === "Escape" && lightbox.value.open) {
     closeLightbox();
+  } else if (event.key === "Escape" && modelPreview.value.open) {
+    closeModelPreview();
   }
 }
 
@@ -2864,6 +3263,7 @@ function detailCacheKey(value = modelDir.value) {
 
 function resetDetailViewState({ clearDetail = true } = {}) {
   closeLightbox();
+  closeModelPreview();
   profileEntryRefs.clear();
   clearProfileMediaStripRefs();
   mainGalleryRail.value = createThumbRailState();
@@ -3149,6 +3549,7 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   closeLightbox();
+  closeModelPreview();
   profileEntryRefs.clear();
   clearProfileMediaStripRefs();
   mainGalleryThumbsRef.value = null;

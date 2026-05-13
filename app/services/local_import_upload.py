@@ -23,6 +23,7 @@ from app.core.timezone import from_timestamp as china_from_timestamp, now_iso as
 from app.services.business_logs import append_business_log
 from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot, upsert_archive_snapshot_model
 from app.services.legacy_archiver import sanitize_filename
+from app.services.local_model_preview import ensure_package_preview_images
 from app.services.task_state import TaskStateStore
 
 
@@ -1337,6 +1338,12 @@ def _run_package_import_from_staging(
         for item in classified["images"]:
             target_path = _copy_item_to_dir(item, images_dir)
             image_paths.append(f"images/{target_path.name}")
+        image_paths = ensure_package_preview_images(
+            model_root=model_root,
+            model_files=copied_models,
+            image_paths=image_paths,
+            title=title,
+        )
 
         description_item = _pick_description_item(classified["texts"])
         description_text = _description_text_from_item(description_item)

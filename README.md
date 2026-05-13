@@ -152,6 +152,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-05-14
+- 本地导入的 STL 在没有图册图片时会自动生成轻量静态封面，存量本地 STL 缺封面时会在读取模型时懒生成
+- 详情页 `3D 预览` 改为点击后才加载 Three.js 和真实模型文件，支持 STL / OBJ / 3MF 旋转、缩放与重置视角，不影响模型库列表初始性能
+- 新增本地 STL 自动封面回归测试，覆盖新导入和存量模型读取补图两条路径
+
 ### 2026-05-13
 - 移动端 raw 上传支持从 `filename` URL 参数、`X-MakerHub-Filename` 请求头和 `Content-Disposition` 解析文件名，优先采用非 `wechat-upload` 的真实名称
 - iOS「推送到 MakerHub」快捷指令重新签名，上传时会同时通过 URL 参数和请求头传递文件名，改善微信中文附件名丢失的问题
@@ -162,13 +167,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 本地整理进度卡隐藏 `wechat-upload.3mf` 等占位名，未拿到真实文件名时显示为“移动端导入”
 - 新增移动端导入回归测试，覆盖 `3MF` 元数据中文标题含 `/` 时的命名兜底
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-13
 - 修复移动端 3MF 导入命中已有配置后源文件残留在扫描目录的问题，重复文件会自动移入 `_duplicates`，避免本地整理 worker 反复启动造成“卡住”的假象
 - 本地整理队列不再用旧的同路径 skipped 记录误拦新上传文件，新文件会按新的指纹重新排队处理
 - 新增本地整理回归测试，覆盖重复源文件清理和同名新文件重新入队
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-13
 - README 新增 iOS「推送到 MakerHub」签名快捷指令下载入口，GitHub 页面可直接下载 `docs/推送到 MakerHub.signed.shortcut`

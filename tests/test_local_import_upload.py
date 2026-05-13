@@ -185,6 +185,108 @@ class LocalImportUploadTest(unittest.TestCase):
             self.assertEqual(task_item["progress"], 100)
             self.assertEqual(task_item["message"], "本地模型包已导入。")
 
+    def test_stl_import_generates_preview_when_no_images_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            archive_root = root / "archive"
+            source_root = root / "source"
+            state_root = root / "state"
+            archive_root.mkdir()
+            source_root.mkdir()
+            state_root.mkdir()
+
+            stl_data = (
+                b"solid cube\n"
+                b"facet normal 0 0 1\nouter loop\n"
+                b"vertex 0 0 0\nvertex 20 0 0\nvertex 0 20 0\n"
+                b"endloop\nendfacet\n"
+                b"facet normal 0 1 0\nouter loop\n"
+                b"vertex 0 0 0\nvertex 20 0 0\nvertex 0 0 20\n"
+                b"endloop\nendfacet\n"
+                b"endsolid cube\n"
+            )
+            store = SimpleNamespace(
+                load=lambda: SimpleNamespace(
+                    organizer=SimpleNamespace(source_dir=source_root.as_posix(), target_dir=archive_root.as_posix())
+                )
+            )
+            task_store = FakeTaskStore()
+
+            with patch.object(local_import_upload, "ARCHIVE_DIR", archive_root), \
+                patch.object(local_import_upload, "ORGANIZER_LIBRARY_INDEX_CACHE_PATH", state_root / "organizer_library_index.json"), \
+                patch.object(local_import_upload, "append_business_log"), \
+                patch.object(local_import_upload, "invalidate_archive_snapshot"), \
+                patch.object(catalog, "ARCHIVE_DIR", archive_root):
+                queued = local_import_upload.upload_local_import_files(
+                    files=[_upload("cube.stl", stl_data)],
+                    paths=["cube.stl"],
+                    store=store,
+                    task_store=task_store,
+                )
+                self.assertTrue(queued["queued"])
+                result = local_import_upload.run_queued_package_import_task(
+                    task_store.payload["items"][0],
+                    store=store,
+                    task_store=task_store,
+                )
+                detail = catalog.get_model_detail(result["model_dir"])
+
+            meta_path = archive_root / result["model_dir"] / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            self.assertTrue(str(meta["cover"]).startswith("images/stl_preview_cube"))
+            self.assertTrue((archive_root / result["model_dir"] / meta["cover"]).exists())
+            self.assertEqual(meta["designImages"][0]["relPath"], meta["cover"])
+            self.assertEqual(meta["instances"][0]["thumbnailLocal"], meta["cover"])
+            self.assertEqual(meta["instances"][0]["pictures"][0]["relPath"], meta["cover"])
+            self.assertIsNotNone(detail)
+            self.assertIn("/images/stl_preview_cube", detail["cover_url"])
+
+    def test_existing_local_stl_without_cover_is_backfilled_on_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            archive_root = root / "archive"
+            model_root = archive_root / "LOCAL_old_stl"
+            (model_root / "instances").mkdir(parents=True)
+            (model_root / "instances" / "body.stl").write_bytes(
+                b"solid body\n"
+                b"facet normal 0 0 1\nouter loop\n"
+                b"vertex 0 0 0\nvertex 10 0 0\nvertex 0 10 10\n"
+                b"endloop\nendfacet\n"
+                b"endsolid body\n"
+            )
+            (model_root / "meta.json").write_text(
+                json.dumps(
+                    {
+                        "title": "old_stl",
+                        "source": "local",
+                        "instances": [
+                            {
+                                "title": "body",
+                                "fileName": "body.stl",
+                                "fileKind": "STL",
+                            }
+                        ],
+                        "localImport": {
+                            "modelFileCount": 1,
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(catalog, "ARCHIVE_DIR", archive_root), \
+                patch.object(catalog, "invalidate_archive_snapshot"):
+                detail = catalog.get_model_detail("LOCAL_old_stl")
+
+            self.assertIsNotNone(detail)
+            self.assertIn("/images/stl_preview_body", detail["cover_url"])
+            meta = json.loads((model_root / "meta.json").read_text(encoding="utf-8"))
+            self.assertTrue(str(meta["cover"]).startswith("images/stl_preview_body"))
+            self.assertTrue((model_root / meta["cover"]).exists())
+            self.assertEqual(meta["instances"][0]["thumbnailLocal"], meta["cover"])
+
     def test_nested_zip_import_skips_unreadable_child_zip(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
