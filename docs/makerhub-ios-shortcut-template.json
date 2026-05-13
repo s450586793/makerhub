@@ -29,7 +29,7 @@
     {
       "action": "获取 URL 内容",
       "method": "POST",
-      "url": "${MakerHubBaseUrl}/api/mobile-import/raw-ipv4?token=${MakerHubToken}",
+      "url": "${MakerHubBaseUrl}/api/mobile-import/raw-ipv4?token=${MakerHubToken}&filename=${FileName}",
       "headers": {
         "X-MakerHub-Filename": "${FileName}"
       },
@@ -43,7 +43,7 @@
   ],
   "makerhub_endpoints": {
     "probe": "/api/mobile-import/ping-ipv4?token=...",
-    "upload": "/api/mobile-import/raw-ipv4?token=..."
+    "upload": "/api/mobile-import/raw-ipv4?token=...&filename=..."
   },
   "network_rule": "在 MakerHub 地址里填写当前手机能访问的局域网或公网地址；地址不可用时由 iOS 显示请求失败。"
 }

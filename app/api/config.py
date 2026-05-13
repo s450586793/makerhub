@@ -184,6 +184,7 @@ ATTACHMENT_FILE_SUFFIX_ALIASES = {
     "pdf": {"pdf"},
     "excel": {"xls", "xlsx", "xlsm", "xlsb", "xlt", "xltx", "xltm", "csv", "tsv", "ods"},
 }
+MOBILE_IMPORT_FALLBACK_STEMS = {"wechat-upload", "移动端导入"}
 
 
 def _read_shares_state() -> dict:
@@ -1998,12 +1999,63 @@ async def _run_mobile_import_upload(files: list[UploadFile], paths: list[str]) -
     }
 
 
+def _mobile_import_clean_filename(value: object) -> str:
+    text = str(value or "").strip().strip("\"'")
+    if not text:
+        return ""
+    text = unquote(text).replace("\x00", "")
+    return Path(text).name.strip().strip("\"'")
+
+
+def _is_mobile_import_fallback_filename(value: object) -> bool:
+    clean_name = _mobile_import_clean_filename(value)
+    if not clean_name:
+        return False
+    return Path(clean_name).stem.strip() in MOBILE_IMPORT_FALLBACK_STEMS
+
+
+def _mobile_import_filename_from_content_disposition(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    encoded_match = re.search(r"filename\*\s*=\s*([^;]+)", text, flags=re.IGNORECASE)
+    if encoded_match:
+        raw = encoded_match.group(1).strip().strip("\"'")
+        if "''" in raw:
+            raw = raw.split("''", 1)[1]
+        return _mobile_import_clean_filename(raw)
+    plain_match = re.search(r"filename\s*=\s*(\"[^\"]+\"|[^;]+)", text, flags=re.IGNORECASE)
+    if plain_match:
+        return _mobile_import_clean_filename(plain_match.group(1))
+    return ""
+
+
+def _mobile_import_request_filename(request: Request) -> tuple[str, str]:
+    candidates = [
+        ("query", request.query_params.get("filename")),
+        ("x-makerhub-filename", request.headers.get("X-MakerHub-Filename")),
+        ("x-filename", request.headers.get("X-Filename")),
+        ("content-disposition", _mobile_import_filename_from_content_disposition(request.headers.get("content-disposition"))),
+    ]
+    fallback_name = ""
+    fallback_source = ""
+    for source, value in candidates:
+        clean_name = _mobile_import_clean_filename(value)
+        if not clean_name:
+            continue
+        if not fallback_name:
+            fallback_name = clean_name
+            fallback_source = source
+        if not _is_mobile_import_fallback_filename(clean_name):
+            return clean_name, source
+    return fallback_name or "wechat-upload", fallback_source or "fallback"
+
+
 def _mobile_import_clean_name(paths: list[str]) -> str:
     raw_name = str(paths[0] if paths else "").strip()
-    if raw_name:
-        clean_name = Path(raw_name).name or raw_name
-        if Path(clean_name).stem != "wechat-upload":
-            return clean_name
+    clean_name = _mobile_import_clean_filename(raw_name)
+    if clean_name and not _is_mobile_import_fallback_filename(clean_name):
+        return clean_name
     return "移动端导入"
 
 
@@ -2184,8 +2236,8 @@ def _upsert_mobile_import_progress(
     received_bytes: int = 0,
 ) -> None:
     raw_name = str(filename or "").strip()
-    clean_name = Path(raw_name).name or "移动端导入"
-    if clean_name == "wechat-upload":
+    clean_name = _mobile_import_clean_filename(raw_name) or "移动端导入"
+    if _is_mobile_import_fallback_filename(clean_name):
         clean_name = "移动端导入"
     task_state_store.upsert_organize_task(
         {
@@ -3770,12 +3822,7 @@ async def mobile_import_raw_ipv4_file(request: Request, background_tasks: Backgr
             "message": "移动端导入 Token 无效。",
         }
     _mark_mobile_import_used()
-    filename = str(
-        request.headers.get("X-MakerHub-Filename")
-        or request.headers.get("X-Filename")
-        or request.query_params.get("filename")
-        or ""
-    ).strip() or "wechat-upload"
+    filename, filename_source = _mobile_import_request_filename(request)
     content_length = str(request.headers.get("content-length") or "").strip()
     mobile_task_id = _mobile_import_task_id("ipv4", filename, content_length)
     _upsert_mobile_import_progress(
@@ -3794,6 +3841,9 @@ async def mobile_import_raw_ipv4_file(request: Request, background_tasks: Backgr
         "移动端原始文件上传开始。",
         channel="ipv4",
         filename=filename,
+        filename_source=filename_source,
+        query_filename=bool(request.query_params.get("filename")),
+        header_filename=bool(request.headers.get("X-MakerHub-Filename") or request.headers.get("X-Filename")),
         content_length=content_length,
         task_id=mobile_task_id,
     )
@@ -3830,12 +3880,7 @@ async def mobile_import_files(
 @router.post("/mobile-import/raw")
 async def mobile_import_raw_file(request: Request, background_tasks: BackgroundTasks):
     _require_mobile_import_token(request)
-    filename = str(
-        request.headers.get("X-MakerHub-Filename")
-        or request.headers.get("X-Filename")
-        or request.query_params.get("filename")
-        or ""
-    ).strip() or "wechat-upload"
+    filename, filename_source = _mobile_import_request_filename(request)
     content_length = str(request.headers.get("content-length") or "").strip()
     mobile_task_id = _mobile_import_task_id("bearer", filename, content_length)
     _upsert_mobile_import_progress(
@@ -3854,6 +3899,9 @@ async def mobile_import_raw_file(request: Request, background_tasks: BackgroundT
         "移动端原始文件上传开始。",
         channel="bearer",
         filename=filename,
+        filename_source=filename_source,
+        query_filename=bool(request.query_params.get("filename")),
+        header_filename=bool(request.headers.get("X-MakerHub-Filename") or request.headers.get("X-Filename")),
         content_length=content_length,
         task_id=mobile_task_id,
     )

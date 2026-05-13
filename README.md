@@ -153,6 +153,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 ## 更新记录
 
 ### 2026-05-13
+- 移动端 raw 上传支持从 `filename` URL 参数、`X-MakerHub-Filename` 请求头和 `Content-Disposition` 解析文件名，优先采用非 `wechat-upload` 的真实名称
+- iOS「推送到 MakerHub」快捷指令重新签名，上传时会同时通过 URL 参数和请求头传递文件名，改善微信中文附件名丢失的问题
+- 移动端上传日志新增文件名来源标记，便于排查文件名来自 query、header 还是兜底值
+
+### 2026-05-13
 - 移动端 `3MF` 导入在快捷指令 / 微信未传真实文件名时，会读取 `3MF` 内部标题作为本地模型名和配置文件名，避免入库成 `wechat-upload`
 - 本地整理进度卡隐藏 `wechat-upload.3mf` 等占位名，未拿到真实文件名时显示为“移动端导入”
 - 新增移动端导入回归测试，覆盖 `3MF` 元数据中文标题含 `/` 时的命名兜底
@@ -162,12 +167,12 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 本地整理队列不再用旧的同路径 skipped 记录误拦新上传文件，新文件会按新的指纹重新排队处理
 - 新增本地整理回归测试，覆盖重复源文件清理和同名新文件重新入队
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-13
 - README 新增 iOS「推送到 MakerHub」签名快捷指令下载入口，GitHub 页面可直接下载 `docs/推送到 MakerHub.signed.shortcut`
 - 更新记录默认只展开最新 3 段，其余历史记录放入折叠区，减少 GitHub 页面底部占用
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-13
 - iOS 快捷指令改为从共享输入读取原文件名，再通过 `X-MakerHub-Filename` 传给移动端导入接口，避免微信推送的 STL / zip / rar 被统一命名为 `wechat-upload`

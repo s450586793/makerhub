@@ -22,6 +22,19 @@ class MobileImportTokenTest(unittest.TestCase):
             query_params={},
         )
 
+    def _filename_request(self, *, query_filename="", makerhub_header="", header_filename="", content_disposition=""):
+        headers = {}
+        if makerhub_header:
+            headers["X-MakerHub-Filename"] = makerhub_header
+        if header_filename:
+            headers["X-Filename"] = header_filename
+        if content_disposition:
+            headers["content-disposition"] = content_disposition
+        return SimpleNamespace(
+            headers=headers,
+            query_params={"filename": query_filename} if query_filename else {},
+        )
+
     def test_mobile_import_token_allows_only_enabled_matching_token(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"
@@ -71,6 +84,25 @@ class MobileImportTokenTest(unittest.TestCase):
         self.assertEqual(config_api._mobile_import_clean_name(["wechat-upload.stl"]), "移动端导入")
         self.assertEqual(config_api._mobile_import_clean_name(["wechat-upload.3mf"]), "移动端导入")
         self.assertEqual(config_api._mobile_import_clean_name(["demo.stl"]), "demo.stl")
+
+    def test_mobile_import_filename_prefers_real_query_name(self):
+        filename, source = config_api._mobile_import_request_filename(
+            self._filename_request(query_filename="米老鼠.3mf", makerhub_header="wechat-upload")
+        )
+        self.assertEqual(filename, "米老鼠.3mf")
+        self.assertEqual(source, "query")
+
+        filename, source = config_api._mobile_import_request_filename(
+            self._filename_request(query_filename="wechat-upload", makerhub_header="Garfield.3mf")
+        )
+        self.assertEqual(filename, "Garfield.3mf")
+        self.assertEqual(source, "x-makerhub-filename")
+
+        filename, source = config_api._mobile_import_request_filename(
+            self._filename_request(content_disposition="attachment; filename*=UTF-8''%E7%B1%B3%E8%80%81%E9%BC%A0.3mf")
+        )
+        self.assertEqual(filename, "米老鼠.3mf")
+        self.assertEqual(source, "content-disposition")
 
     def test_mobile_background_marks_upload_task_and_triggers_package(self):
         upload = UploadFile(file=BytesIO(b"solid makerhub\nendsolid makerhub\n"), filename="demo.stl")
