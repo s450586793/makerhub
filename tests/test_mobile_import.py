@@ -68,7 +68,8 @@ class MobileImportTokenTest(unittest.TestCase):
 
     def test_mobile_import_display_name_hides_shortcut_fallback(self):
         self.assertEqual(config_api._mobile_import_clean_name(["wechat-upload"]), "移动端导入")
-        self.assertEqual(config_api._mobile_import_clean_name(["wechat-upload.stl"]), "wechat-upload.stl")
+        self.assertEqual(config_api._mobile_import_clean_name(["wechat-upload.stl"]), "移动端导入")
+        self.assertEqual(config_api._mobile_import_clean_name(["wechat-upload.3mf"]), "移动端导入")
         self.assertEqual(config_api._mobile_import_clean_name(["demo.stl"]), "demo.stl")
 
     def test_mobile_background_marks_upload_task_and_triggers_package(self):

@@ -125,6 +125,53 @@ class LocalOrganizerTest(unittest.TestCase):
             self.assertEqual(task_item["source_path"], candidate.as_posix())
             self.assertNotEqual(task_item["fingerprint"], "old-fingerprint")
 
+    def test_shortcut_fallback_name_uses_3mf_metadata_title(self):
+        with TemporaryDirectory() as tmp:
+            library_root = Path(tmp) / "archive"
+            library_root.mkdir()
+            source_path = Path(tmp) / "wechat-upload.3mf"
+            source_path.write_bytes(b"demo-3mf")
+
+            service = local_organizer.LocalOrganizerService(
+                store=SimpleNamespace(),
+                task_store=FakeTaskStore(),
+            )
+            title = "EVA 新世纪福音战士 明日香四色半分件/单色打印/双色x2d多版本"
+            analysis = {
+                "source_title": "wechat-upload",
+                "model_title": title,
+                "profile_title": title,
+            }
+
+            self.assertEqual(service._display_title_for_analysis(source_path, analysis), title)
+            self.assertEqual(
+                service._target_filename_for_analysis(source_path, analysis),
+                "EVA 新世纪福音战士 明日香四色半分件_单色打印_双色x2d多版本.3mf",
+            )
+
+            model_root = service._prepare_model_root(
+                library_root,
+                source_path,
+                existing={},
+                matched_model=None,
+                title=service._display_title_for_analysis(source_path, analysis),
+            )
+
+            self.assertEqual(
+                model_root.name,
+                "LOCAL_EVA 新世纪福音战士 明日香四色半分件_单色打印_双色x2d多版本",
+            )
+
+    def test_shortcut_fallback_title_ignores_placeholder_metadata(self):
+        service = local_organizer.LocalOrganizerService(
+            store=SimpleNamespace(),
+            task_store=FakeTaskStore(),
+        )
+        source_path = Path("/tmp/wechat-upload.3mf")
+
+        self.assertEqual(service._display_title_for_analysis(source_path, {}), "移动端导入")
+        self.assertEqual(service._target_filename_for_analysis(source_path, {}), "wechat-upload.3mf")
+
 
 if __name__ == "__main__":
     unittest.main()

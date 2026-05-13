@@ -2000,8 +2000,10 @@ async def _run_mobile_import_upload(files: list[UploadFile], paths: list[str]) -
 
 def _mobile_import_clean_name(paths: list[str]) -> str:
     raw_name = str(paths[0] if paths else "").strip()
-    if raw_name and raw_name != "wechat-upload":
-        return Path(raw_name).name or raw_name
+    if raw_name:
+        clean_name = Path(raw_name).name or raw_name
+        if Path(clean_name).stem != "wechat-upload":
+            return clean_name
     return "移动端导入"
 
 

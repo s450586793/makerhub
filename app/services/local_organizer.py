@@ -43,6 +43,8 @@ ORGANIZER_VISIBLE_QUEUE_LIMIT = ORGANIZER_TASK_LIMIT
 ORGANIZER_PROCESS_MODE_ENV = "MAKERHUB_LOCAL_ORGANIZER_MODE"
 ORGANIZER_DAEMON_ENV = "MAKERHUB_LOCAL_ORGANIZER_DAEMON"
 ORGANIZER_TERMINAL_STATUSES = {"success", "skipped"}
+ORGANIZER_UPLOAD_FALLBACK_STEMS = {"wechat-upload", "移动端导入"}
+ORGANIZER_MODEL_TITLE_SUFFIXES = {".3mf", ".stl", ".step", ".stp", ".obj"}
 
 
 def _now_iso() -> str:
@@ -127,6 +129,43 @@ def _safe_relative_string(path: Path, base: Path) -> str:
 
 def _ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _is_upload_fallback_name(value: Any) -> bool:
+    text = Path(str(value or "").strip()).name
+    if not text:
+        return False
+    stem = Path(text).stem.strip()
+    return stem in ORGANIZER_UPLOAD_FALLBACK_STEMS
+
+
+def _clean_title_candidate(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    name = text
+    base_name = Path(text).name.strip()
+    if base_name and Path(base_name).suffix.lower() in ORGANIZER_MODEL_TITLE_SUFFIXES:
+        name = base_name
+    suffix = Path(name).suffix
+    if suffix.lower() in ORGANIZER_MODEL_TITLE_SUFFIXES:
+        name = name[: -len(suffix)].strip()
+    if not name or _is_upload_fallback_name(name):
+        return ""
+    return name
+
+
+def _safe_3mf_filename_from_title(value: Any) -> str:
+    title = _clean_title_candidate(value)
+    if not title:
+        return ""
+    safe = sanitize_filename(title).strip().rstrip(".")
+    if not safe:
+        return ""
+    suffix = Path(safe).suffix
+    if suffix.lower() in ORGANIZER_MODEL_TITLE_SUFFIXES:
+        safe = safe[: -len(suffix)].strip().rstrip(".")
+    return f"{safe or 'model'}.3mf"
 
 
 def _normalize_identity_text(value: Any) -> str:
@@ -1513,7 +1552,7 @@ class LocalOrganizerService:
         task_id = _task_id_from_fingerprint(fingerprint)
         source_path_text = source_path.as_posix()
         relative_source = _safe_relative_string(source_path, source_dir)
-        source_title = source_path.stem.strip() or source_path.name
+        source_title = self._display_title_for_analysis(source_path, analysis or {})
         now_iso = _now_iso()
 
         self.task_store.upsert_organize_task(
@@ -1543,13 +1582,19 @@ class LocalOrganizerService:
                 source_path,
                 existing=existing,
                 matched_model=matched_model,
+                title=source_title,
             )
             instances_dir = model_root / "instances"
             images_dir = model_root / "images"
             instances_dir.mkdir(parents=True, exist_ok=True)
             images_dir.mkdir(parents=True, exist_ok=True)
 
-            target_file = self._copy_or_move_file(source_path, instances_dir, move_files=move_files)
+            target_file = self._copy_or_move_file(
+                source_path,
+                instances_dir,
+                move_files=move_files,
+                target_name=self._target_filename_for_analysis(source_path, analysis or {}),
+            )
 
             progress_message = "3MF 已写入模型目录，正在生成元数据。"
             if matched_model:
@@ -1677,6 +1722,7 @@ class LocalOrganizerService:
         *,
         existing: dict,
         matched_model: Optional[dict[str, Any]],
+        title: str = "",
     ) -> Path:
         if matched_model:
             matched_root = matched_model.get("model_root")
@@ -1694,7 +1740,7 @@ class LocalOrganizerService:
             except OSError:
                 pass
 
-        stem = sanitize_filename(source_path.stem) or "local_model"
+        stem = sanitize_filename(title or source_path.stem) or "local_model"
         base_name = f"LOCAL_{stem}"
         for index in range(0, 1000):
             candidate_name = base_name if index == 0 else f"{base_name}_{index + 1}"
@@ -1704,14 +1750,40 @@ class LocalOrganizerService:
                 return candidate
         raise RuntimeError("无法为本地模型分配新的目标目录。")
 
-    def _copy_or_move_file(self, source_path: Path, instances_dir: Path, *, move_files: bool) -> Path:
-        target = self._ensure_unique_filename(instances_dir, source_path.name)
+    def _copy_or_move_file(
+        self,
+        source_path: Path,
+        instances_dir: Path,
+        *,
+        move_files: bool,
+        target_name: str = "",
+    ) -> Path:
+        target = self._ensure_unique_filename(instances_dir, target_name or source_path.name)
         _ensure_parent(target)
         if move_files:
             shutil.move(str(source_path), str(target))
         else:
             shutil.copy2(source_path, target)
         return target
+
+    def _display_title_for_analysis(self, source_path: Path, analysis: dict[str, Any]) -> str:
+        source_title = _clean_title_candidate(source_path.stem) or source_path.stem.strip() or source_path.name
+        if not _is_upload_fallback_name(source_path.name):
+            return source_title
+        for key in ("model_title", "profile_title", "source_title"):
+            candidate = _clean_title_candidate(analysis.get(key))
+            if candidate:
+                return candidate
+        return "移动端导入"
+
+    def _target_filename_for_analysis(self, source_path: Path, analysis: dict[str, Any]) -> str:
+        if not _is_upload_fallback_name(source_path.name):
+            return source_path.name
+        for key in ("profile_title", "model_title", "source_title"):
+            candidate = _safe_3mf_filename_from_title(analysis.get(key))
+            if candidate:
+                return candidate
+        return source_path.name
 
     def _ensure_unique_filename(self, parent: Path, raw_name: str) -> Path:
         file_name = sanitize_filename(raw_name) or "model.3mf"
