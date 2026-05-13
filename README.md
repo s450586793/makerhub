@@ -132,6 +132,12 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 日志：集中查看归档、订阅、源端刷新、本地整理、缺失 `3MF` 和系统错误等业务日志。
 - Docker / DSM 部署：适合通过 Docker Compose 或 Synology DSM Container Manager 部署，配置、日志、状态和归档目录分离挂载；仓库内的 `compose.yaml` 默认采用 App / Worker 双容器，并打开网页更新所需的 `docker.sock` 挂载。
 
+## iOS 快捷指令
+
+- [下载「推送到 MakerHub」签名快捷指令](https://raw.githubusercontent.com/s450586793/makerhub/main/docs/%E6%8E%A8%E9%80%81%E5%88%B0%20MakerHub.signed.shortcut)
+- 使用前只需要修改快捷指令顶部两个文本动作：`MakerHub Token` 和 `MakerHub 地址`。地址可填写手机能访问的局域网或公网地址，例如 `http://example.com:1234`，不要以 `/` 结尾。
+- 详细配置说明见 [MakerHub iOS 快捷指令文档](docs/ios-makerhub-shortcut.md)。
+
 ## 设计目标
 - 复用旧项目里已经验证过的爬虫与下载逻辑
 - 重写后台结构、配置模型、任务系统和前端页面
@@ -147,6 +153,10 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 ## 更新记录
 
 ### 2026-05-13
+- README 新增 iOS「推送到 MakerHub」签名快捷指令下载入口，GitHub 页面可直接下载 `docs/推送到 MakerHub.signed.shortcut`
+- 更新记录默认只展开最新 3 段，其余历史记录放入折叠区，减少 GitHub 页面底部占用
+
+### 2026-05-13
 - iOS 快捷指令改为从共享输入读取原文件名，再通过 `X-MakerHub-Filename` 传给移动端导入接口，避免微信推送的 STL / zip / rar 被统一命名为 `wechat-upload`
 - 移动端导入进度隐藏 `wechat-upload` 兜底名，旧快捷指令或异常分享来源未传原名时显示为“移动端导入”；快捷指令说明里的公网示例改为 `example.com`，避免暴露真实部署地址
 
@@ -156,14 +166,14 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 本地整理任务状态保留移动端上传任务元数据，并新增测试覆盖快捷指令上传任务衔接、包整理触发和任务状态归一化
 - 重新生成 iOS 快捷指令：POST 文件体绑定到共享表单输入，避免微信/文件 App 分享后服务端收到空文件
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-12
 - 版本号升级到 `v0.6.86`
 - 移动端导入接口补充诊断日志：`ping-ipv4` 成功会刷新最近使用时间并记录探测成功，`raw-ipv4` 会记录上传开始和请求体接收完成，便于排查 iOS 快捷指令超时卡在地址、反代还是上传阶段
 - `/api/mobile-import/raw-ipv4` 纳入本地导入上传大小保护，使用 `MAKERHUB_MAX_LOCAL_IMPORT_UPLOAD_BYTES` 上限，避免移动端 raw 上传绕过体积限制
 - 重新生成 iOS 快捷指令：局域网地址和公网地址默认都为空，未填写任何可用地址时直接提示 `地址未填写`，不再请求示例局域网地址导致超时
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-12
 - 版本号升级到 `v0.6.85`
