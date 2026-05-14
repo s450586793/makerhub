@@ -519,6 +519,75 @@
           </div>
         </section>
 
+        <form class="system-update-changelog system-runtime-card" @submit.prevent="saveRuntimeResources">
+          <div class="section-card__header">
+            <div>
+              <span class="eyebrow">运行资源</span>
+              <h2>App / Worker 调度</h2>
+            </div>
+            <div class="settings-inline-actions">
+              <button class="button button-secondary" type="submit" :disabled="runtimeResourcesSaving">
+                {{ runtimeResourcesSaving ? "保存中..." : "保存资源设置" }}
+              </button>
+              <button class="button button-primary" type="button" :disabled="!canTriggerSystemUpdate || runtimeResourcesSaving" @click="applyRuntimeResources">
+                应用并重启容器
+              </button>
+            </div>
+          </div>
+          <p class="archive-form__hint">
+            App Web 进程数需要重启容器生效。CPU 核心绑定按 Docker 的 CPU 序号填写，例如 <code>0</code>、<code>1-3</code> 或 <code>0,2</code>；留空表示不限制。
+          </p>
+          <div class="settings-grid settings-grid--three system-update-grid">
+            <label class="field-card">
+              <span>App Web 进程数</span>
+              <input v-model.number="runtimeForm.web_workers" type="number" min="1" max="8" step="1">
+              <small class="archive-form__hint">当前容器：{{ currentAppWebWorkers }}；NAS 多核心建议 2-4。</small>
+            </label>
+            <label class="field-card">
+              <span>App CPU 上限</span>
+              <input v-model.trim="runtimeForm.app_cpu_limit" type="text" inputmode="decimal" placeholder="例如 2 或 2.5">
+              <small class="archive-form__hint">当前：{{ currentAppCpuLimit || "不限" }}</small>
+            </label>
+            <label class="field-card">
+              <span>App CPU 核心绑定</span>
+              <input v-model.trim="runtimeForm.app_cpuset_cpus" type="text" placeholder="例如 0 或 0-1">
+              <small class="archive-form__hint">当前：{{ currentAppCpuset || "未绑定" }}</small>
+            </label>
+          </div>
+          <div class="settings-grid settings-grid--three system-update-grid">
+            <label class="field-card">
+              <span>App CPU 权重</span>
+              <input v-model.number="runtimeForm.app_cpu_shares" type="number" min="0" max="262144" step="1">
+              <small class="archive-form__hint">默认 1024，0 表示不写入。</small>
+            </label>
+            <label class="field-card">
+              <span>Worker CPU 上限</span>
+              <input v-model.trim="runtimeForm.worker_cpu_limit" type="text" inputmode="decimal" placeholder="例如 3">
+              <small class="archive-form__hint">当前：{{ currentWorkerCpuLimit || "不限" }}</small>
+            </label>
+            <label class="field-card">
+              <span>Worker CPU 核心绑定</span>
+              <input v-model.trim="runtimeForm.worker_cpuset_cpus" type="text" placeholder="例如 1-3">
+              <small class="archive-form__hint">当前：{{ currentWorkerCpuset || "未绑定" }}</small>
+            </label>
+          </div>
+          <div class="settings-grid settings-grid--two system-update-grid">
+            <label class="field-card">
+              <span>Worker CPU 权重</span>
+              <input v-model.number="runtimeForm.worker_cpu_shares" type="number" min="0" max="262144" step="1">
+              <small class="archive-form__hint">默认 512，降低后台任务抢占。</small>
+            </label>
+            <article class="field-card system-update-detail">
+              <span>生效方式</span>
+              <strong>{{ systemUpdate.supported ? "可网页重建" : "需要手动重建" }}</strong>
+              <small>{{ systemUpdate.supported ? "保存后点击应用并重启容器。" : systemUpdate.support_reason || "当前没有 Docker socket 权限。" }}</small>
+            </article>
+          </div>
+          <div class="form-footer">
+            <span class="form-status">{{ statuses.runtime }}</span>
+          </div>
+        </form>
+
         <section class="system-update-changelog">
           <div class="section-card__header">
             <div>
@@ -684,6 +753,7 @@ const sharedShareRevokingId = ref("");
 const systemUpdate = ref(defaultSystemUpdateState());
 const systemUpdateLoading = ref(false);
 const systemUpdateSubmitting = ref(false);
+const runtimeResourcesSaving = ref(false);
 const profileBackfill = ref(defaultProfileBackfillState());
 const profileBackfillLoading = ref(false);
 const profileBackfillSubmitting = ref(false);
@@ -711,6 +781,15 @@ const advancedForm = reactive({
   comment_asset_download_limit: 4,
   three_mf_download_limit: 1,
   disk_io_limit: 1,
+});
+const runtimeForm = reactive({
+  web_workers: 1,
+  app_cpu_limit: "",
+  app_cpuset_cpus: "",
+  app_cpu_shares: 1024,
+  worker_cpu_limit: "",
+  worker_cpuset_cpus: "",
+  worker_cpu_shares: 512,
 });
 const organizerForm = reactive({
   source_dir: "",
@@ -761,6 +840,7 @@ const statuses = reactive({
   tokens: "",
   theme: "",
   system_update: "",
+  runtime: "",
   profile_backfill: "",
 });
 const testing = reactive({
@@ -780,6 +860,13 @@ const canTriggerSystemUpdate = computed(() => (
   && !systemUpdateLoading.value
   && !systemUpdateSubmitting.value
 ));
+const currentAppWebWorkers = computed(() => (
+  normalizeBoundedInt(systemUpdate.value.resources?.app?.web_workers, 1, 1, 8)
+));
+const currentAppCpuLimit = computed(() => String(systemUpdate.value.resources?.app?.cpu_limit || ""));
+const currentAppCpuset = computed(() => String(systemUpdate.value.resources?.app?.cpuset_cpus || ""));
+const currentWorkerCpuLimit = computed(() => String(systemUpdate.value.resources?.worker?.cpu_limit || ""));
+const currentWorkerCpuset = computed(() => String(systemUpdate.value.resources?.worker?.cpuset_cpus || ""));
 const systemUpdateButtonText = computed(() => (
   appState.githubUpdateAvailable ? "更新到最新版本" : "重新拉取 latest"
 ));
@@ -900,6 +987,7 @@ function defaultSystemUpdateState() {
     worker_container_name: "",
     worker_image_ref: "",
     worker_replacement_container_id: "",
+    resources: {},
     target_version: "",
     current_version: "",
     supported: false,
@@ -957,6 +1045,22 @@ function normalizeBoundedInt(value, fallback, min, max) {
     return fallback;
   }
   return Math.min(Math.max(Math.trunc(numeric), min), max);
+}
+
+function normalizeCpuText(value) {
+  return String(value || "").trim();
+}
+
+function runtimePayload() {
+  return {
+    web_workers: normalizeBoundedInt(runtimeForm.web_workers, 1, 1, 8),
+    app_cpu_limit: normalizeCpuText(runtimeForm.app_cpu_limit),
+    app_cpuset_cpus: normalizeCpuText(runtimeForm.app_cpuset_cpus).replace(/\s+/g, ""),
+    app_cpu_shares: normalizeBoundedInt(runtimeForm.app_cpu_shares, 1024, 0, 262144),
+    worker_cpu_limit: normalizeCpuText(runtimeForm.worker_cpu_limit),
+    worker_cpuset_cpus: normalizeCpuText(runtimeForm.worker_cpuset_cpus).replace(/\s+/g, ""),
+    worker_cpu_shares: normalizeBoundedInt(runtimeForm.worker_cpu_shares, 512, 0, 262144),
+  };
 }
 
 function formatShareFileCounts(counts) {
@@ -1049,6 +1153,13 @@ function applyConfigToForms(payload) {
   advancedForm.comment_asset_download_limit = normalizeBoundedInt(payload.advanced?.comment_asset_download_limit, 4, 1, 16);
   advancedForm.three_mf_download_limit = normalizeBoundedInt(payload.advanced?.three_mf_download_limit, 1, 1, 4);
   advancedForm.disk_io_limit = normalizeBoundedInt(payload.advanced?.disk_io_limit, 1, 1, 4);
+  runtimeForm.web_workers = normalizeBoundedInt(payload.runtime?.web_workers, 1, 1, 8);
+  runtimeForm.app_cpu_limit = normalizeCpuText(payload.runtime?.app_cpu_limit);
+  runtimeForm.app_cpuset_cpus = normalizeCpuText(payload.runtime?.app_cpuset_cpus);
+  runtimeForm.app_cpu_shares = normalizeBoundedInt(payload.runtime?.app_cpu_shares, 1024, 0, 262144);
+  runtimeForm.worker_cpu_limit = normalizeCpuText(payload.runtime?.worker_cpu_limit);
+  runtimeForm.worker_cpuset_cpus = normalizeCpuText(payload.runtime?.worker_cpuset_cpus);
+  runtimeForm.worker_cpu_shares = normalizeBoundedInt(payload.runtime?.worker_cpu_shares, 512, 0, 262144);
   organizerForm.source_dir = payload.organizer?.source_dir || "";
   organizerForm.target_dir = payload.organizer?.target_dir || "";
   organizerForm.move_files = payload.organizer?.move_files !== false;
@@ -1199,7 +1310,11 @@ async function loadSystemUpdateStatus(options = {}) {
 }
 
 async function triggerSystemUpdate() {
-  const shouldProceed = window.confirm("这会拉取最新镜像并重建当前 MakerHub 容器，页面会短暂不可用。确定继续吗？");
+  return runSystemUpdate("这会拉取最新镜像并重建当前 MakerHub 容器，页面会短暂不可用。确定继续吗？");
+}
+
+async function runSystemUpdate(confirmMessage) {
+  const shouldProceed = window.confirm(confirmMessage);
   if (!shouldProceed) {
     return;
   }
@@ -1221,6 +1336,32 @@ async function triggerSystemUpdate() {
     systemUpdateSubmitting.value = false;
     scheduleSystemUpdatePolling();
   }
+}
+
+async function saveRuntimeResources() {
+  runtimeResourcesSaving.value = true;
+  statuses.runtime = "";
+  try {
+    const payload = await apiRequest("/api/config/runtime", {
+      method: "POST",
+      body: runtimePayload(),
+    });
+    applyConfigPayload(payload);
+    applyConfigToForms(payload);
+    statuses.runtime = "运行资源设置已保存，重启容器后生效。";
+  } catch (error) {
+    statuses.runtime = error instanceof Error ? error.message : "保存运行资源失败。";
+  } finally {
+    runtimeResourcesSaving.value = false;
+  }
+}
+
+async function applyRuntimeResources() {
+  await saveRuntimeResources();
+  if (statuses.runtime && !statuses.runtime.includes("已保存")) {
+    return;
+  }
+  await runSystemUpdate("这会按当前运行资源设置重建 App / Worker 容器，页面会短暂不可用。确定继续吗？");
 }
 
 async function loadProfileBackfillStatus(options = {}) {

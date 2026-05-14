@@ -83,6 +83,20 @@ class SystemUpdateRequest(BaseModel):
     force: bool = False
 
 
+class RuntimeResourceConfig(BaseModel):
+    web_workers: int = Field(
+        default_factory=lambda: _env_int("MAKERHUB_WEB_WORKERS", 1, 1, 8),
+        ge=1,
+        le=8,
+    )
+    app_cpu_limit: str = ""
+    app_cpuset_cpus: str = ""
+    app_cpu_shares: int = Field(default=1024, ge=0, le=262144)
+    worker_cpu_limit: str = ""
+    worker_cpuset_cpus: str = ""
+    worker_cpu_shares: int = Field(default=512, ge=0, le=262144)
+
+
 class ApiTokenRecord(BaseModel):
     id: str
     name: str
@@ -361,4 +375,5 @@ class AppConfig(BaseModel):
     remote_refresh: RemoteRefreshConfig = Field(default_factory=RemoteRefreshConfig)
     three_mf_limits: ThreeMfDownloadLimitsConfig = Field(default_factory=ThreeMfDownloadLimitsConfig)
     advanced: AdvancedRuntimeConfig = Field(default_factory=AdvancedRuntimeConfig)
+    runtime: RuntimeResourceConfig = Field(default_factory=RuntimeResourceConfig)
     paths: RuntimePaths = Field(default_factory=RuntimePaths)

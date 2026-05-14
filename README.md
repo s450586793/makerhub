@@ -77,6 +77,7 @@ services:
       MAKERHUB_PROCESS_ROLE: app
       MAKERHUB_BACKGROUND_TASKS: "false"
       MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
+      MAKERHUB_WEB_WORKERS: "1"
     volumes:
       - /volume4/docker/docker/makerhub/config:/app/config
       - /volume4/docker/docker/makerhub/logs:/app/logs
@@ -152,6 +153,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-05-15
+- 设置页系统面板新增“运行资源 / App / Worker 调度”，可保存 App Web 进程数、App / Worker CPU 上限、核心绑定和 CPU 权重
+- 网页一键更新会在重建 App / Worker 容器时应用运行资源设置，支持通过 Web 页面把 App 从单个 `uvicorn` 进程调整为多进程，缓解容器单核 100% 时页面卡顿
+- Docker 入口支持 `MAKERHUB_WEB_WORKERS`，Compose 示例同步补充默认值；资源重建逻辑新增回归测试，确认 App / Worker 的 CPU 配置会写入新容器
+
 ### 2026-05-14
 - 模型库、订阅库和本地库新增二级缓存：快照生成后会复用已套状态的模型列表和来源分组结果，减少刷新时反复全量分组、筛选和统计的耗时
 - 订阅页、来源总览和分组详情页共用同一份来源分组缓存，进入单个本地库 / 订阅分组时不再为了一个分组重建全部来源卡片
@@ -162,13 +168,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - `3MF` 下载接口补齐浏览器 API 请求头和 Cookie 内 `token` 认证头；遇到 `auth_required` / Cloudflare 候选失败后会继续尝试后续可用 API
 - curl 兜底增加连接和总超时，代理或失效候选不再长时间卡住；补充缺失 `3MF` 回归测试
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-14
 - 本地导入缺图模型的自动封面改由 `makerhub-worker` 后台用 Three.js + Chromium 生成 PNG，前端不再自动下载模型文件或占用网页 CPU
 - 新导入模型会自动排队生成封面；存量缺图模型只在打开详情页时标记待生成，worker 每轮渐进处理，并对超大文件按 `MAKERHUB_LOCAL_PREVIEW_MAX_BYTES` 跳过
 - 旧的 `stl_preview_*.svg` 视为可替换的历史预览图，worker 成功生成 Three.js 封面后会替换为新的 PNG；详情页手动 `3D 预览` 仍支持 STL / OBJ / 3MF 旋转缩放
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-13
 - 移动端 raw 上传支持从 `filename` URL 参数、`X-MakerHub-Filename` 请求头和 `Content-Disposition` 解析文件名，优先采用非 `wechat-upload` 的真实名称

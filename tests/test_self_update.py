@@ -48,6 +48,62 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             else:
                 self_update.os.environ[self_update.WORKER_IMAGE_REF_ENV] = original_image
 
+    def test_replacement_body_applies_app_runtime_resources(self):
+        inspect = {
+            "Id": "app-container-id",
+            "Name": "/makerhub-app",
+            "Config": {
+                "Image": "ghcr.io/example/makerhub:latest",
+                "Env": ["MAKERHUB_ENTRYPOINT=app", "MAKERHUB_WEB_WORKERS=1"],
+            },
+            "HostConfig": {},
+            "NetworkSettings": {"Networks": {}},
+        }
+
+        body = self_update._build_replacement_container_body(
+            inspect,
+            "ghcr.io/example/makerhub:latest",
+            runtime_config={
+                "web_workers": 3,
+                "app_cpu_limit": "2.5",
+                "app_cpuset_cpus": "0-1",
+                "app_cpu_shares": 2048,
+            },
+            role="app",
+        )
+
+        self.assertIn("MAKERHUB_WEB_WORKERS=3", body["Env"])
+        self.assertEqual(body["HostConfig"]["NanoCpus"], 2_500_000_000)
+        self.assertEqual(body["HostConfig"]["CpusetCpus"], "0-1")
+        self.assertEqual(body["HostConfig"]["CpuShares"], 2048)
+
+    def test_replacement_body_applies_worker_runtime_resources(self):
+        inspect = {
+            "Id": "worker-container-id",
+            "Name": "/makerhub-worker",
+            "Config": {
+                "Image": "ghcr.io/example/makerhub:latest",
+                "Env": ["MAKERHUB_ENTRYPOINT=worker"],
+            },
+            "HostConfig": {},
+            "NetworkSettings": {"Networks": {}},
+        }
+
+        body = self_update._build_replacement_container_body(
+            inspect,
+            "ghcr.io/example/makerhub:latest",
+            runtime_config={
+                "worker_cpu_limit": "4",
+                "worker_cpuset_cpus": "2-5",
+                "worker_cpu_shares": 768,
+            },
+            role="worker",
+        )
+
+        self.assertEqual(body["HostConfig"]["NanoCpus"], 4_000_000_000)
+        self.assertEqual(body["HostConfig"]["CpusetCpus"], "2-5")
+        self.assertEqual(body["HostConfig"]["CpuShares"], 768)
+
     def test_request_system_update_passes_web_container_to_helper(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_dir = Path(temp_dir) / "state"

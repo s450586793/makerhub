@@ -13,7 +13,18 @@ case "$mode" in
     exec python -m app.worker
     ;;
   app|api|web|legacy|all|"")
-    exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+    workers="${MAKERHUB_WEB_WORKERS:-1}"
+    case "$workers" in
+      ''|*[!0-9]*)
+        workers=1
+        ;;
+    esac
+    if [ "$workers" -lt 1 ]; then
+      workers=1
+    elif [ "$workers" -gt 8 ]; then
+      workers=8
+    fi
+    exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers "$workers"
     ;;
   *)
     echo "Unknown MAKERHUB_ENTRYPOINT: $mode" >&2

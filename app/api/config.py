@@ -51,6 +51,7 @@ from app.schemas.models import (
     NotificationConfig,
     ProxyConfig,
     RemoteRefreshConfig,
+    RuntimeResourceConfig,
     ShareCreateRequest,
     ShareDeleteExpiredRequest,
     ShareOptions,
@@ -114,7 +115,7 @@ from app.services.source_library import (
 from app.services.source_health import probe_cookie_auth_status
 from app.services.task_state import TaskStateStore, compact_remote_refresh_state
 from app.services.archive_worker import BATCH_TASK_MODES, detect_archive_mode
-from app.services.self_update import get_update_status, request_system_update
+from app.services.self_update import get_update_status, normalize_runtime_resource_config, request_system_update
 
 
 router = APIRouter(prefix="/api")
@@ -1900,6 +1901,7 @@ def _public_config_payload(config) -> dict:
         "remote_refresh": config.remote_refresh.model_dump(),
         "three_mf_limits": config.three_mf_limits.model_dump(),
         "advanced": config.advanced.model_dump(),
+        "runtime": config.runtime.model_dump(),
         "remote_refresh_state": compact_remote_refresh_state(
             task_state_store.load_remote_refresh_state(),
             include_current=False,
@@ -2519,6 +2521,7 @@ async def start_system_update(payload: SystemUpdateRequest, request: Request):
     requested_by = str(identity.get("username") or "").strip()
     config = store.load()
     try:
+        os.environ["MAKERHUB_RUNTIME_CONFIG_JSON"] = json.dumps(config.runtime.model_dump(), ensure_ascii=False)
         response = request_system_update(
             requested_by=requested_by,
             target_version=str(payload.target_version or ""),
@@ -3107,6 +3110,31 @@ async def save_advanced_runtime(payload: AdvancedRuntimeConfig, request: Request
         comment_asset_download_limit=payload.comment_asset_download_limit,
         three_mf_download_limit=payload.three_mf_download_limit,
         disk_io_limit=payload.disk_io_limit,
+    )
+    return _with_version_status(_public_config_payload(config), await _get_github_version_status(proxy_config=config.proxy))
+
+
+@router.post("/config/runtime")
+async def save_runtime_resources(payload: RuntimeResourceConfig, request: Request):
+    _require_session_auth(request)
+    try:
+        normalized = normalize_runtime_resource_config(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    config = store.load()
+    config.runtime = RuntimeResourceConfig(**normalized)
+    store.save(config)
+    append_business_log(
+        "settings",
+        "runtime_resources_saved",
+        "运行资源设置已保存。",
+        web_workers=config.runtime.web_workers,
+        app_cpu_limit=bool(config.runtime.app_cpu_limit),
+        app_cpuset_cpus=bool(config.runtime.app_cpuset_cpus),
+        app_cpu_shares=config.runtime.app_cpu_shares,
+        worker_cpu_limit=bool(config.runtime.worker_cpu_limit),
+        worker_cpuset_cpus=bool(config.runtime.worker_cpuset_cpus),
+        worker_cpu_shares=config.runtime.worker_cpu_shares,
     )
     return _with_version_status(_public_config_payload(config), await _get_github_version_status(proxy_config=config.proxy))
 

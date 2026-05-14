@@ -11,6 +11,7 @@ services:
       MAKERHUB_PROCESS_ROLE: app
       MAKERHUB_BACKGROUND_TASKS: "false"
       MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
+      MAKERHUB_WEB_WORKERS: "1"
     volumes:
       - /volume4/docker/docker/makerhub/config:/app/config
       - /volume4/docker/docker/makerhub/logs:/app/logs

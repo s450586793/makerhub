@@ -9,6 +9,7 @@ import socket
 import threading
 import time
 import uuid
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -29,7 +30,9 @@ WEB_CONTAINER_NAME_ENV = "MAKERHUB_WEB_CONTAINER_NAME"
 WEB_IMAGE_REF_ENV = "MAKERHUB_WEB_IMAGE_REF"
 WORKER_CONTAINER_NAME_ENV = "MAKERHUB_WORKER_CONTAINER_NAME"
 WORKER_IMAGE_REF_ENV = "MAKERHUB_WORKER_IMAGE_REF"
+RUNTIME_CONFIG_ENV = "MAKERHUB_RUNTIME_CONFIG_JSON"
 _CONTAINER_ID_PATTERN = re.compile(r"[0-9a-f]{12,64}")
+_CPUSET_PATTERN = re.compile(r"\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*")
 STARTUP_WAIT_TIMEOUT_SECONDS = 20
 STARTUP_WAIT_INTERVAL_SECONDS = 1.0
 STARTUP_WAIT_STABLE_POLLS = 3
@@ -168,6 +171,80 @@ def _friendly_error_message(error: Exception | str) -> str:
     if not text:
         return "更新失败。"
     return text.replace("\n", " ").strip()[:400]
+
+
+def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        numeric = default
+    return max(min(numeric, maximum), minimum)
+
+
+def _normalize_cpu_limit(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        numeric = Decimal(text)
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("CPU 上限必须是数字，例如 2 或 2.5。") from exc
+    if numeric <= 0:
+        raise ValueError("CPU 上限必须大于 0。")
+    if numeric > Decimal("64"):
+        raise ValueError("CPU 上限不能超过 64。")
+    return format(numeric.normalize(), "f")
+
+
+def _cpu_limit_to_nano_cpus(value: Any) -> int:
+    normalized = _normalize_cpu_limit(value)
+    if not normalized:
+        return 0
+    return int(Decimal(normalized) * Decimal(1_000_000_000))
+
+
+def _normalize_cpuset_cpus(value: Any) -> str:
+    text = str(value or "").strip().replace(" ", "")
+    if not text:
+        return ""
+    if not _CPUSET_PATTERN.fullmatch(text):
+        raise ValueError("CPU 核心绑定格式无效，例如 0、0-3 或 0,2。")
+    for part in text.split(","):
+        if "-" not in part:
+            continue
+        start, end = part.split("-", 1)
+        if int(start) > int(end):
+            raise ValueError("CPU 核心绑定范围无效。")
+    return text
+
+
+def normalize_runtime_resource_config(value: dict[str, Any] | None) -> dict[str, Any]:
+    payload = value if isinstance(value, dict) else {}
+    return {
+        "web_workers": _bounded_int(payload.get("web_workers"), 1, 1, 8),
+        "app_cpu_limit": _normalize_cpu_limit(payload.get("app_cpu_limit")),
+        "app_cpuset_cpus": _normalize_cpuset_cpus(payload.get("app_cpuset_cpus")),
+        "app_cpu_shares": _bounded_int(payload.get("app_cpu_shares"), 1024, 0, 262144),
+        "worker_cpu_limit": _normalize_cpu_limit(payload.get("worker_cpu_limit")),
+        "worker_cpuset_cpus": _normalize_cpuset_cpus(payload.get("worker_cpuset_cpus")),
+        "worker_cpu_shares": _bounded_int(payload.get("worker_cpu_shares"), 512, 0, 262144),
+    }
+
+
+def _runtime_config_from_env() -> dict[str, Any]:
+    raw = str(os.getenv(RUNTIME_CONFIG_ENV, "") or "").strip()
+    if not raw:
+        return normalize_runtime_resource_config({})
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("运行资源配置格式无效。") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("运行资源配置格式无效。")
+    try:
+        return normalize_runtime_resource_config(payload)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def _deployment_mode() -> str:
@@ -368,7 +445,67 @@ def _copy_fields(source: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any
     return payload
 
 
-def _build_replacement_container_body(container_inspect: dict[str, Any], image_ref: str) -> dict[str, Any]:
+def _set_env_value(values: list[Any], key: str, value: Any) -> list[str]:
+    prefix = f"{key}="
+    replacement = f"{key}={value}"
+    result: list[str] = []
+    replaced = False
+    for item in values:
+        text = str(item or "")
+        if text.startswith(prefix):
+            if not replaced:
+                result.append(replacement)
+                replaced = True
+            continue
+        result.append(text)
+    if not replaced:
+        result.append(replacement)
+    return result
+
+
+def _apply_runtime_resource_config(
+    body: dict[str, Any],
+    runtime_config: dict[str, Any] | None,
+    *,
+    role: str,
+) -> None:
+    runtime = normalize_runtime_resource_config(runtime_config)
+    config = body.setdefault("HostConfig", {})
+    if role == "app":
+        body["Env"] = _set_env_value(body.get("Env") or [], "MAKERHUB_WEB_WORKERS", runtime.get("web_workers") or 1)
+        cpu_limit = _cpu_limit_to_nano_cpus(runtime.get("app_cpu_limit"))
+        cpuset_cpus = str(runtime.get("app_cpuset_cpus") or "").strip()
+        cpu_shares = int(runtime.get("app_cpu_shares") or 0)
+    elif role == "worker":
+        cpu_limit = _cpu_limit_to_nano_cpus(runtime.get("worker_cpu_limit"))
+        cpuset_cpus = str(runtime.get("worker_cpuset_cpus") or "").strip()
+        cpu_shares = int(runtime.get("worker_cpu_shares") or 0)
+    else:
+        return
+
+    if cpu_limit > 0:
+        config["NanoCpus"] = cpu_limit
+    else:
+        config.pop("NanoCpus", None)
+    if cpuset_cpus:
+        config["CpusetCpus"] = cpuset_cpus
+    else:
+        config.pop("CpusetCpus", None)
+    if cpu_shares > 0:
+        config["CpuShares"] = cpu_shares
+    else:
+        config.pop("CpuShares", None)
+    if config:
+        body["HostConfig"] = config
+
+
+def _build_replacement_container_body(
+    container_inspect: dict[str, Any],
+    image_ref: str,
+    *,
+    runtime_config: dict[str, Any] | None = None,
+    role: str = "app",
+) -> dict[str, Any]:
     config = container_inspect.get("Config") or {}
     host_config_source = container_inspect.get("HostConfig") or {}
     container_id = str(container_inspect.get("Id") or "")
@@ -461,6 +598,7 @@ def _build_replacement_container_body(container_inspect: dict[str, Any], image_r
     if endpoints_config:
         body["NetworkingConfig"] = {"EndpointsConfig": endpoints_config}
 
+    _apply_runtime_resource_config(body, runtime_config, role=role)
     return body
 
 
@@ -505,6 +643,32 @@ def _resolve_self_container(client: DockerSocketClient) -> dict[str, Any]:
 
 def _container_image_id(container_inspect: dict[str, Any]) -> str:
     return str(container_inspect.get("Image") or "").strip()
+
+
+def _env_lookup(container_inspect: dict[str, Any]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for item in (container_inspect.get("Config") or {}).get("Env") or []:
+        text = str(item or "")
+        if "=" not in text:
+            continue
+        key, value = text.split("=", 1)
+        result[key] = value
+    return result
+
+
+def _container_resource_payload(container_inspect: dict[str, Any]) -> dict[str, Any]:
+    host_config = container_inspect.get("HostConfig") or {}
+    env = _env_lookup(container_inspect)
+    nano_cpus = int(host_config.get("NanoCpus") or 0)
+    cpu_limit = ""
+    if nano_cpus > 0:
+        cpu_limit = format((Decimal(nano_cpus) / Decimal(1_000_000_000)).normalize(), "f")
+    return {
+        "web_workers": _bounded_int(env.get("MAKERHUB_WEB_WORKERS"), 1, 1, 8),
+        "cpu_limit": cpu_limit,
+        "cpuset_cpus": str(host_config.get("CpusetCpus") or ""),
+        "cpu_shares": int(host_config.get("CpuShares") or 0),
+    }
 
 
 def _append_unique_image_id(values: list[str], value: str) -> None:
@@ -651,6 +815,7 @@ def get_update_capability() -> dict[str, Any]:
         "web_image_ref": "",
         "worker_container_name": "",
         "worker_image_ref": "",
+        "resources": {},
     }
     if not DOCKER_SOCKET_PATH.exists():
         payload["support_reason"] = "当前容器没有挂载 /var/run/docker.sock，不能从网页直接触发 Docker 更新。"
@@ -683,6 +848,8 @@ def get_update_capability() -> dict[str, Any]:
         payload["worker_container_name"] = str(worker_inspect.get("Name") or worker_target.get("container_name") or "").lstrip("/")
         payload["worker_image_ref"] = str(worker_target.get("image_ref") or "")
 
+    app_resources = _container_resource_payload(metadata.get("inspect") or {})
+    worker_resources = _container_resource_payload(worker_inspect) if "worker_inspect" in locals() else {}
     payload.update(
         {
             "supported": True,
@@ -690,6 +857,10 @@ def get_update_capability() -> dict[str, Any]:
             "container_name": str(metadata.get("container_name") or ""),
             "image_ref": str(metadata.get("image_ref") or ""),
             "deployment_mode": _deployment_mode(),
+            "resources": {
+                "app": app_resources,
+                "worker": worker_resources,
+            },
         }
     )
     return payload
@@ -710,6 +881,7 @@ def get_update_status() -> dict[str, Any]:
         "web_image_ref": str(capability.get("web_image_ref") or state.get("web_image_ref") or ""),
         "worker_container_name": str(capability.get("worker_container_name") or state.get("worker_container_name") or ""),
         "worker_image_ref": str(capability.get("worker_image_ref") or state.get("worker_image_ref") or ""),
+        "resources": capability.get("resources") if isinstance(capability.get("resources"), dict) else {},
     }
 
 
@@ -732,6 +904,7 @@ def request_system_update(*, requested_by: str = "", target_version: str = "", f
     deployment_mode = _deployment_mode()
     web_target = _web_update_target(target_image)
     worker_target = _worker_update_target(target_image)
+    runtime_config = _runtime_config_from_env()
     old_image_ids: list[str] = []
     _append_unique_image_id(old_image_ids, str(metadata.get("container_image_id") or ""))
     if not target_image:
@@ -787,6 +960,7 @@ def request_system_update(*, requested_by: str = "", target_version: str = "", f
         "Cmd": helper_cmd,
         "Env": [
             f"MAKERHUB_STATE_DIR={STATE_DIR}",
+            f"{RUNTIME_CONFIG_ENV}={json.dumps(runtime_config, ensure_ascii=False, separators=(',', ':'))}",
             "PYTHONUNBUFFERED=1",
         ],
         "Labels": {
@@ -1021,6 +1195,7 @@ def _replace_related_container(
     container_ref: str,
     image_ref: str,
     role: str,
+    runtime_config: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     container_inspect = client.inspect_container(container_ref)
     old_container_id = str(container_inspect.get("Id") or container_ref)
@@ -1058,7 +1233,12 @@ def _replace_related_container(
 
     try:
         client.pull_image(image_ref)
-        replacement_body = _build_replacement_container_body(container_inspect, image_ref)
+        replacement_body = _build_replacement_container_body(
+            container_inspect,
+            image_ref,
+            runtime_config=runtime_config,
+            role=role,
+        )
         replacement_container_id = client.create_container(replacement_body, name=replacement_container_name)
         state_fields: dict[str, str] = {}
         if role in {"web", "worker"}:
@@ -1121,6 +1301,7 @@ def run_update_helper(
     backup_container_name = ""
     old_container_renamed = False
     replacement_container_renamed = False
+    runtime_config = _runtime_config_from_env()
 
     def _attempt_rollback() -> None:
         rollback_errors: list[str] = []
@@ -1211,6 +1392,7 @@ def run_update_helper(
                 container_ref=web_container_name,
                 image_ref=web_image_ref or image_ref,
                 role="web",
+                runtime_config=runtime_config,
             )
             _update_state_from_helper(
                 request_id,
@@ -1243,6 +1425,7 @@ def run_update_helper(
                 container_ref=worker_container_name,
                 image_ref=worker_image_ref or image_ref,
                 role="worker",
+                runtime_config=runtime_config,
             )
             _update_state_from_helper(
                 request_id,
@@ -1269,7 +1452,12 @@ def run_update_helper(
             message="镜像已拉取完成，正在替换当前容器。",
         )
 
-        replacement_body = _build_replacement_container_body(container_inspect, image_ref)
+        replacement_body = _build_replacement_container_body(
+            container_inspect,
+            image_ref,
+            runtime_config=runtime_config,
+            role="app",
+        )
         replacement_container_name = _replacement_container_name(container_name, request_id)
         backup_container_name = _backup_container_name(container_name, request_id)
         replacement_container_id = client.create_container(replacement_body, name=replacement_container_name)
