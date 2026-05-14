@@ -187,6 +187,20 @@ class LocalModelImageCoverRequest(BaseModel):
     rel_path: str = ""
 
 
+class LocalModelPreviewImageRequest(BaseModel):
+    image_data: str = ""
+    mime_type: str = "image/png"
+    source_instance_key: str = ""
+    source_file_name: str = ""
+
+
+class LocalModelPreviewFailureRequest(BaseModel):
+    source_instance_key: str = ""
+    source_file_name: str = ""
+    status: str = "failed"
+    message: str = ""
+
+
 class Missing3mfItem(BaseModel):
     model_id: str
     title: str

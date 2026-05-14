@@ -41,6 +41,8 @@ from app.schemas.models import (
     LocalModelImageDeleteRequest,
     LocalModelMetadataUpdateRequest,
     LocalModelMergeRequest,
+    LocalModelPreviewFailureRequest,
+    LocalModelPreviewImageRequest,
     Missing3mfRetryRequest,
     MobileImportConfig,
     MobileImportTokenResetRequest,
@@ -82,6 +84,8 @@ from app.services.local_model_edit import (
     add_local_model_image,
     delete_local_model_file,
     delete_local_model_image,
+    save_local_model_generated_preview,
+    save_local_model_generated_preview_failure,
     set_local_model_cover_image,
     update_local_model_description,
     update_local_model_metadata,
@@ -3173,7 +3177,9 @@ async def get_source_group_models(
     sort: str = Query("collectDate", description="collectDate / downloads / likes / prints"),
     page: int = Query(1, ge=1, description="分页页码"),
     page_size: int = Query(8, ge=1, le=120, description="每页数量"),
+    limit: int = Query(0, ge=0, le=2000, description="从第一页起一次返回的数量"),
 ):
+    effective_page_size = limit if limit > 0 else page_size
     payload = await run_web_io(
         build_source_group_models_payload,
         source_type=source_type,
@@ -3182,13 +3188,16 @@ async def get_source_group_models(
         source=source,
         tag=tag,
         sort_key=sort,
-        page=page,
-        page_size=page_size,
+        page=1 if limit > 0 else page,
+        page_size=effective_page_size,
         store=store,
         task_store=task_state_store,
     )
     if payload is None:
         raise HTTPException(status_code=404, detail="来源不存在。")
+    if limit > 0:
+        payload["page"] = max(int(page or 1), 1)
+        payload["page_size"] = page_size
     return payload
 
 
@@ -3201,7 +3210,9 @@ async def get_state_group_models(
     sort: str = Query("collectDate", description="collectDate / downloads / likes / prints"),
     page: int = Query(1, ge=1, description="分页页码"),
     page_size: int = Query(8, ge=1, le=120, description="每页数量"),
+    limit: int = Query(0, ge=0, le=2000, description="从第一页起一次返回的数量"),
 ):
+    effective_page_size = limit if limit > 0 else page_size
     payload = await run_web_io(
         build_state_group_models_payload,
         state_key=state_key,
@@ -3209,13 +3220,16 @@ async def get_state_group_models(
         source=source,
         tag=tag,
         sort_key=sort,
-        page=page,
-        page_size=page_size,
+        page=1 if limit > 0 else page,
+        page_size=effective_page_size,
         store=store,
         task_store=task_state_store,
     )
     if payload is None:
         raise HTTPException(status_code=404, detail="状态卡不存在。")
+    if limit > 0:
+        payload["page"] = max(int(page or 1), 1)
+        payload["page_size"] = page_size
     return payload
 
 
@@ -3599,6 +3613,88 @@ async def update_local_model_cover_image(
         "item": updated,
         "detail": detail,
         "message": "封面图已更新。",
+    }
+
+
+@router.post("/models/{model_dir:path}/local/preview-image")
+async def save_local_model_preview_image(
+    model_dir: str,
+    payload: LocalModelPreviewImageRequest,
+    request: Request,
+):
+    _require_session_auth(request)
+    try:
+        def _save_and_load_detail():
+            result = save_local_model_generated_preview(
+                model_dir,
+                image_data=payload.image_data,
+                mime_type=payload.mime_type,
+                source_instance_key=payload.source_instance_key,
+                source_file_name=payload.source_file_name,
+            )
+            return result, get_model_detail(model_dir)
+
+        result, detail = await run_task_api(_save_and_load_detail)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if detail is None:
+        raise HTTPException(status_code=404, detail="模型不存在。")
+
+    append_business_log(
+        "model",
+        "local_model_preview_generated",
+        "本地模型 Three.js 封面已生成。",
+        model_dir=model_dir,
+        source_file_name=payload.source_file_name,
+    )
+    return {
+        "success": True,
+        "result": result,
+        "detail": detail,
+        "message": "Three.js 预览图已保存。",
+    }
+
+
+@router.post("/models/{model_dir:path}/local/preview-image/failure")
+async def save_local_model_preview_image_failure(
+    model_dir: str,
+    payload: LocalModelPreviewFailureRequest,
+    request: Request,
+):
+    _require_session_auth(request)
+    try:
+        def _save_and_load_detail():
+            result = save_local_model_generated_preview_failure(
+                model_dir,
+                message=payload.message,
+                status=payload.status,
+                source_instance_key=payload.source_instance_key,
+                source_file_name=payload.source_file_name,
+            )
+            return result, get_model_detail(model_dir)
+
+        result, detail = await run_task_api(_save_and_load_detail)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if detail is None:
+        raise HTTPException(status_code=404, detail="模型不存在。")
+
+    append_business_log(
+        "model",
+        "local_model_preview_failed",
+        "本地模型 Three.js 封面生成失败。",
+        model_dir=model_dir,
+        source_file_name=payload.source_file_name,
+        status=payload.status,
+        error=payload.message,
+    )
+    return {
+        "success": True,
+        "result": result,
+        "detail": detail,
+        "message": "预览图生成失败状态已记录。",
     }
 
 

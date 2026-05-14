@@ -6,6 +6,7 @@ RUN npm ci
 COPY frontend/ ./
 COPY app/static/css/app.css /app/static/css/app.css
 RUN npm run build
+RUN npm prune --omit=dev
 
 
 FROM python:3.11-slim
@@ -19,7 +20,7 @@ ENV MAKERHUB_ARCHIVE_DIR=/app/archive
 ENV MAKERHUB_LOCAL_DIR=/app/local
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl libarchive-tools \
+    && apt-get install -y --no-install-recommends chromium curl libarchive-tools nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -30,6 +31,7 @@ COPY app ./app
 COPY VERSION ./VERSION
 COPY docker/entrypoint.sh ./docker/entrypoint.sh
 COPY frontend/package.json ./frontend/package.json
+COPY --from=frontend-build /frontend/node_modules ./frontend/node_modules
 COPY --from=frontend-build /frontend/dist ./frontend/dist
 RUN chmod +x /app/docker/entrypoint.sh
 

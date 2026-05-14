@@ -333,10 +333,14 @@ function syncFiltersFromRoute() {
   filters.sort = typeof route.query.sort === "string" ? route.query.sort : "collectDate";
 }
 
-function buildQuery(page = 1) {
+function buildQuery(page = 1, options = {}) {
   const query = new URLSearchParams();
-  query.set("page", String(page));
+  const includeUntilPage = Boolean(options.includeUntilPage);
+  query.set("page", includeUntilPage ? "1" : String(page));
   query.set("page_size", String(PAGE_SIZE));
+  if (includeUntilPage && page > 1) {
+    query.set("limit", String(Math.max(1, Math.floor(page)) * PAGE_SIZE));
+  }
   if (filters.q) query.set("q", filters.q);
   if (filters.source && filters.source !== "all") query.set("source", filters.source);
   if (filters.tag) query.set("tag", filters.tag);
@@ -369,8 +373,8 @@ function endpointBase() {
   return `/api/source-library/sources/${encodeURIComponent(String(route.params.sourceType || ""))}/${encodeURIComponent(String(route.params.sourceKey || ""))}`;
 }
 
-async function fetchPage(page) {
-  return apiRequest(`${endpointBase()}?${buildQuery(page).toString()}`);
+async function fetchPage(page, options = {}) {
+  return apiRequest(`${endpointBase()}?${buildQuery(page, options).toString()}`);
 }
 
 function mergeUniqueModelItems(currentItems = [], incomingItems = []) {
@@ -483,15 +487,10 @@ async function load({ append = false } = {}) {
   syncFiltersFromRoute();
 
   const nextPage = append ? payload.value.page + 1 : routePage();
-  const responses = [];
-  for (let page = append ? nextPage : 1; page <= nextPage; page += 1) {
-    responses.push(await fetchPage(page));
-  }
+  const response = await fetchPage(nextPage, { includeUntilPage: !append && nextPage > 1 });
   if (currentToken !== requestToken) {
     return;
   }
-
-  const response = responses[responses.length - 1];
   view.value = response.view || view.value;
   if (append) {
     const mergedItems = mergeUniqueModelItems(payload.value.items, response.items || []);
@@ -501,14 +500,9 @@ async function load({ append = false } = {}) {
       count: mergedItems.length,
     };
   } else {
-    const mergedItems = responses.reduce(
-      (items, item) => mergeUniqueModelItems(items, item.items || []),
-      [],
-    );
     payload.value = {
       ...response,
-      items: mergedItems,
-      count: mergedItems.length,
+      count: (response.items || []).length,
       page: nextPage,
     };
   }
@@ -526,25 +520,16 @@ async function reloadVisiblePages() {
   const currentToken = ++requestToken;
   syncFiltersFromRoute();
 
-  const responses = [];
-  for (let page = 1; page <= pagesToLoad; page += 1) {
-    responses.push(await fetchPage(page));
-  }
+  const response = await fetchPage(pagesToLoad, { includeUntilPage: pagesToLoad > 1 });
 
-  if (!responses.length || currentToken !== requestToken) {
+  if (currentToken !== requestToken) {
     return;
   }
 
-  const lastResponse = responses[responses.length - 1];
-  const mergedItems = responses.reduce(
-    (items, response) => mergeUniqueModelItems(items, response.items || []),
-    [],
-  );
-  view.value = lastResponse.view || view.value;
+  view.value = response.view || view.value;
   payload.value = {
-    ...lastResponse,
-    items: mergedItems,
-    count: mergedItems.length,
+    ...response,
+    count: (response.items || []).length,
     page: pagesToLoad,
   };
   rememberGroupList();

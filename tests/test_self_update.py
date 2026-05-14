@@ -68,6 +68,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             }
             created: list[dict] = []
             started: list[str] = []
+            written_state: dict = {}
 
             def api_inspect() -> dict:
                 return {
@@ -127,6 +128,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                 self_update.os.environ.pop(self_update.WORKER_IMAGE_REF_ENV, None)
 
                 status = self_update.request_system_update(requested_by="admin", target_version="0.6.0")
+                written_state = self_update._read_update_state()
             finally:
                 self_update.DOCKER_SOCKET_PATH = original_socket
                 self_update.STATE_DIR = original_state_dir
@@ -148,6 +150,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             self.assertIn("--web-image-ref", command)
             self.assertIn("ghcr.io/example/makerhub:latest", command)
             self.assertEqual(started, [created[0]["name"] + "-id"])
+            self.assertEqual(written_state["old_image_ids"], ["sha256:current-image"])
 
     def test_request_system_update_passes_worker_container_to_helper(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -169,6 +172,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             }
             created: list[dict] = []
             started: list[str] = []
+            written_state: dict = {}
 
             def app_inspect() -> dict:
                 return {
@@ -228,6 +232,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                 self_update.os.environ[self_update.WORKER_IMAGE_REF_ENV] = "ghcr.io/example/makerhub:latest"
 
                 status = self_update.request_system_update(requested_by="admin", target_version="0.6.2")
+                written_state = self_update._read_update_state()
             finally:
                 self_update.DOCKER_SOCKET_PATH = original_socket
                 self_update.STATE_DIR = original_state_dir
@@ -249,6 +254,65 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             self.assertIn("--worker-image-ref", command)
             self.assertIn("ghcr.io/example/makerhub:latest", command)
             self.assertEqual(started, [created[0]["name"] + "-id"])
+            self.assertEqual(written_state["old_image_ids"], ["sha256:current-image"])
+
+    def test_delayed_cleanup_removes_old_image_after_success(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "state"
+            socket_path = Path(temp_dir) / "docker.sock"
+            socket_path.write_text("", encoding="utf-8")
+
+            original_socket = self_update.DOCKER_SOCKET_PATH
+            original_state_dir = self_update.STATE_DIR
+            original_update_state = self_update.UPDATE_STATE_PATH
+            original_client = self_update.DockerSocketClient
+            original_candidates = self_update._extract_container_id_candidates
+            removed: list[str] = []
+
+            class FakeDockerSocketClient:
+                def __init__(self, *args, **kwargs):
+                    pass
+
+                def inspect_container(self, container_id):
+                    return {
+                        "Id": "new-container-id",
+                        "Name": "/makerhub-app",
+                        "Image": "sha256:new-image",
+                        "Config": {"Image": "ghcr.io/example/makerhub:latest"},
+                        "HostConfig": {"Binds": [f"{state_dir}:{state_dir}"]},
+                        "Mounts": [],
+                    }
+
+                def remove_image(self, image_id, *, force=False, noprune=False):
+                    removed.append(image_id)
+
+            try:
+                self_update.DOCKER_SOCKET_PATH = socket_path
+                self_update.STATE_DIR = state_dir
+                self_update.UPDATE_STATE_PATH = state_dir / "system_update.json"
+                self_update.DockerSocketClient = FakeDockerSocketClient
+                self_update._extract_container_id_candidates = lambda: ["new-container-id"]
+                self_update._write_update_state(
+                    {
+                        "status": "succeeded",
+                        "request_id": "cleanup-request",
+                        "old_image_ids": ["sha256:old-image", "sha256:new-image"],
+                        "image_cleanup_done": False,
+                    }
+                )
+
+                result = self_update._cleanup_old_update_images(self_update._read_update_state())
+            finally:
+                self_update.DOCKER_SOCKET_PATH = original_socket
+                self_update.STATE_DIR = original_state_dir
+                self_update.UPDATE_STATE_PATH = original_update_state
+                self_update.DockerSocketClient = original_client
+                self_update._extract_container_id_candidates = original_candidates
+
+            self.assertEqual(removed, ["sha256:old-image"])
+            self.assertTrue(result["image_cleanup_done"])
+            self.assertEqual(result["image_cleanup_removed"], ["sha256:old-image"])
+            self.assertEqual(result["image_cleanup_errors"], [])
 
 
 if __name__ == "__main__":

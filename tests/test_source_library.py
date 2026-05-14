@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from app.services.catalog import _source_deleted_model_count
-from app.services.source_library import build_state_group_models_payload
+from app.services.source_library import build_source_group_models_payload, build_state_group_models_payload
 
 
 def _model(model_dir: str, *, source: str = "cn") -> dict:
@@ -74,6 +74,35 @@ class SourceLibraryTest(unittest.TestCase):
         ]
 
         self.assertEqual(_source_deleted_model_count(items), 1)
+
+    def test_source_group_can_return_multiple_loaded_pages_in_one_payload(self):
+        groups = {
+            "local-organizer": {
+                "key": "local-organizer",
+                "kind": "local",
+                "route_kind": "source",
+                "model_dirs": ["local-1", "local-2", "local-3"],
+            }
+        }
+        all_models = []
+        for name in ("local-1", "local-2", "local-3"):
+            item = _model(name, source="local")
+            item["local_flags"]["deleted"] = False
+            all_models.append(item)
+
+        with patch("app.services.source_library._group_models", return_value=(groups, all_models, [])):
+            payload = build_source_group_models_payload(
+                "local",
+                "local-organizer",
+                page=1,
+                page_size=16,
+            )
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["filtered_total"], 3)
+        self.assertEqual(payload["count"], 3)
+        self.assertEqual(len(payload["items"]), 3)
+        self.assertEqual({item["model_dir"] for item in payload["items"]}, {"local-1", "local-2", "local-3"})
 
 
 if __name__ == "__main__":

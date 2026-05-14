@@ -817,11 +817,12 @@
           <canvas ref="modelPreviewCanvasRef" class="model-preview-dialog__canvas"></canvas>
           <div v-if="modelPreview.loading" class="model-preview-dialog__state">
             <strong>正在加载 3D 模型</strong>
-            <span>请稍候。</span>
+            <span>{{ modelPreview.detail || "请稍候。" }}</span>
           </div>
           <div v-else-if="modelPreview.error" class="model-preview-dialog__state model-preview-dialog__state--error">
             <strong>3D 预览加载失败</strong>
             <span>{{ modelPreview.error }}</span>
+            <span v-if="modelPreview.detail">{{ modelPreview.detail }}</span>
           </div>
         </div>
       </div>
@@ -953,6 +954,14 @@ import ShareDialog from "../components/ShareDialog.vue";
 import { apiRequest } from "../lib/api";
 import { formatProfileRating } from "../lib/helpers";
 import { getPageCache, setPageCache } from "../lib/pageCache";
+import {
+  buildInteractivePreviewScene,
+  disposeModelPreviewObject,
+  formatModelPreviewSize,
+  frameModelPreviewObject,
+  guardModelPreviewFileSize,
+  loadModelPreviewObject,
+} from "../lib/threePreview";
 
 
 const route = useRoute();
@@ -978,6 +987,7 @@ const modelPreview = ref({
   error: "",
   fileUrl: "",
   title: "",
+  detail: "",
 });
 const modelPreviewCanvasRef = ref(null);
 const modelPreviewStageRef = ref(null);
@@ -1034,6 +1044,7 @@ let modelPreviewGrid = null;
 let modelPreviewResizeObserver = null;
 let modelPreviewHome = null;
 let modelPreviewRequestId = 0;
+const MODEL_PREVIEW_MAX_BYTES = 24 * 1024 * 1024;
 
 const INITIAL_COMMENT_BATCH = 20;
 const COMMENT_REPLY_PREVIEW_COUNT = 3;
@@ -1885,40 +1896,6 @@ function disposeModelPreviewScene() {
   modelPreviewHome = null;
 }
 
-function disposeModelPreviewMaterial(material) {
-  if (Array.isArray(material)) {
-    for (const item of material) {
-      disposeModelPreviewMaterial(item);
-    }
-    return;
-  }
-  if (!material) {
-    return;
-  }
-  for (const value of Object.values(material)) {
-    if (value?.isTexture) {
-      value.dispose();
-    }
-  }
-  material.dispose?.();
-}
-
-function disposeModelPreviewObject(object) {
-  if (!object) {
-    return;
-  }
-  object.traverse?.((item) => {
-    if (item.geometry) {
-      item.geometry.dispose();
-    }
-    disposeModelPreviewMaterial(item.material);
-  });
-  if (object.geometry) {
-    object.geometry.dispose();
-  }
-  disposeModelPreviewMaterial(object.material);
-}
-
 function resizeModelPreviewRenderer() {
   const stage = modelPreviewStageRef.value;
   if (!stage || !modelPreviewRenderer || !modelPreviewCamera) {
@@ -1930,40 +1907,6 @@ function resizeModelPreviewRenderer() {
   modelPreviewCamera.aspect = width / height;
   modelPreviewCamera.updateProjectionMatrix();
   modelPreviewRenderer.render(modelPreviewScene, modelPreviewCamera);
-}
-
-function frameModelPreviewObject(THREE, object) {
-  const box = new THREE.Box3().setFromObject(object);
-  const size = new THREE.Vector3();
-  const center = new THREE.Vector3();
-  box.getSize(size);
-  box.getCenter(center);
-  object.position.sub(center);
-
-  const maxDim = Math.max(size.x, size.y, size.z, 1);
-  const distance = maxDim * 1.7;
-  const near = Math.max(distance / 100, 0.01);
-  const far = Math.max(distance * 12, 1000);
-  modelPreviewCamera.near = near;
-  modelPreviewCamera.far = far;
-  modelPreviewCamera.position.set(maxDim * 1.18, maxDim * 1.05, maxDim * 1.45);
-  modelPreviewCamera.updateProjectionMatrix();
-
-  if (modelPreviewControls) {
-    modelPreviewControls.target.set(0, 0, 0);
-    modelPreviewControls.minDistance = maxDim * 0.22;
-    modelPreviewControls.maxDistance = maxDim * 8;
-    modelPreviewControls.update();
-  }
-  modelPreviewHome = {
-    position: modelPreviewCamera.position.clone(),
-    target: new THREE.Vector3(0, 0, 0),
-  };
-
-  if (modelPreviewGrid) {
-    modelPreviewGrid.scale.setScalar(maxDim / 10);
-    modelPreviewGrid.position.y = -size.y / 2;
-  }
 }
 
 function resetModelPreviewCamera() {
@@ -1993,61 +1936,6 @@ function startModelPreviewLoop() {
   }
 }
 
-function normalizeModelPreviewObject(THREE, object) {
-  object.updateMatrixWorld(true);
-  object.traverse?.((item) => {
-    if (item?.isMesh) {
-      if (item.geometry && !item.geometry.getAttribute("normal")) {
-        item.geometry.computeVertexNormals();
-      }
-      if (!item.material) {
-        item.material = new THREE.MeshStandardMaterial({
-          color: 0xdfe7ef,
-          roughness: 0.55,
-          metalness: 0.04,
-        });
-      }
-      item.castShadow = false;
-      item.receiveShadow = false;
-    }
-  });
-  return object;
-}
-
-async function loadModelPreviewObject(THREE, fileUrl, fileName) {
-  const name = String(fileName || fileUrl || "").toLowerCase();
-  if (name.endsWith(".3mf")) {
-    const { ThreeMFLoader } = await import("three/examples/jsm/loaders/3MFLoader.js");
-    const loader = new ThreeMFLoader();
-    return normalizeModelPreviewObject(THREE, await loader.loadAsync(fileUrl));
-  }
-  if (name.endsWith(".obj")) {
-    const { OBJLoader } = await import("three/examples/jsm/loaders/OBJLoader.js");
-    const loader = new OBJLoader();
-    const object = await loader.loadAsync(fileUrl);
-    object.traverse((item) => {
-      if (item?.isMesh) {
-        item.material = new THREE.MeshStandardMaterial({
-          color: 0xdfe7ef,
-          roughness: 0.55,
-          metalness: 0.04,
-        });
-      }
-    });
-    return normalizeModelPreviewObject(THREE, object);
-  }
-  const { STLLoader } = await import("three/examples/jsm/loaders/STLLoader.js");
-  const loader = new STLLoader();
-  const geometry = await loader.loadAsync(fileUrl);
-  geometry.computeVertexNormals();
-  const material = new THREE.MeshStandardMaterial({
-    color: 0xdfe7ef,
-    roughness: 0.55,
-    metalness: 0.04,
-  });
-  return new THREE.Mesh(geometry, material);
-}
-
 async function mountModelPreviewScene(fileUrl, requestId) {
   const stage = modelPreviewStageRef.value;
   const canvas = modelPreviewCanvasRef.value;
@@ -2056,36 +1944,34 @@ async function mountModelPreviewScene(fileUrl, requestId) {
   }
   disposeModelPreviewScene();
 
+  const knownSize = Number(activeModelPreviewFile.value?.file_size || 0);
+  if (knownSize > MODEL_PREVIEW_MAX_BYTES) {
+    const label = formatModelPreviewSize(knownSize);
+    const limitLabel = formatModelPreviewSize(MODEL_PREVIEW_MAX_BYTES);
+    throw new Error(`模型文件 ${label || "过大"}，超过网页预览上限 ${limitLabel}。`);
+  }
+  const fileSize = knownSize || await guardModelPreviewFileSize(fileUrl, MODEL_PREVIEW_MAX_BYTES);
+  if (requestId !== modelPreviewRequestId || !modelPreview.value.open) {
+    return false;
+  }
+  if (fileSize) {
+    modelPreview.value = {
+      ...modelPreview.value,
+      detail: `模型大小 ${formatModelPreviewSize(fileSize)}，正在初始化预览。`,
+    };
+  }
+
   const THREE = await import("three");
   const { OrbitControls } = await import("three/examples/jsm/controls/OrbitControls.js");
   if (requestId !== modelPreviewRequestId || !modelPreview.value.open) {
     return false;
   }
 
-  modelPreviewRenderer = new THREE.WebGLRenderer({
-    antialias: true,
-    alpha: true,
-    canvas,
-  });
-  modelPreviewRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-  modelPreviewRenderer.outputColorSpace = THREE.SRGBColorSpace;
-
-  modelPreviewScene = new THREE.Scene();
-  modelPreviewScene.background = new THREE.Color(0x111827);
-  modelPreviewCamera = new THREE.PerspectiveCamera(45, 1, 0.01, 1000);
-
-  const ambient = new THREE.HemisphereLight(0xffffff, 0x26313f, 2.2);
-  modelPreviewScene.add(ambient);
-  const keyLight = new THREE.DirectionalLight(0xffffff, 2.3);
-  keyLight.position.set(3, 5, 4);
-  modelPreviewScene.add(keyLight);
-  const fillLight = new THREE.DirectionalLight(0x9fd4ff, 0.85);
-  fillLight.position.set(-4, 2, -3);
-  modelPreviewScene.add(fillLight);
-  modelPreviewGrid = new THREE.GridHelper(10, 20, 0x4b5563, 0x273244);
-  modelPreviewGrid.material.transparent = true;
-  modelPreviewGrid.material.opacity = 0.32;
-  modelPreviewScene.add(modelPreviewGrid);
+  const sceneBundle = buildInteractivePreviewScene(THREE, canvas);
+  modelPreviewRenderer = sceneBundle.renderer;
+  modelPreviewScene = sceneBundle.scene;
+  modelPreviewCamera = sceneBundle.camera;
+  modelPreviewGrid = sceneBundle.grid;
 
   modelPreviewControls = new OrbitControls(modelPreviewCamera, canvas);
   modelPreviewControls.enableDamping = true;
@@ -2101,7 +1987,7 @@ async function mountModelPreviewScene(fileUrl, requestId) {
   }
   modelPreviewMesh = object;
   modelPreviewScene.add(object);
-  frameModelPreviewObject(THREE, object);
+  modelPreviewHome = frameModelPreviewObject(THREE, object, modelPreviewCamera, modelPreviewControls, modelPreviewGrid);
   resizeModelPreviewRenderer();
 
   if (typeof ResizeObserver !== "undefined") {
@@ -2123,6 +2009,7 @@ async function openModelPreview() {
     error: "",
     fileUrl: previewFile.file_url,
     title: previewFile.title || previewFile.file_name || detail.value?.title || "3D 模型",
+    detail: "正在检查模型大小。",
   };
   if (typeof document !== "undefined") {
     document.body.classList.add("is-lightbox-open");
@@ -2138,6 +2025,7 @@ async function openModelPreview() {
       ...modelPreview.value,
       loading: false,
       error: "",
+      detail: "",
     };
   } catch (error) {
     if (requestId !== modelPreviewRequestId) {
@@ -2148,6 +2036,7 @@ async function openModelPreview() {
       ...modelPreview.value,
       loading: false,
       error: error instanceof Error ? error.message : "无法读取该 STL 文件。",
+      detail: "大文件请用下载按钮保存后在本地切片软件或建模软件中查看。",
     };
   }
 }
@@ -2161,6 +2050,7 @@ function closeModelPreview() {
     error: "",
     fileUrl: "",
     title: "",
+    detail: "",
   };
   if (typeof document !== "undefined" && !lightbox.value.open) {
     document.body.classList.remove("is-lightbox-open");

@@ -147,6 +147,40 @@ class LocalModelEditTest(unittest.TestCase):
             self.assertTrue(detail["cover_url"].endswith("/LOCAL_Test/images/side.png"))
             self.assertTrue(detail["gallery"][0]["url"].endswith("/LOCAL_Test/images/side.png"))
 
+    def test_save_generated_three_preview_updates_cover_and_gallery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_root = Path(tmp).resolve()
+            model_root = self._write_local_model(archive_root)
+            meta_path = model_root / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["cover"] = ""
+            meta["designImages"] = []
+            meta["instances"][0]["thumbnailLocal"] = ""
+            meta["instances"][0]["pictures"] = []
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+            with patch.object(local_model_edit, "ARCHIVE_DIR", archive_root), \
+                patch.object(catalog, "ARCHIVE_DIR", archive_root):
+                result = local_model_edit.save_local_model_generated_preview(
+                    "LOCAL_Test",
+                    image_data="data:image/png;base64,aW1hZ2U=",
+                    mime_type="image/png",
+                    source_instance_key="local-1",
+                    source_file_name="body.stl",
+                )
+                detail = catalog.get_model_detail("LOCAL_Test")
+
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            self.assertEqual(result["preview"]["status"], "success")
+            self.assertTrue(meta["cover"].startswith("images/three_preview_body"))
+            self.assertTrue((model_root / meta["cover"]).exists())
+            self.assertEqual(meta["designImages"][0]["kind"], "generated_three_preview")
+            self.assertEqual(meta["instances"][0]["thumbnailLocal"], meta["cover"])
+            self.assertEqual(meta["localImport"]["previewStatus"], "success")
+            self.assertFalse(meta["localImport"]["previewNeedsGeneration"])
+            self.assertTrue(detail["cover_url"].endswith(f"/LOCAL_Test/{meta['cover']}"))
+            self.assertEqual(detail["local_preview"]["status"], "success")
+
     def test_rejects_non_local_model(self):
         with tempfile.TemporaryDirectory() as tmp:
             archive_root = Path(tmp).resolve()

@@ -153,9 +153,9 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 ## 更新记录
 
 ### 2026-05-14
-- 本地导入的 STL 在没有图册图片时会自动生成轻量静态封面，存量本地 STL 缺封面时会在读取模型时懒生成
-- 详情页 `3D 预览` 改为点击后才加载 Three.js 和真实模型文件，支持 STL / OBJ / 3MF 旋转、缩放与重置视角，不影响模型库列表初始性能
-- 新增本地 STL 自动封面回归测试，覆盖新导入和存量模型读取补图两条路径
+- 本地导入缺图模型的自动封面改由 `makerhub-worker` 后台用 Three.js + Chromium 生成 PNG，前端不再自动下载模型文件或占用网页 CPU
+- 新导入模型会自动排队生成封面；存量缺图模型只在打开详情页时标记待生成，worker 每轮渐进处理，并对超大文件按 `MAKERHUB_LOCAL_PREVIEW_MAX_BYTES` 跳过
+- 旧的 `stl_preview_*.svg` 视为可替换的历史预览图，worker 成功生成 Three.js 封面后会替换为新的 PNG；详情页手动 `3D 预览` 仍支持 STL / OBJ / 3MF 旋转缩放
 
 ### 2026-05-13
 - 移动端 raw 上传支持从 `filename` URL 参数、`X-MakerHub-Filename` 请求头和 `Content-Disposition` 解析文件名，优先采用非 `wechat-upload` 的真实名称

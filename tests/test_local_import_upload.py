@@ -185,7 +185,7 @@ class LocalImportUploadTest(unittest.TestCase):
             self.assertEqual(task_item["progress"], 100)
             self.assertEqual(task_item["message"], "本地模型包已导入。")
 
-    def test_stl_import_generates_preview_when_no_images_exist(self):
+    def test_stl_import_marks_three_preview_pending_when_no_images_exist(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
             archive_root = root / "archive"
@@ -233,13 +233,16 @@ class LocalImportUploadTest(unittest.TestCase):
 
             meta_path = archive_root / result["model_dir"] / "meta.json"
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            self.assertTrue(str(meta["cover"]).startswith("images/stl_preview_cube"))
-            self.assertTrue((archive_root / result["model_dir"] / meta["cover"]).exists())
-            self.assertEqual(meta["designImages"][0]["relPath"], meta["cover"])
-            self.assertEqual(meta["instances"][0]["thumbnailLocal"], meta["cover"])
-            self.assertEqual(meta["instances"][0]["pictures"][0]["relPath"], meta["cover"])
+            self.assertEqual(meta["cover"], "")
+            self.assertEqual(meta["designImages"], [])
+            self.assertEqual(meta["instances"][0]["thumbnailLocal"], "")
+            self.assertEqual(meta["instances"][0]["pictures"], [])
+            self.assertEqual(meta["localImport"]["previewGenerator"], "three")
+            self.assertEqual(meta["localImport"]["previewStatus"], "pending")
+            self.assertTrue(meta["localImport"]["previewNeedsGeneration"])
             self.assertIsNotNone(detail)
-            self.assertIn("/images/stl_preview_cube", detail["cover_url"])
+            self.assertTrue(detail["local_preview"]["needs_generation"])
+            self.assertEqual(detail["local_preview"]["candidate"]["file_name"], "cube.stl")
 
     def test_nested_zip_import_skips_unreadable_child_zip(self):
         with tempfile.TemporaryDirectory() as tmp:

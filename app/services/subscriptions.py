@@ -63,7 +63,7 @@ def _append_subscription_log(event: str, **payload: Any) -> None:
     except Exception:
         return
     if event in {"initialized", "metadata_refreshed", "metadata_refresh_error", "sync_start", "sync_done", "sync_error", "scheduler_error"}:
-        level = "error" if event in {"metadata_refresh_error", "sync_error", "scheduler_error"} else "info"
+        level = "error" if event in {"sync_error", "scheduler_error"} else "warning" if event == "metadata_refresh_error" else "info"
         message_map = {
             "initialized": "订阅初始化完成。",
             "metadata_refreshed": "订阅来源卡元数据已刷新。",

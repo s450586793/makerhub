@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 
 from app.core.settings import ARCHIVE_DIR, CONFIG_PATH, STATE_DIR
 from app.core.store import JsonStore
-from app.core.timezone import from_timestamp as china_from_timestamp, parse_timestamp as china_parse_timestamp
+from app.core.timezone import from_timestamp as china_from_timestamp, now_iso as china_now_iso, parse_timestamp as china_parse_timestamp
 from app.services.batch_discovery import extract_model_id, normalize_source_url
 from app.services.model_attachments import (
     ATTACHMENT_CATEGORY_LABELS,
@@ -26,6 +26,7 @@ from app.services.profile_rating import normalize_profile_rating
 from app.services.source_health import build_source_health_cards
 from app.services.task_state import SUBSCRIPTIONS_STATE_PATH, TaskStateStore, compact_remote_refresh_state
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, resolve_model_instance_files
+from app.services.local_model_preview import build_local_preview_state
 
 
 SOURCE_LABELS = {
@@ -1002,6 +1003,12 @@ def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
             if isinstance(resolved_path, Path)
             else Path(str(item.get("fileName") or "")).name
         )
+        file_size = 0
+        if isinstance(resolved_path, Path):
+            try:
+                file_size = int(resolved_path.stat().st_size)
+            except OSError:
+                file_size = 0
         file_suffix = Path(file_name).suffix.lower().lstrip(".")
         file_kind = str(item.get("fileKind") or file_suffix.upper() or "文件").strip()
         file_ref = f"instances/{file_name}" if file_name else ""
@@ -1046,6 +1053,7 @@ def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
                 "media": media_items,
                 "file_url": file_url,
                 "file_name": file_name or str(item.get("name") or ""),
+                "file_size": file_size,
                 "file_kind": file_kind,
                 "download_label": f"下载 {file_kind}",
                 "file_available": bool(file_url),
@@ -1884,6 +1892,8 @@ def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[
             "design_model_id": str(local_import.get("designModelId") or ""),
             "original_filename": str(local_import.get("originalFilename") or ""),
         }
+        if include_detail:
+            payload["local_preview"] = build_local_preview_state(meta, model_root)
     if not include_detail:
         return payload
 
@@ -2170,6 +2180,21 @@ def get_model_detail(model_dir: str, include_detail: bool = True) -> Optional[di
         return None
 
     clean_model_dir = str(model_dir or "").strip().strip("/")
+    if include_detail:
+        try:
+            raw_meta = _read_json(meta_path)
+        except (json.JSONDecodeError, OSError):
+            raw_meta = {}
+        if isinstance(raw_meta, dict) and _normalize_source(raw_meta, target.relative_to(ARCHIVE_DIR.resolve())) == "local":
+            before = json.dumps(raw_meta.get("localImport") or {}, ensure_ascii=False, sort_keys=True)
+            preview_state = build_local_preview_state(raw_meta, target)
+            after = json.dumps(raw_meta.get("localImport") or {}, ensure_ascii=False, sort_keys=True)
+            if preview_state.get("needs_generation") and before != after:
+                raw_meta["update_time"] = china_now_iso()
+                meta_path.write_text(json.dumps(raw_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+                invalidate_model_detail_cache(clean_model_dir)
+                invalidate_archive_snapshot("local_preview_queued_from_detail")
+
     detail: Optional[dict]
     if include_detail:
         signature = _model_detail_signature(target, meta_path)

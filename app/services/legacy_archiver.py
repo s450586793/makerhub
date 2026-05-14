@@ -166,6 +166,18 @@ THREE_MF_DOWNLOAD_WAIT_MIN_SECONDS = 5.0
 THREE_MF_DOWNLOAD_WAIT_MAX_SECONDS = 10.0
 COMMENT_ASSET_DOWNLOAD_WORKERS = 4
 SHARED_AVATAR_REL_DIR = "_shared/avatars"
+VERBOSE_THREE_MF_FETCH_LOG = os.getenv("MAKERHUB_VERBOSE_THREE_MF_FETCH_LOG", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+TERMINAL_THREE_MF_FETCH_STATES = {
+    "download_limited",
+    "verification_required",
+    "cloudflare",
+    "auth_required",
+}
 MAKERWORLD_API_BROWSER_HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "X-BBL-Client-Type": "web",
@@ -3657,6 +3669,30 @@ def _classify_3mf_fetch_failure(
     }
 
 
+def _should_stop_three_mf_fetch(failure: Optional[dict]) -> bool:
+    return str((failure or {}).get("state") or "").strip() in TERMINAL_THREE_MF_FETCH_STATES
+
+
+def _summarize_three_mf_fetch_attempts(attempts: list[dict]) -> str:
+    if not attempts:
+        return "no-attempts"
+    status_counts: dict[str, int] = {}
+    state_counts: dict[str, int] = {}
+    host_counts: dict[str, int] = {}
+    for attempt in attempts:
+        status = str(attempt.get("status") or "error")
+        state = str(attempt.get("state") or "unknown")
+        host = urlparse(str(attempt.get("url") or "")).netloc or "unknown-host"
+        status_counts[status] = status_counts.get(status, 0) + 1
+        state_counts[state] = state_counts.get(state, 0) + 1
+        host_counts[host] = host_counts.get(host, 0) + 1
+
+    def _compact(values: dict[str, int]) -> str:
+        return ",".join(f"{key}:{count}" for key, count in sorted(values.items())[:8])
+
+    return f"attempts={len(attempts)} statuses={_compact(status_counts)} states={_compact(state_counts)} hosts={_compact(host_counts)}"
+
+
 def fetch_instance_3mf(
     session: requests.Session,
     inst_id: int,
@@ -3673,6 +3709,7 @@ def fetch_instance_3mf(
     auth_token = _extract_auth_token(raw_cookie)
     last_error = None
     last_failure = {"state": "missing", "message": "未获取到 3MF 下载地址。"}
+    attempts: list[dict] = []
     source_hint = (
         normalize_makerworld_source(url=origin)
         or normalize_makerworld_source(url=api_url)
@@ -3701,9 +3738,10 @@ def fetch_instance_3mf(
                 timeout=30,
                 headers=headers,
             )
-            log("[3MF] GET", candidate, "status", r.status_code)
             text_preview = r.text[:200] if r.text else ""
-            log("[3MF] 响应前 200 字符:", text_preview)
+            if VERBOSE_THREE_MF_FETCH_LOG:
+                log("[3MF] GET", candidate, "status", r.status_code)
+                log("[3MF] 响应前 200 字符:", text_preview)
             if r.status_code >= 400:
                 if _is_cloudflare_challenge(text_preview) or _looks_like_html(text_preview):
                     failure = _classify_3mf_fetch_failure(
@@ -3713,13 +3751,17 @@ def fetch_instance_3mf(
                         source=candidate_source,
                     )
                     last_failure = merge_three_mf_failure(last_failure, failure)
-                    if str(failure.get("state") or "") == "download_limited":
+                    attempts.append({"method": "requests", "url": candidate, "status": r.status_code, "state": failure.get("state")})
+                    if _should_stop_three_mf_fetch(failure):
+                        log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
                         return "", "", candidate, last_failure
                     continue
                 last_error = RuntimeError(f"status={r.status_code}")
                 failure = _classify_3mf_fetch_failure(status_code=r.status_code, text=text_preview, source=candidate_source)
                 last_failure = merge_three_mf_failure(last_failure, failure)
-                if str(failure.get("state") or "") == "download_limited":
+                attempts.append({"method": "requests", "url": candidate, "status": r.status_code, "state": failure.get("state")})
+                if _should_stop_three_mf_fetch(failure):
+                    log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
                     return "", "", candidate, last_failure
                 continue
             try:
@@ -3733,13 +3775,17 @@ def fetch_instance_3mf(
                         source=candidate_source,
                     )
                     last_failure = merge_three_mf_failure(last_failure, failure)
-                    if str(failure.get("state") or "") == "download_limited":
+                    attempts.append({"method": "requests", "url": candidate, "status": r.status_code, "state": failure.get("state")})
+                    if _should_stop_three_mf_fetch(failure):
+                        log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
                         return "", "", candidate, last_failure
                     continue
                 last_error = je
                 failure = _classify_3mf_fetch_failure(status_code=r.status_code, text=text_preview, source=candidate_source)
                 last_failure = merge_three_mf_failure(last_failure, failure)
-                if str(failure.get("state") or "") == "download_limited":
+                attempts.append({"method": "requests", "url": candidate, "status": r.status_code, "state": failure.get("state")})
+                if _should_stop_three_mf_fetch(failure):
+                    log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
                     return "", "", candidate, last_failure
                 continue
             name, url = _extract_instance_download(data)
@@ -3752,13 +3798,19 @@ def fetch_instance_3mf(
                 source=candidate_source,
             )
             last_failure = merge_three_mf_failure(last_failure, failure)
-            if str(failure.get("state") or "") == "download_limited":
+            attempts.append({"method": "requests", "url": candidate, "status": r.status_code, "state": failure.get("state")})
+            if _should_stop_three_mf_fetch(failure):
+                log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
                 return "", "", candidate, last_failure
         except Exception as e:
             last_error = e
+            attempts.append({"method": "requests", "url": candidate, "status": "exception", "state": type(e).__name__})
             continue
 
-    log("3MF 获取失败(尝试 curl)", inst_id, last_error)
+    if _should_stop_three_mf_fetch(last_failure):
+        log("3MF 获取失败", inst_id, str(last_failure.get("state") or "missing"), str(last_failure.get("message") or ""))
+        return "", "", candidates[-1] if candidates else api_url or "", last_failure
+    log("3MF 获取失败，尝试 curl", inst_id, _summarize_three_mf_fetch_attempts(attempts), last_error)
     for candidate in candidates:
         candidate_source = source_hint or normalize_makerworld_source(url=candidate)
         cookie_header = sanitize_cookie_header(raw_cookie)
@@ -3794,27 +3846,34 @@ def fetch_instance_3mf(
             res = subprocess.run(cmd, capture_output=True, text=False)
             if res.returncode != 0:
                 err_msg = res.stderr.decode(errors="ignore") if res.stderr else ""
-                log("3MF curl 失败 code=", res.returncode, "stderr:", err_msg[:200])
+                if VERBOSE_THREE_MF_FETCH_LOG:
+                    log("3MF curl 失败 code=", res.returncode, "stderr:", err_msg[:200])
                 failure = _classify_3mf_fetch_failure(text=err_msg, source=candidate_source)
                 last_failure = merge_three_mf_failure(last_failure, failure)
-                if str(failure.get("state") or "") == "download_limited":
+                attempts.append({"method": "curl", "url": candidate, "status": f"exit-{res.returncode}", "state": failure.get("state")})
+                if _should_stop_three_mf_fetch(failure):
+                    log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
                     return "", "", candidate, last_failure
                 continue
             body = res.stdout or b""
             preview = body[:200]
-            log("3MF curl 返回长度:", len(body), "前 200 字符:", preview)
+            if VERBOSE_THREE_MF_FETCH_LOG:
+                log("3MF curl 返回长度:", len(body), "前 200 字符:", preview)
             preview_text = body.decode("utf-8", errors="ignore")
             try:
                 data = json.loads(preview_text)
             except Exception as je:
-                log("3MF curl JSON 解析失败:", je)
+                if VERBOSE_THREE_MF_FETCH_LOG:
+                    log("3MF curl JSON 解析失败:", je)
                 failure = _classify_3mf_fetch_failure(
                     text=preview_text[:400],
                     cloudflare=_is_cloudflare_challenge(preview_text) or _looks_like_html(preview_text),
                     source=candidate_source,
                 )
                 last_failure = merge_three_mf_failure(last_failure, failure)
-                if str(failure.get("state") or "") == "download_limited":
+                attempts.append({"method": "curl", "url": candidate, "status": "json_error", "state": failure.get("state")})
+                if _should_stop_three_mf_fetch(failure):
+                    log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
                     return "", "", candidate, last_failure
                 continue
             name, url = _extract_instance_download(data)
@@ -3822,17 +3881,22 @@ def fetch_instance_3mf(
                 return name, url, candidate, {"state": "available", "message": ""}
             failure = _classify_3mf_fetch_failure(text=preview_text[:400], payload=data, source=candidate_source)
             last_failure = merge_three_mf_failure(last_failure, failure)
-            if str(failure.get("state") or "") == "download_limited":
+            attempts.append({"method": "curl", "url": candidate, "status": "no_url", "state": failure.get("state")})
+            if _should_stop_three_mf_fetch(failure):
+                log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
                 return "", "", candidate, last_failure
         except Exception as ce:
-            log("3MF curl 调用异常:", ce)
+            if VERBOSE_THREE_MF_FETCH_LOG:
+                log("3MF curl 调用异常:", ce)
             failure = _classify_3mf_fetch_failure(text=str(ce), source=candidate_source)
             last_failure = merge_three_mf_failure(last_failure, failure)
-            if str(failure.get("state") or "") == "download_limited":
+            attempts.append({"method": "curl", "url": candidate, "status": "exception", "state": failure.get("state")})
+            if _should_stop_three_mf_fetch(failure):
+                log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
                 return "", "", candidate, last_failure
             continue
+    log("3MF 获取失败", inst_id, _summarize_three_mf_fetch_attempts(attempts), str(last_failure.get("message") or ""))
     return "", "", api_url or "", last_failure
-
 
 def _match_existing_media_item(items: object, *, url: str = "", index: object = None, url_fields: tuple[str, ...] = ("url",)) -> dict:
     lookup = _build_existing_media_lookup(items, url_fields=url_fields)

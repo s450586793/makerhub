@@ -1,12 +1,14 @@
 import signal
 import threading
+import time
 
-from app.core.settings import APP_VERSION, PROCESS_ROLE, ensure_app_dirs
+from app.core.settings import APP_VERSION, LOCAL_PREVIEW_POLL_SECONDS, PROCESS_ROLE, ensure_app_dirs
 from app.core.store import JsonStore
 from app.services.archive_worker import ArchiveTaskManager
 from app.services.archive_profile_backfill import queue_profile_backfill, read_profile_backfill_status
 from app.services.business_logs import append_business_log
 from app.services.local_organizer import LocalOrganizerService
+from app.services.local_preview_worker import run_local_preview_generation_once
 from app.services.remote_refresh import RemoteRefreshManager
 from app.services.subscriptions import SubscriptionManager
 from app.services.task_state import TaskStateStore
@@ -57,12 +59,26 @@ def main() -> int:
         recovered_active=int(queue.get("recovered_count") or 0),
     )
 
+    last_local_preview_poll = 0.0
     try:
         while not stop_event.wait(WORKER_POLL_SECONDS):
             archive_manager.ensure_worker_for_pending()
             profile_backfill_status = read_profile_backfill_status()
             if profile_backfill_status.get("running"):
                 queue_profile_backfill(archive_manager)
+            now = time.monotonic()
+            if now - last_local_preview_poll >= max(int(LOCAL_PREVIEW_POLL_SECONDS or 20), 5):
+                last_local_preview_poll = now
+                try:
+                    run_local_preview_generation_once()
+                except Exception as exc:
+                    append_business_log(
+                        "model",
+                        "local_model_preview_worker_error",
+                        "本地模型 Three.js 封面 worker 轮询失败。",
+                        level="warning",
+                        error=str(exc),
+                    )
     finally:
         local_organizer.stop()
         append_business_log(

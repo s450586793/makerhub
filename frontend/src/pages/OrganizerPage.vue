@@ -1198,6 +1198,7 @@ function clearLibraryCachesAfterImport() {
   deletePageCache("organizer");
   deletePageCacheByPrefix("models:");
   deletePageCacheByPrefix("model-library-group:");
+  deletePageCacheByPrefix("model-detail:");
 }
 
 function resetImportDialogState({ keepFiles = false } = {}) {

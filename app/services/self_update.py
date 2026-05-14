@@ -6,6 +6,7 @@ import json
 import os
 import re
 import socket
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -32,6 +33,11 @@ _CONTAINER_ID_PATTERN = re.compile(r"[0-9a-f]{12,64}")
 STARTUP_WAIT_TIMEOUT_SECONDS = 20
 STARTUP_WAIT_INTERVAL_SECONDS = 1.0
 STARTUP_WAIT_STABLE_POLLS = 3
+IMAGE_CLEANUP_INITIAL_DELAY_SECONDS = 45
+IMAGE_CLEANUP_RETRY_DELAY_SECONDS = 60
+IMAGE_CLEANUP_MAX_ATTEMPTS = 5
+_IMAGE_CLEANUP_THREAD: threading.Thread | None = None
+_IMAGE_CLEANUP_LOCK = threading.Lock()
 
 
 def _now_iso() -> str:
@@ -59,6 +65,11 @@ def _default_update_state() -> dict[str, Any]:
         "worker_container_name": "",
         "worker_image_ref": "",
         "worker_replacement_container_id": "",
+        "old_image_ids": [],
+        "image_cleanup_done": False,
+        "image_cleanup_at": "",
+        "image_cleanup_removed": [],
+        "image_cleanup_errors": [],
         "target_version": "",
         "current_version": APP_VERSION,
         "last_error": "",
@@ -304,6 +315,15 @@ class DockerSocketClient:
             expected_statuses={204},
         )
 
+    def remove_image(self, image_id: str, *, force: bool = False, noprune: bool = False) -> None:
+        force_flag = "1" if force else "0"
+        noprune_flag = "1" if noprune else "0"
+        self.request(
+            "DELETE",
+            f"/images/{quote(image_id, safe='')}" f"?force={force_flag}&noprune={noprune_flag}",
+            expected_statuses={200, 404},
+        )
+
     def get_container_logs(self, container_id: str, *, tail: int = 120) -> str:
         _, payload, _ = self.request(
             "GET",
@@ -483,6 +503,142 @@ def _resolve_self_container(client: DockerSocketClient) -> dict[str, Any]:
     raise RuntimeError(last_error or "无法识别当前容器实例。")
 
 
+def _container_image_id(container_inspect: dict[str, Any]) -> str:
+    return str(container_inspect.get("Image") or "").strip()
+
+
+def _append_unique_image_id(values: list[str], value: str) -> None:
+    image_id = str(value or "").strip()
+    if not image_id or image_id in values:
+        return
+    values.append(image_id)
+
+
+def _cleanup_old_update_images(state: dict[str, Any]) -> dict[str, Any]:
+    image_ids = [
+        str(item or "").strip()
+        for item in (state.get("old_image_ids") or [])
+        if str(item or "").strip()
+    ]
+    if not image_ids:
+        return _write_update_state(
+            {
+                **state,
+                "image_cleanup_done": True,
+                "image_cleanup_at": _now_iso(),
+                "image_cleanup_removed": [],
+                "image_cleanup_errors": [],
+            }
+        )
+    if not DOCKER_SOCKET_PATH.exists():
+        error = "当前容器没有挂载 Docker socket，无法自动清理旧镜像。"
+        append_business_log(
+            "system",
+            "self_update_image_cleanup_warning",
+            error,
+            level="warning",
+            request_id=str(state.get("request_id") or ""),
+            image_ids=image_ids,
+        )
+        return _write_update_state(
+            {
+                **state,
+                "image_cleanup_done": False,
+                "image_cleanup_errors": [error],
+            }
+        )
+
+    client = DockerSocketClient(timeout=60)
+    current_image_id = ""
+    try:
+        metadata = _resolve_self_container(client)
+        current_image_id = str(metadata.get("container_image_id") or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        append_business_log(
+            "system",
+            "self_update_image_cleanup_warning",
+            "旧镜像清理前读取当前容器镜像失败，将跳过当前镜像保护。",
+            level="warning",
+            request_id=str(state.get("request_id") or ""),
+            error=_friendly_error_message(exc),
+        )
+
+    removed: list[str] = []
+    errors: list[str] = []
+    for image_id in image_ids:
+        if current_image_id and image_id == current_image_id:
+            continue
+        try:
+            client.remove_image(image_id, force=False, noprune=False)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{image_id}: {_friendly_error_message(exc)}")
+        else:
+            removed.append(image_id)
+
+    cleanup_done = not errors
+    append_business_log(
+        "system",
+        "self_update_image_cleanup_succeeded" if cleanup_done else "self_update_image_cleanup_warning",
+        "网页更新后的旧镜像已清理。" if cleanup_done else "网页更新后的部分旧镜像清理失败。",
+        level="info" if cleanup_done else "warning",
+        request_id=str(state.get("request_id") or ""),
+        removed_image_ids=removed,
+        errors=errors,
+    )
+    return _write_update_state(
+        {
+            **state,
+            "image_cleanup_done": cleanup_done,
+            "image_cleanup_at": _now_iso(),
+            "image_cleanup_removed": removed,
+            "image_cleanup_errors": errors,
+        }
+    )
+
+
+def _run_delayed_image_cleanup(request_id: str) -> None:
+    time.sleep(max(float(IMAGE_CLEANUP_INITIAL_DELAY_SECONDS), 0.0))
+    last_state: dict[str, Any] = {}
+    for attempt in range(max(int(IMAGE_CLEANUP_MAX_ATTEMPTS), 1)):
+        state = _read_update_state()
+        last_state = state
+        if str(state.get("request_id") or "") != str(request_id or ""):
+            return
+        if str(state.get("status") or "") != "succeeded":
+            return
+        if not state.get("old_image_ids") or state.get("image_cleanup_done"):
+            return
+        last_state = _cleanup_old_update_images(state)
+        if last_state.get("image_cleanup_done"):
+            return
+        if attempt < max(int(IMAGE_CLEANUP_MAX_ATTEMPTS), 1) - 1:
+            time.sleep(max(float(IMAGE_CLEANUP_RETRY_DELAY_SECONDS), 1.0))
+
+    if last_state.get("image_cleanup_errors"):
+        append_business_log(
+            "system",
+            "self_update_image_cleanup_warning",
+            "网页更新后的旧镜像自动清理已重试多次，仍有部分镜像未清理。",
+            level="warning",
+            request_id=str(request_id or ""),
+            errors=last_state.get("image_cleanup_errors") or [],
+        )
+
+
+def _schedule_old_update_image_cleanup(request_id: str) -> None:
+    global _IMAGE_CLEANUP_THREAD
+    with _IMAGE_CLEANUP_LOCK:
+        if _IMAGE_CLEANUP_THREAD and _IMAGE_CLEANUP_THREAD.is_alive():
+            return
+        _IMAGE_CLEANUP_THREAD = threading.Thread(
+            target=_run_delayed_image_cleanup,
+            args=(str(request_id or ""),),
+            name="makerhub-image-cleanup",
+            daemon=True,
+        )
+        _IMAGE_CLEANUP_THREAD.start()
+
+
 def get_update_capability() -> dict[str, Any]:
     payload = {
         "supported": False,
@@ -576,20 +732,24 @@ def request_system_update(*, requested_by: str = "", target_version: str = "", f
     deployment_mode = _deployment_mode()
     web_target = _web_update_target(target_image)
     worker_target = _worker_update_target(target_image)
+    old_image_ids: list[str] = []
+    _append_unique_image_id(old_image_ids, str(metadata.get("container_image_id") or ""))
     if not target_image:
         raise RuntimeError("当前容器缺少镜像引用，无法确定要拉取的目标镜像。")
     if not helper_image:
         raise RuntimeError("当前容器缺少本地镜像 ID，无法启动更新 helper。")
     if web_target.get("container_name"):
         try:
-            client.inspect_container(str(web_target.get("container_name") or ""))
+            web_inspect = client.inspect_container(str(web_target.get("container_name") or ""))
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"Web 容器无法访问：{_friendly_error_message(exc)}") from exc
+        _append_unique_image_id(old_image_ids, _container_image_id(web_inspect))
     if worker_target.get("container_name"):
         try:
-            client.inspect_container(str(worker_target.get("container_name") or ""))
+            worker_inspect = client.inspect_container(str(worker_target.get("container_name") or ""))
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"Worker 容器无法访问：{_friendly_error_message(exc)}") from exc
+        _append_unique_image_id(old_image_ids, _container_image_id(worker_inspect))
     helper_cmd = [
         "python",
         "-m",
@@ -665,6 +825,11 @@ def request_system_update(*, requested_by: str = "", target_version: str = "", f
             "worker_container_name": str(worker_target.get("container_name") or ""),
             "worker_image_ref": str(worker_target.get("image_ref") or ""),
             "worker_replacement_container_id": "",
+            "old_image_ids": old_image_ids,
+            "image_cleanup_done": False,
+            "image_cleanup_at": "",
+            "image_cleanup_removed": [],
+            "image_cleanup_errors": [],
             "target_version": str(target_version or ""),
             "last_error": "",
         }
@@ -727,28 +892,32 @@ def request_system_update(*, requested_by: str = "", target_version: str = "", f
 
 def mark_update_started_after_restart() -> None:
     state = _read_update_state()
-    if str(state.get("status") or "") != "pending_startup":
+    status = str(state.get("status") or "")
+    if status == "pending_startup":
+        finished_at = _now_iso()
+        state = _write_update_state(
+            {
+                **state,
+                "status": "succeeded",
+                "phase": "completed",
+                "message": f"系统已重新启动，当前版本 v{APP_VERSION}。",
+                "finished_at": finished_at,
+                "last_error": "",
+            }
+        )
+        append_business_log(
+            "system",
+            "self_update_succeeded",
+            "系统更新后已重新启动。",
+            request_id=str(state.get("request_id") or ""),
+            replacement_container_id=str(state.get("replacement_container_id") or ""),
+            container_name=str(state.get("container_name") or ""),
+            app_version=APP_VERSION,
+        )
+    elif status != "succeeded":
         return
-    finished_at = _now_iso()
-    _write_update_state(
-        {
-            **state,
-            "status": "succeeded",
-            "phase": "completed",
-            "message": f"系统已重新启动，当前版本 v{APP_VERSION}。",
-            "finished_at": finished_at,
-            "last_error": "",
-        }
-    )
-    append_business_log(
-        "system",
-        "self_update_succeeded",
-        "系统更新后已重新启动。",
-        request_id=str(state.get("request_id") or ""),
-        replacement_container_id=str(state.get("replacement_container_id") or ""),
-        container_name=str(state.get("container_name") or ""),
-        app_version=APP_VERSION,
-    )
+    if state.get("old_image_ids") and not state.get("image_cleanup_done"):
+        _schedule_old_update_image_cleanup(str(state.get("request_id") or ""))
 
 
 def _update_state_from_helper(request_id: str, **fields: Any) -> dict[str, Any]:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import html
 import json
@@ -14,6 +16,12 @@ from fastapi import UploadFile
 from app.core.settings import ARCHIVE_DIR, MAX_LOCAL_IMPORT_UPLOAD_BYTES, MAX_MANUAL_ATTACHMENT_BYTES
 from app.core.timezone import now_iso as china_now_iso
 from app.services.catalog import invalidate_archive_snapshot, invalidate_model_detail_cache
+from app.services.local_model_preview import (
+    apply_generated_preview_image,
+    build_local_preview_state,
+    mark_local_preview_pending,
+    record_generated_preview_failure,
+)
 
 
 MODEL_SUFFIXES = {".3mf", ".stl", ".step", ".stp", ".obj"}
@@ -81,6 +89,25 @@ def _write_meta(model_root: Path, meta: dict[str, Any]) -> None:
     model_dir = model_root.relative_to(ARCHIVE_DIR.resolve()).as_posix()
     invalidate_model_detail_cache(model_dir)
     invalidate_archive_snapshot("local_model_edited")
+
+
+def _decode_preview_image_data(value: str) -> tuple[bytes, str]:
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("预览图为空。")
+    mime_type = "image/png"
+    if raw.startswith("data:"):
+        header, sep, payload = raw.partition(",")
+        if not sep:
+            raise ValueError("预览图格式无效。")
+        media = header[5:].split(";", 1)[0].strip().lower()
+        if media:
+            mime_type = media
+        raw = payload
+    try:
+        return base64.b64decode(raw, validate=True), mime_type
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("预览图格式无效。") from exc
 
 
 def _unique_path(target_dir: Path, filename: str) -> Path:
@@ -260,8 +287,58 @@ def add_local_model_file(model_dir: str, upload: UploadFile, title: str = "") ->
     local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
     local_import["modelFileCount"] = len(instances)
     meta["localImport"] = local_import
+    mark_local_preview_pending(meta, model_root=model_root)
     _write_meta(model_root, meta)
     return entry
+
+
+def save_local_model_generated_preview(
+    model_dir: str,
+    *,
+    image_data: str,
+    mime_type: str = "image/png",
+    source_instance_key: str = "",
+    source_file_name: str = "",
+) -> dict[str, Any]:
+    model_root, meta = _resolve_local_model_root(model_dir)
+    image_bytes, detected_mime = _decode_preview_image_data(image_data)
+    clean_mime = str(mime_type or detected_mime or "image/png").split(";", 1)[0].strip().lower()
+    image_item = apply_generated_preview_image(
+        model_root=model_root,
+        meta=meta,
+        image_bytes=image_bytes,
+        mime_type=clean_mime,
+        source_file_name=source_file_name,
+        source_instance_key=source_instance_key,
+    )
+    _write_meta(model_root, meta)
+    return {
+        "image": image_item,
+        "preview": build_local_preview_state(meta, model_root),
+    }
+
+
+def save_local_model_generated_preview_failure(
+    model_dir: str,
+    *,
+    message: str,
+    status: str = "failed",
+    source_instance_key: str = "",
+    source_file_name: str = "",
+) -> dict[str, Any]:
+    model_root, meta = _resolve_local_model_root(model_dir)
+    result = record_generated_preview_failure(
+        meta,
+        message=message,
+        status=status,
+        source_file_name=source_file_name,
+        source_instance_key=source_instance_key,
+    )
+    _write_meta(model_root, meta)
+    return {
+        "result": result,
+        "preview": build_local_preview_state(meta, model_root),
+    }
 
 
 def delete_local_model_file(model_dir: str, instance_key: str) -> dict[str, Any]:
