@@ -2,7 +2,12 @@ import unittest
 from unittest.mock import patch
 
 from app.services.catalog import _source_deleted_model_count
-from app.services.source_library import build_source_group_models_payload, build_state_group_models_payload
+from app.services.source_library import (
+    _SOURCE_LIBRARY_GROUP_CACHE,
+    _group_models,
+    build_source_group_models_payload,
+    build_state_group_models_payload,
+)
 
 
 def _model(model_dir: str, *, source: str = "cn") -> dict:
@@ -103,6 +108,25 @@ class SourceLibraryTest(unittest.TestCase):
         self.assertEqual(payload["count"], 3)
         self.assertEqual(len(payload["items"]), 3)
         self.assertEqual({item["model_dir"] for item in payload["items"]}, {"local-1", "local-2", "local-3"})
+
+    def test_group_models_reuses_cached_payload_for_same_signature(self):
+        _SOURCE_LIBRARY_GROUP_CACHE.update({"signature": None, "groups": {}, "all_models": (), "sections": ()})
+        local_model = _model("local-1", source="local")
+        local_model["local_flags"]["deleted"] = False
+        try:
+            with patch("app.services.source_library._group_cache_signature", return_value=("same",)), \
+                    patch("app.services.source_library._load_models", return_value=([local_model], [local_model])) as load_models, \
+                    patch("app.services.source_library._group_subscription_sources", return_value=([], [], [])), \
+                    patch("app.services.source_library.load_source_metadata_cache", return_value={"items": {}}):
+                first_groups, first_models, _ = _group_models()
+                second_groups, second_models, _ = _group_models()
+
+            self.assertEqual(load_models.call_count, 1)
+            self.assertIn("local-organizer", first_groups)
+            self.assertIn("local-organizer", second_groups)
+            self.assertEqual(first_models[0]["model_dir"], second_models[0]["model_dir"])
+        finally:
+            _SOURCE_LIBRARY_GROUP_CACHE.update({"signature": None, "groups": {}, "all_models": (), "sections": ()})
 
 
 if __name__ == "__main__":

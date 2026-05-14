@@ -16,14 +16,13 @@ from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_
 from app.services.batch_discovery import normalize_source_url
 from app.services.business_logs import append_business_log
 from app.services.catalog import (
-    _apply_model_flags,
-    _apply_subscription_flags,
-    _clone_model_items,
+    _file_signature,
     _sort_models,
     _source_counts_from_items,
     _tags_from_items,
     _visible_models,
-    get_archive_snapshot,
+    get_decorated_models,
+    get_decorated_models_signature,
 )
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.legacy_archiver import extract_next_data, fetch_html_with_requests, parse_cookies
@@ -36,6 +35,13 @@ SOURCE_LIBRARY_PREVIEW_LIMIT = 4
 SOURCE_LIBRARY_BACKFILL_DELAY_SECONDS = 6
 
 _SOURCE_LIBRARY_LOCK = threading.RLock()
+_SOURCE_LIBRARY_GROUP_CACHE_LOCK = threading.RLock()
+_SOURCE_LIBRARY_GROUP_CACHE: dict[str, Any] = {
+    "signature": None,
+    "groups": {},
+    "all_models": (),
+    "sections": (),
+}
 
 AUTHOR_NAME_KEYS = ("name", "nickname", "displayName", "userName", "username")
 AUTHOR_HANDLE_KEYS = ("handle", "userHandle", "user_handle", "username", "userName", "slug")
@@ -188,15 +194,32 @@ def _save_source_metadata_item(source_key: str, payload: dict[str, Any]) -> None
         _write_metadata_cache_unlocked({"items": items, "updated_at": _now_iso()})
 
 
+def _clone_groups(groups: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {str(key): dict(value) for key, value in (groups or {}).items()}
+
+
+def _clone_sections(sections: Any) -> list[dict[str, Any]]:
+    cloned_sections = []
+    for section in sections or ():
+        cloned_section = dict(section)
+        cloned_section["items"] = [dict(item) for item in section.get("items") or []]
+        cloned_sections.append(cloned_section)
+    return cloned_sections
+
+
+def _clone_model_items(items: Any) -> list[dict]:
+    return [dict(item) for item in items or ()]
+
+
+def _group_cache_signature() -> tuple[Any, ...]:
+    return (
+        get_decorated_models_signature(),
+        _file_signature(SOURCE_LIBRARY_METADATA_PATH),
+    )
+
+
 def _load_models(task_store: Optional[TaskStateStore] = None) -> tuple[list[dict], list[dict]]:
-    task_store = task_store or TaskStateStore()
-    snapshot = get_archive_snapshot()
-    all_models = _clone_model_items(list(snapshot.get("models") or []))
-    flags_store = task_store.load_model_flags()
-    all_models = _apply_model_flags(all_models, flags_store=flags_store)
-    all_models = _apply_subscription_flags(all_models)
-    visible_models = _visible_models(all_models)
-    return all_models, visible_models
+    return get_decorated_models(task_store=task_store)
 
 
 def _preview_items_from_models(models: list[dict]) -> list[dict]:
@@ -811,6 +834,15 @@ def _sort_source_groups(groups: list[dict], sort_key: str) -> list[dict]:
 
 
 def _group_models(store: Optional[JsonStore] = None, task_store: Optional[TaskStateStore] = None) -> tuple[dict[str, dict[str, Any]], list[dict], list[dict]]:
+    signature = _group_cache_signature()
+    with _SOURCE_LIBRARY_GROUP_CACHE_LOCK:
+        if _SOURCE_LIBRARY_GROUP_CACHE.get("signature") == signature:
+            return (
+                _clone_groups(_SOURCE_LIBRARY_GROUP_CACHE.get("groups") or {}),
+                _clone_model_items(_SOURCE_LIBRARY_GROUP_CACHE.get("all_models") or ()),
+                _clone_sections(_SOURCE_LIBRARY_GROUP_CACHE.get("sections") or ()),
+            )
+
     store = store or JsonStore()
     task_store = task_store or TaskStateStore()
     all_models, visible_models = _load_models(task_store=task_store)
@@ -836,7 +868,21 @@ def _group_models(store: Optional[JsonStore] = None, task_store: Optional[TaskSt
         {"key": "locals", "label": "本地库", "items": local_groups},
         {"key": "states", "label": "状态", "items": sorted(state_groups, key=lambda item: DEFAULT_STATE_SORT_ORDER.get(str(item.get("key") or ""), 99))},
     ]
-    return groups, all_models, sections
+    cached_groups = _clone_groups(groups)
+    cached_all_models = tuple(item.copy() for item in all_models)
+    cached_sections = tuple(
+        {
+            **section,
+            "items": tuple(dict(item) for item in section.get("items") or []),
+        }
+        for section in sections
+    )
+    with _SOURCE_LIBRARY_GROUP_CACHE_LOCK:
+        _SOURCE_LIBRARY_GROUP_CACHE["signature"] = signature
+        _SOURCE_LIBRARY_GROUP_CACHE["groups"] = cached_groups
+        _SOURCE_LIBRARY_GROUP_CACHE["all_models"] = cached_all_models
+        _SOURCE_LIBRARY_GROUP_CACHE["sections"] = cached_sections
+    return _clone_groups(cached_groups), _clone_model_items(cached_all_models), _clone_sections(cached_sections)
 
 
 def build_source_library_payload(q: str = "", store: Optional[JsonStore] = None, task_store: Optional[TaskStateStore] = None) -> dict[str, Any]:
@@ -880,26 +926,19 @@ def build_subscription_overview_payload(
     task_store: Optional[TaskStateStore] = None,
 ) -> dict[str, Any]:
     store = store or JsonStore()
-    task_store = task_store or TaskStateStore()
     config = store.load()
     settings = config.subscription_settings.model_dump()
-    all_models, visible_models = _load_models(task_store=task_store)
-    models_by_dir = {str(item.get("model_dir") or ""): item for item in all_models}
-    visible_by_dir = {str(item.get("model_dir") or ""): item for item in visible_models}
-    metadata_cache = load_source_metadata_cache().get("items") or {}
-    authors_raw, collection_groups_raw, favorite_groups_raw = _group_subscription_sources(visible_models, store=store, task_store=task_store)
+    _, _, sections = _group_models(store=store, task_store=task_store)
     source_groups = [
-        *[_finalize_group(group, visible_by_dir, metadata_cache.get(group["key"]) or {}) for group in authors_raw],
-        *[_finalize_group(group, visible_by_dir, metadata_cache.get(group["key"]) or {}) for group in collection_groups_raw],
-        *[_finalize_group(group, visible_by_dir, metadata_cache.get(group["key"]) or {}) for group in favorite_groups_raw],
+        item
+        for section in sections
+        if section.get("key") in {"authors", "collections", "favorites"}
+        for item in section.get("items") or []
     ]
     if settings.get("hide_disabled_from_cards"):
         source_groups = [item for item in source_groups if item.get("subscription_enabled")]
     source_groups = _sort_source_groups(source_groups, str(settings.get("card_sort") or "recent"))
-    state_groups = sorted(
-        [_finalize_group(group, models_by_dir, {}) for group in _group_state_cards(all_models, visible_models)],
-        key=lambda item: DEFAULT_STATE_SORT_ORDER.get(str(item.get("key") or ""), 99),
-    )
+    state_groups = next((list(section.get("items") or []) for section in sections if section.get("key") == "states"), [])
     return {
         "sections": [
             {

@@ -24,7 +24,7 @@ from app.services.model_attachments import (
 )
 from app.services.profile_rating import normalize_profile_rating
 from app.services.source_health import build_source_health_cards
-from app.services.task_state import SUBSCRIPTIONS_STATE_PATH, TaskStateStore, compact_remote_refresh_state
+from app.services.task_state import MODEL_FLAGS_PATH, SUBSCRIPTIONS_STATE_PATH, TaskStateStore, compact_remote_refresh_state
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, resolve_model_instance_files
 from app.services.local_model_preview import build_local_preview_state
 
@@ -52,6 +52,12 @@ _SUBSCRIPTION_FLAGS_INDEX_LOCK = threading.RLock()
 _SUBSCRIPTION_FLAGS_INDEX_CACHE: dict[str, Any] = {
     "signature": None,
     "deleted_by_key": {},
+}
+_DECORATED_MODELS_LOCK = threading.RLock()
+_DECORATED_MODELS_CACHE: dict[str, Any] = {
+    "signature": None,
+    "all_models": (),
+    "visible_models": (),
 }
 
 
@@ -108,6 +114,14 @@ def _file_signature(path: Path) -> tuple[int, int]:
     except OSError:
         return (0, 0)
     return (int(stat.st_mtime_ns), int(stat.st_size))
+
+
+def _clone_cached_model_items(items: Any) -> list[dict]:
+    return [dict(item) for item in items or ()]
+
+
+def _archive_snapshot_signature(snapshot: dict[str, Any]) -> tuple[str, int]:
+    return (str(_ARCHIVE_SNAPSHOT_CACHE.get("marker_token") or ""), int(snapshot.get("total") or 0))
 
 
 def _compose_archive_snapshot(models: list[dict]) -> dict[str, Any]:
@@ -169,6 +183,45 @@ def get_archive_snapshot(force: bool = False) -> dict[str, Any]:
             _ARCHIVE_SNAPSHOT_CACHE["built_at"] = time.time()
             _ARCHIVE_SNAPSHOT_CACHE["marker_token"] = marker_token
         return snapshot
+
+
+def _decorated_models_signature(snapshot: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        _archive_snapshot_signature(snapshot),
+        _file_signature(MODEL_FLAGS_PATH),
+        _subscription_flags_cache_signature(),
+    )
+
+
+def get_decorated_models_signature() -> tuple[Any, ...]:
+    return _decorated_models_signature(get_archive_snapshot())
+
+
+def get_decorated_models(*, task_store: Optional[TaskStateStore] = None) -> tuple[list[dict], list[dict]]:
+    archive_snapshot = get_archive_snapshot()
+    signature = _decorated_models_signature(archive_snapshot)
+    with _DECORATED_MODELS_LOCK:
+        if _DECORATED_MODELS_CACHE.get("signature") == signature:
+            return (
+                _clone_cached_model_items(_DECORATED_MODELS_CACHE.get("all_models")),
+                _clone_cached_model_items(_DECORATED_MODELS_CACHE.get("visible_models")),
+            )
+
+    resolved_task_store = task_store or TaskStateStore()
+    all_models = _clone_model_items(list(archive_snapshot.get("models") or []))
+    flags_store = resolved_task_store.load_model_flags()
+    subscription_state = resolved_task_store.load_subscriptions_state()
+    all_models = _apply_model_flags(all_models, flags_store=flags_store)
+    all_models = _apply_subscription_flags(all_models, state_payload=subscription_state)
+    visible_models = _visible_models(all_models)
+
+    cached_all = tuple(item.copy() for item in all_models)
+    cached_visible = tuple(item.copy() for item in visible_models)
+    with _DECORATED_MODELS_LOCK:
+        _DECORATED_MODELS_CACHE["signature"] = signature
+        _DECORATED_MODELS_CACHE["all_models"] = cached_all
+        _DECORATED_MODELS_CACHE["visible_models"] = cached_visible
+    return _clone_cached_model_items(cached_all), _clone_cached_model_items(cached_visible)
 
 
 def upsert_archive_snapshot_model(model_dir: str, reason: str = "", *, broadcast: bool = True) -> bool:
@@ -2097,12 +2150,7 @@ def build_models_payload(
     page: int = 1,
     page_size: int = 8,
 ) -> dict:
-    archive_snapshot = get_archive_snapshot()
-    all_models = _clone_model_items(list(archive_snapshot.get("models") or []))
-    flags_store = TaskStateStore().load_model_flags()
-    all_models = _apply_model_flags(all_models, flags_store=flags_store)
-    all_models = _apply_subscription_flags(all_models)
-    visible_models = _visible_models(all_models)
+    all_models, visible_models = get_decorated_models()
     normalized_query = q.strip().lower()
     normalized_tag = tag.strip().lower()
     normalized_source = source.strip().lower() or "all"
@@ -2386,12 +2434,10 @@ def build_tasks_payload(
 
 def build_dashboard_payload(config) -> dict:
     archive_snapshot = get_archive_snapshot()
-    all_models = _clone_model_items(list(archive_snapshot.get("collect_sorted") or []))
-    flags_store = TaskStateStore().load_model_flags()
     task_store = TaskStateStore()
     subscription_state = task_store.load_subscriptions_state()
-    all_models = _apply_model_flags(all_models, flags_store=flags_store)
-    all_models = _apply_subscription_flags(all_models, config=config, state_payload=subscription_state)
+    all_models, _ = get_decorated_models(task_store=task_store)
+    all_models = _sort_models(all_models, "collectDate")
     visible_models = _visible_models(all_models)
     tasks_payload = build_tasks_payload(
         missing_fallback=[

@@ -267,37 +267,37 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   position: fixed;
   inset: 0;
   z-index: 110;
-  padding: clamp(14px, 3vw, 28px);
+  padding: clamp(18px, 5vw, 44px);
   display: grid;
   place-items: center;
-  background: rgba(8, 15, 28, 0.72);
-  backdrop-filter: blur(8px);
+  background: rgba(8, 13, 22, 0.48);
+  backdrop-filter: blur(5px);
 }
 
 .model-preview-dialog__panel {
-  width: min(1120px, 100%);
-  height: min(760px, calc(100vh - clamp(28px, 6vw, 56px)));
-  min-height: 420px;
+  width: min(940px, 100%);
+  height: min(660px, calc(100vh - clamp(36px, 10vw, 88px)));
+  min-height: 360px;
   border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: var(--radius-lg);
+  border-radius: 14px;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   color: #edf2f7;
-  background: #111827;
-  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.42);
+  background: rgba(15, 23, 42, 0.94);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.34);
 }
 
 .model-preview-dialog__header {
   min-width: 0;
-  min-height: 64px;
-  padding: 12px 14px 12px 18px;
+  min-height: 54px;
+  padding: 10px 12px 10px 16px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.18);
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
-  background: rgba(17, 24, 39, 0.92);
+  gap: 10px;
+  background: rgba(15, 23, 42, 0.86);
 }
 
 .model-preview-dialog__title {
@@ -307,7 +307,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 }
 
 .model-preview-dialog__title span {
-  color: #9ca3af;
+  color: #94a3b8;
   font-size: var(--text-xs);
   font-weight: 800;
 }
@@ -316,7 +316,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   min-width: 0;
   overflow: hidden;
   color: #f8fafc;
-  font-size: var(--text-base);
+  font-size: var(--text-sm);
   line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -326,14 +326,54 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 6px;
 }
 
-.model-preview-dialog__actions .button {
-  min-height: 34px;
-  border-color: rgba(148, 163, 184, 0.28);
-  background: rgba(31, 41, 55, 0.92);
-  color: #f8fafc;
+.model-preview-dialog__reset,
+.model-preview-dialog__close {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #e5e7eb;
+  background: rgba(30, 41, 59, 0.62);
+  transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+
+.model-preview-dialog__reset:hover,
+.model-preview-dialog__close:hover {
+  border-color: rgba(148, 163, 184, 0.42);
+  background: rgba(51, 65, 85, 0.74);
+  transform: translateY(-1px);
+}
+
+.model-preview-dialog__reset:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
+}
+
+.model-preview-dialog__reset {
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  gap: 6px;
+  font-size: var(--text-xs);
+  font-weight: 800;
+}
+
+.model-preview-dialog__reset span,
+.model-preview-dialog__close span {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+}
+
+.model-preview-dialog__close {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
 }
 
 .model-preview-dialog__stage {
@@ -343,7 +383,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   overflow: hidden;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 42%),
-    #111827;
+    #0f172a;
 }
 
 .model-preview-dialog__canvas {
@@ -4676,23 +4716,25 @@ select:focus {
   }
 
   .model-preview-dialog__panel {
-    height: calc(100vh - 20px);
-    height: calc(100dvh - 20px);
+    width: 100%;
+    height: min(620px, calc(100vh - 20px));
+    height: min(620px, calc(100dvh - 20px));
     min-height: 0;
+    border-radius: 12px;
   }
 
   .model-preview-dialog__header {
     grid-template-columns: 1fr;
     align-items: stretch;
+    gap: 8px;
   }
 
   .model-preview-dialog__actions {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-content: space-between;
   }
 
-  .model-preview-dialog__actions .button {
-    width: 100%;
+  .model-preview-dialog__reset {
+    min-width: 0;
   }
 
   .model-preview-dialog__state {

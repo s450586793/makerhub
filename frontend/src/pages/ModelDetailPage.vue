@@ -796,20 +796,23 @@
           </div>
           <div class="model-preview-dialog__actions">
             <button
-              class="button button-secondary button-small model-preview-dialog__reset"
+              class="model-preview-dialog__reset"
               type="button"
               :disabled="modelPreview.loading || Boolean(modelPreview.error)"
+              title="重置视角"
               @click="resetModelPreviewCamera"
             >
+              <span aria-hidden="true" v-html="MODEL_PREVIEW_ICONS.reset"></span>
               重置视角
             </button>
             <button
-              class="button button-secondary button-small model-preview-dialog__close"
+              class="model-preview-dialog__close"
               type="button"
               aria-label="关闭 3D 预览"
+              title="关闭"
               @click="closeModelPreview"
             >
-              关闭
+              <span aria-hidden="true" v-html="MODEL_PREVIEW_ICONS.close"></span>
             </button>
           </div>
         </header>
@@ -1044,7 +1047,7 @@ let modelPreviewGrid = null;
 let modelPreviewResizeObserver = null;
 let modelPreviewHome = null;
 let modelPreviewRequestId = 0;
-const MODEL_PREVIEW_MAX_BYTES = 24 * 1024 * 1024;
+const MODEL_PREVIEW_MAX_BYTES = 80 * 1024 * 1024;
 
 const INITIAL_COMMENT_BATCH = 20;
 const COMMENT_REPLY_PREVIEW_COUNT = 3;
@@ -1079,6 +1082,10 @@ const PROFILE_FACT_ICONS = {
   download: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.6v8.1"/><path d="m6.9 8.8 3.1 3.2 3.1-3.2"/><path d="M4.2 15.4h11.6"/></svg>',
   prints: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M6 7.2V3.8h8v3.4"/><path d="M5.1 15.8h9.8v-4.7H5.1v4.7Z"/><path d="M4.3 7.2h11.4A1.3 1.3 0 0 1 17 8.5v3.1h-2.1"/><path d="M3 11.6V8.5a1.3 1.3 0 0 1 1.3-1.3"/><circle cx="14.3" cy="9.2" r=".7" fill="currentColor" stroke="none"/></svg>',
   rating: '<svg viewBox="0 0 20 20" fill="currentColor"><path d="m10 2.5 2.3 4.65 5.14.75-3.72 3.62.88 5.12L10 14.19l-4.6 2.45.88-5.12L2.56 7.9l5.14-.75L10 2.5Z"/></svg>',
+};
+const MODEL_PREVIEW_ICONS = {
+  reset: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6.7 7.1H3.8V4.2"/><path d="M4.1 7a6.3 6.3 0 1 1 1 6.7"/><path d="m3.8 7.1 2-2"/></svg>',
+  close: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="m5.5 5.5 9 9"/><path d="m14.5 5.5-9 9"/></svg>',
 };
 const AMS_ICON = '<svg width="2.3em" height="1.2em" viewBox="0 0 46 24" fill="none"><rect x="0.5" y="0.5" width="45" height="23" rx="1.5" fill="#212121" stroke="#000"></rect><path opacity="0.6" d="M1 2a1 1 0 011-1h10v22H2a1 1 0 01-1-1V2z" fill="#E14747"></path><path opacity="0.6" d="M12 1h11v22H12V1z" fill="#FEC90D"></path><path opacity="0.6" d="M23 1h11v22H23V1z" fill="var(--mui-palette-primary-main)"></path><path opacity="0.6" d="M34 1h10a1 1 0 011 1v20a1 1 0 01-1 1H34V1z" fill="#0E65E9"></path><path d="M15.822 17l-.62-2.04h-3.124L11.457 17H9.5l3.023-8.602h2.221L17.78 17h-1.957zm-1.054-3.563l-.622-1.992c-.039-.133-.091-.302-.158-.51a57.03 57.03 0 00-.193-.638 15.253 15.253 0 01-.152-.568 58.37 58.37 0 01-.492 1.717l-.616 1.991h2.233zM22.49 17l-2.062-6.72h-.053l.035.726c.02.32.037.662.053 1.025.015.364.023.692.023.985V17h-1.623V8.434h2.473l2.027 6.55h.035l2.15-6.55h2.474V17h-1.694v-4.055c0-.27.004-.58.012-.931.012-.352.025-.686.04-1.002.017-.32.028-.56.036-.721h-.053L24.154 17H22.49zm12.75-2.379c0 .508-.123.95-.369 1.324-.246.375-.605.664-1.078.867-.469.204-1.04.305-1.711.305a6.42 6.42 0 01-.873-.058 6.022 6.022 0 01-.814-.17 5.096 5.096 0 01-.739-.287v-1.688c.407.18.828.342 1.266.486a4.13 4.13 0 001.3.217c.297 0 .536-.039.715-.117a.817.817 0 00.399-.322.892.892 0 00.123-.469.772.772 0 00-.217-.55 2.265 2.265 0 00-.597-.429c-.25-.132-.534-.275-.85-.427a9.757 9.757 0 01-.65-.34 3.801 3.801 0 01-.668-.498 2.4 2.4 0 01-.522-.71c-.133-.28-.2-.616-.2-1.007 0-.512.118-.95.352-1.312.235-.364.569-.641 1.002-.832.438-.196.953-.293 1.547-.293.446 0 .87.052 1.272.158.406.101.83.25 1.271.445l-.586 1.412a9.706 9.706 0 00-1.06-.369 3.44 3.44 0 00-.955-.135c-.227 0-.42.037-.58.112a.781.781 0 00-.364.304.822.822 0 00-.123.452c0 .203.059.375.176.515.121.137.3.27.54.399.241.128.542.279.901.45.438.208.811.425 1.12.651.312.223.552.486.72.791.168.3.252.676.252 1.125z" fill="#fff"></path></svg>';
 const COMMENT_UI_ICONS = {
