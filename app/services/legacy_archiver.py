@@ -3311,29 +3311,48 @@ def _build_instance_api_candidates(
     api_host_hint: Optional[str],
 ) -> List[str]:
     candidates = []
-    if api_url:
-        candidates.append(api_url)
+    source = (
+        normalize_makerworld_source(url=origin)
+        or normalize_makerworld_source(url=api_url)
+        or normalize_makerworld_source(url=api_host_hint)
+    )
 
     bases = []
-    for base in [origin, api_host_hint, "https://api.bambulab.cn", "https://api.bambulab.com"]:
+    preferred_api_bases = (
+        ["https://api.bambulab.com", "https://api.bambulab.cn"]
+        if source == "global"
+        else ["https://api.bambulab.cn", "https://api.bambulab.com"]
+    )
+    for base in [api_host_hint, *preferred_api_bases, origin]:
         normalized = _normalize_api_base(base)
-        if normalized:
+        if normalized and normalized not in bases:
             bases.append(normalized)
 
-    path_templates = [
-        "/api/v1/design-service/instance/{id}/f3mf",
-        "/v1/design-service/instance/{id}/f3mf",
-    ]
-    prefixes = ["", "/makerworld"]
-    file_types = ["", "3mf"]
-
     for base in bases:
-        for prefix in prefixes:
-            for path in path_templates:
-                for file_type in file_types:
-                    candidates.append(
-                        f"{base}{prefix}{path.format(id=inst_id)}?type=download&fileType={file_type}"
-                    )
+        host = urlparse(base).netloc.lower()
+        if "api.bambulab" in host:
+            path_templates = [
+                "/v1/design-service/instance/{id}/f3mf",
+                "/makerworld/v1/design-service/instance/{id}/f3mf",
+            ]
+        elif "makerworld.com" in host:
+            path_templates = [
+                "/api/v1/design-service/instance/{id}/f3mf",
+                "/makerworld/api/v1/design-service/instance/{id}/f3mf",
+            ]
+        else:
+            path_templates = [
+                "/api/v1/design-service/instance/{id}/f3mf",
+                "/v1/design-service/instance/{id}/f3mf",
+            ]
+        for path in path_templates:
+            for file_type in ("3mf", ""):
+                candidates.append(
+                    f"{base}{path.format(id=inst_id)}?type=download&fileType={file_type}"
+                )
+
+    if api_url:
+        candidates.append(api_url)
 
     return _unique_preserve(candidates)
 
@@ -3670,7 +3689,7 @@ def _classify_3mf_fetch_failure(
 
 
 def _should_stop_three_mf_fetch(failure: Optional[dict]) -> bool:
-    return str((failure or {}).get("state") or "").strip() in TERMINAL_THREE_MF_FETCH_STATES
+    return str((failure or {}).get("state") or "").strip() == "download_limited"
 
 
 def _summarize_three_mf_fetch_attempts(attempts: list[dict]) -> str:
@@ -3722,8 +3741,10 @@ def fetch_instance_3mf(
         try:
             cookie_header = sanitize_cookie_header(raw_cookie)
             headers = {
+                **MAKERWORLD_API_BROWSER_HEADERS,
                 "Accept": "application/json, text/plain, */*",
                 "Referer": origin or "https://makerworld.com.cn/",
+                "Origin": origin or "https://makerworld.com.cn",
                 "User-Agent": session.headers.get("User-Agent", "Mozilla/5.0 (MW-Fetcher)"),
             }
             if cookie_header:
@@ -3818,10 +3839,24 @@ def fetch_instance_3mf(
             "curl",
             "-sSL",
             "--compressed",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+            "30",
             "-H",
             "Accept: application/json, text/plain, */*",
             "-H",
             f"Referer: {origin or 'https://makerworld.com.cn/'}",
+            "-H",
+            f"Origin: {origin or 'https://makerworld.com.cn'}",
+            "-H",
+            "X-BBL-Client-Type: web",
+            "-H",
+            "X-BBL-Client-Version: 00.00.00.01",
+            "-H",
+            "X-BBL-App-Source: makerworld",
+            "-H",
+            "X-BBL-Client-Name: MakerWorld",
             "-H",
             f"User-Agent: {session.headers.get('User-Agent', 'Mozilla/5.0 (MW-Fetcher-curl)')}",
         ]

@@ -4,8 +4,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import app.services.archive_worker as archive_worker_module
+import app.services.legacy_archiver as legacy_archiver_module
 import app.services.task_state as task_state_module
-from app.services.legacy_archiver import _missing_3mf_failure_for_skipped_fetch
+from app.services.legacy_archiver import (
+    _build_instance_api_candidates,
+    _missing_3mf_failure_for_skipped_fetch,
+    fetch_instance_3mf,
+)
 from app.services.archive_worker import ArchiveTaskManager
 from app.services.remote_refresh import _build_missing_3mf_items
 from app.services.task_state import METADATA_ONLY_MISSING_3MF_MESSAGE, _normalize_missing_3mf
@@ -212,6 +217,60 @@ class Missing3mfTest(unittest.TestCase):
         self.assertTrue(submitted[0]["force"])
         self.assertFalse(guard_state["active"])
         self.assertEqual(updates[-1]["status"], "queued")
+
+    def test_cn_instance_api_candidates_prefer_bambulab_api(self):
+        candidates = _build_instance_api_candidates(
+            2864062,
+            "https://makerworld.com.cn/api/v1/design-service/instance/2864062/f3mf?type=download&fileType=",
+            "https://makerworld.com.cn",
+            None,
+        )
+
+        self.assertTrue(candidates[0].startswith("https://api.bambulab.cn/v1/design-service/instance/2864062/f3mf"))
+        self.assertIn(
+            "https://makerworld.com.cn/api/v1/design-service/instance/2864062/f3mf?type=download&fileType=",
+            candidates,
+        )
+
+    def test_fetch_instance_3mf_continues_after_auth_required_candidate(self):
+        original_wait = legacy_archiver_module._wait_before_three_mf_download
+        try:
+            legacy_archiver_module._wait_before_three_mf_download = lambda *_args, **_kwargs: 0
+            session = SimpleNamespace(headers={"User-Agent": "test-agent"})
+            calls = []
+
+            class FakeResponse:
+                def __init__(self, status_code: int, payload: dict):
+                    self.status_code = status_code
+                    self._payload = payload
+                    self.text = __import__("json").dumps(payload, ensure_ascii=False)
+
+                def json(self):
+                    return self._payload
+
+            def fake_get(url, timeout=None, headers=None):
+                calls.append(url)
+                if len(calls) == 1:
+                    return FakeResponse(403, {"code": 1, "error": "Please log in to download models."})
+                return FakeResponse(200, {"name": "ok.3mf", "url": "https://example.test/ok.3mf"})
+
+            session.get = fake_get
+
+            name, url, used_api_url, failure = fetch_instance_3mf(
+                session,
+                2864062,
+                "token=abc",
+                api_url="https://makerworld.com.cn/api/v1/design-service/instance/2864062/f3mf?type=download&fileType=",
+                origin="https://makerworld.com.cn",
+            )
+        finally:
+            legacy_archiver_module._wait_before_three_mf_download = original_wait
+
+        self.assertEqual(name, "ok.3mf")
+        self.assertEqual(url, "https://example.test/ok.3mf")
+        self.assertEqual(failure["state"], "available")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(used_api_url, calls[-1])
 
 
 if __name__ == "__main__":

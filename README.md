@@ -153,6 +153,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 ## 更新记录
 
 ### 2026-05-14
+- 修复国区 `3MF` 下载误报 Cookie 失效的问题，优先请求 `api.bambulab.cn/v1/.../f3mf`，避免 `makerworld.com.cn/api/...` 的 Cloudflare 页面提前截断候选
+- `3MF` 下载接口补齐浏览器 API 请求头和 Cookie 内 `token` 认证头；遇到 `auth_required` / Cloudflare 候选失败后会继续尝试后续可用 API
+- curl 兜底增加连接和总超时，代理或失效候选不再长时间卡住；补充缺失 `3MF` 回归测试
+
+### 2026-05-14
 - 本地导入缺图模型的自动封面改由 `makerhub-worker` 后台用 Three.js + Chromium 生成 PNG，前端不再自动下载模型文件或占用网页 CPU
 - 新导入模型会自动排队生成封面；存量缺图模型只在打开详情页时标记待生成，worker 每轮渐进处理，并对超大文件按 `MAKERHUB_LOCAL_PREVIEW_MAX_BYTES` 跳过
 - 旧的 `stl_preview_*.svg` 视为可替换的历史预览图，worker 成功生成 Three.js 封面后会替换为新的 PNG；详情页手动 `3D 预览` 仍支持 STL / OBJ / 3MF 旋转缩放
@@ -162,13 +167,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - iOS「推送到 MakerHub」快捷指令重新签名，上传时会同时通过 URL 参数和请求头传递文件名，改善微信中文附件名丢失的问题
 - 移动端上传日志新增文件名来源标记，便于排查文件名来自 query、header 还是兜底值
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-13
 - 移动端 `3MF` 导入在快捷指令 / 微信未传真实文件名时，会读取 `3MF` 内部标题作为本地模型名和配置文件名，避免入库成 `wechat-upload`
 - 本地整理进度卡隐藏 `wechat-upload.3mf` 等占位名，未拿到真实文件名时显示为“移动端导入”
 - 新增移动端导入回归测试，覆盖 `3MF` 元数据中文标题含 `/` 时的命名兜底
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-13
 - 修复移动端 3MF 导入命中已有配置后源文件残留在扫描目录的问题，重复文件会自动移入 `_duplicates`，避免本地整理 worker 反复启动造成“卡住”的假象
