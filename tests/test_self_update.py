@@ -104,6 +104,40 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
         self.assertEqual(body["HostConfig"]["CpusetCpus"], "2-5")
         self.assertEqual(body["HostConfig"]["CpuShares"], 768)
 
+    def test_startup_marks_version_mismatch_failed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "state"
+
+            original_state_dir = self_update.STATE_DIR
+            original_update_state = self_update.UPDATE_STATE_PATH
+            original_app_version = self_update.APP_VERSION
+            try:
+                self_update.STATE_DIR = state_dir
+                self_update.UPDATE_STATE_PATH = state_dir / "system_update.json"
+                self_update.APP_VERSION = "0.6.97"
+                self_update._write_update_state(
+                    {
+                        "status": "pending_startup",
+                        "phase": "starting",
+                        "target_version": "0.6.98",
+                        "request_id": "version-mismatch-request",
+                        "replacement_container_id": "new-container",
+                        "container_name": "makerhub-app",
+                    }
+                )
+
+                self_update.mark_update_started_after_restart()
+                state = self_update._read_update_state()
+            finally:
+                self_update.STATE_DIR = original_state_dir
+                self_update.UPDATE_STATE_PATH = original_update_state
+                self_update.APP_VERSION = original_app_version
+
+            self.assertEqual(state["status"], "failed")
+            self.assertEqual(state["phase"], "version_mismatch")
+            self.assertIn("当前版本仍为 v0.6.97", state["message"])
+            self.assertIn("目标版本 v0.6.98", state["message"])
+
     def test_request_system_update_passes_web_container_to_helper(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_dir = Path(temp_dir) / "state"

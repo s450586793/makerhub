@@ -173,6 +173,10 @@ def _friendly_error_message(error: Exception | str) -> str:
     return text.replace("\n", " ").strip()[:400]
 
 
+def _normalize_version_label(value: Any) -> str:
+    return str(value or "").strip().lstrip("vV")
+
+
 def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
     try:
         numeric = int(value)
@@ -1069,6 +1073,36 @@ def mark_update_started_after_restart() -> None:
     status = str(state.get("status") or "")
     if status == "pending_startup":
         finished_at = _now_iso()
+        target_version = _normalize_version_label(state.get("target_version"))
+        current_version = _normalize_version_label(APP_VERSION)
+        if target_version and current_version and target_version != current_version:
+            error_message = (
+                f"容器已重新启动，但当前版本仍为 v{APP_VERSION}，未达到目标版本 v{target_version}。"
+                " 通常是最新 Docker 镜像还未构建完成或镜像仓库仍返回旧 latest，请稍后再试。"
+            )
+            state = _write_update_state(
+                {
+                    **state,
+                    "status": "failed",
+                    "phase": "version_mismatch",
+                    "message": error_message,
+                    "finished_at": finished_at,
+                    "last_error": error_message,
+                }
+            )
+            append_business_log(
+                "system",
+                "self_update_failed",
+                error_message,
+                level="error",
+                request_id=str(state.get("request_id") or ""),
+                replacement_container_id=str(state.get("replacement_container_id") or ""),
+                container_name=str(state.get("container_name") or ""),
+                app_version=APP_VERSION,
+                target_version=target_version,
+                phase="version_mismatch",
+            )
+            return
         state = _write_update_state(
             {
                 **state,

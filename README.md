@@ -154,6 +154,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 ## 更新记录
 
 ### 2026-05-15
+- 网页一键更新新增版本一致性校验：如果目标版本已是新版，但新容器启动后仍读到旧版本，会明确标记更新失败
+- 更新失败提示会指出 Docker 镜像可能尚未构建完成或 GHCR `latest` 仍返回旧镜像，避免页面显示“已完成”但实际仍停留在旧版本
+- 补充自更新回归测试，覆盖目标版本和启动后版本不一致的场景
+
+### 2026-05-15
 - 订阅库来源卡新增 worker 侧图片区快照，API 返回 `preview_snapshot_url`，前端优先加载单张快照图，减少订阅库列表反复请求多张模型封面
 - 设置页新增统一 Token 页签，合并 API Token 与 iOS 快捷指令 Token，可配置名称、权限、过期时间和撤销状态，并在页面持续显示完整 Token 便于复用
 - 运行资源 / App / Worker 调度从系统页移到高级页；移动端导入继续兼容旧 `mhi_` Token，同时新统一 Token 会按“本地导入”权限校验
@@ -163,13 +168,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 网页一键更新会在重建 App / Worker 容器时应用运行资源设置，支持通过 Web 页面把 App 从单个 `uvicorn` 进程调整为多进程，缓解容器单核 100% 时页面卡顿
 - Docker 入口支持 `MAKERHUB_WEB_WORKERS`，Compose 示例同步补充默认值；资源重建逻辑新增回归测试，确认 App / Worker 的 CPU 配置会写入新容器
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-14
 - 模型库、订阅库和本地库新增二级缓存：快照生成后会复用已套状态的模型列表和来源分组结果，减少刷新时反复全量分组、筛选和统计的耗时
 - 订阅页、来源总览和分组详情页共用同一份来源分组缓存，进入单个本地库 / 订阅分组时不再为了一个分组重建全部来源卡片
 - 详情页 `3D 预览` 弹窗缩小为更轻的居中浮层，并把手动预览上限提高到 80 MB；自动封面生成仍保留较低上限，避免后台处理超大模型拖慢页面
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-14
 - 修复国区 `3MF` 下载误报 Cookie 失效的问题，优先请求 `api.bambulab.cn/v1/.../f3mf`，避免 `makerworld.com.cn/api/...` 的 Cloudflare 页面提前截断候选
