@@ -52,7 +52,15 @@
         <p v-if="card.recent_summary" class="source-library-card__summary">{{ card.recent_summary }}</p>
       </div>
 
-      <div class="source-library-card__preview-grid source-library-card__preview-grid--author">
+      <div v-if="snapshotUrl" class="source-library-card__preview-snapshot source-library-card__preview-grid--author">
+        <img
+          :src="snapshotUrl"
+          :alt="card.title"
+          loading="lazy"
+          @error="snapshotFailed = true"
+        >
+      </div>
+      <div v-else class="source-library-card__preview-grid source-library-card__preview-grid--author">
         <div
           v-for="(preview, index) in previewTiles"
           :key="preview?.model_dir || `preview-${index}`"
@@ -104,7 +112,18 @@
         <p v-if="card.recent_summary" class="source-library-card__summary">{{ card.recent_summary }}</p>
       </div>
 
-      <div class="source-library-card__preview-grid source-library-card__preview-grid--collection">
+      <div v-if="snapshotUrl" class="source-library-card__preview-snapshot source-library-card__preview-grid--collection">
+        <img
+          :src="snapshotUrl"
+          :alt="card.title"
+          loading="lazy"
+          @error="snapshotFailed = true"
+        >
+        <div v-if="overflowCount > 0" class="source-library-card__overflow-mask source-library-card__overflow-mask--snapshot">
+          <strong>+{{ overflowCount }}</strong>
+        </div>
+      </div>
+      <div v-else class="source-library-card__preview-grid source-library-card__preview-grid--collection">
         <div
           v-for="(preview, index) in previewTiles"
           :key="preview?.model_dir || `preview-${index}`"
@@ -129,7 +148,7 @@
 </template>
 
 <script setup>
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 
 
 const props = defineProps({
@@ -152,6 +171,13 @@ const emit = defineEmits(["open", "select"]);
 const titleInitial = computed(() => tileInitial(props.card.title || "M"));
 const collectionAvatarUrl = computed(() => props.card.avatar_url || props.card.cover_url || "");
 const titleIsLong = computed(() => String(props.card.title || "").trim().length > 8);
+const snapshotFailed = ref(false);
+const snapshotUrl = computed(() => {
+  if (snapshotFailed.value) {
+    return "";
+  }
+  return String(props.card.preview_snapshot_url || "").trim();
+});
 const previewTiles = computed(() => {
   const previews = Array.isArray(props.card.preview_models) ? props.card.preview_models.slice(0, 4) : [];
   if (!previews.length && props.card.cover_url) {
@@ -174,6 +200,13 @@ const displayStats = computed(() => {
   const stats = Array.isArray(props.card.stats) ? props.card.stats.filter((item) => item && item.label) : [];
   return props.card.card_kind === "author" ? stats.slice(0, 3) : stats.slice(0, 2);
 });
+
+watch(
+  () => props.card.preview_snapshot_url,
+  () => {
+    snapshotFailed.value = false;
+  },
+);
 
 function formatCompact(value) {
   const numeric = Number(value || 0);

@@ -71,7 +71,11 @@ async def list_tokens(request: Request):
 @router.post("/tokens")
 async def create_token(payload: ApiTokenCreateRequest, request: Request):
     _require_session_auth(request)
-    raw_token, token_view = auth_manager.create_api_token(payload.name)
+    raw_token, token_view = auth_manager.create_api_token(
+        payload.name,
+        permissions=payload.permissions,
+        expires_days=payload.expires_days,
+    )
     append_business_log("auth", "api_token_created", "API Token 已创建。", token_id=token_view.id, name=token_view.name)
     return {
         "success": True,

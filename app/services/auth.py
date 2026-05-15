@@ -1,7 +1,7 @@
 import json
 from datetime import timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 from fastapi import Request
 
@@ -15,6 +15,41 @@ from app.schemas.models import ApiTokenRecord, ApiTokenView
 SESSION_COOKIE_NAME = "makerhub_session"
 SESSION_TTL_DAYS = 14
 SESSIONS_PATH = STATE_DIR / "auth_sessions.json"
+TOKEN_PERMISSION_LABELS = {
+    "archive_write": "提交归档",
+    "mobile_import": "本地导入",
+    "models_read": "读取模型库",
+    "share_manage": "管理分享",
+    "system_manage": "系统管理",
+    "token_manage": "Token 管理",
+}
+DEFAULT_API_TOKEN_PERMISSIONS = ["archive_write"]
+TOKEN_PERMISSION_ORDER = list(TOKEN_PERMISSION_LABELS.keys())
+
+
+def normalize_token_permissions(values: Optional[Iterable[str]]) -> list[str]:
+    seen: set[str] = set()
+    permissions: list[str] = []
+    legacy_values = {"api", "all", "*"}
+    for value in values or []:
+        clean = str(value or "").strip().lower()
+        if clean in legacy_values:
+            clean = "archive_write"
+        if clean not in TOKEN_PERMISSION_LABELS or clean in seen:
+            continue
+        seen.add(clean)
+        permissions.append(clean)
+    return permissions or list(DEFAULT_API_TOKEN_PERMISSIONS)
+
+
+def token_status(record: ApiTokenRecord, now=None) -> str:
+    if record.disabled or record.revoked_at:
+        return "revoked"
+    if record.expires_at:
+        expires_at = parse_datetime(record.expires_at)
+        if expires_at is not None and expires_at < (now or china_now()):
+            return "expired"
+    return "active"
 
 
 class AuthManager:
@@ -117,51 +152,67 @@ class AuthManager:
             self._write_sessions(payload)
         return target
 
+    def _token_view(self, item: ApiTokenRecord, *, now=None) -> ApiTokenView:
+        return ApiTokenView(
+            id=item.id,
+            name=item.name,
+            token_prefix=item.token_prefix,
+            token_value=item.token_value,
+            created_at=item.created_at,
+            permissions=normalize_token_permissions(item.permissions),
+            expires_at=item.expires_at,
+            last_used_at=item.last_used_at,
+            disabled=item.disabled,
+            revoked_at=item.revoked_at,
+            status=token_status(item, now=now),
+        )
+
     def list_api_tokens(self) -> list[ApiTokenView]:
         config = self.store.load()
         items = sorted(config.api_tokens, key=lambda item: item.created_at, reverse=True)
-        return [
-            ApiTokenView(
-                id=item.id,
-                name=item.name,
-                token_prefix=item.token_prefix,
-                created_at=item.created_at,
-                last_used_at=item.last_used_at,
-                disabled=item.disabled,
-            )
-            for item in items
-        ]
+        now = china_now()
+        return [self._token_view(item, now=now) for item in items]
 
-    def create_api_token(self, name: str) -> tuple[str, ApiTokenView]:
+    def create_api_token(
+        self,
+        name: str,
+        *,
+        permissions: Optional[Iterable[str]] = None,
+        expires_days: int = 0,
+        token_prefix: str = "mht",
+    ) -> tuple[str, ApiTokenView]:
         config = self.store.load()
-        raw_token = generate_api_token()
+        raw_token = generate_api_token(prefix=token_prefix)
         now = china_now_iso()
         display_name = str(name or "").strip() or f"Token {len(config.api_tokens) + 1}"
+        safe_expires_days = max(0, min(int(expires_days or 0), 3650))
+        expires_at = (china_now() + timedelta(days=safe_expires_days)).isoformat() if safe_expires_days else ""
         record = ApiTokenRecord(
             id=generate_session_id(),
             name=display_name,
             token_prefix=raw_token[:12],
             token_hash=hash_api_token(raw_token),
+            token_value=raw_token,
             created_at=now,
+            permissions=normalize_token_permissions(permissions),
+            expires_at=expires_at,
         )
         config.api_tokens.insert(0, record)
         self.store.save(config)
-        return raw_token, ApiTokenView(
-            id=record.id,
-            name=record.name,
-            token_prefix=record.token_prefix,
-            created_at=record.created_at,
-            last_used_at=record.last_used_at,
-            disabled=record.disabled,
-        )
+        return raw_token, self._token_view(record)
 
     def revoke_api_token(self, token_id: str) -> list[ApiTokenView]:
         config = self.store.load()
-        config.api_tokens = [item for item in config.api_tokens if item.id != token_id]
+        now = china_now_iso()
+        for item in config.api_tokens:
+            if item.id == token_id:
+                item.disabled = True
+                item.revoked_at = item.revoked_at or now
+                break
         self.store.save(config)
         return self.list_api_tokens()
 
-    def validate_api_token(self, raw_token: str) -> Optional[ApiTokenView]:
+    def validate_api_token(self, raw_token: str, *, required_permission: str = "") -> Optional[ApiTokenView]:
         token = str(raw_token or "").strip()
         if not token:
             return None
@@ -169,10 +220,16 @@ class AuthManager:
         token_hash = hash_api_token(token)
         config = self.store.load()
         matched = None
+        now = china_now()
         for item in config.api_tokens:
-            if item.disabled:
+            if token_status(item, now=now) != "active":
                 continue
             if item.token_hash == token_hash:
+                permissions = normalize_token_permissions(item.permissions)
+                clean_required = str(required_permission or "").strip().lower()
+                if clean_required and clean_required not in permissions:
+                    return None
+                item.permissions = permissions
                 item.last_used_at = china_now_iso()
                 matched = item
                 break
@@ -181,14 +238,7 @@ class AuthManager:
             return None
 
         self.store.save(config)
-        return ApiTokenView(
-            id=matched.id,
-            name=matched.name,
-            token_prefix=matched.token_prefix,
-            created_at=matched.created_at,
-            last_used_at=matched.last_used_at,
-            disabled=matched.disabled,
-        )
+        return self._token_view(matched)
 
     def change_password(self, current_password: str, new_password: str) -> None:
         config = self.store.load()
@@ -224,7 +274,7 @@ class AuthManager:
 
         if allow_api_token:
             token = self.extract_api_token(request)
-            token_view = self.validate_api_token(token)
+            token_view = self.validate_api_token(token, required_permission="archive_write")
             if token_view:
                 return {
                     "kind": "token",

@@ -5,12 +5,13 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 
 import requests
 from bs4 import BeautifulSoup
+from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
 
-from app.core.settings import STATE_DIR, ensure_app_dirs
+from app.core.settings import ARCHIVE_DIR, STATE_DIR, ensure_app_dirs
 from app.core.store import JsonStore
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
 from app.services.batch_discovery import normalize_source_url
@@ -30,9 +31,14 @@ from app.services.task_state import TaskStateStore
 
 
 SOURCE_LIBRARY_METADATA_PATH = STATE_DIR / "source_library_metadata.json"
+SOURCE_LIBRARY_SNAPSHOT_DIR = STATE_DIR / "source_library_snapshots"
 SOURCE_LIBRARY_METADATA_TTL_SECONDS = 12 * 60 * 60
 SOURCE_LIBRARY_PREVIEW_LIMIT = 4
 SOURCE_LIBRARY_BACKFILL_DELAY_SECONDS = 6
+SOURCE_LIBRARY_SNAPSHOT_SIZE = 480
+SOURCE_LIBRARY_SNAPSHOT_GAP = 10
+SOURCE_LIBRARY_SNAPSHOT_BG = (246, 248, 251, 255)
+SOURCE_LIBRARY_SNAPSHOT_TILE_BG = (232, 237, 243, 255)
 
 _SOURCE_LIBRARY_LOCK = threading.RLock()
 _SOURCE_LIBRARY_GROUP_CACHE_LOCK = threading.RLock()
@@ -211,10 +217,28 @@ def _clone_model_items(items: Any) -> list[dict]:
     return [dict(item) for item in items or ()]
 
 
+def _directory_signature(path: Path) -> tuple[int, int, int]:
+    try:
+        files = [item for item in path.iterdir() if item.is_file()]
+    except OSError:
+        return (0, 0, 0)
+    latest_mtime = 0
+    total_size = 0
+    for item in files:
+        try:
+            stat = item.stat()
+        except OSError:
+            continue
+        latest_mtime = max(latest_mtime, int(stat.st_mtime_ns))
+        total_size += int(stat.st_size)
+    return (len(files), latest_mtime, total_size)
+
+
 def _group_cache_signature() -> tuple[Any, ...]:
     return (
         get_decorated_models_signature(),
         _file_signature(SOURCE_LIBRARY_METADATA_PATH),
+        _directory_signature(SOURCE_LIBRARY_SNAPSHOT_DIR),
     )
 
 
@@ -233,6 +257,163 @@ def _preview_items_from_models(models: list[dict]) -> list[dict]:
             }
         )
     return previews
+
+
+def _snapshot_url(filename: str, signature: str) -> str:
+    return f"/api/source-library/snapshots/{quote(filename)}?v={quote(signature[:12])}"
+
+
+def _resolve_archive_image_path(url: Any) -> Optional[Path]:
+    raw = str(url or "").strip()
+    if not raw.startswith("/archive/"):
+        return None
+    clean = raw.split("#", 1)[0].split("?", 1)[0]
+    relative = unquote(clean[len("/archive/"):]).strip().lstrip("/")
+    if not relative:
+        return None
+    candidate = (ARCHIVE_DIR / relative).resolve()
+    try:
+        candidate.relative_to(ARCHIVE_DIR.resolve())
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None
+
+
+def _preview_snapshot_source_signature(previews: list[dict]) -> str:
+    parts: list[dict[str, Any]] = []
+    for preview in previews[:SOURCE_LIBRARY_PREVIEW_LIMIT]:
+        cover_url = str(preview.get("cover_url") or "")
+        image_path = _resolve_archive_image_path(cover_url)
+        file_sig = _file_signature(image_path) if image_path else (0, 0)
+        parts.append(
+            {
+                "model_dir": str(preview.get("model_dir") or ""),
+                "title": str(preview.get("title") or ""),
+                "cover_url": cover_url,
+                "file_signature": file_sig,
+            }
+        )
+    return hashlib.sha1(json.dumps(parts, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _source_preview_snapshot_signature(group: dict[str, Any], previews: Optional[list[dict]] = None) -> str:
+    payload = {
+        "key": str(group.get("key") or ""),
+        "kind": str(group.get("kind") or ""),
+        "previews": _preview_snapshot_source_signature(previews if previews is not None else list(group.get("preview_models") or [])),
+    }
+    return hashlib.sha1(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _source_preview_snapshot_filename(source_key: str, signature: str) -> str:
+    safe_key = re.sub(r"[^a-zA-Z0-9_.-]+", "-", str(source_key or "").strip()).strip("-")[:80] or "source"
+    return f"{safe_key}-{signature[:12]}.webp"
+
+
+def _source_preview_snapshot_metadata(group: dict[str, Any], metadata: dict[str, Any], previews: list[dict]) -> str:
+    signature = _source_preview_snapshot_signature(group, previews)
+    if metadata.get("preview_snapshot_signature") != signature:
+        return ""
+    filename = str(metadata.get("preview_snapshot_filename") or "")
+    if not filename:
+        return ""
+    if "/" in filename or "\\" in filename:
+        return ""
+    path = SOURCE_LIBRARY_SNAPSHOT_DIR / filename
+    if not path.is_file():
+        return ""
+    return _snapshot_url(filename, signature)
+
+
+def _render_placeholder_tile(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], label: str) -> None:
+    draw.rounded_rectangle(box, radius=22, fill=SOURCE_LIBRARY_SNAPSHOT_TILE_BG)
+    text = (_normalize_text(label)[:1] or "M").upper()
+    if any(ord(char) > 127 for char in text):
+        text = "M"
+    left, top, right, bottom = box
+    try:
+        bbox = draw.textbbox((0, 0), text)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+    except Exception:
+        text_width = 20
+        text_height = 20
+    draw.text(
+        (
+            left + (right - left - text_width) / 2,
+            top + (bottom - top - text_height) / 2 - 2,
+        ),
+        text,
+        fill=(111, 124, 143, 255),
+    )
+
+
+def _paste_snapshot_tile(canvas: Image.Image, draw: ImageDraw.ImageDraw, preview: Optional[dict], box: tuple[int, int, int, int]) -> bool:
+    if not preview:
+        _render_placeholder_tile(draw, box, "")
+        return False
+    image_path = _resolve_archive_image_path(preview.get("cover_url"))
+    if image_path is None:
+        _render_placeholder_tile(draw, box, str(preview.get("title") or ""))
+        return False
+    try:
+        with Image.open(image_path) as source:
+            source = ImageOps.exif_transpose(source).convert("RGB")
+            tile_width = max(1, box[2] - box[0])
+            tile_height = max(1, box[3] - box[1])
+            fitted = ImageOps.fit(source, (tile_width, tile_height), method=Image.Resampling.LANCZOS)
+    except (OSError, UnidentifiedImageError):
+        _render_placeholder_tile(draw, box, str(preview.get("title") or ""))
+        return False
+    mask = Image.new("L", fitted.size, 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.rounded_rectangle((0, 0, fitted.size[0], fitted.size[1]), radius=22, fill=255)
+    canvas.paste(fitted.convert("RGBA"), box[:2], mask)
+    return True
+
+
+def _render_source_preview_snapshot(previews: list[dict], target_path: Path) -> bool:
+    canvas = Image.new("RGBA", (SOURCE_LIBRARY_SNAPSHOT_SIZE, SOURCE_LIBRARY_SNAPSHOT_SIZE), SOURCE_LIBRARY_SNAPSHOT_BG)
+    draw = ImageDraw.Draw(canvas)
+    gap = SOURCE_LIBRARY_SNAPSHOT_GAP
+    tile_size = (SOURCE_LIBRARY_SNAPSHOT_SIZE - gap) // 2
+    had_image = False
+    padded: list[Optional[dict]] = list(previews[:SOURCE_LIBRARY_PREVIEW_LIMIT])
+    while len(padded) < SOURCE_LIBRARY_PREVIEW_LIMIT:
+        padded.append(None)
+    for index, preview in enumerate(padded):
+        row = index // 2
+        col = index % 2
+        left = col * (tile_size + gap)
+        top = row * (tile_size + gap)
+        box = (left, top, left + tile_size, top + tile_size)
+        had_image = _paste_snapshot_tile(canvas, draw, preview, box) or had_image
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = target_path.with_suffix(".tmp.webp")
+    canvas.convert("RGB").save(temp_path, "WEBP", quality=84, method=4)
+    temp_path.replace(target_path)
+    return had_image
+
+
+def _prune_old_source_preview_snapshots(source_key: str, keep_filename: str) -> None:
+    safe_key = re.sub(r"[^a-zA-Z0-9_.-]+", "-", str(source_key or "").strip()).strip("-")[:80] or "source"
+    try:
+        for item in SOURCE_LIBRARY_SNAPSHOT_DIR.glob(f"{safe_key}-*.webp"):
+            if item.name != keep_filename:
+                item.unlink(missing_ok=True)
+    except OSError:
+        return
+
+
+def _save_source_snapshot_metadata(source_key: str, payload: dict[str, Any]) -> None:
+    with _SOURCE_LIBRARY_LOCK:
+        cache = _read_metadata_cache_unlocked()
+        items = dict(cache.get("items") or {})
+        current = dict(items.get(source_key) or {})
+        current.update(payload)
+        current["preview_snapshot_updated_at"] = _now_iso()
+        items[source_key] = current
+        _write_metadata_cache_unlocked({"items": items, "updated_at": _now_iso()})
 
 
 def _iter_nodes(payload: Any):
@@ -551,6 +732,9 @@ def _finalize_group(group: dict[str, Any], models_by_dir: dict[str, dict], metad
     members = [models_by_dir[item] for item in group.get("model_dirs") or [] if item in models_by_dir]
     preview_models = _preview_items_from_models(members)
     group["preview_models"] = preview_models
+    preview_snapshot_url = _source_preview_snapshot_metadata(group, metadata, preview_models)
+    if preview_snapshot_url:
+        group["preview_snapshot_url"] = preview_snapshot_url
     if metadata.get("title"):
         group["title"] = metadata["title"]
     if metadata.get("subtitle"):
@@ -848,7 +1032,7 @@ def _group_models(store: Optional[JsonStore] = None, task_store: Optional[TaskSt
     all_models, visible_models = _load_models(task_store=task_store)
     models_by_dir = {str(item.get("model_dir") or ""): item for item in all_models}
     visible_by_dir = {str(item.get("model_dir") or ""): item for item in visible_models}
-    metadata_cache = load_source_metadata_cache().get("items") or {}
+    metadata_cache = dict(load_source_metadata_cache().get("items") or {})
 
     author_groups_raw, collection_groups_raw, favorite_groups_raw = _group_subscription_sources(visible_models, store=store, task_store=task_store)
     author_groups = [_finalize_group(group, visible_by_dir, metadata_cache.get(group["key"]) or {}) for group in author_groups_raw]
@@ -1297,6 +1481,94 @@ def refresh_subscription_source_metadata(
     }
 
 
+def refresh_source_preview_snapshots(
+    *,
+    force: bool = False,
+    store: Optional[JsonStore] = None,
+    task_store: Optional[TaskStateStore] = None,
+    limit: Optional[int] = None,
+) -> dict[str, Any]:
+    store = store or JsonStore()
+    task_store = task_store or TaskStateStore()
+    groups, _, _ = _group_models(store=store, task_store=task_store)
+    metadata_cache = load_source_metadata_cache().get("items") or {}
+
+    candidates = [
+        group
+        for group in groups.values()
+        if str(group.get("kind") or "") in {"author", "collection", "favorite"}
+        and str(group.get("key") or "")
+        and list(group.get("preview_models") or [])
+    ]
+    candidates.sort(key=lambda item: (-_group_sort_timestamp(item), str(item.get("title") or "")))
+    if limit is not None:
+        candidates = candidates[: max(0, int(limit or 0))]
+
+    total = len(candidates)
+    generated = 0
+    skipped = 0
+    failed = 0
+    for group in candidates:
+        source_key = str(group.get("key") or "")
+        previews = list(group.get("preview_models") or [])[:SOURCE_LIBRARY_PREVIEW_LIMIT]
+        signature = _source_preview_snapshot_signature(group, previews)
+        filename = _source_preview_snapshot_filename(source_key, signature)
+        target_path = SOURCE_LIBRARY_SNAPSHOT_DIR / filename
+        cached = metadata_cache.get(source_key) or {}
+        if (
+            not force
+            and cached.get("preview_snapshot_signature") == signature
+            and cached.get("preview_snapshot_filename") == filename
+            and target_path.is_file()
+        ):
+            skipped += 1
+            continue
+        try:
+            had_image = _render_source_preview_snapshot(previews, target_path)
+            _prune_old_source_preview_snapshots(source_key, filename)
+            _save_source_snapshot_metadata(
+                source_key,
+                {
+                    "preview_snapshot_signature": signature,
+                    "preview_snapshot_filename": filename,
+                    "preview_snapshot_url": _snapshot_url(filename, signature),
+                    "preview_snapshot_had_image": had_image,
+                    "preview_snapshot_error": "",
+                },
+            )
+            metadata_cache[source_key] = {
+                **dict(metadata_cache.get(source_key) or {}),
+                "preview_snapshot_signature": signature,
+                "preview_snapshot_filename": filename,
+            }
+            generated += 1
+        except Exception as exc:
+            failed += 1
+            _save_source_snapshot_metadata(
+                source_key,
+                {
+                    "preview_snapshot_error": _normalize_text(str(exc))[:240],
+                },
+            )
+    if total:
+        append_business_log(
+            "source_library",
+            "preview_snapshots_refreshed",
+            "订阅来源卡快照已刷新。",
+            total=total,
+            generated=generated,
+            skipped=skipped,
+            failed=failed,
+            force=force,
+        )
+    return {
+        "total": total,
+        "generated": generated,
+        "skipped": skipped,
+        "failed": failed,
+    }
+
+
 def refresh_source_metadata(force: bool = False, store: Optional[JsonStore] = None, task_store: Optional[TaskStateStore] = None) -> dict[str, Any]:
     store = store or JsonStore()
     task_store = task_store or TaskStateStore()
@@ -1391,6 +1663,16 @@ class SourceLibraryManager:
                 "source_library",
                 "metadata_refresh_failed",
                 "来源卡元数据补全失败。",
+                level="warning",
+                error=_normalize_text(str(exc))[:240],
+            )
+        try:
+            refresh_source_preview_snapshots(force=False, store=self.store, task_store=self.task_store)
+        except Exception as exc:
+            append_business_log(
+                "source_library",
+                "preview_snapshot_refresh_failed",
+                "来源卡快照刷新失败。",
                 level="warning",
                 error=_normalize_text(str(exc))[:240],
             )

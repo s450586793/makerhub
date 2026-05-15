@@ -149,45 +149,100 @@
           <span class="form-status">{{ statuses.organizer }}</span>
         </div>
       </form>
+    </div>
 
+    <div v-show="activeTab === 'tokens'" class="settings-panel is-active">
       <section class="settings-form token-card">
         <div class="section-card__header">
           <div>
-            <span class="eyebrow">移动端导入</span>
-            <h2>iOS 快捷指令</h2>
+            <span class="eyebrow">Token</span>
+            <h2>访问凭证管理</h2>
           </div>
           <div class="settings-inline-actions">
             <button class="button button-secondary button-small" type="button" @click="copyShortcutConfig">
-              复制配置
+              复制快捷指令配置
             </button>
-            <button class="button button-primary button-small" type="button" @click="resetMobileImportToken">
+            <button class="button button-primary button-small" type="button" @click="createToken">
               生成 Token
             </button>
           </div>
         </div>
 
-        <div class="mobile-import-status-grid">
-          <article class="field-card system-update-stat">
-            <span>Token 状态</span>
-            <strong>{{ mobileImportTokenStatus }}</strong>
-            <small>{{ mobileImportTokenMeta }}</small>
-          </article>
-          <article class="field-card system-update-stat">
-            <span>快捷指令提示</span>
-            <strong>成功显示“已上传”</strong>
-            <small>地址不可用时 iOS 会显示请求失败。</small>
-          </article>
-        </div>
+        <form class="token-create-form token-create-form--stacked" @submit.prevent="createToken">
+          <div class="settings-grid settings-grid--three">
+            <label class="field-card">
+              <span>名称</span>
+              <input v-model.trim="tokenForm.name" type="text" placeholder="例如：我的 iPhone / 自动化脚本">
+            </label>
+            <label class="field-card">
+              <span>用途</span>
+              <select v-model="tokenForm.preset" @change="applyTokenPreset">
+                <option value="mobile">iOS 快捷指令</option>
+                <option value="api">API 调用</option>
+                <option value="custom">自定义</option>
+              </select>
+            </label>
+            <label class="field-card">
+              <span>过期时间</span>
+              <select v-model.number="tokenForm.expires_days">
+                <option :value="7">7 天</option>
+                <option :value="30">30 天</option>
+                <option :value="90">90 天</option>
+                <option :value="365">365 天</option>
+                <option :value="0">永不过期</option>
+              </select>
+            </label>
+          </div>
+          <label class="field-card">
+            <span>权限</span>
+            <div class="token-permission-grid">
+              <label v-for="permission in tokenPermissionOptions" :key="permission.value" class="switch">
+                <input v-model="tokenForm.permissions" type="checkbox" :value="permission.value">
+                <span>{{ permission.label }}</span>
+              </label>
+            </div>
+          </label>
+        </form>
 
         <div v-if="mobileImportToken" class="token-output">
           <strong>新 Token</strong>
           <code>{{ mobileImportToken }}</code>
         </div>
 
+        <div class="token-list">
+          <article v-for="item in tokenItems" :key="item.id" class="token-item token-item--wide">
+            <div class="token-item__main">
+              <div class="token-item__title">
+                <strong>{{ item.name }}</strong>
+                <span :class="['shared-list-item__status', tokenStatusClass(item)]">{{ tokenStatusLabel(item) }}</span>
+              </div>
+              <code class="token-value">{{ item.token_value || `${item.token_prefix}...` }}</code>
+              <div class="token-item__meta">
+                <span>{{ tokenPermissionText(item.permissions) }}</span>
+                <span>创建于 {{ item.created_at }}</span>
+                <span>过期 {{ item.expires_at || "永不过期" }}</span>
+                <span>最近使用 {{ item.last_used_at || "未使用" }}</span>
+              </div>
+            </div>
+            <div class="token-item__actions">
+              <button class="button button-secondary button-small" type="button" :disabled="!item.token_value" @click="copyTokenValue(item)">
+                复制 Token
+              </button>
+              <button class="button button-secondary button-small" type="button" :disabled="!item.token_value || !hasTokenPermission(item, 'mobile_import')" @click="copyShortcutConfig(item)">
+                复制快捷指令配置
+              </button>
+              <button class="button button-danger button-small" type="button" :disabled="item.status === 'revoked'" @click="revokeToken(item.id)">
+                撤销
+              </button>
+            </div>
+          </article>
+          <p v-if="!tokenItems.length" class="empty-copy">当前还没有 Token。</p>
+        </div>
+
         <div class="mobile-import-shortcut">
-          <strong>快捷指令流程</strong>
+          <strong>iOS 快捷指令流程</strong>
           <ol>
-            <li>接收共享表单里的文件。</li>
+            <li>创建带“本地导入”权限的 Token。</li>
             <li>在手机快捷指令里填写 Token 和 MakerHub 地址。</li>
             <li>用 Token 请求选定地址的 <code>/api/mobile-import/ping-ipv4</code>。</li>
             <li>地址可用后，把文件上传到 <code>/api/mobile-import/raw-ipv4</code>。</li>
@@ -195,12 +250,7 @@
           </ol>
         </div>
 
-        <div class="settings-inline-actions">
-          <button class="button button-secondary" type="button" :disabled="!mobileImportEnabled" @click="disableMobileImport">
-            停用 Token
-          </button>
-          <span class="form-status">{{ statuses.mobile_import }}</span>
-        </div>
+        <span class="form-status">{{ statuses.tokens }}</span>
       </section>
     </div>
 
@@ -412,6 +462,75 @@
           <span class="form-status">{{ statuses.advanced }}</span>
         </div>
       </form>
+
+      <form class="settings-form token-card system-runtime-card" @submit.prevent="saveRuntimeResources">
+        <div class="section-card__header">
+          <div>
+            <span class="eyebrow">运行资源</span>
+            <h2>App / Worker 调度</h2>
+          </div>
+          <div class="settings-inline-actions">
+            <button class="button button-secondary" type="submit" :disabled="runtimeResourcesSaving">
+              {{ runtimeResourcesSaving ? "保存中..." : "保存资源设置" }}
+            </button>
+            <button class="button button-primary" type="button" :disabled="!canTriggerSystemUpdate || runtimeResourcesSaving" @click="applyRuntimeResources">
+              应用并重启容器
+            </button>
+          </div>
+        </div>
+        <p class="archive-form__hint">
+          App Web 进程数需要重启容器生效。CPU 核心绑定按 Docker 的 CPU 序号填写，例如 <code>0</code>、<code>1-3</code> 或 <code>0,2</code>；留空表示不限制。
+        </p>
+        <div class="settings-grid settings-grid--three system-update-grid">
+          <label class="field-card">
+            <span>App Web 进程数</span>
+            <input v-model.number="runtimeForm.web_workers" type="number" min="1" max="8" step="1">
+            <small class="archive-form__hint">当前容器：{{ currentAppWebWorkers }}；NAS 多核心建议 2-4。</small>
+          </label>
+          <label class="field-card">
+            <span>App CPU 上限</span>
+            <input v-model.trim="runtimeForm.app_cpu_limit" type="text" inputmode="decimal" placeholder="例如 2 或 2.5">
+            <small class="archive-form__hint">当前：{{ currentAppCpuLimit || "不限" }}</small>
+          </label>
+          <label class="field-card">
+            <span>App CPU 核心绑定</span>
+            <input v-model.trim="runtimeForm.app_cpuset_cpus" type="text" placeholder="例如 0 或 0-1">
+            <small class="archive-form__hint">当前：{{ currentAppCpuset || "未绑定" }}</small>
+          </label>
+        </div>
+        <div class="settings-grid settings-grid--three system-update-grid">
+          <label class="field-card">
+            <span>App CPU 权重</span>
+            <input v-model.number="runtimeForm.app_cpu_shares" type="number" min="0" max="262144" step="1">
+            <small class="archive-form__hint">默认 1024，0 表示不写入。</small>
+          </label>
+          <label class="field-card">
+            <span>Worker CPU 上限</span>
+            <input v-model.trim="runtimeForm.worker_cpu_limit" type="text" inputmode="decimal" placeholder="例如 3">
+            <small class="archive-form__hint">当前：{{ currentWorkerCpuLimit || "不限" }}</small>
+          </label>
+          <label class="field-card">
+            <span>Worker CPU 核心绑定</span>
+            <input v-model.trim="runtimeForm.worker_cpuset_cpus" type="text" placeholder="例如 1-3">
+            <small class="archive-form__hint">当前：{{ currentWorkerCpuset || "未绑定" }}</small>
+          </label>
+        </div>
+        <div class="settings-grid settings-grid--two system-update-grid">
+          <label class="field-card">
+            <span>Worker CPU 权重</span>
+            <input v-model.number="runtimeForm.worker_cpu_shares" type="number" min="0" max="262144" step="1">
+            <small class="archive-form__hint">默认 512，降低后台任务抢占。</small>
+          </label>
+          <article class="field-card system-update-detail">
+            <span>生效方式</span>
+            <strong>{{ systemUpdate.supported ? "可网页重建" : "需要手动重建" }}</strong>
+            <small>{{ systemUpdate.supported ? "保存后点击应用并重启容器。" : systemUpdate.support_reason || "当前没有 Docker socket 权限。" }}</small>
+          </article>
+        </div>
+        <div class="form-footer">
+          <span class="form-status">{{ statuses.runtime }}</span>
+        </div>
+      </form>
     </div>
 
     <div v-show="activeTab === 'system'" class="settings-panel is-active">
@@ -519,75 +638,6 @@
           </div>
         </section>
 
-        <form class="system-update-changelog system-runtime-card" @submit.prevent="saveRuntimeResources">
-          <div class="section-card__header">
-            <div>
-              <span class="eyebrow">运行资源</span>
-              <h2>App / Worker 调度</h2>
-            </div>
-            <div class="settings-inline-actions">
-              <button class="button button-secondary" type="submit" :disabled="runtimeResourcesSaving">
-                {{ runtimeResourcesSaving ? "保存中..." : "保存资源设置" }}
-              </button>
-              <button class="button button-primary" type="button" :disabled="!canTriggerSystemUpdate || runtimeResourcesSaving" @click="applyRuntimeResources">
-                应用并重启容器
-              </button>
-            </div>
-          </div>
-          <p class="archive-form__hint">
-            App Web 进程数需要重启容器生效。CPU 核心绑定按 Docker 的 CPU 序号填写，例如 <code>0</code>、<code>1-3</code> 或 <code>0,2</code>；留空表示不限制。
-          </p>
-          <div class="settings-grid settings-grid--three system-update-grid">
-            <label class="field-card">
-              <span>App Web 进程数</span>
-              <input v-model.number="runtimeForm.web_workers" type="number" min="1" max="8" step="1">
-              <small class="archive-form__hint">当前容器：{{ currentAppWebWorkers }}；NAS 多核心建议 2-4。</small>
-            </label>
-            <label class="field-card">
-              <span>App CPU 上限</span>
-              <input v-model.trim="runtimeForm.app_cpu_limit" type="text" inputmode="decimal" placeholder="例如 2 或 2.5">
-              <small class="archive-form__hint">当前：{{ currentAppCpuLimit || "不限" }}</small>
-            </label>
-            <label class="field-card">
-              <span>App CPU 核心绑定</span>
-              <input v-model.trim="runtimeForm.app_cpuset_cpus" type="text" placeholder="例如 0 或 0-1">
-              <small class="archive-form__hint">当前：{{ currentAppCpuset || "未绑定" }}</small>
-            </label>
-          </div>
-          <div class="settings-grid settings-grid--three system-update-grid">
-            <label class="field-card">
-              <span>App CPU 权重</span>
-              <input v-model.number="runtimeForm.app_cpu_shares" type="number" min="0" max="262144" step="1">
-              <small class="archive-form__hint">默认 1024，0 表示不写入。</small>
-            </label>
-            <label class="field-card">
-              <span>Worker CPU 上限</span>
-              <input v-model.trim="runtimeForm.worker_cpu_limit" type="text" inputmode="decimal" placeholder="例如 3">
-              <small class="archive-form__hint">当前：{{ currentWorkerCpuLimit || "不限" }}</small>
-            </label>
-            <label class="field-card">
-              <span>Worker CPU 核心绑定</span>
-              <input v-model.trim="runtimeForm.worker_cpuset_cpus" type="text" placeholder="例如 1-3">
-              <small class="archive-form__hint">当前：{{ currentWorkerCpuset || "未绑定" }}</small>
-            </label>
-          </div>
-          <div class="settings-grid settings-grid--two system-update-grid">
-            <label class="field-card">
-              <span>Worker CPU 权重</span>
-              <input v-model.number="runtimeForm.worker_cpu_shares" type="number" min="0" max="262144" step="1">
-              <small class="archive-form__hint">默认 512，降低后台任务抢占。</small>
-            </label>
-            <article class="field-card system-update-detail">
-              <span>生效方式</span>
-              <strong>{{ systemUpdate.supported ? "可网页重建" : "需要手动重建" }}</strong>
-              <small>{{ systemUpdate.supported ? "保存后点击应用并重启容器。" : systemUpdate.support_reason || "当前没有 Docker socket 权限。" }}</small>
-            </article>
-          </div>
-          <div class="form-footer">
-            <span class="form-status">{{ statuses.runtime }}</span>
-          </div>
-        </form>
-
         <section class="system-update-changelog">
           <div class="section-card__header">
             <div>
@@ -681,38 +731,6 @@
         </div>
       </form>
 
-      <section class="token-card">
-        <div class="section-card__header">
-          <div>
-            <span class="eyebrow">Token</span>
-            <h2>API Token 管理</h2>
-          </div>
-        </div>
-        <form class="token-create-form" @submit.prevent="createToken">
-          <input v-model.trim="tokenName" type="text" placeholder="例如：家里 NAS / 自动化脚本">
-          <button class="button button-primary" type="submit">生成 Token</button>
-        </form>
-        <p class="archive-form__hint">后续通过 API 调用归档时，可在 <code>Authorization: Bearer &lt;token&gt;</code> 里传入。</p>
-        <div v-if="newToken" class="token-output">
-          <strong>新 Token</strong>
-          <code>{{ newToken }}</code>
-        </div>
-        <span class="form-status">{{ statuses.tokens }}</span>
-        <div class="token-list">
-          <article v-for="item in tokenItems" :key="item.id" class="token-item">
-            <div>
-              <strong>{{ item.name }}</strong>
-              <span>{{ item.token_prefix }}...</span>
-            </div>
-            <div class="token-item__meta">
-              <span>创建于 {{ item.created_at || "-" }}</span>
-              <span>最近使用 {{ item.last_used_at || "未使用" }}</span>
-            </div>
-            <button class="button button-secondary button-small" type="button" @click="revokeToken(item.id)">撤销</button>
-          </article>
-          <p v-if="!tokenItems.length" class="empty-copy">当前还没有 API Token。</p>
-        </div>
-      </section>
     </div>
   </section>
 </template>
@@ -734,6 +752,7 @@ const tabs = [
   { key: "system", label: "系统" },
   { key: "connections", label: "连接设置" },
   { key: "organizer", label: "本地整理" },
+  { key: "tokens", label: "Token" },
   { key: "sharing", label: "模型分享" },
   { key: "advanced", label: "高级" },
   { key: "user", label: "用户" },
@@ -742,8 +761,6 @@ const tabs = [
 
 const activeTab = ref("system");
 const themePreference = ref("auto");
-const tokenName = ref("");
-const newToken = ref("");
 const tokenItems = ref([]);
 const mobileImportToken = ref("");
 const sharedShares = ref([]);
@@ -781,6 +798,25 @@ const advancedForm = reactive({
   comment_asset_download_limit: 4,
   three_mf_download_limit: 1,
   disk_io_limit: 1,
+});
+const tokenPermissionOptions = [
+  { value: "mobile_import", label: "本地导入" },
+  { value: "archive_write", label: "提交归档" },
+  { value: "models_read", label: "读取模型库" },
+  { value: "share_manage", label: "管理分享" },
+  { value: "system_manage", label: "系统管理" },
+  { value: "token_manage", label: "Token 管理" },
+];
+const tokenPresetPermissions = {
+  mobile: ["mobile_import"],
+  api: ["archive_write"],
+  custom: ["archive_write"],
+};
+const tokenForm = reactive({
+  name: "我的 iPhone",
+  preset: "mobile",
+  expires_days: 365,
+  permissions: ["mobile_import"],
 });
 const runtimeForm = reactive({
   web_workers: 1,
@@ -922,24 +958,9 @@ const changelogSummaryText = computed(() => {
   }
   return "会优先读取 GitHub 仓库 README 中的最新更新记录。";
 });
-const mobileImportEnabled = computed(() => Boolean(config.value?.mobile_import?.enabled));
-const mobileImportTokenStatus = computed(() => {
-  if (mobileImportEnabled.value) {
-    return "已启用";
-  }
-  if (config.value?.mobile_import?.token_prefix) {
-    return "已停用";
-  }
-  return "未生成";
-});
-const mobileImportTokenMeta = computed(() => {
-  const mobileImport = config.value?.mobile_import || {};
-  if (!mobileImport.token_prefix) {
-    return "生成后只显示一次完整 Token。";
-  }
-  const used = mobileImport.last_used_at ? `最近使用：${mobileImport.last_used_at}` : "最近使用：未使用";
-  return `${mobileImport.token_prefix}... / ${used}`;
-});
+const mobileImportTokenItem = computed(() => (
+  tokenItems.value.find((item) => hasTokenPermission(item, "mobile_import") && item.status === "active" && item.token_value) || null
+));
 const profileBackfillStats = computed(() => {
   const result = profileBackfill.value.last_result || {};
   return {
@@ -1061,6 +1082,44 @@ function runtimePayload() {
     worker_cpuset_cpus: normalizeCpuText(runtimeForm.worker_cpuset_cpus).replace(/\s+/g, ""),
     worker_cpu_shares: normalizeBoundedInt(runtimeForm.worker_cpu_shares, 512, 0, 262144),
   };
+}
+
+function applyTokenPreset() {
+  tokenForm.permissions = [...(tokenPresetPermissions[tokenForm.preset] || tokenPresetPermissions.custom)];
+  if (tokenForm.preset === "mobile" && (!tokenForm.name || tokenForm.name === "API Token")) {
+    tokenForm.name = "我的 iPhone";
+  } else if (tokenForm.preset === "api" && (!tokenForm.name || tokenForm.name === "我的 iPhone")) {
+    tokenForm.name = "API Token";
+  }
+}
+
+function hasTokenPermission(item, permission) {
+  return Array.isArray(item?.permissions) && item.permissions.includes(permission);
+}
+
+function tokenPermissionText(permissions) {
+  const values = Array.isArray(permissions) ? permissions : [];
+  const labels = values
+    .map((value) => tokenPermissionOptions.find((item) => item.value === value)?.label || value)
+    .filter(Boolean);
+  return labels.length ? labels.join(" / ") : "无权限";
+}
+
+function tokenStatusLabel(item) {
+  if (item?.status === "revoked" || item?.disabled) {
+    return "已撤销";
+  }
+  if (item?.status === "expired") {
+    return "已过期";
+  }
+  return "有效";
+}
+
+function tokenStatusClass(item) {
+  if (item?.status === "revoked" || item?.disabled || item?.status === "expired") {
+    return "is-expired";
+  }
+  return "is-ok";
 }
 
 function formatShareFileCounts(counts) {
@@ -1470,9 +1529,10 @@ async function saveOrganizer() {
 }
 
 function buildShortcutConfigText() {
+  const tokenValue = mobileImportToken.value || mobileImportTokenItem.value?.token_value || "<在 MakerHub 设置里生成后粘贴>";
   const lines = [
     "MakerHub iOS 快捷指令配置",
-    `Token: ${mobileImportToken.value || "<在 MakerHub 设置里生成后粘贴>"}`,
+    `Token: ${tokenValue}`,
     "MakerHub 地址: <在手机快捷指令里填写，例如 http://192.168.1.20:1111 或 https://你的公网地址>",
     "",
     "流程: 从共享表单接收文件；先 GET MakerHub 地址 /api/mobile-import/ping-ipv4?token=Token；可用后 POST 文件到 /api/mobile-import/raw-ipv4?token=Token；上传成功提示 已上传。",
@@ -1498,48 +1558,19 @@ async function copyText(value) {
   return copied;
 }
 
-async function copyShortcutConfig() {
-  statuses.mobile_import = "";
+async function copyShortcutConfig(item = null) {
+  statuses.tokens = "";
+  const previousToken = mobileImportToken.value;
   try {
+    if (item?.token_value) {
+      mobileImportToken.value = item.token_value;
+    }
     const copied = await copyText(buildShortcutConfigText());
-    statuses.mobile_import = copied ? "快捷指令配置已复制。" : "浏览器阻止复制，请手动复制配置。";
+    statuses.tokens = copied ? "快捷指令配置已复制。" : "浏览器阻止复制，请手动复制配置。";
   } catch (error) {
-    statuses.mobile_import = error instanceof Error ? error.message : "复制失败。";
-  }
-}
-
-async function resetMobileImportToken() {
-  if (config.value?.mobile_import?.token_prefix && !window.confirm("生成新 Token 会让旧快捷指令失效。确定继续吗？")) {
-    return;
-  }
-  statuses.mobile_import = "";
-  try {
-    const payload = await apiRequest("/api/config/mobile-import/token", {
-      method: "POST",
-      body: { enabled: true },
-    });
-    mobileImportToken.value = payload.token || "";
-    applyConfigPayload(payload);
-    statuses.mobile_import = "Token 已生成。请把新 Token 填入 iOS 快捷指令。";
-  } catch (error) {
-    statuses.mobile_import = error instanceof Error ? error.message : "生成 Token 失败。";
-  }
-}
-
-async function disableMobileImport() {
-  if (!window.confirm("停用后，手机快捷指令将无法继续上传文件。确定停用吗？")) {
-    return;
-  }
-  statuses.mobile_import = "";
-  try {
-    const payload = await apiRequest("/api/config/mobile-import/disable", {
-      method: "POST",
-    });
-    mobileImportToken.value = "";
-    applyConfigPayload(payload);
-    statuses.mobile_import = "移动端导入 Token 已停用。";
-  } catch (error) {
-    statuses.mobile_import = error instanceof Error ? error.message : "停用失败。";
+    statuses.tokens = error instanceof Error ? error.message : "复制失败。";
+  } finally {
+    mobileImportToken.value = previousToken;
   }
 }
 
@@ -1811,13 +1842,22 @@ async function savePassword() {
 
 async function createToken() {
   try {
+    const permissions = Array.isArray(tokenForm.permissions) && tokenForm.permissions.length
+      ? [...tokenForm.permissions]
+      : [...tokenPresetPermissions[tokenForm.preset] || tokenPresetPermissions.api];
     const response = await apiRequest("/api/auth/tokens", {
       method: "POST",
-      body: { name: tokenName.value },
+      body: {
+        name: tokenForm.name,
+        permissions,
+        expires_days: Number(tokenForm.expires_days || 0),
+      },
     });
-    newToken.value = response.token || "";
+    mobileImportToken.value = permissions.includes("mobile_import") ? response.token || "" : "";
     tokenItems.value = response.items || [];
-    tokenName.value = "";
+    if (response.token && tokenForm.preset !== "custom") {
+      applyTokenPreset();
+    }
     statuses.tokens = "Token 已生成。";
   } catch (error) {
     statuses.tokens = error instanceof Error ? error.message : "生成失败。";
@@ -1825,6 +1865,9 @@ async function createToken() {
 }
 
 async function revokeToken(tokenId) {
+  if (!window.confirm("确认撤销这个 Token 吗？撤销后使用它的脚本或快捷指令会失效。")) {
+    return;
+  }
   try {
     const response = await apiRequest(`/api/auth/tokens/${encodeURIComponent(tokenId)}`, {
       method: "DELETE",
@@ -1833,6 +1876,19 @@ async function revokeToken(tokenId) {
     statuses.tokens = "Token 已撤销。";
   } catch (error) {
     statuses.tokens = error instanceof Error ? error.message : "撤销失败。";
+  }
+}
+
+async function copyTokenValue(item) {
+  if (!item?.token_value) {
+    statuses.tokens = "这个 Token 没有保存明文，只能重新生成后复制。";
+    return;
+  }
+  try {
+    const copied = await copyText(item.token_value);
+    statuses.tokens = copied ? "Token 已复制。" : "浏览器阻止复制，请手动复制。";
+  } catch (error) {
+    statuses.tokens = error instanceof Error ? error.message : "复制失败。";
   }
 }
 

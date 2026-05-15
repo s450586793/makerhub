@@ -12,7 +12,7 @@ from fastapi import UploadFile
 from app.api import config as config_api
 from app.core.security import hash_api_token
 from app.core.store import JsonStore
-from app.schemas.models import AppConfig, MobileImportConfig
+from app.schemas.models import ApiTokenRecord, AppConfig, MobileImportConfig
 
 
 class MobileImportTokenTest(unittest.TestCase):
@@ -58,6 +58,44 @@ class MobileImportTokenTest(unittest.TestCase):
                     config_api._require_mobile_import_token(self._request("wrong"))
 
                 saved.mobile_import.enabled = False
+                store.save(saved)
+                with self.assertRaises(HTTPException):
+                    config_api._require_mobile_import_token(self._request(raw_token))
+
+    def test_mobile_import_accepts_unified_token_with_permission(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            store = JsonStore(path=config_path)
+            raw_token = "mhi_unified_token"
+            config = AppConfig()
+            config.api_tokens = [
+                ApiTokenRecord(
+                    id="token-1",
+                    name="iPhone",
+                    token_prefix=raw_token[:12],
+                    token_hash=hash_api_token(raw_token),
+                    token_value=raw_token,
+                    permissions=["mobile_import"],
+                    created_at="2026-05-12T10:00:00+08:00",
+                )
+            ]
+            store.save(config)
+
+            with patch.object(config_api, "store", store), \
+                    patch.object(config_api.auth_manager, "store", store):
+                config_api._require_mobile_import_token(self._request(raw_token))
+                saved = store.load()
+                self.assertTrue(saved.api_tokens[0].last_used_at)
+
+                saved.api_tokens[0].permissions = ["archive_write"]
+                saved.api_tokens[0].last_used_at = ""
+                store.save(saved)
+                with self.assertRaises(HTTPException):
+                    config_api._require_mobile_import_token(self._request(raw_token))
+
+                saved = store.load()
+                saved.api_tokens[0].permissions = ["mobile_import"]
+                saved.api_tokens[0].disabled = True
                 store.save(saved)
                 with self.assertRaises(HTTPException):
                     config_api._require_mobile_import_token(self._request(raw_token))

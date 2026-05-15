@@ -19,7 +19,11 @@ from app.services.archive_worker import ArchiveTaskManager, detect_archive_mode
 from app.services.batch_discovery import extract_model_id, normalize_source_url
 from app.services.business_logs import append_business_log
 from app.services.process_jobs import run_discover_batch_urls_job
-from app.services.source_library import build_subscription_overview_payload, refresh_subscription_source_metadata
+from app.services.source_library import (
+    build_subscription_overview_payload,
+    refresh_source_preview_snapshots,
+    refresh_subscription_source_metadata,
+)
 from app.services.task_state import TaskStateStore
 
 
@@ -62,12 +66,30 @@ def _append_subscription_log(event: str, **payload: Any) -> None:
             )
     except Exception:
         return
-    if event in {"initialized", "metadata_refreshed", "metadata_refresh_error", "sync_start", "sync_done", "sync_error", "scheduler_error"}:
-        level = "error" if event in {"sync_error", "scheduler_error"} else "warning" if event == "metadata_refresh_error" else "info"
+    if event in {
+        "initialized",
+        "metadata_refreshed",
+        "metadata_refresh_error",
+        "preview_snapshots_refreshed",
+        "preview_snapshot_refresh_error",
+        "sync_start",
+        "sync_done",
+        "sync_error",
+        "scheduler_error",
+    }:
+        level = (
+            "error"
+            if event in {"sync_error", "scheduler_error"}
+            else "warning"
+            if event in {"metadata_refresh_error", "preview_snapshot_refresh_error"}
+            else "info"
+        )
         message_map = {
             "initialized": "订阅初始化完成。",
             "metadata_refreshed": "订阅来源卡元数据已刷新。",
             "metadata_refresh_error": "订阅来源卡元数据刷新失败。",
+            "preview_snapshots_refreshed": "订阅来源卡快照已刷新。",
+            "preview_snapshot_refresh_error": "订阅来源卡快照刷新失败。",
             "sync_start": "订阅同步开始。",
             "sync_done": "订阅同步完成。",
             "sync_error": "订阅同步失败。",
@@ -316,6 +338,7 @@ class SubscriptionManager:
                 initialized = self._initialize_subscription_state(record)
                 initialized = self._enqueue_initialized_subscription_items(record, initialized)
                 initial_enqueue_count = int(initialized.get("last_enqueued_count") or 0)
+                self._refresh_source_preview_snapshots(record.id)
             else:
                 initialized = self.task_store.patch_subscription_state(
                     record.id,
@@ -421,6 +444,7 @@ class SubscriptionManager:
                 target.id,
                 last_message="订阅已更新，并已按新链接重新初始化。",
             )
+            self._refresh_source_preview_snapshots(target.id)
         else:
             updates = {
                 "next_run_at": _next_run_at(target.cron) if target.enabled else "",
@@ -785,6 +809,7 @@ class SubscriptionManager:
                 enqueued=enqueued_count,
                 deleted=len(deleted_items),
             )
+            self._refresh_source_preview_snapshots(subscription.id)
         except Exception as exc:
             failed_at = _now()
             self.task_store.patch_subscription_state(
@@ -834,6 +859,24 @@ class SubscriptionManager:
                 "metadata_refresh_error",
                 subscription_id=subscription.id,
                 url=subscription.url,
+                error=str(exc),
+            )
+
+    def _refresh_source_preview_snapshots(self, subscription_id: str = "") -> None:
+        try:
+            result = refresh_source_preview_snapshots(force=False, store=self.store, task_store=self.task_store)
+            _append_subscription_log(
+                "preview_snapshots_refreshed",
+                subscription_id=subscription_id,
+                total=result.get("total"),
+                generated=result.get("generated"),
+                skipped=result.get("skipped"),
+                failed=result.get("failed"),
+            )
+        except Exception as exc:
+            _append_subscription_log(
+                "preview_snapshot_refresh_error",
+                subscription_id=subscription_id,
                 error=str(exc),
             )
 

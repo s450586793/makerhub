@@ -10,6 +10,7 @@ from app.services.business_logs import append_business_log
 from app.services.local_organizer import LocalOrganizerService
 from app.services.local_preview_worker import run_local_preview_generation_once
 from app.services.remote_refresh import RemoteRefreshManager
+from app.services.source_library import SourceLibraryManager
 from app.services.subscriptions import SubscriptionManager
 from app.services.task_state import TaskStateStore
 
@@ -37,6 +38,7 @@ def main() -> int:
         background_enabled=True,
     )
     local_organizer = LocalOrganizerService(store=store, task_store=task_store)
+    source_library_manager = SourceLibraryManager(store=store, task_store=task_store)
     remote_refresh_manager = RemoteRefreshManager(
         store=store,
         task_store=task_store,
@@ -47,6 +49,7 @@ def main() -> int:
     queue = archive_manager.resume_pending_tasks()
     subscription_manager.start()
     local_organizer.start()
+    source_library_manager.start()
     remote_refresh_manager.start()
 
     append_business_log(

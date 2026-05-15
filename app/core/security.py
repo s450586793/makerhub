@@ -50,8 +50,9 @@ def hash_api_token(token: str) -> str:
     return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
 
 
-def generate_api_token() -> str:
-    return f"mht_{secrets.token_urlsafe(24)}"
+def generate_api_token(prefix: str = "mht") -> str:
+    clean_prefix = "".join(char for char in str(prefix or "mht").lower() if char.isalnum())[:8] or "mht"
+    return f"{clean_prefix}_{secrets.token_urlsafe(24)}"
 
 
 def generate_session_id() -> str:

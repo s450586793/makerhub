@@ -102,18 +102,27 @@ class ApiTokenRecord(BaseModel):
     name: str
     token_prefix: str
     token_hash: str
+    token_value: str = ""
     created_at: str
+    permissions: List[str] = Field(default_factory=lambda: ["archive_write"])
+    expires_at: str = ""
     last_used_at: str = ""
     disabled: bool = False
+    revoked_at: str = ""
 
 
 class ApiTokenView(BaseModel):
     id: str
     name: str
     token_prefix: str
+    token_value: str = ""
     created_at: str
+    permissions: List[str] = Field(default_factory=list)
+    expires_at: str = ""
     last_used_at: str = ""
     disabled: bool = False
+    revoked_at: str = ""
+    status: str = "active"
 
 
 class LoginRequest(BaseModel):
@@ -128,6 +137,8 @@ class PasswordChangeRequest(BaseModel):
 
 class ApiTokenCreateRequest(BaseModel):
     name: str = ""
+    permissions: List[str] = Field(default_factory=lambda: ["archive_write"])
+    expires_days: int = Field(default=0, ge=0, le=3650)
 
 
 class MobileImportTokenResetRequest(BaseModel):

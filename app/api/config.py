@@ -108,6 +108,8 @@ from app.services.archive_profile_backfill import (
 from app.services.batch_discovery import extract_model_id, normalize_source_url
 from app.services.subscriptions import SubscriptionManager
 from app.services.source_library import (
+    SOURCE_LIBRARY_SNAPSHOT_DIR,
+    SourceLibraryManager,
     build_source_group_models_payload,
     build_source_library_payload,
     build_state_group_models_payload,
@@ -129,6 +131,10 @@ subscription_manager = SubscriptionManager(
     task_store=task_state_store,
 )
 local_organizer = LocalOrganizerService(
+    store=store,
+    task_store=task_state_store,
+)
+source_library_manager = SourceLibraryManager(
     store=store,
     task_store=task_state_store,
 )
@@ -1946,7 +1952,12 @@ def _extract_bearer_token(request: Request) -> str:
 def _validate_mobile_import_token(raw_token: str) -> None:
     token_hash = hash_api_token(raw_token)
     config = store.load()
+    token_view = auth_manager.validate_api_token(raw_token, required_permission="mobile_import")
+    if token_view:
+        return
     mobile_import = config.mobile_import
+    if any(item.token_hash == token_hash for item in config.api_tokens):
+        raise HTTPException(status_code=401, detail="移动端导入 Token 无效。")
     if (
         not mobile_import.enabled
         or not mobile_import.token_hash
@@ -1954,10 +1965,6 @@ def _validate_mobile_import_token(raw_token: str) -> None:
         or not hmac.compare_digest(str(mobile_import.token_hash), token_hash)
     ):
         raise HTTPException(status_code=401, detail="移动端导入 Token 无效。")
-
-
-def _generate_mobile_import_token() -> str:
-    return f"mhi_{secrets.token_urlsafe(24)}"
 
 
 def _require_mobile_import_token(request: Request) -> None:
@@ -3028,7 +3035,11 @@ async def save_organizer(payload: OrganizeTask, request: Request):
 async def reset_mobile_import_token(payload: MobileImportTokenResetRequest, request: Request):
     _require_session_auth(request)
     config = store.load()
-    raw_token = _generate_mobile_import_token()
+    raw_token, token_view = auth_manager.create_api_token(
+        "iOS 快捷指令",
+        permissions=["mobile_import"],
+        token_prefix="mhi",
+    )
     config.mobile_import = MobileImportConfig(
         enabled=bool(payload.enabled),
         token_prefix=raw_token[:12],
@@ -3043,6 +3054,7 @@ async def reset_mobile_import_token(payload: MobileImportTokenResetRequest, requ
         "移动端导入 Token 已生成。",
         enabled=config.mobile_import.enabled,
         token_prefix=config.mobile_import.token_prefix,
+        token_id=token_view.id,
     )
     return {
         **_with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy)),
@@ -3056,6 +3068,11 @@ async def disable_mobile_import(request: Request):
     _require_session_auth(request)
     config = store.load()
     config.mobile_import.enabled = False
+    token_hash = str(config.mobile_import.token_hash or "")
+    for item in config.api_tokens:
+        if token_hash and item.token_hash == token_hash:
+            item.disabled = True
+            item.revoked_at = item.revoked_at or china_now_iso()
     saved = store.save(config)
     append_business_log("settings", "mobile_import_disabled", "移动端导入 Token 已停用。")
     return _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
@@ -3193,6 +3210,21 @@ async def get_source_library_data(
         store=store,
         task_store=task_state_store,
     )
+
+
+@router.get("/source-library/snapshots/{filename}")
+async def get_source_library_snapshot(filename: str):
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+\.webp", str(filename or "")):
+        raise HTTPException(status_code=404, detail="快照不存在。")
+    snapshot_root = SOURCE_LIBRARY_SNAPSHOT_DIR.resolve()
+    target = (snapshot_root / filename).resolve()
+    try:
+        target.relative_to(snapshot_root)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="快照不存在。")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="快照不存在。")
+    return FileResponse(target, media_type="image/webp")
 
 
 @router.get("/source-library/sources/{source_type}/{source_key}")
