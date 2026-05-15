@@ -11,6 +11,7 @@ from app.services.source_library import (
     _base_group,
     _finalize_group,
     _group_models,
+    _render_source_preview_snapshot,
     _source_preview_snapshot_signature,
     build_source_group_models_payload,
     build_state_group_models_payload,
@@ -207,6 +208,51 @@ class SourceLibraryTest(unittest.TestCase):
             self.assertTrue(item.get("preview_snapshot_filename", "").endswith(".webp"))
             self.assertTrue((snapshot_dir / item["preview_snapshot_filename"]).is_file())
             self.assertTrue(item.get("preview_snapshot_url", "").startswith("/api/source-library/snapshots/"))
+
+    def test_preview_snapshot_gap_is_transparent_for_dark_theme(self):
+        group = _base_group(
+            key="author-cn-test",
+            kind="author",
+            card_kind="author",
+            title="Ace",
+            subtitle="@ace",
+            site="cn",
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_root = root / "archive"
+            cover_path = archive_root / "model-1" / "cover.webp"
+            snapshot_path = root / "snapshot.webp"
+            cover_path.parent.mkdir(parents=True)
+            Image.new("RGB", (24, 24), "red").save(cover_path, "WEBP")
+            previews = [{"model_dir": "model-1", "title": "model-1", "cover_url": "/archive/model-1/cover.webp"}]
+
+            with patch("app.services.source_library.ARCHIVE_DIR", archive_root):
+                self.assertTrue(_render_source_preview_snapshot(previews, snapshot_path))
+
+            with Image.open(snapshot_path) as snapshot:
+                alpha = snapshot.convert("RGBA").getpixel((240, 240))[3]
+
+        self.assertLess(alpha, 16)
+
+    def test_preview_snapshot_signature_includes_render_version(self):
+        group = _base_group(
+            key="author-cn-test",
+            kind="author",
+            card_kind="author",
+            title="Ace",
+            subtitle="@ace",
+            site="cn",
+        )
+        previews = [{"model_dir": "model-1", "title": "model-1", "cover_url": "/archive/model-1/cover.webp"}]
+
+        with patch("app.services.source_library.SOURCE_LIBRARY_SNAPSHOT_RENDER_VERSION", 100):
+            first = _source_preview_snapshot_signature(group, previews)
+        with patch("app.services.source_library.SOURCE_LIBRARY_SNAPSHOT_RENDER_VERSION", 101):
+            second = _source_preview_snapshot_signature(group, previews)
+
+        self.assertNotEqual(first, second)
 
 
 if __name__ == "__main__":

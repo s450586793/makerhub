@@ -2240,6 +2240,9 @@ def get_model_detail(model_dir: str, include_detail: bool = True) -> Optional[di
             if preview_state.get("needs_generation") and before != after:
                 raw_meta["update_time"] = china_now_iso()
                 meta_path.write_text(json.dumps(raw_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+                from app.services.local_preview_worker import mark_local_preview_queue_updated
+
+                mark_local_preview_queue_updated("local_preview_queued_from_detail")
                 invalidate_model_detail_cache(clean_model_dir)
                 invalidate_archive_snapshot("local_preview_queued_from_detail")
 

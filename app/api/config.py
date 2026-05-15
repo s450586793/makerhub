@@ -1415,6 +1415,9 @@ def _parse_github_changelog(markdown: str, *, limit: int = 4) -> list[dict]:
     entries: list[dict] = []
     current_entry: dict | None = None
     version_pattern = re.compile(r"`v?([^`]+)`")
+    heading_version_pattern = re.compile(
+        r"^(?P<date>\d{4}-\d{2}-\d{2})(?:\s*(?:[·\-|/]|，|,)\s*v?(?P<version>\d+(?:\.\d+){1,3}))?$"
+    )
 
     for raw_line in section_text.splitlines():
         line = raw_line.strip()
@@ -1426,9 +1429,11 @@ def _parse_github_changelog(markdown: str, *, limit: int = 4) -> list[dict]:
                 entries.append(current_entry)
                 if len(entries) >= limit:
                     break
+            heading_text = line[4:].strip()
+            heading_match = heading_version_pattern.match(heading_text)
             current_entry = {
-                "date": line[4:].strip(),
-                "version": "",
+                "date": heading_match.group("date") if heading_match else heading_text,
+                "version": heading_match.group("version") if heading_match and heading_match.group("version") else "",
                 "items": [],
             }
             continue

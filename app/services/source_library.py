@@ -37,7 +37,8 @@ SOURCE_LIBRARY_PREVIEW_LIMIT = 4
 SOURCE_LIBRARY_BACKFILL_DELAY_SECONDS = 6
 SOURCE_LIBRARY_SNAPSHOT_SIZE = 480
 SOURCE_LIBRARY_SNAPSHOT_GAP = 10
-SOURCE_LIBRARY_SNAPSHOT_BG = (246, 248, 251, 255)
+SOURCE_LIBRARY_SNAPSHOT_RENDER_VERSION = 2
+SOURCE_LIBRARY_SNAPSHOT_BG = (0, 0, 0, 0)
 SOURCE_LIBRARY_SNAPSHOT_TILE_BG = (232, 237, 243, 255)
 
 _SOURCE_LIBRARY_LOCK = threading.RLock()
@@ -298,6 +299,7 @@ def _preview_snapshot_source_signature(previews: list[dict]) -> str:
 
 def _source_preview_snapshot_signature(group: dict[str, Any], previews: Optional[list[dict]] = None) -> str:
     payload = {
+        "render_version": SOURCE_LIBRARY_SNAPSHOT_RENDER_VERSION,
         "key": str(group.get("key") or ""),
         "kind": str(group.get("kind") or ""),
         "previews": _preview_snapshot_source_signature(previews if previews is not None else list(group.get("preview_models") or [])),
@@ -390,7 +392,7 @@ def _render_source_preview_snapshot(previews: list[dict], target_path: Path) -> 
         had_image = _paste_snapshot_tile(canvas, draw, preview, box) or had_image
     target_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = target_path.with_suffix(".tmp.webp")
-    canvas.convert("RGB").save(temp_path, "WEBP", quality=84, method=4)
+    canvas.save(temp_path, "WEBP", quality=84, method=4)
     temp_path.replace(target_path)
     return had_image
 

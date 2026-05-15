@@ -12,6 +12,7 @@ from app.core.settings import (
     LOCAL_PREVIEW_MAX_BYTES,
     LOCAL_PREVIEW_TIMEOUT_SECONDS,
     ROOT_DIR,
+    STATE_DIR,
 )
 from app.core.timezone import now_iso as china_now_iso
 from app.services.business_logs import append_business_log
@@ -28,6 +29,25 @@ from app.services.local_model_preview import (
 SUPPORTED_PREVIEW_SUFFIXES = {".3mf", ".obj", ".stl"}
 RENDERER_SCRIPT = ROOT_DIR / "app" / "services" / "local_preview_renderer.mjs"
 DEFAULT_RENDER_SIZE = 720
+PREVIEW_QUEUE_MARKER_PATH = STATE_DIR / "local_preview_queue.marker"
+
+
+def mark_local_preview_queue_updated(reason: str = "") -> None:
+    try:
+        PREVIEW_QUEUE_MARKER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PREVIEW_QUEUE_MARKER_PATH.write_text(
+            json.dumps({"updated_at": china_now_iso(), "reason": str(reason or "")}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError:
+        return
+
+
+def local_preview_queue_marker_mtime() -> float:
+    try:
+        return PREVIEW_QUEUE_MARKER_PATH.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def _read_meta(meta_path: Path) -> dict[str, Any] | None:

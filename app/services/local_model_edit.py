@@ -22,6 +22,7 @@ from app.services.local_model_preview import (
     mark_local_preview_pending,
     record_generated_preview_failure,
 )
+from app.services.local_preview_worker import mark_local_preview_queue_updated
 
 
 MODEL_SUFFIXES = {".3mf", ".stl", ".step", ".stp", ".obj"}
@@ -287,7 +288,8 @@ def add_local_model_file(model_dir: str, upload: UploadFile, title: str = "") ->
     local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
     local_import["modelFileCount"] = len(instances)
     meta["localImport"] = local_import
-    mark_local_preview_pending(meta, model_root=model_root)
+    if mark_local_preview_pending(meta, model_root=model_root):
+        mark_local_preview_queue_updated("local_model_file_added")
     _write_meta(model_root, meta)
     return entry
 

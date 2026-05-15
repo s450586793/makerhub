@@ -24,6 +24,7 @@ from app.services.business_logs import append_business_log
 from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot, upsert_archive_snapshot_model
 from app.services.legacy_archiver import sanitize_filename
 from app.services.local_model_preview import ensure_package_preview_images, mark_local_preview_pending
+from app.services.local_preview_worker import mark_local_preview_queue_updated
 from app.services.task_state import TaskStateStore
 
 
@@ -1385,7 +1386,8 @@ def _run_package_import_from_staging(
             attachments=attachments,
             description_text=description_text,
         )
-        mark_local_preview_pending(meta, model_root=model_root)
+        if mark_local_preview_pending(meta, model_root=model_root):
+            mark_local_preview_queue_updated("local_package_import")
         meta_path = model_root / "meta.json"
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         cleanup_staging = True
