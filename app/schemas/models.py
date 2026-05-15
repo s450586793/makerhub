@@ -89,12 +89,11 @@ class RuntimeResourceConfig(BaseModel):
         ge=1,
         le=8,
     )
-    app_cpu_limit: str = ""
-    app_cpuset_cpus: str = ""
-    app_cpu_shares: int = Field(default=1024, ge=0, le=262144)
-    worker_cpu_limit: str = ""
-    worker_cpuset_cpus: str = ""
-    worker_cpu_shares: int = Field(default=512, ge=0, le=262144)
+    worker_concurrency: int = Field(
+        default_factory=lambda: _env_int("MAKERHUB_WORKER_CONCURRENCY", 2, 1, 4),
+        ge=1,
+        le=4,
+    )
 
 
 class ApiTokenRecord(BaseModel):

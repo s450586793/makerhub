@@ -9,7 +9,6 @@ import socket
 import threading
 import time
 import uuid
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -32,7 +31,6 @@ WORKER_CONTAINER_NAME_ENV = "MAKERHUB_WORKER_CONTAINER_NAME"
 WORKER_IMAGE_REF_ENV = "MAKERHUB_WORKER_IMAGE_REF"
 RUNTIME_CONFIG_ENV = "MAKERHUB_RUNTIME_CONFIG_JSON"
 _CONTAINER_ID_PATTERN = re.compile(r"[0-9a-f]{12,64}")
-_CPUSET_PATTERN = re.compile(r"\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*")
 STARTUP_WAIT_TIMEOUT_SECONDS = 20
 STARTUP_WAIT_INTERVAL_SECONDS = 1.0
 STARTUP_WAIT_STABLE_POLLS = 3
@@ -185,53 +183,11 @@ def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
     return max(min(numeric, maximum), minimum)
 
 
-def _normalize_cpu_limit(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    try:
-        numeric = Decimal(text)
-    except (InvalidOperation, ValueError) as exc:
-        raise ValueError("CPU 上限必须是数字，例如 2 或 2.5。") from exc
-    if numeric <= 0:
-        raise ValueError("CPU 上限必须大于 0。")
-    if numeric > Decimal("64"):
-        raise ValueError("CPU 上限不能超过 64。")
-    return format(numeric.normalize(), "f")
-
-
-def _cpu_limit_to_nano_cpus(value: Any) -> int:
-    normalized = _normalize_cpu_limit(value)
-    if not normalized:
-        return 0
-    return int(Decimal(normalized) * Decimal(1_000_000_000))
-
-
-def _normalize_cpuset_cpus(value: Any) -> str:
-    text = str(value or "").strip().replace(" ", "")
-    if not text:
-        return ""
-    if not _CPUSET_PATTERN.fullmatch(text):
-        raise ValueError("CPU 核心绑定格式无效，例如 0、0-3 或 0,2。")
-    for part in text.split(","):
-        if "-" not in part:
-            continue
-        start, end = part.split("-", 1)
-        if int(start) > int(end):
-            raise ValueError("CPU 核心绑定范围无效。")
-    return text
-
-
 def normalize_runtime_resource_config(value: dict[str, Any] | None) -> dict[str, Any]:
     payload = value if isinstance(value, dict) else {}
     return {
         "web_workers": _bounded_int(payload.get("web_workers"), 1, 1, 8),
-        "app_cpu_limit": _normalize_cpu_limit(payload.get("app_cpu_limit")),
-        "app_cpuset_cpus": _normalize_cpuset_cpus(payload.get("app_cpuset_cpus")),
-        "app_cpu_shares": _bounded_int(payload.get("app_cpu_shares"), 1024, 0, 262144),
-        "worker_cpu_limit": _normalize_cpu_limit(payload.get("worker_cpu_limit")),
-        "worker_cpuset_cpus": _normalize_cpuset_cpus(payload.get("worker_cpuset_cpus")),
-        "worker_cpu_shares": _bounded_int(payload.get("worker_cpu_shares"), 512, 0, 262144),
+        "worker_concurrency": _bounded_int(payload.get("worker_concurrency"), 2, 1, 4),
     }
 
 
@@ -474,33 +430,10 @@ def _apply_runtime_resource_config(
     role: str,
 ) -> None:
     runtime = normalize_runtime_resource_config(runtime_config)
-    config = body.setdefault("HostConfig", {})
     if role == "app":
         body["Env"] = _set_env_value(body.get("Env") or [], "MAKERHUB_WEB_WORKERS", runtime.get("web_workers") or 1)
-        cpu_limit = _cpu_limit_to_nano_cpus(runtime.get("app_cpu_limit"))
-        cpuset_cpus = str(runtime.get("app_cpuset_cpus") or "").strip()
-        cpu_shares = int(runtime.get("app_cpu_shares") or 0)
     elif role == "worker":
-        cpu_limit = _cpu_limit_to_nano_cpus(runtime.get("worker_cpu_limit"))
-        cpuset_cpus = str(runtime.get("worker_cpuset_cpus") or "").strip()
-        cpu_shares = int(runtime.get("worker_cpu_shares") or 0)
-    else:
-        return
-
-    if cpu_limit > 0:
-        config["NanoCpus"] = cpu_limit
-    else:
-        config.pop("NanoCpus", None)
-    if cpuset_cpus:
-        config["CpusetCpus"] = cpuset_cpus
-    else:
-        config.pop("CpusetCpus", None)
-    if cpu_shares > 0:
-        config["CpuShares"] = cpu_shares
-    else:
-        config.pop("CpuShares", None)
-    if config:
-        body["HostConfig"] = config
+        body["Env"] = _set_env_value(body.get("Env") or [], "MAKERHUB_WORKER_CONCURRENCY", runtime.get("worker_concurrency") or 2)
 
 
 def _build_replacement_container_body(
@@ -661,17 +594,10 @@ def _env_lookup(container_inspect: dict[str, Any]) -> dict[str, str]:
 
 
 def _container_resource_payload(container_inspect: dict[str, Any]) -> dict[str, Any]:
-    host_config = container_inspect.get("HostConfig") or {}
     env = _env_lookup(container_inspect)
-    nano_cpus = int(host_config.get("NanoCpus") or 0)
-    cpu_limit = ""
-    if nano_cpus > 0:
-        cpu_limit = format((Decimal(nano_cpus) / Decimal(1_000_000_000)).normalize(), "f")
     return {
         "web_workers": _bounded_int(env.get("MAKERHUB_WEB_WORKERS"), 1, 1, 8),
-        "cpu_limit": cpu_limit,
-        "cpuset_cpus": str(host_config.get("CpusetCpus") or ""),
-        "cpu_shares": int(host_config.get("CpuShares") or 0),
+        "worker_concurrency": _bounded_int(env.get("MAKERHUB_WORKER_CONCURRENCY"), 2, 1, 4),
     }
 
 

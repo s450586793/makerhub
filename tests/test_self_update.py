@@ -48,7 +48,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             else:
                 self_update.os.environ[self_update.WORKER_IMAGE_REF_ENV] = original_image
 
-    def test_replacement_body_applies_app_runtime_resources(self):
+    def test_replacement_body_applies_app_web_workers_only(self):
         inspect = {
             "Id": "app-container-id",
             "Name": "/makerhub-app",
@@ -56,7 +56,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                 "Image": "ghcr.io/example/makerhub:latest",
                 "Env": ["MAKERHUB_ENTRYPOINT=app", "MAKERHUB_WEB_WORKERS=1"],
             },
-            "HostConfig": {},
+            "HostConfig": {"NanoCpus": 2_000_000_000, "CpusetCpus": "0-1", "CpuShares": 2048},
             "NetworkSettings": {"Networks": {}},
         }
 
@@ -65,27 +65,23 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             "ghcr.io/example/makerhub:latest",
             runtime_config={
                 "web_workers": 3,
-                "app_cpu_limit": "2.5",
-                "app_cpuset_cpus": "0-1",
-                "app_cpu_shares": 2048,
+                "worker_concurrency": 4,
             },
             role="app",
         )
 
         self.assertIn("MAKERHUB_WEB_WORKERS=3", body["Env"])
-        self.assertEqual(body["HostConfig"]["NanoCpus"], 2_500_000_000)
-        self.assertEqual(body["HostConfig"]["CpusetCpus"], "0-1")
-        self.assertEqual(body["HostConfig"]["CpuShares"], 2048)
+        self.assertNotIn("HostConfig", body)
 
-    def test_replacement_body_applies_worker_runtime_resources(self):
+    def test_replacement_body_applies_worker_concurrency_env_only(self):
         inspect = {
             "Id": "worker-container-id",
             "Name": "/makerhub-worker",
             "Config": {
                 "Image": "ghcr.io/example/makerhub:latest",
-                "Env": ["MAKERHUB_ENTRYPOINT=worker"],
+                "Env": ["MAKERHUB_ENTRYPOINT=worker", "MAKERHUB_WORKER_CONCURRENCY=1"],
             },
-            "HostConfig": {},
+            "HostConfig": {"NanoCpus": 4_000_000_000, "CpusetCpus": "2-5", "CpuShares": 768},
             "NetworkSettings": {"Networks": {}},
         }
 
@@ -93,16 +89,14 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             inspect,
             "ghcr.io/example/makerhub:latest",
             runtime_config={
-                "worker_cpu_limit": "4",
-                "worker_cpuset_cpus": "2-5",
-                "worker_cpu_shares": 768,
+                "web_workers": 3,
+                "worker_concurrency": 4,
             },
             role="worker",
         )
 
-        self.assertEqual(body["HostConfig"]["NanoCpus"], 4_000_000_000)
-        self.assertEqual(body["HostConfig"]["CpusetCpus"], "2-5")
-        self.assertEqual(body["HostConfig"]["CpuShares"], 768)
+        self.assertIn("MAKERHUB_WORKER_CONCURRENCY=4", body["Env"])
+        self.assertNotIn("HostConfig", body)
 
     def test_startup_marks_version_mismatch_failed(self):
         with tempfile.TemporaryDirectory() as temp_dir:

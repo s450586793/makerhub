@@ -95,6 +95,7 @@ services:
       MAKERHUB_ENTRYPOINT: worker
       MAKERHUB_PROCESS_ROLE: worker
       MAKERHUB_BACKGROUND_TASKS: "true"
+      MAKERHUB_WORKER_CONCURRENCY: "2"
       MAKERHUB_HEAVY_JOB_NICE: "10"
     volumes:
       - /volume4/docker/docker/makerhub/config:/app/config
@@ -153,6 +154,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-05-16 · v0.6.101
+- 高级页的 App / Worker 调度简化为 `App Web 进程数` 和 `Worker 并发数` 两项，不再暴露 CPU 上限、核心绑定和权重等容易误填的 Docker 参数
+- 网页一键更新只写入进程 / 并发环境变量，不再通过页面覆盖容器 CPU 限制；旧配置里的 CPU 字段会被兼容忽略
+- `Worker 并发数` 会同步映射到源端刷新、MakerWorld 请求、3MF 下载、磁盘写入和评论资源下载等已有后台限流项
+
 ### 2026-05-15 · v0.6.100
 - Worker 空闲时不再每轮全量扫描本地预览队列，改为队列标记触发加低频兜底扫描，减少无任务时长期占用 CPU
 - 订阅库来源卡快照中间缝隙改为透明背景，并升级快照签名让旧浅色缓存自动失效，深色模式不再出现白线
@@ -163,13 +169,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 更新失败提示会指出 Docker 镜像可能尚未构建完成或 GHCR `latest` 仍返回旧镜像，避免页面显示“已完成”但实际仍停留在旧版本
 - 补充自更新回归测试，覆盖目标版本和启动后版本不一致的场景
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-15 · v0.6.98
 - 订阅库来源卡新增 worker 侧图片区快照，API 返回 `preview_snapshot_url`，前端优先加载单张快照图，减少订阅库列表反复请求多张模型封面
 - 设置页新增统一 Token 页签，合并 API Token 与 iOS 快捷指令 Token，可配置名称、权限、过期时间和撤销状态，并在页面持续显示完整 Token 便于复用
 - 运行资源 / App / Worker 调度从系统页移到高级页；移动端导入继续兼容旧 `mhi_` Token，同时新统一 Token 会按“本地导入”权限校验
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-15 · v0.6.97
 - 设置页系统面板新增“运行资源 / App / Worker 调度”，可保存 App Web 进程数、App / Worker CPU 上限、核心绑定和 CPU 权重

@@ -3145,18 +3145,19 @@ async def save_runtime_resources(payload: RuntimeResourceConfig, request: Reques
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     config = store.load()
     config.runtime = RuntimeResourceConfig(**normalized)
+    worker_concurrency = int(config.runtime.worker_concurrency or 2)
+    config.advanced.remote_refresh_model_workers = max(1, min(worker_concurrency, 4))
+    config.advanced.makerworld_request_limit = max(1, min(worker_concurrency, 8))
+    config.advanced.three_mf_download_limit = max(1, min(worker_concurrency, 4))
+    config.advanced.disk_io_limit = max(1, min(worker_concurrency, 4))
+    config.advanced.comment_asset_download_limit = max(4, min(worker_concurrency * 2, 16))
     store.save(config)
     append_business_log(
         "settings",
         "runtime_resources_saved",
-        "运行资源设置已保存。",
+        "容器进程设置已保存。",
         web_workers=config.runtime.web_workers,
-        app_cpu_limit=bool(config.runtime.app_cpu_limit),
-        app_cpuset_cpus=bool(config.runtime.app_cpuset_cpus),
-        app_cpu_shares=config.runtime.app_cpu_shares,
-        worker_cpu_limit=bool(config.runtime.worker_cpu_limit),
-        worker_cpuset_cpus=bool(config.runtime.worker_cpuset_cpus),
-        worker_cpu_shares=config.runtime.worker_cpu_shares,
+        worker_concurrency=config.runtime.worker_concurrency,
     )
     return _with_version_status(_public_config_payload(config), await _get_github_version_status(proxy_config=config.proxy))
 
