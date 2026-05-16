@@ -551,9 +551,15 @@ function fileIdentitySet(files) {
   const identities = new Set();
   for (const item of Array.isArray(files) ? files : []) {
     const sourcePath = String(item?.source_path || "").trim();
+    const targetPath = String(item?.target_path || "").trim();
     const fileName = String(item?.file_name || "").trim();
     if (sourcePath) {
       identities.add(`path:${sourcePath}`);
+      identities.add(`suffix:/${sourcePath.replace(/^\/+/, "")}`);
+    }
+    if (targetPath) {
+      identities.add(`path:${targetPath}`);
+      identities.add(`suffix:/${targetPath.replace(/^\/+/, "")}`);
     }
     if (fileName) {
       identities.add(`name:${fileName}`);
@@ -567,8 +573,13 @@ function organizerItemMatchesImport(item, identities) {
     return false;
   }
   const sourcePath = String(item?.source_path || "").trim();
+  const targetPath = String(item?.target_path || "").trim();
+  const packageSource = String(item?.package_source || "").trim();
   const fileName = String(item?.file_name || "").trim();
-  return (sourcePath && identities.has(`path:${sourcePath}`)) || (fileName && identities.has(`name:${fileName}`));
+  return (sourcePath && (identities.has(`path:${sourcePath}`) || identities.has(`suffix:/${sourcePath.replace(/^\/+/, "")}`)))
+    || (targetPath && (identities.has(`path:${targetPath}`) || identities.has(`suffix:/${targetPath.replace(/^\/+/, "")}`)))
+    || (packageSource && (identities.has(`path:${packageSource}`) || identities.has(`suffix:/${packageSource.replace(/^\/+/, "")}`)))
+    || (fileName && identities.has(`name:${fileName}`));
 }
 
 function normalizeImportStatus(status) {
@@ -965,8 +976,15 @@ function findLastImportPackageTask(tasks) {
     return null;
   }
   const matches = (Array.isArray(tasks?.items) ? tasks.items : []).filter((item) => (
-    String(item?.kind || "") === "local_package_import"
-    && String(item?.staging_dir || "").trim() === uploadDir
+    (
+      String(item?.kind || "") === "local_package_import"
+      || String(item?.kind || "") === "local_upload"
+    )
+    && (
+      String(item?.staging_dir || "").trim() === uploadDir
+      || String(item?.source_path || "").trim() === uploadDir
+      || uploadDir.endsWith(`/${String(item?.package_source || "").trim().replace(/^\/+/, "")}`)
+    )
   ));
   return matches.sort((left, right) => organizerItemTimestamp(right) - organizerItemTimestamp(left))[0] || null;
 }

@@ -1119,6 +1119,40 @@ def _normalize_instances(meta: dict, model_root: Path) -> list[dict]:
     return normalized
 
 
+def _normalize_local_import_groups(meta: dict, model_root: Path) -> list[dict]:
+    local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
+    groups = local_import.get("groups") if isinstance(local_import.get("groups"), list) else []
+    normalized: list[dict] = []
+    for index, group in enumerate(groups, start=1):
+        if not isinstance(group, dict):
+            continue
+        download_ref = str(group.get("downloadLocal") or "").strip()
+        download_url = _local_asset_url(model_root, download_ref) if download_ref else None
+        model_files = group.get("modelFiles") if isinstance(group.get("modelFiles"), list) else []
+        normalized.append(
+            {
+                "id": str(group.get("id") or f"group-{index}"),
+                "title": str(group.get("title") or group.get("root") or f"分组 {index}"),
+                "root": str(group.get("root") or ""),
+                "download_name": str(group.get("downloadName") or Path(download_ref).name or ""),
+                "download_url": download_url or "",
+                "model_file_count": _safe_int(group.get("modelFileCount")),
+                "image_count": _safe_int(group.get("imageCount")),
+                "attachment_count": _safe_int(group.get("attachmentCount")),
+                "size": _safe_int(group.get("size")),
+                "model_files": [
+                    {
+                        "file_name": str(item.get("fileName") or ""),
+                        "source_path": str(item.get("sourcePath") or ""),
+                    }
+                    for item in model_files
+                    if isinstance(item, dict)
+                ],
+            }
+        )
+    return normalized
+
+
 def _extract_publish_value(meta: dict) -> Any:
     direct_candidates = [
         meta.get("publishTime"),
@@ -1946,6 +1980,7 @@ def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[
             "original_filename": str(local_import.get("originalFilename") or ""),
         }
         if include_detail:
+            payload["local_import"]["groups"] = _normalize_local_import_groups(meta, model_root)
             payload["local_preview"] = build_local_preview_state(meta, model_root)
     if not include_detail:
         return payload

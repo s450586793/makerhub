@@ -1994,7 +1994,8 @@ async def _run_mobile_import_upload(files: list[UploadFile], paths: list[str]) -
         store=store,
         task_store=task_state_store,
     )
-    if BACKGROUND_TASKS_ENABLED and result.get("trigger_organizer", True):
+    should_trigger_organizer = bool(result.get("trigger_organizer", True)) and result.get("mode") == "3mf"
+    if BACKGROUND_TASKS_ENABLED and should_trigger_organizer:
         try:
             await run_task_api(local_organizer.run_once)
             result["triggered"] = True
@@ -2140,9 +2141,7 @@ def _run_mobile_import_background(files: list[UploadFile], paths: list[str], mob
             paths=paths,
             result=result,
         )
-        should_trigger_organizer = bool(result.get("trigger_organizer", True)) or bool(
-            result.get("queued") and result.get("mode") == "package"
-        )
+        should_trigger_organizer = bool(result.get("trigger_organizer", True)) and result.get("mode") == "3mf"
         if BACKGROUND_TASKS_ENABLED and should_trigger_organizer:
             try:
                 local_organizer.run_once()
@@ -3936,7 +3935,8 @@ async def import_local_library_files(
             store=store,
             task_store=task_state_store,
         )
-        if BACKGROUND_TASKS_ENABLED and result.get("trigger_organizer", True):
+        should_trigger_organizer = bool(result.get("trigger_organizer", True)) and result.get("mode") == "3mf"
+        if BACKGROUND_TASKS_ENABLED and should_trigger_organizer:
             try:
                 await run_task_api(local_organizer.run_once)
                 result["triggered"] = True

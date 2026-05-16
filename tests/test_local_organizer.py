@@ -34,6 +34,12 @@ class FakeTaskStore:
         self.payload = {**self.payload, "items": items[:limit], "count": len(items)}
         return self.payload
 
+    def _update_organize_tasks(self, updater):
+        updated = updater(dict(self.payload))
+        if updated is not None:
+            self.payload = dict(updated)
+        return self.payload
+
 
 class LocalOrganizerTest(unittest.TestCase):
     def test_sync_candidate_queue_moves_terminal_duplicate_source(self):

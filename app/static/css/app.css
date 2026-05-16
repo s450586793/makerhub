@@ -2695,6 +2695,70 @@ select:focus {
   background: rgba(15, 23, 42, 0.12);
 }
 
+.mw-local-package-groups {
+  min-height: 0;
+  padding: 0 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.mw-local-package-group {
+  min-width: 0;
+  padding: 9px 0;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.mw-local-package-group:last-child {
+  border-bottom: 0;
+}
+
+.mw-local-package-group__main {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.mw-local-package-group__main strong,
+.mw-local-package-group__main span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mw-local-package-group__main strong {
+  color: #1f2937;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 700;
+}
+
+.mw-local-package-group__main span {
+  color: #4b5563;
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 600;
+}
+
+.mw-local-package-group__download {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #166534;
+  background: #f9fafb;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .mw-config-panel__filters {
   flex-wrap: nowrap;
   overflow-x: auto;
@@ -4552,6 +4616,24 @@ html[data-theme="dark"] .detail-page--makerworld .mw-config-panel__header {
 
 html[data-theme="dark"] .detail-page--makerworld .mw-config-panel__divider {
   background: var(--mw-border);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-local-package-group {
+  border-bottom-color: var(--mw-border);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-local-package-group__main strong {
+  color: var(--mw-text);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-local-package-group__main span {
+  color: var(--mw-muted);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-local-package-group__download {
+  color: #9df0bf;
+  background: var(--mw-panel-soft);
+  border-color: var(--mw-border-strong);
 }
 
 html[data-theme="dark"] .detail-page--makerworld .mw-profile-list {

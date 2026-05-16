@@ -142,13 +142,13 @@ class MobileImportTokenTest(unittest.TestCase):
         self.assertEqual(filename, "米老鼠.3mf")
         self.assertEqual(source, "content-disposition")
 
-    def test_mobile_background_marks_upload_task_and_triggers_package(self):
+    def test_mobile_background_marks_upload_task_without_inline_package_processing(self):
         upload = UploadFile(file=BytesIO(b"solid makerhub\nendsolid makerhub\n"), filename="demo.stl")
         result = {
             "success": True,
             "mode": "package",
             "queued": True,
-            "trigger_organizer": False,
+            "trigger_organizer": True,
             "task_id": "pkg-1",
             "uploaded": [{"file_name": "demo.stl", "status": "queued"}],
         }
@@ -159,7 +159,7 @@ class MobileImportTokenTest(unittest.TestCase):
             patch.object(config_api.task_state_store, "upsert_organize_task") as upsert_task:
             config_api._run_mobile_import_background([upload], ["demo.stl"], "mobile-1")
 
-        run_once.assert_called_once()
+        run_once.assert_not_called()
         payload = upsert_task.call_args_list[0].args[0]
         self.assertEqual(payload["id"], "mobile-1")
         self.assertEqual(payload["kind"], "mobile_import_upload")

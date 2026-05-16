@@ -19,7 +19,13 @@ from app.core.timezone import from_timestamp as china_from_timestamp, now_iso as
 from app.services.business_logs import append_business_log
 from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot, upsert_archive_snapshot_model
 from app.services.legacy_archiver import sanitize_filename
-from app.services.local_import_upload import run_queued_package_import_task
+from app.services.local_import_upload import (
+    LOCAL_IMPORT_UPLOAD_SUBDIR,
+    MODEL_SUFFIXES,
+    PACKAGE_ARCHIVE_SUFFIXES,
+    queue_local_path_package_import,
+    run_queued_package_import_task,
+)
 from app.services.task_state import TaskStateStore
 
 
@@ -45,6 +51,7 @@ ORGANIZER_DAEMON_ENV = "MAKERHUB_LOCAL_ORGANIZER_DAEMON"
 ORGANIZER_TERMINAL_STATUSES = {"success", "skipped"}
 ORGANIZER_UPLOAD_FALLBACK_STEMS = {"wechat-upload", "移动端导入"}
 ORGANIZER_MODEL_TITLE_SUFFIXES = {".3mf", ".stl", ".step", ".stp", ".obj"}
+ORGANIZER_PACKAGE_FILE_SUFFIXES = (MODEL_SUFFIXES - {".3mf"}) | PACKAGE_ARCHIVE_SUFFIXES
 
 
 def _now_iso() -> str:
@@ -125,6 +132,14 @@ def _safe_relative_string(path: Path, base: Path) -> str:
         return path.resolve().relative_to(base.resolve()).as_posix()
     except ValueError:
         return path.name
+
+
+def _is_under_path(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def _ensure_parent(path: Path) -> None:
@@ -344,6 +359,17 @@ class LocalOrganizerService:
         except OSError:
             pass
 
+        self._queue_local_package_candidates(
+            source_dir=source_dir,
+            library_root=library_root,
+            move_files=bool(organizer.move_files),
+        )
+
+        package_task = self._next_package_import_task()
+        if package_task:
+            self._process_package_import_task(package_task)
+            return
+
         candidates = self._iter_candidates(source_dir)
         actionable_candidates = self._sync_candidate_queue(
             candidates=candidates,
@@ -364,11 +390,12 @@ class LocalOrganizerService:
             )
 
         candidate = actionable_candidates[0]
+        candidate_move_files = bool(organizer.move_files) or _is_under_path(candidate, source_dir / LOCAL_IMPORT_UPLOAD_SUBDIR)
         self._spawn_worker(
             source_path=candidate,
             source_dir=source_dir,
             library_root=library_root,
-            move_files=bool(organizer.move_files),
+            move_files=candidate_move_files,
         )
 
     def _sync_candidate_queue(
@@ -398,6 +425,7 @@ class LocalOrganizerService:
         actionable_candidates: list[Path] = []
 
         for source_path in visible_candidates:
+            candidate_move_files = move_files or _is_under_path(source_path, source_dir / LOCAL_IMPORT_UPLOAD_SUBDIR)
             fingerprint = self._fingerprint(source_path)
             task_id = _task_id_from_fingerprint(fingerprint) if fingerprint else ""
             existing = {}
@@ -429,7 +457,7 @@ class LocalOrganizerService:
                 moved_to = self._move_terminal_source_file(
                     source_path=source_path,
                     source_dir=source_dir,
-                    move_files=move_files,
+                    move_files=candidate_move_files,
                     existing=entry,
                 )
                 if moved_to:
@@ -453,7 +481,7 @@ class LocalOrganizerService:
                     ),
                     "progress": 0,
                     "updated_at": now_iso,
-                    "move_files": move_files,
+                    "move_files": candidate_move_files,
                     "fingerprint": fingerprint,
                 }
 
@@ -463,7 +491,7 @@ class LocalOrganizerService:
                 entry["updated_at"] = now_iso
             entry["source_dir"] = source_dir.as_posix()
             entry["target_dir"] = library_root.as_posix()
-            entry["move_files"] = move_files
+            entry["move_files"] = candidate_move_files
             if fingerprint:
                 entry["fingerprint"] = fingerprint
             if task_id:
@@ -559,6 +587,7 @@ class LocalOrganizerService:
         )
         try:
             run_queued_package_import_task(running_task, store=self.store, task_store=self.task_store)
+            self._cleanup_finished_package_source(running_task)
         except Exception as exc:
             self.task_store.upsert_organize_task(
                 {
@@ -593,6 +622,106 @@ class LocalOrganizerService:
             title=str(task.get("title") or ""),
             staging_dir=staging_dir.as_posix(),
         )
+
+    def _remove_local_upload_placeholders_for_source(self, source_path: Path) -> None:
+        source_text = source_path.as_posix()
+
+        def _mutate(payload: dict[str, Any]) -> dict[str, Any]:
+            items: list[dict[str, Any]] = []
+            removed = 0
+            for item in payload.get("items") or []:
+                if (
+                    isinstance(item, dict)
+                    and str(item.get("kind") or "").strip() == "local_upload"
+                    and str(item.get("source_path") or "").strip() == source_text
+                    and str(item.get("status") or "").strip().lower() in {"pending", "queued"}
+                ):
+                    removed += 1
+                    continue
+                items.append(item)
+            if not removed:
+                return payload
+            return {
+                **payload,
+                "items": items,
+                "count": max(0, int(payload.get("count") or len(items) + removed) - removed),
+            }
+
+        try:
+            self.task_store._update_organize_tasks(_mutate)
+        except Exception:
+            return
+
+    def _queue_local_package_candidates(self, *, source_dir: Path, library_root: Path, move_files: bool) -> None:
+        payload = self.task_store.load_organize_tasks()
+        existing_sources = {
+            str(item.get("source_path") or "").strip()
+            for item in payload.get("items") or []
+            if str(item.get("kind") or "").strip() == "local_package_import"
+            and str(item.get("status") or "").strip().lower() not in {"failed"}
+        }
+        for source_path in self._iter_package_candidates(source_dir):
+            source_text = source_path.as_posix()
+            if source_text in existing_sources:
+                continue
+            candidate_move_files = move_files or _is_under_path(source_path, source_dir / LOCAL_IMPORT_UPLOAD_SUBDIR)
+            try:
+                queue_local_path_package_import(
+                    source_path=source_path,
+                    source_dir=source_dir,
+                    library_root=library_root,
+                    move_files=candidate_move_files,
+                    task_store=self.task_store,
+                )
+                self._remove_local_upload_placeholders_for_source(source_path)
+                existing_sources.add(source_text)
+            except Exception as exc:
+                self.task_store.upsert_organize_task(
+                    {
+                        "id": _task_id_from_fingerprint(source_text),
+                        "title": source_path.stem.strip() if source_path.is_file() else source_path.name,
+                        "file_name": source_path.name,
+                        "source_dir": source_dir.as_posix(),
+                        "target_dir": library_root.as_posix(),
+                        "source_path": source_text,
+                        "status": "failed",
+                        "message": str(exc) or "本地模型包加入队列失败。",
+                        "progress": 0,
+                        "updated_at": _now_iso(),
+                        "move_files": candidate_move_files,
+                        "fingerprint": source_text,
+                        "kind": "local_package_import",
+                    },
+                    limit=ORGANIZER_TASK_LIMIT,
+                )
+                _append_organizer_log("package_import_queue_failed", source=source_text, error=str(exc))
+
+    def _cleanup_finished_package_source(self, task: dict[str, Any]) -> None:
+        original_source = str(task.get("original_source_path") or "").strip()
+        if not original_source:
+            return
+        source_path = Path(original_source).expanduser()
+        if not source_path.exists():
+            return
+        source_dir = Path(str(task.get("source_dir") or "")).expanduser()
+        if not source_dir:
+            return
+        if _is_under_path(source_path, source_dir / LOCAL_IMPORT_UPLOAD_SUBDIR) or bool(task.get("move_files", False)):
+            destination_dir = source_dir / "_skipped"
+        else:
+            return
+        try:
+            destination_dir.mkdir(parents=True, exist_ok=True)
+            target = self._ensure_unique_filename(destination_dir, source_path.name, default_suffix="")
+            shutil.move(str(source_path), str(target))
+        except Exception as exc:
+            _append_organizer_log(
+                "package_import_source_cleanup_failed",
+                source=source_path.as_posix(),
+                error=str(exc),
+            )
+            return
+        _append_organizer_log("package_import_source_moved", source=source_path.as_posix(), moved_to=target.as_posix())
 
     def process_candidate(
         self,
@@ -913,6 +1042,83 @@ class LocalOrganizerService:
                 candidates.append(path)
         candidates.sort(key=lambda item: item.as_posix().lower())
         return candidates
+
+    def _iter_package_candidates(self, source_dir: Path) -> list[Path]:
+        now = time.time()
+        candidates: list[Path] = []
+        try:
+            children = sorted(source_dir.iterdir(), key=lambda item: item.name.lower())
+        except OSError:
+            return candidates
+        for path in children:
+            if path.name == LOCAL_IMPORT_UPLOAD_SUBDIR:
+                try:
+                    upload_children = sorted(path.iterdir(), key=lambda item: item.name.lower())
+                except OSError:
+                    upload_children = []
+                for upload_child in upload_children:
+                    if upload_child.is_symlink():
+                        continue
+                    if self._should_skip_scan_directory(upload_child, source_dir):
+                        continue
+                    if upload_child.is_dir():
+                        if not self._directory_has_package_files(upload_child):
+                            continue
+                        if not self._path_is_old_enough(upload_child, now):
+                            continue
+                        candidates.append(upload_child)
+                    elif (
+                        upload_child.is_file()
+                        and upload_child.suffix.lower() in ORGANIZER_PACKAGE_FILE_SUFFIXES
+                        and self._path_is_old_enough(upload_child, now)
+                    ):
+                        candidates.append(upload_child)
+                continue
+            if self._should_skip_scan_directory(path, source_dir):
+                continue
+            if path.is_symlink():
+                continue
+            if path.is_dir():
+                if not self._directory_has_package_files(path):
+                    continue
+                if not self._path_is_old_enough(path, now):
+                    continue
+                candidates.append(path)
+                continue
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in ORGANIZER_PACKAGE_FILE_SUFFIXES:
+                continue
+            if self._is_managed_output(path, source_dir):
+                continue
+            if not self._path_is_old_enough(path, now):
+                continue
+            candidates.append(path)
+        return candidates
+
+    def _directory_has_package_files(self, path: Path) -> bool:
+        try:
+            for child in path.rglob("*"):
+                if child.is_symlink() or not child.is_file():
+                    continue
+                if child.suffix.lower() in (MODEL_SUFFIXES | PACKAGE_ARCHIVE_SUFFIXES | PREVIEW_IMAGE_SUFFIXES):
+                    return True
+        except OSError:
+            return False
+        return False
+
+    def _path_is_old_enough(self, path: Path, now: float) -> bool:
+        try:
+            newest = path.stat().st_mtime
+            if path.is_dir():
+                for child in path.rglob("*"):
+                    try:
+                        newest = max(newest, child.stat().st_mtime)
+                    except OSError:
+                        continue
+        except OSError:
+            return False
+        return now - newest >= ORGANIZER_MIN_FILE_AGE_SECONDS
 
     def _should_skip_scan_directory(self, path: Path, source_dir: Path) -> bool:
         try:
@@ -1785,9 +1991,9 @@ class LocalOrganizerService:
                 return candidate
         return source_path.name
 
-    def _ensure_unique_filename(self, parent: Path, raw_name: str) -> Path:
+    def _ensure_unique_filename(self, parent: Path, raw_name: str, *, default_suffix: str = ".3mf") -> Path:
         file_name = sanitize_filename(raw_name) or "model.3mf"
-        suffix = Path(file_name).suffix or ".3mf"
+        suffix = Path(file_name).suffix or default_suffix
         stem = Path(file_name).stem or "model"
         target = parent / f"{stem}{suffix}"
         index = 2

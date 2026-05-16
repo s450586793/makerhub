@@ -214,6 +214,27 @@
           </div>
           <div class="mw-config-panel__divider"></div>
 
+          <div v-if="localImportGroups.length" class="mw-local-package-groups">
+            <article
+              v-for="group in localImportGroups"
+              :key="group.id"
+              class="mw-local-package-group"
+            >
+              <div class="mw-local-package-group__main">
+                <strong :title="group.title">{{ group.title }}</strong>
+                <span>{{ localImportGroupSummary(group) }}</span>
+              </div>
+              <a
+                v-if="group.download_url"
+                class="mw-local-package-group__download"
+                :href="group.download_url"
+                :download="group.download_name || `${group.title}.zip`"
+              >
+                下载
+              </a>
+            </article>
+          </div>
+
           <div v-if="detail.instances?.length" class="mw-profile-list" @scroll="handleProfileListScroll">
             <div
               v-for="(profile, profileIndex) in detail.instances"
@@ -1320,6 +1341,10 @@ const attachmentGroups = computed(() => {
   return [...groups.entries()].map(([label, items]) => ({ label, items }));
 });
 
+const localImportGroups = computed(() => (
+  Array.isArray(detail.value?.local_import?.groups) ? detail.value.local_import.groups : []
+));
+
 const showDocsSection = computed(() => {
   return !isLocalModel.value || attachmentGroups.value.length > 0;
 });
@@ -1442,6 +1467,18 @@ function sameThumbRailState(left, right) {
     && left.canScrollPrev === right.canScrollPrev
     && left.canScrollNext === right.canScrollNext,
   );
+}
+
+function localImportGroupSummary(group) {
+  const parts = [];
+  const modelCount = Number(group?.model_file_count || 0);
+  const imageCount = Number(group?.image_count || 0);
+  const attachmentCount = Number(group?.attachment_count || 0);
+  if (modelCount) parts.push(`${modelCount} 个模型文件`);
+  if (imageCount) parts.push(`${imageCount} 张图片`);
+  if (attachmentCount) parts.push(`${attachmentCount} 个附件`);
+  if (Number(group?.size || 0) > 0) parts.push(formatFileSize(group.size));
+  return parts.join(" / ") || "本地分组";
 }
 
 function measureThumbRail(element) {

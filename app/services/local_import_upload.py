@@ -40,6 +40,7 @@ LOCAL_IMPORT_MAX_ZIP_DEPTH = 3
 LOCAL_IMPORT_MAX_ARCHIVE_DEPTH = LOCAL_IMPORT_MAX_ZIP_DEPTH
 LOCAL_IMPORT_MAX_EXTRACTED_BYTES = MAX_LOCAL_IMPORT_UPLOAD_BYTES * 4
 ORGANIZER_LIBRARY_INDEX_CACHE_PATH = STATE_DIR / "organizer_library_index.json"
+LOCAL_IMPORT_GROUP_DOWNLOAD_DIR = "packages"
 
 PACKAGE_ARCHIVE_SUFFIXES = {".zip", ".rar"}
 MODEL_SUFFIXES = {".3mf", ".stl", ".step", ".stp", ".obj"}
@@ -134,6 +135,19 @@ def _unique_relative_destination(root: Path, relative_path: str) -> Path:
     parts = clean.split("/")
     parent = root.joinpath(*parts[:-1]) if len(parts) > 1 else root
     return _unique_destination(parent, parts[-1])
+
+
+def _unique_directory(parent: Path, name: str) -> Path:
+    parent.mkdir(parents=True, exist_ok=True)
+    clean = sanitize_filename(str(name or "").strip()) or "local_import"
+    clean = clean.strip(". ") or "local_import"
+    candidate = parent / clean
+    index = 2
+    while candidate.exists():
+        candidate = parent / f"{clean}_{index}"
+        index += 1
+    candidate.mkdir(parents=True, exist_ok=False)
+    return candidate
 
 
 def _cleanup_stale_staging_dirs() -> None:
@@ -282,22 +296,136 @@ def _prepare_model_root(library_root: Path, title: str) -> Path:
     raise RuntimeError("无法为本地模型分配新的目标目录。")
 
 
-def _stage_package_uploads(entries: list[dict[str, Any]], staging_dir: Path) -> list[dict[str, Any]]:
+def _shared_upload_folder_root(entries: list[dict[str, Any]]) -> str:
+    roots: list[str] = []
+    for entry in entries:
+        relative_path = str(entry.get("relative_path") or "").replace("\\", "/").strip("/")
+        if "/" not in relative_path:
+            return ""
+        root = relative_path.split("/", 1)[0].strip()
+        if not root:
+            return ""
+        roots.append(root)
+    return roots[0] if roots and len(set(roots)) == 1 else ""
+
+
+def _strip_upload_folder_root(relative_path: str, root: str) -> str:
+    clean = str(relative_path or "").replace("\\", "/").strip("/")
+    if root and clean == root:
+        return ""
+    if root and clean.startswith(f"{root}/"):
+        clean = clean[len(root) + 1 :]
+    return clean
+
+
+def _stage_package_uploads_to_local_source(
+    entries: list[dict[str, Any]],
+    *,
+    source_dir: Path,
+    title: str,
+) -> tuple[Path, list[dict[str, Any]]]:
+    upload_root = source_dir / LOCAL_IMPORT_UPLOAD_SUBDIR
+    batch_dir = _unique_directory(upload_root, title)
+    strip_root = _shared_upload_folder_root(entries)
+    staged: list[dict[str, Any]] = []
+    try:
+        for entry in entries:
+            original_relative = str(entry.get("relative_path") or entry.get("file_name") or "file")
+            target_relative = _strip_upload_folder_root(original_relative, strip_root)
+            if not target_relative:
+                target_relative = str(entry.get("file_name") or "file")
+            target_path = _unique_relative_destination(batch_dir, target_relative)
+            size = _copy_upload_to_staging(entry["upload"], target_path, original_relative)
+            try:
+                source_relative = target_path.relative_to(source_dir).as_posix()
+            except ValueError:
+                source_relative = target_path.name
+            staged.append(
+                {
+                    "path": target_path,
+                    "file_name": target_path.name,
+                    "relative_path": source_relative,
+                    "size": size,
+                    "archive_depth": 0,
+                }
+            )
+        if not staged:
+            raise ValueError("上传文件为空。")
+        return batch_dir, staged
+    except Exception:
+        shutil.rmtree(batch_dir, ignore_errors=True)
+        raise
+
+
+def _copy_local_path_to_staging(source_path: Path, upload_root: Path, relative_path: str) -> dict[str, Any] | None:
+    if source_path.is_symlink() or not source_path.is_file():
+        return None
+    try:
+        size = int(source_path.stat().st_size)
+    except OSError:
+        return None
+    if size <= 0:
+        return None
+    if size > MAX_LOCAL_IMPORT_UPLOAD_BYTES:
+        raise ValueError(f"本地文件过大：{source_path.name}")
+
+    target_path = _unique_relative_destination(upload_root, relative_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = target_path.with_name(f".{target_path.name}.{os.getpid()}.{threading.get_ident()}.{uuid4().hex[:8]}.copying")
+    try:
+        shutil.copy2(source_path, temp_path)
+        temp_path.replace(target_path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        target_path.unlink(missing_ok=True)
+        raise
+    return {
+        "path": target_path,
+        "file_name": target_path.name,
+        "relative_path": relative_path,
+        "size": size,
+        "archive_depth": 0,
+    }
+
+
+def stage_local_package_path(source_path: Path) -> tuple[Path, list[dict[str, Any]]]:
+    source_path = source_path.expanduser()
+    if not source_path.exists():
+        raise ValueError("本地导入源文件不存在。")
+
+    staging_dir = _new_staging_dir()
     upload_root = staging_dir / "uploads"
     staged: list[dict[str, Any]] = []
-    for entry in entries:
-        target_path = _unique_relative_destination(upload_root, str(entry.get("relative_path") or entry.get("file_name") or "file"))
-        size = _copy_upload_to_staging(entry["upload"], target_path, str(entry.get("relative_path") or entry.get("file_name") or ""))
-        staged.append(
-            {
-                "path": target_path,
-                "file_name": target_path.name,
-                "relative_path": str(entry.get("relative_path") or target_path.name),
-                "size": size,
-                "archive_depth": 0,
-            }
-        )
-    return staged
+    try:
+        if source_path.is_dir():
+            for child in sorted(source_path.rglob("*")):
+                if child.is_symlink() or not child.is_file():
+                    continue
+                try:
+                    child_relative = child.relative_to(source_path).as_posix()
+                except ValueError:
+                    child_relative = child.name
+                relative_path = _normalize_relative_path(f"{source_path.name}/{child_relative}", child.name or "file")
+                if _is_ignored_relative_path(relative_path):
+                    continue
+                item = _copy_local_path_to_staging(child, upload_root, relative_path)
+                if item:
+                    staged.append(item)
+        elif source_path.is_file():
+            relative_path = _normalize_relative_path(source_path.name, source_path.name or "file")
+            if not _is_ignored_relative_path(relative_path):
+                item = _copy_local_path_to_staging(source_path, upload_root, relative_path)
+                if item:
+                    staged.append(item)
+        else:
+            raise ValueError("本地导入源不是可读取的文件或文件夹。")
+
+        if not staged:
+            raise ValueError("本地导入源内没有可导入的文件。")
+        return staging_dir, staged
+    except Exception:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
 
 
 def _staged_upload_entries(staging_dir: Path) -> list[dict[str, Any]]:
@@ -571,6 +699,103 @@ def _classify_package_files(items: list[dict[str, Any]]) -> dict[str, list[dict[
     return classified
 
 
+def _display_relative_path(value: Any) -> str:
+    text = str(value or "").replace("\\", "/").strip("/")
+    if "!/" in text:
+        text = text.split("!/", 1)[1].strip("/")
+    return text
+
+
+def _relative_parts(value: Any) -> list[str]:
+    clean = _display_relative_path(value)
+    return [part for part in clean.split("/") if part]
+
+
+def _common_package_root(items: list[dict[str, Any]]) -> str:
+    roots = {_relative_parts(item.get("relative_path") or item.get("file_name") or "")[0] for item in items if _relative_parts(item.get("relative_path") or item.get("file_name") or "")}
+    return next(iter(roots)) if len(roots) == 1 else ""
+
+
+def _top_level_group_key(value: Any, *, strip_root: str = "") -> str:
+    parts = _relative_parts(value)
+    if strip_root and parts and parts[0] == strip_root:
+        parts = parts[1:]
+    if len(parts) <= 1:
+        return ""
+    return parts[0]
+
+
+def _item_group_key(item: dict[str, Any], *, strip_root: str = "") -> str:
+    return _top_level_group_key(item.get("relative_path") or item.get("file_name") or "", strip_root=strip_root)
+
+
+def _relative_path_without_root(value: Any, strip_root: str = "") -> str:
+    parts = _relative_parts(value)
+    if strip_root and parts[:1] == [strip_root]:
+        parts = parts[1:]
+    return "/".join(parts)
+
+
+def _build_local_import_groups(
+    *,
+    model_root: Path,
+    title: str,
+    model_files: list[dict[str, Any]],
+    image_items: list[dict[str, Any]],
+    attachment_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    strip_root = _common_package_root(model_files)
+    model_group_keys = [_item_group_key(item, strip_root=strip_root) for item in model_files]
+    grouped_keys = sorted({key for key in model_group_keys if key})
+    if len(grouped_keys) < 2:
+        return []
+
+    packages_dir = model_root / LOCAL_IMPORT_GROUP_DOWNLOAD_DIR
+    packages_dir.mkdir(parents=True, exist_ok=True)
+    groups: list[dict[str, Any]] = []
+    for key in grouped_keys:
+        group_models = [item for item in model_files if _item_group_key(item, strip_root=strip_root) == key]
+        if not group_models:
+            continue
+        group_images = [item for item in image_items if _item_group_key(item, strip_root=strip_root) == key]
+        group_attachments = [item for item in attachment_items if _item_group_key(item, strip_root=strip_root) == key]
+        zip_path = _unique_destination(packages_dir, f"{key}.zip")
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for item in [*group_models, *group_images, *group_attachments]:
+                source = Path(str(item.get("path") or ""))
+                if not source.exists() or not source.is_file():
+                    continue
+                arcname = _relative_path_without_root(item.get("relative_path") or item.get("file_name") or source.name, strip_root)
+                if not arcname:
+                    arcname = f"{key}/{source.name}"
+                archive.write(source, arcname)
+        try:
+            zip_size = int(zip_path.stat().st_size)
+        except OSError:
+            zip_size = 0
+        groups.append(
+            {
+                "id": uuid4().hex,
+                "title": key,
+                "root": key,
+                "downloadName": zip_path.name,
+                "downloadLocal": f"{LOCAL_IMPORT_GROUP_DOWNLOAD_DIR}/{zip_path.name}",
+                "modelFileCount": len(group_models),
+                "imageCount": len(group_images),
+                "attachmentCount": len(group_attachments),
+                "size": zip_size,
+                "modelFiles": [
+                    {
+                        "fileName": str(item.get("file_name") or Path(str(item.get("target_path") or item.get("path") or "")).name),
+                        "sourcePath": _relative_path_without_root(item.get("relative_path") or item.get("file_name") or "", strip_root),
+                    }
+                    for item in group_models
+                ],
+            }
+        )
+    return groups
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     bytes_since_pause = 0
@@ -789,6 +1014,7 @@ def _build_package_meta(
     image_paths: list[str],
     attachments: list[dict[str, Any]],
     description_text: str,
+    groups: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     now_iso = china_now_iso()
     publish_iso = now_iso
@@ -882,6 +1108,8 @@ def _build_package_meta(
             "duplicateFiles": duplicate_files[:50],
             "skippedArchiveCount": len(skipped_archives),
             "skippedArchives": skipped_archives[:50],
+            "groups": groups or [],
+            "groupCount": len(groups or []),
         },
     }
 
@@ -980,6 +1208,8 @@ def _upsert_package_progress(
                 existing_task = item
                 break
     target_path = (model_root / "meta.json").as_posix() if model_root else ""
+    original_source_path = str(existing_task.get("original_source_path") or "")
+    source_path = str(existing_task.get("source_path") or "") if original_source_path else package_source
     task_store.upsert_organize_task(
         {
             "id": task_id,
@@ -987,20 +1217,21 @@ def _upsert_package_progress(
             "file_name": title,
             "source_dir": source_dir,
             "target_dir": library_root.as_posix(),
-            "source_path": package_source,
+            "source_path": source_path,
             "target_path": target_path,
             "model_dir": model_dir,
             "status": status,
             "message": message,
             "progress": max(0, min(100, int(progress or 0))),
             "updated_at": china_now_iso(),
-            "move_files": False,
+            "move_files": bool(existing_task.get("move_files", False)),
             "fingerprint": _package_task_fingerprint(task_id),
             "snapshot_ready": snapshot_ready,
             "kind": str(existing_task.get("kind") or ("local_package_import" if staging_dir else "")),
             "staging_dir": str(existing_task.get("staging_dir") or (staging_dir.as_posix() if staging_dir else "")),
             "package_source": str(existing_task.get("package_source") or package_source),
             "package_title": str(existing_task.get("package_title") or title),
+            "original_source_path": original_source_path,
         },
         limit=50,
     )
@@ -1018,17 +1249,15 @@ def _queue_package_import_files(
         raise ValueError("请先在设置里配置本地整理目标目录。")
     source_dir = Path(str(config.organizer.source_dir or "")).expanduser()
     library_root = Path(target_raw).expanduser()
+    if not str(config.organizer.source_dir or "").strip():
+        raise ValueError("请先在设置里配置本地整理扫描目录。")
+    source_dir.mkdir(parents=True, exist_ok=True)
 
-    staging_dir = _new_staging_dir()
-    task_id = _package_task_id(staging_dir)
     title = _package_title(entries)
-    package_source = _package_source_summary(entries)
+    batch_dir, staged = _stage_package_uploads_to_local_source(entries, source_dir=source_dir, title=title)
+    task_id = hashlib.sha1(f"local-upload:{batch_dir.resolve()}".encode("utf-8")).hexdigest()[:16]
+    package_source = batch_dir.resolve().relative_to(source_dir.resolve()).as_posix()
     source_dir_text = source_dir.as_posix() if str(source_dir) != "." else ""
-    try:
-        staged = _stage_package_uploads(entries, staging_dir)
-    except Exception:
-        shutil.rmtree(staging_dir, ignore_errors=True)
-        raise
 
     uploaded = _package_uploaded_entries_from_staged(
         staged,
@@ -1042,18 +1271,18 @@ def _queue_package_import_files(
             "file_name": title,
             "source_dir": source_dir_text,
             "target_dir": library_root.as_posix(),
-            "source_path": package_source,
+            "source_path": batch_dir.as_posix(),
             "target_path": "",
             "model_dir": "",
             "status": "queued",
-            "message": "已上传，等待后台本地整理。",
-            "progress": 10,
+            "message": "已上传到本地整理目录，等待扫描处理。",
+            "progress": 35,
             "updated_at": china_now_iso(),
             "move_files": False,
-            "fingerprint": _package_task_fingerprint(task_id),
+            "fingerprint": f"local-upload:{task_id}",
             "snapshot_ready": False,
-            "kind": "local_package_import",
-            "staging_dir": staging_dir.as_posix(),
+            "kind": "local_upload",
+            "staging_dir": "",
             "package_source": package_source,
             "package_title": title,
         },
@@ -1071,36 +1300,89 @@ def _queue_package_import_files(
             }
         ],
         source_dir=source_dir_text,
-        upload_dir=staging_dir.as_posix(),
+        upload_dir=batch_dir.as_posix(),
     )
     append_business_log(
         "organizer",
         "local_import_package_queued",
-        "本地模型包已上传，等待后台整理。",
+        "本地模型包已上传到本地整理目录，等待后台扫描。",
         title=title,
         task_id=task_id,
         file_count=len(staged),
-        staging_dir=staging_dir.as_posix(),
+        staging_dir=batch_dir.as_posix(),
     )
     return {
         "success": True,
         "mode": "package",
         "queued": True,
-        "trigger_organizer": False,
+        "trigger_organizer": True,
         "task_id": task_id,
-        "message": f"已上传本地模型包：{title}，正在后台整理。",
+        "message": f"已上传本地模型包：{title}，等待本地整理。",
         "snapshot_ready": False,
         "uploaded": [
             {
                 "file_name": title,
                 "source_path": package_source,
-                "target_path": "",
+                "target_path": batch_dir.as_posix(),
                 "size": sum(int(item.get("size") or 0) for item in staged),
                 "status": "queued",
-                "message": "已上传，等待后台本地整理。",
+                "message": "已上传到本地整理目录，等待扫描处理。",
             }
         ],
     }
+
+
+def queue_local_path_package_import(
+    *,
+    source_path: Path,
+    source_dir: Path,
+    library_root: Path,
+    move_files: bool,
+    task_store: TaskStateStore,
+) -> dict[str, Any]:
+    staging_dir, staged = stage_local_package_path(source_path)
+    task_id = _package_task_id(staging_dir)
+    title = source_path.stem.strip() if source_path.is_file() else source_path.name.strip()
+    title = title or "本地模型导入"
+    try:
+        package_source = source_path.resolve().relative_to(source_dir.resolve()).as_posix()
+    except Exception:
+        package_source = source_path.name
+    task_store.upsert_organize_task(
+        {
+            "id": task_id,
+            "title": title,
+            "file_name": source_path.name,
+            "source_dir": source_dir.as_posix(),
+            "target_dir": library_root.as_posix(),
+            "source_path": source_path.as_posix(),
+            "target_path": "",
+            "model_dir": "",
+            "status": "queued",
+            "message": "已检测到本地模型包，等待后台整理。",
+            "progress": 10,
+            "updated_at": china_now_iso(),
+            "move_files": move_files,
+            "fingerprint": _package_task_fingerprint(task_id),
+            "snapshot_ready": False,
+            "kind": "local_package_import",
+            "staging_dir": staging_dir.as_posix(),
+            "package_source": package_source,
+            "package_title": title,
+            "original_source_path": source_path.as_posix(),
+        },
+        limit=50,
+    )
+    append_business_log(
+        "organizer",
+        "local_path_package_queued",
+        "本地目录模型包已加入整理队列。",
+        title=title,
+        source_path=source_path.as_posix(),
+        task_id=task_id,
+        file_count=len(staged),
+    )
+    return {"task_id": task_id, "title": title, "staging_dir": staging_dir.as_posix(), "file_count": len(staged)}
 
 
 def _upload_legacy_3mf_files(
@@ -1353,9 +1635,16 @@ def _run_package_import_from_staging(
             for item in classified["texts"]
             if description_item is None or Path(item["path"]) != Path(description_item["path"])
         ]
+        attachment_items = [*classified["attachments"], *text_attachments]
+        grouped_downloads = _build_local_import_groups(
+            model_root=model_root,
+            title=title,
+            model_files=copied_models,
+            image_items=classified["images"],
+            attachment_items=attachment_items,
+        )
 
         attachments: list[dict[str, Any]] = []
-        attachment_items = [*classified["attachments"], *text_attachments]
         for item in attachment_items:
             target_path = _copy_item_to_dir(item, attachments_dir)
             rel_path = f"attachments/{target_path.name}"
@@ -1385,6 +1674,7 @@ def _run_package_import_from_staging(
             image_paths=image_paths,
             attachments=attachments,
             description_text=description_text,
+            groups=grouped_downloads,
         )
         if mark_local_preview_pending(meta, model_root=model_root):
             mark_local_preview_queue_updated("local_package_import")
@@ -1478,6 +1768,7 @@ def _run_package_import_from_staging(
         skipped_zip_count=len(skipped_archives),
         image_count=len(image_paths),
         attachment_count=len(attachments),
+        group_count=len(grouped_downloads),
     )
 
     return {
@@ -1492,6 +1783,7 @@ def _run_package_import_from_staging(
         "skipped_zip_count": len(skipped_archives),
         "image_count": len(image_paths),
         "attachment_count": len(attachments),
+        "group_count": len(grouped_downloads),
         "uploaded": uploaded,
     }
 
