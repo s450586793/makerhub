@@ -586,8 +586,11 @@ class LocalOrganizerService:
             staging_dir=staging_dir.as_posix(),
         )
         try:
-            run_queued_package_import_task(running_task, store=self.store, task_store=self.task_store)
-            self._cleanup_finished_package_source(running_task)
+            result = run_queued_package_import_task(running_task, store=self.store, task_store=self.task_store)
+            self._cleanup_finished_package_source(
+                running_task,
+                duplicate=bool(isinstance(result, dict) and result.get("duplicate")),
+            )
         except Exception as exc:
             self.task_store.upsert_organize_task(
                 {
@@ -696,7 +699,7 @@ class LocalOrganizerService:
                 )
                 _append_organizer_log("package_import_queue_failed", source=source_text, error=str(exc))
 
-    def _cleanup_finished_package_source(self, task: dict[str, Any]) -> None:
+    def _cleanup_finished_package_source(self, task: dict[str, Any], *, duplicate: bool = False) -> None:
         original_source = str(task.get("original_source_path") or "").strip()
         if not original_source:
             return
@@ -707,7 +710,7 @@ class LocalOrganizerService:
         if not source_dir:
             return
         if _is_under_path(source_path, source_dir / LOCAL_IMPORT_UPLOAD_SUBDIR) or bool(task.get("move_files", False)):
-            destination_dir = source_dir / "_skipped"
+            destination_dir = source_dir / ("_duplicates" if duplicate else "_skipped")
         else:
             return
         try:

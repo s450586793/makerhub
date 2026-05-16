@@ -135,6 +135,28 @@ class OrganizeTaskStateTest(unittest.TestCase):
         self.assertEqual(item["meta"]["content_length"], "1024")
         self.assertEqual(item["meta"]["received_bytes"], 512)
 
+    def test_normalize_preserves_local_package_original_source_path(self):
+        payload = {
+            "items": [
+                {
+                    "id": "pkg-local",
+                    "title": "索尼克托架",
+                    "status": "queued",
+                    "kind": "local_package_import",
+                    "source_path": "/app/local/索尼克托架.stl",
+                    "staging_dir": "/app/state/import_uploads/sonic",
+                    "package_source": "索尼克托架.stl",
+                    "package_title": "索尼克托架",
+                    "original_source_path": "/app/local/索尼克托架.stl",
+                }
+            ],
+        }
+
+        normalized = _normalize_organize_tasks(payload)
+        item = normalized["items"][0]
+
+        self.assertEqual(item["original_source_path"], "/app/local/索尼克托架.stl")
+
 
 class ArchiveQueueStateTest(unittest.TestCase):
     def test_clear_recent_failures_preserves_active_and_queued_tasks(self):

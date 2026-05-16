@@ -85,6 +85,21 @@ def _queued_package_task(staging_dir: Path, title: str, source_dir: Path, archiv
     }
 
 
+def _queued_local_source_package_task(
+    staging_dir: Path,
+    title: str,
+    source_dir: Path,
+    archive_root: Path,
+    source_path: Path,
+) -> dict:
+    task = _queued_package_task(staging_dir, title, source_dir, archive_root, source_path.as_posix())
+    task["source_path"] = source_path.as_posix()
+    task["package_source"] = source_path.name
+    task["original_source_path"] = source_path.as_posix()
+    task["move_files"] = True
+    return task
+
+
 def _stage_test_file(root: Path, relative_path: str, data: bytes) -> tuple[Path, dict]:
     staging_dir = root / f"staged-{len(list(root.glob('staged-*'))) + 1}"
     target_path = staging_dir / "uploads" / relative_path
@@ -556,6 +571,77 @@ class LocalImportUploadTest(unittest.TestCase):
             self.assertEqual(last_import["uploaded_count"], 1)
             self.assertEqual(last_import["files"][0]["status"], "skipped")
             self.assertIn("本地库已存在相同模型文件", last_import["files"][0]["message"])
+
+    def test_local_source_duplicate_package_preserves_original_source_for_cleanup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            archive_root = root / "archive"
+            source_root = root / "source"
+            state_root = root / "state"
+            archive_root.mkdir()
+            source_root.mkdir()
+            state_root.mkdir()
+
+            store = SimpleNamespace(
+                load=lambda: SimpleNamespace(
+                    organizer=SimpleNamespace(source_dir=source_root.as_posix(), target_dir=archive_root.as_posix(), move_files=True)
+                )
+            )
+            task_store = FakeTaskStore()
+
+            existing_stl = b"solid sonic\nendsolid sonic\n"
+            source_file = source_root / "索尼克托架.stl"
+            source_file.write_bytes(existing_stl)
+            staging_dir, staged_file = _stage_test_file(root, "索尼克托架.stl", existing_stl)
+            queued_task = _queued_local_source_package_task(staging_dir, "索尼克托架", source_root, archive_root, source_file)
+            task_store.upsert_organize_task(queued_task)
+
+            digest_path = root / "digest.stl"
+            digest_path.write_bytes(existing_stl)
+            digest = local_import_upload._sha256_file(digest_path)
+            existing_root = archive_root / "LOCAL_索尼克托架"
+            (existing_root / "instances").mkdir(parents=True)
+            (existing_root / "instances" / "索尼克托架.stl").write_bytes(existing_stl)
+            (existing_root / "meta.json").write_text(
+                json.dumps(
+                    {
+                        "title": "索尼克托架",
+                        "source": "local",
+                        "instances": [
+                            {
+                                "title": "索尼克托架",
+                                "fileName": "索尼克托架.stl",
+                                "localImport": {
+                                    "fileHash": digest,
+                                    "configFingerprint": f"sha256:{digest}",
+                                },
+                            }
+                        ],
+                        "localImport": {"modelFileCount": 1},
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(local_import_upload, "ARCHIVE_DIR", archive_root), \
+                patch.object(local_import_upload, "ORGANIZER_LIBRARY_INDEX_CACHE_PATH", state_root / "organizer_library_index.json"), \
+                patch.object(local_import_upload, "append_business_log"), \
+                patch.object(local_import_upload, "invalidate_archive_snapshot"), \
+                patch.object(catalog, "ARCHIVE_DIR", archive_root):
+                result = local_import_upload.run_queued_package_import_task(
+                    queued_task,
+                    store=store,
+                    task_store=task_store,
+                )
+
+            self.assertFalse(result["success"])
+            self.assertTrue(result["duplicate"])
+            task_item = task_store.payload["items"][0]
+            self.assertEqual(task_item["status"], "skipped")
+            self.assertEqual(task_item["original_source_path"], source_file.as_posix())
+            self.assertTrue(task_item["move_files"])
 
     def test_direct_3mf_mixed_with_other_file_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "3MF 请单独导入"):

@@ -131,6 +131,48 @@ class LocalOrganizerTest(unittest.TestCase):
             self.assertEqual(task_item["source_path"], candidate.as_posix())
             self.assertNotEqual(task_item["fingerprint"], "old-fingerprint")
 
+    def test_finished_duplicate_package_source_moves_to_duplicates(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_dir = root / "source"
+            library_root = root / "archive"
+            staging_dir = root / "state" / "staging"
+            source_dir.mkdir()
+            library_root.mkdir()
+            staging_dir.mkdir(parents=True)
+            source_file = source_dir / "索尼克托架.stl"
+            source_file.write_bytes(b"solid sonic\nendsolid sonic\n")
+
+            task_store = FakeTaskStore()
+            service = local_organizer.LocalOrganizerService(
+                store=SimpleNamespace(),
+                task_store=task_store,
+            )
+            task = {
+                "id": "duplicate-package",
+                "title": "索尼克托架",
+                "file_name": "索尼克托架",
+                "source_dir": source_dir.as_posix(),
+                "target_dir": library_root.as_posix(),
+                "source_path": source_file.as_posix(),
+                "status": "running",
+                "progress": 55,
+                "move_files": True,
+                "kind": "local_package_import",
+                "staging_dir": staging_dir.as_posix(),
+                "package_source": source_file.name,
+                "package_title": "索尼克托架",
+                "original_source_path": source_file.as_posix(),
+            }
+
+            with patch.object(local_organizer, "_append_organizer_log"):
+                service._cleanup_finished_package_source(task, duplicate=True)
+
+            self.assertFalse(source_file.exists())
+            moved_files = list((source_dir / "_duplicates").glob("索尼克托架*.stl"))
+            self.assertEqual(len(moved_files), 1)
+            self.assertEqual(moved_files[0].read_bytes(), b"solid sonic\nendsolid sonic\n")
+
     def test_shortcut_fallback_name_uses_3mf_metadata_title(self):
         with TemporaryDirectory() as tmp:
             library_root = Path(tmp) / "archive"

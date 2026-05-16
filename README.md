@@ -154,6 +154,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-05-17 · v0.6.105
+- 修复 local 根目录直接放入重复 STL 后反复整理的问题：本地包任务会保留原始源文件路径，重复跳过后把源文件移入 `_duplicates`
+- 本地包整理完成后按结果清理源文件，成功导入进入 `_skipped`，重复跳过进入 `_duplicates`，避免同一文件被下一轮扫描再次入队
+- 补充本地整理状态归一化和重复 STL 回归测试，防止 `original_source_path` 再次丢失
+
 ### 2026-05-16 · v0.6.104
 - 本地整理抽成统一主流程：Web 导入和 iOS 快捷指令的非纯 3MF 上传会先落到本地整理扫描目录，再由后台整理器统一处理 zip / rar / 文件夹 / STL / STEP / OBJ
 - `local` 文件夹直接放入模型文件、压缩包或模型文件夹时，也会进入同一套本地整理队列，和 Web / iOS 导入保持一致
@@ -164,13 +169,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 移动端导入任务的阶段标签只在任务仍为运行或排队时显示上传阶段，失败记录会正常显示“失败”
 - 排查线上 `超级马里奥赛车.3mf` 的整理记录，确认模型已成功入库且快照已生成，前端仅残留同名失败上传记录的显示误判
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-16 · v0.6.102
 - Token 页改为表格化管理，横向展示名称、过期时间、权限、Token 字符和操作按钮，方便直接复用完整 Token
 - 生成 Token 改为弹窗填写名称、过期时间和权限，移除原来的“用途”选择，页面主体不再常驻创建表单
 - Token 权限用标签方式展示，移动端快捷指令配置复制和撤销操作保留在同一行
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-16 · v0.6.101
 - 高级页的 App / Worker 调度简化为 `App Web 进程数` 和 `Worker 并发数` 两项，不再暴露 CPU 上限、核心绑定和权重等容易误填的 Docker 参数
