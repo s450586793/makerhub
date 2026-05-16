@@ -6,4 +6,4 @@ requests==2.33.0
 beautifulsoup4==4.12.3
 python-multipart==0.0.27
 croniter==6.0.0
-pillow==11.3.0
+pillow==12.2.0
