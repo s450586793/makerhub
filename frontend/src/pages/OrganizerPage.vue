@@ -456,7 +456,7 @@ const organizerProgressFooterText = computed(() => {
     return "任务状态读取失败";
   }
   const task = currentOrganizerTask.value;
-  if (isMobileImportTask(task) && organizerProgressPercent(task) < IMPORT_PROCESS_PROGRESS_START) {
+  if (mobileImportInUploadStage(task)) {
     return "上传中";
   }
   if (importUploadProgressIsActive()) {
@@ -492,7 +492,7 @@ const organizerProgressChips = computed(() => {
     return [
       { label: "总进度", value: `${displayOrganizerProgressPercent(activeTask)}%` },
       { label: "文件", value: 1 },
-      { label: "阶段", value: organizerProgressPercent(activeTask) < IMPORT_PROCESS_PROGRESS_START ? "上传" : "整理" },
+      { label: "阶段", value: mobileImportInUploadStage(activeTask) ? "上传" : "整理" },
       { label: "状态", value: organizerTaskStatusLabel(activeTask) },
     ];
   }
@@ -608,8 +608,16 @@ function isMobileImportTask(item) {
   return String(item?.kind || "") === "mobile_import_upload";
 }
 
+function mobileImportInUploadStage(item) {
+  if (!isMobileImportTask(item)) {
+    return false;
+  }
+  const variant = organizerStatusVariant(item?.status);
+  return (variant === "running" || variant === "queued") && organizerProgressPercent(item) < IMPORT_PROCESS_PROGRESS_START;
+}
+
 function organizerTaskStatusLabel(item) {
-  if (isMobileImportTask(item) && organizerProgressPercent(item) < IMPORT_PROCESS_PROGRESS_START) {
+  if (mobileImportInUploadStage(item)) {
     return "上传中";
   }
   return organizerStatusLabel(item?.status);
@@ -693,7 +701,7 @@ function organizerTaskMessage(item) {
     return message;
   }
   if (isMobileImportTask(item)) {
-    return organizerProgressPercent(item) < IMPORT_PROCESS_PROGRESS_START
+    return mobileImportInUploadStage(item)
       ? "移动端上传中。"
       : "移动端上传已进入本地整理流程。";
   }
