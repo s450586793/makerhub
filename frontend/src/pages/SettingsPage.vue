@@ -162,80 +162,56 @@
             <button class="button button-secondary button-small" type="button" @click="copyShortcutConfig">
               复制快捷指令配置
             </button>
-            <button class="button button-primary button-small" type="button" @click="createToken">
+            <button class="button button-primary button-small" type="button" @click="openTokenDialog">
               生成 Token
             </button>
           </div>
         </div>
 
-        <form class="token-create-form token-create-form--stacked" @submit.prevent="createToken">
-          <div class="settings-grid settings-grid--three">
-            <label class="field-card">
-              <span>名称</span>
-              <input v-model.trim="tokenForm.name" type="text" placeholder="例如：我的 iPhone / 自动化脚本">
-            </label>
-            <label class="field-card">
-              <span>用途</span>
-              <select v-model="tokenForm.preset" @change="applyTokenPreset">
-                <option value="mobile">iOS 快捷指令</option>
-                <option value="api">API 调用</option>
-                <option value="custom">自定义</option>
-              </select>
-            </label>
-            <label class="field-card">
-              <span>过期时间</span>
-              <select v-model.number="tokenForm.expires_days">
-                <option :value="7">7 天</option>
-                <option :value="30">30 天</option>
-                <option :value="90">90 天</option>
-                <option :value="365">365 天</option>
-                <option :value="0">永不过期</option>
-              </select>
-            </label>
-          </div>
-          <label class="field-card">
-            <span>权限</span>
-            <div class="token-permission-grid">
-              <label v-for="permission in tokenPermissionOptions" :key="permission.value" class="switch">
-                <input v-model="tokenForm.permissions" type="checkbox" :value="permission.value">
-                <span>{{ permission.label }}</span>
-              </label>
-            </div>
-          </label>
-        </form>
-
-        <div v-if="mobileImportToken" class="token-output">
-          <strong>新 Token</strong>
-          <code>{{ mobileImportToken }}</code>
-        </div>
-
-        <div class="token-list">
-          <article v-for="item in tokenItems" :key="item.id" class="token-item token-item--wide">
-            <div class="token-item__main">
-              <div class="token-item__title">
-                <strong>{{ item.name }}</strong>
-                <span :class="['shared-list-item__status', tokenStatusClass(item)]">{{ tokenStatusLabel(item) }}</span>
-              </div>
-              <code class="token-value">{{ item.token_value || `${item.token_prefix}...` }}</code>
-              <div class="token-item__meta">
-                <span>{{ tokenPermissionText(item.permissions) }}</span>
-                <span>创建于 {{ item.created_at }}</span>
-                <span>过期 {{ item.expires_at || "永不过期" }}</span>
-                <span>最近使用 {{ item.last_used_at || "未使用" }}</span>
-              </div>
-            </div>
-            <div class="token-item__actions">
-              <button class="button button-secondary button-small" type="button" :disabled="!item.token_value" @click="copyTokenValue(item)">
-                复制 Token
-              </button>
-              <button class="button button-secondary button-small" type="button" :disabled="!item.token_value || !hasTokenPermission(item, 'mobile_import')" @click="copyShortcutConfig(item)">
-                复制快捷指令配置
-              </button>
-              <button class="button button-danger button-small" type="button" :disabled="item.status === 'revoked'" @click="revokeToken(item.id)">
-                撤销
-              </button>
-            </div>
-          </article>
+        <div class="token-table-wrap">
+          <table class="token-table">
+            <thead>
+              <tr>
+                <th>名称</th>
+                <th>过期时间</th>
+                <th>权限</th>
+                <th>Token 字符</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="item in tokenItems" :key="item.id" :class="['token-table__row', tokenStatusClass(item)]">
+                <td>
+                  <div class="token-table__name">
+                    <strong>{{ item.name }}</strong>
+                    <span :class="['shared-list-item__status', tokenStatusClass(item)]">{{ tokenStatusLabel(item) }}</span>
+                  </div>
+                </td>
+                <td>{{ formatTokenDate(item.expires_at) }}</td>
+                <td>
+                  <div class="token-permission-tags">
+                    <span v-for="permission in tokenPermissionLabels(item.permissions)" :key="permission">{{ permission }}</span>
+                  </div>
+                </td>
+                <td>
+                  <code class="token-table__value">{{ item.token_value || `${item.token_prefix}...` }}</code>
+                </td>
+                <td>
+                  <div class="token-table__actions">
+                    <button class="button button-secondary button-small" type="button" :disabled="!item.token_value" @click="copyTokenValue(item)">
+                      复制
+                    </button>
+                    <button class="button button-secondary button-small" type="button" :disabled="!item.token_value || !hasTokenPermission(item, 'mobile_import')" @click="copyShortcutConfig(item)">
+                      快捷指令
+                    </button>
+                    <button class="button button-danger button-small" type="button" :disabled="item.status === 'revoked'" @click="revokeToken(item.id)">
+                      撤销
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
           <p v-if="!tokenItems.length" class="empty-copy">当前还没有 Token。</p>
         </div>
 
@@ -252,6 +228,48 @@
 
         <span class="form-status">{{ statuses.tokens }}</span>
       </section>
+
+      <div
+        v-if="tokenDialogOpen"
+        class="submit-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="token-create-dialog-title"
+        @click="closeTokenDialog"
+      >
+        <div class="submit-dialog__panel token-create-dialog__panel" @click.stop>
+          <h2 id="token-create-dialog-title">生成 Token</h2>
+          <form class="token-create-dialog__form" @submit.prevent="createToken">
+            <label class="field-card">
+              <span>名称</span>
+              <input v-model.trim="tokenForm.name" type="text" placeholder="例如：我的 iPhone / 自动化脚本">
+            </label>
+            <label class="field-card">
+              <span>过期时间</span>
+              <select v-model.number="tokenForm.expires_days">
+                <option :value="7">7 天</option>
+                <option :value="30">30 天</option>
+                <option :value="90">90 天</option>
+                <option :value="365">365 天</option>
+                <option :value="0">永不过期</option>
+              </select>
+            </label>
+            <label class="field-card">
+              <span>权限</span>
+              <div class="token-permission-grid">
+                <label v-for="permission in tokenPermissionOptions" :key="permission.value" class="switch">
+                  <input v-model="tokenForm.permissions" type="checkbox" :value="permission.value">
+                  <span>{{ permission.label }}</span>
+                </label>
+              </div>
+            </label>
+            <div class="submit-dialog__actions">
+              <button class="button button-secondary" type="button" @click="closeTokenDialog">取消</button>
+              <button class="button button-primary" type="submit">生成 Token</button>
+            </div>
+          </form>
+        </div>
+      </div>
     </div>
 
     <div v-show="activeTab === 'sharing'" class="settings-panel is-active">
@@ -734,6 +752,7 @@ const activeTab = ref("system");
 const themePreference = ref("auto");
 const tokenItems = ref([]);
 const mobileImportToken = ref("");
+const tokenDialogOpen = ref(false);
 const sharedShares = ref([]);
 const sharedSharesLoading = ref(false);
 const sharedShareCopyingId = ref("");
@@ -778,14 +797,8 @@ const tokenPermissionOptions = [
   { value: "system_manage", label: "系统管理" },
   { value: "token_manage", label: "Token 管理" },
 ];
-const tokenPresetPermissions = {
-  mobile: ["mobile_import"],
-  api: ["archive_write"],
-  custom: ["archive_write"],
-};
 const tokenForm = reactive({
   name: "我的 iPhone",
-  preset: "mobile",
   expires_days: 365,
   permissions: ["mobile_import"],
 });
@@ -1040,25 +1053,25 @@ function runtimePayload() {
   };
 }
 
-function applyTokenPreset() {
-  tokenForm.permissions = [...(tokenPresetPermissions[tokenForm.preset] || tokenPresetPermissions.custom)];
-  if (tokenForm.preset === "mobile" && (!tokenForm.name || tokenForm.name === "API Token")) {
-    tokenForm.name = "我的 iPhone";
-  } else if (tokenForm.preset === "api" && (!tokenForm.name || tokenForm.name === "我的 iPhone")) {
-    tokenForm.name = "API Token";
-  }
-}
-
 function hasTokenPermission(item, permission) {
   return Array.isArray(item?.permissions) && item.permissions.includes(permission);
 }
 
-function tokenPermissionText(permissions) {
+function tokenPermissionLabels(permissions) {
   const values = Array.isArray(permissions) ? permissions : [];
   const labels = values
     .map((value) => tokenPermissionOptions.find((item) => item.value === value)?.label || value)
     .filter(Boolean);
-  return labels.length ? labels.join(" / ") : "无权限";
+  return labels.length ? labels : ["无权限"];
+}
+
+function tokenPermissionText(permissions) {
+  return tokenPermissionLabels(permissions).join(" / ");
+}
+
+function formatTokenDate(value) {
+  const text = String(value || "").trim();
+  return text || "永不过期";
 }
 
 function tokenStatusLabel(item) {
@@ -1791,11 +1804,26 @@ async function savePassword() {
   }
 }
 
+function resetTokenDialogForm() {
+  tokenForm.name = "我的 iPhone";
+  tokenForm.expires_days = 365;
+  tokenForm.permissions = ["mobile_import"];
+}
+
+function openTokenDialog() {
+  resetTokenDialogForm();
+  tokenDialogOpen.value = true;
+}
+
+function closeTokenDialog() {
+  tokenDialogOpen.value = false;
+}
+
 async function createToken() {
   try {
     const permissions = Array.isArray(tokenForm.permissions) && tokenForm.permissions.length
       ? [...tokenForm.permissions]
-      : [...tokenPresetPermissions[tokenForm.preset] || tokenPresetPermissions.api];
+      : ["archive_write"];
     const response = await apiRequest("/api/auth/tokens", {
       method: "POST",
       body: {
@@ -1806,9 +1834,7 @@ async function createToken() {
     });
     mobileImportToken.value = permissions.includes("mobile_import") ? response.token || "" : "";
     tokenItems.value = response.items || [];
-    if (response.token && tokenForm.preset !== "custom") {
-      applyTokenPreset();
-    }
+    tokenDialogOpen.value = false;
     statuses.tokens = "Token 已生成。";
   } catch (error) {
     statuses.tokens = error instanceof Error ? error.message : "生成失败。";

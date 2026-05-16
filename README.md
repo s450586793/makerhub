@@ -154,6 +154,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-05-16 · v0.6.102
+- Token 页改为表格化管理，横向展示名称、过期时间、权限、Token 字符和操作按钮，方便直接复用完整 Token
+- 生成 Token 改为弹窗填写名称、过期时间和权限，移除原来的“用途”选择，页面主体不再常驻创建表单
+- Token 权限用标签方式展示，移动端快捷指令配置复制和撤销操作保留在同一行
+
 ### 2026-05-16 · v0.6.101
 - 高级页的 App / Worker 调度简化为 `App Web 进程数` 和 `Worker 并发数` 两项，不再暴露 CPU 上限、核心绑定和权重等容易误填的 Docker 参数
 - 网页一键更新只写入进程 / 并发环境变量，不再通过页面覆盖容器 CPU 限制；旧配置里的 CPU 字段会被兼容忽略
@@ -164,13 +169,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 订阅库来源卡快照中间缝隙改为透明背景，并升级快照签名让旧浅色缓存自动失效，深色模式不再出现白线
 - GitHub 更新记录解析支持从标题读取版本号，README 顶部更新说明继续只展开最新三条
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-15 · v0.6.99
 - 网页一键更新新增版本一致性校验：如果目标版本已是新版，但新容器启动后仍读到旧版本，会明确标记更新失败
 - 更新失败提示会指出 Docker 镜像可能尚未构建完成或 GHCR `latest` 仍返回旧镜像，避免页面显示“已完成”但实际仍停留在旧版本
 - 补充自更新回归测试，覆盖目标版本和启动后版本不一致的场景
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-15 · v0.6.98
 - 订阅库来源卡新增 worker 侧图片区快照，API 返回 `preview_snapshot_url`，前端优先加载单张快照图，减少订阅库列表反复请求多张模型封面
