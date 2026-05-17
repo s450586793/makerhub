@@ -1045,6 +1045,27 @@ function hasRecentImportWork() {
   return counts.pending > 0 || counts.success + counts.skipped + counts.failed < uploadedCount;
 }
 
+function hasBackendActiveOrganizeWork(tasks) {
+  if (Number(tasks?.running_count || 0) > 0 || Number(tasks?.queued_count || 0) > 0) {
+    return true;
+  }
+  return (Array.isArray(tasks?.items) ? tasks.items : []).some((item) => (
+    ["running", "queued"].includes(organizerStatusVariant(item?.status))
+  ));
+}
+
+function lastImportBatchIsTerminal(tasks) {
+  const lastImport = tasks?.last_import && typeof tasks.last_import === "object" ? tasks.last_import : null;
+  if (!lastImport) {
+    return false;
+  }
+  const { uploadedCount, counts } = recentImportStatusCounts(tasks);
+  if (uploadedCount <= 0 || counts.pending > 0) {
+    return false;
+  }
+  return counts.success + counts.skipped + counts.failed >= uploadedCount;
+}
+
 function buildLocalImportSummary(tasks) {
   const lastImport = tasks?.last_import && typeof tasks.last_import === "object" ? tasks.last_import : null;
   const allItems = Array.isArray(tasks?.items) ? tasks.items : [];
@@ -1173,8 +1194,19 @@ function reconcileImportUploadProgress() {
   if (!importUploadProgress.visible) {
     return;
   }
+  const tasks = organizerTasks.value || {};
   const lastImport = organizerTasks.value?.last_import;
   const matchingTask = findCurrentImportOrganizerTask();
+  if (
+    lastImport
+    && lastImportUpdatedAfter(lastImport, importUploadProgress.startedAt)
+    && !hasBackendActiveOrganizeWork(tasks)
+    && lastImportBatchIsTerminal(tasks)
+    && (!matchingTask || organizerStatusVariant(matchingTask.status) !== "success" || matchingTask.snapshot_ready)
+  ) {
+    resetImportUploadProgress();
+    return;
+  }
   if (
     lastImport
     && lastImportUpdatedAfter(lastImport, importUploadProgress.startedAt)
