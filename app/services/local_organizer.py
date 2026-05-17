@@ -1100,15 +1100,23 @@ class LocalOrganizerService:
         return candidates
 
     def _directory_has_package_files(self, path: Path) -> bool:
+        has_non_3mf_model = False
+        has_archive = False
+        has_preview = False
         try:
             for child in path.rglob("*"):
                 if child.is_symlink() or not child.is_file():
                     continue
-                if child.suffix.lower() in (MODEL_SUFFIXES | PACKAGE_ARCHIVE_SUFFIXES | PREVIEW_IMAGE_SUFFIXES):
-                    return True
+                suffix = child.suffix.lower()
+                if suffix in MODEL_SUFFIXES and suffix != ".3mf":
+                    has_non_3mf_model = True
+                elif suffix in PACKAGE_ARCHIVE_SUFFIXES:
+                    has_archive = True
+                elif suffix in PREVIEW_IMAGE_SUFFIXES:
+                    has_preview = True
         except OSError:
             return False
-        return False
+        return has_non_3mf_model or has_archive or has_preview
 
     def _path_is_old_enough(self, path: Path, now: float) -> bool:
         try:

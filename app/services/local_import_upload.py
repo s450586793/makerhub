@@ -230,7 +230,7 @@ def _upload_entries(files: list[UploadFile], paths: list[str] | None) -> list[di
 
 def _is_legacy_3mf_batch(entries: list[dict[str, Any]]) -> bool:
     return bool(entries) and all(
-        str(item.get("suffix") or "").lower() == ".3mf" and not item.get("is_folder_item")
+        str(item.get("suffix") or "").lower() == ".3mf"
         for item in entries
     )
 
@@ -697,6 +697,49 @@ def _classify_package_files(items: list[dict[str, Any]]) -> dict[str, list[dict[
         elif suffix in ATTACHMENT_SUFFIXES:
             classified["attachments"].append(item)
     return classified
+
+
+def _is_pure_3mf_package(items: list[dict[str, Any]], classified: dict[str, list[dict[str, Any]]]) -> bool:
+    model_items = list(classified.get("models") or [])
+    if not model_items:
+        return False
+    if len(model_items) != len(items):
+        return False
+    if any(Path(str(item.get("file_name") or "")).suffix.lower() != ".3mf" for item in model_items):
+        return False
+    return not (
+        classified.get("images")
+        or classified.get("texts")
+        or classified.get("attachments")
+    )
+
+
+def _stage_pure_3mf_package_for_legacy_scan(
+    model_items: list[dict[str, Any]],
+    *,
+    source_dir: Path,
+) -> list[dict[str, Any]]:
+    upload_dir = source_dir / LOCAL_IMPORT_UPLOAD_SUBDIR
+    uploaded: list[dict[str, Any]] = []
+    for item in model_items:
+        source_path = Path(str(item.get("path") or ""))
+        if not source_path.exists() or not source_path.is_file():
+            continue
+        filename = _safe_3mf_filename(str(item.get("file_name") or source_path.name or "model.3mf"))
+        target_path = _unique_destination(upload_dir, filename)
+        _move_staged_file_to_target(source_path, target_path)
+        uploaded.append(
+            {
+                "file_name": target_path.name,
+                "source_path": target_path.as_posix(),
+                "size": int(item.get("size") or target_path.stat().st_size),
+                "status": "queued",
+                "message": "已拆分为独立 3MF，等待本地整理。",
+            }
+        )
+    if not uploaded:
+        raise ValueError("没有找到可导入的 3MF 文件。")
+    return uploaded
 
 
 def _display_relative_path(value: Any) -> str:
@@ -1531,6 +1574,46 @@ def _run_package_import_from_staging(
             preserve_task_metadata=True,
         )
         classified = _classify_package_files(expanded)
+        if _is_pure_3mf_package(expanded, classified):
+            uploaded_3mf = _stage_pure_3mf_package_for_legacy_scan(classified["models"], source_dir=source_dir)
+            _upsert_package_progress(
+                task_store=task_store,
+                task_id=task_id,
+                title=title,
+                source_dir=source_dir_text,
+                library_root=library_root,
+                package_source=package_source,
+                status="success",
+                message="已拆分为独立 3MF，等待本地整理。",
+                progress=100,
+                staging_dir=staging_dir,
+                snapshot_ready=True,
+                preserve_task_metadata=True,
+            )
+            _update_last_import(
+                task_store=task_store,
+                uploaded=uploaded_3mf,
+                source_dir=source_dir_text,
+                upload_dir=(source_dir / LOCAL_IMPORT_UPLOAD_SUBDIR).as_posix(),
+            )
+            append_business_log(
+                "organizer",
+                "local_import_package_split_3mf",
+                "本地模型包仅包含 3MF，已拆分为独立 3MF 等待整理。",
+                title=title,
+                task_id=task_id,
+                file_count=len(uploaded_3mf),
+                package_source=package_source,
+            )
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            return {
+                "success": True,
+                "mode": "3mf_split",
+                "trigger_organizer": True,
+                "message": f"已拆分 {len(uploaded_3mf)} 个 3MF，等待本地整理。",
+                "uploaded": uploaded_3mf,
+                "model_file_count": len(uploaded_3mf),
+            }
         model_items, duplicate_items = _dedupe_model_files(classified["models"])
         if not model_items:
             raise ValueError("没有找到可导入的 STL / 3MF / STEP / OBJ 模型文件。")

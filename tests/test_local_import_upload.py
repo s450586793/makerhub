@@ -283,6 +283,119 @@ class LocalImportUploadTest(unittest.TestCase):
             self.assertTrue(detail_groups[0]["download_url"].endswith("/packages/Batch1.zip"))
             self.assertTrue(package_dir.exists())
 
+    def test_local_folder_with_only_3mf_uses_legacy_3mf_candidates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            archive_root = root / "archive"
+            source_root = root / "source"
+            archive_root.mkdir()
+            source_root.mkdir()
+
+            package_dir = source_root / "配置合集"
+            package_dir.mkdir()
+            (package_dir / "A.3mf").write_bytes(b"3mf-a")
+            (package_dir / "B.3mf").write_bytes(b"3mf-b")
+            store = SimpleNamespace(
+                load=lambda: SimpleNamespace(
+                    organizer=SimpleNamespace(source_dir=source_root.as_posix(), target_dir=archive_root.as_posix(), move_files=True)
+                )
+            )
+            task_store = FakeTaskStore()
+
+            with patch.object(local_organizer, "ORGANIZER_MIN_FILE_AGE_SECONDS", 0), \
+                patch.object(local_organizer, "append_business_log"), \
+                patch.object(local_organizer, "_append_organizer_log"), \
+                patch.object(local_organizer.LocalOrganizerService, "_spawn_worker") as spawn_worker:
+                service = local_organizer.LocalOrganizerService(store=store, task_store=task_store)
+                service.run_once()
+
+            self.assertEqual(spawn_worker.call_count, 1)
+            first_source = spawn_worker.call_args.kwargs["source_path"]
+            self.assertEqual(first_source, package_dir / "A.3mf")
+            queued = task_store.payload["items"]
+            self.assertEqual(len(queued), 2)
+            self.assertTrue(all(item.get("kind") != "local_package_import" for item in queued))
+
+    def test_zip_with_only_3mf_splits_to_legacy_3mf_queue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            archive_root = root / "archive"
+            source_root = root / "source"
+            state_root = root / "state"
+            archive_root.mkdir()
+            source_root.mkdir()
+            state_root.mkdir()
+
+            package = _zip_bytes({"A.3mf": b"3mf-a", "B.3mf": b"3mf-b"})
+            staging_dir, staged_file = _stage_test_file(root, "Configs.zip", package)
+            queued_task = _queued_package_task(staging_dir, "Configs", source_root, archive_root, staged_file["path"])
+            task_store = FakeTaskStore()
+            task_store.upsert_organize_task(queued_task)
+            store = SimpleNamespace(
+                load=lambda: SimpleNamespace(
+                    organizer=SimpleNamespace(source_dir=source_root.as_posix(), target_dir=archive_root.as_posix())
+                )
+            )
+
+            with patch.object(local_import_upload, "LOCAL_IMPORT_STAGING_DIR", state_root / "import_uploads"), \
+                patch.object(local_import_upload, "append_business_log"):
+                result = local_import_upload.run_queued_package_import_task(
+                    queued_task,
+                    store=store,
+                    task_store=task_store,
+                )
+
+            self.assertEqual(result["mode"], "3mf_split")
+            upload_dir = source_root / local_import_upload.LOCAL_IMPORT_UPLOAD_SUBDIR
+            self.assertTrue((upload_dir / "A.3mf").exists())
+            self.assertTrue((upload_dir / "B.3mf").exists())
+            last_import = task_store.payload["last_import"]
+            self.assertEqual(last_import["uploaded_count"], 2)
+            self.assertEqual([item["file_name"] for item in last_import["files"]], ["A.3mf", "B.3mf"])
+            self.assertTrue(all(item["status"] == "queued" for item in last_import["files"]))
+
+    def test_folder_with_3mf_and_assets_stays_single_package(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            archive_root = root / "archive"
+            source_root = root / "source"
+            state_root = root / "state"
+            archive_root.mkdir()
+            source_root.mkdir()
+            state_root.mkdir()
+
+            package_dir = source_root / "混合模型"
+            package_dir.mkdir()
+            (package_dir / "A.3mf").write_bytes(b"3mf-a")
+            (package_dir / "part.stl").write_bytes(b"solid part\nendsolid part\n")
+            (package_dir / "cover.jpg").write_bytes(b"fake-jpg")
+            store = SimpleNamespace(
+                load=lambda: SimpleNamespace(
+                    organizer=SimpleNamespace(source_dir=source_root.as_posix(), target_dir=archive_root.as_posix(), move_files=False)
+                )
+            )
+            task_store = FakeTaskStore()
+
+            with patch.object(local_import_upload, "ARCHIVE_DIR", archive_root), \
+                patch.object(local_import_upload, "LOCAL_IMPORT_STAGING_DIR", state_root / "import_uploads"), \
+                patch.object(local_import_upload, "ORGANIZER_LIBRARY_INDEX_CACHE_PATH", state_root / "organizer_library_index.json"), \
+                patch.object(local_import_upload, "append_business_log"), \
+                patch.object(local_organizer, "ARCHIVE_DIR", archive_root), \
+                patch.object(local_organizer, "ORGANIZER_MIN_FILE_AGE_SECONDS", 0), \
+                patch.object(local_organizer, "ORGANIZER_LIBRARY_INDEX_CACHE_PATH", state_root / "organizer_library_index.json"), \
+                patch.object(local_organizer, "append_business_log"), \
+                patch.object(local_organizer, "_append_organizer_log"), \
+                patch.object(catalog, "ARCHIVE_DIR", archive_root):
+                service = local_organizer.LocalOrganizerService(store=store, task_store=task_store)
+                service.run_once()
+                detail = catalog.get_model_detail("LOCAL_混合模型")
+
+            self.assertIsNotNone(detail)
+            meta = json.loads((archive_root / "LOCAL_混合模型" / "meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(meta["title"], "混合模型")
+            file_names = {item["fileName"] for item in meta["instances"]}
+            self.assertEqual(file_names, {"A.3mf", "part.stl"})
+
     def test_stl_import_marks_three_preview_pending_when_no_images_exist(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
