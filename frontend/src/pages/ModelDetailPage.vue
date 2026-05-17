@@ -171,20 +171,51 @@
           </div>
 
           <div class="mw-action-strip">
-            <a
-              v-if="heroDownloadHref"
-              class="mw-download-button mw-download-button--hero"
-              :href="heroDownloadHref"
-              download
-            >
-              {{ heroDownloadLabel }}
-            </a>
-            <span
-              v-else
-              class="mw-download-button mw-download-button--hero is-disabled"
-            >
-              {{ heroDownloadLabel }}
-            </span>
+            <div class="mw-download-split" :class="{ 'is-open': downloadMenuOpen }">
+              <a
+                v-if="heroDownloadHref"
+                class="mw-download-button mw-download-button--hero mw-download-split__main"
+                :href="heroDownloadHref"
+                :download="heroDownloadFilename"
+              >
+                {{ heroDownloadLabel }}
+              </a>
+              <span
+                v-else
+                class="mw-download-button mw-download-button--hero mw-download-split__main is-disabled"
+              >
+                {{ heroDownloadLabel }}
+              </span>
+              <button
+                class="mw-download-split__toggle"
+                type="button"
+                :aria-expanded="downloadMenuOpen ? 'true' : 'false'"
+                aria-label="更多下载选项"
+                @click.stop="toggleDownloadMenu"
+              >
+                <svg aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="m5 7.5 5 5 5-5"/>
+                </svg>
+              </button>
+              <div v-if="downloadMenuOpen" class="mw-download-menu" @click.stop>
+                <button
+                  class="mw-download-menu__item"
+                  type="button"
+                  :disabled="!bambuStudioOpenHref"
+                  @click="openBambuStudio"
+                >
+                  在 Bambu Studio 打开
+                </button>
+                <a
+                  class="mw-download-menu__item"
+                  :href="downloadAllHref"
+                  :download="downloadAllFilename"
+                  @click="closeDownloadMenu"
+                >
+                  下载所有文件.zip
+                </a>
+              </div>
+            </div>
             <a
               v-if="detail.origin_url"
               class="mw-inline-link mw-inline-link--ghost"
@@ -1036,6 +1067,7 @@ const sourceBackfillLoading = ref(false);
 const sourceBackfillMessage = ref("");
 const sourceBackfillError = ref("");
 const shareDialogVisible = ref(false);
+const downloadMenuOpen = ref(false);
 const localEditBusy = ref(false);
 const localEditDialog = ref({
   open: false,
@@ -1178,6 +1210,29 @@ function decodeArchivePath(value) {
   } catch {
     return withoutPrefix;
   }
+}
+
+function absoluteDownloadUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw || typeof window === "undefined") {
+    return raw;
+  }
+  try {
+    return new URL(raw, window.location.origin).toString();
+  } catch {
+    return raw;
+  }
+}
+
+function bambuStudioScheme() {
+  if (typeof navigator === "undefined") {
+    return "bambustudioopen";
+  }
+  const platform = `${navigator.platform || ""} ${navigator.userAgent || ""}`.toLowerCase();
+  if (platform.includes("win")) {
+    return "bambustudio";
+  }
+  return "bambustudioopen";
 }
 
 const modelDir = computed(() => {
@@ -1438,6 +1493,10 @@ const heroDownloadHref = computed(() => {
   return "";
 });
 
+const heroDownloadFilename = computed(() => (
+  activeInstance.value?.file_name ? String(activeInstance.value.file_name) : ""
+));
+
 const heroDownloadLabel = computed(() => {
   if (!activeInstance.value) {
     return "选择打印配置";
@@ -1449,6 +1508,27 @@ const heroDownloadLabel = computed(() => {
     return activeInstance.value.file_status_message || `${activeInstance.value.file_kind || "文件"} 还未获取到`;
   }
   return "当前没有模型文件";
+});
+
+const bambuStudioOpenHref = computed(() => {
+  if (!heroDownloadHref.value) {
+    return "";
+  }
+  const absoluteUrl = absoluteDownloadUrl(heroDownloadHref.value);
+  if (!absoluteUrl) {
+    return "";
+  }
+  return `${bambuStudioScheme()}://open?file=${encodeURIComponent(absoluteUrl)}`;
+});
+
+const downloadAllHref = computed(() => {
+  const value = String(detail.value?.model_dir || modelDir.value || "").trim();
+  return value ? `/api/models/${encodeURIComponent(value)}/download-all` : "";
+});
+
+const downloadAllFilename = computed(() => {
+  const title = String(detail.value?.title || detail.value?.model_dir || "MakerHub模型").trim() || "MakerHub模型";
+  return `${title}_所有文件.zip`;
 });
 
 function createThumbRailState() {
@@ -1785,6 +1865,23 @@ function handleProfileEntryFocusOut(event, profile) {
   closeProfilePopover(profile?.instance_key || "", { force: !hoverPopoverEnabled.value });
 }
 
+function closeDownloadMenu() {
+  downloadMenuOpen.value = false;
+}
+
+function toggleDownloadMenu() {
+  downloadMenuOpen.value = !downloadMenuOpen.value;
+}
+
+function openBambuStudio() {
+  const target = bambuStudioOpenHref.value;
+  closeDownloadMenu();
+  if (!target || typeof window === "undefined") {
+    return;
+  }
+  window.location.href = target;
+}
+
 function profilePopoverPlacement(profile, index, total) {
   const state = popoverPlacementState.value[profile?.instance_key];
   if (state?.placement === "below") {
@@ -1840,10 +1937,13 @@ function handleHashChange() {
 }
 
 function handleWindowPointerDown(event) {
+  const target = event.target;
+  if (downloadMenuOpen.value && target instanceof Element && !target.closest(".mw-download-split")) {
+    closeDownloadMenu();
+  }
   if (hoverPopoverEnabled.value || !previewedInstanceKey.value) {
     return;
   }
-  const target = event.target;
   if (target instanceof Element && target.closest(".mw-profile-entry")) {
     return;
   }
@@ -2102,7 +2202,9 @@ function closeModelPreview() {
 }
 
 function handleWindowKeydown(event) {
-  if (event.key === "Escape" && lightbox.value.open) {
+  if (event.key === "Escape" && downloadMenuOpen.value) {
+    closeDownloadMenu();
+  } else if (event.key === "Escape" && lightbox.value.open) {
     closeLightbox();
   } else if (event.key === "Escape" && modelPreview.value.open) {
     closeModelPreview();
@@ -3214,6 +3316,7 @@ function resetDetailViewState({ clearDetail = true } = {}) {
   sourceBackfillLoading.value = false;
   sourceBackfillMessage.value = "";
   sourceBackfillError.value = "";
+  downloadMenuOpen.value = false;
   if (clearDetail) {
     localEditDialog.value = {
       open: false,
@@ -3499,6 +3602,7 @@ onBeforeUnmount(() => {
   sourceBackfillLoading.value = false;
   sourceBackfillMessage.value = "";
   sourceBackfillError.value = "";
+  downloadMenuOpen.value = false;
   localEditBusy.value = false;
   expandedCommentReplies.value = {};
   disconnectCommentsLoadMoreObserver();

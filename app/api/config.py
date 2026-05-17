@@ -118,6 +118,7 @@ from app.services.source_health import probe_cookie_auth_status
 from app.services.task_state import TaskStateStore, compact_remote_refresh_state
 from app.services.archive_worker import BATCH_TASK_MODES, detect_archive_mode
 from app.services.self_update import get_update_status, normalize_runtime_resource_config, request_system_update
+from app.services.legacy_archiver import sanitize_filename
 
 
 router = APIRouter(prefix="/api")
@@ -196,6 +197,12 @@ ATTACHMENT_FILE_SUFFIX_ALIASES = {
     "excel": {"xls", "xlsx", "xlsm", "xlsb", "xlt", "xltx", "xltm", "csv", "tsv", "ods"},
 }
 MOBILE_IMPORT_FALLBACK_STEMS = {"wechat-upload", "移动端导入"}
+MODEL_DOWNLOAD_ALL_CACHE_DIR = STATE_DIR / "model_downloads"
+MODEL_DOWNLOAD_ALL_INCLUDED_DIRS = {"instances", "images", "attachments", "file"}
+MODEL_DOWNLOAD_ALL_EXCLUDED_DIRS = {"packages"}
+MODEL_DOWNLOAD_ALL_EXCLUDED_FILENAMES = {
+    ".makerhub-manual-attachments.json",
+}
 
 
 def _read_shares_state() -> dict:
@@ -219,6 +226,72 @@ def _write_shares_state(payload: dict) -> None:
     temp_path = SHARES_STATE_PATH.with_name(f"{SHARES_STATE_PATH.name}.{os.getpid()}.tmp")
     temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     temp_path.replace(SHARES_STATE_PATH)
+
+
+def _safe_download_filename(filename: str, fallback: str = "makerhub-model") -> str:
+    raw = Path(str(filename or "").strip()).name
+    suffix = Path(raw).suffix.lower()
+    stem = Path(raw).stem.strip() if raw else ""
+    if not stem:
+        stem = str(fallback or "makerhub-model").strip()
+        suffix = Path(fallback).suffix.lower() or suffix
+    safe_stem = sanitize_filename(stem).strip(" ._") or "makerhub-model"
+    safe_suffix = re.sub(r"[^.\w]+", "", suffix)[:16]
+    return f"{safe_stem}{safe_suffix}"
+
+
+def _resolve_archive_model_root(model_dir: str) -> Path:
+    clean_model_dir = str(model_dir or "").strip().strip("/")
+    if not clean_model_dir:
+        raise ValueError("模型不存在。")
+    archive_root = ARCHIVE_DIR.resolve()
+    model_root = (ARCHIVE_DIR / clean_model_dir).resolve()
+    try:
+        model_root.relative_to(archive_root)
+    except ValueError as exc:
+        raise ValueError("非法模型路径。") from exc
+    if not model_root.exists() or not model_root.is_dir() or not (model_root / "meta.json").exists():
+        raise ValueError("模型不存在。")
+    return model_root
+
+
+def _should_include_model_download_file(path: Path, model_root: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        relative = path.relative_to(model_root)
+    except ValueError:
+        return False
+    if not relative.parts or relative.parts[0] not in MODEL_DOWNLOAD_ALL_INCLUDED_DIRS:
+        return False
+    if any(part in MODEL_DOWNLOAD_ALL_EXCLUDED_DIRS for part in relative.parts[:-1]):
+        return False
+    if path.name in MODEL_DOWNLOAD_ALL_EXCLUDED_FILENAMES:
+        return False
+    return True
+
+
+def _create_model_download_all_archive(model_dir: str) -> tuple[Path, str]:
+    model_root = _resolve_archive_model_root(model_dir)
+    try:
+        meta = json.loads((model_root / "meta.json").read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        meta = {}
+    title = str(meta.get("title") or model_root.name).strip()
+    download_name = _safe_download_filename(f"{title or model_root.name}_所有文件.zip", fallback=f"{model_root.name}_所有文件.zip")
+    MODEL_DOWNLOAD_ALL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    zip_path = MODEL_DOWNLOAD_ALL_CACHE_DIR / f"{uuid.uuid4().hex}.zip"
+    added = 0
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(model_root.rglob("*")):
+            if not _should_include_model_download_file(path, model_root):
+                continue
+            archive.write(path, path.relative_to(model_root).as_posix())
+            added += 1
+    if added <= 0:
+        zip_path.unlink(missing_ok=True)
+        raise ValueError("当前模型没有可下载文件。")
+    return zip_path, download_name
 
 
 def _share_token_hash(token: str) -> str:
@@ -3308,6 +3381,22 @@ async def get_model_detail_comments(
     if payload is None:
         raise HTTPException(status_code=404, detail="模型不存在。")
     return payload
+
+
+@router.get("/models/{model_dir:path}/download-all")
+async def download_model_all_files(model_dir: str, background_tasks: BackgroundTasks):
+    try:
+        zip_path, download_name = await run_ui_io(_create_model_download_all_archive, model_dir)
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 404 if "不存在" in message else 400
+        raise HTTPException(status_code=status_code, detail=message) from exc
+    background_tasks.add_task(zip_path.unlink, missing_ok=True)
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=download_name,
+    )
 
 
 @router.post("/models/{model_dir:path}/source-backfill")

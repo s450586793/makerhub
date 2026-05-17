@@ -154,6 +154,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-05-17 · v0.6.108
+- 详情页主下载按钮改为 split button：左侧保持当前配置下载，右侧下拉提供“在 Bambu Studio 打开”和“下载所有文件.zip”
+- 新增模型级 `/api/models/{model_dir}/download-all` 下载出口，会按模型目录打包模型文件、图片和附件，并自动清理临时 zip
+- “下载所有文件.zip” 会跳过本地分组生成的 `packages/*.zip`，避免 zip 套 zip 导致体积重复
+
 ### 2026-05-17 · v0.6.107
 - 本地整理三入口统一内容分流：纯 3MF 集合继续逐个按 3MF 元数据 / 配置指纹整理，混合 STL / STEP / OBJ / 图片 / 附件时按一个本地模型包导入
 - zip / rar 内仅包含 3MF 时会自动拆分回独立 3MF 整理队列，local 子文件夹仅包含 3MF 时不再被当作一个模型包合并
@@ -163,6 +168,9 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 修复本地整理进度条卡在旧上传进度的问题：后端已无运行 / 排队任务，且最近导入已完成、跳过或失败时，前端会清理本地进度缓存并回到空闲
 - 本地整理状态同步会以服务端当前任务为准，避免历史重复导入记录把进度卡片继续显示为“整理中”
 - 线上排查确认 `索尼克托架` 重复日志为历史终态记录，当前任务队列已恢复为空闲
+
+<details>
+<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-17 · v0.6.105
 - 修复 local 根目录直接放入重复 STL 后反复整理的问题：本地包任务会保留原始源文件路径，重复跳过后把源文件移入 `_duplicates`
@@ -178,9 +186,6 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 本地整理进度卡修正移动端导入失败状态：上传连接已断开或空文件等失败任务不再被进度阶段误显示为“上传中”
 - 移动端导入任务的阶段标签只在任务仍为运行或排队时显示上传阶段，失败记录会正常显示“失败”
 - 排查线上 `超级马里奥赛车.3mf` 的整理记录，确认模型已成功入库且快照已生成，前端仅残留同名失败上传记录的显示误判
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-16 · v0.6.102
 - Token 页改为表格化管理，横向展示名称、过期时间、权限、Token 字符和操作按钮，方便直接复用完整 Token
