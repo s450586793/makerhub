@@ -154,6 +154,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-05-17 · v0.6.109
+- 修复详情页“在 Bambu Studio 打开”：后端生成 10 分钟有效的签名 3MF 下载链接，Bambu Studio 可直接获取文件并导入
+- 修复带本地分组下载包的模型详情页黑屏问题，补齐分组大小格式化，避免本地分组渲染时抛错
+- 缩略图左右切换改为更小的半透明悬浮按钮，不再挤占图片轨道两侧空间
+
 ### 2026-05-17 · v0.6.108
 - 详情页主下载按钮改为 split button：左侧保持当前配置下载，右侧下拉提供“在 Bambu Studio 打开”和“下载所有文件.zip”
 - 新增模型级 `/api/models/{model_dir}/download-all` 下载出口，会按模型目录打包模型文件、图片和附件，并自动清理临时 zip
@@ -164,13 +169,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - zip / rar 内仅包含 3MF 时会自动拆分回独立 3MF 整理队列，local 子文件夹仅包含 3MF 时不再被当作一个模型包合并
 - 升级 `Pillow` 到 `12.2.0`，修复 GitHub Dependabot 报告的 6 个 Pillow 安全漏洞，并补齐根目录版本文件
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-17 · v0.6.106
 - 修复本地整理进度条卡在旧上传进度的问题：后端已无运行 / 排队任务，且最近导入已完成、跳过或失败时，前端会清理本地进度缓存并回到空闲
 - 本地整理状态同步会以服务端当前任务为准，避免历史重复导入记录把进度卡片继续显示为“整理中”
 - 线上排查确认 `索尼克托架` 重复日志为历史终态记录，当前任务队列已恢复为空闲
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-17 · v0.6.105
 - 修复 local 根目录直接放入重复 STL 后反复整理的问题：本地包任务会保留原始源文件路径，重复跳过后把源文件移入 `_duplicates`

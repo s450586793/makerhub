@@ -140,6 +140,10 @@ class ApiTokenCreateRequest(BaseModel):
     expires_days: int = Field(default=0, ge=0, le=3650)
 
 
+class BambuStudioDownloadLinkRequest(BaseModel):
+    file_name: str = ""
+
+
 class MobileImportTokenResetRequest(BaseModel):
     enabled: bool = True
 

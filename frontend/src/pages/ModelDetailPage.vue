@@ -201,10 +201,10 @@
                 <button
                   class="mw-download-menu__item"
                   type="button"
-                  :disabled="!bambuStudioOpenHref"
+                  :disabled="!canOpenBambuStudio || bambuStudioOpening"
                   @click="openBambuStudio"
                 >
-                  在 Bambu Studio 打开
+                  {{ bambuStudioOpening ? "正在打开..." : "在 Bambu Studio 打开" }}
                 </button>
                 <a
                   class="mw-download-menu__item"
@@ -214,6 +214,7 @@
                 >
                   下载所有文件.zip
                 </a>
+                <p v-if="bambuStudioError" class="mw-download-menu__error">{{ bambuStudioError }}</p>
               </div>
             </div>
             <a
@@ -1068,6 +1069,8 @@ const sourceBackfillMessage = ref("");
 const sourceBackfillError = ref("");
 const shareDialogVisible = ref(false);
 const downloadMenuOpen = ref(false);
+const bambuStudioOpening = ref(false);
+const bambuStudioError = ref("");
 const localEditBusy = ref(false);
 const localEditDialog = ref({
   open: false,
@@ -1222,17 +1225,6 @@ function absoluteDownloadUrl(value) {
   } catch {
     return raw;
   }
-}
-
-function bambuStudioScheme() {
-  if (typeof navigator === "undefined") {
-    return "bambustudioopen";
-  }
-  const platform = `${navigator.platform || ""} ${navigator.userAgent || ""}`.toLowerCase();
-  if (platform.includes("win")) {
-    return "bambustudio";
-  }
-  return "bambustudioopen";
 }
 
 const modelDir = computed(() => {
@@ -1510,16 +1502,16 @@ const heroDownloadLabel = computed(() => {
   return "当前没有模型文件";
 });
 
-const bambuStudioOpenHref = computed(() => {
-  if (!heroDownloadHref.value) {
-    return "";
-  }
-  const absoluteUrl = absoluteDownloadUrl(heroDownloadHref.value);
-  if (!absoluteUrl) {
-    return "";
-  }
-  return `${bambuStudioScheme()}://open?file=${encodeURIComponent(absoluteUrl)}`;
+const canOpenBambuStudio = computed(() => {
+  const filename = heroDownloadFilename.value || "";
+  return Boolean(heroDownloadHref.value && filename.toLowerCase().endsWith(".3mf"));
 });
+
+function bambuStudioOpenHref(downloadUrl, filename) {
+  const absoluteUrl = absoluteDownloadUrl(downloadUrl);
+  const nameParam = filename ? `&name=${filename}` : "";
+  return `bambustudioopen://${encodeURIComponent(`${absoluteUrl}${nameParam}`)}`;
+}
 
 const downloadAllHref = computed(() => {
   const value = String(detail.value?.model_dir || modelDir.value || "").trim();
@@ -1871,15 +1863,32 @@ function closeDownloadMenu() {
 
 function toggleDownloadMenu() {
   downloadMenuOpen.value = !downloadMenuOpen.value;
+  if (downloadMenuOpen.value) {
+    bambuStudioError.value = "";
+  }
 }
 
-function openBambuStudio() {
-  const target = bambuStudioOpenHref.value;
-  closeDownloadMenu();
-  if (!target || typeof window === "undefined") {
+async function openBambuStudio() {
+  if (!canOpenBambuStudio.value || bambuStudioOpening.value || typeof window === "undefined") {
     return;
   }
-  window.location.href = target;
+  bambuStudioOpening.value = true;
+  bambuStudioError.value = "";
+  try {
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/bambu-studio-link`, {
+      method: "POST",
+      body: {
+        file_name: heroDownloadFilename.value,
+      },
+    });
+    const target = bambuStudioOpenHref(payload.path || payload.url, payload.file_name || heroDownloadFilename.value);
+    closeDownloadMenu();
+    window.location.href = target;
+  } catch (error) {
+    bambuStudioError.value = error instanceof Error ? error.message : "无法打开 Bambu Studio。";
+  } finally {
+    bambuStudioOpening.value = false;
+  }
 }
 
 function profilePopoverPlacement(profile, index, total) {
@@ -2213,6 +2222,23 @@ function handleWindowKeydown(event) {
 
 function formatStat(value) {
   return STAT_FORMATTER.format(Number(value || 0));
+}
+
+function formatFileSize(value) {
+  const size = Number(value || 0);
+  if (!Number.isFinite(size) || size <= 0) {
+    return "0 B";
+  }
+  if (size >= 1024 * 1024 * 1024) {
+    return `${(size / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  }
+  if (size >= 1024 * 1024) {
+    return `${(size / 1024 / 1024).toFixed(1)} MB`;
+  }
+  if (size >= 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+  return `${size} B`;
 }
 
 function profilePopoverFacts(profile) {
@@ -3317,6 +3343,8 @@ function resetDetailViewState({ clearDetail = true } = {}) {
   sourceBackfillMessage.value = "";
   sourceBackfillError.value = "";
   downloadMenuOpen.value = false;
+  bambuStudioOpening.value = false;
+  bambuStudioError.value = "";
   if (clearDetail) {
     localEditDialog.value = {
       open: false,
@@ -3603,6 +3631,8 @@ onBeforeUnmount(() => {
   sourceBackfillMessage.value = "";
   sourceBackfillError.value = "";
   downloadMenuOpen.value = false;
+  bambuStudioOpening.value = false;
+  bambuStudioError.value = "";
   localEditBusy.value = false;
   expandedCommentReplies.value = {};
   disconnectCommentsLoadMoreObserver();

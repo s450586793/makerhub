@@ -32,6 +32,7 @@ from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_
 from app.schemas.models import (
     AdvancedRuntimeConfig,
     ArchiveRequest,
+    BambuStudioDownloadLinkRequest,
     Missing3mfCancelRequest,
     CookiePair,
     CookieTestRequest,
@@ -203,6 +204,8 @@ MODEL_DOWNLOAD_ALL_EXCLUDED_DIRS = {"packages"}
 MODEL_DOWNLOAD_ALL_EXCLUDED_FILENAMES = {
     ".makerhub-manual-attachments.json",
 }
+BAMBU_STUDIO_DOWNLOAD_SECRET_PATH = STATE_DIR / "bambu_studio_download_secret"
+BAMBU_STUDIO_DOWNLOAD_TTL_SECONDS = 10 * 60
 
 
 def _read_shares_state() -> dict:
@@ -292,6 +295,45 @@ def _create_model_download_all_archive(model_dir: str) -> tuple[Path, str]:
         zip_path.unlink(missing_ok=True)
         raise ValueError("当前模型没有可下载文件。")
     return zip_path, download_name
+
+
+def _bambu_studio_download_secret() -> str:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        secret = BAMBU_STUDIO_DOWNLOAD_SECRET_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        secret = ""
+    if not secret:
+        secret = secrets.token_urlsafe(32)
+        BAMBU_STUDIO_DOWNLOAD_SECRET_PATH.write_text(secret, encoding="utf-8")
+    return secret
+
+
+def _bambu_download_signature(model_dir: str, file_name: str, expires_at: int) -> str:
+    payload = f"{model_dir}\n{file_name}\n{int(expires_at)}"
+    return hmac.new(
+        _bambu_studio_download_secret().encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _resolve_bambu_download_file(model_dir: str, file_name: str) -> tuple[Path, str]:
+    model_root = _resolve_archive_model_root(model_dir)
+    raw_name = str(file_name or "").strip()
+    clean_name = Path(raw_name).name
+    if raw_name != clean_name:
+        raise ValueError("非法文件路径。")
+    if not clean_name or Path(clean_name).suffix.lower() != ".3mf":
+        raise ValueError("Bambu Studio 只支持打开 3MF 文件。")
+    target = (model_root / "instances" / clean_name).resolve()
+    try:
+        target.relative_to((model_root / "instances").resolve())
+    except ValueError as exc:
+        raise ValueError("非法文件路径。") from exc
+    if not target.is_file():
+        raise ValueError("3MF 文件不存在。")
+    return target, clean_name
 
 
 def _share_token_hash(token: str) -> str:
@@ -3396,6 +3438,58 @@ async def download_model_all_files(model_dir: str, background_tasks: BackgroundT
         zip_path,
         media_type="application/zip",
         filename=download_name,
+    )
+
+
+@router.post("/models/{model_dir:path}/bambu-studio-link")
+async def create_bambu_studio_download_link(model_dir: str, payload: BambuStudioDownloadLinkRequest, request: Request):
+    _require_session_auth(request)
+    clean_model_dir = str(model_dir or "").strip().strip("/")
+    clean_file_name = str(payload.file_name or "").strip()
+    try:
+        _resolve_bambu_download_file(clean_model_dir, clean_file_name)
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 404 if "不存在" in message else 400
+        raise HTTPException(status_code=status_code, detail=message) from exc
+
+    expires_at = int(time.time()) + BAMBU_STUDIO_DOWNLOAD_TTL_SECONDS
+    signature = _bambu_download_signature(clean_model_dir, clean_file_name, expires_at)
+    download_path = (
+        f"/api/public/bambu-studio/models/{quote(clean_model_dir, safe='/')}/files/"
+        f"{quote(clean_file_name, safe='')}"
+        f"?expires={expires_at}&sig={quote(signature, safe='')}"
+    )
+    return {
+        "url": str(request.url_for("public_bambu_studio_download_file", model_dir=clean_model_dir, file_name=clean_file_name))
+        + f"?expires={expires_at}&sig={quote(signature, safe='')}",
+        "path": download_path,
+        "expires_at": expires_at,
+        "file_name": clean_file_name,
+    }
+
+
+@router.get("/public/bambu-studio/models/{model_dir:path}/files/{file_name}")
+async def public_bambu_studio_download_file(model_dir: str, file_name: str, expires: int = Query(0), sig: str = Query("")):
+    clean_model_dir = str(model_dir or "").strip().strip("/")
+    clean_file_name = str(file_name or "").strip()
+    if not clean_model_dir or not clean_file_name:
+        raise HTTPException(status_code=404, detail="文件不存在。")
+    if int(expires or 0) < int(time.time()):
+        raise HTTPException(status_code=403, detail="下载链接已过期。")
+    expected = _bambu_download_signature(clean_model_dir, clean_file_name, int(expires or 0))
+    if not hmac.compare_digest(expected, str(sig or "")):
+        raise HTTPException(status_code=403, detail="下载链接无效。")
+    try:
+        target, safe_name = await run_web_io(_resolve_bambu_download_file, clean_model_dir, clean_file_name)
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 404 if "不存在" in message else 400
+        raise HTTPException(status_code=status_code, detail=message) from exc
+    return FileResponse(
+        target,
+        media_type="model/3mf",
+        filename=safe_name,
     )
 
 

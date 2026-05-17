@@ -2468,8 +2468,9 @@ select:focus {
 }
 
 .mw-thumb-rail {
-  --mw-thumb-rail-control-size: 34px;
-  --mw-thumb-rail-fade-width: 42px;
+  --mw-thumb-rail-control-size: 28px;
+  --mw-thumb-rail-control-offset: 8px;
+  --mw-thumb-rail-fade-width: 28px;
   --mw-thumb-rail-fade-solid: rgba(255, 255, 255, 0.98);
   --mw-thumb-rail-fade-transparent: rgba(255, 255, 255, 0);
   position: relative;
@@ -2477,7 +2478,7 @@ select:focus {
 }
 
 .mw-thumb-rail.is-overflowing {
-  padding-inline: calc(var(--mw-thumb-rail-control-size) + 8px);
+  padding-inline: 0;
 }
 
 .mw-thumb-rail::before,
@@ -2516,9 +2517,10 @@ select:focus {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #20322b;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
+  color: rgba(255, 255, 255, 0.94);
+  background: rgba(15, 23, 42, 0.28);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(6px);
   transform: translateY(-50%);
   cursor: pointer;
   z-index: 2;
@@ -2526,6 +2528,7 @@ select:focus {
 }
 
 .mw-thumb-rail__control:hover:not(:disabled) {
+  background: rgba(15, 23, 42, 0.48);
   transform: translateY(-50%) scale(1.04);
 }
 
@@ -2535,11 +2538,11 @@ select:focus {
 }
 
 .mw-thumb-rail__control.is-prev {
-  left: 0;
+  left: var(--mw-thumb-rail-control-offset);
 }
 
 .mw-thumb-rail__control.is-next {
-  right: 0;
+  right: var(--mw-thumb-rail-control-offset);
 }
 
 .mw-thumb-rail__control-icon {
@@ -2557,8 +2560,9 @@ select:focus {
 }
 
 .mw-thumb-rail--popover {
-  --mw-thumb-rail-control-size: 30px;
-  --mw-thumb-rail-fade-width: 36px;
+  --mw-thumb-rail-control-size: 26px;
+  --mw-thumb-rail-control-offset: 6px;
+  --mw-thumb-rail-fade-width: 24px;
 }
 
 .mw-instance-media-tabs {
@@ -2655,6 +2659,13 @@ select:focus {
   color: #9ca3af;
   cursor: not-allowed;
   background: transparent;
+}
+
+.mw-download-menu__error {
+  margin: 4px 8px 6px;
+  color: #b91c1c;
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .mw-inline-link--ghost {
@@ -4783,9 +4794,13 @@ html[data-theme="dark"] .detail-page--makerworld .mw-thumb-rail {
 }
 
 html[data-theme="dark"] .detail-page--makerworld .mw-thumb-rail__control {
-  color: var(--mw-text);
-  background: rgba(18, 29, 25, 0.96);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32);
+  color: rgba(255, 255, 255, 0.94);
+  background: rgba(3, 7, 18, 0.32);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-thumb-rail__control:hover:not(:disabled) {
+  background: rgba(3, 7, 18, 0.54);
 }
 
 html[data-theme="dark"] .detail-page--makerworld .mw-gallery__thumb::after {
@@ -4845,6 +4860,10 @@ html[data-theme="dark"] .detail-page--makerworld .mw-download-menu__item:hover {
 
 html[data-theme="dark"] .detail-page--makerworld .mw-download-menu__item:disabled {
   color: var(--mw-muted);
+}
+
+html[data-theme="dark"] .detail-page--makerworld .mw-download-menu__error {
+  color: #fca5a5;
 }
 
 html[data-theme="dark"] .detail-page--makerworld .mw-head__subline,
@@ -5242,8 +5261,8 @@ html[data-theme="dark"] .gallery-card__source--local-deleted {
   }
 
   .mw-thumb-rail {
-    --mw-thumb-rail-control-size: 32px;
-    --mw-thumb-rail-fade-width: 38px;
+    --mw-thumb-rail-control-size: 28px;
+    --mw-thumb-rail-fade-width: 28px;
   }
 
   .mw-gallery__thumb {
@@ -5678,12 +5697,13 @@ html[data-theme="dark"] .gallery-card__source--local-deleted {
   }
 
   .mw-thumb-rail {
-    --mw-thumb-rail-control-size: 28px;
-    --mw-thumb-rail-fade-width: 30px;
+    --mw-thumb-rail-control-size: 26px;
+    --mw-thumb-rail-control-offset: 6px;
+    --mw-thumb-rail-fade-width: 24px;
   }
 
   .mw-thumb-rail.is-overflowing {
-    padding-inline: calc(var(--mw-thumb-rail-control-size) + 6px);
+    padding-inline: 0;
   }
 
   .mw-action-strip {
