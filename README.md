@@ -154,6 +154,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-05-18 · v0.6.110
+- 详情页当前文件主按钮默认对 3MF 执行“在 Bambu Studio 打开”，STL / STEP / OBJ 继续保持普通下载，右侧下拉保留当前文件下载和“下载所有文件.zip”
+- 源端刷新图片资源判断改用稳定资源 URL，忽略 CDN 签名、过期时间和缩略参数变化，减少把同一张图误报成“图片资源已更新”并重复同步
+- 归档页面数据回退提示拆分原因：区分未包含内嵌数据、内嵌数据未定位到模型、模型数据无效、解析失败和疑似验证拦截
+
 ### 2026-05-17 · v0.6.109
 - 修复详情页“在 Bambu Studio 打开”：后端生成 10 分钟有效的签名 3MF 下载链接，Bambu Studio 可直接获取文件并导入
 - 修复带本地分组下载包的模型详情页黑屏问题，补齐分组大小格式化，避免本地分组渲染时抛错
@@ -164,13 +169,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 新增模型级 `/api/models/{model_dir}/download-all` 下载出口，会按模型目录打包模型文件、图片和附件，并自动清理临时 zip
 - “下载所有文件.zip” 会跳过本地分组生成的 `packages/*.zip`，避免 zip 套 zip 导致体积重复
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-17 · v0.6.107
 - 本地整理三入口统一内容分流：纯 3MF 集合继续逐个按 3MF 元数据 / 配置指纹整理，混合 STL / STEP / OBJ / 图片 / 附件时按一个本地模型包导入
 - zip / rar 内仅包含 3MF 时会自动拆分回独立 3MF 整理队列，local 子文件夹仅包含 3MF 时不再被当作一个模型包合并
 - 升级 `Pillow` 到 `12.2.0`，修复 GitHub Dependabot 报告的 6 个 Pillow 安全漏洞，并补齐根目录版本文件
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-17 · v0.6.106
 - 修复本地整理进度条卡在旧上传进度的问题：后端已无运行 / 排队任务，且最近导入已完成、跳过或失败时，前端会清理本地进度缓存并回到空闲

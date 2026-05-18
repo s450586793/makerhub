@@ -115,6 +115,123 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         self.assertEqual(remote_refresh._remote_refresh_model_workers(config), 3)
         self.assertEqual(remote_refresh._remote_refresh_model_workers(high_config), 4)
 
+    def test_asset_signature_ignores_volatile_cdn_query_params(self):
+        existing_meta = {
+            "cover": {
+                "url": "https://cdn.example.com/model/design/cover.jpg?x-oss-process=image/resize,w_512&Expires=100&Signature=old",
+            },
+            "designImages": [
+                {
+                    "index": 1,
+                    "originalUrl": "https://cdn.example.com/model/design/cover.jpg?x-oss-process=image/resize,w_512&Expires=100&Signature=old",
+                }
+            ],
+            "summaryImages": [
+                {
+                    "index": 1,
+                    "originalUrl": "https://cdn.example.com/model/summary/a.png?token=old&w=800",
+                }
+            ],
+            "author": {
+                "avatarUrl": "https://cdn.example.com/avatar/user.jpg?auth_key=old",
+            },
+            "instances": [
+                {
+                    "id": "i1",
+                    "pictures": [
+                        {
+                            "url": "https://cdn.example.com/model/instance/pic.png?X-Amz-Date=old&X-Amz-Signature=old",
+                        }
+                    ],
+                    "plates": [
+                        {
+                            "thumbnailUrl": "https://cdn.example.com/model/instance/plate.png?image_process=resize,w_256",
+                        }
+                    ],
+                }
+            ],
+            "comments": [
+                {
+                    "id": "c1",
+                    "author": {
+                        "avatarUrl": "https://cdn.example.com/avatar/commenter.jpg?token=old",
+                    },
+                    "images": [
+                        {
+                            "url": "https://cdn.example.com/comment/image.jpg?thumb=small&Expires=100",
+                        }
+                    ],
+                }
+            ],
+        }
+        fresh_meta = {
+            "cover": {
+                "url": "https://cdn.example.com/model/design/cover.jpg?x-oss-process=image/resize,w_1024&Expires=200&Signature=new",
+            },
+            "designImages": [
+                {
+                    "index": 1,
+                    "originalUrl": "https://cdn.example.com/model/design/cover.jpg?x-oss-process=image/resize,w_1024&Expires=200&Signature=new",
+                }
+            ],
+            "summaryImages": [
+                {
+                    "index": 1,
+                    "originalUrl": "https://cdn.example.com/model/summary/a.png?token=new&w=1200",
+                }
+            ],
+            "author": {
+                "avatarUrl": "https://cdn.example.com/avatar/user.jpg?auth_key=new",
+            },
+            "instances": [
+                {
+                    "id": "i1",
+                    "pictures": [
+                        {
+                            "url": "https://cdn.example.com/model/instance/pic.png?X-Amz-Date=new&X-Amz-Signature=new",
+                        }
+                    ],
+                    "plates": [
+                        {
+                            "thumbnailUrl": "https://cdn.example.com/model/instance/plate.png?image_process=resize,w_512",
+                        }
+                    ],
+                }
+            ],
+            "comments": [
+                {
+                    "id": "c1",
+                    "author": {
+                        "avatarUrl": "https://cdn.example.com/avatar/commenter.jpg?token=new",
+                    },
+                    "images": [
+                        {
+                            "url": "https://cdn.example.com/comment/image.jpg?thumb=large&Expires=200",
+                        }
+                    ],
+                }
+            ],
+        }
+
+        self.assertEqual(
+            remote_refresh._asset_url_signature(existing_meta),
+            remote_refresh._asset_url_signature(fresh_meta),
+        )
+
+        changed_meta = {
+            **fresh_meta,
+            "designImages": [
+                {
+                    "index": 1,
+                    "originalUrl": "https://cdn.example.com/model/design/changed.jpg?x-oss-process=image/resize,w_1024",
+                }
+            ],
+        }
+        self.assertNotEqual(
+            remote_refresh._asset_url_signature(existing_meta),
+            remote_refresh._asset_url_signature(changed_meta),
+        )
+
     def test_refresh_one_downloads_page_and_comment_assets(self):
         config = self.store.load()
         config.cookies[0].cookie = "session=ok"

@@ -2650,15 +2650,17 @@ select:focus {
   align-items: center;
 }
 
-.mw-download-menu__item:hover {
+.mw-download-menu__item:hover:not(:disabled):not(.is-disabled) {
   background: rgba(22, 163, 74, 0.08);
   color: #137a48;
 }
 
-.mw-download-menu__item:disabled {
+.mw-download-menu__item:disabled,
+.mw-download-menu__item.is-disabled {
   color: #9ca3af;
   cursor: not-allowed;
   background: transparent;
+  pointer-events: none;
 }
 
 .mw-download-menu__error {
@@ -3306,6 +3308,7 @@ select:focus {
 .mw-download-button {
   min-height: 40px;
   width: 100%;
+  border: 0;
   border-radius: 4px;
   display: inline-flex;
   align-items: center;
@@ -3315,6 +3318,7 @@ select:focus {
   font-weight: 600;
   line-height: 22px;
   background: var(--brand);
+  cursor: pointer;
 }
 
 .mw-download-button--compact {
@@ -4853,12 +4857,13 @@ html[data-theme="dark"] .detail-page--makerworld .mw-download-menu__item {
   color: var(--mw-text);
 }
 
-html[data-theme="dark"] .detail-page--makerworld .mw-download-menu__item:hover {
+html[data-theme="dark"] .detail-page--makerworld .mw-download-menu__item:hover:not(:disabled):not(.is-disabled) {
   color: #9df0bf;
   background: rgba(65, 199, 132, 0.16);
 }
 
-html[data-theme="dark"] .detail-page--makerworld .mw-download-menu__item:disabled {
+html[data-theme="dark"] .detail-page--makerworld .mw-download-menu__item:disabled,
+html[data-theme="dark"] .detail-page--makerworld .mw-download-menu__item.is-disabled {
   color: var(--mw-muted);
 }
 

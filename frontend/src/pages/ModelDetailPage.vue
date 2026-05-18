@@ -172,19 +172,28 @@
 
           <div class="mw-action-strip">
             <div class="mw-download-split" :class="{ 'is-open': downloadMenuOpen }">
+              <button
+                v-if="canOpenBambuStudio"
+                class="mw-download-button mw-download-button--hero mw-download-split__main"
+                type="button"
+                :disabled="bambuStudioOpening"
+                @click="openBambuStudio"
+              >
+                {{ primaryDownloadLabel }}
+              </button>
               <a
-                v-if="heroDownloadHref"
+                v-else-if="heroDownloadHref"
                 class="mw-download-button mw-download-button--hero mw-download-split__main"
                 :href="heroDownloadHref"
                 :download="heroDownloadFilename"
               >
-                {{ heroDownloadLabel }}
+                {{ primaryDownloadLabel }}
               </a>
               <span
                 v-else
                 class="mw-download-button mw-download-button--hero mw-download-split__main is-disabled"
               >
-                {{ heroDownloadLabel }}
+                {{ primaryDownloadLabel }}
               </span>
               <button
                 class="mw-download-split__toggle"
@@ -206,6 +215,14 @@
                 >
                   {{ bambuStudioOpening ? "正在打开..." : "在 Bambu Studio 打开" }}
                 </button>
+                <a
+                  :class="['mw-download-menu__item', !heroDownloadHref && 'is-disabled']"
+                  :href="heroDownloadHref || undefined"
+                  :download="heroDownloadFilename"
+                  @click="closeDownloadMenu"
+                >
+                  {{ heroDownloadHref ? `下载当前${activeFileKindLabel}` : "当前文件不可下载" }}
+                </a>
                 <a
                   class="mw-download-menu__item"
                   :href="downloadAllHref"
@@ -1505,6 +1522,22 @@ const heroDownloadLabel = computed(() => {
 const canOpenBambuStudio = computed(() => {
   const filename = heroDownloadFilename.value || "";
   return Boolean(heroDownloadHref.value && filename.toLowerCase().endsWith(".3mf"));
+});
+
+const activeFileKindLabel = computed(() => {
+  const label = String(activeInstance.value?.file_kind || "").trim().toUpperCase();
+  if (label) {
+    return label;
+  }
+  const suffix = heroDownloadFilename.value.split(".").pop();
+  return suffix ? suffix.toUpperCase() : "文件";
+});
+
+const primaryDownloadLabel = computed(() => {
+  if (canOpenBambuStudio.value) {
+    return bambuStudioOpening.value ? "正在打开..." : "在 Bambu Studio 打开";
+  }
+  return heroDownloadLabel.value;
 });
 
 function bambuStudioOpenHref(downloadUrl, filename) {

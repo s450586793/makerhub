@@ -13,7 +13,7 @@ from fnmatch import fnmatchcase
 from html import escape, unescape
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlsplit, urlunsplit
 
 """
 archiver.py (app2)
@@ -31,6 +31,50 @@ from app.services.profile_rating import normalize_profile_rating
 from app.services.resource_limiter import resource_slot
 from app.services.three_mf import describe_three_mf_failure, merge_three_mf_failure, normalize_makerworld_source
 from app.services.three_mf_quota import reserve_three_mf_download_slot
+
+
+VOLATILE_ASSET_QUERY_KEYS = {
+    "auth_key",
+    "authkey",
+    "expires",
+    "signature",
+    "token",
+    "ts",
+    "timestamp",
+    "x-oss-process",
+    "x-oss-signature",
+    "x-oss-signature-method",
+    "x-oss-signature-version",
+    "x-oss-date",
+    "x-oss-expires",
+    "x-amz-algorithm",
+    "x-amz-credential",
+    "x-amz-date",
+    "x-amz-expires",
+    "x-amz-signature",
+    "x-amz-signedheaders",
+    "image_process",
+    "imageprocess",
+    "imagemogr2",
+    "imageview2",
+    "resize",
+    "thumb",
+    "thumbnail",
+    "width",
+    "height",
+    "format",
+    "quality",
+    "webp",
+    "w",
+    "h",
+    "q",
+}
+VOLATILE_ASSET_QUERY_PREFIXES = (
+    "x-amz-",
+    "x-oss-",
+    "response-",
+    "utm_",
+)
 
 
 def log(*args):
@@ -3391,13 +3435,36 @@ def _normalize_url_value(value: object) -> str:
     return raw
 
 
+def _normalize_asset_url_value(value: object) -> str:
+    raw = _normalize_url_value(value)
+    if not raw:
+        return ""
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return raw.split("#", 1)[0]
+    if not parsed.scheme and not parsed.netloc:
+        return raw.split("#", 1)[0]
+    kept_params: list[tuple[str, str]] = []
+    for key, param_value in parse_qsl(parsed.query, keep_blank_values=True):
+        lowered = key.lower()
+        compact = lowered.replace("_", "").replace("-", "")
+        if lowered in VOLATILE_ASSET_QUERY_KEYS or compact in VOLATILE_ASSET_QUERY_KEYS:
+            continue
+        if any(lowered.startswith(prefix) for prefix in VOLATILE_ASSET_QUERY_PREFIXES):
+            continue
+        kept_params.append((key, param_value))
+    query = urlencode(sorted(kept_params))
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path, query, ""))
+
+
 def _media_item_remote_matches(item: object, url: str, *, url_fields: tuple[str, ...]) -> bool:
     if not isinstance(item, dict):
         return False
-    normalized_url = _normalize_url_value(url)
+    normalized_url = _normalize_asset_url_value(url)
     if not normalized_url:
         return False
-    return any(_normalize_url_value(item.get(field)) == normalized_url for field in url_fields)
+    return any(_normalize_asset_url_value(item.get(field)) == normalized_url for field in url_fields)
 
 
 def _media_item_local_path(
@@ -3947,7 +4014,7 @@ def _build_existing_media_lookup(items: object, *, url_fields: tuple[str, ...] =
         if not isinstance(item, dict):
             continue
         for field in url_fields:
-            candidate = _normalize_url_value(item.get(field))
+            candidate = _normalize_asset_url_value(item.get(field))
             if candidate and candidate not in by_url:
                 by_url[candidate] = item
         item_index = str(item.get("index") if item.get("index") is not None else "").strip()
@@ -3964,7 +4031,7 @@ def _match_existing_media_item_from_lookup(
 ) -> dict:
     if not isinstance(lookup, dict):
         return {}
-    normalized_url = _normalize_url_value(url)
+    normalized_url = _normalize_asset_url_value(url)
     normalized_index = str(index if index is not None else "").strip()
     if normalized_url:
         matched = (lookup.get("by_url") or {}).get(normalized_url)
@@ -6100,6 +6167,7 @@ def archive_model(
 
     design = None
     design_payload_error = ""
+    api_fallback_reason = ""
     next_data = {}
     next_data_started_at = time.perf_counter()
     try:
@@ -6108,14 +6176,25 @@ def archive_model(
         if design is not None:
             design_payload_error = _design_payload_error(design, fetch_url)
             if design_payload_error:
-                log(logger, "页面内模型数据无效，尝试 API 获取:", design_payload_error)
+                api_fallback_reason = f"页面内嵌模型数据无效：{design_payload_error}"
+                log(logger, f"{api_fallback_reason}，正在改用接口抓取")
                 design = None
             else:
                 _normalize_design_payload_identity(design, fetch_url)
         if design is None:
-            log(logger, "未能从 __NEXT_DATA__ 定位 design，尝试 API 获取")
+            if not api_fallback_reason:
+                if is_cloudflare_challenge:
+                    api_fallback_reason = "页面疑似验证拦截"
+                elif not has_app_data:
+                    api_fallback_reason = "页面未包含内嵌模型数据"
+                elif next_data:
+                    api_fallback_reason = "页面内嵌数据未定位到模型"
+                else:
+                    api_fallback_reason = "页面内嵌数据为空"
+            log(logger, f"{api_fallback_reason}，正在改用接口抓取")
     except Exception as e:
-        log(logger, "解析 __NEXT_DATA__ 失败，尝试 API 获取:", e)
+        api_fallback_reason = f"页面内嵌数据解析失败：{e}"
+        log(logger, f"{api_fallback_reason}，正在改用接口抓取")
     timings_ms["extract_next_data"] = _log_perf(
         "archive.extract_next_data",
         next_data_started_at,
@@ -6126,7 +6205,8 @@ def archive_model(
 
     api_host_hint = _extract_api_host(html_text)
     if design is None:
-        emit_progress(progress_callback, 22, "页面数据不足，正在回退接口抓取")
+        fallback_message = api_fallback_reason or "页面内嵌数据不完整"
+        emit_progress(progress_callback, 22, f"{fallback_message}，正在改用接口抓取")
         api_fallback_started_at = time.perf_counter()
         design = fetch_design_from_api(sess, raw_cookie_header, fetch_url, api_host_hint=api_host_hint, logger=logger)
         timings_ms["fetch_design_api"] = _log_perf(

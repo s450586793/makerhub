@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from croniter import CroniterBadCronError, croniter
 
@@ -44,6 +45,48 @@ REMOTE_REFRESH_POLL_SECONDS = 20
 DEFAULT_REMOTE_REFRESH_CRON = "0 0 * * *"
 DEFAULT_REMOTE_REFRESH_MODEL_WORKERS = 2
 MAX_REMOTE_REFRESH_MODEL_WORKERS = 4
+VOLATILE_ASSET_QUERY_KEYS = {
+    "auth_key",
+    "authkey",
+    "expires",
+    "signature",
+    "token",
+    "ts",
+    "timestamp",
+    "x-oss-process",
+    "x-oss-signature",
+    "x-oss-signature-method",
+    "x-oss-signature-version",
+    "x-oss-date",
+    "x-oss-expires",
+    "x-amz-algorithm",
+    "x-amz-credential",
+    "x-amz-date",
+    "x-amz-expires",
+    "x-amz-signature",
+    "x-amz-signedheaders",
+    "image_process",
+    "imageprocess",
+    "imagemogr2",
+    "imageview2",
+    "resize",
+    "thumb",
+    "thumbnail",
+    "width",
+    "height",
+    "format",
+    "quality",
+    "webp",
+    "w",
+    "h",
+    "q",
+}
+VOLATILE_ASSET_QUERY_PREFIXES = (
+    "x-amz-",
+    "x-oss-",
+    "response-",
+    "utm_",
+)
 
 
 def _remote_refresh_model_workers(config: Any = None) -> int:
@@ -527,6 +570,32 @@ def _normalized_url(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _normalized_asset_url(value: Any) -> str:
+    raw = _normalized_url(value)
+    if not raw:
+        return ""
+    if raw.startswith("//"):
+        raw = f"https:{raw}"
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return raw.split("#", 1)[0]
+    if not parsed.scheme and not parsed.netloc:
+        return raw.split("#", 1)[0]
+
+    kept_params: list[tuple[str, str]] = []
+    for key, param_value in parse_qsl(parsed.query, keep_blank_values=True):
+        lowered = key.lower()
+        compact = lowered.replace("_", "").replace("-", "")
+        if lowered in VOLATILE_ASSET_QUERY_KEYS or compact in VOLATILE_ASSET_QUERY_KEYS:
+            continue
+        if any(lowered.startswith(prefix) for prefix in VOLATILE_ASSET_QUERY_PREFIXES):
+            continue
+        kept_params.append((key, param_value))
+    query = urlencode(sorted(kept_params))
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path, query, ""))
+
+
 def _remote_int(value: Any) -> int:
     try:
         return int(value or 0)
@@ -540,6 +609,17 @@ def _media_url_values(item: Any, *fields: str) -> list[str]:
     urls: list[str] = []
     for field in fields:
         value = _normalized_url(item.get(field))
+        if value:
+            urls.append(value)
+    return urls
+
+
+def _media_asset_url_values(item: Any, *fields: str) -> list[str]:
+    if not isinstance(item, dict):
+        return []
+    urls: list[str] = []
+    for field in fields:
+        value = _normalized_asset_url(item.get(field))
         if value:
             urls.append(value)
     return urls
@@ -562,10 +642,10 @@ def _comment_remote_signature(items: Any) -> list[Any]:
                 "reply_count": _remote_int(item.get("replyCount")),
                 "author": {
                     "name": _normalized_remote_value(author.get("name")),
-                    "avatar": _normalized_url(author.get("avatarUrl")),
+                    "avatar": _normalized_asset_url(author.get("avatarUrl")),
                 },
                 "images": [
-                    _media_url_values(image, "url", "originalUrl", "imageUrl", "src")
+                    _media_asset_url_values(image, "url", "originalUrl", "imageUrl", "src")
                     for image in images
                     if isinstance(image, dict)
                 ],
@@ -597,7 +677,7 @@ def _instance_remote_signature(items: Any) -> list[Any]:
                 "plates": [
                     {
                         "index": _normalized_remote_value(plate.get("index")),
-                        "url": _normalized_url(plate.get("thumbnailUrl")),
+                        "url": _normalized_asset_url(plate.get("thumbnailUrl")),
                     }
                     for plate in plates
                     if isinstance(plate, dict)
@@ -605,7 +685,7 @@ def _instance_remote_signature(items: Any) -> list[Any]:
                 "pictures": [
                     {
                         "index": _normalized_remote_value(picture.get("index")),
-                        "url": _normalized_url(picture.get("url") or picture.get("originalUrl")),
+                        "url": _normalized_asset_url(picture.get("url") or picture.get("originalUrl")),
                     }
                     for picture in pictures
                     if isinstance(picture, dict)
@@ -633,15 +713,15 @@ def _asset_url_signature(meta: dict[str, Any]) -> dict[str, Any]:
 
     collect_comments(comments)
     return {
-        "cover": _media_url_values(cover, "url", "originalUrl") or [_normalized_url(meta.get("coverUrl"))],
-        "author_avatar": _normalized_url(author.get("avatarUrl")),
+        "cover": _media_asset_url_values(cover, "url", "originalUrl") or [_normalized_asset_url(meta.get("coverUrl"))],
+        "author_avatar": _normalized_asset_url(author.get("avatarUrl")),
         "design": [
-            _media_url_values(item, "originalUrl", "url")
+            _media_asset_url_values(item, "originalUrl", "url")
             for item in meta.get("designImages") or []
             if isinstance(item, dict)
         ],
         "summary": [
-            _media_url_values(item, "originalUrl", "url", "src")
+            _media_asset_url_values(item, "originalUrl", "url", "src")
             for item in meta.get("summaryImages") or []
             if isinstance(item, dict)
         ],
@@ -649,16 +729,16 @@ def _asset_url_signature(meta: dict[str, Any]) -> dict[str, Any]:
             {
                 "key": _instance_key(item),
                 "pictures": [
-                    _media_url_values(picture, "url", "originalUrl", "imageUrl", "src")
+                    _media_asset_url_values(picture, "url", "originalUrl", "imageUrl", "src")
                     for picture in (item.get("pictures") if isinstance(item, dict) else []) or []
                     if isinstance(picture, dict)
                 ],
                 "plates": [
-                    _normalized_url(plate.get("thumbnailUrl"))
+                    _normalized_asset_url(plate.get("thumbnailUrl"))
                     for plate in (item.get("plates") if isinstance(item, dict) else []) or []
                     if isinstance(plate, dict)
                 ],
-                "cover": _media_url_values(item, "cover", "coverUrl", "previewImage", "thumbnail", "thumbnailUrl") if isinstance(item, dict) else [],
+                "cover": _media_asset_url_values(item, "cover", "coverUrl", "previewImage", "thumbnail", "thumbnailUrl") if isinstance(item, dict) else [],
             }
             for item in instances
             if isinstance(item, dict)
@@ -666,9 +746,9 @@ def _asset_url_signature(meta: dict[str, Any]) -> dict[str, Any]:
         "comments": [
             {
                 "id": _normalized_remote_value(item.get("id")),
-                "avatar": _normalized_url((item.get("author") or {}).get("avatarUrl") if isinstance(item.get("author"), dict) else ""),
+                "avatar": _normalized_asset_url((item.get("author") or {}).get("avatarUrl") if isinstance(item.get("author"), dict) else ""),
                 "images": [
-                    _media_url_values(image, "url", "originalUrl", "imageUrl", "src")
+                    _media_asset_url_values(image, "url", "originalUrl", "imageUrl", "src")
                     for image in (item.get("images") if isinstance(item.get("images"), list) else [])
                     if isinstance(image, dict)
                 ],
@@ -676,7 +756,7 @@ def _asset_url_signature(meta: dict[str, Any]) -> dict[str, Any]:
             for item in comment_items
         ],
         "attachments": [
-            _normalized_url(item.get("url") or item.get("downloadUrl"))
+            _normalized_asset_url(item.get("url") or item.get("downloadUrl"))
             for item in meta.get("attachments") or []
             if isinstance(item, dict)
         ],
@@ -689,7 +769,7 @@ def _remote_content_signature(meta: dict[str, Any]) -> dict[str, Any]:
     return {
         "title": _normalized_remote_value(meta.get("title")),
         "title_translated": _normalized_remote_value(meta.get("titleTranslated")),
-        "cover_url": _normalized_url(meta.get("coverUrl")),
+        "cover_url": _normalized_asset_url(meta.get("coverUrl")),
         "tags": meta.get("tags") if isinstance(meta.get("tags"), list) else [],
         "stats": meta.get("stats") if isinstance(meta.get("stats"), dict) else {},
         "summary": _summary_signature(meta.get("summary")),
