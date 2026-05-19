@@ -5,6 +5,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from datetime import datetime
 
 from app.core.store import JsonStore
 from app.services import remote_refresh
@@ -114,6 +115,57 @@ class RemoteRefreshManagerTest(unittest.TestCase):
 
         self.assertEqual(remote_refresh._remote_refresh_model_workers(config), 3)
         self.assertEqual(remote_refresh._remote_refresh_model_workers(high_config), 4)
+
+    def test_state_payload_reschedules_when_cron_changes_from_app_container(self):
+        config = self.store.load()
+        config.remote_refresh.enabled = True
+        config.remote_refresh.cron = "0 2 * * *"
+        self.store.save(config)
+        self.task_store.patch_remote_refresh_state(
+            status="idle",
+            running=False,
+            next_run_at="2026-05-20T00:00:00+08:00",
+            scheduled_cron="0 0 * * *",
+            last_message="等待下一轮源端刷新。",
+        )
+        manager = RemoteRefreshManager(
+            store=self.store,
+            task_store=self.task_store,
+            archive_manager=None,
+            background_enabled=False,
+        )
+        original_now = remote_refresh._now
+        remote_refresh._now = lambda: datetime.fromisoformat("2026-05-19T12:00:00+08:00")
+
+        try:
+            state = manager.state_payload()
+        finally:
+            remote_refresh._now = original_now
+
+        self.assertEqual(state["next_run_at"], "2026-05-20T02:00:00+08:00")
+        self.assertEqual(state["scheduled_cron"], "0 2 * * *")
+
+    def test_app_container_state_payload_does_not_clear_worker_running_state(self):
+        self.task_store.patch_remote_refresh_state(
+            status="running",
+            running=True,
+            next_run_at="2026-05-20T00:00:00+08:00",
+            scheduled_cron="0 0 * * *",
+            last_message="源端刷新进行中。",
+            current_item={"id": "m1", "title": "模型 1", "progress": 40},
+        )
+        manager = RemoteRefreshManager(
+            store=self.store,
+            task_store=self.task_store,
+            archive_manager=None,
+            background_enabled=False,
+        )
+
+        state = manager.state_payload()
+
+        self.assertEqual(state["status"], "running")
+        self.assertTrue(state["running"])
+        self.assertEqual(state["current_item"]["id"], "m1")
 
     def test_asset_signature_ignores_volatile_cdn_query_params(self):
         existing_meta = {

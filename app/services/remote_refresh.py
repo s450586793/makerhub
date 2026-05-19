@@ -1174,14 +1174,10 @@ class RemoteRefreshManager:
             self._thread.start()
 
     def state_payload(self) -> dict:
-        if not self.background_enabled:
-            return self.task_store.load_remote_refresh_state()
-        return self._ensure_state()
+        return self._ensure_state(update_runtime_state=self.background_enabled)
 
     def notify_config_updated(self) -> dict:
-        if not self.background_enabled:
-            return self.task_store.load_remote_refresh_state()
-        return self._ensure_state(force_reschedule=True)
+        return self._ensure_state(force_reschedule=True, update_runtime_state=self.background_enabled)
 
     def trigger_manual_refresh(self) -> dict[str, Any]:
         config = self.store.load()
@@ -1321,46 +1317,54 @@ class RemoteRefreshManager:
                 raise
             return True
 
-    def _ensure_state(self, force_reschedule: bool = False) -> dict:
+    def _ensure_state(self, force_reschedule: bool = False, update_runtime_state: bool = True) -> dict:
         config = self.store.load()
         refresh_config = config.remote_refresh
         normalized_cron = _validate_cron(refresh_config.cron)
         current = self.task_store.load_remote_refresh_state()
-        batch_running = self._is_batch_running()
-        stale_running = bool(current.get("running")) and not batch_running
+        batch_running = self._is_batch_running() if update_runtime_state else bool(current.get("running"))
+        stale_running = update_runtime_state and bool(current.get("running")) and not batch_running
 
         if not refresh_config.enabled:
-            if batch_running:
+            if update_runtime_state and batch_running:
                 return self.task_store.patch_remote_refresh_state(
                     status="running",
                     running=True,
                     last_message=str(current.get("last_message") or "源端刷新进行中。"),
                 )
+            if not update_runtime_state:
+                return current
             return self.task_store.patch_remote_refresh_state(
                 status="disabled",
                 running=False,
                 next_run_at="",
+                scheduled_cron=normalized_cron,
                 last_message="源端刷新已停用。",
                 current_item={},
             )
 
         next_run_at = str(current.get("next_run_at") or "")
-        if force_reschedule:
+        if force_reschedule or str(current.get("scheduled_cron") or "") != normalized_cron:
             next_run_at = _next_run_at(normalized_cron)
         elif stale_running or not next_run_at:
             next_run_at = _next_run_at(normalized_cron)
 
-        return self.task_store.patch_remote_refresh_state(
-            status="running" if batch_running else "idle",
-            running=batch_running,
-            next_run_at=next_run_at,
-            last_message=(
-                "检测到上次源端刷新未正常结束，已恢复为空闲并重新安排下次执行。"
-                if stale_running
-                else str(current.get("last_message") or "等待下一轮源端刷新。")
-            ),
-            current_item={} if stale_running else None,
-        )
+        changes = {
+            "next_run_at": next_run_at,
+            "scheduled_cron": normalized_cron,
+        }
+        if update_runtime_state:
+            changes.update(
+                status="running" if batch_running else "idle",
+                running=batch_running,
+                last_message=(
+                    "检测到上次源端刷新未正常结束，已恢复为空闲并重新安排下次执行。"
+                    if stale_running
+                    else str(current.get("last_message") or "等待下一轮源端刷新。")
+                ),
+                current_item={} if stale_running else None,
+            )
+        return self.task_store.patch_remote_refresh_state(**changes)
 
     def _run_loop(self) -> None:
         while True:
@@ -1397,6 +1401,7 @@ class RemoteRefreshManager:
                 status="disabled",
                 running=False,
                 next_run_at="",
+                scheduled_cron=normalized_cron,
                 last_message="源端刷新已停用。",
                 current_item={},
             )
@@ -1412,6 +1417,7 @@ class RemoteRefreshManager:
                 status="idle",
                 running=False,
                 next_run_at=china_from_timestamp(retry_at).isoformat(),
+                scheduled_cron=normalized_cron,
                 last_message="当前有归档队列或本地整理任务在运行，源端刷新延后 60 秒。",
                 current_item={},
             )
@@ -1481,6 +1487,7 @@ class RemoteRefreshManager:
                 status="running",
                 running=True,
                 manual_requested_at="",
+                scheduled_cron=normalized_cron,
                 last_run_at=started_at,
                 last_batch_total=len(candidates),
                 last_batch_succeeded=0,
@@ -1529,6 +1536,7 @@ class RemoteRefreshManager:
                     status="idle",
                     running=False,
                     next_run_at=_next_run_at(normalized_cron),
+                    scheduled_cron=normalized_cron,
                     last_success_at=started_at,
                     last_message=no_candidate_message,
                     last_batch_total=0,
@@ -1606,6 +1614,7 @@ class RemoteRefreshManager:
                 running=False,
                 current_item={},
                 next_run_at=_next_run_at(normalized_cron),
+                scheduled_cron=normalized_cron,
                 last_success_at=finished_at if succeeded else str(previous_state.get("last_success_at") or ""),
                 last_error_at=finished_at if failed else str(previous_state.get("last_error_at") or ""),
                 last_message=message,

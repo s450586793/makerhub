@@ -2733,6 +2733,11 @@ async def start_system_update(payload: SystemUpdateRequest, request: Request):
 async def save_cookies(payload: list[CookiePair], request: Request):
     _require_session_auth(request)
     config = store.load()
+    retry_platforms = {
+        item.platform
+        for item in payload
+        if item.platform in {"cn", "global"} and sanitize_cookie_header(item.cookie)
+    }
     config.cookies = [
         CookiePair(platform=item.platform, cookie=sanitize_cookie_header(item.cookie))
         for item in payload
@@ -2745,7 +2750,18 @@ async def save_cookies(payload: list[CookiePair], request: Request):
         platforms=[item.platform for item in payload],
     )
     saved = store.save(config)
-    return _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
+    retry_result = subscription_manager.retry_error_subscriptions_for_platforms(retry_platforms)
+    if int(retry_result.get("queued_count") or 0) > 0:
+        append_business_log(
+            "subscription",
+            "cookie_update_retry_queued",
+            "Cookie 更新后已自动安排失败订阅重试。",
+            platforms=sorted(retry_platforms),
+            queued_count=retry_result.get("queued_count"),
+        )
+    response = _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
+    response["subscription_retry"] = retry_result
+    return response
 
 
 @router.post("/config/proxy")

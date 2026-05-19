@@ -154,6 +154,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-05-19 · v0.6.112
+- 保存国内 / 国际 Cookie 后会自动检查同站点处于 `error` 的启用订阅，并立即安排重试，避免换新 Cookie 后还要等下一次 Cron
+- 源端刷新状态新增排程 Cron 记录，配置 Cron 改动后会自动重算下次运行时间，避免页面出现 `02:00` 配置却仍显示 `00:00` 的旧计划
+- App / Worker 双容器模式下，App 只修正源端刷新排程字段，不会因为本容器没有后台线程而误清掉 Worker 正在运行的状态
+
 ### 2026-05-19 · v0.6.111
 - 归档、源端发现、评论补全、Cookie 健康检查和 3MF 下载地址解析改为 Scrapling 优先抓取，遇到验证页可启用 Scrapling 浏览器兜底，失败时继续回退旧 requests / curl 流程
 - 高级设置新增“页面 / API 抓取方式”和“Scrapling 浏览器兜底”，可在 Scrapling 优先、旧流程和仅 Scrapling 间切换，Docker 镜像构建会安装 Scrapling 浏览器依赖
@@ -164,13 +169,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 源端刷新图片资源判断改用稳定资源 URL，忽略 CDN 签名、过期时间和缩略参数变化，减少把同一张图误报成“图片资源已更新”并重复同步
 - 归档页面数据回退提示拆分原因：区分未包含内嵌数据、内嵌数据未定位到模型、模型数据无效、解析失败和疑似验证拦截
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-17 · v0.6.109
 - 修复详情页“在 Bambu Studio 打开”：后端生成 10 分钟有效的签名 3MF 下载链接，Bambu Studio 可直接获取文件并导入
 - 修复带本地分组下载包的模型详情页黑屏问题，补齐分组大小格式化，避免本地分组渲染时抛错
 - 缩略图左右切换改为更小的半透明悬浮按钮，不再挤占图片轨道两侧空间
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-17 · v0.6.108
 - 详情页主下载按钮改为 split button：左侧保持当前配置下载，右侧下拉提供“在 Bambu Studio 打开”和“下载所有文件.zip”

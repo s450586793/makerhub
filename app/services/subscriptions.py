@@ -119,6 +119,11 @@ def _select_cookie(url: str, config) -> str:
     return sanitize_cookie_header(cookie_map.get(platform) or "")
 
 
+def _platform_for_url(url: str) -> str:
+    netloc = urlparse(url).netloc.lower()
+    return "global" if "makerworld.com" in netloc and "makerworld.com.cn" not in netloc else "cn"
+
+
 @contextmanager
 def _temporary_proxy_env(config):
     import os
@@ -504,6 +509,47 @@ class SubscriptionManager:
             "message": "订阅同步已触发。",
             "subscription": next((item for item in self.list_payload()["items"] if item["id"] == clean_id), None),
         }
+
+    def retry_error_subscriptions_for_platforms(self, platforms: set[str]) -> dict:
+        normalized_platforms = {str(item or "").strip().lower() for item in platforms if str(item or "").strip()}
+        normalized_platforms = {item for item in normalized_platforms if item in {"cn", "global"}}
+        if not normalized_platforms:
+            return {"queued_count": 0, "subscription_ids": []}
+
+        config = self.store.load()
+        state_payload = self.task_store.load_subscriptions_state()
+        state_map = {str(item.get("id") or ""): item for item in state_payload.get("items") or []}
+        now_iso = _now_iso()
+        queued_ids: list[str] = []
+
+        for item in config.subscriptions:
+            if not item.enabled:
+                continue
+            if _platform_for_url(item.url) not in normalized_platforms:
+                continue
+            state = state_map.get(item.id) or {}
+            if bool(state.get("running")) or str(state.get("status") or "") != "error":
+                continue
+            self.task_store.patch_subscription_state(
+                item.id,
+                manual_requested_at=now_iso,
+                next_run_at=now_iso,
+                last_message="Cookie 已更新，已自动安排失败订阅重试。",
+            )
+            queued_ids.append(item.id)
+
+        if queued_ids:
+            _append_subscription_log(
+                "cookie_update_retry_queued",
+                platforms=sorted(normalized_platforms),
+                subscription_ids=queued_ids,
+                count=len(queued_ids),
+            )
+            self.start()
+            if self.background_enabled:
+                self._maybe_launch_due_sync()
+
+        return {"queued_count": len(queued_ids), "subscription_ids": queued_ids}
 
     def upsert_from_archive(
         self,

@@ -138,6 +138,67 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertEqual(state["status"], "success")
         self.assertEqual(state["next_run_at"], "2026-04-21T23:00:00+08:00")
 
+    def test_retry_error_subscriptions_for_platforms_only_queues_matching_errors(self):
+        config = self.store.load()
+        config.subscriptions.extend(
+            [
+                SubscriptionRecord(
+                    id="sub-2",
+                    name="国际作者",
+                    url="https://makerworld.com/en/@global/upload",
+                    mode="author_upload",
+                    cron="0 * * * *",
+                    enabled=True,
+                ),
+                SubscriptionRecord(
+                    id="sub-3",
+                    name="国内正常",
+                    url="https://makerworld.com.cn/zh/@ok/upload",
+                    mode="author_upload",
+                    cron="0 * * * *",
+                    enabled=True,
+                ),
+                SubscriptionRecord(
+                    id="sub-4",
+                    name="国内停用",
+                    url="https://makerworld.com.cn/zh/@off/upload",
+                    mode="author_upload",
+                    cron="0 * * * *",
+                    enabled=False,
+                ),
+            ]
+        )
+        self.store.save(config)
+        for item_id, status in (
+            ("sub-1", "error"),
+            ("sub-2", "error"),
+            ("sub-3", "success"),
+            ("sub-4", "error"),
+        ):
+            self.task_store.patch_subscription_state(
+                item_id,
+                status=status,
+                running=False,
+                manual_requested_at="",
+                next_run_at="",
+                last_message="旧状态",
+            )
+
+        result = self.manager.retry_error_subscriptions_for_platforms({"cn"})
+        states = {
+            item["id"]: item
+            for item in self.task_store.load_subscriptions_state().get("items") or []
+        }
+
+        self.assertEqual(result["queued_count"], 1)
+        self.assertEqual(result["subscription_ids"], ["sub-1"])
+        self.assertTrue(states["sub-1"]["manual_requested_at"])
+        self.assertEqual(states["sub-1"]["next_run_at"], states["sub-1"]["manual_requested_at"])
+        self.assertEqual(states["sub-1"]["last_message"], "Cookie 已更新，已自动安排失败订阅重试。")
+        self.assertFalse(states["sub-2"]["manual_requested_at"])
+        self.assertFalse(states["sub-3"]["manual_requested_at"])
+        self.assertFalse(states["sub-4"]["manual_requested_at"])
+
 
 if __name__ == "__main__":
     unittest.main()
