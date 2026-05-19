@@ -68,6 +68,12 @@ class ResourceLimiterConfigTest(unittest.TestCase):
         self.assertEqual(config.three_mf_download_limit, 2)
         self.assertEqual(config.disk_io_limit, 2)
 
+    def test_advanced_runtime_defaults_enable_scrapling_first(self):
+        config = AdvancedRuntimeConfig()
+
+        self.assertEqual(config.scraping_engine, "scrapling_first")
+        self.assertTrue(config.scrapling_browser_fallback)
+
 
 if __name__ == "__main__":
     unittest.main()

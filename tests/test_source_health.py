@@ -236,6 +236,89 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(card_map["cn"]["state"], "ok")
         self.assertEqual(card_map["cn"]["status"], "连接正常")
 
+    def test_probe_verification_becomes_partial_when_recent_refresh_mostly_succeeds(self):
+        original_probe = source_health._probe_platform_status
+        source_health._probe_platform_status = lambda platform, *_args, **_kwargs: {
+            "platform": platform,
+            "state": "verification_required" if platform == "cn" else "ok",
+            "status": "需要验证" if platform == "cn" else "连接正常",
+            "detail": "",
+        }
+
+        class Config:
+            cookies = []
+            proxy = None
+
+        recent_items = [
+            {
+                "status": "success",
+                "url": f"https://makerworld.com.cn/zh/models/{idx}",
+            }
+            for idx in range(8)
+        ] + [
+            {
+                "status": "failed",
+                "message": "页面被 Cloudflare 验证拦截，请更新 cookie（含 cf_clearance）后重试",
+                "url": "https://makerworld.com.cn/zh/models/999",
+            }
+        ]
+
+        try:
+            cards = source_health.build_source_health_cards(
+                Config(),
+                [],
+                remote_refresh_state={"recent_items": recent_items},
+            )
+        finally:
+            source_health._probe_platform_status = original_probe
+
+        card_map = {item["key"]: item for item in cards}
+        self.assertEqual(card_map["cn"]["state"], "probe_limited")
+        self.assertEqual(card_map["cn"]["status"], "部分受限")
+        self.assertEqual(card_map["cn"]["tone"], "warning")
+        self.assertIn("认证探针返回验证页", card_map["cn"]["detail"])
+
+    def test_missing_3mf_verification_stays_danger_even_when_refresh_succeeds(self):
+        original_probe = source_health._probe_platform_status
+        source_health._probe_platform_status = lambda platform, *_args, **_kwargs: {
+            "platform": platform,
+            "state": "verification_required",
+            "status": "需要验证",
+            "detail": "",
+        }
+
+        class Config:
+            cookies = []
+            proxy = None
+
+        recent_items = [
+            {
+                "status": "success",
+                "url": f"https://makerworld.com.cn/zh/models/{idx}",
+            }
+            for idx in range(10)
+        ]
+
+        try:
+            cards = source_health.build_source_health_cards(
+                Config(),
+                [
+                    {
+                        "status": "verification_required",
+                        "message": "",
+                        "model_url": "https://makerworld.com.cn/zh/models/123",
+                    }
+                ],
+                remote_refresh_state={"recent_items": recent_items},
+            )
+        finally:
+            source_health._probe_platform_status = original_probe
+
+        card_map = {item["key"]: item for item in cards}
+        self.assertEqual(card_map["cn"]["state"], "verification_required")
+        self.assertEqual(card_map["cn"]["status"], "需要验证")
+        self.assertEqual(card_map["cn"]["tone"], "danger")
+
 class InlineExecutor:
     def __init__(self, *args, **kwargs):
         pass

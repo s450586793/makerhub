@@ -1,11 +1,19 @@
 import json
+import threading
 from datetime import timedelta
 from pathlib import Path
 from typing import Iterable, Optional
 
 from fastapi import Request
 
-from app.core.security import generate_api_token, generate_session_id, hash_api_token, hash_password, verify_password
+from app.core.security import (
+    default_admin_password_hash,
+    generate_api_token,
+    generate_session_id,
+    hash_api_token,
+    hash_password,
+    verify_password,
+)
 from app.core.settings import STATE_DIR, ensure_app_dirs
 from app.core.store import JsonStore
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
@@ -14,12 +22,15 @@ from app.schemas.models import ApiTokenRecord, ApiTokenView
 
 SESSION_COOKIE_NAME = "makerhub_session"
 SESSION_TTL_DAYS = 14
+LOGIN_FAILURE_WINDOW_SECONDS = 15 * 60
+LOGIN_FAILURE_LOCK_SECONDS = 5 * 60
+LOGIN_FAILURE_LIMIT = 5
 SESSIONS_PATH = STATE_DIR / "auth_sessions.json"
 TOKEN_PERMISSION_LABELS = {
-    "archive_write": "提交归档",
-    "mobile_import": "本地导入",
-    "models_read": "读取模型库",
-    "share_manage": "管理分享",
+    "archive_write": "提交归档任务",
+    "mobile_import": "移动端/本地导入",
+    "models_read": "查看模型库",
+    "share_manage": "接收/管理分享",
     "system_manage": "系统管理",
     "token_manage": "Token 管理",
 }
@@ -56,6 +67,8 @@ class AuthManager:
     def __init__(self, store: Optional[JsonStore] = None, sessions_path: Path = SESSIONS_PATH) -> None:
         self.store = store or JsonStore()
         self.sessions_path = sessions_path
+        self._login_failures: dict[str, dict[str, float]] = {}
+        self._login_failure_lock = threading.RLock()
         ensure_app_dirs()
 
     def _read_sessions(self) -> dict:
@@ -103,6 +116,60 @@ class AuthManager:
         if str(username or "").strip() != config.user.username:
             return False
         return verify_password(password, config.user.password_hash)
+
+    def default_password_active(self) -> bool:
+        config = self.store.load()
+        return (
+            str(config.user.username or "").strip() == "admin"
+            and verify_password("admin", config.user.password_hash)
+            and str(config.user.password_hash or "").strip() == default_admin_password_hash()
+        )
+
+    def login_failure_key(self, request: Optional[Request], username: str) -> str:
+        clean_username = str(username or "").strip().lower() or "-"
+        client_host = ""
+        if request is not None and request.client:
+            client_host = str(request.client.host or "").strip()
+        forwarded_for = ""
+        if request is not None:
+            forwarded_for = str(request.headers.get("X-Forwarded-For") or "").split(",", 1)[0].strip()
+        return f"{forwarded_for or client_host or '-'}:{clean_username}"
+
+    def login_backoff_seconds(self, key: str) -> int:
+        now = china_now().timestamp()
+        with self._login_failure_lock:
+            item = self._login_failures.get(str(key or ""))
+            if not item:
+                return 0
+            locked_until = float(item.get("locked_until") or 0)
+            if locked_until <= now:
+                return 0
+            return max(int(locked_until - now), 1)
+
+    def record_login_failure(self, key: str) -> int:
+        now = china_now().timestamp()
+        with self._login_failure_lock:
+            item = self._login_failures.get(str(key or "")) or {}
+            first_seen = float(item.get("first_seen") or now)
+            if now - first_seen > LOGIN_FAILURE_WINDOW_SECONDS:
+                first_seen = now
+                count = 0
+            else:
+                count = int(item.get("count") or 0)
+            count += 1
+            locked_until = float(item.get("locked_until") or 0)
+            if count >= LOGIN_FAILURE_LIMIT:
+                locked_until = now + LOGIN_FAILURE_LOCK_SECONDS
+            self._login_failures[str(key or "")] = {
+                "first_seen": first_seen,
+                "count": count,
+                "locked_until": locked_until,
+            }
+            return max(int(locked_until - now), 0)
+
+    def clear_login_failures(self, key: str) -> None:
+        with self._login_failure_lock:
+            self._login_failures.pop(str(key or ""), None)
 
     def create_session(self, username: str) -> dict:
         payload = self._prune_sessions(self._read_sessions())
@@ -261,7 +328,12 @@ class AuthManager:
             return custom
         return str(request.query_params.get("token") or "").strip()
 
-    def resolve_request_auth(self, request: Request, allow_api_token: bool = False) -> Optional[dict]:
+    def resolve_request_auth(
+        self,
+        request: Request,
+        allow_api_token: bool = False,
+        api_token_permission: str = "",
+    ) -> Optional[dict]:
         session_id = str(request.cookies.get(SESSION_COOKIE_NAME) or "").strip()
         if session_id:
             session = self.get_session(session_id)
@@ -272,9 +344,9 @@ class AuthManager:
                     "session_id": session_id,
                 }
 
-        if allow_api_token:
+        if allow_api_token or api_token_permission:
             token = self.extract_api_token(request)
-            token_view = self.validate_api_token(token, required_permission="archive_write")
+            token_view = self.validate_api_token(token, required_permission=api_token_permission)
             if token_view:
                 return {
                     "kind": "token",

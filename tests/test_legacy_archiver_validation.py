@@ -1,4 +1,6 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from app.services import legacy_archiver
 
@@ -7,6 +9,7 @@ class _JsonResponse:
     def __init__(self, status_code, payload=None):
         self.status_code = status_code
         self._payload = payload if payload is not None else {}
+        self.text = __import__("json").dumps(self._payload, ensure_ascii=False)
 
     def json(self):
         return self._payload
@@ -27,6 +30,19 @@ class _ApiSession:
 
 
 class LegacyArchiverValidationTest(unittest.TestCase):
+    def setUp(self):
+        self.scrapling_patcher = patch(
+            "app.services.legacy_archiver.fetch_json_with_scrapling",
+            return_value=(None, SimpleNamespace(ok=False, status_code=0, text="", error="", engine="disabled")),
+        )
+        self.scrapling_only_patcher = patch("app.services.legacy_archiver.scrapling_only", return_value=False)
+        self.scrapling_patcher.start()
+        self.scrapling_only_patcher.start()
+
+    def tearDown(self):
+        self.scrapling_patcher.stop()
+        self.scrapling_only_patcher.stop()
+
     def test_design_payload_rejects_empty_api_shell(self):
         error = legacy_archiver._design_payload_error(
             {"id": 0, "title": "", "coverUrl": "", "instances": []},
@@ -94,6 +110,30 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         self.assertIsInstance(design, dict)
         self.assertEqual(design["id"], 2416065)
         self.assertEqual(design["title"], "十二生肖-兔女孩")
+
+    def test_fetch_design_from_api_uses_scrapling_before_requests(self):
+        session = _ApiSession()
+        with patch(
+            "app.services.legacy_archiver.fetch_json_with_scrapling",
+            return_value=(
+                {
+                    "id": "2416065",
+                    "title": "Scrapling model",
+                    "coverUrl": "https://cdn.example.com/cn.jpg",
+                    "instances": [],
+                },
+                SimpleNamespace(ok=True, status_code=200, text="", error="", engine="scrapling-static"),
+            ),
+        ):
+            design = legacy_archiver.fetch_design_from_api(
+                session,
+                "token=abc",
+                "https://makerworld.com.cn/zh/models/2416065",
+            )
+
+        self.assertIsInstance(design, dict)
+        self.assertEqual(design["title"], "Scrapling model")
+        self.assertEqual(session.calls, [])
 
     def test_extract_author_ignores_browsing_history_link(self):
         author = legacy_archiver.extract_author(

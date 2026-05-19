@@ -154,6 +154,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-05-19 · v0.6.111
+- 归档、源端发现、评论补全、Cookie 健康检查和 3MF 下载地址解析改为 Scrapling 优先抓取，遇到验证页可启用 Scrapling 浏览器兜底，失败时继续回退旧 requests / curl 流程
+- 高级设置新增“页面 / API 抓取方式”和“Scrapling 浏览器兜底”，可在 Scrapling 优先、旧流程和仅 Scrapling 间切换，Docker 镜像构建会安装 Scrapling 浏览器依赖
+- 收紧 API Token 权限、登录防护和分享接收校验，隐藏接收分享时解析出的地址 / token 日志，并补充本地编辑、分享接收和抓取回归测试
+
 ### 2026-05-18 · v0.6.110
 - 详情页当前文件主按钮默认对 3MF 执行“在 Bambu Studio 打开”，STL / STEP / OBJ 继续保持普通下载，右侧下拉保留当前文件下载和“下载所有文件.zip”
 - 源端刷新图片资源判断改用稳定资源 URL，忽略 CDN 签名、过期时间和缩略参数变化，减少把同一张图误报成“图片资源已更新”并重复同步
@@ -164,13 +169,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 修复带本地分组下载包的模型详情页黑屏问题，补齐分组大小格式化，避免本地分组渲染时抛错
 - 缩略图左右切换改为更小的半透明悬浮按钮，不再挤占图片轨道两侧空间
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-17 · v0.6.108
 - 详情页主下载按钮改为 split button：左侧保持当前配置下载，右侧下拉提供“在 Bambu Studio 打开”和“下载所有文件.zip”
 - 新增模型级 `/api/models/{model_dir}/download-all` 下载出口，会按模型目录打包模型文件、图片和附件，并自动清理临时 zip
 - “下载所有文件.zip” 会跳过本地分组生成的 `packages/*.zip`，避免 zip 套 zip 导致体积重复
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-17 · v0.6.107
 - 本地整理三入口统一内容分流：纯 3MF 集合继续逐个按 3MF 元数据 / 配置指纹整理，混合 STL / STEP / OBJ / 图片 / 附件时按一个本地模型包导入

@@ -25,6 +25,7 @@ RUN apt-get update \
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+RUN scrapling install
 RUN mkdir -p /app/config /app/logs /app/state /app/archive /app/local
 
 COPY app ./app

@@ -50,6 +50,43 @@ SPA_SHELL_PATHS = {
 }
 
 
+def _api_token_permission_for_request(method: str, path: str) -> str:
+    clean_method = str(method or "").upper()
+    clean_path = str(path or "")
+
+    if clean_path.startswith("/api/mobile-import"):
+        return "mobile_import"
+
+    if clean_path in {"/api/archive", "/api/archive/preview"} and clean_method == "POST":
+        return "archive_write"
+
+    if clean_method == "GET" and clean_path.startswith("/archive/"):
+        return "models_read"
+
+    if clean_method != "GET":
+        return ""
+
+    if clean_path in {
+        "/api/dashboard",
+        "/api/models",
+        "/api/models/flags",
+        "/api/source-library",
+        "/api/subscriptions",
+        "/api/tasks",
+        "/api/remote-refresh",
+    }:
+        return "models_read"
+
+    if (
+        clean_path.startswith("/api/models/")
+        or clean_path.startswith("/api/source-library/")
+        or clean_path.startswith("/api/events/")
+    ):
+        return "models_read"
+
+    return ""
+
+
 def _apply_cache_headers(path: str, response):
     if path.startswith("/assets/"):
         response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
@@ -145,8 +182,8 @@ async def auth_guard(request: Request, call_next):
         response = await call_next(request)
         return _apply_cache_headers(path, response)
 
-    allow_api_token = path.startswith("/api") or path.startswith("/archive")
-    identity = auth_manager.resolve_request_auth(request, allow_api_token=allow_api_token)
+    api_token_permission = _api_token_permission_for_request(request.method, path)
+    identity = auth_manager.resolve_request_auth(request, api_token_permission=api_token_permission)
     request.state.auth_identity = identity or {}
 
     if path == "/login":

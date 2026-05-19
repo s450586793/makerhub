@@ -444,6 +444,23 @@
           </label>
         </div>
 
+        <div class="settings-grid settings-grid--two">
+          <label class="field-card">
+            <span>页面 / API 抓取方式</span>
+            <select v-model="advancedForm.scraping_engine">
+              <option value="scrapling_first">Scrapling 优先</option>
+              <option value="legacy">旧流程</option>
+              <option value="scrapling_only">仅 Scrapling</option>
+            </select>
+            <small class="archive-form__hint">默认 Scrapling 优先；旧流程会继续作为回退兜底。</small>
+          </label>
+          <label class="field-card field-card--switch">
+            <span>Scrapling 浏览器兜底</span>
+            <label class="switch"><input v-model="advancedForm.scrapling_browser_fallback" type="checkbox"><span>启用隐身浏览器抓取</span></label>
+            <small class="archive-form__hint">静态请求遇到验证页或非 JSON 时再启用，适合归档、源端刷新和评论补全。</small>
+          </label>
+        </div>
+
         <div class="settings-grid settings-grid--three">
           <label class="field-card">
             <span>源端刷新模型并发</span>
@@ -783,6 +800,8 @@ const threeMfLimitsForm = reactive({
   global_daily_limit: 100,
 });
 const advancedForm = reactive({
+  scraping_engine: "scrapling_first",
+  scrapling_browser_fallback: true,
   remote_refresh_model_workers: 2,
   makerworld_request_limit: 2,
   comment_asset_download_limit: 4,
@@ -790,10 +809,13 @@ const advancedForm = reactive({
   disk_io_limit: 1,
 });
 const tokenPermissionOptions = [
-  { value: "mobile_import", label: "本地导入" },
-  { value: "archive_write", label: "提交归档" },
-  { value: "models_read", label: "读取模型库" },
-  { value: "share_manage", label: "管理分享" },
+  { value: "mobile_import", label: "移动端/本地导入" },
+  { value: "archive_write", label: "提交归档任务" },
+  { value: "models_read", label: "查看模型库" },
+];
+const tokenPermissionLabelsMap = [
+  ...tokenPermissionOptions,
+  { value: "share_manage", label: "接收/管理分享" },
   { value: "system_manage", label: "系统管理" },
   { value: "token_manage", label: "Token 管理" },
 ];
@@ -1060,13 +1082,9 @@ function hasTokenPermission(item, permission) {
 function tokenPermissionLabels(permissions) {
   const values = Array.isArray(permissions) ? permissions : [];
   const labels = values
-    .map((value) => tokenPermissionOptions.find((item) => item.value === value)?.label || value)
+    .map((value) => tokenPermissionLabelsMap.find((item) => item.value === value)?.label || value)
     .filter(Boolean);
   return labels.length ? labels : ["无权限"];
-}
-
-function tokenPermissionText(permissions) {
-  return tokenPermissionLabels(permissions).join(" / ");
 }
 
 function formatTokenDate(value) {
@@ -1176,6 +1194,10 @@ function applyConfigToForms(payload) {
   connectionForm.https_proxy = payload.proxy?.https_proxy || "";
   threeMfLimitsForm.cn_daily_limit = normalizeDailyThreeMfLimit(payload.three_mf_limits?.cn_daily_limit);
   threeMfLimitsForm.global_daily_limit = normalizeDailyThreeMfLimit(payload.three_mf_limits?.global_daily_limit);
+  advancedForm.scraping_engine = ["legacy", "scrapling_first", "scrapling_only"].includes(payload.advanced?.scraping_engine)
+    ? payload.advanced.scraping_engine
+    : "scrapling_first";
+  advancedForm.scrapling_browser_fallback = payload.advanced?.scrapling_browser_fallback !== false;
   advancedForm.remote_refresh_model_workers = normalizeBoundedInt(payload.advanced?.remote_refresh_model_workers, 2, 1, 4);
   advancedForm.makerworld_request_limit = normalizeBoundedInt(payload.advanced?.makerworld_request_limit, 2, 1, 8);
   advancedForm.comment_asset_download_limit = normalizeBoundedInt(payload.advanced?.comment_asset_download_limit, 4, 1, 16);
@@ -1465,6 +1487,10 @@ async function saveAdvanced() {
     const payload = await apiRequest("/api/config/advanced", {
       method: "POST",
       body: {
+        scraping_engine: ["legacy", "scrapling_first", "scrapling_only"].includes(advancedForm.scraping_engine)
+          ? advancedForm.scraping_engine
+          : "scrapling_first",
+        scrapling_browser_fallback: Boolean(advancedForm.scrapling_browser_fallback),
         remote_refresh_model_workers: normalizeBoundedInt(advancedForm.remote_refresh_model_workers, 2, 1, 4),
         makerworld_request_limit: normalizeBoundedInt(advancedForm.makerworld_request_limit, 2, 1, 8),
         comment_asset_download_limit: normalizeBoundedInt(advancedForm.comment_asset_download_limit, 4, 1, 16),

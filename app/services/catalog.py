@@ -8,7 +8,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -37,6 +37,73 @@ SOURCE_LABELS = {
 
 LEGACY_CURL_FAILURE_MARKER = "No such file or directory: 'curl'"
 DETAIL_COMMENTS_PAGE_SIZE = 20
+SUMMARY_ALLOWED_TAGS = {
+    "a",
+    "b",
+    "blockquote",
+    "br",
+    "code",
+    "del",
+    "div",
+    "em",
+    "figcaption",
+    "figure",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "i",
+    "img",
+    "li",
+    "ol",
+    "p",
+    "pre",
+    "s",
+    "span",
+    "strong",
+    "sub",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "th",
+    "thead",
+    "tr",
+    "u",
+    "ul",
+}
+SUMMARY_DANGEROUS_TAGS = {
+    "audio",
+    "base",
+    "button",
+    "canvas",
+    "embed",
+    "form",
+    "iframe",
+    "input",
+    "link",
+    "math",
+    "meta",
+    "object",
+    "option",
+    "script",
+    "select",
+    "source",
+    "style",
+    "svg",
+    "textarea",
+    "video",
+}
+SUMMARY_GLOBAL_ATTRS = {"title"}
+SUMMARY_TAG_ATTRS = {
+    "a": {"href", "target", "rel"},
+    "img": {"src", "alt", "width", "height"},
+    "td": {"colspan", "rowspan"},
+    "th": {"colspan", "rowspan"},
+}
 _ARCHIVE_SNAPSHOT_LOCK = threading.RLock()
 _ARCHIVE_SNAPSHOT_MARKER_PATH = STATE_DIR / "archive_snapshot.marker"
 _ARCHIVE_SNAPSHOT_CACHE: dict[str, Any] = {
@@ -662,19 +729,80 @@ def _rewrite_summary_html(model_root: Path, html: str, *, preserve_text_newlines
 
     for tag in soup.find_all(src=True):
         raw = str(tag.get("src") or "").strip()
-        local = _local_asset_url(model_root, raw)
-        if local:
-            tag["src"] = local
+        if _is_safe_summary_url(raw):
+            continue
+        if _can_rewrite_summary_local_ref(raw):
+            local = _local_asset_url(model_root, raw)
+            if local:
+                tag["src"] = local
 
     for tag in soup.find_all(href=True):
         raw = str(tag.get("href") or "").strip()
-        if raw.startswith(("http://", "https://", "mailto:", "tel:", "#", "javascript:")):
+        if _is_safe_summary_url(raw, allow_fragment=True):
             continue
-        local = _local_asset_url(model_root, raw)
-        if local:
-            tag["href"] = local
+        if _can_rewrite_summary_local_ref(raw):
+            local = _local_asset_url(model_root, raw)
+            if local:
+                tag["href"] = local
 
+    _sanitize_summary_html(soup)
     return str(soup)
+
+
+def _can_rewrite_summary_local_ref(value: str) -> bool:
+    raw = str(value or "").strip()
+    if not raw or raw.startswith(("//", "#")):
+        return False
+    parsed = urlparse(raw)
+    return not bool(parsed.scheme)
+
+
+def _is_safe_summary_url(value: str, *, allow_fragment: bool = False) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    if allow_fragment and raw.startswith("#"):
+        return True
+    if raw.startswith("//"):
+        return True
+    parsed = urlparse(raw)
+    if not parsed.scheme:
+        return raw.startswith(("/", "./", "../"))
+    return parsed.scheme.lower() in {"http", "https", "mailto", "tel"}
+
+
+def _sanitize_summary_html(soup: BeautifulSoup) -> None:
+    for tag in list(soup.find_all(True)):
+        name = str(tag.name or "").lower()
+        if name in SUMMARY_DANGEROUS_TAGS:
+            tag.decompose()
+            continue
+        if name not in SUMMARY_ALLOWED_TAGS:
+            tag.unwrap()
+            continue
+
+        allowed_attrs = SUMMARY_GLOBAL_ATTRS | SUMMARY_TAG_ATTRS.get(name, set())
+        for attr_name in list(tag.attrs.keys()):
+            clean_attr = str(attr_name or "").lower()
+            if clean_attr.startswith("on") or clean_attr not in allowed_attrs:
+                del tag.attrs[attr_name]
+                continue
+
+            if clean_attr in {"href", "src"}:
+                raw_url = str(tag.attrs.get(attr_name) or "").strip()
+                if not _is_safe_summary_url(raw_url, allow_fragment=clean_attr == "href"):
+                    del tag.attrs[attr_name]
+                    continue
+
+            if clean_attr in {"width", "height", "colspan", "rowspan"}:
+                raw_value = str(tag.attrs.get(attr_name) or "").strip()
+                if not re.fullmatch(r"\d{1,4}", raw_value):
+                    del tag.attrs[attr_name]
+
+        if name == "a" and tag.get("href"):
+            tag["rel"] = "noreferrer"
+            if str(tag.get("href") or "").startswith(("http://", "https://", "//")):
+                tag["target"] = "_blank"
 
 
 def _html_to_plain_text(value: Any) -> str:
@@ -2491,7 +2619,11 @@ def build_dashboard_payload(config) -> dict:
     seven_days_ago = now - 7 * 24 * 60 * 60
 
     status_cards = [
-        *build_source_health_cards(config, tasks_payload["missing_3mf"]["items"]),
+        *build_source_health_cards(
+            config,
+            tasks_payload["missing_3mf"]["items"],
+            remote_refresh_state=tasks_payload["remote_refresh"],
+        ),
         {
             "key": "proxy",
             "title": "HTTP 代理",

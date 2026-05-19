@@ -234,8 +234,15 @@ class Missing3mfTest(unittest.TestCase):
 
     def test_fetch_instance_3mf_continues_after_auth_required_candidate(self):
         original_wait = legacy_archiver_module._wait_before_three_mf_download
+        original_scrapling_fetch_json = legacy_archiver_module.fetch_json_with_scrapling
+        original_scrapling_only = legacy_archiver_module.scrapling_only
         try:
             legacy_archiver_module._wait_before_three_mf_download = lambda *_args, **_kwargs: 0
+            legacy_archiver_module.fetch_json_with_scrapling = lambda *_args, **_kwargs: (
+                None,
+                SimpleNamespace(ok=False, status_code=0, text="", error="", engine="disabled"),
+            )
+            legacy_archiver_module.scrapling_only = lambda *_args, **_kwargs: False
             session = SimpleNamespace(headers={"User-Agent": "test-agent"})
             calls = []
 
@@ -265,12 +272,48 @@ class Missing3mfTest(unittest.TestCase):
             )
         finally:
             legacy_archiver_module._wait_before_three_mf_download = original_wait
+            legacy_archiver_module.fetch_json_with_scrapling = original_scrapling_fetch_json
+            legacy_archiver_module.scrapling_only = original_scrapling_only
 
         self.assertEqual(name, "ok.3mf")
         self.assertEqual(url, "https://example.test/ok.3mf")
         self.assertEqual(failure["state"], "available")
         self.assertEqual(len(calls), 2)
         self.assertEqual(used_api_url, calls[-1])
+
+    def test_fetch_instance_3mf_uses_scrapling_download_payload(self):
+        original_wait = legacy_archiver_module._wait_before_three_mf_download
+        original_scrapling_fetch_json = legacy_archiver_module.fetch_json_with_scrapling
+        try:
+            legacy_archiver_module._wait_before_three_mf_download = lambda *_args, **_kwargs: 0
+            session = SimpleNamespace(headers={"User-Agent": "test-agent"}, get=lambda *_args, **_kwargs: None)
+            calls = []
+
+            def fake_scrapling(url, **kwargs):
+                calls.append((url, kwargs))
+                return (
+                    {"name": "from-scrapling.3mf", "url": "https://example.test/from-scrapling.3mf"},
+                    SimpleNamespace(ok=True, status_code=200, text="", error="", engine="scrapling-static"),
+                )
+
+            legacy_archiver_module.fetch_json_with_scrapling = fake_scrapling
+
+            name, url, used_api_url, failure = fetch_instance_3mf(
+                session,
+                2864062,
+                "token=abc",
+                api_url="https://makerworld.com.cn/api/v1/design-service/instance/2864062/f3mf?type=download&fileType=",
+                origin="https://makerworld.com.cn",
+            )
+        finally:
+            legacy_archiver_module._wait_before_three_mf_download = original_wait
+            legacy_archiver_module.fetch_json_with_scrapling = original_scrapling_fetch_json
+
+        self.assertEqual(name, "from-scrapling.3mf")
+        self.assertEqual(url, "https://example.test/from-scrapling.3mf")
+        self.assertEqual(failure["state"], "available")
+        self.assertEqual(used_api_url, calls[0][0])
+        self.assertIn("Cookie", calls[0][1]["headers"])
 
 
 if __name__ == "__main__":

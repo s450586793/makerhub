@@ -14,8 +14,10 @@ from app.services.legacy_archiver import (
     fetch_design_from_api,
     fetch_html_with_curl,
     fetch_html_with_requests,
+    fetch_json_with_scrapling,
     parse_cookies,
 )
+from app.services.scrapling_fetch import scrapling_only
 
 
 MODEL_PATH_RE = re.compile(r"/(?:[a-z]{2}/)?models/(\d+)(?:[^\"'\\s<>]*)?", re.I)
@@ -179,6 +181,46 @@ def _api_get_json(
     headers = _build_api_headers(session, raw_cookie, source_url)
     for api_url in _service_endpoint_candidates(source_url, service_name, path):
         started = time.time()
+        payload, scrapling_result = fetch_json_with_scrapling(
+            api_url,
+            raw_cookie=raw_cookie,
+            headers=headers,
+            params=params or None,
+            timeout=15,
+        )
+        if isinstance(payload, dict):
+            hits_payload = _extract_hits_payload(payload)
+            payload_summary = _payload_debug_summary(payload) if "/favorites" in path else []
+            _append_discovery_debug(
+                "api_ok",
+                api_url=api_url,
+                service=service_name,
+                path=path,
+                params=params or {},
+                status_code=scrapling_result.status_code,
+                elapsed_ms=round((time.time() - started) * 1000, 1),
+                engine=scrapling_result.engine,
+                uid=_extract_uid(payload),
+                hits=len((hits_payload or {}).get("hits") or []),
+                total=(hits_payload or {}).get("total"),
+                has_next=(hits_payload or {}).get("hasNext"),
+                search_session_id=_extract_search_session_id(hits_payload or payload),
+                payload_summary=payload_summary,
+            )
+            return payload
+        if scrapling_only():
+            _append_discovery_debug(
+                "api_error",
+                api_url=api_url,
+                service=service_name,
+                path=path,
+                params=params or {},
+                engine=getattr(scrapling_result, "engine", "scrapling"),
+                status_code=getattr(scrapling_result, "status_code", 0),
+                error=getattr(scrapling_result, "error", ""),
+                elapsed_ms=round((time.time() - started) * 1000, 1),
+            )
+            continue
         try:
             response = session.get(api_url, params=params or None, headers=headers, timeout=(5, 12))
         except Exception as exc:

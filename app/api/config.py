@@ -206,6 +206,10 @@ MODEL_DOWNLOAD_ALL_EXCLUDED_FILENAMES = {
 }
 BAMBU_STUDIO_DOWNLOAD_SECRET_PATH = STATE_DIR / "bambu_studio_download_secret"
 BAMBU_STUDIO_DOWNLOAD_TTL_SECONDS = 10 * 60
+SHARE_RECEIVE_MAX_FILES = 2000
+SHARE_RECEIVE_MAX_TOTAL_BYTES = MAX_LOCAL_IMPORT_UPLOAD_BYTES
+SHARE_RECEIVE_MAX_FILE_BYTES = MAX_LOCAL_IMPORT_UPLOAD_BYTES
+SHARE_RECEIVE_MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 
 
 def _read_shares_state() -> dict:
@@ -482,6 +486,10 @@ def _decode_share_code(value: str) -> dict:
 
 def _share_receive_remote_error(action: str) -> ValueError:
     return ValueError(f"{action}失败：无法连接分享端，请确认分享码仍有效且分享端公开访问地址可用。")
+
+
+def _share_receive_limit_error(message: str) -> ValueError:
+    return ValueError(f"分享内容超过接收限制：{message}")
 
 
 def _normalize_share_options(options: ShareOptions | SharingConfig | dict | None) -> dict:
@@ -1032,6 +1040,7 @@ def _active_share_conflict_message(conflicts: list[dict]) -> str:
 
 def _fetch_share_manifest(share_code: str) -> tuple[dict, dict]:
     decoded = _decode_share_code(share_code)
+    _validate_share_receive_base_url(decoded["base_url"])
     if decoded.get("access_code"):
         manifest_url = urljoin(
             f"{decoded['base_url']}/",
@@ -1042,19 +1051,69 @@ def _fetch_share_manifest(share_code: str) -> tuple[dict, dict]:
             f"{decoded['base_url']}/",
             f"api/public/shares/{decoded['share_id']}/manifest?token={decoded['token']}",
         )
+    response = None
     try:
-        response = requests.get(manifest_url, timeout=(8, 30), headers={"Accept": "application/json"})
+        response = requests.get(manifest_url, timeout=(8, 30), headers={"Accept": "application/json"}, stream=True)
     except requests.RequestException:
         raise _share_receive_remote_error("读取分享") from None
     if response.status_code != 200:
+        response.close()
         raise ValueError(f"读取分享失败：HTTP {response.status_code}")
+    content_length = _safe_int_value(response.headers.get("content-length"), 0)
+    if content_length > SHARE_RECEIVE_MAX_MANIFEST_BYTES:
+        response.close()
+        raise _share_receive_limit_error("分享清单过大。")
+    raw_chunks = []
+    received = 0
     try:
-        manifest = response.json()
+        for chunk in response.iter_content(chunk_size=256 * 1024):
+            if not chunk:
+                continue
+            received += len(chunk)
+            if received > SHARE_RECEIVE_MAX_MANIFEST_BYTES:
+                raise _share_receive_limit_error("分享清单过大。")
+            raw_chunks.append(chunk)
+        manifest = json.loads(b"".join(raw_chunks).decode("utf-8"))
     except ValueError as exc:
+        if str(exc).startswith("分享内容超过接收限制"):
+            raise
         raise ValueError("分享 manifest 不是有效 JSON。") from exc
+    except requests.RequestException:
+        raise _share_receive_remote_error("读取分享") from None
+    finally:
+        response.close()
     if not isinstance(manifest, dict):
         raise ValueError("分享 manifest 格式无效。")
+    _validate_share_manifest_limits(manifest)
     return decoded, manifest
+
+
+def _validate_share_receive_base_url(base_url: str) -> None:
+    try:
+        _run_public_base_url_test(base_url)
+    except ValueError as exc:
+        message = str(exc)
+        if "必须以 http:// 或 https:// 开头" in message:
+            raise
+        raise _share_receive_remote_error("验证分享端") from exc
+
+
+def _share_manifest_files(manifest: dict) -> list[dict]:
+    return [item for item in manifest.get("files") or [] if isinstance(item, dict)]
+
+
+def _validate_share_manifest_limits(manifest: dict) -> None:
+    files = _share_manifest_files(manifest)
+    if len(files) > SHARE_RECEIVE_MAX_FILES:
+        raise _share_receive_limit_error(f"文件数量超过 {SHARE_RECEIVE_MAX_FILES} 个。")
+    declared_total = 0
+    for item in files:
+        declared_size = _safe_int_value(item.get("size"), 0)
+        if declared_size > SHARE_RECEIVE_MAX_FILE_BYTES:
+            raise _share_receive_limit_error("单个文件过大。")
+        declared_total += declared_size
+        if declared_total > SHARE_RECEIVE_MAX_TOTAL_BYTES:
+            raise _share_receive_limit_error("文件总体积过大。")
 
 
 def _normalize_duplicate_hash(value: object) -> str:
@@ -1267,6 +1326,9 @@ def _download_share_file(base_url: str, file_item: dict, target_path: Path) -> t
     file_url = str(file_item.get("url") or "")
     if not file_url:
         raise ValueError("分享文件缺少下载地址。")
+    declared_size = _safe_int_value(file_item.get("size"), 0)
+    if declared_size > SHARE_RECEIVE_MAX_FILE_BYTES:
+        raise _share_receive_limit_error("单个文件过大。")
     url = urljoin(f"{base_url}/", file_url.lstrip("/"))
     response = None
     try:
@@ -1274,7 +1336,12 @@ def _download_share_file(base_url: str, file_item: dict, target_path: Path) -> t
     except requests.RequestException:
         raise _share_receive_remote_error("下载分享文件") from None
     if response.status_code != 200:
+        response.close()
         raise ValueError(f"下载分享文件失败：HTTP {response.status_code}")
+    content_length = _safe_int_value(response.headers.get("content-length"), 0)
+    if content_length > SHARE_RECEIVE_MAX_FILE_BYTES:
+        response.close()
+        raise _share_receive_limit_error("单个文件过大。")
     target_path.parent.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256()
     total_size = 0
@@ -1285,6 +1352,8 @@ def _download_share_file(base_url: str, file_item: dict, target_path: Path) -> t
                 if not chunk:
                     continue
                 total_size += len(chunk)
+                if total_size > SHARE_RECEIVE_MAX_FILE_BYTES:
+                    raise _share_receive_limit_error("单个文件过大。")
                 digest.update(chunk)
                 handle.write(chunk)
         temp_path.replace(target_path)
@@ -2018,6 +2087,7 @@ def _public_config_payload(config) -> dict:
             "password_hint": config.user.password_hint,
             "theme_preference": config.user.theme_preference,
             "password_updated_at": config.user.password_updated_at,
+            "default_password": auth_manager.default_password_active(),
         },
         "api_tokens": [item.model_dump() for item in auth_manager.list_api_tokens()],
         "subscriptions": [item.model_dump() for item in config.subscriptions],
@@ -3050,6 +3120,7 @@ async def preview_model_share(payload: ShareReceiveRequest, request: Request):
 
     def _preview_payload() -> dict:
         decoded, manifest = _fetch_share_manifest(payload.share_code)
+        _validate_share_manifest_limits(manifest)
         duplicates = _find_manifest_duplicates(manifest)
         models = manifest.get("models") if isinstance(manifest.get("models"), list) else []
         files = manifest.get("files") if isinstance(manifest.get("files"), list) else []
@@ -3095,6 +3166,7 @@ async def import_model_share(payload: ShareReceiveRequest, request: Request):
 
     def _import_payload() -> dict:
         decoded, manifest = _fetch_share_manifest(payload.share_code)
+        _validate_share_manifest_limits(manifest)
         return _import_share_manifest(decoded=decoded, manifest=manifest)
 
     try:
@@ -3241,6 +3313,8 @@ async def save_advanced_runtime(payload: AdvancedRuntimeConfig, request: Request
         "settings",
         "advanced_runtime_saved",
         "高级运行参数已保存。",
+        scraping_engine=payload.scraping_engine,
+        scrapling_browser_fallback=payload.scrapling_browser_fallback,
         remote_refresh_model_workers=payload.remote_refresh_model_workers,
         makerworld_request_limit=payload.makerworld_request_limit,
         comment_asset_download_limit=payload.comment_asset_download_limit,

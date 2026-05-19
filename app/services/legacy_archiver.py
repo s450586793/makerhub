@@ -29,6 +29,7 @@ from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_
 from app.services.cookie_utils import extract_auth_token, parse_cookie_values, sanitize_cookie_header
 from app.services.profile_rating import normalize_profile_rating
 from app.services.resource_limiter import resource_slot
+from app.services.scrapling_fetch import fetch_json as scrapling_fetch_json, fetch_text as scrapling_fetch_text, scrapling_only
 from app.services.three_mf import describe_three_mf_failure, merge_three_mf_failure, normalize_makerworld_source
 from app.services.three_mf_quota import reserve_three_mf_download_slot
 
@@ -478,7 +479,7 @@ def choose_unique_instance_filename(
 
 
 def fetch_html_with_requests(session: requests.Session, url: str, raw_cookie: str) -> Optional[str]:
-    cookie_header = sanitize_cookie_header(raw_cookie)
+    cookie_header = sanitize_cookie_header(raw_cookie) or _session_cookie_header(session)
     headers = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
@@ -493,6 +494,18 @@ def fetch_html_with_requests(session: requests.Session, url: str, raw_cookie: st
     }
     if cookie_header:
         headers["Cookie"] = cookie_header
+    scrapling_result = scrapling_fetch_text(
+        url,
+        raw_cookie=cookie_header,
+        headers=headers,
+        timeout=30,
+        logger=log,
+    )
+    if scrapling_result.ok and scrapling_result.text:
+        return scrapling_result.text
+    if scrapling_only():
+        log("Scrapling only 模式获取页面失败:", scrapling_result.engine, scrapling_result.status_code, scrapling_result.error)
+        return None
     try:
         resp = session.get(url, timeout=30, headers=headers)
     except Exception as e:
@@ -502,6 +515,39 @@ def fetch_html_with_requests(session: requests.Session, url: str, raw_cookie: st
         log("requests 获取页面状态异常:", resp.status_code)
         return None
     return resp.text
+
+
+def fetch_json_with_scrapling(
+    url: str,
+    *,
+    raw_cookie: str = "",
+    headers: Optional[dict[str, str]] = None,
+    params: Optional[dict[str, object]] = None,
+    timeout: float = 30,
+    logger=None,
+):
+    result = scrapling_fetch_json(
+        url,
+        raw_cookie=raw_cookie,
+        headers=headers,
+        params=params,
+        timeout=timeout,
+        logger=logger or log,
+    )
+    if result.ok:
+        return result.payload, result
+    return None, result
+
+
+def _session_cookie_header(session: requests.Session) -> str:
+    try:
+        return "; ".join(
+            f"{cookie.name}={cookie.value}"
+            for cookie in session.cookies
+            if getattr(cookie, "name", "") and getattr(cookie, "value", "") is not None
+        )
+    except Exception:
+        return ""
 
 
 def fetch_html_with_curl(url: str, raw_cookie: str) -> str:
@@ -974,7 +1020,7 @@ def fetch_design_from_api(
         for prefix in prefixes:
             for path in path_templates:
                 endpoints.append(f"{base.rstrip('/')}{prefix}{path.format(id=design_id)}")
-    cookie_header = sanitize_cookie_header(raw_cookie)
+    cookie_header = sanitize_cookie_header(raw_cookie) or _session_cookie_header(session)
     headers = {
         "Accept": "application/json, text/plain, */*",
         "Referer": url,
@@ -983,6 +1029,24 @@ def fetch_design_from_api(
     if cookie_header:
         headers["Cookie"] = cookie_header
     for api_url in endpoints:
+        payload, scrapling_result = fetch_json_with_scrapling(
+            api_url,
+            raw_cookie=cookie_header,
+            headers=headers,
+            timeout=30,
+            logger=logger or log,
+        )
+        if isinstance(payload, dict):
+            design = _unwrap_design_payload(payload)
+            if design:
+                payload_error = _design_payload_error(design, url)
+                if payload_error:
+                    log(logger, "Scrapling API 返回的模型数据无效，跳过:", api_url, payload_error)
+                else:
+                    _normalize_design_payload_identity(design, url)
+                    return design
+        if scrapling_only():
+            continue
         try:
             resp = session.get(api_url, timeout=30, headers=headers)
         except Exception:
@@ -2333,6 +2397,20 @@ def _fetch_comment_reply_payload(
         reply_path,
         api_host_hint=api_host_hint,
     ):
+        payload, _ = fetch_json_with_scrapling(
+            api_url,
+            raw_cookie=_session_cookie_header(session),
+            headers=headers,
+            params=params or None,
+            timeout=15,
+        )
+        if payload is not None:
+            if _extract_comment_replies_from_payload(payload, root_comment_id):
+                return payload
+            if fallback_payload is None:
+                fallback_payload = payload
+        if scrapling_only():
+            continue
         try:
             response = session.get(api_url, params=params or None, headers=headers, timeout=(5, 12))
         except Exception:
@@ -2381,6 +2459,23 @@ def _fetch_comment_list_payload(
         "/commentandrating",
         api_host_hint=api_host_hint,
     ):
+        payload, _ = fetch_json_with_scrapling(
+            api_url,
+            raw_cookie=_session_cookie_header(session),
+            headers=headers,
+            params=params,
+            timeout=18,
+        )
+        if payload is not None:
+            if _extract_comment_list_items(payload):
+                return payload
+            if fallback_payload is None or (
+                _comment_list_payload_total(payload) > _comment_list_payload_total(fallback_payload)
+                or _comment_list_payload_hit_count(payload) > _comment_list_payload_hit_count(fallback_payload)
+            ):
+                fallback_payload = payload
+        if scrapling_only():
+            continue
         try:
             response = session.get(api_url, params=params, headers=headers, timeout=(5, 15))
         except Exception:
@@ -3791,8 +3886,9 @@ def fetch_instance_3mf(
     获取实例的 3MF 下载地址，允许外部传入 api_url，并自动回退不同 API Host。
     返回: (name, url, used_api_url, failure_info)
     """
+    effective_cookie = sanitize_cookie_header(raw_cookie) or _session_cookie_header(session)
     candidates = _build_instance_api_candidates(inst_id, api_url, origin, api_host_hint)
-    auth_token = _extract_auth_token(raw_cookie)
+    auth_token = _extract_auth_token(effective_cookie)
     last_error = None
     last_failure = {"state": "missing", "message": "未获取到 3MF 下载地址。"}
     attempts: list[dict] = []
@@ -3806,7 +3902,7 @@ def fetch_instance_3mf(
     for candidate in candidates:
         candidate_source = source_hint or normalize_makerworld_source(url=candidate)
         try:
-            cookie_header = sanitize_cookie_header(raw_cookie)
+            cookie_header = effective_cookie
             headers = {
                 **MAKERWORLD_API_BROWSER_HEADERS,
                 "Accept": "application/json, text/plain, */*",
@@ -3821,6 +3917,63 @@ def fetch_instance_3mf(
                 headers["token"] = auth_token
                 headers["X-Token"] = auth_token
                 headers["X-Access-Token"] = auth_token
+            data = None
+            scrapling_result = None
+            payload, scrapling_result = fetch_json_with_scrapling(
+                candidate,
+                raw_cookie=cookie_header,
+                headers=headers,
+                timeout=30,
+            )
+            if payload is not None:
+                data = payload
+                attempts.append({
+                    "method": scrapling_result.engine or "scrapling",
+                    "url": candidate,
+                    "status": scrapling_result.status_code,
+                    "state": "json",
+                })
+            elif scrapling_only():
+                text_preview = scrapling_result.text[:200] if scrapling_result and scrapling_result.text else ""
+                failure = _classify_3mf_fetch_failure(
+                    status_code=scrapling_result.status_code if scrapling_result else 0,
+                    text=text_preview or (scrapling_result.error if scrapling_result else ""),
+                    cloudflare=bool(text_preview and (_is_cloudflare_challenge(text_preview) or _looks_like_html(text_preview))),
+                    source=candidate_source,
+                )
+                last_failure = merge_three_mf_failure(last_failure, failure)
+                attempts.append({
+                    "method": scrapling_result.engine if scrapling_result else "scrapling",
+                    "url": candidate,
+                    "status": scrapling_result.status_code if scrapling_result else "error",
+                    "state": failure.get("state"),
+                })
+                if _should_stop_three_mf_fetch(failure):
+                    log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
+                    return "", "", candidate, last_failure
+                continue
+            if data is not None:
+                name, url = _extract_instance_download(data)
+                if url:
+                    return name, url, candidate, {"state": "available", "message": ""}
+                text_preview = json.dumps(data, ensure_ascii=False)[:200]
+                failure = _classify_3mf_fetch_failure(
+                    status_code=scrapling_result.status_code if scrapling_result else 200,
+                    text=text_preview,
+                    payload=data,
+                    source=candidate_source,
+                )
+                last_failure = merge_three_mf_failure(last_failure, failure)
+                attempts.append({
+                    "method": scrapling_result.engine if scrapling_result else "scrapling",
+                    "url": candidate,
+                    "status": scrapling_result.status_code if scrapling_result else 200,
+                    "state": failure.get("state"),
+                })
+                if _should_stop_three_mf_fetch(failure):
+                    log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
+                    return "", "", candidate, last_failure
+                continue
             r = session.get(
                 candidate,
                 timeout=30,
@@ -3901,7 +4054,7 @@ def fetch_instance_3mf(
     log("3MF 获取失败，尝试 curl", inst_id, _summarize_three_mf_fetch_attempts(attempts), last_error)
     for candidate in candidates:
         candidate_source = source_hint or normalize_makerworld_source(url=candidate)
-        cookie_header = sanitize_cookie_header(raw_cookie)
+        cookie_header = effective_cookie
         cmd = [
             "curl",
             "-sSL",

@@ -100,6 +100,38 @@ class LocalModelEditTest(unittest.TestCase):
             self.assertIn("1<br", detail["summary_html"])
             self.assertIn("2<br", detail["summary_html"])
 
+    def test_summary_html_sanitizes_scripts_and_unsafe_attributes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_root = Path(tmp).resolve()
+            model_root = self._write_local_model(archive_root)
+            meta_path = model_root / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["summary"] = {
+                "text": "unsafe",
+                "html": (
+                    '<p onclick="alert(1)" style="color:red">ok<script>alert(1)</script></p>'
+                    '<a href="javascript:alert(1)" onmouseover="alert(2)">bad</a>'
+                    '<img src="javascript:alert(3)" onerror="alert(4)">'
+                    '<iframe src="https://example.com"></iframe>'
+                    '<a href="images/cover.jpg">cover</a>'
+                ),
+            }
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+            with patch.object(catalog, "ARCHIVE_DIR", archive_root):
+                detail = catalog.get_model_detail("LOCAL_Test")
+
+            html = detail["summary_html"]
+            self.assertIn(">ok", html)
+            self.assertIn('/archive/LOCAL_Test/images/cover.jpg', html)
+            self.assertNotIn("<script", html)
+            self.assertNotIn("<iframe", html)
+            self.assertNotIn("onclick", html)
+            self.assertNotIn("onmouseover", html)
+            self.assertNotIn("onerror", html)
+            self.assertNotIn("style=", html)
+            self.assertNotIn("javascript:", html)
+
     def test_update_metadata_changes_title_and_description(self):
         with tempfile.TemporaryDirectory() as tmp:
             archive_root = Path(tmp).resolve()

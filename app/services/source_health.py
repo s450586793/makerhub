@@ -13,6 +13,7 @@ import requests
 from app.core.settings import STATE_DIR, ensure_app_dirs
 from app.core.timezone import now as china_now, parse_datetime
 from app.services.cookie_utils import sanitize_cookie_header
+from app.services.scrapling_fetch import fetch_text as scrapling_fetch_text, scrapling_only
 from app.services.three_mf import (
     describe_three_mf_failure,
     merge_three_mf_failure,
@@ -109,6 +110,48 @@ def _contains_verification_markers(text: str) -> bool:
         "challenge-platform",
     )
     return any(marker in lowered for marker in markers)
+
+
+def _auth_probe_result_from_response(
+    *,
+    name: str,
+    url: str,
+    status_code: int,
+    text: str,
+    headers: Any,
+    elapsed_ms: float,
+    engine: str = "",
+) -> dict[str, Any]:
+    preview = (text or "")[:240]
+    looks_like_html = _looks_like_html(preview)
+    verification_marker = _contains_verification_markers(preview)
+    status_value = int(status_code or 0)
+    ok = status_value > 0 and status_value < 400 and not looks_like_html
+    result = {
+        "target": name,
+        "url": url,
+        "ok": ok,
+        "status_code": status_value,
+        "elapsed_ms": elapsed_ms,
+        "content_type": str((headers or {}).get("content-type") or "").lower()[:80],
+    }
+    if engine:
+        result["engine"] = engine
+    if not ok:
+        if looks_like_html:
+            result["failure_kind"] = "verification_required"
+            result["error"] = (
+                "返回了验证页面，通常表示需要完成网页验证。"
+                if verification_marker
+                else "返回了 HTML 页面，通常表示 Cookie 失效、风控校验未通过，或代理未生效。"
+            )
+        elif status_code in {401, 403}:
+            result["failure_kind"] = "auth_required"
+            result["error"] = f"接口返回状态码 {status_code}。"
+        else:
+            result["failure_kind"] = "http_error"
+            result["error"] = f"接口返回状态码 {status_code}。"
+    return result
 
 
 def _safe_error_message(exc: Exception) -> str:
@@ -300,6 +343,44 @@ def _probe_auth_endpoints(platform: str, raw_cookie: str, proxy_config: Any) -> 
         for name, url in probes:
             started = time.perf_counter()
             try:
+                scrapling_result = scrapling_fetch_text(
+                    headers=headers,
+                    proxy_config=proxy_config,
+                    raw_cookie=raw_cookie,
+                    timeout=12,
+                    url=url,
+                    expect_json=True,
+                )
+                if scrapling_result.ok:
+                    elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+                    result = _auth_probe_result_from_response(
+                        name=name,
+                        url=url,
+                        status_code=int(scrapling_result.status_code or 0),
+                        text=scrapling_result.text or "",
+                        headers=scrapling_result.headers or {},
+                        elapsed_ms=elapsed_ms,
+                        engine=scrapling_result.engine,
+                    )
+                    results.append(result)
+                    states.append(_classify_auth_probe_result(result))
+                    continue
+                if scrapling_only():
+                    elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+                    result = _auth_probe_result_from_response(
+                        name=name,
+                        url=url,
+                        status_code=int(scrapling_result.status_code or 0),
+                        text=scrapling_result.text or "",
+                        headers=scrapling_result.headers or {},
+                        elapsed_ms=elapsed_ms,
+                        engine=scrapling_result.engine,
+                    )
+                    if not result.get("error") or result.get("failure_kind") == "http_error":
+                        result["error"] = scrapling_result.error or "Scrapling 抓取失败。"
+                    results.append(result)
+                    states.append(_classify_auth_probe_result(result))
+                    continue
                 response = session.get(
                     url,
                     headers=headers,
@@ -307,32 +388,14 @@ def _probe_auth_endpoints(platform: str, raw_cookie: str, proxy_config: Any) -> 
                     timeout=(6, 12),
                 )
                 elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
-                preview = (response.text or "")[:240]
-                looks_like_html = _looks_like_html(preview)
-                verification_marker = _contains_verification_markers(preview)
-                ok = response.status_code < 400 and not looks_like_html
-                result = {
-                    "target": name,
-                    "url": url,
-                    "ok": ok,
-                    "status_code": int(response.status_code),
-                    "elapsed_ms": elapsed_ms,
-                    "content_type": str(response.headers.get("content-type") or "").lower()[:80],
-                }
-                if not ok:
-                    if looks_like_html:
-                        result["failure_kind"] = "verification_required"
-                        result["error"] = (
-                            "返回了验证页面，通常表示需要完成网页验证。"
-                            if verification_marker
-                            else "返回了 HTML 页面，通常表示 Cookie 失效、风控校验未通过，或代理未生效。"
-                        )
-                    elif response.status_code in {401, 403}:
-                        result["failure_kind"] = "auth_required"
-                        result["error"] = f"接口返回状态码 {response.status_code}。"
-                    else:
-                        result["failure_kind"] = "http_error"
-                        result["error"] = f"接口返回状态码 {response.status_code}。"
+                result = _auth_probe_result_from_response(
+                    name=name,
+                    url=url,
+                    status_code=int(response.status_code),
+                    text=response.text or "",
+                    headers=response.headers,
+                    elapsed_ms=elapsed_ms,
+                )
             except Exception as exc:
                 elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
                 result = {
@@ -460,6 +523,67 @@ def _probe_platform_status(platform: str, raw_cookie: str, proxy_config: Any) ->
     )
 
 
+def _recent_remote_refresh_health(platform: str, remote_refresh_state: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(remote_refresh_state, dict):
+        return {}
+    platform_key = "global" if str(platform or "").strip() == "global" else "cn"
+    success_count = 0
+    failure_count = 0
+    verification_failures = 0
+    for raw_item in remote_refresh_state.get("recent_items") or []:
+        if not isinstance(raw_item, dict):
+            continue
+        item_url = str(raw_item.get("url") or "").strip()
+        if normalize_makerworld_source(url=item_url) != platform_key:
+            continue
+        status = str(raw_item.get("status") or "").strip()
+        if status in {"success", "source_deleted"}:
+            success_count += 1
+        elif status == "failed":
+            failure_count += 1
+            state = normalize_three_mf_failure_state(
+                "missing",
+                raw_item.get("message") or "",
+                url=item_url,
+            )
+            if state in {"verification_required", "cloudflare"}:
+                verification_failures += 1
+    total = success_count + failure_count
+    success_rate = (success_count / total) if total else 0.0
+    return {
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "verification_failures": verification_failures,
+        "total": total,
+        "success_rate": success_rate,
+    }
+
+
+def _soften_probe_verification_with_remote_health(
+    platform: str,
+    state: str,
+    status: str,
+    detail: str,
+    tone: str,
+    remote_refresh_state: dict[str, Any] | None,
+) -> tuple[str, str, str, str]:
+    if state not in {"verification_required", "cloudflare", "auth_required"}:
+        return state, status, detail, tone
+    health = _recent_remote_refresh_health(platform, remote_refresh_state)
+    success_count = int(health.get("success_count") or 0)
+    total = int(health.get("total") or 0)
+    success_rate = float(health.get("success_rate") or 0)
+    if success_count < 5 or total < 5 or success_rate < 0.6:
+        return state, status, detail, tone
+    softened_state = "probe_limited"
+    softened_status = "部分受限"
+    softened_detail = (
+        f"认证探针返回验证页，但最近源端刷新同站点 {success_count}/{total} 个成功，"
+        "归档能力仍可用；如需下载 3MF 或刷新失败项，再前往官网验证。"
+    )
+    return softened_state, softened_status, softened_detail, "warning"
+
+
 def _build_missing_3mf_overrides(items: list[dict[str, Any]] | None) -> dict[str, dict[str, str]]:
     overrides: dict[str, dict[str, str]] = {}
     limit_guards: dict[str, dict[str, Any]] = {}
@@ -508,10 +632,17 @@ def _status_text_from_failure_state(state: str) -> str:
         return "需要验证"
     if state == "auth_required":
         return "Cookie 失效"
+    if state == "probe_limited":
+        return "部分受限"
     return "连接异常"
 
 
-def build_source_health_cards(config: Any, missing_3mf_items: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+def build_source_health_cards(
+    config: Any,
+    missing_3mf_items: list[dict[str, Any]] | None = None,
+    *,
+    remote_refresh_state: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     cookie_map = {item.platform: item.cookie for item in getattr(config, "cookies", [])}
     platforms = ("cn", "global")
     missing_overrides = _build_missing_3mf_overrides(missing_3mf_items)
@@ -522,6 +653,7 @@ def build_source_health_cards(config: Any, missing_3mf_items: list[dict[str, Any
         detail = str(probe.get("detail") or "").strip()
         override = missing_overrides.get(platform) or {}
         override_state = str(override.get("state") or "").strip()
+        override_applied = False
         if (
             override_state
             and state != "missing_cookie"
@@ -529,16 +661,28 @@ def build_source_health_cards(config: Any, missing_3mf_items: list[dict[str, Any
         ):
             state = override_state
             detail = str(override.get("message") or "").strip()
+            override_applied = True
         if state in {"verification_required", "cloudflare"}:
             detail = describe_three_mf_failure(state, detail, url=PLATFORM_ORIGINS.get(platform, ""))
         if not detail and state == "verification_required":
             detail = "MakerWorld 需要验证，前往官网任意下载一个模型。"
+        status = _status_text_from_failure_state(state) if override_applied else str(probe.get("status") or "连接异常")
+        tone = "ok" if state == "ok" else "danger"
+        if not override_applied:
+            state, status, detail, tone = _soften_probe_verification_with_remote_health(
+                platform,
+                state,
+                status,
+                detail,
+                tone,
+                remote_refresh_state,
+            )
         return {
             "key": platform,
             "title": SOURCE_HEALTH_LABELS.get(platform, platform),
-            "status": _status_text_from_failure_state(state) if override_state and state == override_state else str(probe.get("status") or "连接异常"),
+            "status": status,
             "detail": detail,
-            "tone": "ok" if state == "ok" else "danger",
+            "tone": tone,
             "state": state,
             "url": PLATFORM_ORIGINS.get(platform, ""),
             "action_label": "去验证" if state in {"verification_required", "cloudflare"} else "打开官网",

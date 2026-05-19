@@ -20,14 +20,51 @@ def _require_session_auth(request: Request) -> dict:
 
 
 @router.post("/login")
-async def login(payload: LoginRequest):
+async def login(payload: LoginRequest, request: Request):
+    failure_key = auth_manager.login_failure_key(request, payload.username)
+    backoff_seconds = auth_manager.login_backoff_seconds(failure_key)
+    if backoff_seconds > 0:
+        append_business_log(
+            "auth",
+            "login_rate_limited",
+            "登录失败次数过多，暂时限制重试。",
+            level="warning",
+            username=payload.username,
+            retry_after_seconds=backoff_seconds,
+        )
+        raise HTTPException(status_code=429, detail=f"登录失败次数过多，请 {backoff_seconds} 秒后再试。")
+
     if not auth_manager.authenticate_credentials(payload.username, payload.password):
-        append_business_log("auth", "login_failed", "登录失败：用户名或密码错误。", level="warning", username=payload.username)
+        retry_after = auth_manager.record_login_failure(failure_key)
+        append_business_log(
+            "auth",
+            "login_failed",
+            "登录失败：用户名或密码错误。",
+            level="warning",
+            username=payload.username,
+            rate_limited=retry_after > 0,
+        )
         raise HTTPException(status_code=401, detail="用户名或密码错误。")
 
+    auth_manager.clear_login_failures(failure_key)
     session = auth_manager.create_session(payload.username)
-    append_business_log("auth", "login_success", "用户已登录。", username=payload.username)
-    response = JSONResponse({"success": True, "username": payload.username})
+    default_password = auth_manager.default_password_active()
+    append_business_log(
+        "auth",
+        "login_success",
+        "用户已登录。",
+        username=payload.username,
+        default_password=default_password,
+    )
+    if default_password:
+        append_business_log(
+            "auth",
+            "default_password_active",
+            "当前仍在使用默认 admin 密码，请尽快修改。",
+            level="warning",
+            username=payload.username,
+        )
+    response = JSONResponse({"success": True, "username": payload.username, "default_password": default_password})
     response.set_cookie(
         SESSION_COOKIE_NAME,
         session["id"],
@@ -35,6 +72,7 @@ async def login(payload: LoginRequest):
         httponly=True,
         samesite="lax",
         path="/",
+        secure=_secure_cookie_for_request(request),
     )
     return response
 
@@ -59,7 +97,18 @@ async def me(request: Request):
         "kind": identity.get("kind") or "",
         "username": config.user.username if identity else "",
         "display_name": config.user.display_name if identity else "",
+        "default_password": auth_manager.default_password_active() if identity else False,
     }
+
+
+def _secure_cookie_for_request(request: Request) -> bool:
+    forwarded_proto = str(request.headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip().lower()
+    if forwarded_proto == "https":
+        return True
+    forwarded_ssl = str(request.headers.get("X-Forwarded-Ssl") or "").strip().lower()
+    if forwarded_ssl == "on":
+        return True
+    return str(request.url.scheme or "").lower() == "https"
 
 
 @router.get("/tokens")

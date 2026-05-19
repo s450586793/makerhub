@@ -1551,6 +1551,10 @@ html[data-theme="dark"] .organizer-progress-popover {
   background: #d14b4b;
 }
 
+.dashboard-hero__status-dot.is-warning {
+  background: #d97706;
+}
+
 .dashboard-hero__status-dot.is-neutral {
   background: #9aa4b2;
 }
@@ -1578,6 +1582,11 @@ html[data-theme="dark"] .organizer-progress-popover {
 .dashboard-hero__status.is-danger {
   border-color: rgba(209, 75, 75, 0.2);
   background: rgba(209, 75, 75, 0.08);
+}
+
+.dashboard-hero__status.is-warning {
+  border-color: rgba(217, 119, 6, 0.22);
+  background: rgba(217, 119, 6, 0.08);
 }
 
 .dashboard-focus-grid {
