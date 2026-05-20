@@ -154,6 +154,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-05-20 · v0.6.116
+- 修复收藏夹订阅缺失模型会误标“源已删除”的问题：收藏夹少扫或移除收藏只影响订阅统计，不再作为模型源端删除依据
+- “源已删除”红标现在只保留给作者上传页订阅确认缺失，或源端刷新直接检查原始模型链接后判定删除的模型
+- 补充订阅标记回归测试，覆盖收藏夹缺失不标红、作者上传缺失仍标红，以及显式状态测试绕过缓存的场景
+
 ### 2026-05-20 · v0.6.115
 - 订阅库作者 / 收藏夹同步新增 MakerWorld 当前可用的 `search-service/search/user` UID 解析链路，旧的 handle 解析接口失效时不再直接退到 Cloudflare 容易拦截的页面 HTML
 - 批量发现接口候选改为优先请求 `api.bambulab.cn` / `api.bambulab.com`，减少订阅同步先撞 `makerworld.com.cn` 页面域名导致的 `403` 和等待时间
@@ -164,13 +169,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 编辑弹窗加宽到更适合管理图册、模型文件和附件的布局，窄屏仍会自动折行
 - 附件上传 / 删除结果会同步显示在编辑弹窗内，和详情页现有附件接口保持一致
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-20 · v0.6.113
 - 国内 MakerWorld 与国内 Bambu API 请求统一绕过代理，订阅扫描、归档、源端刷新、Scrapling 抓取、Cookie 健康检查和来源卡元数据刷新都会直接访问国内站
 - 后台归档 / 批量发现 / 源端删除检查会把代理配置传入子进程入口，由单个任务按目标地址决定是否使用代理，避免源端刷新并发时国内 / 国际任务互相污染代理环境
 - 设置页保存连接配置时会先保存代理再保存 Cookie，并在保存期间禁用重复提交，避免 Cookie 保存后自动重试订阅时仍使用旧代理配置
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-19 · v0.6.112
 - 保存国内 / 国际 Cookie 后会自动检查同站点处于 `error` 的启用订阅，并立即安排重试，避免换新 Cookie 后还要等下一次 Cron

@@ -5,7 +5,8 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from app.services.catalog import _source_deleted_model_count
+from app.schemas.models import SubscriptionRecord
+from app.services.catalog import _apply_subscription_flags, _source_deleted_model_count
 from app.services.source_library import (
     _SOURCE_LIBRARY_GROUP_CACHE,
     _base_group,
@@ -88,6 +89,88 @@ class SourceLibraryTest(unittest.TestCase):
         ]
 
         self.assertEqual(_source_deleted_model_count(items), 1)
+
+    def test_subscription_flags_ignore_collection_missing_items(self):
+        item = {
+            "id": "2014963",
+            "origin_url": "https://makerworld.com.cn/zh/models/2014963",
+            "remote_sync": {},
+        }
+        config = type(
+            "ConfigStub",
+            (),
+            {
+                "subscriptions": [
+                    SubscriptionRecord(
+                        id="sub-collection",
+                        name="艾斯收藏夹",
+                        url="https://makerworld.com.cn/zh/@ace/collections/models",
+                        mode="collection_models",
+                    )
+                ]
+            },
+        )()
+        state_payload = {
+            "items": [
+                {
+                    "id": "sub-collection",
+                    "current_items": [],
+                    "tracked_items": [
+                        {
+                            "task_key": "model:2014963",
+                            "model_id": "2014963",
+                            "url": "https://makerworld.com.cn/zh/models/2014963",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        _apply_subscription_flags([item], config=config, state_payload=state_payload)
+
+        self.assertFalse(item["subscription_flags"]["deleted_on_source"])
+        self.assertEqual(item["subscription_flags"]["deleted_sources"], [])
+
+    def test_subscription_flags_keep_author_missing_items(self):
+        item = {
+            "id": "2014963",
+            "origin_url": "https://makerworld.com.cn/zh/models/2014963",
+            "remote_sync": {},
+        }
+        config = type(
+            "ConfigStub",
+            (),
+            {
+                "subscriptions": [
+                    SubscriptionRecord(
+                        id="sub-author",
+                        name="Whitt Labs",
+                        url="https://makerworld.com.cn/zh/@GLB_Whittlabs/upload",
+                        mode="author_upload",
+                    )
+                ]
+            },
+        )()
+        state_payload = {
+            "items": [
+                {
+                    "id": "sub-author",
+                    "current_items": [],
+                    "tracked_items": [
+                        {
+                            "task_key": "model:2014963",
+                            "model_id": "2014963",
+                            "url": "https://makerworld.com.cn/zh/models/2014963",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        _apply_subscription_flags([item], config=config, state_payload=state_payload)
+
+        self.assertTrue(item["subscription_flags"]["deleted_on_source"])
+        self.assertEqual(item["subscription_flags"]["deleted_sources"][0]["id"], "sub-author")
 
     def test_source_group_can_return_multiple_loaded_pages_in_one_payload(self):
         groups = {

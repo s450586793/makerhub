@@ -2192,6 +2192,8 @@ def _build_subscription_deleted_index(config: Any, state_payload: dict[str, Any]
         subscription = subscriptions.get(subscription_id)
         if not subscription:
             continue
+        if str(getattr(subscription, "mode", "") or "").strip() != "author_upload":
+            continue
 
         current_keys = {
             str(child.get("task_key") or "").strip()
@@ -2221,6 +2223,11 @@ def _get_subscription_deleted_index(
     config: Optional[Any] = None,
     state_payload: Optional[dict[str, Any]] = None,
 ) -> dict[str, list[dict]]:
+    if config is not None or isinstance(state_payload, dict):
+        resolved_config = config if config is not None else JsonStore().load()
+        resolved_state = state_payload if isinstance(state_payload, dict) else TaskStateStore().load_subscriptions_state()
+        return _build_subscription_deleted_index(resolved_config, resolved_state)
+
     signature = _subscription_flags_cache_signature()
     with _SUBSCRIPTION_FLAGS_INDEX_LOCK:
         if _SUBSCRIPTION_FLAGS_INDEX_CACHE.get("signature") == signature:
