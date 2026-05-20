@@ -126,6 +126,83 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   text-align: left;
 }
 
+.mw-attachment-upload__fields {
+  align-items: stretch;
+}
+
+.mw-attachment-upload__file.mw-attachment-upload__drop {
+  min-height: 52px;
+  align-items: center;
+  border-style: dashed;
+  transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+}
+
+.mw-attachment-upload__file.mw-attachment-upload__drop.is-dragging {
+  border-color: color-mix(in srgb, var(--brand) 60%, var(--border));
+  background: color-mix(in srgb, var(--brand-soft) 48%, var(--surface-strong));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 24%, transparent);
+}
+
+.mw-attachment-upload__drop-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.mw-attachment-upload__drop-copy strong,
+.mw-attachment-upload__drop-copy em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mw-attachment-upload__drop-copy strong {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.mw-attachment-upload__drop-copy em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  line-height: 16px;
+}
+
+.mw-local-edit-dialog {
+  align-items: start;
+  overflow-y: auto;
+}
+
+.mw-local-edit-dialog__panel {
+  width: min(1320px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+  display: grid;
+  gap: 18px;
+  padding: 24px;
+  text-align: left;
+}
+
+.mw-local-edit-attachment-form .mw-attachment-upload__fields {
+  grid-template-columns: minmax(120px, 160px) minmax(160px, 1fr) minmax(260px, 1.5fr) auto;
+}
+
+html[data-theme="dark"] .mw-attachment-upload__file.mw-attachment-upload__drop.is-dragging {
+  border-color: color-mix(in srgb, var(--brand) 66%, rgba(255, 255, 255, 0.22));
+  background: color-mix(in srgb, var(--brand) 15%, rgba(17, 24, 39, 0.92));
+}
+
+html[data-theme="dark"] .mw-attachment-upload__drop-copy strong {
+  color: var(--text);
+}
+
+html[data-theme="dark"] .mw-attachment-upload__drop-copy em {
+  color: var(--muted);
+}
+
 .share-dialog__summary,
 .share-preview__head {
   min-height: 42px;
@@ -4886,6 +4963,35 @@ select:focus {
   }
 
   .source-library-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mw-local-edit-dialog__panel {
+    max-height: calc(100vh - 24px);
+    max-height: calc(100dvh - 24px);
+    padding: 18px;
+  }
+
+  .mw-local-edit-dialog__header,
+  .mw-local-edit-block__head,
+  .mw-local-edit-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .mw-local-edit-actions,
+  .mw-local-edit-picker,
+  .mw-local-edit-row__actions,
+  .mw-local-edit-row .button {
+    width: 100%;
+  }
+
+  .mw-local-edit-row__actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .mw-local-edit-attachment-form .mw-attachment-upload__fields {
     grid-template-columns: 1fr;
   }
 }

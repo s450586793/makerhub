@@ -557,9 +557,18 @@
               type="text"
               placeholder="附件名称，可选"
             >
-            <label class="mw-attachment-upload__file">
+            <label
+              :class="['mw-attachment-upload__file', 'mw-attachment-upload__drop', attachmentDragActive && 'is-dragging']"
+              @dragenter.prevent="onAttachmentDragEnter"
+              @dragover.prevent="onAttachmentDragOver"
+              @dragleave.prevent="onAttachmentDragLeave"
+              @drop.prevent="onAttachmentDrop"
+            >
               <input ref="attachmentFileInput" type="file" @change="onAttachmentFileChange">
-              <span>{{ attachmentForm.file?.name || "选择附件" }}</span>
+              <span class="mw-attachment-upload__drop-copy">
+                <strong>{{ attachmentForm.file?.name || "拖拽附件到这里" }}</strong>
+                <em>{{ attachmentForm.file ? formatBytes(attachmentForm.file.size) : "也可以点击选择文件" }}</em>
+              </span>
             </label>
             <button
               :disabled="attachmentUploading"
@@ -1021,9 +1030,18 @@
                 placeholder="附件名称，可选"
                 :disabled="attachmentUploading"
               >
-              <label class="mw-attachment-upload__file">
+              <label
+                :class="['mw-attachment-upload__file', 'mw-attachment-upload__drop', attachmentDragActive && 'is-dragging']"
+                @dragenter.prevent="onAttachmentDragEnter"
+                @dragover.prevent="onAttachmentDragOver"
+                @dragleave.prevent="onAttachmentDragLeave"
+                @drop.prevent="onAttachmentDrop"
+              >
                 <input ref="attachmentFileInput" type="file" :disabled="attachmentUploading" @change="onAttachmentFileChange">
-                <span>{{ attachmentForm.file?.name || "选择附件" }}</span>
+                <span class="mw-attachment-upload__drop-copy">
+                  <strong>{{ attachmentForm.file?.name || "拖拽附件到这里" }}</strong>
+                  <em>{{ attachmentForm.file ? formatBytes(attachmentForm.file.size) : "也可以点击选择文件" }}</em>
+                </span>
               </label>
               <button
                 :disabled="attachmentUploading || !attachmentForm.file"
@@ -1102,6 +1120,21 @@ import {
 
 const route = useRoute();
 
+function formatBytes(bytes) {
+  const size = Number(bytes || 0);
+  if (!Number.isFinite(size) || size <= 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB"];
+  let value = size;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
 const loading = ref(true);
 const errorMessage = ref("");
 const detail = shallowRef(null);
@@ -1128,6 +1161,7 @@ const modelPreview = ref({
 const modelPreviewCanvasRef = ref(null);
 const modelPreviewStageRef = ref(null);
 const attachmentFileInput = ref(null);
+const attachmentDragActive = ref(false);
 const attachmentUploading = ref(false);
 const attachmentUploadMessage = ref("");
 const attachmentUploadError = ref("");
@@ -3564,9 +3598,47 @@ async function submitSourceBackfill() {
 
 function onAttachmentFileChange(event) {
   const [file] = event.target.files || [];
+  setAttachmentFile(file || null);
+}
+
+function setAttachmentFile(file) {
   attachmentForm.value.file = file || null;
   attachmentUploadMessage.value = "";
   attachmentUploadError.value = "";
+  if (localEditDialog.value.open) {
+    localEditDialog.value.message = "";
+    localEditDialog.value.error = "";
+  }
+}
+
+function onAttachmentDragEnter() {
+  if (attachmentUploading.value) {
+    return;
+  }
+  attachmentDragActive.value = true;
+}
+
+function onAttachmentDragOver() {
+  if (attachmentUploading.value) {
+    return;
+  }
+  attachmentDragActive.value = true;
+}
+
+function onAttachmentDragLeave(event) {
+  if (event.relatedTarget instanceof Node && event.currentTarget?.contains(event.relatedTarget)) {
+    return;
+  }
+  attachmentDragActive.value = false;
+}
+
+function onAttachmentDrop(event) {
+  attachmentDragActive.value = false;
+  if (attachmentUploading.value) {
+    return;
+  }
+  const [file] = Array.from(event.dataTransfer?.files || []);
+  setAttachmentFile(file || null);
 }
 
 function openShareDialog() {
@@ -3614,7 +3686,8 @@ async function submitAttachmentUpload() {
     }
     resetAttachmentUploadState({ clearFeedback: false });
   } catch (error) {
-    attachmentUploadError.value = error instanceof Error ? error.message : "附件上传失败。";
+    const fallback = attachmentForm.value.file?.size === 0 ? "上传文件为空，请重新选择文件。" : "附件上传失败。";
+    attachmentUploadError.value = error instanceof Error ? error.message : fallback;
     if (localEditDialog.value.open) {
       localEditDialog.value.error = attachmentUploadError.value;
     }
