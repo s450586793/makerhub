@@ -1,5 +1,4 @@
 import json
-import os
 import re
 import threading
 import time
@@ -28,6 +27,7 @@ from app.services.catalog import (
     upsert_archive_snapshot_model,
 )
 from app.services.process_jobs import run_archive_model_job, run_discover_batch_urls_job
+from app.services.proxy_policy import temporary_proxy_env
 from app.services.task_state import TaskStateStore
 from app.services.three_mf import (
     describe_three_mf_failure,
@@ -319,38 +319,9 @@ def _missing_3mf_message_from_result(
 
 
 @contextmanager
-def _temporary_proxy_env(config):
-    if not getattr(config.proxy, "enabled", False):
+def _temporary_proxy_env(config, target_url: str = ""):
+    with temporary_proxy_env(config, target_url):
         yield
-        return
-
-    previous = {
-        "HTTP_PROXY": os.environ.get("HTTP_PROXY"),
-        "HTTPS_PROXY": os.environ.get("HTTPS_PROXY"),
-        "NO_PROXY": os.environ.get("NO_PROXY"),
-        "http_proxy": os.environ.get("http_proxy"),
-        "https_proxy": os.environ.get("https_proxy"),
-        "no_proxy": os.environ.get("no_proxy"),
-    }
-
-    if config.proxy.http_proxy:
-        os.environ["HTTP_PROXY"] = config.proxy.http_proxy
-        os.environ["http_proxy"] = config.proxy.http_proxy
-    if config.proxy.https_proxy:
-        os.environ["HTTPS_PROXY"] = config.proxy.https_proxy
-        os.environ["https_proxy"] = config.proxy.https_proxy
-    if config.proxy.no_proxy:
-        os.environ["NO_PROXY"] = config.proxy.no_proxy
-        os.environ["no_proxy"] = config.proxy.no_proxy
-
-    try:
-        yield
-    finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
 
 
 class ArchiveTaskManager:
@@ -1224,9 +1195,9 @@ class ArchiveTaskManager:
                 "message": "该批量归档任务已经在队列中。",
             }
 
-        with _temporary_proxy_env(config):
+        with _temporary_proxy_env(config, clean_url):
             _log_archive("batch_preview_started", "开始批量预扫描。", url=clean_url, mode=mode)
-            discovered = run_discover_batch_urls_job(clean_url, cookie)
+            discovered = run_discover_batch_urls_job(clean_url, cookie, proxy_config=config.proxy)
             discovered["source_name"] = resolve_batch_source_name(clean_url, cookie)
 
         discovered_items = list(discovered.get("items") or [])
@@ -1566,8 +1537,8 @@ class ArchiveTaskManager:
                 message="正在扫描模型链接",
             )
 
-            with _temporary_proxy_env(config):
-                discovered = run_discover_batch_urls_job(url, cookie)
+            with _temporary_proxy_env(config, url):
+                discovered = run_discover_batch_urls_job(url, cookie, proxy_config=config.proxy)
 
         pending_keys = self._queued_task_keys()
         archived_keys = self._archived_task_keys()
@@ -1779,7 +1750,7 @@ class ArchiveTaskManager:
             )
 
         cn_daily_limit, global_daily_limit = _three_mf_daily_limits(config)
-        with _temporary_proxy_env(config):
+        with _temporary_proxy_env(config, url):
             result = run_archive_model_job(
                 url=url,
                 cookie=cookie,
@@ -1798,6 +1769,7 @@ class ArchiveTaskManager:
                 three_mf_daily_limit_cn=cn_daily_limit,
                 three_mf_daily_limit_global=global_daily_limit,
                 existing_model_dir=existing_model_dir,
+                proxy_config=config.proxy,
             )
 
         missing_items = []

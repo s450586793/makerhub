@@ -27,6 +27,7 @@ from app.services.catalog import (
 )
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.legacy_archiver import extract_next_data, fetch_html_with_requests, parse_cookies
+from app.services.proxy_policy import proxy_mapping
 from app.services.task_state import TaskStateStore
 
 
@@ -489,11 +490,7 @@ def _fetch_listing_html(url: str, raw_cookie: str, proxy_config=None) -> str:
         }
     )
     session.cookies.update(parse_cookies(raw_cookie))
-    if getattr(proxy_config, "enabled", False):
-        if getattr(proxy_config, "http_proxy", ""):
-            session.proxies["http"] = proxy_config.http_proxy
-        if getattr(proxy_config, "https_proxy", ""):
-            session.proxies["https"] = proxy_config.https_proxy
+    session.proxies.update(proxy_mapping(proxy_config, url))
     html_text = fetch_html_with_requests(session, url, raw_cookie) or ""
     if not html_text:
         raise RuntimeError("页面内容为空。")

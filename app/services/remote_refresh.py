@@ -6,7 +6,6 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -176,41 +175,6 @@ def _select_cookie(url: str, config) -> str:
     if "makerworld.com/" in lowered and "makerworld.com.cn" not in lowered:
         return sanitize_cookie_header(cookie_map.get("global") or "")
     return sanitize_cookie_header(cookie_map.get("cn") or "")
-
-
-@contextmanager
-def _temporary_proxy_env(config):
-    if not getattr(config.proxy, "enabled", False):
-        yield
-        return
-
-    previous = {
-        "HTTP_PROXY": os.environ.get("HTTP_PROXY"),
-        "HTTPS_PROXY": os.environ.get("HTTPS_PROXY"),
-        "NO_PROXY": os.environ.get("NO_PROXY"),
-        "http_proxy": os.environ.get("http_proxy"),
-        "https_proxy": os.environ.get("https_proxy"),
-        "no_proxy": os.environ.get("no_proxy"),
-    }
-
-    if config.proxy.http_proxy:
-        os.environ["HTTP_PROXY"] = config.proxy.http_proxy
-        os.environ["http_proxy"] = config.proxy.http_proxy
-    if config.proxy.https_proxy:
-        os.environ["HTTPS_PROXY"] = config.proxy.https_proxy
-        os.environ["https_proxy"] = config.proxy.https_proxy
-    if config.proxy.no_proxy:
-        os.environ["NO_PROXY"] = config.proxy.no_proxy
-        os.environ["no_proxy"] = config.proxy.no_proxy
-
-    try:
-        yield
-    finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -1556,50 +1520,49 @@ class RemoteRefreshManager:
             batch_metrics = _empty_batch_metrics()
             slow_models: list[dict[str, Any]] = []
 
-            with _temporary_proxy_env(config):
-                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="remote-refresh-model") as executor:
-                    future_map = {
-                        executor.submit(self._refresh_one, item, index=index, total=len(candidates), config=config): item
-                        for index, item in enumerate(candidates, start=1)
-                    }
-                    for future in as_completed(future_map):
-                        item = future_map[future]
-                        try:
-                            result = future.result()
-                        except Exception as exc:
-                            result = {
-                                "ok": False,
-                                "error": _sanitize_remote_refresh_message(exc, exc.__class__.__name__),
-                                "metrics": {
-                                    "title": str(item.get("title") or item.get("model_dir") or ""),
-                                    "model_dir": str(item.get("model_dir") or ""),
-                                },
-                            }
-                        if result.get("ok"):
-                            succeeded += 1
-                            if result.get("skipped"):
-                                skipped += 1
-                        else:
-                            failed += 1
-                        item_metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
-                        _merge_batch_metrics(batch_metrics, item_metrics)
-                        if item_metrics:
-                            slow_models.append(item_metrics)
-                        processed_total = succeeded + failed
-                        remaining_total = max(int(stats.get("eligible_total") or 0) - processed_total, 0)
-                        self.task_store.patch_remote_refresh_state(
-                            last_batch_succeeded=succeeded,
-                            last_batch_failed=failed,
-                            last_batch_skipped=skipped,
-                            last_remaining_total=remaining_total,
-                            last_batch_metrics=batch_metrics,
-                            last_resource_waits=_resource_wait_delta(resource_wait_baseline),
-                            last_slow_models=_top_slow_models(slow_models),
-                            last_message=(
-                                f"源端刷新进行中，并发 {workers}：已完成 {processed_total}/{len(candidates)}，"
-                                f"成功 {succeeded}，失败 {failed}。"
-                            ),
-                        )
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="remote-refresh-model") as executor:
+                future_map = {
+                    executor.submit(self._refresh_one, item, index=index, total=len(candidates), config=config): item
+                    for index, item in enumerate(candidates, start=1)
+                }
+                for future in as_completed(future_map):
+                    item = future_map[future]
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        result = {
+                            "ok": False,
+                            "error": _sanitize_remote_refresh_message(exc, exc.__class__.__name__),
+                            "metrics": {
+                                "title": str(item.get("title") or item.get("model_dir") or ""),
+                                "model_dir": str(item.get("model_dir") or ""),
+                            },
+                        }
+                    if result.get("ok"):
+                        succeeded += 1
+                        if result.get("skipped"):
+                            skipped += 1
+                    else:
+                        failed += 1
+                    item_metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+                    _merge_batch_metrics(batch_metrics, item_metrics)
+                    if item_metrics:
+                        slow_models.append(item_metrics)
+                    processed_total = succeeded + failed
+                    remaining_total = max(int(stats.get("eligible_total") or 0) - processed_total, 0)
+                    self.task_store.patch_remote_refresh_state(
+                        last_batch_succeeded=succeeded,
+                        last_batch_failed=failed,
+                        last_batch_skipped=skipped,
+                        last_remaining_total=remaining_total,
+                        last_batch_metrics=batch_metrics,
+                        last_resource_waits=_resource_wait_delta(resource_wait_baseline),
+                        last_slow_models=_top_slow_models(slow_models),
+                        last_message=(
+                            f"源端刷新进行中，并发 {workers}：已完成 {processed_total}/{len(candidates)}，"
+                            f"成功 {succeeded}，失败 {failed}。"
+                        ),
+                    )
 
             finished_at = _now_iso()
             previous_state = self.task_store.load_remote_refresh_state()
@@ -1782,6 +1745,7 @@ class RemoteRefreshManager:
                 download_comment_assets=False,
                 rebuild_archive=False,
                 record_missing_3mf_log=False,
+                proxy_config=config.proxy,
             )
             archive_duration_ms = round((time.perf_counter() - archive_started_perf) * 1000, 1)
             limit_guard_state = limit_guard if daily_limit_active else None
@@ -1822,6 +1786,7 @@ class RemoteRefreshManager:
                     download_comment_assets=True,
                     rebuild_archive=False,
                     record_missing_3mf_log=False,
+                    proxy_config=config.proxy,
                 )
                 archive_duration_ms += round((time.perf_counter() - asset_archive_started_perf) * 1000, 1)
                 limit_guard_state = update_limit_guard_from_result(archive_result, limit_guard_state)
@@ -1962,7 +1927,7 @@ class RemoteRefreshManager:
             )
             return {"ok": True, "metrics": model_metrics}
         except Exception as exc:
-            deleted_on_source = run_source_deleted_check_job(origin_url, cookie)
+            deleted_on_source = run_source_deleted_check_job(origin_url, cookie, proxy_config=config.proxy)
             if deleted_on_source and meta_path.exists():
                 message = "源端模型已删除，本地保留现有归档。"
                 with resource_slot("disk_io", detail=model_dir):

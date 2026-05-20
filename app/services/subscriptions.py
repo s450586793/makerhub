@@ -2,7 +2,6 @@ import json
 import threading
 import time
 import uuid
-from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
@@ -122,43 +121,6 @@ def _select_cookie(url: str, config) -> str:
 def _platform_for_url(url: str) -> str:
     netloc = urlparse(url).netloc.lower()
     return "global" if "makerworld.com" in netloc and "makerworld.com.cn" not in netloc else "cn"
-
-
-@contextmanager
-def _temporary_proxy_env(config):
-    import os
-
-    if not getattr(config.proxy, "enabled", False):
-        yield
-        return
-
-    previous = {
-        "HTTP_PROXY": os.environ.get("HTTP_PROXY"),
-        "HTTPS_PROXY": os.environ.get("HTTPS_PROXY"),
-        "NO_PROXY": os.environ.get("NO_PROXY"),
-        "http_proxy": os.environ.get("http_proxy"),
-        "https_proxy": os.environ.get("https_proxy"),
-        "no_proxy": os.environ.get("no_proxy"),
-    }
-
-    if config.proxy.http_proxy:
-        os.environ["HTTP_PROXY"] = config.proxy.http_proxy
-        os.environ["http_proxy"] = config.proxy.http_proxy
-    if config.proxy.https_proxy:
-        os.environ["HTTPS_PROXY"] = config.proxy.https_proxy
-        os.environ["https_proxy"] = config.proxy.https_proxy
-    if config.proxy.no_proxy:
-        os.environ["NO_PROXY"] = config.proxy.no_proxy
-        os.environ["no_proxy"] = config.proxy.no_proxy
-
-    try:
-        yield
-    finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
 
 
 def _build_source_item(url: str) -> dict:
@@ -873,8 +835,7 @@ class SubscriptionManager:
         cookie = _select_cookie(subscription.url, config)
         if not cookie:
             raise RuntimeError("未找到可用 Cookie，请先到设置页配置对应站点 Cookie。")
-        with _temporary_proxy_env(config):
-            return run_discover_batch_urls_job(subscription.url, cookie)
+        return run_discover_batch_urls_job(subscription.url, cookie, proxy_config=config.proxy)
 
     def _refresh_subscription_source_metadata(
         self,

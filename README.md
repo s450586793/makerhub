@@ -154,6 +154,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-05-20 · v0.6.113
+- 国内 MakerWorld 与国内 Bambu API 请求统一绕过代理，订阅扫描、归档、源端刷新、Scrapling 抓取、Cookie 健康检查和来源卡元数据刷新都会直接访问国内站
+- 后台归档 / 批量发现 / 源端删除检查会把代理配置传入子进程入口，由单个任务按目标地址决定是否使用代理，避免源端刷新并发时国内 / 国际任务互相污染代理环境
+- 设置页保存连接配置时会先保存代理再保存 Cookie，并在保存期间禁用重复提交，避免 Cookie 保存后自动重试订阅时仍使用旧代理配置
+
 ### 2026-05-19 · v0.6.112
 - 保存国内 / 国际 Cookie 后会自动检查同站点处于 `error` 的启用订阅，并立即安排重试，避免换新 Cookie 后还要等下一次 Cron
 - 源端刷新状态新增排程 Cron 记录，配置 Cron 改动后会自动重算下次运行时间，避免页面出现 `02:00` 配置却仍显示 `00:00` 的旧计划
@@ -164,13 +169,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 高级设置新增“页面 / API 抓取方式”和“Scrapling 浏览器兜底”，可在 Scrapling 优先、旧流程和仅 Scrapling 间切换，Docker 镜像构建会安装 Scrapling 浏览器依赖
 - 收紧 API Token 权限、登录防护和分享接收校验，隐藏接收分享时解析出的地址 / token 日志，并补充本地编辑、分享接收和抓取回归测试
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-18 · v0.6.110
 - 详情页当前文件主按钮默认对 3MF 执行“在 Bambu Studio 打开”，STL / STEP / OBJ 继续保持普通下载，右侧下拉保留当前文件下载和“下载所有文件.zip”
 - 源端刷新图片资源判断改用稳定资源 URL，忽略 CDN 签名、过期时间和缩略参数变化，减少把同一张图误报成“图片资源已更新”并重复同步
 - 归档页面数据回退提示拆分原因：区分未包含内嵌数据、内嵌数据未定位到模型、模型数据无效、解析失败和疑似验证拦截
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-17 · v0.6.109
 - 修复详情页“在 Bambu Studio 打开”：后端生成 10 分钟有效的签名 3MF 下载链接，Bambu Studio 可直接获取文件并导入

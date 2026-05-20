@@ -49,7 +49,7 @@
             <button
               :class="['subscription-switch', connectionForm.proxy_enabled && 'is-on']"
               type="button"
-              :disabled="testing.proxy"
+              :disabled="testing.proxy || connectionSaving"
               @click="connectionForm.proxy_enabled = !connectionForm.proxy_enabled"
             >
               <span class="subscription-switch__track" aria-hidden="true">
@@ -75,7 +75,9 @@
           <span class="form-status">{{ statuses.proxy }}</span>
         </div>
         <div class="form-footer">
-          <button class="button button-primary" type="submit">保存连接设置</button>
+          <button class="button button-primary" type="submit" :disabled="connectionSaving">
+            {{ connectionSaving ? "保存中..." : "保存连接设置" }}
+          </button>
           <span class="form-status">{{ statuses.connections }}</span>
         </div>
       </form>
@@ -781,6 +783,7 @@ const runtimeResourcesSaving = ref(false);
 const profileBackfill = ref(defaultProfileBackfillState());
 const profileBackfillLoading = ref(false);
 const profileBackfillSubmitting = ref(false);
+const connectionSaving = ref(false);
 
 const connectionForm = reactive({
   cookie_cn: "",
@@ -1452,15 +1455,13 @@ async function triggerProfileBackfill() {
 }
 
 async function saveConnections() {
+  if (connectionSaving.value) {
+    return;
+  }
+  connectionSaving.value = true;
+  statuses.connections = "";
   try {
-    await apiRequest("/api/config/cookies", {
-      method: "POST",
-      body: [
-        { platform: "cn", cookie: connectionForm.cookie_cn },
-        { platform: "global", cookie: connectionForm.cookie_global },
-      ],
-    });
-    await apiRequest("/api/config/proxy", {
+    const proxyPayload = await apiRequest("/api/config/proxy", {
       method: "POST",
       body: {
         enabled: connectionForm.proxy_enabled,
@@ -1468,10 +1469,20 @@ async function saveConnections() {
         https_proxy: connectionForm.https_proxy,
       },
     });
+    applyConfigPayload(proxyPayload);
+    await apiRequest("/api/config/cookies", {
+      method: "POST",
+      body: [
+        { platform: "cn", cookie: connectionForm.cookie_cn },
+        { platform: "global", cookie: connectionForm.cookie_global },
+      ],
+    });
     await refreshConfig();
     statuses.connections = "连接设置已保存。";
   } catch (error) {
     statuses.connections = error instanceof Error ? error.message : "保存失败。";
+  } finally {
+    connectionSaving.value = false;
   }
 }
 

@@ -13,6 +13,7 @@ import requests
 from app.core.settings import STATE_DIR, ensure_app_dirs
 from app.core.timezone import now as china_now, parse_datetime
 from app.services.cookie_utils import sanitize_cookie_header
+from app.services.proxy_policy import effective_proxy_cache_state, proxy_mapping
 from app.services.scrapling_fetch import fetch_text as scrapling_fetch_text, scrapling_only
 from app.services.three_mf import (
     describe_three_mf_failure,
@@ -64,6 +65,7 @@ SOURCE_HEALTH_CACHE: dict[str, dict[str, Any]] = {}
 
 def _make_session() -> requests.Session:
     session = requests.Session()
+    session.trust_env = False
     session.headers.update(
         {
             **MW_BROWSER_HEADERS,
@@ -73,19 +75,8 @@ def _make_session() -> requests.Session:
     return session
 
 
-def _build_proxy_mapping(proxy_config: Any) -> dict[str, str]:
-    if not proxy_config or not bool(getattr(proxy_config, "enabled", False)):
-        return {}
-    http_proxy = str(getattr(proxy_config, "http_proxy", "") or "").strip()
-    https_proxy = str(getattr(proxy_config, "https_proxy", "") or "").strip()
-    proxies: dict[str, str] = {}
-    if http_proxy:
-        proxies["http"] = http_proxy
-    if https_proxy:
-        proxies["https"] = https_proxy
-    elif http_proxy:
-        proxies["https"] = http_proxy
-    return proxies
+def _build_proxy_mapping(proxy_config: Any, target_url: str = "", *, platform: str = "") -> dict[str, str]:
+    return proxy_mapping(proxy_config, target_url, platform=platform)
 
 
 def _looks_like_html(text: str) -> bool:
@@ -335,7 +326,7 @@ def _probe_auth_endpoints(platform: str, raw_cookie: str, proxy_config: Any) -> 
         return _empty_cookie_auth_payload(platform, "http_error", "连接异常", "缺少认证探针配置。")
 
     session = _make_session()
-    proxies = _build_proxy_mapping(proxy_config)
+    proxies = _build_proxy_mapping(proxy_config, platform=platform)
     headers = _build_request_headers(PLATFORM_ORIGINS.get(platform, ""), raw_cookie)
     states: list[str] = []
     results: list[dict[str, Any]] = []
@@ -458,15 +449,7 @@ def _probe_auth_endpoints(platform: str, raw_cookie: str, proxy_config: Any) -> 
 
 
 def _cache_key(platform: str, raw_cookie: str, proxy_config: Any) -> str:
-    proxy_state = json.dumps(
-        {
-            "enabled": bool(getattr(proxy_config, "enabled", False)),
-            "http": str(getattr(proxy_config, "http_proxy", "") or ""),
-            "https": str(getattr(proxy_config, "https_proxy", "") or ""),
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-    )
+    proxy_state = json.dumps(effective_proxy_cache_state(proxy_config, platform=platform), ensure_ascii=False, sort_keys=True)
     cookie_hash = hashlib.sha1(str(raw_cookie or "").encode("utf-8", errors="ignore")).hexdigest()
     return f"{platform}:{cookie_hash}:{proxy_state}"
 

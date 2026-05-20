@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 
 from app.services import source_health
 
@@ -173,6 +174,47 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(payload["state"], "download_limited")
         self.assertEqual(payload["status"], "到达每日上限")
         self.assertIn("2026-04-27 00:00", payload["detail"])
+
+    def test_proxy_mapping_bypasses_cn_platform(self):
+        proxy = SimpleNamespace(
+            enabled=True,
+            http_proxy="http://proxy.local:7890",
+            https_proxy="http://proxy.local:7891",
+        )
+
+        self.assertEqual(source_health._build_proxy_mapping(proxy, platform="cn"), {})
+        self.assertEqual(
+            source_health._build_proxy_mapping(proxy, platform="global"),
+            {"http": "http://proxy.local:7890", "https": "http://proxy.local:7891"},
+        )
+
+    def test_cookie_probe_cache_key_treats_cn_proxy_as_bypassed(self):
+        proxy_a = SimpleNamespace(
+            enabled=True,
+            http_proxy="http://proxy-a.local:7890",
+            https_proxy="http://proxy-a.local:7891",
+        )
+        proxy_b = SimpleNamespace(
+            enabled=True,
+            http_proxy="http://proxy-b.local:7890",
+            https_proxy="http://proxy-b.local:7891",
+        )
+
+        self.assertEqual(
+            source_health._cache_key("cn", "foo=bar", proxy_a),
+            source_health._cache_key("cn", "foo=bar", proxy_b),
+        )
+        self.assertNotEqual(
+            source_health._cache_key("global", "foo=bar", proxy_a),
+            source_health._cache_key("global", "foo=bar", proxy_b),
+        )
+
+    def test_cookie_probe_session_ignores_env_proxy(self):
+        session = source_health._make_session()
+        try:
+            self.assertFalse(session.trust_env)
+        finally:
+            session.close()
 
     def test_missing_3mf_message_only_verification_overrides_probe_ok(self):
         original_probe = source_health._probe_platform_status

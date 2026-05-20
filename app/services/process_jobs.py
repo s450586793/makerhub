@@ -13,6 +13,7 @@ import requests
 from app.services.batch_discovery import discover_batch_model_urls, normalize_source_url
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.legacy_archiver import archive_model as legacy_archive_model
+from app.services.proxy_policy import temporary_proxy_env
 from app.services.resource_limiter import resource_slot
 
 
@@ -30,6 +31,24 @@ def _normalize_three_mf_daily_limit(value: Any, fallback: int = DEFAULT_THREE_MF
     except (TypeError, ValueError):
         return fallback
     return max(0, limit)
+
+
+def _proxy_config_payload(proxy_config: Any = None) -> dict[str, Any]:
+    if not proxy_config:
+        return {}
+    if isinstance(proxy_config, dict):
+        return {
+            "enabled": bool(proxy_config.get("enabled")),
+            "http_proxy": str(proxy_config.get("http_proxy") or ""),
+            "https_proxy": str(proxy_config.get("https_proxy") or ""),
+            "no_proxy": str(proxy_config.get("no_proxy") or ""),
+        }
+    return {
+        "enabled": bool(getattr(proxy_config, "enabled", False)),
+        "http_proxy": str(getattr(proxy_config, "http_proxy", "") or ""),
+        "https_proxy": str(getattr(proxy_config, "https_proxy", "") or ""),
+        "no_proxy": str(getattr(proxy_config, "no_proxy", "") or ""),
+    }
 
 
 def _job_mode() -> str:
@@ -167,30 +186,32 @@ def _read_job_result_file(result_path: Optional[Path]) -> Optional[dict[str, Any
 
 def _run_archive_model_entry(queue, payload: dict[str, Any]) -> None:
     _apply_heavy_job_niceness()
+    url = str(payload.get("url") or "")
 
     def progress_callback(progress_payload: dict[str, Any]) -> None:
         _emit(queue, "progress", progress_payload)
 
     try:
-        result = legacy_archive_model(
-            url=str(payload.get("url") or ""),
-            cookie=str(payload.get("cookie") or ""),
-            download_dir=Path(str(payload.get("download_dir") or "")),
-            logs_dir=Path(str(payload.get("logs_dir") or "")),
-            existing_root=Path(str(payload.get("existing_root") or "")) if str(payload.get("existing_root") or "").strip() else None,
-            progress_callback=progress_callback,
-            skip_three_mf_fetch=bool(payload.get("skip_three_mf_fetch")),
-            three_mf_skip_message=str(payload.get("three_mf_skip_message") or ""),
-            profile_metadata_only=bool(payload.get("profile_metadata_only")),
-            download_assets=bool(payload.get("download_assets", True)),
-            download_comment_assets=payload.get("download_comment_assets"),
-            rebuild_archive=bool(payload.get("rebuild_archive", True)),
-            record_missing_3mf_log=bool(payload.get("record_missing_3mf_log", True)),
-            three_mf_skip_state=str(payload.get("three_mf_skip_state") or ""),
-            three_mf_daily_limit_cn=_normalize_three_mf_daily_limit(payload.get("three_mf_daily_limit_cn")),
-            three_mf_daily_limit_global=_normalize_three_mf_daily_limit(payload.get("three_mf_daily_limit_global")),
-            existing_model_dir=str(payload.get("existing_model_dir") or ""),
-        )
+        with temporary_proxy_env(payload.get("proxy_config") or {}, url):
+            result = legacy_archive_model(
+                url=url,
+                cookie=str(payload.get("cookie") or ""),
+                download_dir=Path(str(payload.get("download_dir") or "")),
+                logs_dir=Path(str(payload.get("logs_dir") or "")),
+                existing_root=Path(str(payload.get("existing_root") or "")) if str(payload.get("existing_root") or "").strip() else None,
+                progress_callback=progress_callback,
+                skip_three_mf_fetch=bool(payload.get("skip_three_mf_fetch")),
+                three_mf_skip_message=str(payload.get("three_mf_skip_message") or ""),
+                profile_metadata_only=bool(payload.get("profile_metadata_only")),
+                download_assets=bool(payload.get("download_assets", True)),
+                download_comment_assets=payload.get("download_comment_assets"),
+                rebuild_archive=bool(payload.get("rebuild_archive", True)),
+                record_missing_3mf_log=bool(payload.get("record_missing_3mf_log", True)),
+                three_mf_skip_state=str(payload.get("three_mf_skip_state") or ""),
+                three_mf_daily_limit_cn=_normalize_three_mf_daily_limit(payload.get("three_mf_daily_limit_cn")),
+                three_mf_daily_limit_global=_normalize_three_mf_daily_limit(payload.get("three_mf_daily_limit_global")),
+                existing_model_dir=str(payload.get("existing_model_dir") or ""),
+            )
         _emit_finished(queue, payload, "result", result)
     except Exception as exc:
         _emit_finished(
@@ -206,12 +227,14 @@ def _run_archive_model_entry(queue, payload: dict[str, Any]) -> None:
 
 def _run_discover_batch_entry(queue, payload: dict[str, Any]) -> None:
     _apply_heavy_job_niceness()
+    url = str(payload.get("url") or "")
 
     try:
-        result = discover_batch_model_urls(
-            str(payload.get("url") or ""),
-            str(payload.get("cookie") or ""),
-        )
+        with temporary_proxy_env(payload.get("proxy_config") or {}, url):
+            result = discover_batch_model_urls(
+                url,
+                str(payload.get("cookie") or ""),
+            )
         _emit_finished(queue, payload, "result", result)
     except Exception as exc:
         _emit_finished(
@@ -226,11 +249,13 @@ def _run_discover_batch_entry(queue, payload: dict[str, Any]) -> None:
 
 
 def _run_source_deleted_entry(queue, payload: dict[str, Any]) -> None:
+    url = str(payload.get("url") or "")
     try:
-        result = _source_looks_deleted(
-            str(payload.get("url") or ""),
-            str(payload.get("cookie") or ""),
-        )
+        with temporary_proxy_env(payload.get("proxy_config") or {}, url):
+            result = _source_looks_deleted(
+                url,
+                str(payload.get("cookie") or ""),
+            )
         _emit_finished(queue, payload, "result", {"deleted": bool(result)})
     except Exception as exc:
         _emit_finished(
@@ -381,28 +406,31 @@ def run_archive_model_job(
     three_mf_daily_limit_cn: int = 100,
     three_mf_daily_limit_global: int = 100,
     existing_model_dir: str = "",
+    proxy_config: Any = None,
 ) -> dict[str, Any]:
     with resource_slot("makerworld_page_api", detail=normalize_source_url(url)):
+        proxy_payload = _proxy_config_payload(proxy_config)
         if not _use_subprocess():
-            return legacy_archive_model(
-                url=url,
-                cookie=cookie,
-                download_dir=Path(download_dir),
-                logs_dir=Path(logs_dir),
-                existing_root=Path(existing_root) if str(existing_root or "").strip() else None,
-                progress_callback=progress_callback,
-                skip_three_mf_fetch=skip_three_mf_fetch,
-                three_mf_skip_message=three_mf_skip_message,
-                profile_metadata_only=profile_metadata_only,
-                download_assets=download_assets,
-                download_comment_assets=download_comment_assets,
-                rebuild_archive=rebuild_archive,
-                record_missing_3mf_log=record_missing_3mf_log,
-                three_mf_skip_state=three_mf_skip_state,
-                three_mf_daily_limit_cn=three_mf_daily_limit_cn,
-                three_mf_daily_limit_global=three_mf_daily_limit_global,
-                existing_model_dir=existing_model_dir,
-            )
+            with temporary_proxy_env(proxy_payload, url):
+                return legacy_archive_model(
+                    url=url,
+                    cookie=cookie,
+                    download_dir=Path(download_dir),
+                    logs_dir=Path(logs_dir),
+                    existing_root=Path(existing_root) if str(existing_root or "").strip() else None,
+                    progress_callback=progress_callback,
+                    skip_three_mf_fetch=skip_three_mf_fetch,
+                    three_mf_skip_message=three_mf_skip_message,
+                    profile_metadata_only=profile_metadata_only,
+                    download_assets=download_assets,
+                    download_comment_assets=download_comment_assets,
+                    rebuild_archive=rebuild_archive,
+                    record_missing_3mf_log=record_missing_3mf_log,
+                    three_mf_skip_state=three_mf_skip_state,
+                    three_mf_daily_limit_cn=three_mf_daily_limit_cn,
+                    three_mf_daily_limit_global=three_mf_daily_limit_global,
+                    existing_model_dir=existing_model_dir,
+                )
         return _run_process_job(
             _run_archive_model_entry,
             {
@@ -422,33 +450,40 @@ def run_archive_model_job(
                 "three_mf_daily_limit_cn": three_mf_daily_limit_cn,
                 "three_mf_daily_limit_global": three_mf_daily_limit_global,
                 "existing_model_dir": existing_model_dir,
+                "proxy_config": proxy_payload,
             },
             progress_callback=progress_callback,
         )
 
 
-def run_discover_batch_urls_job(url: str, cookie: str) -> dict[str, Any]:
+def run_discover_batch_urls_job(url: str, cookie: str, proxy_config: Any = None) -> dict[str, Any]:
     with resource_slot("makerworld_page_api", detail=normalize_source_url(url)):
+        proxy_payload = _proxy_config_payload(proxy_config)
         if not _use_subprocess():
-            return discover_batch_model_urls(url, cookie)
+            with temporary_proxy_env(proxy_payload, url):
+                return discover_batch_model_urls(url, cookie)
         return _run_process_job(
             _run_discover_batch_entry,
             {
                 "url": url,
                 "cookie": cookie,
+                "proxy_config": proxy_payload,
             },
         )
 
 
-def run_source_deleted_check_job(url: str, cookie: str) -> bool:
+def run_source_deleted_check_job(url: str, cookie: str, proxy_config: Any = None) -> bool:
     with resource_slot("makerworld_page_api", detail=normalize_source_url(url)):
+        proxy_payload = _proxy_config_payload(proxy_config)
         if not _use_subprocess():
-            return _source_looks_deleted(url, cookie)
+            with temporary_proxy_env(proxy_payload, url):
+                return _source_looks_deleted(url, cookie)
         result = _run_process_job(
             _run_source_deleted_entry,
             {
                 "url": url,
                 "cookie": cookie,
+                "proxy_config": proxy_payload,
             },
         )
         return bool(result.get("deleted")) if isinstance(result, dict) else bool(result)

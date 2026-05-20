@@ -6,6 +6,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import urlencode
 
 from app.services.cookie_utils import sanitize_cookie_header
+from app.services.proxy_policy import proxy_url
 
 
 SCRAPING_ENGINE_LEGACY = "legacy"
@@ -94,7 +95,7 @@ def _use_browser_fallback(config: Any = None) -> bool:
     return bool(raw.get("scrapling_browser_fallback", True))
 
 
-def _proxy_url(proxy_config: Any = None) -> str:
+def _proxy_url(proxy_config: Any = None, target_url: str = "") -> str:
     proxy = proxy_config
     if proxy is None:
         try:
@@ -103,11 +104,7 @@ def _proxy_url(proxy_config: Any = None) -> str:
             proxy = JsonStore().load().proxy
         except Exception:
             proxy = None
-    if not proxy or not bool(getattr(proxy, "enabled", False)):
-        return ""
-    https_proxy = str(getattr(proxy, "https_proxy", "") or "").strip()
-    http_proxy = str(getattr(proxy, "http_proxy", "") or "").strip()
-    return https_proxy or http_proxy
+    return proxy_url(proxy, target_url)
 
 
 def _headers_with_cookie(headers: Optional[dict[str, str]], raw_cookie: str) -> dict[str, str]:
@@ -221,8 +218,8 @@ def fetch_text(
         return ScraplingFetchResult(ok=False, url=url, engine="unavailable", error=import_error or "Scrapling unavailable")
 
     request_headers = _headers_with_cookie(headers, raw_cookie)
-    proxy = _proxy_url(proxy_config)
     target_url = _with_params(url, params)
+    proxy = _proxy_url(proxy_config, target_url)
     common_kwargs: dict[str, Any] = {"headers": request_headers}
     static_result = ScraplingFetchResult(ok=False, url=target_url, engine="scrapling-static")
     try:
