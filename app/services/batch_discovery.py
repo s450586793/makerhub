@@ -142,7 +142,7 @@ def _api_base_candidates(source_url: str) -> list[str]:
         fallback_candidates = []
 
     bases: list[str] = []
-    for candidate in (_origin_from_url(source_url), preferred_site, preferred_api, *fallback_candidates):
+    for candidate in (preferred_api, _origin_from_url(source_url), preferred_site, *fallback_candidates):
         if candidate and candidate not in bases:
             bases.append(candidate.rstrip("/"))
     return bases
@@ -152,7 +152,13 @@ def _service_endpoint_candidates(source_url: str, service_name: str, path: str) 
     clean_path = "/" + str(path or "").lstrip("/")
     endpoints: list[str] = []
     for base in _api_base_candidates(source_url):
-        for prefix in (f"/api/v1/{service_name}", f"/v1/{service_name}"):
+        base_host = urlparse(base).netloc.lower()
+        prefixes = (
+            (f"/v1/{service_name}", f"/api/v1/{service_name}")
+            if base_host.startswith("api.bambulab.")
+            else (f"/api/v1/{service_name}", f"/v1/{service_name}")
+        )
+        for prefix in prefixes:
             api_url = f"{base}{prefix}{clean_path}"
             if api_url not in endpoints:
                 endpoints.append(api_url)
@@ -802,6 +808,16 @@ def _resolve_uid_by_handle_api(
     if not normalized_handle:
         return ""
 
+    uid = _resolve_uid_by_user_search_api(
+        session,
+        source_url=source_url,
+        raw_cookie=raw_cookie,
+        handle=normalized_handle,
+        event_prefix=event_prefix,
+    )
+    if uid:
+        return uid
+
     profile_payload = _api_get_json(
         session,
         source_url=source_url,
@@ -833,6 +849,87 @@ def _resolve_uid_by_handle_api(
             if uid:
                 _append_discovery_debug(f"{event_prefix}_resolved", handle=normalized_handle, uid=uid, mode=param_name)
                 return uid
+
+    return ""
+
+
+def _looks_like_user_search_hit(node: Any) -> bool:
+    if not isinstance(node, dict):
+        return False
+    if not _extract_uid(node):
+        return False
+    return any(
+        key in node
+        for key in (
+            "handle",
+            "name",
+            "avatar",
+            "avatarUrl",
+            "fanCount",
+            "followCount",
+            "publicInstanceUploadCount",
+            "isFollowed",
+        )
+    )
+
+
+def _extract_uid_from_user_search_payload(payload: Any, handle: str) -> str:
+    expected_handle = _normalize_handle_value(handle)
+    if not expected_handle:
+        return ""
+
+    candidates: list[dict] = []
+    for node in _iter_dicts(payload):
+        hits = node.get("hits")
+        if not isinstance(hits, list):
+            continue
+        user_hits = [hit for hit in hits if _looks_like_user_search_hit(hit)]
+        if user_hits:
+            candidates.extend(user_hits)
+
+    for node in candidates:
+        if _node_matches_handle(node, expected_handle):
+            return _extract_uid(node)
+
+    if len(candidates) == 1:
+        return _extract_uid(candidates[0])
+
+    return ""
+
+
+def _resolve_uid_by_user_search_api(
+    session: requests.Session,
+    source_url: str,
+    raw_cookie: str,
+    handle: str,
+    event_prefix: str,
+) -> str:
+    normalized_handle = str(handle or "").strip("@").strip()
+    if not normalized_handle:
+        return ""
+
+    for keyword in (normalized_handle, f"@{normalized_handle}"):
+        payload = _api_get_json(
+            session,
+            source_url=source_url,
+            raw_cookie=raw_cookie,
+            service_name="search-service",
+            path="/search/user",
+            params={
+                "keyword": keyword,
+                "offset": 0,
+                "limit": 10,
+            },
+        )
+        uid = _extract_uid_from_user_search_payload(payload, normalized_handle)
+        if uid:
+            _append_discovery_debug(
+                f"{event_prefix}_resolved",
+                handle=normalized_handle,
+                uid=uid,
+                mode="search_user",
+            )
+            return uid
 
     return ""
 

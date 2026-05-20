@@ -46,7 +46,12 @@ class SubscriptionManagerTest(unittest.TestCase):
         ]
         self.store.save(config)
         self.task_store = TaskStateStore()
-        self.manager = SubscriptionManager(ArchiveManagerStub(), store=self.store, task_store=self.task_store)
+        self.manager = SubscriptionManager(
+            ArchiveManagerStub(),
+            store=self.store,
+            task_store=self.task_store,
+            background_enabled=False,
+        )
         self.manager._refresh_subscription_source_metadata = lambda *_args, **_kwargs: None
 
     def tearDown(self):

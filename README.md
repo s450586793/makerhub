@@ -154,6 +154,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-05-20 · v0.6.115
+- 订阅库作者 / 收藏夹同步新增 MakerWorld 当前可用的 `search-service/search/user` UID 解析链路，旧的 handle 解析接口失效时不再直接退到 Cloudflare 容易拦截的页面 HTML
+- 批量发现接口候选改为优先请求 `api.bambulab.cn` / `api.bambulab.com`，减少订阅同步先撞 `makerworld.com.cn` 页面域名导致的 `403` 和等待时间
+- 补充订阅发现回归测试，覆盖按 handle 精确匹配 UID 和单条用户搜索结果兜底，防止订阅库再次整体掉入 error
+
 ### 2026-05-20 · v0.6.114
 - 本地导入模型的“编辑”弹窗新增附件管理，可直接选择分类、命名并上传附件，同时查看、下载和删除已添加附件
 - 编辑弹窗加宽到更适合管理图册、模型文件和附件的布局，窄屏仍会自动折行
@@ -164,13 +169,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 后台归档 / 批量发现 / 源端删除检查会把代理配置传入子进程入口，由单个任务按目标地址决定是否使用代理，避免源端刷新并发时国内 / 国际任务互相污染代理环境
 - 设置页保存连接配置时会先保存代理再保存 Cookie，并在保存期间禁用重复提交，避免 Cookie 保存后自动重试订阅时仍使用旧代理配置
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-19 · v0.6.112
 - 保存国内 / 国际 Cookie 后会自动检查同站点处于 `error` 的启用订阅，并立即安排重试，避免换新 Cookie 后还要等下一次 Cron
 - 源端刷新状态新增排程 Cron 记录，配置 Cron 改动后会自动重算下次运行时间，避免页面出现 `02:00` 配置却仍显示 `00:00` 的旧计划
 - App / Worker 双容器模式下，App 只修正源端刷新排程字段，不会因为本容器没有后台线程而误清掉 Worker 正在运行的状态
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-19 · v0.6.111
 - 归档、源端发现、评论补全、Cookie 健康检查和 3MF 下载地址解析改为 Scrapling 优先抓取，遇到验证页可启用 Scrapling 浏览器兜底，失败时继续回退旧 requests / curl 流程
