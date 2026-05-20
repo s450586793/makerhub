@@ -913,7 +913,7 @@
         <div class="mw-local-edit-dialog__header">
           <div>
             <h2 id="local-edit-dialog-title">编辑</h2>
-            <p>维护标题、描述、图册和模型文件。</p>
+            <p>维护标题、描述、图册、模型文件和附件。</p>
           </div>
           <button class="button button-secondary button-small" type="button" @click="closeLocalEditDialog">关闭</button>
         </div>
@@ -1005,8 +1005,71 @@
           <p v-else class="empty-copy">当前没有图册图片。</p>
         </section>
 
+        <section class="mw-local-edit-block">
+          <div class="mw-local-edit-block__head">
+            <h3>附件</h3>
+          </div>
+          <form class="mw-attachment-upload mw-local-edit-attachment-form" @submit.prevent="submitAttachmentUpload">
+            <div class="mw-attachment-upload__fields">
+              <select v-model="attachmentForm.category" class="mw-attachment-upload__select" :disabled="attachmentUploading">
+                <option v-for="item in attachmentCategories" :key="item.value" :value="item.value">{{ item.label }}</option>
+              </select>
+              <input
+                v-model.trim="attachmentForm.name"
+                class="mw-attachment-upload__input"
+                type="text"
+                placeholder="附件名称，可选"
+                :disabled="attachmentUploading"
+              >
+              <label class="mw-attachment-upload__file">
+                <input ref="attachmentFileInput" type="file" :disabled="attachmentUploading" @change="onAttachmentFileChange">
+                <span>{{ attachmentForm.file?.name || "选择附件" }}</span>
+              </label>
+              <button
+                :disabled="attachmentUploading || !attachmentForm.file"
+                class="button button-primary button-small"
+                type="submit"
+              >
+                {{ attachmentUploading ? "上传中..." : "上传附件" }}
+              </button>
+            </div>
+          </form>
+          <div v-if="detail.attachments?.length" class="mw-local-edit-list">
+            <article v-for="attachment in detail.attachments" :key="attachment.id || attachment.localName || attachment.url" class="mw-local-edit-row">
+              <div>
+                <strong>{{ attachment.name || attachment.fileName || "附件" }}</strong>
+                <span>{{ attachment.category_label || "附件文件" }} · {{ attachmentExtLabel(attachment) }}</span>
+              </div>
+              <div class="mw-local-edit-row__actions">
+                <a
+                  v-if="attachmentDownloadUrl(attachment)"
+                  class="button button-secondary button-small"
+                  :href="attachmentDownloadUrl(attachment)"
+                  :download="attachmentDownloadName(attachment)"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  下载
+                </a>
+                <button
+                  v-if="attachment.can_delete"
+                  class="button button-secondary button-small mw-doc-action--danger"
+                  type="button"
+                  :disabled="deletingAttachmentId === attachment.id"
+                  @click="removeAttachment(attachment)"
+                >
+                  {{ deletingAttachmentId === attachment.id ? "删除中..." : "删除" }}
+                </button>
+              </div>
+            </article>
+          </div>
+          <p v-else class="empty-copy">当前没有附件。</p>
+        </section>
+
         <p v-if="localEditDialog.message" class="mw-local-edit-status is-success">{{ localEditDialog.message }}</p>
         <p v-if="localEditDialog.error" class="mw-local-edit-status is-error">{{ localEditDialog.error }}</p>
+        <p v-if="attachmentUploadMessage" class="mw-local-edit-status is-success">{{ attachmentUploadMessage }}</p>
+        <p v-if="attachmentUploadError" class="mw-local-edit-status is-error">{{ attachmentUploadError }}</p>
       </div>
     </div>
   </div>
@@ -3163,6 +3226,8 @@ function resetAttachmentUploadState(options = {}) {
 function resetLocalEditFeedback() {
   localEditDialog.value.message = "";
   localEditDialog.value.error = "";
+  attachmentUploadMessage.value = "";
+  attachmentUploadError.value = "";
 }
 
 function openLocalEditDialog() {
@@ -3176,6 +3241,7 @@ function openLocalEditDialog() {
     message: "",
     error: "",
   };
+  resetAttachmentUploadState({ keepCategory: true });
 }
 
 function closeLocalEditDialog() {
@@ -3183,6 +3249,7 @@ function closeLocalEditDialog() {
     return;
   }
   localEditDialog.value.open = false;
+  resetAttachmentUploadState({ keepCategory: true });
 }
 
 async function submitLocalMetadata() {
@@ -3512,13 +3579,21 @@ function closeShareDialog() {
 
 async function submitAttachmentUpload() {
   if (!attachmentForm.value.file) {
-    attachmentUploadError.value = "请选择要上传的附件。";
+    const message = "请选择要上传的附件。";
+    attachmentUploadError.value = message;
+    if (localEditDialog.value.open) {
+      localEditDialog.value.error = message;
+    }
     return;
   }
 
   attachmentUploading.value = true;
   attachmentUploadMessage.value = "";
   attachmentUploadError.value = "";
+  if (localEditDialog.value.open) {
+    localEditDialog.value.message = "";
+    localEditDialog.value.error = "";
+  }
 
   const formData = new FormData();
   formData.set("file", attachmentForm.value.file);
@@ -3534,9 +3609,15 @@ async function submitAttachmentUpload() {
     });
     await applyDetailPayload(payload.detail);
     attachmentUploadMessage.value = payload.message || "附件已上传。";
+    if (localEditDialog.value.open) {
+      localEditDialog.value.message = attachmentUploadMessage.value;
+    }
     resetAttachmentUploadState({ clearFeedback: false });
   } catch (error) {
     attachmentUploadError.value = error instanceof Error ? error.message : "附件上传失败。";
+    if (localEditDialog.value.open) {
+      localEditDialog.value.error = attachmentUploadError.value;
+    }
   } finally {
     attachmentUploading.value = false;
   }
@@ -3553,6 +3634,10 @@ async function removeAttachment(attachment) {
   deletingAttachmentId.value = attachment.id;
   attachmentUploadMessage.value = "";
   attachmentUploadError.value = "";
+  if (localEditDialog.value.open) {
+    localEditDialog.value.message = "";
+    localEditDialog.value.error = "";
+  }
 
   try {
     const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/attachments/${encodeURIComponent(attachment.id)}`, {
@@ -3560,8 +3645,14 @@ async function removeAttachment(attachment) {
     });
     await applyDetailPayload(payload.detail);
     attachmentUploadMessage.value = payload.message || "附件已删除。";
+    if (localEditDialog.value.open) {
+      localEditDialog.value.message = attachmentUploadMessage.value;
+    }
   } catch (error) {
     attachmentUploadError.value = error instanceof Error ? error.message : "附件删除失败。";
+    if (localEditDialog.value.open) {
+      localEditDialog.value.error = attachmentUploadError.value;
+    }
   } finally {
     deletingAttachmentId.value = "";
   }

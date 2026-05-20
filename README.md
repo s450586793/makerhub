@@ -154,6 +154,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-05-20 · v0.6.114
+- 本地导入模型的“编辑”弹窗新增附件管理，可直接选择分类、命名并上传附件，同时查看、下载和删除已添加附件
+- 编辑弹窗加宽到更适合管理图册、模型文件和附件的布局，窄屏仍会自动折行
+- 附件上传 / 删除结果会同步显示在编辑弹窗内，和详情页现有附件接口保持一致
+
 ### 2026-05-20 · v0.6.113
 - 国内 MakerWorld 与国内 Bambu API 请求统一绕过代理，订阅扫描、归档、源端刷新、Scrapling 抓取、Cookie 健康检查和来源卡元数据刷新都会直接访问国内站
 - 后台归档 / 批量发现 / 源端删除检查会把代理配置传入子进程入口，由单个任务按目标地址决定是否使用代理，避免源端刷新并发时国内 / 国际任务互相污染代理环境
@@ -164,13 +169,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 源端刷新状态新增排程 Cron 记录，配置 Cron 改动后会自动重算下次运行时间，避免页面出现 `02:00` 配置却仍显示 `00:00` 的旧计划
 - App / Worker 双容器模式下，App 只修正源端刷新排程字段，不会因为本容器没有后台线程而误清掉 Worker 正在运行的状态
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-19 · v0.6.111
 - 归档、源端发现、评论补全、Cookie 健康检查和 3MF 下载地址解析改为 Scrapling 优先抓取，遇到验证页可启用 Scrapling 浏览器兜底，失败时继续回退旧 requests / curl 流程
 - 高级设置新增“页面 / API 抓取方式”和“Scrapling 浏览器兜底”，可在 Scrapling 优先、旧流程和仅 Scrapling 间切换，Docker 镜像构建会安装 Scrapling 浏览器依赖
 - 收紧 API Token 权限、登录防护和分享接收校验，隐藏接收分享时解析出的地址 / token 日志，并补充本地编辑、分享接收和抓取回归测试
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-18 · v0.6.110
 - 详情页当前文件主按钮默认对 3MF 执行“在 Bambu Studio 打开”，STL / STEP / OBJ 继续保持普通下载，右侧下拉保留当前文件下载和“下载所有文件.zip”
