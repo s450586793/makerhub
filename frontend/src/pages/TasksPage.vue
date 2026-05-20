@@ -1,10 +1,12 @@
 <template>
-  <section class="page-intro" data-tasks-page>
-    <div>
+  <section class="surface surface--filters page-intro app-page-toolbar" data-tasks-page>
+    <div class="app-page-toolbar__copy">
       <span class="eyebrow">任务</span>
-      <h1>任务总览</h1>
+      <div class="app-page-toolbar__title-row">
+        <h1>任务总览</h1>
+      </div>
     </div>
-    <div class="intro-stats">
+    <div class="intro-stats app-page-toolbar__stats">
       <div class="intro-stat">
         <span>运行中/排队</span>
         <strong>{{ payload.summary.running_or_queued }}</strong>

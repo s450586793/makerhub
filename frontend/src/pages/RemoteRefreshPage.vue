@@ -1,10 +1,12 @@
 <template>
-  <section class="page-intro">
-    <div>
+  <section class="surface surface--filters page-intro app-page-toolbar">
+    <div class="app-page-toolbar__copy">
       <span class="eyebrow">源端刷新</span>
-      <h1>源端刷新配置</h1>
+      <div class="app-page-toolbar__title-row">
+        <h1>源端刷新配置</h1>
+      </div>
     </div>
-    <div class="intro-stats remote-refresh-intro-stats">
+    <div class="intro-stats remote-refresh-intro-stats app-page-toolbar__stats">
       <div class="intro-stat">
         <span>当前状态</span>
         <strong>{{ formatRemoteRefreshStatus(remoteRefreshState.status) }}</strong>

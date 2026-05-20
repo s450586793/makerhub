@@ -1,6 +1,6 @@
 <template>
   <section class="logs-workbench">
-    <section class="surface logs-hero">
+    <section class="surface surface--filters logs-hero app-page-toolbar">
       <div class="logs-hero__top">
         <div class="logs-hero__title">
           <span class="logs-hero__icon">LOG</span>
