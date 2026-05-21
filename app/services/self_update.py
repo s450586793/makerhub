@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from app.core.settings import APP_VERSION, STATE_DIR
+from app.core.settings import APP_VERSION, LOGS_DIR, STATE_DIR
 from app.core.timezone import now_iso as china_now_iso
 from app.services.business_logs import append_business_log
 
@@ -133,6 +133,36 @@ def _state_mount_spec_from_inspect(container_inspect: dict[str, Any]) -> str:
         suffix = ":ro" if mount.get("RW") is False else ""
         return f"{source}:{state_dir}{suffix}"
     return ""
+
+
+def _mount_spec_from_inspect(container_inspect: dict[str, Any], destination_path: Path | str) -> str:
+    destination_path_text = str(destination_path)
+    for bind in container_inspect.get("HostConfig", {}).get("Binds") or []:
+        _, destination, _ = _parse_bind_destination(bind)
+        if destination == destination_path_text:
+            return str(bind)
+
+    for mount in container_inspect.get("Mounts") or []:
+        if str(mount.get("Destination") or "") != destination_path_text:
+            continue
+        mount_type = str(mount.get("Type") or "")
+        if mount_type == "volume" and mount.get("Name"):
+            source = str(mount.get("Name") or "")
+        else:
+            source = str(mount.get("Source") or "")
+        if not source:
+            continue
+        suffix = ":ro" if mount.get("RW") is False else ""
+        return f"{source}:{destination_path_text}{suffix}"
+    return ""
+
+
+def _same_image_ref(left: str, right: str) -> bool:
+    return str(left or "").strip() == str(right or "").strip()
+
+
+def _format_update_step_message(role_label: str, action: str) -> str:
+    return f"正在更新{role_label}容器：{action}。"
 
 
 def _extract_container_id_candidates() -> list[str]:
@@ -565,6 +595,7 @@ def _resolve_self_container(client: DockerSocketClient) -> dict[str, Any]:
         state_mount = _state_mount_spec_from_inspect(inspect)
         if not state_mount:
             raise RuntimeError(f"当前容器未挂载 {STATE_DIR}，无法持久化更新状态。")
+        logs_mount = _mount_spec_from_inspect(inspect, LOGS_DIR)
 
         return {
             "container_id": str(inspect.get("Id") or candidate),
@@ -572,6 +603,7 @@ def _resolve_self_container(client: DockerSocketClient) -> dict[str, Any]:
             "image_ref": str((inspect.get("Config") or {}).get("Image") or ""),
             "container_image_id": str(inspect.get("Image") or ""),
             "state_mount": state_mount,
+            "logs_mount": logs_mount,
             "inspect": inspect,
         }
 
@@ -885,11 +917,19 @@ def request_system_update(*, requested_by: str = "", target_version: str = "", f
                 str(worker_target.get("image_ref") or target_image),
             ]
         )
+    helper_binds = [
+        f"{DOCKER_SOCKET_PATH}:{DOCKER_SOCKET_PATH}",
+        str(metadata.get("state_mount") or ""),
+    ]
+    logs_mount = str(metadata.get("logs_mount") or "").strip()
+    if logs_mount:
+        helper_binds.append(logs_mount)
     helper_body = {
         "Image": helper_image,
         "Cmd": helper_cmd,
         "Env": [
             f"MAKERHUB_STATE_DIR={STATE_DIR}",
+            f"MAKERHUB_LOGS_DIR={LOGS_DIR}",
             f"{RUNTIME_CONFIG_ENV}={json.dumps(runtime_config, ensure_ascii=False, separators=(',', ':'))}",
             "PYTHONUNBUFFERED=1",
         ],
@@ -899,10 +939,7 @@ def request_system_update(*, requested_by: str = "", target_version: str = "", f
         },
         "HostConfig": {
             "AutoRemove": True,
-            "Binds": [
-                f"{DOCKER_SOCKET_PATH}:{DOCKER_SOCKET_PATH}",
-                str(metadata.get("state_mount") or ""),
-            ],
+            "Binds": helper_binds,
             "NetworkMode": "none",
             "RestartPolicy": {"Name": "no"},
         },
@@ -1156,6 +1193,7 @@ def _replace_related_container(
     image_ref: str,
     role: str,
     runtime_config: dict[str, Any] | None = None,
+    image_already_pulled: bool = False,
 ) -> dict[str, str]:
     container_inspect = client.inspect_container(container_ref)
     old_container_id = str(container_inspect.get("Id") or container_ref)
@@ -1192,7 +1230,28 @@ def _replace_related_container(
             raise RuntimeError("；".join(rollback_errors))
 
     try:
-        client.pull_image(image_ref)
+        role_label = "Worker" if role == "worker" else "Web" if role == "web" else role
+        if image_already_pulled:
+            _update_state_from_helper(
+                request_id,
+                status="running",
+                phase=f"updating_{role}",
+                message=_format_update_step_message(role_label, "复用已拉取镜像"),
+            )
+        else:
+            _update_state_from_helper(
+                request_id,
+                status="running",
+                phase=f"pulling_{role}",
+                message=_format_update_step_message(role_label, "正在拉取镜像"),
+            )
+            client.pull_image(image_ref)
+        _update_state_from_helper(
+            request_id,
+            status="running",
+            phase=f"creating_{role}",
+            message=_format_update_step_message(role_label, "正在创建新实例"),
+        )
         replacement_body = _build_replacement_container_body(
             container_inspect,
             image_ref,
@@ -1204,11 +1263,25 @@ def _replace_related_container(
         if role in {"web", "worker"}:
             state_fields[f"{role}_replacement_container_id"] = replacement_container_id
         _update_state_from_helper(request_id, **state_fields)
+        _update_state_from_helper(
+            request_id,
+            status="running",
+            phase=f"switching_{role}",
+            message=_format_update_step_message(role_label, "正在切换旧实例"),
+            **state_fields,
+        )
         client.stop_container(old_container_id, timeout_seconds=10)
         client.rename_container(old_container_id, name=backup_container_name)
         old_container_renamed = True
         client.rename_container(replacement_container_id, name=container_name)
         replacement_container_renamed = True
+        _update_state_from_helper(
+            request_id,
+            status="running",
+            phase=f"starting_{role}",
+            message=_format_update_step_message(role_label, "正在启动并等待健康检查"),
+            **state_fields,
+        )
         client.start_container(replacement_container_id)
         _wait_for_replacement_container(client, replacement_container_id)
         try:
@@ -1353,6 +1426,7 @@ def run_update_helper(
                 image_ref=web_image_ref or image_ref,
                 role="web",
                 runtime_config=runtime_config,
+                image_already_pulled=_same_image_ref(web_image_ref or image_ref, image_ref),
             )
             _update_state_from_helper(
                 request_id,
@@ -1386,6 +1460,7 @@ def run_update_helper(
                 image_ref=worker_image_ref or image_ref,
                 role="worker",
                 runtime_config=runtime_config,
+                image_already_pulled=_same_image_ref(worker_image_ref or image_ref, image_ref),
             )
             _update_state_from_helper(
                 request_id,

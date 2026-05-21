@@ -154,6 +154,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-05-22 · v0.6.122
+- 网页一键更新优化 App / Worker 同镜像流程：helper 拉取 `latest` 后，Worker / Web 更新会复用已拉取镜像，不再重复拉取同一个镜像
+- 更新状态细化到拉取、创建、切换、启动等阶段，避免页面只停在“执行中”而看不出实际卡点
+- 更新 helper 会继承日志目录挂载，后续更新过程中的诊断信息可写入业务日志；旧镜像清理继续保持成功重启后后台延迟执行
+
 ### 2026-05-22 · v0.6.121
 - 保存国内 / 国际 Cookie 后会自动导入对应账号的默认收藏夹、关注作者和关注收藏夹到订阅库，后台也会定时同步新增关注来源
 - 订阅扫描新增源端数量闭环：作者页 / 收藏夹显示数量与实际扫描数量不一致时会保留历史状态并提示异常，避免漏归档或误标源端删除
@@ -164,13 +169,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 订阅总数、启用中、同步中统计与返回 / 订阅设置按钮并排显示，减少首屏顶部空白
 - 移动端保留换行兜底，避免统计和按钮在窄屏互相挤压
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-21 · v0.6.119
 - 国际站模型详情 API 回退改为优先请求 `api.bambulab.com`，避免先撞 `makerworld.com` 页面域名时被 Cloudflare 验证页截断
 - 评论和服务接口候选同样改为 Bambu API 域名优先，减少国际站元数据补全、归档和源端刷新误报验证拦截
 - 补充国际站 API 优先回归测试，锁定 `api.bambulab.com` 优先于页面域名的请求顺序
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-20 · v0.6.118
 - 统一源端刷新、归档任务、设置和日志页顶部功能栏高度，与模型库、本地库保持同一套 84px 紧凑栏

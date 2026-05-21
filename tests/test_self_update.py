@@ -140,6 +140,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
 
             original_socket = self_update.DOCKER_SOCKET_PATH
             original_state_dir = self_update.STATE_DIR
+            original_logs_dir = self_update.LOGS_DIR
             original_update_state = self_update.UPDATE_STATE_PATH
             original_client = self_update.DockerSocketClient
             original_candidates = self_update._extract_container_id_candidates
@@ -244,6 +245,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
 
             original_socket = self_update.DOCKER_SOCKET_PATH
             original_state_dir = self_update.STATE_DIR
+            original_logs_dir = self_update.LOGS_DIR
             original_update_state = self_update.UPDATE_STATE_PATH
             original_client = self_update.DockerSocketClient
             original_candidates = self_update._extract_container_id_candidates
@@ -268,6 +270,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                         "Binds": [
                             f"{state_dir}:{state_dir}",
                             f"{socket_path}:{socket_path}",
+                            f"{state_dir.parent / 'logs'}:{state_dir.parent / 'logs'}",
                         ],
                     },
                     "Mounts": [],
@@ -306,6 +309,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             try:
                 self_update.DOCKER_SOCKET_PATH = socket_path
                 self_update.STATE_DIR = state_dir
+                self_update.LOGS_DIR = state_dir.parent / "logs"
                 self_update.UPDATE_STATE_PATH = state_dir / "system_update.json"
                 self_update.DockerSocketClient = FakeDockerSocketClient
                 self_update._extract_container_id_candidates = lambda: ["app-container-id"]
@@ -320,6 +324,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             finally:
                 self_update.DOCKER_SOCKET_PATH = original_socket
                 self_update.STATE_DIR = original_state_dir
+                self_update.LOGS_DIR = original_logs_dir
                 self_update.UPDATE_STATE_PATH = original_update_state
                 self_update.DockerSocketClient = original_client
                 self_update._extract_container_id_candidates = original_candidates
@@ -337,8 +342,81 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             self.assertIn("makerhub-worker", command)
             self.assertIn("--worker-image-ref", command)
             self.assertIn("ghcr.io/example/makerhub:latest", command)
+            self.assertIn(f"MAKERHUB_LOGS_DIR={state_dir.parent / 'logs'}", created[0]["body"]["Env"])
+            self.assertIn(f"{state_dir.parent / 'logs'}:{state_dir.parent / 'logs'}", created[0]["body"]["HostConfig"]["Binds"])
             self.assertEqual(started, [created[0]["name"] + "-id"])
             self.assertEqual(written_state["old_image_ids"], ["sha256:current-image"])
+
+    def test_related_container_skips_pull_when_image_was_already_pulled(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "state"
+            pulled: list[str] = []
+            phases: list[str] = []
+
+            original_state_dir = self_update.STATE_DIR
+            original_update_state = self_update.UPDATE_STATE_PATH
+            original_wait = self_update._wait_for_replacement_container
+            try:
+                self_update.STATE_DIR = state_dir
+                self_update.UPDATE_STATE_PATH = state_dir / "system_update.json"
+                self_update._write_update_state({"request_id": "skip-pull"})
+                self_update._wait_for_replacement_container = lambda *_args, **_kwargs: {}
+
+                class FakeDockerSocketClient:
+                    def inspect_container(self, container_id):
+                        return {
+                            "Id": container_id,
+                            "Name": "/makerhub-worker",
+                            "Image": "sha256:old-image",
+                            "Config": {"Image": "ghcr.io/example/makerhub:latest"},
+                            "HostConfig": {},
+                            "NetworkSettings": {"Networks": {}},
+                        }
+
+                    def pull_image(self, image_ref):
+                        pulled.append(image_ref)
+
+                    def create_container(self, _body, *, name=""):
+                        return f"{name}-id"
+
+                    def stop_container(self, _container_id, *, timeout_seconds=10):
+                        pass
+
+                    def rename_container(self, _container_id, *, name):
+                        pass
+
+                    def start_container(self, _container_id):
+                        pass
+
+                    def remove_container(self, _container_id, *, force=False):
+                        pass
+
+                original_update_state_from_helper = self_update._update_state_from_helper
+
+                def tracking_update_state(request_id, **fields):
+                    if fields.get("phase"):
+                        phases.append(fields["phase"])
+                    return original_update_state_from_helper(request_id, **fields)
+
+                self_update._update_state_from_helper = tracking_update_state
+                result = self_update._replace_related_container(
+                    FakeDockerSocketClient(),
+                    request_id="skip-pull",
+                    container_ref="worker-container-id",
+                    image_ref="ghcr.io/example/makerhub:latest",
+                    role="worker",
+                    image_already_pulled=True,
+                )
+            finally:
+                self_update.STATE_DIR = original_state_dir
+                self_update.UPDATE_STATE_PATH = original_update_state
+                self_update._wait_for_replacement_container = original_wait
+                self_update._update_state_from_helper = original_update_state_from_helper
+
+            self.assertEqual(result["container_name"], "makerhub-worker")
+            self.assertEqual(pulled, [])
+            self.assertIn("creating_worker", phases)
+            self.assertIn("starting_worker", phases)
 
     def test_delayed_cleanup_removes_old_image_after_success(self):
         with tempfile.TemporaryDirectory() as temp_dir:
