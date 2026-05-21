@@ -1,12 +1,13 @@
 <template>
-  <section class="page-intro page-intro--compact subscription-page-intro">
-    <div>
+  <section class="surface surface--filters page-intro app-page-toolbar subscription-manage-toolbar">
+    <div class="app-page-toolbar__copy">
       <span class="eyebrow">订阅库管理</span>
-      <h1>订阅链接与同步明细</h1>
-      <p>集中查看所有订阅来源的链接、Cron、同步状态和操作入口。</p>
+      <div class="app-page-toolbar__title-row">
+        <h1>订阅链接与同步明细</h1>
+      </div>
     </div>
-    <div class="subscription-page-intro__side">
-      <div class="intro-stats">
+    <div class="subscription-manage-toolbar__side">
+      <div class="intro-stats app-page-toolbar__stats">
         <div class="intro-stat">
           <span>订阅总数</span>
           <strong>{{ payload.count }}</strong>

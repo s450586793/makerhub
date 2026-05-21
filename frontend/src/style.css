@@ -832,15 +832,14 @@ html[data-theme="dark"] .mw-attachment-upload__drop-copy em {
   margin-bottom: 12px;
 }
 
-.subscription-page-intro {
-  align-items: flex-start;
-}
-
-.subscription-page-intro__side {
+.subscription-manage-toolbar__side {
   min-width: 0;
-  display: grid;
-  gap: 12px;
-  justify-items: end;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
 }
 
 .subscription-page-tools {
@@ -3809,9 +3808,10 @@ html[data-theme="dark"] .organizer-progress-popover {
     right: 0;
   }
 
-  .subscription-page-intro__side {
+  .subscription-manage-toolbar__side {
     width: 100%;
-    justify-items: stretch;
+    justify-content: stretch;
+    flex-wrap: wrap;
   }
 
   .subscription-page-tools {
