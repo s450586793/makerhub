@@ -154,6 +154,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-05-21 · v0.6.119
+- 国际站模型详情 API 回退改为优先请求 `api.bambulab.com`，避免先撞 `makerworld.com` 页面域名时被 Cloudflare 验证页截断
+- 评论和服务接口候选同样改为 Bambu API 域名优先，减少国际站元数据补全、归档和源端刷新误报验证拦截
+- 补充国际站 API 优先回归测试，锁定 `api.bambulab.com` 优先于页面域名的请求顺序
+
 ### 2026-05-20 · v0.6.118
 - 统一源端刷新、归档任务、设置和日志页顶部功能栏高度，与模型库、本地库保持同一套 84px 紧凑栏
 - 修复日志页旧 hero 样式覆盖紧凑栏的问题，收起说明文字并把日志状态、操作按钮和统计信息压到同一行
@@ -164,13 +169,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 附件上传区改为可点击也可拖拽的选择区域，放在上传按钮左侧，并显示当前附件名称与大小
 - 补充附件拖拽事件防护和空文件错误兜底，避免拖拽离开或上传异常时前端直接报错
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-20 · v0.6.116
 - 修复收藏夹订阅缺失模型会误标“源已删除”的问题：收藏夹少扫或移除收藏只影响订阅统计，不再作为模型源端删除依据
 - “源已删除”红标现在只保留给作者上传页订阅确认缺失，或源端刷新直接检查原始模型链接后判定删除的模型
 - 补充订阅标记回归测试，覆盖收藏夹缺失不标红、作者上传缺失仍标红，以及显式状态测试绕过缓存的场景
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-20 · v0.6.115
 - 订阅库作者 / 收藏夹同步新增 MakerWorld 当前可用的 `search-service/search/user` UID 解析链路，旧的 handle 解析接口失效时不再直接退到 Cloudflare 容易拦截的页面 HTML

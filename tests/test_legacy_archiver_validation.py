@@ -111,6 +111,34 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         self.assertEqual(design["id"], 2416065)
         self.assertEqual(design["title"], "十二生肖-兔女孩")
 
+    def test_fetch_design_from_api_prefers_global_bambulab_api(self):
+        session = _ApiSession(
+            {
+                "api.bambulab.com": {
+                    "id": "2416065",
+                    "title": "Global API model",
+                    "coverUrl": "https://cdn.example.com/global.jpg",
+                    "instances": [],
+                },
+                "makerworld.com": {
+                    "id": "2416065",
+                    "title": "Site domain model",
+                    "coverUrl": "https://cdn.example.com/site.jpg",
+                    "instances": [],
+                },
+            }
+        )
+
+        design = legacy_archiver.fetch_design_from_api(
+            session,
+            "",
+            "https://makerworld.com/zh/models/2416065",
+        )
+
+        self.assertIsInstance(design, dict)
+        self.assertEqual(design["title"], "Global API model")
+        self.assertIn("api.bambulab.com", session.calls[0])
+
     def test_fetch_design_from_api_uses_scrapling_before_requests(self):
         session = _ApiSession()
         with patch(
@@ -134,6 +162,15 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         self.assertIsInstance(design, dict)
         self.assertEqual(design["title"], "Scrapling model")
         self.assertEqual(session.calls, [])
+
+    def test_comment_api_base_candidates_prefer_global_bambulab_api(self):
+        candidates = legacy_archiver._comment_api_base_candidates(
+            "https://makerworld.com/zh/models/2416065",
+            api_host_hint="https://makerworld.com",
+        )
+
+        self.assertEqual(candidates[0], "https://api.bambulab.com")
+        self.assertIn("https://makerworld.com", candidates)
 
     def test_extract_author_ignores_browsing_history_link(self):
         author = legacy_archiver.extract_author(

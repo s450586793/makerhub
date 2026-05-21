@@ -996,8 +996,6 @@ def fetch_design_from_api(
     origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else "https://makerworld.com.cn"
     source = normalize_makerworld_source(url=url)
     bases = []
-    _append_api_base_candidate(bases, api_host_hint or "", source)
-    _append_api_base_candidate(bases, origin, source)
     if source == "global":
         _append_api_base_candidate(bases, "https://api.bambulab.com", source)
     elif source == "cn":
@@ -1005,6 +1003,8 @@ def fetch_design_from_api(
     else:
         _append_api_base_candidate(bases, "https://api.bambulab.cn", source)
         _append_api_base_candidate(bases, "https://api.bambulab.com", source)
+    _append_api_base_candidate(bases, api_host_hint or "", source)
+    _append_api_base_candidate(bases, origin, source)
 
     path_templates = [
         "/api/v1/design-service/design/{id}",
@@ -2259,7 +2259,7 @@ def _comment_api_base_candidates(source_url: str, api_host_hint: Optional[str] =
     )
 
     bases: List[str] = []
-    for candidate in (origin, api_host_hint, preferred_site, preferred_api):
+    for candidate in (preferred_api, api_host_hint, origin, preferred_site):
         normalized = _normalize_service_base(candidate)
         if normalized and normalized not in bases:
             bases.append(normalized)
