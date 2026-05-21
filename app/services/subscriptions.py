@@ -9,15 +9,23 @@ from urllib.parse import urlparse
 
 from croniter import CroniterBadCronError, croniter
 
-from app.core.settings import BACKGROUND_TASKS_ENABLED, LOGS_DIR
+from app.core.settings import BACKGROUND_TASKS_ENABLED, LOGS_DIR, STATE_DIR
 from app.core.store import JsonStore
 from app.core.timezone import ensure_timezone, now as china_now, now_iso as china_now_iso, parse_datetime
 from app.schemas.models import SubscriptionRecord
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.archive_worker import ArchiveTaskManager, detect_archive_mode
-from app.services.batch_discovery import extract_model_id, normalize_source_url
+from app.services.batch_discovery import (
+    default_favorites_subscription_source,
+    discover_cookie_account_profile,
+    discover_cookie_followed_authors,
+    discover_cookie_followed_collections,
+    extract_model_id,
+    normalize_source_url,
+)
 from app.services.business_logs import append_business_log
 from app.services.process_jobs import run_discover_batch_urls_job
+from app.services.proxy_policy import temporary_proxy_env
 from app.services.source_library import (
     build_subscription_overview_payload,
     refresh_source_preview_snapshots,
@@ -29,8 +37,18 @@ from app.services.task_state import TaskStateStore
 DEFAULT_SUBSCRIPTION_CRON = "0 */6 * * *"
 SUBSCRIPTION_MODES = {"author_upload", "collection_models"}
 SUBSCRIPTION_LOG_PATH = LOGS_DIR / "subscriptions.log"
+COOKIE_SOURCE_SYNC_STATE_PATH = STATE_DIR / "cookie_source_sync_state.json"
 SUBSCRIPTION_POLL_SECONDS = 20
 SUBSCRIPTION_RUNNING_STALE_AFTER = timedelta(hours=6)
+COOKIE_SOURCE_SYNC_INTERVAL = timedelta(hours=6)
+COLLECTION_PARTIAL_SCAN_MIN_TRACKED = 20
+COLLECTION_PARTIAL_SCAN_RATIO = 0.5
+STRICT_EXPECTED_TOTAL_SOURCES = {
+    "author_upload_api_total",
+    "collection_page_all_models",
+    "collection_models_api_total",
+    "collection_detail_api_total",
+}
 
 
 def _now() -> datetime:
@@ -74,11 +92,12 @@ def _append_subscription_log(event: str, **payload: Any) -> None:
         "sync_start",
         "sync_done",
         "sync_error",
+        "sync_partial_rejected",
         "scheduler_error",
     }:
         level = (
             "error"
-            if event in {"sync_error", "scheduler_error"}
+            if event in {"sync_error", "sync_partial_rejected", "scheduler_error"}
             else "warning"
             if event in {"metadata_refresh_error", "preview_snapshot_refresh_error"}
             else "info"
@@ -92,9 +111,56 @@ def _append_subscription_log(event: str, **payload: Any) -> None:
             "sync_start": "订阅同步开始。",
             "sync_done": "订阅同步完成。",
             "sync_error": "订阅同步失败。",
+            "sync_partial_rejected": "订阅扫描结果异常，已保留历史状态。",
             "scheduler_error": "订阅调度器异常。",
         }
         append_business_log("subscription", event, message_map.get(event, event), level=level, **payload)
+
+
+def _read_cookie_source_sync_state() -> dict[str, Any]:
+    try:
+        if not COOKIE_SOURCE_SYNC_STATE_PATH.exists():
+            return {}
+        payload = json.loads(COOKIE_SOURCE_SYNC_STATE_PATH.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_cookie_source_sync_state(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        COOKIE_SOURCE_SYNC_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        COOKIE_SOURCE_SYNC_STATE_PATH.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        return payload
+    return payload
+
+
+def _cookie_source_sync_due(platforms: set[str]) -> set[str]:
+    state = _read_cookie_source_sync_state()
+    now = _now()
+    due: set[str] = set()
+    for platform in sorted(platforms):
+        item = state.get(platform) if isinstance(state.get(platform), dict) else {}
+        last_sync_at = _parse_iso(str(item.get("last_sync_at") or ""))
+        if last_sync_at is None or now - last_sync_at >= COOKIE_SOURCE_SYNC_INTERVAL:
+            due.add(platform)
+    return due
+
+
+def _patch_cookie_source_sync_state(platform: str, **changes: Any) -> dict[str, Any]:
+    clean_platform = "global" if str(platform or "").strip().lower() == "global" else "cn"
+    state = _read_cookie_source_sync_state()
+    item = dict(state.get(clean_platform) or {})
+    for key, value in changes.items():
+        if value is None:
+            continue
+        item[key] = value
+    state[clean_platform] = item
+    return _write_cookie_source_sync_state(state)
 
 
 def _validate_cron(cron_expr: str) -> str:
@@ -145,6 +211,9 @@ def _normalize_source_items(items: list[Any]) -> list[dict]:
                     "url": normalize_source_url(str(raw.get("url") or "")),
                     "task_key": str(raw.get("task_key") or "").strip(),
                 }
+                for meta_key in ("source_order", "favorited_at", "source_position"):
+                    if raw.get(meta_key) not in (None, ""):
+                        item[meta_key] = raw.get(meta_key)
                 if not item["task_key"]:
                     if item["model_id"]:
                         item["task_key"] = f"model:{item['model_id']}"
@@ -180,6 +249,80 @@ def _deleted_source_items(current_items: list[dict], tracked_items: list[dict]) 
     return [item for item in _normalize_source_items(tracked_items) if item["task_key"] not in current_keys]
 
 
+def _strict_expected_total(discovered: dict) -> Optional[int]:
+    if not isinstance(discovered, dict):
+        return None
+    expected_total = discovered.get("expected_total")
+    if not isinstance(expected_total, int) or expected_total <= 0:
+        return None
+    expected_total_source = str(discovered.get("expected_total_source") or "").strip()
+    if bool(discovered.get("strict_expected_total")) or expected_total_source in STRICT_EXPECTED_TOTAL_SOURCES:
+        return expected_total
+    return None
+
+
+def _partial_scan_message(context: dict[str, Any]) -> str:
+    reason = str(context.get("reason") or "")
+    mode = str(context.get("mode") or "")
+    current_count = int(context.get("current_count") or 0)
+    source_label = "收藏夹" if mode == "collection_models" else "作者页" if mode == "author_upload" else "源端"
+    if reason == "expected_total_mismatch":
+        expected_total = int(context.get("expected_total") or 0)
+        return (
+            f"订阅扫描结果异常：源端显示 {expected_total} 个模型，本次仅扫描到 {current_count} 个，"
+            f"疑似{source_label}接口返回不完整，已保留历史跟踪状态。"
+        )
+
+    previous_count = int(context.get("previous_count") or 0)
+    return (
+        f"订阅扫描结果异常：本次仅扫描到 {current_count} 个，低于历史跟踪 {previous_count} 个，"
+        f"疑似{source_label}接口返回不完整，已保留历史跟踪状态。"
+    )
+
+
+def _subscription_partial_scan_context(
+    subscription: SubscriptionRecord,
+    current_items: list[dict],
+    previous_state: dict,
+    discovered: dict,
+) -> Optional[dict[str, Any]]:
+    normalized_current_items = _normalize_source_items(current_items)
+    current_count = len(normalized_current_items)
+    expected_total = _strict_expected_total(discovered)
+    if expected_total is not None and current_count < expected_total:
+        previous_tracked_items = _normalize_source_items(previous_state.get("tracked_items") or [])
+        return {
+            "reason": "expected_total_mismatch",
+            "mode": subscription.mode,
+            "current_count": current_count,
+            "previous_count": len(previous_tracked_items),
+            "expected_total": expected_total,
+            "expected_total_source": str(discovered.get("expected_total_source") or ""),
+            "previous_tracked_items": previous_tracked_items,
+        }
+
+    if subscription.mode != "collection_models":
+        return None
+
+    previous_tracked_items = _normalize_source_items(previous_state.get("tracked_items") or [])
+    previous_count = len(previous_tracked_items)
+    if previous_count < COLLECTION_PARTIAL_SCAN_MIN_TRACKED:
+        return None
+    threshold = max(5, int(previous_count * COLLECTION_PARTIAL_SCAN_RATIO))
+    if current_count >= threshold:
+        return None
+    return {
+        "reason": "history_drop",
+        "mode": subscription.mode,
+        "current_count": current_count,
+        "previous_count": previous_count,
+        "threshold": threshold,
+        "expected_total": discovered.get("expected_total") if isinstance(discovered, dict) else None,
+        "expected_total_source": str(discovered.get("expected_total_source") or "") if isinstance(discovered, dict) else "",
+        "previous_tracked_items": previous_tracked_items,
+    }
+
+
 def _detect_subscription_mode(url: str) -> str:
     mode = detect_archive_mode(url)
     if mode in SUBSCRIPTION_MODES:
@@ -202,6 +345,17 @@ def _default_subscription_name(url: str, mode: str) -> str:
     return handle or parsed.netloc or "订阅任务"
 
 
+def _subscription_import_name(source: dict[str, Any], mode: str, platform: str) -> str:
+    title = str(source.get("title") or source.get("name") or "").strip()
+    handle = str(source.get("handle") or "").strip().lstrip("@")
+    site_label = "国际" if platform == "global" else "国内"
+    if mode == "author_upload":
+        return f"{title or handle or 'MakerWorld'} 作者订阅"
+    if "所有模型" in title:
+        return f"{site_label} {title}".strip()
+    return f"{title or handle or 'MakerWorld'} 收藏夹订阅"
+
+
 class SubscriptionManager:
     def __init__(
         self,
@@ -217,6 +371,7 @@ class SubscriptionManager:
         self.background_enabled = BACKGROUND_TASKS_ENABLED if background_enabled is None else bool(background_enabled)
         self._loop_lock = threading.Lock()
         self._running_id = ""
+        self._cookie_source_sync_running = False
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
@@ -513,6 +668,207 @@ class SubscriptionManager:
 
         return {"queued_count": len(queued_ids), "subscription_ids": queued_ids}
 
+    def sync_cookie_sources(self, platforms: set[str], *, reason: str = "manual") -> dict:
+        with self._loop_lock:
+            if getattr(self, "_cookie_source_sync_running", False):
+                return {
+                    "created_count": 0,
+                    "updated_count": 0,
+                    "platforms": [],
+                    "skipped": True,
+                    "message": "关注来源同步已在运行。",
+                }
+            self._cookie_source_sync_running = True
+
+        try:
+            return self._sync_cookie_sources(platforms, reason=reason)
+        finally:
+            with self._loop_lock:
+                self._cookie_source_sync_running = False
+
+    def _sync_cookie_sources(self, platforms: set[str], *, reason: str = "manual") -> dict:
+        normalized_platforms = {str(item or "").strip().lower() for item in platforms if str(item or "").strip()}
+        normalized_platforms = {item for item in normalized_platforms if item in {"cn", "global"}}
+        if not normalized_platforms:
+            return {"created_count": 0, "updated_count": 0, "platforms": []}
+
+        config = self.store.load()
+        cookie_map = {
+            str(item.platform or "").strip().lower(): sanitize_cookie_header(item.cookie)
+            for item in getattr(config, "cookies", [])
+        }
+        default_cron = _validate_cron(getattr(config.subscription_settings, "default_cron", "") or DEFAULT_SUBSCRIPTION_CRON)
+        default_enabled = bool(getattr(config.subscription_settings, "default_enabled", True))
+        now_iso = _now_iso()
+
+        created_ids: list[str] = []
+        updated_ids: list[str] = []
+        platform_results: list[dict[str, Any]] = []
+        changed = False
+
+        for platform in sorted(normalized_platforms):
+            raw_cookie = cookie_map.get(platform) or ""
+            if not raw_cookie:
+                platform_results.append(
+                    {
+                        "platform": platform,
+                        "status": "skipped",
+                        "message": "未配置 Cookie。",
+                        "created_count": 0,
+                        "updated_count": 0,
+                    }
+                )
+                continue
+
+            try:
+                with temporary_proxy_env(config.proxy, "", platform=platform):
+                    profile = discover_cookie_account_profile(platform, raw_cookie)
+                    uid = str(profile.get("uid") or "").strip()
+                    sources: list[dict[str, Any]] = []
+
+                    default_favorites = default_favorites_subscription_source(platform, profile)
+                    if default_favorites.get("url"):
+                        sources.append({**default_favorites, "mode": "collection_models", "source_kind": "default_favorites"})
+
+                    followed_authors = discover_cookie_followed_authors(platform, raw_cookie, uid=uid)
+                    for item in followed_authors.get("items") or []:
+                        if item.get("url"):
+                            sources.append({**item, "mode": "author_upload", "source_kind": "followed_author"})
+
+                    followed_collections = discover_cookie_followed_collections(platform, raw_cookie, uid=uid)
+                    for item in followed_collections.get("items") or []:
+                        if item.get("url"):
+                            sources.append({**item, "mode": "collection_models", "source_kind": "followed_collection"})
+
+                platform_created = 0
+                platform_updated = 0
+                seen_urls: set[str] = set()
+                for source in sources:
+                    clean_url = normalize_source_url(str(source.get("url") or ""))
+                    if not clean_url or clean_url in seen_urls:
+                        continue
+                    seen_urls.add(clean_url)
+                    mode = str(source.get("mode") or _detect_subscription_mode(clean_url)).strip()
+                    if mode not in SUBSCRIPTION_MODES:
+                        continue
+                    existing = next(
+                        (item for item in config.subscriptions if normalize_source_url(item.url) == clean_url),
+                        None,
+                    )
+                    name = _subscription_import_name(source, mode, platform)
+                    if existing:
+                        changed_existing = False
+                        if name and not str(existing.name or "").strip():
+                            existing.name = name
+                            changed_existing = True
+                        if not existing.enabled and default_enabled:
+                            existing.enabled = True
+                            changed_existing = True
+                        if changed_existing:
+                            existing.updated_at = now_iso
+                            changed = True
+                            platform_updated += 1
+                            updated_ids.append(existing.id)
+                        continue
+
+                    record = SubscriptionRecord(
+                        id=uuid.uuid4().hex,
+                        name=name or _default_subscription_name(clean_url, mode),
+                        url=clean_url,
+                        mode=mode,
+                        cron=default_cron,
+                        enabled=default_enabled,
+                        created_at=now_iso,
+                        updated_at=now_iso,
+                    )
+                    config.subscriptions.append(record)
+                    changed = True
+                    platform_created += 1
+                    created_ids.append(record.id)
+                    self.task_store.patch_subscription_state(
+                        record.id,
+                        status="pending" if default_enabled else "idle",
+                        running=False,
+                        manual_requested_at=now_iso if default_enabled else "",
+                        next_run_at=now_iso if default_enabled else "",
+                        last_message=(
+                            "Cookie 保存后已自动导入订阅源，等待后台首次同步。"
+                            if reason == "cookie_save"
+                            else "关注来源刷新后已自动导入订阅源，等待后台首次同步。"
+                        ),
+                    )
+
+                _patch_cookie_source_sync_state(
+                    platform,
+                    last_sync_at=now_iso,
+                    last_status="success",
+                    last_message="关注来源同步完成。",
+                    last_created_count=platform_created,
+                    last_updated_count=platform_updated,
+                    default_favorites_found=bool(default_favorites.get("url")),
+                    followed_author_count=int((followed_authors or {}).get("count") or 0),
+                    followed_collection_count=int((followed_collections or {}).get("count") or 0),
+                    account_uid=uid,
+                    account_handle=str(profile.get("handle") or ""),
+                )
+                platform_results.append(
+                    {
+                        "platform": platform,
+                        "status": "success",
+                        "created_count": platform_created,
+                        "updated_count": platform_updated,
+                        "default_favorites_found": bool(default_favorites.get("url")),
+                        "followed_author_count": int((followed_authors or {}).get("count") or 0),
+                        "followed_collection_count": int((followed_collections or {}).get("count") or 0),
+                    }
+                )
+            except Exception as exc:
+                message = str(exc)[:240]
+                _patch_cookie_source_sync_state(
+                    platform,
+                    last_sync_at=now_iso,
+                    last_status="error",
+                    last_message=message,
+                )
+                platform_results.append(
+                    {
+                        "platform": platform,
+                        "status": "error",
+                        "message": message,
+                        "created_count": 0,
+                        "updated_count": 0,
+                    }
+                )
+                _append_subscription_log(
+                    "cookie_source_sync_error",
+                    platform=platform,
+                    reason=reason,
+                    error=message,
+                )
+
+        if changed:
+            self.store.save(config)
+
+        result = {
+            "created_count": len(created_ids),
+            "updated_count": len(updated_ids),
+            "subscription_ids": created_ids,
+            "updated_subscription_ids": updated_ids,
+            "platforms": platform_results,
+        }
+        _append_subscription_log(
+            "cookie_source_sync_done",
+            reason=reason,
+            platforms=sorted(normalized_platforms),
+            created_count=result["created_count"],
+            updated_count=result["updated_count"],
+            platform_results=platform_results,
+        )
+        self.start()
+        if self.background_enabled and created_ids:
+            self._maybe_launch_due_sync()
+        return result
+
     def upsert_from_archive(
         self,
         *,
@@ -585,10 +941,24 @@ class SubscriptionManager:
         while True:
             try:
                 self._ensure_state_records()
+                self._maybe_sync_cookie_sources()
                 self._maybe_launch_due_sync()
             except Exception as exc:
                 _append_subscription_log("scheduler_error", error=str(exc))
             time.sleep(SUBSCRIPTION_POLL_SECONDS)
+
+    def _maybe_sync_cookie_sources(self) -> None:
+        config = self.store.load()
+        platforms = {
+            str(item.platform or "").strip().lower()
+            for item in getattr(config, "cookies", [])
+            if str(item.platform or "").strip().lower() in {"cn", "global"}
+            and sanitize_cookie_header(item.cookie)
+        }
+        due_platforms = _cookie_source_sync_due(platforms)
+        if not due_platforms:
+            return
+        self.sync_cookie_sources(due_platforms, reason="scheduled")
 
     def _ensure_state_records(self) -> None:
         config = self.store.load()
@@ -745,6 +1115,40 @@ class SubscriptionManager:
         try:
             discovered = self._discover_subscription_items(subscription)
             current_items = _normalize_source_items(discovered.get("items") or [])
+            partial_context = _subscription_partial_scan_context(subscription, current_items, previous_state, discovered)
+            if partial_context is not None:
+                failed_at = _now()
+                previous_count = int(partial_context["previous_count"])
+                current_count = int(partial_context["current_count"])
+                restored_items = partial_context["previous_tracked_items"]
+                fallback_items = restored_items if restored_items else current_items
+                message = _partial_scan_message(partial_context)
+                self.task_store.patch_subscription_state(
+                    subscription.id,
+                    status="error",
+                    running=False,
+                    next_run_at=_next_run_at(subscription.cron, failed_at) if subscription.enabled else "",
+                    last_error_at=failed_at.isoformat(),
+                    last_message=message,
+                    last_discovered_count=current_count,
+                    last_new_count=0,
+                    last_enqueued_count=0,
+                    last_deleted_count=0,
+                    current_items=fallback_items,
+                    tracked_items=fallback_items,
+                )
+                _append_subscription_log(
+                    "sync_partial_rejected",
+                    subscription_id=subscription.id,
+                    url=subscription.url,
+                    discovered=current_count,
+                    tracked=previous_count,
+                    reason=partial_context.get("reason"),
+                    threshold=partial_context.get("threshold"),
+                    expected_total=partial_context.get("expected_total"),
+                    expected_total_source=partial_context.get("expected_total_source"),
+                )
+                return
             self._refresh_subscription_source_metadata(subscription, discovered, len(current_items))
             tracked_items = _merge_source_items(previous_state.get("tracked_items") or [], current_items)
             previous_tracked_keys = {item["task_key"] for item in _normalize_source_items(previous_state.get("tracked_items") or [])}

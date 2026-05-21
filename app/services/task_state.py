@@ -655,11 +655,15 @@ def _normalize_subscription_source_item(item: Any) -> Optional[dict]:
         return None
     if not task_key:
         task_key = f"model:{model_id}" if model_id else url
-    return {
+    normalized = {
         "model_id": model_id,
         "url": url,
         "task_key": task_key,
     }
+    for key in ("source_order", "favorited_at", "source_position"):
+        if key in item and item.get(key) not in (None, ""):
+            normalized[key] = item.get(key)
+    return normalized
 
 
 def _normalize_subscription_state(payload: Any) -> dict:

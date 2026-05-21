@@ -337,6 +337,9 @@ class SubscriptionSourceItem(BaseModel):
     model_id: str = ""
     url: str = ""
     task_key: str = ""
+    source_order: int = 0
+    source_position: int = 0
+    favorited_at: str = ""
 
 
 class SubscriptionStateItem(BaseModel):

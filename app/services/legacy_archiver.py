@@ -26,6 +26,7 @@ archiver.py (app2)
 import requests
 from bs4 import BeautifulSoup
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
+from app.services.business_logs import append_business_log
 from app.services.cookie_utils import extract_auth_token, parse_cookie_values, sanitize_cookie_header
 from app.services.profile_rating import normalize_profile_rating
 from app.services.resource_limiter import resource_slot
@@ -111,6 +112,63 @@ def _log_perf(label: str, started_at: float, logger=None, **extra) -> float:
     else:
         log(logger, message)
     return elapsed_ms
+
+
+def _trace_url(value: str) -> str:
+    try:
+        parsed = urlparse(str(value or ""))
+        if not parsed.netloc:
+            return ""
+        return urlunsplit((parsed.scheme or "https", parsed.netloc, parsed.path or "", "", ""))
+    except Exception:
+        return ""
+
+
+def _scrapling_trace(
+    stage: str,
+    result=None,
+    *,
+    url: str = "",
+    state: str = "",
+    used: bool = False,
+    fallback: str = "",
+    logger=None,
+    level: str = "info",
+    **extra,
+) -> None:
+    engine = str(getattr(result, "engine", "") or "").strip()
+    status_code = int(getattr(result, "status_code", 0) or 0)
+    error = str(getattr(result, "error", "") or "").strip()
+    ok = bool(getattr(result, "ok", False))
+    safe_extra = {key: value for key, value in extra.items() if value not in (None, "", [], {}, ())}
+    trace_state = state or ("ok" if ok else "failed")
+    message = (
+        f"[scrapling] stage={stage} engine={engine or '-'} "
+        f"status={status_code or '-'} state={trace_state} used={bool(used)}"
+    )
+    if fallback:
+        message = f"{message} fallback={fallback}"
+    if logger is not None:
+        log(logger, message)
+    try:
+        append_business_log(
+            "scrapling",
+            "fetch_trace",
+            message,
+            level=level,
+            stage=stage,
+            engine=engine,
+            status_code=status_code,
+            ok=ok,
+            state=trace_state,
+            used=bool(used),
+            fallback=fallback,
+            url=_trace_url(url),
+            error=error[:300] if error else "",
+            **safe_extra,
+        )
+    except Exception:
+        return
 
 
 def emit_progress(progress_callback, percent: int, message: str, extra: Optional[dict] = None):
@@ -502,10 +560,29 @@ def fetch_html_with_requests(session: requests.Session, url: str, raw_cookie: st
         logger=log,
     )
     if scrapling_result.ok and scrapling_result.text:
+        _scrapling_trace("archive.fetch_html", scrapling_result, url=url, state="ok", used=True)
         return scrapling_result.text
     if scrapling_only():
+        _scrapling_trace(
+            "archive.fetch_html",
+            scrapling_result,
+            url=url,
+            state="failed",
+            used=False,
+            fallback="blocked_by_scrapling_only",
+            level="warning",
+        )
         log("Scrapling only 模式获取页面失败:", scrapling_result.engine, scrapling_result.status_code, scrapling_result.error)
         return None
+    _scrapling_trace(
+        "archive.fetch_html",
+        scrapling_result,
+        url=url,
+        state="failed",
+        used=False,
+        fallback="requests",
+        level="warning",
+    )
     try:
         resp = session.get(url, timeout=30, headers=headers)
     except Exception as e:
@@ -1041,10 +1118,38 @@ def fetch_design_from_api(
             if design:
                 payload_error = _design_payload_error(design, url)
                 if payload_error:
+                    _scrapling_trace(
+                        "archive.fetch_design_api",
+                        scrapling_result,
+                        url=api_url,
+                        state="invalid_payload",
+                        used=False,
+                        logger=logger,
+                        level="warning",
+                    )
                     log(logger, "Scrapling API 返回的模型数据无效，跳过:", api_url, payload_error)
                 else:
+                    _scrapling_trace(
+                        "archive.fetch_design_api",
+                        scrapling_result,
+                        url=api_url,
+                        state="ok",
+                        used=True,
+                        logger=logger,
+                    )
                     _normalize_design_payload_identity(design, url)
                     return design
+        elif scrapling_result is not None:
+            _scrapling_trace(
+                "archive.fetch_design_api",
+                scrapling_result,
+                url=api_url,
+                state="failed",
+                used=False,
+                fallback="requests" if not scrapling_only() else "blocked_by_scrapling_only",
+                logger=logger,
+                level="warning",
+            )
         if scrapling_only():
             continue
         try:
@@ -2397,7 +2502,7 @@ def _fetch_comment_reply_payload(
         reply_path,
         api_host_hint=api_host_hint,
     ):
-        payload, _ = fetch_json_with_scrapling(
+        payload, scrapling_result = fetch_json_with_scrapling(
             api_url,
             raw_cookie=_session_cookie_header(session),
             headers=headers,
@@ -2406,9 +2511,28 @@ def _fetch_comment_reply_payload(
         )
         if payload is not None:
             if _extract_comment_replies_from_payload(payload, root_comment_id):
+                _scrapling_trace(
+                    "comments.fetch_replies",
+                    scrapling_result,
+                    url=api_url,
+                    state="ok",
+                    used=True,
+                    reply_kind=reply_kind,
+                )
                 return payload
             if fallback_payload is None:
                 fallback_payload = payload
+        elif scrapling_result is not None:
+            _scrapling_trace(
+                "comments.fetch_replies",
+                scrapling_result,
+                url=api_url,
+                state="failed",
+                used=False,
+                fallback="requests" if not scrapling_only() else "blocked_by_scrapling_only",
+                level="warning",
+                reply_kind=reply_kind,
+            )
         if scrapling_only():
             continue
         try:
@@ -2459,7 +2583,7 @@ def _fetch_comment_list_payload(
         "/commentandrating",
         api_host_hint=api_host_hint,
     ):
-        payload, _ = fetch_json_with_scrapling(
+        payload, scrapling_result = fetch_json_with_scrapling(
             api_url,
             raw_cookie=_session_cookie_header(session),
             headers=headers,
@@ -2468,12 +2592,34 @@ def _fetch_comment_list_payload(
         )
         if payload is not None:
             if _extract_comment_list_items(payload):
+                if offset <= 0:
+                    _scrapling_trace(
+                        "comments.fetch_list",
+                        scrapling_result,
+                        url=api_url,
+                        state="ok",
+                        used=True,
+                        offset=offset,
+                        hit_count=_comment_list_payload_hit_count(payload),
+                        total=_comment_list_payload_total(payload),
+                    )
                 return payload
             if fallback_payload is None or (
                 _comment_list_payload_total(payload) > _comment_list_payload_total(fallback_payload)
                 or _comment_list_payload_hit_count(payload) > _comment_list_payload_hit_count(fallback_payload)
             ):
                 fallback_payload = payload
+        elif scrapling_result is not None:
+            _scrapling_trace(
+                "comments.fetch_list",
+                scrapling_result,
+                url=api_url,
+                state="failed",
+                used=False,
+                fallback="requests" if not scrapling_only() else "blocked_by_scrapling_only",
+                level="warning",
+                offset=offset,
+            )
         if scrapling_only():
             continue
         try:
@@ -3948,6 +4094,16 @@ def fetch_instance_3mf(
                     "status": scrapling_result.status_code if scrapling_result else "error",
                     "state": failure.get("state"),
                 })
+                _scrapling_trace(
+                    "three_mf.fetch_api",
+                    scrapling_result,
+                    url=candidate,
+                    state=str(failure.get("state") or "missing"),
+                    used=False,
+                    fallback="blocked_by_scrapling_only",
+                    level="warning",
+                    instance_id=inst_id,
+                )
                 if _should_stop_three_mf_fetch(failure):
                     log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
                     return "", "", candidate, last_failure
@@ -3955,6 +4111,14 @@ def fetch_instance_3mf(
             if data is not None:
                 name, url = _extract_instance_download(data)
                 if url:
+                    _scrapling_trace(
+                        "three_mf.fetch_api",
+                        scrapling_result,
+                        url=candidate,
+                        state="ok",
+                        used=True,
+                        instance_id=inst_id,
+                    )
                     return name, url, candidate, {"state": "available", "message": ""}
                 text_preview = json.dumps(data, ensure_ascii=False)[:200]
                 failure = _classify_3mf_fetch_failure(
@@ -3970,10 +4134,31 @@ def fetch_instance_3mf(
                     "status": scrapling_result.status_code if scrapling_result else 200,
                     "state": failure.get("state"),
                 })
+                _scrapling_trace(
+                    "three_mf.fetch_api",
+                    scrapling_result,
+                    url=candidate,
+                    state=str(failure.get("state") or "missing"),
+                    used=False,
+                    fallback="next_candidate",
+                    level="warning",
+                    instance_id=inst_id,
+                )
                 if _should_stop_three_mf_fetch(failure):
                     log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
                     return "", "", candidate, last_failure
                 continue
+            if scrapling_result is not None:
+                _scrapling_trace(
+                    "three_mf.fetch_api",
+                    scrapling_result,
+                    url=candidate,
+                    state="failed",
+                    used=False,
+                    fallback="requests",
+                    level="warning",
+                    instance_id=inst_id,
+                )
             r = session.get(
                 candidate,
                 timeout=30,

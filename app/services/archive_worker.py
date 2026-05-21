@@ -100,6 +100,12 @@ def _task_key(url: str) -> str:
     return normalize_source_url(url)
 
 
+def _source_item_url(item: Any) -> str:
+    if isinstance(item, dict):
+        return normalize_source_url(str(item.get("url") or ""))
+    return normalize_source_url(str(item or ""))
+
+
 def _resolve_archive_result_model_dir(result: dict[str, Any]) -> str:
     work_dir = str(result.get("work_dir") or "").strip()
     if not work_dir:
@@ -665,7 +671,7 @@ class ArchiveTaskManager:
             "created_at": time.time(),
             "url": clean_url,
             "mode": mode,
-            "discovered_items": list(discovered.get("items") or []),
+            "discovered_items": [_source_item_url(item) for item in discovered.get("items") or [] if _source_item_url(item)],
             "expected_total": discovered.get("expected_total"),
             "pages_scanned": discovered.get("pages_scanned"),
             "scan_mode": discovered.get("mode") or "",
@@ -1200,7 +1206,7 @@ class ArchiveTaskManager:
             discovered = run_discover_batch_urls_job(clean_url, cookie, proxy_config=config.proxy)
             discovered["source_name"] = resolve_batch_source_name(clean_url, cookie)
 
-        discovered_items = list(discovered.get("items") or [])
+        discovered_items = [_source_item_url(item) for item in discovered.get("items") or [] if _source_item_url(item)]
         discovered_count = len(discovered_items)
         if discovered_count <= 0:
             _log_archive("batch_preview_empty", "批量预扫描没有发现可归档模型。", level="warning", url=clean_url, mode=mode)
@@ -1358,7 +1364,7 @@ class ArchiveTaskManager:
                 "url": clean_url,
             }
 
-        normalized_items = [normalize_source_url(item) for item in discovered_items or [] if normalize_source_url(item)]
+        normalized_items = [_source_item_url(item) for item in discovered_items or [] if _source_item_url(item)]
         if not normalized_items:
             _log_archive("discovered_batch_empty", "订阅同步没有新增模型需要入队。", url=clean_url, mode=clean_mode)
             return {
@@ -1546,7 +1552,7 @@ class ArchiveTaskManager:
         skipped_pending = 0
         skipped_archived = 0
         expected_items: list[dict[str, Any]] = []
-        discovered_items = discovered.get("items") or []
+        discovered_items = [_source_item_url(item) for item in discovered.get("items") or [] if _source_item_url(item)]
         total_items = len(discovered_items)
 
         if total_items:

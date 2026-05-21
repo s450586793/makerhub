@@ -2,9 +2,10 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from app.core.store import JsonStore
-from app.schemas.models import SubscriptionRecord
+from app.schemas.models import CookiePair, SubscriptionRecord
 from app.services import subscriptions
 from app.services.subscriptions import SubscriptionManager
 import app.services.task_state as task_state_module
@@ -12,13 +13,17 @@ from app.services.task_state import TaskStateStore
 
 
 class ArchiveManagerStub:
+    def __init__(self):
+        self.submitted_batches = []
+
     def _queued_task_keys(self):
         return set()
 
     def _archived_task_keys(self):
         return set()
 
-    def submit_discovered_batch(self, **_kwargs):
+    def submit_discovered_batch(self, **kwargs):
+        self.submitted_batches.append(kwargs)
         return {"accepted": True, "queued_count": 0}
 
 
@@ -44,10 +49,12 @@ class SubscriptionManagerTest(unittest.TestCase):
                 enabled=True,
             )
         ]
+        config.cookies = []
         self.store.save(config)
         self.task_store = TaskStateStore()
+        self.archive_manager = ArchiveManagerStub()
         self.manager = SubscriptionManager(
-            ArchiveManagerStub(),
+            self.archive_manager,
             store=self.store,
             task_store=self.task_store,
             background_enabled=False,
@@ -203,6 +210,178 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertFalse(states["sub-2"]["manual_requested_at"])
         self.assertFalse(states["sub-3"]["manual_requested_at"])
         self.assertFalse(states["sub-4"]["manual_requested_at"])
+
+    def test_collection_sync_rejects_obvious_partial_scan_and_preserves_history(self):
+        tracked_items = [
+            {
+                "task_key": f"model:{index}",
+                "model_id": str(index),
+                "url": f"https://makerworld.com.cn/zh/models/{index}",
+            }
+            for index in range(100)
+        ]
+        self.task_store.patch_subscription_state(
+            "sub-1",
+            status="success",
+            running=False,
+            tracked_items=tracked_items,
+            current_items=tracked_items,
+            last_deleted_count=0,
+        )
+        self.manager._discover_subscription_items = lambda _subscription: {
+            "items": [
+                f"https://makerworld.com.cn/zh/models/{index}"
+                for index in range(10)
+            ],
+            "expected_total": 100,
+        }
+
+        self.manager._sync_subscription("sub-1")
+
+        state = self._subscription_state()
+        self.assertFalse(state["running"])
+        self.assertEqual(state["status"], "error")
+        self.assertIn("订阅扫描结果异常", state["last_message"])
+        self.assertEqual(state["last_discovered_count"], 10)
+        self.assertEqual(state["last_deleted_count"], 0)
+        self.assertEqual(len(state["current_items"]), 100)
+        self.assertEqual(len(state["tracked_items"]), 100)
+        self.assertEqual(self.archive_manager.submitted_batches, [])
+
+    def test_collection_sync_rejects_when_discovered_count_misses_source_total(self):
+        self.task_store.patch_subscription_state(
+            "sub-1",
+            status="idle",
+            running=False,
+            tracked_items=[],
+            current_items=[],
+            last_deleted_count=0,
+        )
+        self.manager._discover_subscription_items = lambda _subscription: {
+            "items": [
+                f"https://makerworld.com.cn/zh/models/{index}"
+                for index in range(43)
+            ],
+            "expected_total": 308,
+            "expected_total_source": "collection_page_all_models",
+            "strict_expected_total": True,
+        }
+
+        self.manager._sync_subscription("sub-1")
+
+        state = self._subscription_state()
+        self.assertFalse(state["running"])
+        self.assertEqual(state["status"], "error")
+        self.assertIn("源端显示 308 个模型，本次仅扫描到 43 个", state["last_message"])
+        self.assertEqual(state["last_discovered_count"], 43)
+        self.assertEqual(state["last_deleted_count"], 0)
+        self.assertEqual(len(state["current_items"]), 43)
+        self.assertEqual(len(state["tracked_items"]), 43)
+        self.assertEqual(self.archive_manager.submitted_batches, [])
+
+    def test_author_sync_rejects_when_discovered_count_misses_source_total(self):
+        config = self.store.load()
+        config.subscriptions = [
+            SubscriptionRecord(
+                id="sub-author",
+                name="作者订阅",
+                url="https://makerworld.com.cn/zh/@ace/upload",
+                mode="author_upload",
+                cron="0 * * * *",
+                enabled=True,
+            )
+        ]
+        self.store.save(config)
+        self.task_store.patch_subscription_state(
+            "sub-author",
+            status="idle",
+            running=False,
+            tracked_items=[],
+            current_items=[],
+            last_deleted_count=0,
+        )
+        self.manager._discover_subscription_items = lambda _subscription: {
+            "items": [
+                f"https://makerworld.com.cn/zh/models/{index}"
+                for index in range(8)
+            ],
+            "expected_total": 20,
+            "expected_total_source": "author_upload_api_total",
+            "strict_expected_total": True,
+        }
+
+        self.manager._sync_subscription("sub-author")
+
+        state_items = self.task_store.load_subscriptions_state().get("items") or []
+        state = next(item for item in state_items if item["id"] == "sub-author")
+        self.assertFalse(state["running"])
+        self.assertEqual(state["status"], "error")
+        self.assertIn("源端显示 20 个模型，本次仅扫描到 8 个", state["last_message"])
+        self.assertIn("作者页接口返回不完整", state["last_message"])
+        self.assertEqual(state["last_discovered_count"], 8)
+        self.assertEqual(state["last_deleted_count"], 0)
+        self.assertEqual(len(state["current_items"]), 8)
+        self.assertEqual(len(state["tracked_items"]), 8)
+        self.assertEqual(self.archive_manager.submitted_batches, [])
+
+    def test_sync_cookie_sources_imports_default_favorites_followed_authors_and_collections(self):
+        config = self.store.load()
+        config.cookies = [CookiePair(platform="cn", cookie="token=ok")]
+        config.subscriptions = []
+        self.store.save(config)
+
+        with patch.object(
+            subscriptions,
+            "discover_cookie_account_profile",
+            return_value={"uid": "2024907479", "handle": "s450586793", "name": "艾斯"},
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_followed_authors",
+            return_value={
+                "count": 1,
+                "items": [
+                    {
+                        "title": "Whitt Labs",
+                        "handle": "GLB_Whittlabs",
+                        "url": "https://makerworld.com.cn/zh/@GLB_Whittlabs/upload",
+                    }
+                ],
+            },
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_followed_collections",
+            return_value={
+                "count": 1,
+                "items": [
+                    {
+                        "title": "关注收藏夹",
+                        "url": "https://makerworld.com.cn/zh/collections/518732-test",
+                    }
+                ],
+            },
+        ), patch.object(
+            subscriptions,
+            "default_favorites_subscription_source",
+            return_value={
+                "title": "艾斯 所有模型收藏夹",
+                "url": "https://makerworld.com.cn/zh/@s450586793/collections/models",
+            },
+        ), patch.object(subscriptions, "_patch_cookie_source_sync_state"):
+            result = self.manager.sync_cookie_sources({"cn"}, reason="cookie_save")
+            second = self.manager.sync_cookie_sources({"cn"}, reason="cookie_save")
+
+        config = self.store.load()
+        urls = {item.url: item for item in config.subscriptions}
+        self.assertEqual(result["created_count"], 3)
+        self.assertEqual(second["created_count"], 0)
+        self.assertIn("https://makerworld.com.cn/zh/@s450586793/collections/models", urls)
+        self.assertIn("https://makerworld.com.cn/zh/@GLB_Whittlabs/upload", urls)
+        self.assertIn("https://makerworld.com.cn/zh/collections/518732-test", urls)
+        self.assertEqual(urls["https://makerworld.com.cn/zh/@GLB_Whittlabs/upload"].mode, "author_upload")
+        self.assertEqual(urls["https://makerworld.com.cn/zh/collections/518732-test"].mode, "collection_models")
+        states = self.task_store.load_subscriptions_state().get("items") or []
+        self.assertEqual(len(states), 3)
+        self.assertTrue(all(item["manual_requested_at"] for item in states))
 
 
 if __name__ == "__main__":

@@ -717,6 +717,34 @@ def _append_group_model(group: dict[str, Any], model: dict[str, Any]) -> None:
     group["model_dirs"].append(model_dir)
 
 
+def _sort_group_model_dirs_by_source_items(
+    model_dirs: list[str],
+    source_items: list[dict[str, Any]],
+    lookup: dict[str, dict],
+) -> list[str]:
+    if not model_dirs or not source_items:
+        return model_dirs
+    order_by_dir: dict[str, int] = {}
+    for index, child in enumerate(source_items):
+        if not isinstance(child, dict):
+            continue
+        task_key = _normalize_text(child.get("task_key"))
+        url_key = normalize_source_url(str(child.get("url") or ""))
+        matched = lookup.get(task_key) or lookup.get(url_key)
+        model_dir = str((matched or {}).get("model_dir") or "").strip()
+        if model_dir and model_dir not in order_by_dir:
+            order_by_dir[model_dir] = index
+    if not order_by_dir:
+        return model_dirs
+    return sorted(
+        model_dirs,
+        key=lambda model_dir: (
+            order_by_dir.get(str(model_dir or ""), len(order_by_dir) + len(model_dirs)),
+            str(model_dir or ""),
+        ),
+    )
+
+
 def _author_avatar_from_members(members: list[dict]) -> str:
     for model in members:
         author = model.get("author") if isinstance(model.get("author"), dict) else {}
@@ -960,6 +988,8 @@ def _group_subscription_sources(
             matched = lookup.get(task_key) or lookup.get(url_key)
             if matched:
                 _append_group_model(group, matched)
+        if mode == "collection_models":
+            group["model_dirs"] = _sort_group_model_dirs_by_source_items(group.get("model_dirs") or [], source_items, lookup)
         if mode == "author_upload":
             if not group.get("model_dirs"):
                 author_profile_url = _author_profile_url(source_url)
@@ -1251,6 +1281,7 @@ def _subset_models_payload(
     page: int = 1,
     page_size: int = 8,
     default_include_deleted: bool = False,
+    preserve_input_order: bool = False,
 ) -> dict[str, Any]:
     normalized_query = q.strip().lower()
     normalized_tag = tag.strip().lower()
@@ -1289,7 +1320,8 @@ def _subset_models_payload(
         else:
             selected = [item for item in selected if any(tag_value.lower() == normalized_tag for tag_value in item["tags"])]
 
-    selected = _sort_models(selected, sort_key)
+    if not (preserve_input_order and sort_key == "sourceOrder"):
+        selected = _sort_models(selected, sort_key)
     safe_page_size = max(1, min(int(page_size or 8), 120))
     safe_page = max(int(page or 1), 1)
     total_filtered = len(selected)
@@ -1341,16 +1373,23 @@ def build_source_group_models_payload(
         return None
     all_models_by_dir = {str(item.get("model_dir") or ""): item for item in all_models}
     members = [all_models_by_dir[item] for item in group.get("model_dirs") or [] if item in all_models_by_dir]
+    effective_sort_key = sort_key
+    preserve_input_order = False
+    if str(group.get("kind") or "") in {"favorite", "collection"} and sort_key == "collectDate":
+        effective_sort_key = "sourceOrder"
+        preserve_input_order = True
     payload = _subset_models_payload(
         members,
         q=q,
         source=source,
         tag=tag,
-        sort_key=sort_key,
+        sort_key=effective_sort_key,
         page=page,
         page_size=page_size,
         default_include_deleted=str(group.get("key") or "") == "local_deleted",
+        preserve_input_order=preserve_input_order,
     )
+    payload["filters"]["sort"] = sort_key
     payload["view"] = group
     return payload
 

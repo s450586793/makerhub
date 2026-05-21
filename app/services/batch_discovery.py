@@ -1,6 +1,7 @@
 import json
 import re
 import time
+from html import unescape
 from typing import Any, Optional
 from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlparse, urlunparse
 
@@ -46,6 +47,13 @@ AUTHOR_BATCH_PAGE_LIMIT = 100
 COLLECTION_BATCH_PAGE_LIMIT = 20
 HTML_BATCH_PAGE_LIMIT = 20
 DISCOVERY_DEBUG_LOG = LOGS_DIR / "batch_discovery.log"
+COOKIE_SOURCE_PAGE_LIMIT = 100
+STRICT_EXPECTED_TOTAL_SOURCES = {
+    "author_upload_api_total",
+    "collection_page_all_models",
+    "collection_models_api_total",
+    "collection_detail_api_total",
+}
 
 
 def normalize_source_url(url: str) -> str:
@@ -332,6 +340,30 @@ def _extract_uid(payload: Any) -> str:
     return ""
 
 
+def _extract_node_uid(node: Any) -> str:
+    if not isinstance(node, dict):
+        return ""
+    for key in ("uid", "userId", "ownerUid", "creatorUid", "authorUid", "id"):
+        candidate = _coerce_numeric_string(node.get(key))
+        if candidate:
+            return candidate
+    return ""
+
+
+def _extract_node_handle(node: Any) -> str:
+    if not isinstance(node, dict):
+        return ""
+    for key in ("username", "userName", "slug", "handle", "userHandle", "user_handle", "creatorUsername"):
+        candidate = str(node.get(key) or "").strip().lstrip("@")
+        if candidate:
+            return candidate
+    for key in ("url", "homepage", "profileUrl", "authorUrl", "link", "href"):
+        candidate = _extract_handle_from_url(str(node.get(key) or ""))
+        if candidate:
+            return candidate
+    return ""
+
+
 def _looks_like_design_hit(node: Any) -> bool:
     if not isinstance(node, dict):
         return False
@@ -453,6 +485,113 @@ def _payload_debug_summary(payload: Any) -> list[dict[str, Any]]:
     return summaries
 
 
+def _safe_positive_int(value: Any) -> Optional[int]:
+    try:
+        if value in (None, ""):
+            return None
+        parsed = int(str(value).replace(",", "").strip())
+        return parsed if parsed > 0 else None
+    except Exception:
+        return None
+
+
+def _extract_collection_page_all_models_count_from_text(text: str) -> Optional[int]:
+    normalized = unescape(str(text or ""))
+    normalized = normalized.replace("\\/", "/").replace("\\u002F", "/")
+    normalized = re.sub(r"\s+", " ", normalized)
+    patterns = (
+        r"(?:所有模型|全部模型|All\s+models?)\s*[（(]\s*([0-9][0-9,]*)\s*[)）]",
+        r"(?:所有模型|全部模型|All\s+models?).{0,80}?[\"']?(?:count|total|designCount|designCnt)[\"']?\s*[:=]\s*([0-9][0-9,]*)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, normalized, flags=re.I)
+        if not match:
+            continue
+        parsed = _safe_positive_int(match.group(1))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _extract_collection_page_all_models_count_from_node(node: Any) -> Optional[int]:
+    if isinstance(node, dict):
+        label_values = [
+            str(node.get(key) or "").strip()
+            for key in ("label", "title", "name", "text", "tabName", "displayName")
+        ]
+        if any(re.fullmatch(r"(所有模型|全部模型|All\s+models?)", value, flags=re.I) for value in label_values if value):
+            for key in ("count", "total", "designCount", "designCnt", "modelCount", "modelsCount"):
+                parsed = _safe_positive_int(node.get(key))
+                if parsed is not None:
+                    return parsed
+        for value in node.values():
+            parsed = _extract_collection_page_all_models_count_from_node(value)
+            if parsed is not None:
+                return parsed
+    elif isinstance(node, list):
+        for item in node:
+            parsed = _extract_collection_page_all_models_count_from_node(item)
+            if parsed is not None:
+                return parsed
+    elif isinstance(node, str):
+        return _extract_collection_page_all_models_count_from_text(node)
+    return None
+
+
+def _extract_collection_page_all_models_count(html_text: str) -> Optional[int]:
+    if not html_text:
+        return None
+
+    parsed = _extract_collection_page_all_models_count_from_text(html_text)
+    if parsed is not None:
+        return parsed
+
+    try:
+        next_data = extract_next_data(str(html_text))
+    except Exception:
+        next_data = {}
+    parsed = _extract_collection_page_all_models_count_from_node(next_data)
+    if parsed is not None:
+        return parsed
+
+    try:
+        text = BeautifulSoup(str(html_text), "html.parser").get_text(" ", strip=True)
+    except Exception:
+        text = ""
+    return _extract_collection_page_all_models_count_from_text(text)
+
+
+def _fetch_collection_page_all_models_count(
+    session: requests.Session,
+    source_url: str,
+    raw_cookie: str,
+) -> Optional[int]:
+    try:
+        html_text = _fetch_listing_html(session, source_url, raw_cookie)
+    except Exception:
+        html_text = ""
+    count = _extract_collection_page_all_models_count(html_text)
+    if count is not None:
+        _append_discovery_debug(
+            "collection_page_total_detected",
+            source_url=source_url,
+            expected_total=count,
+            expected_total_source="collection_page_all_models",
+        )
+    return count
+
+
+def _apply_collection_page_expected_total(result: Optional[dict], expected_total: Optional[int]) -> Optional[dict]:
+    if result is None or expected_total is None or expected_total <= 0:
+        return result
+    previous_expected = result.get("expected_total")
+    result["reported_expected_total"] = previous_expected
+    result["expected_total"] = expected_total
+    result["expected_total_source"] = "collection_page_all_models"
+    result["strict_expected_total"] = True
+    return result
+
+
 def _extract_design_id_from_hit(hit: Any) -> str:
     if not isinstance(hit, dict):
         return ""
@@ -486,6 +625,77 @@ def _extract_model_urls_from_hits(payload: dict, base_url: str) -> list[str]:
             seen.add(url)
             found.append(url)
     return found
+
+
+def _extract_time_value(node: Any) -> str:
+    if not isinstance(node, dict):
+        return ""
+    for key in (
+        "favoritedAt",
+        "favoriteTime",
+        "favoritedTime",
+        "collectionTime",
+        "collectedAt",
+        "collectedTime",
+        "createTime",
+        "createdAt",
+        "updatedAt",
+    ):
+        value = node.get(key)
+        if value in (None, ""):
+            continue
+        return str(value).strip()
+    return ""
+
+
+def _extract_model_source_items_from_hits(payload: dict, base_url: str, start_order: int = 0) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    hits = payload.get("hits") or []
+    for hit in hits:
+        hit_urls: list[str] = []
+        hit_url_set: set[str] = set()
+        raw_url_set: set[str] = set()
+        _collect_model_urls_from_node(hit, raw_url_set, base_url)
+        design_id = _extract_design_id_from_hit(hit)
+        if design_id:
+            raw_url_set.add(normalize_model_url(f"/zh/models/{design_id}", fallback_base=base_url))
+        raw_urls = sorted(raw_url_set, key=lambda url: (0 if design_id and extract_model_id(url) == design_id else 1, url))
+        for url in raw_urls:
+            if not url or url in hit_url_set:
+                continue
+            hit_url_set.add(url)
+            hit_urls.append(url)
+        favorited_at = _extract_time_value(hit)
+        for url in hit_urls:
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            source_order = start_order + len(found)
+            model_id = extract_model_id(url)
+            item = {
+                "url": url,
+                "model_id": model_id,
+                "task_key": f"model:{model_id}" if model_id else url,
+                "source_order": source_order,
+                "source_position": source_order,
+            }
+            if favorited_at:
+                item["favorited_at"] = favorited_at
+            found.append(item)
+    return found
+
+
+def _source_items_to_urls(items: list[Any]) -> list[str]:
+    urls: list[str] = []
+    for item in items or []:
+        if isinstance(item, dict):
+            url = normalize_source_url(str(item.get("url") or ""))
+        else:
+            url = normalize_source_url(str(item or ""))
+        if url:
+            urls.append(url)
+    return urls
 
 
 def _author_published_param_candidates(offset: int, limit: int) -> list[dict[str, int]]:
@@ -538,7 +748,8 @@ def _fetch_author_hits_payload(
         if hits_payload is None:
             continue
 
-        page_links = _extract_model_urls_from_hits(hits_payload, source_url)
+        page_items = _extract_model_source_items_from_hits(hits_payload, source_url)
+        page_links = _source_items_to_urls(page_items)
         if first_payload is None:
             first_payload = payload
             first_hits_payload = hits_payload
@@ -795,6 +1006,497 @@ def _summarize_collection_next_data(next_data: Any, handle: str) -> list[dict[st
         if len(snapshots) >= 6:
             break
     return snapshots
+
+
+def _platform_source_url(platform: str) -> str:
+    return "https://makerworld.com/zh" if str(platform or "").strip().lower() == "global" else "https://makerworld.com.cn/zh"
+
+
+def _platform_origin(platform: str) -> str:
+    return "https://makerworld.com" if str(platform or "").strip().lower() == "global" else "https://makerworld.com.cn"
+
+
+def _makerworld_model_path_lang(platform: str) -> str:
+    return "en" if str(platform or "").strip().lower() == "global" else "zh"
+
+
+def _extract_account_profile(payload: Any) -> dict[str, str]:
+    best: dict[str, str] = {}
+    best_score = -1
+    for node in _iter_dicts(payload):
+        uid = _extract_node_uid(node)
+        handle = _extract_node_handle(node)
+        name = str(node.get("name") or node.get("nickname") or node.get("nickName") or node.get("displayName") or "").strip()
+        avatar = str(node.get("avatar") or node.get("avatarUrl") or node.get("avatar_url") or node.get("avatarImageUrl") or "").strip()
+        lowered_keys = {str(key).lower() for key in node.keys()}
+        profile_keys = {
+            "name",
+            "username",
+            "handle",
+            "userhandle",
+            "user_handle",
+            "nickname",
+            "displayname",
+            "avatar",
+            "avatarurl",
+            "avatar_url",
+        }
+        if not (handle or profile_keys & lowered_keys):
+            continue
+        score = 0
+        if uid:
+            score += 4
+        if handle:
+            score += 4
+        if name:
+            score += 2
+        if avatar:
+            score += 1
+        if profile_keys & lowered_keys:
+            score += 2
+        if score > best_score:
+            best_score = score
+            best = {
+                "uid": uid,
+                "handle": handle,
+                "name": name,
+                "avatar_url": avatar,
+            }
+    return best
+
+
+def discover_cookie_account_profile(platform: str, raw_cookie: str) -> dict[str, str]:
+    clean_platform = "global" if str(platform or "").strip().lower() == "global" else "cn"
+    source_url = _platform_source_url(clean_platform)
+    session = requests.Session()
+    session.headers.update({"User-Agent": BROWSER_USER_AGENT})
+    session.cookies.update(parse_cookies(raw_cookie))
+
+    candidates = [
+        ("user-service", "/my/profile"),
+        ("user-service", "/my"),
+        ("user-service", "/my/info"),
+        ("user-service", "/profile"),
+        ("design-user-service", "/my/profile"),
+        ("design-user-service", "/profile"),
+        ("design-user-service", "/my/preference"),
+        ("user-service", "/my/message/count"),
+    ]
+    for service_name, path in candidates:
+        payload = _api_get_json(
+            session,
+            source_url=source_url,
+            raw_cookie=raw_cookie,
+            service_name=service_name,
+            path=path,
+        )
+        if payload is None:
+            continue
+        profile = _extract_account_profile(payload)
+        _append_discovery_debug(
+            "cookie_account_probe",
+            platform=clean_platform,
+            service=service_name,
+            path=path,
+            has_uid=bool(profile.get("uid")),
+            has_handle=bool(profile.get("handle")),
+        )
+        if profile.get("uid") or profile.get("handle"):
+            profile["platform"] = clean_platform
+            return profile
+    return {"platform": clean_platform, "uid": "", "handle": "", "name": "", "avatar_url": ""}
+
+
+def _looks_like_author_follow_node(node: Any) -> bool:
+    if not isinstance(node, dict):
+        return False
+    if not _extract_node_handle(node):
+        return False
+    if any(key in node for key in ("designId", "modelId", "coverLandscape", "downloadCount", "printCount", "commentCount")):
+        return False
+    return any(
+        key in node
+        for key in (
+            "uid",
+            "userId",
+            "name",
+            "nickname",
+            "avatar",
+            "avatarUrl",
+            "fanCount",
+            "fansCount",
+            "followCount",
+            "followerCount",
+            "publicInstanceUploadCount",
+            "isFollowed",
+        )
+    )
+
+
+def _extract_followed_authors(payload: Any, platform: str) -> list[dict[str, str]]:
+    source_origin = _platform_origin(platform)
+    lang = _makerworld_model_path_lang(platform)
+    authors: list[dict[str, str]] = []
+    seen: set[str] = set()
+    candidate_nodes: list[dict[str, Any]] = []
+
+    for node in _iter_dicts(payload):
+        hits = node.get("hits")
+        if isinstance(hits, list):
+            candidate_nodes.extend(item for item in hits if isinstance(item, dict))
+        for key in ("items", "list", "records", "users", "data"):
+            values = node.get(key)
+            if isinstance(values, list):
+                candidate_nodes.extend(item for item in values if isinstance(item, dict))
+
+    if not candidate_nodes:
+        candidate_nodes = [node for node in _iter_dicts(payload) if isinstance(node, dict)]
+
+    for node in candidate_nodes:
+        if not _looks_like_author_follow_node(node):
+            continue
+        handle = _extract_node_handle(node)
+        if not handle:
+            continue
+        key = handle.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        title = str(node.get("name") or node.get("nickname") or node.get("nickName") or handle).strip() or handle
+        authors.append(
+            {
+                "title": title,
+                "handle": handle,
+                "uid": _extract_node_uid(node),
+                "url": f"{source_origin}/{lang}/@{quote(handle, safe='@._-')}/upload",
+            }
+        )
+    return authors
+
+
+def _followed_author_path_candidates(uid: str) -> list[str]:
+    clean_uid = _coerce_numeric_string(uid)
+    candidates = [
+        "/my/following",
+        "/my/follows",
+        "/following",
+        "/followings",
+        "/user/following",
+        "/user/followings",
+        "/follow/following",
+        "/relation/following",
+    ]
+    if clean_uid:
+        candidates.extend(
+            [
+                f"/following/{clean_uid}",
+                f"/followings/{clean_uid}",
+                f"/user/{clean_uid}/following",
+                f"/user/{clean_uid}/followings",
+                f"/follow/{clean_uid}/following",
+                f"/relation/{clean_uid}/following",
+            ]
+        )
+    seen: set[str] = set()
+    result: list[str] = []
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        result.append(path)
+    return result
+
+
+def _followed_author_param_candidates(uid: str, offset: int, limit: int) -> list[dict[str, Any]]:
+    clean_uid = _coerce_numeric_string(uid)
+    page = max((offset // max(limit, 1)) + 1, 1)
+    bases = [
+        {},
+        {"offset": offset, "limit": limit},
+        {"page": page, "limit": limit},
+        {"pageNum": page, "limit": limit},
+        {"pageNo": page, "limit": limit},
+        {"current": page, "size": limit},
+    ]
+    candidates: list[dict[str, Any]] = []
+    for base in bases:
+        candidates.append(dict(base))
+        if clean_uid:
+            for key in ("uid", "userId", "followUid"):
+                payload = dict(base)
+                payload[key] = clean_uid
+                candidates.append(payload)
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[tuple[str, Any], ...]] = set()
+    for candidate in candidates:
+        key = tuple(sorted(candidate.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
+
+
+def discover_cookie_followed_authors(
+    platform: str,
+    raw_cookie: str,
+    *,
+    uid: str = "",
+    max_pages: int = 8,
+    limit: int = COOKIE_SOURCE_PAGE_LIMIT,
+) -> dict[str, Any]:
+    clean_platform = "global" if str(platform or "").strip().lower() == "global" else "cn"
+    source_url = _platform_source_url(clean_platform)
+    session = requests.Session()
+    session.headers.update({"User-Agent": BROWSER_USER_AGENT})
+    session.cookies.update(parse_cookies(raw_cookie))
+    discovered: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    pages_scanned = 0
+    selected_path = ""
+
+    for path in _followed_author_path_candidates(uid):
+        offset = 0
+        path_discovered: list[dict[str, str]] = []
+        for _ in range(max_pages):
+            payload = None
+            authors: list[dict[str, str]] = []
+            for params in _followed_author_param_candidates(uid, offset, limit):
+                payload = _api_get_json(
+                    session,
+                    source_url=source_url,
+                    raw_cookie=raw_cookie,
+                    service_name="user-service",
+                    path=path,
+                    params=params or None,
+                )
+                if payload is None:
+                    continue
+                authors = _extract_followed_authors(payload, clean_platform)
+                _append_discovery_debug(
+                    "cookie_followed_authors_probe",
+                    platform=clean_platform,
+                    path=path,
+                    params=params,
+                    authors=len(authors),
+                )
+                if authors:
+                    selected_path = path
+                    break
+            if payload is None or not authors:
+                break
+            pages_scanned += 1
+            new_count = 0
+            for author in authors:
+                url = normalize_source_url(str(author.get("url") or ""))
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                path_discovered.append({**author, "url": url})
+                new_count += 1
+            hits_payload = _extract_hits_payload(payload) or payload
+            has_next = _extract_has_next(hits_payload) if isinstance(hits_payload, dict) else None
+            total = _extract_total_count(hits_payload, len(authors)) if isinstance(hits_payload, dict) else len(authors)
+            if has_next is False:
+                break
+            if total is not None and len(path_discovered) >= total:
+                break
+            if new_count == 0 and offset > 0:
+                break
+            if len(authors) < limit and has_next is not True:
+                break
+            offset += max(len(authors), 1)
+        if path_discovered:
+            discovered.extend(path_discovered)
+            break
+
+    return {
+        "platform": clean_platform,
+        "items": discovered,
+        "count": len(discovered),
+        "pages_scanned": pages_scanned,
+        "path": selected_path,
+    }
+
+
+def _collection_detail_url_from_entry(entry: dict[str, Any], platform: str) -> str:
+    for key in ("url", "link", "href", "collectionUrl", "favoriteUrl"):
+        candidate = str(entry.get(key) or "").strip()
+        if candidate:
+            parsed_url = urljoin(_platform_origin(platform), candidate)
+            if COLLECTION_DETAIL_RE.search(urlparse(parsed_url).path or ""):
+                return normalize_source_url(parsed_url)
+    collection_id = str(entry.get("id") or entry.get("collectionId") or entry.get("favoriteId") or "").strip()
+    if not collection_id:
+        return ""
+    slug = str(entry.get("slug") or entry.get("name") or entry.get("title") or "").strip()
+    suffix = f"-{quote(slug, safe='')}" if slug else ""
+    return f"{_platform_origin(platform)}/{_makerworld_model_path_lang(platform)}/collections/{collection_id}{suffix}"
+
+
+def _extract_followed_collections(payload: Any, platform: str) -> list[dict[str, Any]]:
+    collections: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    candidate_nodes: list[dict[str, Any]] = []
+    for node in _iter_dicts(payload):
+        hits = node.get("hits")
+        if isinstance(hits, list):
+            candidate_nodes.extend(item for item in hits if isinstance(item, dict))
+        for key in ("items", "list", "records", "collections", "favorites", "data"):
+            values = node.get(key)
+            if isinstance(values, list):
+                candidate_nodes.extend(item for item in values if isinstance(item, dict))
+    if not candidate_nodes:
+        candidate_nodes = [node for node in _iter_dicts(payload) if isinstance(node, dict)]
+
+    for node in candidate_nodes:
+        if not _looks_like_collection_entry(node, ""):
+            continue
+        url = _collection_detail_url_from_entry(node, platform)
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        title = str(node.get("name") or node.get("title") or "关注收藏夹").strip() or "关注收藏夹"
+        collections.append(
+            {
+                "title": title,
+                "id": _extract_collection_entry_id(node),
+                "url": url,
+                "count": _extract_collection_entry_count(node),
+            }
+        )
+    return collections
+
+
+def _followed_collection_path_candidates(uid: str) -> list[str]:
+    clean_uid = _coerce_numeric_string(uid)
+    candidates = [
+        "/favorites/following",
+        "/favorites/followed",
+        "/favorites/v2/following",
+        "/favorites/v2/followed",
+        "/favoriteslist/following",
+        "/collection/following",
+        "/collection/followed",
+        "/collections/following",
+        "/collections/followed",
+    ]
+    if clean_uid:
+        candidates.extend(
+            [
+                f"/favorites/following/{clean_uid}",
+                f"/favorites/followed/{clean_uid}",
+                f"/favorites/v2/following/{clean_uid}",
+                f"/favorites/v2/followed/{clean_uid}",
+                f"/collection/following/{clean_uid}",
+                f"/collections/following/{clean_uid}",
+            ]
+        )
+    seen: set[str] = set()
+    result: list[str] = []
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        result.append(path)
+    return result
+
+
+def discover_cookie_followed_collections(
+    platform: str,
+    raw_cookie: str,
+    *,
+    uid: str = "",
+    max_pages: int = 6,
+    limit: int = COOKIE_SOURCE_PAGE_LIMIT,
+) -> dict[str, Any]:
+    clean_platform = "global" if str(platform or "").strip().lower() == "global" else "cn"
+    source_url = _platform_source_url(clean_platform)
+    session = requests.Session()
+    session.headers.update({"User-Agent": BROWSER_USER_AGENT})
+    session.cookies.update(parse_cookies(raw_cookie))
+    discovered: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    pages_scanned = 0
+    selected_path = ""
+
+    for path in _followed_collection_path_candidates(uid):
+        offset = 0
+        path_discovered: list[dict[str, Any]] = []
+        for _ in range(max_pages):
+            payload = None
+            collections: list[dict[str, Any]] = []
+            for params in _followed_author_param_candidates(uid, offset, limit):
+                payload = _api_get_json(
+                    session,
+                    source_url=source_url,
+                    raw_cookie=raw_cookie,
+                    service_name="design-service",
+                    path=path,
+                    params=params or None,
+                )
+                if payload is None:
+                    continue
+                collections = _extract_followed_collections(payload, clean_platform)
+                _append_discovery_debug(
+                    "cookie_followed_collections_probe",
+                    platform=clean_platform,
+                    path=path,
+                    params=params,
+                    collections=len(collections),
+                )
+                if collections:
+                    selected_path = path
+                    break
+            if payload is None or not collections:
+                break
+            pages_scanned += 1
+            new_count = 0
+            for collection in collections:
+                url = normalize_source_url(str(collection.get("url") or ""))
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                path_discovered.append({**collection, "url": url})
+                new_count += 1
+            hits_payload = _extract_hits_payload(payload) or payload
+            has_next = _extract_has_next(hits_payload) if isinstance(hits_payload, dict) else None
+            total = _extract_total_count(hits_payload, len(collections)) if isinstance(hits_payload, dict) else len(collections)
+            if has_next is False:
+                break
+            if total is not None and len(path_discovered) >= total:
+                break
+            if new_count == 0 and offset > 0:
+                break
+            if len(collections) < limit and has_next is not True:
+                break
+            offset += max(len(collections), 1)
+        if path_discovered:
+            discovered.extend(path_discovered)
+            break
+
+    return {
+        "platform": clean_platform,
+        "items": discovered,
+        "count": len(discovered),
+        "pages_scanned": pages_scanned,
+        "path": selected_path,
+    }
+
+
+def default_favorites_subscription_source(platform: str, profile: dict[str, str]) -> dict[str, str]:
+    clean_platform = "global" if str(platform or "").strip().lower() == "global" else "cn"
+    handle = str(profile.get("handle") or "").strip().lstrip("@")
+    if not handle:
+        return {}
+    origin = _platform_origin(clean_platform)
+    lang = _makerworld_model_path_lang(clean_platform)
+    title_name = str(profile.get("name") or handle).strip() or handle
+    return {
+        "title": f"{title_name} 所有模型收藏夹",
+        "handle": handle,
+        "url": f"{origin}/{lang}/@{quote(handle, safe='@._-')}/collections/models",
+    }
 
 
 def _resolve_uid_by_handle_api(
@@ -1070,7 +1772,7 @@ def _discover_author_upload_api(
 
     _append_discovery_debug("author_discovery_start", source_url=source_url, handle=handle, uid=uid)
 
-    discovered: list[str] = []
+    discovered: list[dict[str, Any]] = []
     seen: set[str] = set()
     pages_scanned = 0
     offset = 0
@@ -1137,6 +1839,8 @@ def _discover_author_upload_api(
         "items": discovered,
         "mode": "author_upload_api",
         "expected_total": expected_total,
+        "expected_total_source": "author_upload_api_total" if expected_total else "",
+        "strict_expected_total": bool(expected_total),
     }
 
 
@@ -1260,42 +1964,87 @@ def _extract_collection_entry_id(node: Any) -> str:
     return ""
 
 
+def _extract_collection_entry_count(node: dict) -> Optional[int]:
+    for key in ("designCount", "designCnt", "modelCount", "modelsCount"):
+        try:
+            value = node.get(key)
+            if value in (None, ""):
+                continue
+            return max(int(value), 0)
+        except Exception:
+            continue
+    designs = node.get("designs")
+    if isinstance(designs, list) and designs:
+        return len(designs)
+    return None
+
+
+def _looks_like_collection_entry(node: Any, owner_uid: str) -> bool:
+    if not isinstance(node, dict):
+        return False
+    collection_id = _extract_collection_entry_id(node)
+    if not collection_id or collection_id == owner_uid:
+        return False
+    if node.get("designId") or node.get("modelId"):
+        return False
+    if any(
+        key in node
+        for key in (
+            "downloadCount",
+            "printCount",
+            "commentCount",
+            "collectionCount",
+            "coverLandscape",
+            "boostCnt",
+            "bomsNeeded",
+        )
+    ):
+        return False
+    return any(
+        key in node
+        for key in (
+            "designCount",
+            "designCnt",
+            "modelCount",
+            "modelsCount",
+            "collectionType",
+            "privacy",
+            "isDefault",
+            "isPublic",
+            "hiddenCnt",
+            "hiddenIds",
+            "designCover",
+            "inCollection",
+        )
+    )
+
+
 def _extract_collection_entries(payload: Any, owner_uid: str) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
+    candidate_nodes: list[dict[str, Any]] = []
 
     for node in _iter_dicts(payload):
-        collection_id = _extract_collection_entry_id(node)
-        if not collection_id or collection_id == owner_uid or collection_id in seen:
+        hits = node.get("hits")
+        if not isinstance(hits, list):
             continue
-        if any(
-            key in node
-            for key in ("downloadCount", "printCount", "commentCount", "likeCount", "coverUrl", "designCreator", "user")
-        ):
-            continue
-        if not any(
-            key in node
-            for key in (
-                "designCount",
-                "designCnt",
-                "modelCount",
-                "modelsCount",
-                "collectionType",
-                "privacy",
-                "isDefault",
-                "isPublic",
-                "name",
-                "title",
-            )
-        ):
-            continue
+        candidate_nodes.extend(hit for hit in hits if isinstance(hit, dict))
 
+    if not candidate_nodes:
+        candidate_nodes = [node for node in _iter_dicts(payload) if isinstance(node, dict)]
+
+    for node in candidate_nodes:
+        if not _looks_like_collection_entry(node, owner_uid):
+            continue
+        collection_id = _extract_collection_entry_id(node)
+        if collection_id in seen:
+            continue
         seen.add(collection_id)
         entries.append(
             {
                 "id": collection_id,
                 "name": str(node.get("name") or node.get("title") or "").strip(),
-                "count": _extract_total_count(node, -1),
+                "count": _extract_collection_entry_count(node),
             }
         )
     return entries
@@ -1353,7 +2102,7 @@ def _discover_collection_models_by_lists(
     if not entries:
         return None
 
-    discovered: list[str] = []
+    discovered: list[dict[str, Any]] = []
     seen_links: set[str] = set()
     pages_scanned = 0
     collections_scanned = 0
@@ -1398,6 +2147,7 @@ def _discover_collection_models_by_lists(
             payload = None
             hits_payload = None
             page_links: list[str] = []
+            page_items: list[dict[str, Any]] = []
 
             for params in _collection_designs_param_candidates(offset, limit, source_url, handle):
                 payload = _api_get_json(
@@ -1413,7 +2163,8 @@ def _discover_collection_models_by_lists(
                 hits_payload = _extract_hits_payload(payload)
                 if hits_payload is None:
                     continue
-                page_links = _extract_model_urls_from_hits(hits_payload, source_url)
+                page_items = _extract_model_source_items_from_hits(hits_payload, source_url, len(discovered))
+                page_links = _source_items_to_urls(page_items)
                 _append_discovery_debug(
                     "collection_list_page_probe",
                     collection_id=collection_id,
@@ -1433,11 +2184,12 @@ def _discover_collection_models_by_lists(
             pages_scanned += 1
             collection_pages_scanned += 1
             new_links = 0
-            for link in page_links:
+            for item in page_items:
+                link = str(item.get("url") or "")
                 if link in seen_links:
                     continue
                 seen_links.add(link)
-                discovered.append(link)
+                discovered.append(item)
                 new_links += 1
 
             total = _extract_total_count(hits_payload, len(hits))
@@ -1480,10 +2232,10 @@ def _fetch_collection_hits_payload(
     limit: int,
     seen_links: set[str],
     search_session_id: str,
-) -> tuple[Optional[dict], Optional[dict], list[str], str]:
+) -> tuple[Optional[dict], Optional[dict], list[dict[str, Any]], str]:
     first_payload: Optional[dict] = None
     first_hits_payload: Optional[dict] = None
-    first_page_links: list[str] = []
+    first_page_items: list[dict[str, Any]] = []
     first_path = ""
 
     for path in _collection_designs_path_candidates(uid):
@@ -1509,11 +2261,12 @@ def _fetch_collection_hits_payload(
             if hits_payload is None:
                 continue
 
-            page_links = _extract_model_urls_from_hits(hits_payload, source_url)
+            page_items = _extract_model_source_items_from_hits(hits_payload, source_url)
+            page_links = _source_items_to_urls(page_items)
             if first_payload is None:
                 first_payload = payload
                 first_hits_payload = hits_payload
-                first_page_links = page_links
+                first_page_items = page_items
                 first_path = path
 
             if offset <= 0 and page_links:
@@ -1526,7 +2279,7 @@ def _fetch_collection_hits_payload(
                     page_links=len(page_links),
                     new_links=len(page_links),
                 )
-                return payload, hits_payload, page_links, path
+                return payload, hits_payload, page_items, path
 
             new_links = [link for link in page_links if link not in seen_links]
             if new_links:
@@ -1539,7 +2292,7 @@ def _fetch_collection_hits_payload(
                     page_links=len(page_links),
                     new_links=len(new_links),
                 )
-                return payload, hits_payload, page_links, path
+                return payload, hits_payload, page_items, path
 
             _append_discovery_debug(
                 "collection_page_duplicate",
@@ -1550,7 +2303,7 @@ def _fetch_collection_hits_payload(
                 page_links=len(page_links),
             )
 
-    return first_payload, first_hits_payload, first_page_links, first_path
+    return first_payload, first_hits_payload, first_page_items, first_path
 
 
 def _discover_collection_models_api(
@@ -1570,7 +2323,7 @@ def _discover_collection_models_api(
 
     _append_discovery_debug("collection_discovery_start", source_url=source_url, handle=handle, uid=uid)
 
-    discovered: list[str] = []
+    discovered: list[dict[str, Any]] = []
     seen: set[str] = set()
     pages_scanned = 0
     offset = 0
@@ -1580,7 +2333,7 @@ def _discover_collection_models_api(
     search_session_id = ""
 
     while pages_scanned < page_budget:
-        payload, hits_payload, page_links, selected_path = _fetch_collection_hits_payload(
+        payload, hits_payload, page_items, selected_path = _fetch_collection_hits_payload(
             session,
             source_url=source_url,
             raw_cookie=raw_cookie,
@@ -1621,11 +2374,14 @@ def _discover_collection_models_api(
             page_budget = min(max(page_budget, estimated_pages), 120)
 
         new_link_count = 0
-        for link in page_links:
+        for item in page_items:
+            item["source_order"] = len(discovered)
+            item["source_position"] = item["source_order"]
+            link = str(item.get("url") or "")
             if link in seen:
                 continue
             seen.add(link)
-            discovered.append(link)
+            discovered.append(item)
             new_link_count += 1
 
         if not hits:
@@ -1662,6 +2418,8 @@ def _discover_collection_models_api(
         "mode": "collection_models_api",
         "path": selected_path,
         "expected_total": expected_total,
+        "expected_total_source": "collection_models_api_total" if expected_total else "",
+        "strict_expected_total": bool(expected_total),
     }
 
 
@@ -1674,10 +2432,10 @@ def _fetch_collection_detail_hits_payload(
     limit: int,
     seen_links: set[str],
     search_session_id: str,
-) -> tuple[Optional[dict], Optional[dict], list[str], str]:
+) -> tuple[Optional[dict], Optional[dict], list[dict[str, Any]], str]:
     first_payload: Optional[dict] = None
     first_hits_payload: Optional[dict] = None
-    first_page_links: list[str] = []
+    first_page_items: list[dict[str, Any]] = []
     path = f"/favorites/{collection_id}/designs"
 
     for params in _collection_designs_param_candidates(
@@ -1702,11 +2460,12 @@ def _fetch_collection_detail_hits_payload(
         if hits_payload is None:
             continue
 
-        page_links = _extract_model_urls_from_hits(hits_payload, source_url)
+        page_items = _extract_model_source_items_from_hits(hits_payload, source_url)
+        page_links = _source_items_to_urls(page_items)
         if first_payload is None:
             first_payload = payload
             first_hits_payload = hits_payload
-            first_page_links = page_links
+            first_page_items = page_items
 
         if offset <= 0 and page_links:
             _append_discovery_debug(
@@ -1718,7 +2477,7 @@ def _fetch_collection_detail_hits_payload(
                 page_links=len(page_links),
                 new_links=len(page_links),
             )
-            return payload, hits_payload, page_links, path
+            return payload, hits_payload, page_items, path
 
         new_links = [link for link in page_links if link not in seen_links]
         if new_links:
@@ -1731,7 +2490,7 @@ def _fetch_collection_detail_hits_payload(
                 page_links=len(page_links),
                 new_links=len(new_links),
             )
-            return payload, hits_payload, page_links, path
+            return payload, hits_payload, page_items, path
 
         _append_discovery_debug(
             "collection_detail_page_duplicate",
@@ -1742,7 +2501,7 @@ def _fetch_collection_detail_hits_payload(
             page_links=len(page_links),
         )
 
-    return first_payload, first_hits_payload, first_page_links, path
+    return first_payload, first_hits_payload, first_page_items, path
 
 
 def _discover_collection_detail_models_api(
@@ -1758,7 +2517,7 @@ def _discover_collection_detail_models_api(
 
     _append_discovery_debug("collection_detail_discovery_start", source_url=source_url, collection_id=collection_id)
 
-    discovered: list[str] = []
+    discovered: list[dict[str, Any]] = []
     seen: set[str] = set()
     pages_scanned = 0
     offset = 0
@@ -1768,7 +2527,7 @@ def _discover_collection_detail_models_api(
     selected_path = ""
 
     while pages_scanned < page_budget:
-        payload, hits_payload, page_links, selected_path = _fetch_collection_detail_hits_payload(
+        payload, hits_payload, page_items, selected_path = _fetch_collection_detail_hits_payload(
             session,
             source_url=source_url,
             raw_cookie=raw_cookie,
@@ -1810,11 +2569,14 @@ def _discover_collection_detail_models_api(
             page_budget = min(max(page_budget, estimated_pages), 120)
 
         new_link_count = 0
-        for link in page_links:
+        for item in page_items:
+            item["source_order"] = len(discovered)
+            item["source_position"] = item["source_order"]
+            link = str(item.get("url") or "")
             if link in seen:
                 continue
             seen.add(link)
-            discovered.append(link)
+            discovered.append(item)
             new_link_count += 1
 
         if not hits:
@@ -1850,6 +2612,8 @@ def _discover_collection_detail_models_api(
         "mode": "collection_detail_api",
         "path": selected_path,
         "expected_total": expected_total,
+        "expected_total_source": "collection_detail_api_total" if expected_total else "",
+        "strict_expected_total": bool(expected_total),
         "collection_id": collection_id,
     }
 
@@ -2079,6 +2843,10 @@ def discover_batch_model_urls(url: str, raw_cookie: str, max_pages: int = 12) ->
     session.cookies.update(parse_cookies(raw_cookie))
 
     if _is_collection_models_url(source_url):
+        page_expected_total = None
+        if not _is_collection_detail_url(source_url):
+            page_expected_total = _fetch_collection_page_all_models_count(session, source_url, raw_cookie)
+
         if _is_collection_detail_url(source_url):
             detail_result = _discover_collection_detail_models_api(
                 session=session,
@@ -2096,7 +2864,7 @@ def discover_batch_model_urls(url: str, raw_cookie: str, max_pages: int = 12) ->
             max_pages=max_pages,
         )
         if api_result is not None:
-            return api_result
+            return _apply_collection_page_expected_total(api_result, page_expected_total) or api_result
 
         handle = _extract_collection_handle(source_url)
         owner_uid = _resolve_collection_owner_uid(session, source_url, raw_cookie, handle) if handle else ""
@@ -2110,7 +2878,7 @@ def discover_batch_model_urls(url: str, raw_cookie: str, max_pages: int = 12) ->
                 max_pages=max_pages,
             )
             if list_result is not None:
-                return list_result
+                return _apply_collection_page_expected_total(list_result, page_expected_total) or list_result
 
     if AUTHOR_UPLOAD_RE.search(urlparse(source_url).path or ""):
         api_result = _discover_author_upload_api(

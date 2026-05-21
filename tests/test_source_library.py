@@ -201,6 +201,33 @@ class SourceLibraryTest(unittest.TestCase):
         self.assertEqual(len(payload["items"]), 3)
         self.assertEqual({item["model_dir"] for item in payload["items"]}, {"local-1", "local-2", "local-3"})
 
+    def test_favorite_source_group_preserves_subscription_source_order_by_default(self):
+        groups = {
+            "favorite-cn-test": {
+                "key": "favorite-cn-test",
+                "kind": "favorite",
+                "route_kind": "source",
+                "model_dirs": ["newer-favorite", "older-favorite"],
+            }
+        }
+        newer = _model("newer-favorite", source="cn")
+        newer["local_flags"]["deleted"] = False
+        newer["collect_ts"] = 1
+        older = _model("older-favorite", source="cn")
+        older["local_flags"]["deleted"] = False
+        older["collect_ts"] = 999
+
+        with patch("app.services.source_library._group_models", return_value=(groups, [newer, older], [])):
+            payload = build_source_group_models_payload(
+                "favorite",
+                "favorite-cn-test",
+                sort_key="collectDate",
+            )
+
+        self.assertIsNotNone(payload)
+        self.assertEqual([item["model_dir"] for item in payload["items"]], ["newer-favorite", "older-favorite"])
+        self.assertEqual(payload["filters"]["sort"], "collectDate")
+
     def test_group_models_reuses_cached_payload_for_same_signature(self):
         _SOURCE_LIBRARY_GROUP_CACHE.update({"signature": None, "groups": {}, "all_models": (), "sections": ()})
         local_model = _model("local-1", source="local")
