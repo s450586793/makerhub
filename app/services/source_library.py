@@ -777,7 +777,7 @@ def _finalize_group(group: dict[str, Any], models_by_dir: dict[str, dict], metad
     group["verified"] = bool(metadata.get("verified") or group.get("verified"))
     group["followers_count"] = _safe_int(metadata.get("followers_count") or group.get("followers_count"))
     group["likes_count"] = _safe_int(metadata.get("likes_count") or group.get("likes_count"))
-    group["remote_model_count"] = _safe_int(metadata.get("remote_model_count") or group.get("remote_model_count"))
+    group["remote_model_count"] = _safe_int(group.get("remote_model_count") or metadata.get("remote_model_count"))
     if metadata.get("description"):
         group["description"] = metadata["description"]
     local_model_count = len(group.get("model_dirs") or [])

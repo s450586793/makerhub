@@ -12,6 +12,7 @@ from app.services.source_library import (
     _base_group,
     _finalize_group,
     _group_models,
+    _source_key,
     _render_source_preview_snapshot,
     _source_preview_snapshot_signature,
     build_source_group_models_payload,
@@ -292,6 +293,67 @@ class SourceLibraryTest(unittest.TestCase):
         self.assertEqual(group["local_model_count"], 17)
         self.assertEqual(group["model_count"], 17)
         self.assertEqual(groups[group["key"]]["model_count"], 17)
+
+    def test_subscription_source_count_overrides_stale_metadata_count(self):
+        subscription = SubscriptionRecord(
+            id="sub-favorite",
+            name="艾斯收藏夹",
+            url="https://makerworld.com.cn/zh/@s450586793/collections/models",
+            mode="collection_models",
+        )
+        config = type("ConfigStub", (), {"subscriptions": [subscription]})()
+        current_items = [
+            {
+                "task_key": f"model:{index}",
+                "model_id": str(index),
+                "url": f"https://makerworld.com.cn/zh/models/{index}",
+            }
+            for index in range(310)
+        ]
+        visible_models = []
+        for index in range(4):
+            model = _model(f"model-{index}", source="cn")
+            model["id"] = str(index)
+            model["origin_url"] = f"https://makerworld.com.cn/zh/models/{index}"
+            model["local_flags"]["deleted"] = False
+            visible_models.append(model)
+
+        task_store = type(
+            "TaskStoreStub",
+            (),
+            {
+                "load_subscriptions_state": lambda self: {
+                    "items": [
+                        {
+                            "id": "sub-favorite",
+                            "current_items": current_items,
+                            "tracked_items": current_items,
+                            "last_discovered_count": 310,
+                        }
+                    ]
+                }
+            },
+        )()
+        store = type("StoreStub", (), {"load": lambda self: config})()
+        source_key = _source_key("collection", "cn", subscription.url)
+
+        with patch("app.services.source_library._load_models", return_value=(visible_models, visible_models)), \
+                patch(
+                    "app.services.source_library.load_source_metadata_cache",
+                    return_value={"items": {source_key: {"remote_model_count": 302}}},
+                ), \
+                patch("app.services.source_library._group_cache_signature", return_value=("favorite-stale-metadata",)):
+            groups, _all_models, sections = _group_models(store=store, task_store=task_store)
+
+        group = next(
+            item
+            for section in sections
+            for item in section["items"]
+            if item.get("subscription_id") == "sub-favorite"
+        )
+        self.assertEqual(group["remote_model_count"], 310)
+        self.assertEqual(group["model_count"], 310)
+        self.assertEqual(groups[group["key"]]["model_count"], 310)
 
     def test_group_models_reuses_cached_payload_for_same_signature(self):
         _SOURCE_LIBRARY_GROUP_CACHE.update({"signature": None, "groups": {}, "all_models": (), "sections": ()})

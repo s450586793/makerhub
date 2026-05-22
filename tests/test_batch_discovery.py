@@ -516,6 +516,100 @@ class BatchDiscoveryTest(unittest.TestCase):
         self.assertEqual(result["expected_total_source"], "collection_page_all_models")
         self.assertTrue(result["strict_expected_total"])
 
+    def test_collection_fallback_prefers_result_closest_to_page_total(self):
+        complete_items = [
+            {"url": f"https://makerworld.com/zh/models/{index}", "source_order": index}
+            for index in range(18)
+        ]
+        overbroad_items = [
+            {"url": f"https://makerworld.com/zh/models/{index}", "source_order": index}
+            for index in range(25)
+        ]
+
+        with patch.object(
+            batch_discovery,
+            "_discover_collection_models_api",
+            return_value={
+                "source_url": "https://makerworld.com/zh/@s450586793/collections/models",
+                "items": complete_items,
+                "mode": "collection_models_api",
+                "expected_total": 18,
+            },
+        ), patch.object(
+            batch_discovery,
+            "_resolve_collection_owner_uid",
+            return_value="2024907479",
+        ), patch.object(
+            batch_discovery,
+            "_discover_collection_models_by_lists",
+            return_value={
+                "source_url": "https://makerworld.com/zh/@s450586793/collections/models",
+                "items": overbroad_items,
+                "mode": "collection_models_lists",
+                "expected_total": 25,
+            },
+        ), patch.object(batch_discovery, "_discover_by_html") as html_fallback:
+            result = batch_discovery._discover_collection_with_fallbacks(
+                requests.Session(),
+                "https://makerworld.com/zh/@s450586793/collections/models",
+                "token=ok",
+                max_pages=2,
+                page_expected_total=18,
+            )
+
+        self.assertEqual(len(result["items"]), 18)
+        self.assertEqual(result["mode"], "collection_models_api")
+        self.assertEqual(result["expected_total"], 18)
+        html_fallback.assert_not_called()
+
+    def test_collection_fallback_retries_api_when_first_result_misses_page_total(self):
+        partial_items = [
+            {"url": f"https://makerworld.com/zh/models/{index}", "source_order": index}
+            for index in range(6)
+        ]
+        complete_items = [
+            {"url": f"https://makerworld.com/zh/models/{index}", "source_order": index}
+            for index in range(17)
+        ]
+        api_results = [
+            {
+                "source_url": "https://makerworld.com/zh/@s450586793/collections/models",
+                "items": partial_items,
+                "mode": "collection_models_api",
+                "expected_total": 6,
+            },
+            {
+                "source_url": "https://makerworld.com/zh/@s450586793/collections/models",
+                "items": complete_items,
+                "mode": "collection_models_api",
+                "expected_total": 17,
+            },
+        ]
+
+        with patch.object(
+            batch_discovery,
+            "_discover_collection_models_api",
+            side_effect=api_results,
+        ) as api_mock, patch.object(
+            batch_discovery,
+            "_resolve_collection_owner_uid",
+            return_value="2024907479",
+        ), patch.object(batch_discovery, "_discover_collection_models_by_lists") as list_fallback, \
+                patch.object(batch_discovery, "_discover_by_html") as html_fallback:
+            result = batch_discovery._discover_collection_with_fallbacks(
+                requests.Session(),
+                "https://makerworld.com/zh/@s450586793/collections/models",
+                "token=ok",
+                max_pages=2,
+                page_expected_total=17,
+            )
+
+        self.assertEqual(api_mock.call_count, 2)
+        self.assertEqual(len(result["items"]), 17)
+        self.assertEqual(result["mode"], "collection_models_api")
+        list_fallback.assert_not_called()
+        html_fallback.assert_not_called()
+
     def test_collection_fallback_uses_candidate_expected_total_when_page_total_missing(self):
         partial_items = [
             {"url": f"https://makerworld.com/zh/models/{index}", "source_order": index}

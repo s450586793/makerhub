@@ -3030,13 +3030,28 @@ def _discovery_is_complete(result: Optional[dict], expected_total: Optional[int]
     return _discovery_item_count(result) >= expected
 
 
-def _better_discovery_result(current: Optional[dict], candidate: Optional[dict]) -> Optional[dict]:
+def _better_discovery_result(
+    current: Optional[dict],
+    candidate: Optional[dict],
+    *,
+    expected_total: Optional[int] = None,
+) -> Optional[dict]:
     if not isinstance(candidate, dict) or _discovery_item_count(candidate) <= 0:
         return current
     if not isinstance(current, dict) or _discovery_item_count(current) <= 0:
         return candidate
     current_count = _discovery_item_count(current)
     candidate_count = _discovery_item_count(candidate)
+    expected = _safe_positive_int(expected_total)
+    if expected is not None:
+        current_complete = current_count >= expected
+        candidate_complete = candidate_count >= expected
+        if current_complete != candidate_complete:
+            return candidate if candidate_complete else current
+        current_distance = abs(expected - current_count)
+        candidate_distance = abs(expected - candidate_count)
+        if current_distance != candidate_distance:
+            return candidate if candidate_distance < current_distance else current
     if candidate_count != current_count:
         return candidate if candidate_count > current_count else current
     current_expected = _safe_positive_int(current.get("expected_total")) or 0
@@ -3061,7 +3076,15 @@ def _discover_collection_with_fallbacks(
         raw_cookie=raw_cookie,
         max_pages=max_pages,
     )
-    best_result = _better_discovery_result(best_result, api_result)
+    if page_expected_total and not _discovery_is_complete(api_result, page_expected_total):
+        retry_result = _discover_collection_models_api(
+            session=session,
+            source_url=source_url,
+            raw_cookie=raw_cookie,
+            max_pages=max_pages,
+        )
+        api_result = _better_discovery_result(api_result, retry_result, expected_total=page_expected_total)
+    best_result = _better_discovery_result(best_result, api_result, expected_total=page_expected_total)
     if _discovery_is_complete(best_result, page_expected_total):
         return _apply_collection_page_expected_total(best_result, page_expected_total) or best_result
 
@@ -3076,7 +3099,7 @@ def _discover_collection_with_fallbacks(
             owner_uid=owner_uid,
             max_pages=max_pages,
         )
-        best_result = _better_discovery_result(best_result, list_result)
+        best_result = _better_discovery_result(best_result, list_result, expected_total=page_expected_total)
         if _discovery_is_complete(best_result, page_expected_total):
             return _apply_collection_page_expected_total(best_result, page_expected_total) or best_result
 
@@ -3094,7 +3117,7 @@ def _discover_collection_with_fallbacks(
             error=str(exc),
         )
         html_result = None
-    best_result = _better_discovery_result(best_result, html_result)
+    best_result = _better_discovery_result(best_result, html_result, expected_total=page_expected_total)
     if best_result is not None:
         return _apply_collection_page_expected_total(best_result, page_expected_total) or best_result
     return None
