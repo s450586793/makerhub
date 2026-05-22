@@ -191,6 +191,8 @@ def _api_get_json(
     service_name: str,
     path: str,
     params: Optional[dict[str, Any]] = None,
+    *,
+    skip_empty_hits: bool = False,
 ) -> Optional[dict]:
     headers = _build_api_headers(session, raw_cookie, source_url)
     for api_url in _service_endpoint_candidates(source_url, service_name, path):
@@ -205,6 +207,20 @@ def _api_get_json(
         if isinstance(payload, dict):
             hits_payload = _extract_hits_payload(payload)
             payload_summary = _payload_debug_summary(payload) if "/favorites" in path else []
+            if skip_empty_hits and _hits_payload_is_empty_result(hits_payload):
+                _append_discovery_debug(
+                    "api_empty_hits_skipped",
+                    api_url=api_url,
+                    service=service_name,
+                    path=path,
+                    params=params or {},
+                    status_code=scrapling_result.status_code,
+                    elapsed_ms=round((time.time() - started) * 1000, 1),
+                    engine=scrapling_result.engine,
+                    total=(hits_payload or {}).get("total"),
+                    payload_summary=payload_summary,
+                )
+                continue
             _append_discovery_debug(
                 "api_ok",
                 api_url=api_url,
@@ -287,6 +303,19 @@ def _api_get_json(
         if isinstance(payload, dict):
             hits_payload = _extract_hits_payload(payload)
             payload_summary = _payload_debug_summary(payload) if "/favorites" in path else []
+            if skip_empty_hits and _hits_payload_is_empty_result(hits_payload):
+                _append_discovery_debug(
+                    "api_empty_hits_skipped",
+                    api_url=api_url,
+                    service=service_name,
+                    path=path,
+                    params=params or {},
+                    status_code=response.status_code,
+                    elapsed_ms=round((time.time() - started) * 1000, 1),
+                    total=(hits_payload or {}).get("total"),
+                    payload_summary=payload_summary,
+                )
+                continue
             _append_discovery_debug(
                 "api_ok",
                 api_url=api_url,
@@ -403,6 +432,16 @@ def _extract_hits_payload(payload: Any) -> Optional[dict]:
             best_node = node
             best_score = score
     return best_node
+
+
+def _hits_payload_is_empty_result(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    hits = payload.get("hits")
+    if not isinstance(hits, list) or hits:
+        return False
+    total = _extract_total_count(payload, 0)
+    return total == 0
 
 
 def _extract_total_count(payload: dict, fallback: int) -> Optional[int]:
@@ -1082,6 +1121,7 @@ def discover_cookie_account_profile(platform: str, raw_cookie: str) -> dict[str,
         ("design-user-service", "/my/preference"),
         ("user-service", "/my/message/count"),
     ]
+    best_profile: dict[str, str] = {}
     for service_name, path in candidates:
         payload = _api_get_json(
             session,
@@ -1102,17 +1142,40 @@ def discover_cookie_account_profile(platform: str, raw_cookie: str) -> dict[str,
             has_handle=bool(profile.get("handle")),
         )
         if profile.get("uid") or profile.get("handle"):
-            profile["platform"] = clean_platform
-            return profile
+            if not best_profile:
+                best_profile = dict(profile)
+            else:
+                for key, value in profile.items():
+                    if value and not best_profile.get(key):
+                        best_profile[key] = value
+            if best_profile.get("handle"):
+                best_profile["platform"] = clean_platform
+                return best_profile
+
+    if best_profile.get("uid") or best_profile.get("handle"):
+        best_profile["platform"] = clean_platform
+        return best_profile
     return {"platform": clean_platform, "uid": "", "handle": "", "name": "", "avatar_url": ""}
+
+
+def _profile_handle_or_uid_handle(profile: dict[str, str]) -> str:
+    handle = str(profile.get("handle") or "").strip().lstrip("@")
+    if handle:
+        return handle
+    uid = _coerce_numeric_string(profile.get("uid"))
+    if uid:
+        return f"user_{uid}"
+    return ""
 
 
 def _looks_like_author_follow_node(node: Any) -> bool:
     if not isinstance(node, dict):
         return False
-    if not _extract_node_handle(node):
+    if not (_extract_node_handle(node) or _extract_node_uid(node)):
         return False
-    if any(key in node for key in ("designId", "modelId", "coverLandscape", "downloadCount", "printCount", "commentCount")):
+    if _extract_design_id_from_hit(node):
+        return False
+    if any(key in node for key in ("designId", "modelId", "coverLandscape", "coverUrl", "cover")):
         return False
     return any(
         key in node
@@ -1133,6 +1196,11 @@ def _looks_like_author_follow_node(node: Any) -> bool:
     )
 
 
+def _fallback_author_handle_from_uid(node: Any) -> str:
+    uid = _extract_node_uid(node)
+    return f"user_{uid}" if uid else ""
+
+
 def _extract_followed_authors(payload: Any, platform: str) -> list[dict[str, str]]:
     source_origin = _platform_origin(platform)
     lang = _makerworld_model_path_lang(platform)
@@ -1144,7 +1212,7 @@ def _extract_followed_authors(payload: Any, platform: str) -> list[dict[str, str
         hits = node.get("hits")
         if isinstance(hits, list):
             candidate_nodes.extend(item for item in hits if isinstance(item, dict))
-        for key in ("items", "list", "records", "users", "data"):
+        for key in ("items", "list", "records", "users", "followers", "followings", "data"):
             values = node.get(key)
             if isinstance(values, list):
                 candidate_nodes.extend(item for item in values if isinstance(item, dict))
@@ -1155,7 +1223,7 @@ def _extract_followed_authors(payload: Any, platform: str) -> list[dict[str, str
     for node in candidate_nodes:
         if not _looks_like_author_follow_node(node):
             continue
-        handle = _extract_node_handle(node)
+        handle = _extract_node_handle(node) or _fallback_author_handle_from_uid(node)
         if not handle:
             continue
         key = handle.lower()
@@ -1187,16 +1255,16 @@ def _followed_author_path_candidates(uid: str) -> list[str]:
         "/relation/following",
     ]
     if clean_uid:
-        candidates.extend(
-            [
-                f"/following/{clean_uid}",
-                f"/followings/{clean_uid}",
-                f"/user/{clean_uid}/following",
-                f"/user/{clean_uid}/followings",
-                f"/follow/{clean_uid}/following",
-                f"/relation/{clean_uid}/following",
-            ]
-        )
+        candidates = [
+            f"/user/{clean_uid}/follows",
+            f"/user/{clean_uid}/following",
+            f"/user/{clean_uid}/followings",
+            f"/following/{clean_uid}",
+            f"/followings/{clean_uid}",
+            f"/follow/{clean_uid}/following",
+            f"/relation/{clean_uid}/following",
+            *candidates,
+        ]
     seen: set[str] = set()
     result: list[str] = []
     for path in candidates:
@@ -1211,12 +1279,12 @@ def _followed_author_param_candidates(uid: str, offset: int, limit: int) -> list
     clean_uid = _coerce_numeric_string(uid)
     page = max((offset // max(limit, 1)) + 1, 1)
     bases = [
-        {},
         {"offset": offset, "limit": limit},
         {"page": page, "limit": limit},
         {"pageNum": page, "limit": limit},
         {"pageNo": page, "limit": limit},
         {"current": page, "size": limit},
+        {},
     ]
     candidates: list[dict[str, Any]] = []
     for base in bases:
@@ -1235,6 +1303,63 @@ def _followed_author_param_candidates(uid: str, offset: int, limit: int) -> list
         seen.add(key)
         deduped.append(candidate)
     return deduped
+
+
+def _frontend_follows_param_candidates(offset: int, limit: int) -> list[dict[str, Any]]:
+    return [{"offset": offset, "limit": limit}]
+
+
+def _following_page_url(platform: str, profile: dict[str, str]) -> str:
+    handle = _profile_handle_or_uid_handle(profile)
+    if not handle:
+        return ""
+    origin = _platform_origin(platform)
+    lang = _makerworld_model_path_lang(platform)
+    return f"{origin}/{lang}/@{quote(handle, safe='@._-')}/following"
+
+
+def discover_cookie_followed_authors_from_page(
+    platform: str,
+    raw_cookie: str,
+    profile: dict[str, str],
+) -> dict[str, Any]:
+    clean_platform = "global" if str(platform or "").strip().lower() == "global" else "cn"
+    source_url = _following_page_url(clean_platform, profile)
+    if not source_url:
+        return {"platform": clean_platform, "items": [], "count": 0, "source_url": "", "total": None}
+
+    session = requests.Session()
+    session.headers.update({"User-Agent": BROWSER_USER_AGENT})
+    session.cookies.update(parse_cookies(raw_cookie))
+    try:
+        html_text = _fetch_listing_html(session, source_url, raw_cookie)
+        next_data = extract_next_data(html_text)
+    except Exception as exc:
+        _append_discovery_debug(
+            "cookie_followed_authors_page_error",
+            platform=clean_platform,
+            source_url=source_url,
+            error=str(exc)[:160],
+        )
+        return {"platform": clean_platform, "items": [], "count": 0, "source_url": source_url, "total": None}
+
+    authors = _extract_followed_authors(next_data, clean_platform)
+    page_props = (next_data.get("props") or {}).get("pageProps") if isinstance(next_data, dict) else {}
+    total = _extract_total_count(page_props or {}, len(authors)) if isinstance(page_props, dict) else len(authors)
+    _append_discovery_debug(
+        "cookie_followed_authors_page",
+        platform=clean_platform,
+        source_url=source_url,
+        authors=len(authors),
+        total=total,
+    )
+    return {
+        "platform": clean_platform,
+        "items": authors,
+        "count": len(authors),
+        "source_url": source_url,
+        "total": total,
+    }
 
 
 def discover_cookie_followed_authors(
@@ -1261,7 +1386,12 @@ def discover_cookie_followed_authors(
         for _ in range(max_pages):
             payload = None
             authors: list[dict[str, str]] = []
-            for params in _followed_author_param_candidates(uid, offset, limit):
+            param_candidates = (
+                _frontend_follows_param_candidates(offset, limit)
+                if re.search(r"/user/[^/]+/follows$", path)
+                else _followed_author_param_candidates(uid, offset, limit)
+            )
+            for params in param_candidates:
                 payload = _api_get_json(
                     session,
                     source_url=source_url,
@@ -1486,7 +1616,7 @@ def discover_cookie_followed_collections(
 
 def default_favorites_subscription_source(platform: str, profile: dict[str, str]) -> dict[str, str]:
     clean_platform = "global" if str(platform or "").strip().lower() == "global" else "cn"
-    handle = str(profile.get("handle") or "").strip().lstrip("@")
+    handle = _profile_handle_or_uid_handle(profile)
     if not handle:
         return {}
     origin = _platform_origin(clean_platform)
@@ -1697,6 +1827,11 @@ def _resolve_author_uid_from_sample_models(
 
 
 def _resolve_author_uid(session: requests.Session, source_url: str, raw_cookie: str, handle: str) -> str:
+    fallback_uid = _coerce_numeric_string(re.sub(r"^user_", "", str(handle or "").strip(), flags=re.I))
+    if fallback_uid:
+        _append_discovery_debug("author_uid_resolved", handle=handle, uid=fallback_uid, mode="user_uid_handle")
+        return fallback_uid
+
     uid = _resolve_uid_by_handle_api(
         session,
         source_url=source_url,
@@ -1731,6 +1866,11 @@ def _resolve_collection_owner_uid(
     raw_cookie: str,
     handle: str,
 ) -> str:
+    fallback_uid = _coerce_numeric_string(re.sub(r"^user_", "", str(handle or "").strip(), flags=re.I))
+    if fallback_uid:
+        _append_discovery_debug("collection_owner_uid_resolved", handle=handle, uid=fallback_uid, mode="user_uid_handle")
+        return fallback_uid
+
     uid = _resolve_uid_by_handle_api(
         session,
         source_url=source_url,
@@ -1881,7 +2021,7 @@ def _collection_designs_param_candidates(
     base_params = _collection_route_query_params(
         source_url,
         handle,
-        include_handle=False,
+        include_handle=True,
         extra_params=extra_params,
     )
     candidates = [
@@ -1934,7 +2074,7 @@ def _collection_list_path_candidates(uid: str) -> list[str]:
 
 
 def _collection_list_param_candidates(source_url: str, handle: str) -> list[dict[str, Any]]:
-    base_params = _collection_route_query_params(source_url, handle, include_handle=False)
+    base_params = _collection_route_query_params(source_url, handle, include_handle=True)
     candidates = [
         base_params,
         {**base_params, "offset": 0, "limit": 50},
@@ -2106,9 +2246,9 @@ def _discover_collection_models_by_lists(
     seen_links: set[str] = set()
     pages_scanned = 0
     collections_scanned = 0
-    expected_total = sum(max(int(entry.get("count") or 0), 0) for entry in entries)
+    entry_expected_total = sum(max(int(entry.get("count") or 0), 0) for entry in entries)
     total_page_budget = max(max_pages, 1)
-    if expected_total > 0:
+    if entry_expected_total > 0:
         projected_pages = sum(
             max((max(int(entry.get("count") or 0), 0) + max(limit, 1) - 1) // max(limit, 1), 1)
             for entry in entries
@@ -2121,11 +2261,12 @@ def _discover_collection_models_by_lists(
         handle=handle,
         owner_uid=owner_uid,
         entry_count=len(entries),
-        expected_total=expected_total,
+        expected_total=entry_expected_total,
         total_page_budget=total_page_budget,
         entries=entries[:10],
     )
 
+    designs_expected_total = 0
     for entry in entries:
         collection_id = str(entry.get("id") or "").strip()
         if not collection_id:
@@ -2157,6 +2298,7 @@ def _discover_collection_models_by_lists(
                     service_name="design-service",
                     path=f"/favorites/{collection_id}/designs",
                     params=params,
+                    skip_empty_hits=True,
                 )
                 if payload is None:
                     continue
@@ -2193,6 +2335,8 @@ def _discover_collection_models_by_lists(
                 new_links += 1
 
             total = _extract_total_count(hits_payload, len(hits))
+            if collection_pages_scanned == 1 and total is not None and total > 0:
+                designs_expected_total += total
             has_next = _extract_has_next(hits_payload)
             if not hits:
                 break
@@ -2218,7 +2362,9 @@ def _discover_collection_models_by_lists(
         "collections_scanned": collections_scanned,
         "items": discovered,
         "mode": "collection_models_lists",
-        "expected_total": expected_total if expected_total > 0 else len(discovered),
+        "expected_total": designs_expected_total or entry_expected_total or len(discovered),
+        "expected_total_source": "collection_designs_total" if designs_expected_total else "",
+        "strict_expected_total": bool(designs_expected_total),
     }
 
 
@@ -2253,6 +2399,7 @@ def _fetch_collection_hits_payload(
                 service_name="design-service",
                 path=path,
                 params=params,
+                skip_empty_hits=True,
             )
             if payload is None:
                 continue
@@ -2452,6 +2599,7 @@ def _fetch_collection_detail_hits_payload(
             service_name="design-service",
             path=path,
             params=params,
+            skip_empty_hits=True,
         )
         if payload is None:
             continue
@@ -2652,25 +2800,34 @@ def _collect_model_urls_from_node(node: object, found: set[str], base_url: str) 
 
 
 def _extract_page_links(html_text: str, base_url: str) -> list[str]:
-    found: set[str] = set()
+    found: list[str] = []
+    seen: set[str] = set()
     expanded = str(html_text or "").replace("\\/", "/").replace("\\u002F", "/")
 
+    def add_link(raw_url: str) -> None:
+        normalized = normalize_model_url(raw_url, fallback_base=base_url)
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        found.append(normalized)
+
     for raw in MODEL_PATH_RE.findall(expanded):
-        found.add(normalize_model_url(f"/zh/models/{raw}", fallback_base=base_url))
+        add_link(f"/zh/models/{raw}")
 
     soup = BeautifulSoup(expanded, "html.parser")
     for link in soup.find_all("a", href=True):
-        normalized = normalize_model_url(link.get("href") or "", fallback_base=base_url)
-        if normalized:
-            found.add(normalized)
+        add_link(link.get("href") or "")
 
     try:
         next_data = extract_next_data(expanded)
     except Exception:
         next_data = {}
-    _collect_model_urls_from_node(next_data, found, base_url)
+    next_data_links: set[str] = set()
+    _collect_model_urls_from_node(next_data, next_data_links, base_url)
+    for link in sorted(next_data_links):
+        add_link(link)
 
-    return sorted(url for url in found if url)
+    return found
 
 
 def _normalize_source_title(title: str, source_url: str) -> str:
@@ -2772,6 +2929,28 @@ def _page_variants(base_url: str, page: int, limit: int = HTML_BATCH_PAGE_LIMIT)
     return variants
 
 
+def _source_items_from_urls(urls: list[str]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for url in urls:
+        normalized = normalize_source_url(url)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        model_id = extract_model_id(normalized)
+        source_order = len(items)
+        items.append(
+            {
+                "url": normalized,
+                "model_id": model_id,
+                "task_key": f"model:{model_id}" if model_id else normalized,
+                "source_order": source_order,
+                "source_position": source_order,
+            }
+        )
+    return items
+
+
 def _discover_by_html(session: requests.Session, source_url: str, raw_cookie: str, max_pages: int) -> dict:
     discovered: list[str] = []
     seen: set[str] = set()
@@ -2831,9 +3010,94 @@ def _discover_by_html(session: requests.Session, source_url: str, raw_cookie: st
     return {
         "source_url": source_url,
         "pages_scanned": pages_scanned,
-        "items": discovered,
+        "items": _source_items_from_urls(discovered),
         "mode": "html_fallback",
     }
+
+
+def _discovery_item_count(result: Optional[dict]) -> int:
+    if not isinstance(result, dict):
+        return 0
+    return len(result.get("items") or [])
+
+
+def _discovery_is_complete(result: Optional[dict], expected_total: Optional[int]) -> bool:
+    if not isinstance(result, dict) or _discovery_item_count(result) <= 0:
+        return False
+    expected = _safe_positive_int(expected_total) or _safe_positive_int(result.get("expected_total"))
+    if expected is None or expected <= 0:
+        return True
+    return _discovery_item_count(result) >= expected
+
+
+def _better_discovery_result(current: Optional[dict], candidate: Optional[dict]) -> Optional[dict]:
+    if not isinstance(candidate, dict) or _discovery_item_count(candidate) <= 0:
+        return current
+    if not isinstance(current, dict) or _discovery_item_count(current) <= 0:
+        return candidate
+    current_count = _discovery_item_count(current)
+    candidate_count = _discovery_item_count(candidate)
+    if candidate_count != current_count:
+        return candidate if candidate_count > current_count else current
+    current_expected = _safe_positive_int(current.get("expected_total")) or 0
+    candidate_expected = _safe_positive_int(candidate.get("expected_total")) or 0
+    if candidate_expected != current_expected:
+        return candidate if candidate_expected > current_expected else current
+    return current
+
+
+def _discover_collection_with_fallbacks(
+    session: requests.Session,
+    source_url: str,
+    raw_cookie: str,
+    max_pages: int,
+    page_expected_total: Optional[int],
+) -> Optional[dict]:
+    best_result: Optional[dict] = None
+
+    api_result = _discover_collection_models_api(
+        session=session,
+        source_url=source_url,
+        raw_cookie=raw_cookie,
+        max_pages=max_pages,
+    )
+    best_result = _better_discovery_result(best_result, api_result)
+    if _discovery_is_complete(best_result, page_expected_total):
+        return _apply_collection_page_expected_total(best_result, page_expected_total) or best_result
+
+    handle = _extract_collection_handle(source_url)
+    owner_uid = _resolve_collection_owner_uid(session, source_url, raw_cookie, handle) if handle else ""
+    if handle and owner_uid:
+        list_result = _discover_collection_models_by_lists(
+            session=session,
+            source_url=source_url,
+            raw_cookie=raw_cookie,
+            handle=handle,
+            owner_uid=owner_uid,
+            max_pages=max_pages,
+        )
+        best_result = _better_discovery_result(best_result, list_result)
+        if _discovery_is_complete(best_result, page_expected_total):
+            return _apply_collection_page_expected_total(best_result, page_expected_total) or best_result
+
+    try:
+        html_result = _discover_by_html(
+            session=session,
+            source_url=source_url,
+            raw_cookie=raw_cookie,
+            max_pages=max_pages,
+        )
+    except Exception as exc:
+        _append_discovery_debug(
+            "collection_html_fallback_error",
+            source_url=source_url,
+            error=str(exc),
+        )
+        html_result = None
+    best_result = _better_discovery_result(best_result, html_result)
+    if best_result is not None:
+        return _apply_collection_page_expected_total(best_result, page_expected_total) or best_result
+    return None
 
 
 def discover_batch_model_urls(url: str, raw_cookie: str, max_pages: int = 12) -> dict:
@@ -2857,28 +3121,15 @@ def discover_batch_model_urls(url: str, raw_cookie: str, max_pages: int = 12) ->
             if detail_result is not None:
                 return detail_result
 
-        api_result = _discover_collection_models_api(
+        collection_result = _discover_collection_with_fallbacks(
             session=session,
             source_url=source_url,
             raw_cookie=raw_cookie,
             max_pages=max_pages,
+            page_expected_total=page_expected_total,
         )
-        if api_result is not None:
-            return _apply_collection_page_expected_total(api_result, page_expected_total) or api_result
-
-        handle = _extract_collection_handle(source_url)
-        owner_uid = _resolve_collection_owner_uid(session, source_url, raw_cookie, handle) if handle else ""
-        if handle and owner_uid:
-            list_result = _discover_collection_models_by_lists(
-                session=session,
-                source_url=source_url,
-                raw_cookie=raw_cookie,
-                handle=handle,
-                owner_uid=owner_uid,
-                max_pages=max_pages,
-            )
-            if list_result is not None:
-                return _apply_collection_page_expected_total(list_result, page_expected_total) or list_result
+        if collection_result is not None:
+            return collection_result
 
     if AUTHOR_UPLOAD_RE.search(urlparse(source_url).path or ""):
         api_result = _discover_author_upload_api(

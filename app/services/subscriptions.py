@@ -19,6 +19,7 @@ from app.services.batch_discovery import (
     default_favorites_subscription_source,
     discover_cookie_account_profile,
     discover_cookie_followed_authors,
+    discover_cookie_followed_authors_from_page,
     discover_cookie_followed_collections,
     extract_model_id,
     normalize_source_url,
@@ -770,8 +771,23 @@ class SubscriptionManager:
                     if default_favorites.get("url"):
                         sources.append({**default_favorites, "mode": "collection_models", "source_kind": "default_favorites"})
 
+                    followed_authors_page = discover_cookie_followed_authors_from_page(platform, raw_cookie, profile)
                     followed_authors = discover_cookie_followed_authors(platform, raw_cookie, uid=uid)
-                    for item in followed_authors.get("items") or []:
+                    followed_author_items: list[dict[str, Any]] = []
+                    followed_author_urls: set[str] = set()
+                    followed_author_keys: set[str] = set()
+                    for author_result in (followed_authors_page, followed_authors):
+                        for author in author_result.get("items") or []:
+                            url = normalize_source_url(str(author.get("url") or ""))
+                            author_uid = str(author.get("uid") or "").strip()
+                            author_handle = str(author.get("handle") or "").strip().lower()
+                            author_key = f"uid:{author_uid}" if author_uid else f"handle:{author_handle}" if author_handle else url
+                            if not url or url in followed_author_urls or author_key in followed_author_keys:
+                                continue
+                            followed_author_urls.add(url)
+                            followed_author_keys.add(author_key)
+                            followed_author_items.append({**author, "url": url})
+                    for item in followed_author_items:
                         if item.get("url"):
                             sources.append({**item, "mode": "author_upload", "source_kind": "followed_author"})
 
@@ -848,7 +864,7 @@ class SubscriptionManager:
                     last_created_count=platform_created,
                     last_updated_count=platform_updated,
                     default_favorites_found=bool(default_favorites.get("url")),
-                    followed_author_count=int((followed_authors or {}).get("count") or 0),
+                    followed_author_count=len(followed_author_items),
                     followed_collection_count=int((followed_collections or {}).get("count") or 0),
                     account_uid=uid,
                     account_handle=str(profile.get("handle") or ""),
@@ -860,7 +876,7 @@ class SubscriptionManager:
                         "created_count": platform_created,
                         "updated_count": platform_updated,
                         "default_favorites_found": bool(default_favorites.get("url")),
-                        "followed_author_count": int((followed_authors or {}).get("count") or 0),
+                        "followed_author_count": len(followed_author_items),
                         "followed_collection_count": int((followed_collections or {}).get("count") or 0),
                     }
                 )

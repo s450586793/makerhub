@@ -103,6 +103,54 @@ class BatchDiscoveryTest(unittest.TestCase):
         )
         self.assertNotIn("2356866", {item["id"] for item in entries})
 
+    def test_collection_list_discovery_prefers_design_endpoint_total_for_expected_total(self):
+        def fake_fetch_entries(*_args, **_kwargs):
+            return [
+                {"id": "518732", "name": "默认收藏夹", "count": 340},
+                {"id": "989423", "name": "已打印", "count": 14},
+            ]
+
+        def fake_api_get_json(_session, **kwargs):
+            path = kwargs["path"]
+            offset = int((kwargs.get("params") or {}).get("offset") or 0)
+            if path == "/favorites/518732/designs":
+                if offset == 0:
+                    return {
+                        "hits": [
+                            {"id": 1001, "title": "A", "coverUrl": "https://example.test/a.jpg"},
+                            {"id": 1002, "title": "B", "coverUrl": "https://example.test/b.jpg"},
+                        ],
+                        "total": 2,
+                    }
+                return {"hits": [], "total": 2}
+            if path == "/favorites/989423/designs":
+                return {
+                    "hits": [
+                        {"id": 2001, "title": "C", "coverUrl": "https://example.test/c.jpg"},
+                    ],
+                    "total": 1,
+                }
+            return None
+
+        with patch.object(batch_discovery, "_fetch_collection_list_entries", side_effect=fake_fetch_entries), \
+                patch.object(batch_discovery, "_api_get_json", side_effect=fake_api_get_json), \
+                patch.object(batch_discovery, "_append_discovery_debug"):
+            result = batch_discovery._discover_collection_models_by_lists(
+                requests.Session(),
+                "https://makerworld.com.cn/zh/@s450586793/collections/models",
+                "token=ok",
+                "s450586793",
+                "2024907479",
+                max_pages=2,
+                limit=20,
+            )
+
+        self.assertEqual(len(result["items"]), 3)
+        self.assertEqual(result["expected_total"], 3)
+        self.assertNotIn("reported_expected_total", result)
+        self.assertEqual(result["expected_total_source"], "collection_designs_total")
+        self.assertTrue(result["strict_expected_total"])
+
     def test_extract_collection_page_all_models_count_from_rendered_tab(self):
         html = """
         <html>
@@ -153,6 +201,56 @@ class BatchDiscoveryTest(unittest.TestCase):
         self.assertEqual(result["expected_total_source"], "author_upload_api_total")
         self.assertTrue(result["strict_expected_total"])
 
+    def test_api_get_json_can_skip_empty_hits_and_continue_endpoint_probe(self):
+        calls = []
+
+        class FakeScraplingResult:
+            status_code = 0
+            engine = "test"
+            error = ""
+
+        class FakeResponse:
+            status_code = 200
+            headers = {"content-type": "application/json"}
+            text = "{}"
+
+            def __init__(self, payload):
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        class FakeSession:
+            headers = {"User-Agent": "test-agent"}
+
+            def get(self, url, **_kwargs):
+                calls.append(url)
+                if len(calls) == 1:
+                    return FakeResponse({"hits": [], "total": 0})
+                return FakeResponse({"hits": [{"id": 1001, "title": "A"}], "total": 1})
+
+        with patch.object(
+            batch_discovery,
+            "_service_endpoint_candidates",
+            return_value=["https://api.example.test/empty", "https://api.example.test/full"],
+        ), patch.object(
+            batch_discovery,
+            "fetch_json_with_scrapling",
+            return_value=(None, FakeScraplingResult()),
+        ), patch.object(batch_discovery, "_append_discovery_debug"):
+            payload = batch_discovery._api_get_json(
+                FakeSession(),
+                "https://makerworld.com/zh/@ace/collections/models",
+                "token=ok",
+                "design-service",
+                "/favorites/designs/123",
+                {"offset": 0, "limit": 20},
+                skip_empty_hits=True,
+            )
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(payload["total"], 1)
+
     def test_extract_followed_authors_builds_upload_urls(self):
         payload = {
             "hits": [
@@ -167,6 +265,111 @@ class BatchDiscoveryTest(unittest.TestCase):
         self.assertEqual(authors[0]["title"], "Ace Print")
         self.assertEqual(authors[0]["url"], "https://makerworld.com.cn/zh/@AcePrint/upload")
 
+    def test_extract_followed_authors_accepts_frontend_follow_hit_stats(self):
+        payload = {
+            "hits": [
+                {
+                    "uid": 2024907479,
+                    "handle": "",
+                    "name": "艾斯",
+                    "avatar": "https://example.test/avatar.jpg",
+                    "downloadCount": 12,
+                    "publicInstanceUploadCount": 3,
+                    "MWCount": {"designCount": 9},
+                }
+            ],
+            "total": 1,
+        }
+
+        authors = batch_discovery._extract_followed_authors(payload, "cn")
+
+        self.assertEqual(len(authors), 1)
+        self.assertEqual(authors[0]["handle"], "user_2024907479")
+        self.assertEqual(authors[0]["url"], "https://makerworld.com.cn/zh/@user_2024907479/upload")
+
+    def test_extract_followed_authors_accepts_next_data_followers(self):
+        payload = {
+            "props": {
+                "pageProps": {
+                    "followers": [
+                        {
+                            "uid": 954312513,
+                            "name": "3D Girl",
+                            "handle": "GLB_ThreeeDee",
+                            "avatar": "https://example.test/a.jpg",
+                            "publicInstanceUploadCount": 348,
+                        }
+                    ],
+                    "total": 27,
+                }
+            }
+        }
+
+        authors = batch_discovery._extract_followed_authors(payload, "cn")
+
+        self.assertEqual(len(authors), 1)
+        self.assertEqual(authors[0]["handle"], "GLB_ThreeeDee")
+
+    def test_followed_author_paths_prioritize_makerworld_frontend_follows_api(self):
+        paths = batch_discovery._followed_author_path_candidates("2024907479")
+
+        self.assertEqual(paths[0], "/user/2024907479/follows")
+        self.assertEqual(len(paths), len(set(paths)))
+
+    def test_discover_cookie_followed_authors_paginates_frontend_follows_api(self):
+        calls = []
+
+        def fake_api_get_json(_session, **kwargs):
+            calls.append(kwargs)
+            self.assertEqual(kwargs["service_name"], "user-service")
+            if kwargs["path"] != "/user/2024907479/follows":
+                return None
+            offset = int((kwargs.get("params") or {}).get("offset") or 0)
+            if offset == 0:
+                return {
+                    "hits": [
+                        {"uid": 1, "handle": "AcePrint", "name": "Ace Print", "avatar": "https://example.test/a.jpg"},
+                        {"uid": 2, "handle": "BeePrint", "name": "Bee Print", "avatar": "https://example.test/b.jpg"},
+                    ],
+                    "total": 3,
+                }
+            if offset == 2:
+                return {
+                    "hits": [
+                        {"uid": 3, "handle": "CatPrint", "name": "Cat Print", "avatar": "https://example.test/c.jpg"},
+                    ],
+                    "total": 3,
+                }
+            return {"hits": [], "total": 3}
+
+        with patch.object(batch_discovery, "_api_get_json", side_effect=fake_api_get_json), \
+                patch.object(batch_discovery, "_append_discovery_debug"):
+            result = batch_discovery.discover_cookie_followed_authors(
+                "cn",
+                "token=ok",
+                uid="2024907479",
+                max_pages=4,
+                limit=2,
+            )
+
+        self.assertEqual(result["path"], "/user/2024907479/follows")
+        self.assertEqual(result["count"], 3)
+        self.assertEqual([item["handle"] for item in result["items"]], ["AcePrint", "BeePrint", "CatPrint"])
+        self.assertEqual([call["params"]["offset"] for call in calls], [0, 2])
+
+    def test_resolve_author_uid_accepts_user_uid_handle(self):
+        with patch.object(batch_discovery, "_api_get_json") as api_get_json, \
+                patch.object(batch_discovery, "_append_discovery_debug"):
+            uid = batch_discovery._resolve_author_uid(
+                requests.Session(),
+                "https://makerworld.com.cn/zh/@user_2024907479/upload",
+                "token=ok",
+                "user_2024907479",
+            )
+
+        self.assertEqual(uid, "2024907479")
+        api_get_json.assert_not_called()
+
     def test_default_favorites_subscription_source_uses_account_handle(self):
         source = batch_discovery.default_favorites_subscription_source(
             "global",
@@ -176,12 +379,42 @@ class BatchDiscoveryTest(unittest.TestCase):
         self.assertEqual(source["title"], "艾斯 所有模型收藏夹")
         self.assertEqual(source["url"], "https://makerworld.com/en/@s450586793/collections/models")
 
+    def test_default_favorites_subscription_source_falls_back_to_uid_handle(self):
+        source = batch_discovery.default_favorites_subscription_source(
+            "global",
+            {"uid": "2073587493", "handle": "", "name": "艾斯"},
+        )
+
+        self.assertEqual(source["handle"], "user_2073587493")
+        self.assertEqual(source["url"], "https://makerworld.com/en/@user_2073587493/collections/models")
+
     def test_extract_account_profile_ignores_plain_counter_id(self):
         profile = batch_discovery._extract_account_profile(
             {"data": {"id": 123, "unreadCount": 4}}
         )
 
         self.assertEqual(profile, {})
+
+    def test_discover_cookie_account_profile_continues_until_handle_found(self):
+        payloads = [
+            {
+                "uid": 2073587493,
+                "name": "艾斯",
+                "avatar": "https://example.test/avatar.jpg",
+            },
+            {
+                "uid": 2073587493,
+                "handle": "s450586793",
+                "name": "艾斯",
+            },
+        ]
+
+        with patch.object(batch_discovery, "_api_get_json", side_effect=payloads), \
+                patch.object(batch_discovery, "_append_discovery_debug"):
+            profile = batch_discovery.discover_cookie_account_profile("global", "token=ok")
+
+        self.assertEqual(profile["uid"], "2073587493")
+        self.assertEqual(profile["handle"], "s450586793")
 
     def test_extract_model_source_items_prefers_hit_design_id_order(self):
         payload = {
@@ -216,6 +449,135 @@ class BatchDiscoveryTest(unittest.TestCase):
         self.assertEqual(len(collections), 1)
         self.assertEqual(collections[0]["title"], "关注收藏夹")
         self.assertTrue(collections[0]["url"].startswith("https://makerworld.com.cn/zh/collections/518732"))
+
+    def test_collection_design_params_include_handle(self):
+        params = batch_discovery._collection_designs_param_candidates(
+            0,
+            20,
+            "https://makerworld.com/zh/@s450586793/collections/models",
+            "s450586793",
+        )
+
+        self.assertTrue(params)
+        self.assertTrue(all(item.get("handle") == "s450586793" for item in params))
+
+    def test_collection_fallback_continues_when_candidate_misses_expected_total(self):
+        partial_items = [
+            {"url": f"https://makerworld.com/zh/models/{index}", "source_order": index}
+            for index in range(6)
+        ]
+        complete_items = [
+            {"url": f"https://makerworld.com/zh/models/{index}", "source_order": index}
+            for index in range(17)
+        ]
+
+        with patch.object(
+            batch_discovery,
+            "_discover_collection_models_api",
+            return_value={
+                "source_url": "https://makerworld.com/zh/@s450586793/collections/models",
+                "items": partial_items,
+                "mode": "collection_models_api",
+                "expected_total": 8,
+            },
+        ), patch.object(
+            batch_discovery,
+            "_resolve_collection_owner_uid",
+            return_value="2024907479",
+        ), patch.object(
+            batch_discovery,
+            "_discover_collection_models_by_lists",
+            return_value={
+                "source_url": "https://makerworld.com/zh/@s450586793/collections/models",
+                "items": partial_items,
+                "mode": "collection_models_lists",
+                "expected_total": 8,
+            },
+        ), patch.object(
+            batch_discovery,
+            "_discover_by_html",
+            return_value={
+                "source_url": "https://makerworld.com/zh/@s450586793/collections/models",
+                "items": complete_items,
+                "mode": "html_fallback",
+            },
+        ):
+            result = batch_discovery._discover_collection_with_fallbacks(
+                requests.Session(),
+                "https://makerworld.com/zh/@s450586793/collections/models",
+                "token=ok",
+                max_pages=2,
+                page_expected_total=17,
+            )
+
+        self.assertEqual(len(result["items"]), 17)
+        self.assertEqual(result["mode"], "html_fallback")
+        self.assertEqual(result["expected_total"], 17)
+        self.assertEqual(result["expected_total_source"], "collection_page_all_models")
+        self.assertTrue(result["strict_expected_total"])
+
+    def test_collection_fallback_uses_candidate_expected_total_when_page_total_missing(self):
+        partial_items = [
+            {"url": f"https://makerworld.com/zh/models/{index}", "source_order": index}
+            for index in range(6)
+        ]
+        complete_items = [
+            {"url": f"https://makerworld.com/zh/models/{index}", "source_order": index}
+            for index in range(8)
+        ]
+
+        with patch.object(
+            batch_discovery,
+            "_discover_collection_models_api",
+            return_value={
+                "source_url": "https://makerworld.com/zh/@s450586793/collections/models",
+                "items": partial_items,
+                "mode": "collection_models_api",
+                "expected_total": 8,
+            },
+        ), patch.object(
+            batch_discovery,
+            "_resolve_collection_owner_uid",
+            return_value="2024907479",
+        ), patch.object(
+            batch_discovery,
+            "_discover_collection_models_by_lists",
+            return_value={
+                "source_url": "https://makerworld.com/zh/@s450586793/collections/models",
+                "items": complete_items,
+                "mode": "collection_models_lists",
+                "expected_total": 8,
+            },
+        ), patch.object(batch_discovery, "_discover_by_html") as html_fallback:
+            result = batch_discovery._discover_collection_with_fallbacks(
+                requests.Session(),
+                "https://makerworld.com/zh/@s450586793/collections/models",
+                "token=ok",
+                max_pages=2,
+                page_expected_total=None,
+            )
+
+        self.assertEqual(len(result["items"]), 8)
+        self.assertEqual(result["mode"], "collection_models_lists")
+        html_fallback.assert_not_called()
+
+    def test_extract_page_links_preserves_page_order(self):
+        html = """
+        <a href="/zh/models/300">third</a>
+        <script>{"url":"/zh/models/100"}</script>
+        <a href="/zh/models/200">second</a>
+        """
+
+        links = batch_discovery._extract_page_links(html, "https://makerworld.com/zh/@ace/collections/models")
+
+        self.assertEqual(
+            links[:3],
+            [
+                "https://makerworld.com/zh/models/300",
+                "https://makerworld.com/zh/models/100",
+                "https://makerworld.com/zh/models/200",
+            ],
+        )
 
 
 if __name__ == "__main__":

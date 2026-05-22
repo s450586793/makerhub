@@ -339,14 +339,35 @@ class SubscriptionManagerTest(unittest.TestCase):
             return_value={"uid": "2024907479", "handle": "s450586793", "name": "艾斯"},
         ), patch.object(
             subscriptions,
-            "discover_cookie_followed_authors",
+            "discover_cookie_followed_authors_from_page",
             return_value={
                 "count": 1,
                 "items": [
                     {
                         "title": "Whitt Labs",
                         "handle": "GLB_Whittlabs",
+                        "uid": "31394486",
                         "url": "https://makerworld.com.cn/zh/@GLB_Whittlabs/upload",
+                    }
+                ],
+            },
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_followed_authors",
+            return_value={
+                "count": 1,
+                "items": [
+                    {
+                        "title": "Whitt Labs",
+                        "handle": "user_31394486",
+                        "uid": "31394486",
+                        "url": "https://makerworld.com.cn/zh/@user_31394486/upload",
+                    },
+                    {
+                        "title": "Second Author",
+                        "handle": "user_123",
+                        "uid": "123",
+                        "url": "https://makerworld.com.cn/zh/@user_123/upload",
                     }
                 ],
             },
@@ -375,15 +396,16 @@ class SubscriptionManagerTest(unittest.TestCase):
 
         config = self.store.load()
         urls = {item.url: item for item in config.subscriptions}
-        self.assertEqual(result["created_count"], 3)
+        self.assertEqual(result["created_count"], 4)
         self.assertEqual(second["created_count"], 0)
         self.assertIn("https://makerworld.com.cn/zh/@s450586793/collections/models", urls)
         self.assertIn("https://makerworld.com.cn/zh/@GLB_Whittlabs/upload", urls)
+        self.assertIn("https://makerworld.com.cn/zh/@user_123/upload", urls)
         self.assertIn("https://makerworld.com.cn/zh/collections/518732-test", urls)
         self.assertEqual(urls["https://makerworld.com.cn/zh/@GLB_Whittlabs/upload"].mode, "author_upload")
         self.assertEqual(urls["https://makerworld.com.cn/zh/collections/518732-test"].mode, "collection_models")
         states = self.task_store.load_subscriptions_state().get("items") or []
-        self.assertEqual(len(states), 3)
+        self.assertEqual(len(states), 4)
         self.assertTrue(all(item["manual_requested_at"] for item in states))
 
     def test_request_cookie_source_sync_marks_platforms_for_worker(self):

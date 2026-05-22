@@ -782,7 +782,11 @@ def _finalize_group(group: dict[str, Any], models_by_dir: dict[str, dict], metad
         group["description"] = metadata["description"]
     local_model_count = len(group.get("model_dirs") or [])
     group["local_model_count"] = local_model_count
-    group["model_count"] = max(local_model_count, _safe_int(group.get("remote_model_count")))
+    remote_model_count = _safe_int(group.get("remote_model_count"))
+    if str(group.get("kind") or "") in {"collection", "favorite"} and remote_model_count:
+        group["model_count"] = remote_model_count
+    else:
+        group["model_count"] = max(local_model_count, remote_model_count)
     group["stats"] = _build_group_stats(group, members)
     group["sort_score"] = max(group["followers_count"], group["model_count"], group["likes_count"])
     group.pop("_model_dir_set", None)
@@ -979,7 +983,7 @@ def _group_subscription_sources(
         current_items = state_item.get("current_items") or []
         tracked_items = state_item.get("tracked_items") or []
         source_items = current_items or tracked_items
-        source_model_count = max(len(source_items), _safe_int(state_item.get("last_discovered_count")))
+        source_model_count = len(source_items) or _safe_int(state_item.get("last_discovered_count"))
         if source_model_count:
             group["remote_model_count"] = source_model_count
         for child in source_items:
