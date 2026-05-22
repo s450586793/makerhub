@@ -1083,20 +1083,29 @@ def fetch_design_from_api(
     _append_api_base_candidate(bases, api_host_hint or "", source)
     _append_api_base_candidate(bases, origin, source)
 
-    path_templates = [
-        "/api/v1/design-service/design/{id}",
-        "/api/v1/design-service/design/{id}/detail",
-        "/api/v1/design-service/design/{id}/detail?source=web",
-        "/api/v1/design-service/design/{id}?lang=zh",
-        "/v1/design-service/design/{id}",
-        "/v1/design-service/design/{id}/detail",
-    ]
-    prefixes = ["", "/makerworld"]
     endpoints = []
     for base in bases:
-        for prefix in prefixes:
-            for path in path_templates:
-                endpoints.append(f"{base.rstrip('/')}{prefix}{path.format(id=design_id)}")
+        host = urlparse(base).netloc.lower()
+        if host.startswith("api.bambulab."):
+            path_templates = [
+                "/v1/design-service/design/{id}",
+                "/v1/design-service/design/{id}/detail",
+                "/v1/design-service/design/{id}/detail?source=web",
+                "/v1/design-service/design/{id}?lang=zh",
+            ]
+        else:
+            path_templates = [
+                "/api/v1/design-service/design/{id}",
+                "/api/v1/design-service/design/{id}/detail",
+                "/api/v1/design-service/design/{id}/detail?source=web",
+                "/api/v1/design-service/design/{id}?lang=zh",
+                "/v1/design-service/design/{id}",
+                "/v1/design-service/design/{id}/detail",
+            ]
+        for path in path_templates:
+            candidate = f"{base.rstrip('/')}{path.format(id=design_id)}"
+            if candidate not in endpoints:
+                endpoints.append(candidate)
     cookie_header = sanitize_cookie_header(raw_cookie) or _session_cookie_header(session)
     headers = {
         "Accept": "application/json, text/plain, */*",
@@ -1146,9 +1155,9 @@ def fetch_design_from_api(
                 url=api_url,
                 state="failed",
                 used=False,
-                fallback="requests" if not scrapling_only() else "blocked_by_scrapling_only",
+                fallback="next_candidate" if not scrapling_only() else "blocked_by_scrapling_only",
                 logger=logger,
-                level="warning",
+                level="info",
             )
         if scrapling_only():
             continue
@@ -2380,11 +2389,16 @@ def _comment_service_endpoint_candidates(
     clean_path = "/" + str(path or "").lstrip("/")
     endpoints: List[str] = []
     for base in _comment_api_base_candidates(source_url, api_host_hint=api_host_hint):
-        for prefix in ("", "/makerworld"):
-            for service_prefix in ("/api/v1/comment-service", "/v1/comment-service"):
-                candidate = f"{base}{prefix}{service_prefix}{clean_path}"
-                if candidate not in endpoints:
-                    endpoints.append(candidate)
+        host = urlparse(base).netloc.lower()
+        service_prefixes = (
+            ("/v1/comment-service",)
+            if host.startswith("api.bambulab.")
+            else ("/api/v1/comment-service", "/v1/comment-service")
+        )
+        for service_prefix in service_prefixes:
+            candidate = f"{base}{service_prefix}{clean_path}"
+            if candidate not in endpoints:
+                endpoints.append(candidate)
     return endpoints
 
 
@@ -2529,8 +2543,8 @@ def _fetch_comment_reply_payload(
                 url=api_url,
                 state="failed",
                 used=False,
-                fallback="requests" if not scrapling_only() else "blocked_by_scrapling_only",
-                level="warning",
+                fallback="next_candidate" if not scrapling_only() else "blocked_by_scrapling_only",
+                level="info",
                 reply_kind=reply_kind,
             )
         if scrapling_only():
@@ -2616,8 +2630,8 @@ def _fetch_comment_list_payload(
                 url=api_url,
                 state="failed",
                 used=False,
-                fallback="requests" if not scrapling_only() else "blocked_by_scrapling_only",
-                level="warning",
+                fallback="next_candidate" if not scrapling_only() else "blocked_by_scrapling_only",
+                level="info",
                 offset=offset,
             )
         if scrapling_only():
@@ -3618,12 +3632,10 @@ def _build_instance_api_candidates(
         if "api.bambulab" in host:
             path_templates = [
                 "/v1/design-service/instance/{id}/f3mf",
-                "/makerworld/v1/design-service/instance/{id}/f3mf",
             ]
         elif "makerworld.com" in host:
             path_templates = [
                 "/api/v1/design-service/instance/{id}/f3mf",
-                "/makerworld/api/v1/design-service/instance/{id}/f3mf",
             ]
         else:
             path_templates = [
@@ -4101,7 +4113,7 @@ def fetch_instance_3mf(
                     state=str(failure.get("state") or "missing"),
                     used=False,
                     fallback="blocked_by_scrapling_only",
-                    level="warning",
+                    level="info",
                     instance_id=inst_id,
                 )
                 if _should_stop_three_mf_fetch(failure):
@@ -4141,7 +4153,7 @@ def fetch_instance_3mf(
                     state=str(failure.get("state") or "missing"),
                     used=False,
                     fallback="next_candidate",
-                    level="warning",
+                    level="info",
                     instance_id=inst_id,
                 )
                 if _should_stop_three_mf_fetch(failure):
@@ -4156,7 +4168,7 @@ def fetch_instance_3mf(
                     state="failed",
                     used=False,
                     fallback="requests",
-                    level="warning",
+                    level="info",
                     instance_id=inst_id,
                 )
             r = session.get(

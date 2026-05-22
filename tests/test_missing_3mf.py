@@ -227,6 +227,8 @@ class Missing3mfTest(unittest.TestCase):
         )
 
         self.assertTrue(candidates[0].startswith("https://api.bambulab.cn/v1/design-service/instance/2864062/f3mf"))
+        self.assertFalse(any("api.bambulab.cn/api/v1/design-service" in item for item in candidates))
+        self.assertFalse(any("api.bambulab.cn/makerworld/v1/design-service" in item for item in candidates))
         self.assertIn(
             "https://makerworld.com.cn/api/v1/design-service/instance/2864062/f3mf?type=download&fileType=",
             candidates,

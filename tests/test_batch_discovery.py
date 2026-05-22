@@ -379,7 +379,7 @@ class BatchDiscoveryTest(unittest.TestCase):
 
         self.assertEqual(source["title"], "艾斯 所有模型收藏夹")
         self.assertEqual(source["avatar_url"], "https://example.test/avatar.jpg")
-        self.assertEqual(source["url"], "https://makerworld.com/en/@s450586793/collections/models")
+        self.assertEqual(source["url"], "https://makerworld.com/zh/@s450586793/collections/models")
 
     def test_default_favorites_subscription_source_falls_back_to_uid_handle(self):
         source = batch_discovery.default_favorites_subscription_source(
@@ -388,7 +388,7 @@ class BatchDiscoveryTest(unittest.TestCase):
         )
 
         self.assertEqual(source["handle"], "user_2073587493")
-        self.assertEqual(source["url"], "https://makerworld.com/en/@user_2073587493/collections/models")
+        self.assertEqual(source["url"], "https://makerworld.com/zh/@user_2073587493/collections/models")
 
     def test_extract_account_profile_ignores_plain_counter_id(self):
         profile = batch_discovery._extract_account_profile(
@@ -462,6 +462,22 @@ class BatchDiscoveryTest(unittest.TestCase):
 
         self.assertTrue(params)
         self.assertTrue(all(item.get("handle") == "s450586793" for item in params))
+
+    def test_bambulab_service_candidates_use_v1_without_legacy_api_prefix(self):
+        candidates = batch_discovery._service_endpoint_candidates(
+            "https://makerworld.com/zh/@s450586793/collections/models",
+            "design-service",
+            "/favorites/518732/designs",
+        )
+
+        self.assertEqual(
+            candidates[0],
+            "https://api.bambulab.com/v1/design-service/favorites/518732/designs",
+        )
+        self.assertNotIn(
+            "https://api.bambulab.com/api/v1/design-service/favorites/518732/designs",
+            candidates,
+        )
 
     def test_collection_fallback_continues_when_candidate_misses_expected_total(self):
         partial_items = [

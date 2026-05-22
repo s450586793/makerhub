@@ -172,6 +172,26 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         self.assertEqual(candidates[0], "https://api.bambulab.com")
         self.assertIn("https://makerworld.com", candidates)
 
+    def test_comment_service_candidates_use_bambulab_v1_without_legacy_api_prefix(self):
+        candidates = legacy_archiver._comment_service_endpoint_candidates(
+            "https://makerworld.com/zh/models/2416065",
+            "/commentandrating",
+            api_host_hint="https://makerworld.com",
+        )
+
+        self.assertEqual(
+            candidates[0],
+            "https://api.bambulab.com/v1/comment-service/commentandrating",
+        )
+        self.assertNotIn(
+            "https://api.bambulab.com/api/v1/comment-service/commentandrating",
+            candidates,
+        )
+        self.assertNotIn(
+            "https://api.bambulab.com/makerworld/v1/comment-service/commentandrating",
+            candidates,
+        )
+
     def test_extract_author_ignores_browsing_history_link(self):
         author = legacy_archiver.extract_author(
             {},

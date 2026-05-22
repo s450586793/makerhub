@@ -175,7 +175,7 @@ def _service_endpoint_candidates(source_url: str, service_name: str, path: str) 
     for base in _api_base_candidates(source_url):
         base_host = urlparse(base).netloc.lower()
         prefixes = (
-            (f"/v1/{service_name}", f"/api/v1/{service_name}")
+            (f"/v1/{service_name}",)
             if base_host.startswith("api.bambulab.")
             else (f"/api/v1/{service_name}", f"/v1/{service_name}")
         )
@@ -1657,7 +1657,7 @@ def default_favorites_subscription_source(platform: str, profile: dict[str, str]
     if not handle:
         return {}
     origin = _platform_origin(clean_platform)
-    lang = _makerworld_model_path_lang(clean_platform)
+    lang = "zh"
     title_name = str(profile.get("name") or handle).strip() or handle
     return {
         "title": f"{title_name} 所有模型收藏夹",

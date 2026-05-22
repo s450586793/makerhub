@@ -214,6 +214,55 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertFalse(states["sub-3"]["manual_requested_at"])
         self.assertFalse(states["sub-4"]["manual_requested_at"])
 
+    def test_ensure_state_records_dedupes_global_default_favorites_language_urls(self):
+        config = self.store.load()
+        config.subscriptions = [
+            SubscriptionRecord(
+                id="sub-en",
+                name="国际 艾斯 所有模型收藏夹",
+                url="https://makerworld.com/en/@s450586793/collections/models",
+                mode="collection_models",
+                cron="0 */6 * * *",
+                enabled=True,
+            ),
+            SubscriptionRecord(
+                id="sub-zh",
+                name="艾斯国际区收藏夹订阅",
+                url="https://makerworld.com/zh/@s450586793/collections/models",
+                mode="collection_models",
+                cron="0 * * * *",
+                enabled=True,
+            ),
+        ]
+        self.store.save(config)
+        self.task_store.patch_subscription_state(
+            "sub-en",
+            status="success",
+            running=False,
+            last_success_at="2026-05-22T18:10:00+08:00",
+            current_items=[{"task_key": f"model:{index}", "model_id": str(index), "url": f"https://makerworld.com/zh/models/{index}"} for index in range(18)],
+            tracked_items=[{"task_key": f"model:{index}", "model_id": str(index), "url": f"https://makerworld.com/zh/models/{index}"} for index in range(18)],
+        )
+        self.task_store.patch_subscription_state(
+            "sub-zh",
+            status="success",
+            running=False,
+            last_success_at="2026-05-22T18:02:00+08:00",
+            current_items=[{"task_key": f"model:{index}", "model_id": str(index), "url": f"https://makerworld.com/zh/models/{index}"} for index in range(18)],
+            tracked_items=[{"task_key": f"model:{index}", "model_id": str(index), "url": f"https://makerworld.com/zh/models/{index}"} for index in range(25)],
+        )
+
+        self.manager._ensure_state_records()
+
+        config = self.store.load()
+        self.assertEqual(len(config.subscriptions), 1)
+        self.assertEqual(config.subscriptions[0].url, "https://makerworld.com/zh/@s450586793/collections/models")
+        self.assertEqual(config.subscriptions[0].name, "国际 艾斯 所有模型收藏夹")
+        states = self.task_store.load_subscriptions_state().get("items") or []
+        self.assertEqual(len(states), 1)
+        self.assertEqual(len(states[0]["current_items"]), 18)
+        self.assertEqual(len(states[0]["tracked_items"]), 18)
+
     def test_collection_sync_rejects_obvious_partial_scan_and_preserves_history(self):
         tracked_items = [
             {

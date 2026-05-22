@@ -9,12 +9,14 @@ from app.schemas.models import SubscriptionRecord
 from app.services.catalog import _apply_subscription_flags, _source_deleted_model_count
 from app.services.source_library import (
     _SOURCE_LIBRARY_GROUP_CACHE,
+    _SOURCE_LIBRARY_PAYLOAD_REFRESH_STATE,
     _base_group,
     _finalize_group,
     _group_models,
     _source_key,
     _render_source_preview_snapshot,
     _source_preview_snapshot_signature,
+    build_source_library_payload,
     build_source_group_models_payload,
     build_state_group_models_payload,
     refresh_source_preview_snapshots,
@@ -437,6 +439,54 @@ class SourceLibraryTest(unittest.TestCase):
             self.assertEqual(first_models[0]["model_dir"], second_models[0]["model_dir"])
         finally:
             _SOURCE_LIBRARY_GROUP_CACHE.update({"signature": None, "groups": {}, "all_models": (), "sections": ()})
+
+    def test_source_library_payload_uses_cache_for_empty_query(self):
+        with TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "source_library_payload_cache.json"
+            built_payload = {
+                "sections": [],
+                "count": 0,
+                "filters": {"q": ""},
+                "summary": {"card_count": 0, "model_count": 0},
+                "cache": {"stale": False, "refreshing": False, "updated_at": "now"},
+            }
+
+            with patch("app.services.source_library.SOURCE_LIBRARY_PAYLOAD_CACHE_PATH", cache_path), \
+                    patch("app.services.source_library._source_library_payload_signature", return_value=("same",)), \
+                    patch("app.services.source_library._build_source_library_payload_uncached", return_value=built_payload) as build_uncached:
+                first = build_source_library_payload()
+                second = build_source_library_payload()
+
+        self.assertEqual(build_uncached.call_count, 1)
+        self.assertEqual(first["summary"]["model_count"], 0)
+        self.assertEqual(second["summary"]["model_count"], 0)
+        self.assertFalse(second["cache"]["stale"])
+
+    def test_source_library_payload_returns_stale_cache_and_schedules_refresh(self):
+        with TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "source_library_payload_cache.json"
+            old_payload = {
+                "sections": [{"key": "favorites", "label": "收藏夹", "count": 1, "items": [{"title": "旧缓存"}]}],
+                "count": 1,
+                "filters": {"q": ""},
+                "summary": {"card_count": 1, "model_count": 1},
+            }
+
+            try:
+                _SOURCE_LIBRARY_PAYLOAD_REFRESH_STATE.update({"running": False, "last_started": 0.0})
+                with patch("app.services.source_library.SOURCE_LIBRARY_PAYLOAD_CACHE_PATH", cache_path), \
+                        patch("app.services.source_library._source_library_payload_signature", return_value=("new",)), \
+                        patch("app.services.source_library._schedule_source_library_payload_refresh") as schedule_refresh:
+                    from app.services import source_library
+
+                    source_library._write_source_library_payload_cache(old_payload, ("old",))
+                    payload = build_source_library_payload()
+            finally:
+                _SOURCE_LIBRARY_PAYLOAD_REFRESH_STATE.update({"running": False, "last_started": 0.0})
+
+        self.assertEqual(payload["sections"][0]["items"][0]["title"], "旧缓存")
+        self.assertTrue(payload["cache"]["stale"])
+        schedule_refresh.assert_called_once()
 
     def test_finalize_group_exposes_matching_preview_snapshot(self):
         group = _base_group(

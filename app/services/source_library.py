@@ -11,10 +11,14 @@ import requests
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
 
-from app.core.settings import ARCHIVE_DIR, STATE_DIR, ensure_app_dirs
+from app.core.settings import ARCHIVE_DIR, CONFIG_PATH, STATE_DIR, ensure_app_dirs
 from app.core.store import JsonStore
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
-from app.services.batch_discovery import normalize_source_url
+from app.services.batch_discovery import (
+    default_favorites_subscription_source,
+    discover_cookie_account_profile,
+    normalize_source_url,
+)
 from app.services.business_logs import append_business_log
 from app.services.catalog import (
     _file_signature,
@@ -27,13 +31,18 @@ from app.services.catalog import (
 )
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.legacy_archiver import extract_next_data, fetch_html_with_requests, parse_cookies
-from app.services.proxy_policy import proxy_mapping
+from app.services.proxy_policy import proxy_mapping, temporary_proxy_env
+from app.services import task_state as task_state_module
 from app.services.task_state import TaskStateStore
 
 
 SOURCE_LIBRARY_METADATA_PATH = STATE_DIR / "source_library_metadata.json"
 SOURCE_LIBRARY_SNAPSHOT_DIR = STATE_DIR / "source_library_snapshots"
+SOURCE_LIBRARY_PAYLOAD_CACHE_PATH = STATE_DIR / "source_library_payload_cache.json"
+SOURCE_LIBRARY_ARCHIVE_MARKER_PATH = STATE_DIR / "archive_snapshot.marker"
 SOURCE_LIBRARY_METADATA_TTL_SECONDS = 12 * 60 * 60
+SOURCE_LIBRARY_PAYLOAD_CACHE_VERSION = 1
+SOURCE_LIBRARY_PAYLOAD_REFRESH_MIN_SECONDS = 45
 SOURCE_LIBRARY_PREVIEW_LIMIT = 4
 SOURCE_LIBRARY_BACKFILL_DELAY_SECONDS = 6
 SOURCE_LIBRARY_SNAPSHOT_SIZE = 480
@@ -49,6 +58,12 @@ _SOURCE_LIBRARY_GROUP_CACHE: dict[str, Any] = {
     "groups": {},
     "all_models": (),
     "sections": (),
+}
+_SOURCE_LIBRARY_PAYLOAD_CACHE_LOCK = threading.RLock()
+_SOURCE_LIBRARY_PAYLOAD_REFRESH_LOCK = threading.Lock()
+_SOURCE_LIBRARY_PAYLOAD_REFRESH_STATE: dict[str, Any] = {
+    "running": False,
+    "last_started": 0.0,
 }
 
 AUTHOR_NAME_KEYS = ("name", "nickname", "displayName", "userName", "username")
@@ -119,6 +134,29 @@ def _site_badge(site: str) -> str:
 def _source_key(kind: str, site: str, reference: str) -> str:
     digest = hashlib.sha1(f"{kind}:{site}:{reference}".encode("utf-8")).hexdigest()[:12]
     return f"{kind}-{site}-{digest}"
+
+
+def _default_favorites_identity_url(url: str) -> str:
+    normalized = normalize_source_url(url)
+    if not normalized:
+        return ""
+    parsed = urlparse(normalized)
+    path = parsed.path or ""
+    match = re.search(r"/(?:[a-z]{2}/)?@([^/?#]+)/collections/models/?$", path, re.I)
+    if not match:
+        return normalized
+    handle = _normalize_handle(unquote(match.group(1)))
+    if not handle:
+        return normalized
+    return parsed._replace(path=f"/zh/@{quote(handle, safe='@._-')}/collections/models", query="", fragment="").geturl()
+
+
+def _source_reference_for_key(kind: str, url: str) -> str:
+    return _default_favorites_identity_url(url) if kind == "favorite" else normalize_source_url(url)
+
+
+def _source_group_key(kind: str, site: str, url: str) -> str:
+    return _source_key(kind, site, _source_reference_for_key(kind, url))
 
 
 def _author_reference(model: dict) -> tuple[str, str, str]:
@@ -237,6 +275,176 @@ def _directory_signature(path: Path) -> tuple[int, int, int]:
         latest_mtime = max(latest_mtime, int(stat.st_mtime_ns))
         total_size += int(stat.st_size)
     return (len(files), latest_mtime, total_size)
+
+
+def _source_library_payload_signature(store: Optional[JsonStore] = None) -> tuple[Any, ...]:
+    config_path = Path(getattr(store, "path", None) or CONFIG_PATH)
+    return (
+        SOURCE_LIBRARY_PAYLOAD_CACHE_VERSION,
+        _file_signature(config_path),
+        _file_signature(task_state_module.SUBSCRIPTIONS_STATE_PATH),
+        _file_signature(task_state_module.MODEL_FLAGS_PATH),
+        _file_signature(SOURCE_LIBRARY_ARCHIVE_MARKER_PATH),
+        _file_signature(SOURCE_LIBRARY_METADATA_PATH),
+        _directory_signature(SOURCE_LIBRARY_SNAPSHOT_DIR),
+    )
+
+
+def _clone_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return json.loads(json.dumps(payload, ensure_ascii=False))
+    except (TypeError, ValueError):
+        return dict(payload)
+
+
+def _read_source_library_payload_cache_unlocked() -> dict[str, Any]:
+    if not SOURCE_LIBRARY_PAYLOAD_CACHE_PATH.exists():
+        return {}
+    try:
+        payload = json.loads(SOURCE_LIBRARY_PAYLOAD_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_source_library_payload_cache(payload: dict[str, Any], signature: tuple[Any, ...]) -> None:
+    wrapped = {
+        "version": SOURCE_LIBRARY_PAYLOAD_CACHE_VERSION,
+        "signature": list(signature),
+        "updated_at": _now_iso(),
+        "payload": payload,
+    }
+    try:
+        SOURCE_LIBRARY_PAYLOAD_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = SOURCE_LIBRARY_PAYLOAD_CACHE_PATH.with_name(
+            f"{SOURCE_LIBRARY_PAYLOAD_CACHE_PATH.name}.{threading.get_ident()}.tmp"
+        )
+        temp_path.write_text(json.dumps(wrapped, ensure_ascii=False), encoding="utf-8")
+        temp_path.replace(SOURCE_LIBRARY_PAYLOAD_CACHE_PATH)
+    except OSError:
+        return
+
+
+def _load_source_library_payload_cache(signature: tuple[Any, ...]) -> tuple[dict[str, Any], bool]:
+    with _SOURCE_LIBRARY_PAYLOAD_CACHE_LOCK:
+        wrapped = _read_source_library_payload_cache_unlocked()
+    if int(wrapped.get("version") or 0) != SOURCE_LIBRARY_PAYLOAD_CACHE_VERSION:
+        return {}, True
+    payload = wrapped.get("payload")
+    if not isinstance(payload, dict):
+        return {}, True
+    cached_signature = tuple(wrapped.get("signature") or ())
+    stale = cached_signature != signature
+    cloned = _clone_payload(payload)
+    cloned["cache"] = {
+        **(cloned.get("cache") if isinstance(cloned.get("cache"), dict) else {}),
+        "stale": stale,
+        "updated_at": str(wrapped.get("updated_at") or ""),
+        "refreshing": bool(_SOURCE_LIBRARY_PAYLOAD_REFRESH_STATE.get("running")),
+    }
+    return cloned, stale
+
+
+def _build_source_library_payload_uncached(q: str = "", store: Optional[JsonStore] = None, task_store: Optional[TaskStateStore] = None) -> dict[str, Any]:
+    groups, all_models, sections = _group_models(store=store, task_store=task_store)
+    normalized_query = _normalize_text(q).lower()
+    total_cards = 0
+    filtered_sections = []
+    for section in sections:
+        items = list(section.get("items") or [])
+        if normalized_query:
+            items = [
+                item
+                for item in items
+                if normalized_query in str(item.get("title") or "").lower()
+                or normalized_query in str(item.get("subtitle") or "").lower()
+                or normalized_query in str(item.get("description") or "").lower()
+            ]
+        total_cards += len(items)
+        filtered_sections.append(
+            {
+                "key": section.get("key"),
+                "label": section.get("label"),
+                "count": len(items),
+                "items": items,
+            }
+        )
+    return {
+        "sections": filtered_sections,
+        "count": total_cards,
+        "filters": {"q": q},
+        "summary": {
+            "card_count": total_cards,
+            "model_count": len(_visible_models(all_models)),
+        },
+        "cache": {"stale": False, "refreshing": False, "updated_at": _now_iso()},
+    }
+
+
+def _refresh_source_library_payload_cache(
+    signature: tuple[Any, ...],
+    *,
+    store: Optional[JsonStore] = None,
+    task_store: Optional[TaskStateStore] = None,
+) -> None:
+    try:
+        payload = _build_source_library_payload_uncached("", store=store, task_store=task_store)
+        signature = _source_library_payload_signature(store)
+        with _SOURCE_LIBRARY_PAYLOAD_CACHE_LOCK:
+            _write_source_library_payload_cache(payload, signature)
+    except Exception as exc:
+        append_business_log(
+            "source_library",
+            "payload_cache_refresh_failed",
+            "来源库页面缓存刷新失败。",
+            level="warning",
+            error=_normalize_text(str(exc))[:240],
+        )
+    finally:
+        with _SOURCE_LIBRARY_PAYLOAD_REFRESH_LOCK:
+            _SOURCE_LIBRARY_PAYLOAD_REFRESH_STATE["running"] = False
+
+
+def _schedule_source_library_payload_refresh(
+    signature: tuple[Any, ...],
+    *,
+    store: Optional[JsonStore] = None,
+    task_store: Optional[TaskStateStore] = None,
+) -> None:
+    now_value = time.time()
+    with _SOURCE_LIBRARY_PAYLOAD_REFRESH_LOCK:
+        if _SOURCE_LIBRARY_PAYLOAD_REFRESH_STATE.get("running"):
+            return
+        last_started = float(_SOURCE_LIBRARY_PAYLOAD_REFRESH_STATE.get("last_started") or 0.0)
+        if now_value - last_started < SOURCE_LIBRARY_PAYLOAD_REFRESH_MIN_SECONDS:
+            return
+        _SOURCE_LIBRARY_PAYLOAD_REFRESH_STATE["running"] = True
+        _SOURCE_LIBRARY_PAYLOAD_REFRESH_STATE["last_started"] = now_value
+    thread = threading.Thread(
+        target=_refresh_source_library_payload_cache,
+        kwargs={"signature": signature, "store": store, "task_store": task_store},
+        name="makerhub-source-library-payload",
+        daemon=True,
+    )
+    thread.start()
+
+
+def _source_library_payload_from_cache_or_build(
+    *,
+    store: Optional[JsonStore] = None,
+    task_store: Optional[TaskStateStore] = None,
+) -> dict[str, Any]:
+    signature = _source_library_payload_signature(store)
+    cached, stale = _load_source_library_payload_cache(signature)
+    if cached:
+        if stale:
+            _schedule_source_library_payload_refresh(signature, store=store, task_store=task_store)
+        return cached
+
+    payload = _build_source_library_payload_uncached("", store=store, task_store=task_store)
+    with _SOURCE_LIBRARY_PAYLOAD_CACHE_LOCK:
+        _write_source_library_payload_cache(payload, signature)
+    return payload
 
 
 def _group_cache_signature() -> tuple[Any, ...]:
@@ -969,13 +1177,13 @@ def _group_subscription_sources(
             if not title:
                 title = "合集" if kind == "collection" else "收藏夹"
             group = _base_group(
-                key=_source_key(kind, site, source_url),
+                key=_source_group_key(kind, site, source_url),
                 kind=kind,
                 card_kind="collection",
                 title=title,
                 subtitle="MakerWorld 来源",
                 site=site,
-                canonical_url=source_url,
+                canonical_url=_source_reference_for_key(kind, source_url),
             )
         else:
             continue
@@ -1108,38 +1316,9 @@ def _group_models(store: Optional[JsonStore] = None, task_store: Optional[TaskSt
 
 
 def build_source_library_payload(q: str = "", store: Optional[JsonStore] = None, task_store: Optional[TaskStateStore] = None) -> dict[str, Any]:
-    groups, all_models, sections = _group_models(store=store, task_store=task_store)
-    normalized_query = _normalize_text(q).lower()
-    total_cards = 0
-    filtered_sections = []
-    for section in sections:
-        items = list(section.get("items") or [])
-        if normalized_query:
-            items = [
-                item
-                for item in items
-                if normalized_query in str(item.get("title") or "").lower()
-                or normalized_query in str(item.get("subtitle") or "").lower()
-                or normalized_query in str(item.get("description") or "").lower()
-            ]
-        total_cards += len(items)
-        filtered_sections.append(
-            {
-                "key": section.get("key"),
-                "label": section.get("label"),
-                "count": len(items),
-                "items": items,
-            }
-        )
-    return {
-        "sections": filtered_sections,
-        "count": total_cards,
-        "filters": {"q": q},
-        "summary": {
-            "card_count": total_cards,
-            "model_count": len(_visible_models(all_models)),
-        },
-    }
+    if _normalize_text(q):
+        return _build_source_library_payload_uncached(q, store=store, task_store=task_store)
+    return _source_library_payload_from_cache_or_build(store=store, task_store=task_store)
 
 
 def build_subscription_overview_payload(
@@ -1150,7 +1329,8 @@ def build_subscription_overview_payload(
     store = store or JsonStore()
     config = store.load()
     settings = config.subscription_settings.model_dump()
-    _, _, sections = _group_models(store=store, task_store=task_store)
+    payload = _source_library_payload_from_cache_or_build(store=store, task_store=task_store)
+    sections = payload.get("sections") or []
     source_groups = [
         item
         for section in sections
@@ -1177,6 +1357,7 @@ def build_subscription_overview_payload(
             },
         ],
         "settings": settings,
+        "cache": payload.get("cache") if isinstance(payload.get("cache"), dict) else {},
     }
 
 
@@ -1472,12 +1653,13 @@ def _source_identity_from_subscription(url: str, mode: str) -> Optional[dict[str
         }
     if clean_mode == "collection_models":
         kind = _subscription_kind(source_url)
+        canonical_url = _source_reference_for_key(kind, source_url)
         return {
-            "key": _source_key(kind, site, source_url),
+            "key": _source_group_key(kind, site, source_url),
             "kind": kind,
             "site": site,
-            "canonical_url": source_url,
-            "fetch_url": source_url,
+            "canonical_url": canonical_url,
+            "fetch_url": canonical_url,
         }
     return None
 
@@ -1485,6 +1667,79 @@ def _source_identity_from_subscription(url: str, mode: str) -> Optional[dict[str
 def source_identity_key(url: str, mode: str) -> str:
     identity = _source_identity_from_subscription(url, mode)
     return str((identity or {}).get("key") or "")
+
+
+def backfill_default_favorites_avatar_metadata(
+    *,
+    store: Optional[JsonStore] = None,
+) -> dict[str, Any]:
+    store = store or JsonStore()
+    config = store.load()
+    subscriptions = list(getattr(config, "subscriptions", []) or [])
+    cookie_map = {
+        str(item.platform or "").strip().lower(): sanitize_cookie_header(item.cookie)
+        for item in getattr(config, "cookies", [])
+    }
+
+    total = 0
+    updated = 0
+    failed = 0
+    for platform in ("cn", "global"):
+        raw_cookie = cookie_map.get(platform) or ""
+        if not raw_cookie:
+            continue
+        try:
+            with temporary_proxy_env(config.proxy, "", platform=platform):
+                profile = discover_cookie_account_profile(platform, raw_cookie)
+        except Exception as exc:
+            failed += 1
+            append_business_log(
+                "source_library",
+                "default_favorite_avatar_backfill_failed",
+                "默认收藏夹头像补全失败。",
+                level="warning",
+                platform=platform,
+                error=_normalize_text(str(exc))[:240],
+            )
+            continue
+
+        source = default_favorites_subscription_source(platform, profile)
+        source_url = _default_favorites_identity_url(str(source.get("url") or ""))
+        avatar_url = str(source.get("avatar_url") or "").strip()
+        if not source_url or not avatar_url:
+            continue
+        site = "global" if platform == "global" else "cn"
+        for subscription in subscriptions:
+            if str(getattr(subscription, "mode", "") or "").strip() != "collection_models":
+                continue
+            subscription_url = _default_favorites_identity_url(str(getattr(subscription, "url", "") or ""))
+            if subscription_url != source_url:
+                continue
+            source_key = source_identity_key(subscription_url, "collection_models")
+            if not source_key:
+                continue
+            total += 1
+            _save_source_metadata_item(
+                source_key,
+                {
+                    "kind": "favorite",
+                    "canonical_url": source_url,
+                    "site": site,
+                    "avatar_url": avatar_url,
+                    "error": "",
+                },
+            )
+            updated += 1
+    if total:
+        append_business_log(
+            "source_library",
+            "default_favorite_avatar_backfilled",
+            "默认收藏夹头像已按 Cookie 账号补全。",
+            total=total,
+            updated=updated,
+            failed=failed,
+        )
+    return {"total": total, "updated": updated, "failed": failed}
 
 
 def _positive_int(value: Any) -> int:
@@ -1715,6 +1970,16 @@ class SourceLibraryManager:
                 "source_library",
                 "metadata_refresh_failed",
                 "来源卡元数据补全失败。",
+                level="warning",
+                error=_normalize_text(str(exc))[:240],
+            )
+        try:
+            backfill_default_favorites_avatar_metadata(store=self.store)
+        except Exception as exc:
+            append_business_log(
+                "source_library",
+                "default_favorite_avatar_backfill_failed",
+                "默认收藏夹头像补全失败。",
                 level="warning",
                 error=_normalize_text(str(exc))[:240],
             )

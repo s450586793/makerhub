@@ -154,6 +154,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-05-22 · v0.6.127
+- 国际区默认收藏夹地址统一为 `makerworld.com/zh/@账号/collections/models`，旧 `/en/` 订阅会自动合并到同一个来源，避免订阅库重复出现默认收藏夹
+- 来源库和订阅库来源卡新增 payload 缓存，缓存过期时先返回旧卡片并后台刷新，减少每次打开页面都重算来源卡导致的等待
+- MakerWorld API / Scrapling 候选路径收敛到当前可用的 Bambu API 地址，减少无效 `/api/v1`、`/makerworld` 候选造成的 403/404/418 warning
+
 ### 2026-05-22 · v0.6.126
 - 默认收藏夹来源卡头像改为使用 Cookie 账号头像，国内 / 国际账号都会在关注来源同步时写入来源卡元数据
 - 收藏夹卡片头像位置不再用模型封面兜底，模型图只保留在下方预览区，避免默认收藏夹头像显示成某个模型照片
@@ -164,13 +169,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - 收藏夹抓取在页面 All models 总数存在时，会优先选择最接近该总数的结果，避免局部收藏夹列表被误当成全量
 - 国际区收藏夹全量接口低于页面总数时会自动短重试，减少偶发只扫到 6 个导致同步异常的抖动
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-22 · v0.6.124
 - MakerWorld 关注作者同步改用前端 `/user/{uid}/follows` 分页接口，并合并关注页首屏数据，避免 handle 为空导致订阅来源缺失
 - Cookie 账号识别会继续探测到 handle；默认收藏夹支持 uid 兜底，国内 / 国际默认收藏夹可自动生成订阅来源
 - 收藏夹模型闭环改用设计分页接口实际 total，国区默认收藏夹按 310/310 判断，不再保留列表统计 354 口径
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-22 · v0.6.123
 - 设置页保存连接配置改为快速返回：Cookie / 代理保存成功后只登记关注来源同步请求，关注作者与收藏夹导入交给 Worker 后台执行

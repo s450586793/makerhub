@@ -32,6 +32,7 @@ from app.services.source_library import (
     refresh_source_preview_snapshots,
     refresh_subscription_source_metadata,
     source_identity_key,
+    _default_favorites_identity_url,
     _save_source_metadata_item,
 )
 from app.services.task_state import TaskStateStore
@@ -199,6 +200,63 @@ def _select_cookie(url: str, config) -> str:
     platform = "global" if "makerworld.com" in netloc and "makerworld.com.cn" not in netloc else "cn"
     cookie_map = {item.platform: item.cookie for item in config.cookies}
     return sanitize_cookie_header(cookie_map.get(platform) or "")
+
+
+def _canonical_subscription_url(url: str, mode: str = "") -> str:
+    clean_url = normalize_source_url(url)
+    if (mode or _detect_subscription_mode(clean_url)) == "collection_models":
+        return _default_favorites_identity_url(clean_url)
+    return clean_url
+
+
+def _subscription_identity_url(url: str, mode: str = "") -> str:
+    return _canonical_subscription_url(url, mode)
+
+
+def _subscription_identity_key(record: SubscriptionRecord) -> tuple[str, str]:
+    return (str(record.mode or "").strip(), _subscription_identity_url(record.url, record.mode))
+
+
+def _state_items_count(state: dict, key: str) -> int:
+    value = state.get(key)
+    return len(value) if isinstance(value, list) else 0
+
+
+def _state_deleted_count(state: dict) -> int:
+    current_items = _normalize_source_items(state.get("current_items") or [])
+    tracked_items = _normalize_source_items(state.get("tracked_items") or [])
+    return len(_deleted_source_items(current_items, tracked_items))
+
+
+def _state_sort_time(value: Any) -> datetime:
+    parsed = _parse_iso(str(value or ""))
+    return parsed or datetime.min.replace(tzinfo=china_now().tzinfo)
+
+
+def _pick_duplicate_subscription_state(states: list[dict]) -> dict:
+    if not states:
+        return {}
+    return max(
+        states,
+        key=lambda item: (
+            _state_items_count(item, "current_items"),
+            -_state_deleted_count(item),
+            _state_items_count(item, "tracked_items"),
+            _state_sort_time(item.get("last_success_at") or item.get("last_run_at")),
+        ),
+    )
+
+
+def _better_default_favorite_name(current: str, candidate: str) -> str:
+    current_text = str(current or "").strip()
+    candidate_text = str(candidate or "").strip()
+    if not candidate_text:
+        return current_text
+    if not current_text:
+        return candidate_text
+    if "所有模型收藏夹" in candidate_text and "所有模型收藏夹" not in current_text:
+        return candidate_text
+    return current_text
 
 
 def _platform_for_url(url: str) -> str:
@@ -451,14 +509,21 @@ class SubscriptionManager:
         enabled: bool = True,
         initialize_from_source: bool = True,
     ) -> dict:
-        clean_url = normalize_source_url(url)
+        clean_url = _canonical_subscription_url(url)
         mode = _detect_subscription_mode(clean_url)
         if mode not in SUBSCRIPTION_MODES:
             raise ValueError("仅支持作者上传页或收藏夹模型页订阅。")
 
         normalized_cron = _validate_cron(cron)
         config = self.store.load()
-        existing = next((item for item in config.subscriptions if normalize_source_url(item.url) == clean_url), None)
+        existing = next(
+            (
+                item
+                for item in config.subscriptions
+                if _subscription_identity_url(item.url, item.mode) == _subscription_identity_url(clean_url, mode)
+            ),
+            None,
+        )
         now_iso = _now_iso()
         created_new = False
         initial_enqueue_count = 0
@@ -544,7 +609,7 @@ class SubscriptionManager:
         if not clean_id:
             raise ValueError("缺少订阅 ID。")
 
-        clean_url = normalize_source_url(url)
+        clean_url = _canonical_subscription_url(url)
         mode = _detect_subscription_mode(clean_url)
         if mode not in SUBSCRIPTION_MODES:
             raise ValueError("仅支持作者上传页或收藏夹模型页订阅。")
@@ -559,7 +624,8 @@ class SubscriptionManager:
             (
                 item
                 for item in config.subscriptions
-                if item.id != clean_id and normalize_source_url(item.url) == clean_url
+                if item.id != clean_id
+                and _subscription_identity_url(item.url, item.mode) == _subscription_identity_url(clean_url, mode)
             ),
             None,
         )
@@ -567,7 +633,7 @@ class SubscriptionManager:
             raise ValueError("该链接已存在订阅。")
 
         previous = target.model_copy(deep=True)
-        url_changed = normalize_source_url(target.url) != clean_url
+        url_changed = _subscription_identity_url(target.url, target.mode) != _subscription_identity_url(clean_url, mode)
 
         target.url = clean_url
         target.mode = mode
@@ -824,11 +890,12 @@ class SubscriptionManager:
                 platform_updated = 0
                 seen_urls: set[str] = set()
                 for source in sources:
-                    clean_url = normalize_source_url(str(source.get("url") or ""))
+                    raw_url = normalize_source_url(str(source.get("url") or ""))
+                    mode = str(source.get("mode") or _detect_subscription_mode(raw_url)).strip()
+                    clean_url = _canonical_subscription_url(raw_url, mode)
                     if not clean_url or clean_url in seen_urls:
                         continue
                     seen_urls.add(clean_url)
-                    mode = str(source.get("mode") or _detect_subscription_mode(clean_url)).strip()
                     if mode not in SUBSCRIPTION_MODES:
                         continue
                     source_key = source_identity_key(clean_url, mode)
@@ -838,7 +905,11 @@ class SubscriptionManager:
                             _source_metadata_seed(source, mode, platform, clean_url),
                         )
                     existing = next(
-                        (item for item in config.subscriptions if normalize_source_url(item.url) == clean_url),
+                        (
+                            item
+                            for item in config.subscriptions
+                            if _subscription_identity_url(item.url, item.mode) == _subscription_identity_url(clean_url, mode)
+                        ),
                         None,
                     )
                     name = _subscription_import_name(source, mode, platform)
@@ -938,6 +1009,7 @@ class SubscriptionManager:
 
         if changed:
             self.store.save(config)
+            self._dedupe_default_favorites_subscriptions()
 
         result = {
             "created_count": len(created_ids),
@@ -968,14 +1040,21 @@ class SubscriptionManager:
         cron: str = DEFAULT_SUBSCRIPTION_CRON,
         name: str = "",
     ) -> dict:
-        clean_url = normalize_source_url(url)
+        clean_url = _canonical_subscription_url(url, mode)
         clean_mode = mode if mode in SUBSCRIPTION_MODES else _detect_subscription_mode(clean_url)
         if clean_mode not in SUBSCRIPTION_MODES:
             raise ValueError("仅作者上传页或收藏夹模型页支持创建订阅。")
 
         normalized_cron = _validate_cron(cron)
         config = self.store.load()
-        existing = next((item for item in config.subscriptions if normalize_source_url(item.url) == clean_url), None)
+        existing = next(
+            (
+                item
+                for item in config.subscriptions
+                if _subscription_identity_url(item.url, item.mode) == _subscription_identity_url(clean_url, clean_mode)
+            ),
+            None,
+        )
         now_iso = _now_iso()
 
         if existing:
@@ -1051,6 +1130,7 @@ class SubscriptionManager:
         self.sync_cookie_sources(due_platforms, reason=_cookie_source_sync_reason(due_platforms))
 
     def _ensure_state_records(self) -> None:
+        self._dedupe_default_favorites_subscriptions()
         config = self.store.load()
         state_payload = self.task_store.load_subscriptions_state()
         state_ids = {str(item.get("id") or "") for item in state_payload.get("items") or []}
@@ -1072,6 +1152,57 @@ class SubscriptionManager:
             self.task_store.remove_subscription_state(stale_ids)
 
         self._recover_stale_running_states(config)
+
+    def _dedupe_default_favorites_subscriptions(self) -> None:
+        config = self.store.load()
+        seen: dict[tuple[str, str], SubscriptionRecord] = {}
+        duplicate_ids: list[str] = []
+        changed = False
+        state_payload = self.task_store.load_subscriptions_state()
+        state_map = {str(item.get("id") or ""): item for item in state_payload.get("items") or []}
+        state_replacements: dict[str, dict] = {}
+
+        for record in list(config.subscriptions):
+            canonical_url = _canonical_subscription_url(record.url, record.mode)
+            if canonical_url and canonical_url != normalize_source_url(record.url):
+                record.url = canonical_url
+                changed = True
+            key = _subscription_identity_key(record)
+            if key[0] != "collection_models" or not key[1] or "/collections/models" not in key[1]:
+                continue
+            existing = seen.get(key)
+            if existing is None:
+                seen[key] = record
+                continue
+            keep = existing
+            drop = record
+            keep_state = state_map.get(keep.id) or {}
+            drop_state = state_map.get(drop.id) or {}
+            if _pick_duplicate_subscription_state([keep_state, drop_state]) is drop_state:
+                keep, drop = drop, keep
+                seen[key] = keep
+            keep.name = _better_default_favorite_name(keep.name, drop.name)
+            keep.enabled = bool(keep.enabled or drop.enabled)
+            keep.updated_at = max(str(keep.updated_at or ""), str(drop.updated_at or "")) or _now_iso()
+            duplicate_ids.append(drop.id)
+            chosen_state = _pick_duplicate_subscription_state([keep_state, drop_state])
+            if chosen_state:
+                state_replacements[keep.id] = {**chosen_state, "id": keep.id}
+            changed = True
+
+        if duplicate_ids:
+            config.subscriptions = [item for item in config.subscriptions if item.id not in set(duplicate_ids)]
+        if changed:
+            self.store.save(config)
+        for target_id, state_item in state_replacements.items():
+            self.task_store.upsert_subscription_state(state_item)
+        if duplicate_ids:
+            self.task_store.remove_subscription_state(duplicate_ids)
+            _append_subscription_log(
+                "default_favorites_deduped",
+                kept_count=len(seen),
+                removed_ids=duplicate_ids,
+            )
 
     def _running_state_is_stale(self, state: dict, now: datetime) -> bool:
         last_run_at = _parse_iso(str(state.get("last_run_at") or ""))
