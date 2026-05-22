@@ -9,7 +9,6 @@ from urllib.parse import urlparse
 
 from croniter import CroniterBadCronError, croniter
 
-from app.core.database import database_configured, database_driver_available, load_json_state, save_json_state
 from app.core.settings import BACKGROUND_TASKS_ENABLED, LOGS_DIR, STATE_DIR
 from app.core.store import JsonStore
 from app.core.timezone import ensure_timezone, now as china_now, now_iso as china_now_iso, parse_datetime
@@ -43,9 +42,6 @@ DEFAULT_SUBSCRIPTION_CRON = "0 */6 * * *"
 SUBSCRIPTION_MODES = {"author_upload", "collection_models"}
 SUBSCRIPTION_LOG_PATH = LOGS_DIR / "subscriptions.log"
 COOKIE_SOURCE_SYNC_STATE_PATH = STATE_DIR / "cookie_source_sync_state.json"
-COOKIE_SOURCE_SYNC_STATE_KEY = "cookie_source_sync_state"
-COOKIE_SOURCE_INVENTORY_PATH = STATE_DIR / "cookie_source_inventory.json"
-COOKIE_SOURCE_INVENTORY_KEY = "cookie_source_inventory"
 SUBSCRIPTION_POLL_SECONDS = 20
 SUBSCRIPTION_RUNNING_STALE_AFTER = timedelta(hours=6)
 COOKIE_SOURCE_SYNC_INTERVAL = timedelta(hours=6)
@@ -126,34 +122,16 @@ def _append_subscription_log(event: str, **payload: Any) -> None:
 
 
 def _read_cookie_source_sync_state() -> dict[str, Any]:
-    if database_configured() and database_driver_available():
-        try:
-            payload = load_json_state(COOKIE_SOURCE_SYNC_STATE_KEY)
-            if isinstance(payload, dict):
-                return payload
-        except Exception:
-            pass
     try:
         if not COOKIE_SOURCE_SYNC_STATE_PATH.exists():
             return {}
         payload = json.loads(COOKIE_SOURCE_SYNC_STATE_PATH.read_text(encoding="utf-8"))
-        if isinstance(payload, dict):
-            try:
-                save_json_state(COOKIE_SOURCE_SYNC_STATE_KEY, payload)
-            except Exception:
-                pass
-            return payload
-        return {}
+        return payload if isinstance(payload, dict) else {}
     except Exception:
         return {}
 
 
 def _write_cookie_source_sync_state(payload: dict[str, Any]) -> dict[str, Any]:
-    try:
-        if database_configured() and database_driver_available():
-            save_json_state(COOKIE_SOURCE_SYNC_STATE_KEY, payload)
-    except Exception:
-        pass
     try:
         COOKIE_SOURCE_SYNC_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         COOKIE_SOURCE_SYNC_STATE_PATH.write_text(
@@ -163,75 +141,6 @@ def _write_cookie_source_sync_state(payload: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         return payload
     return payload
-
-
-def _read_cookie_source_inventory_state() -> dict[str, Any]:
-    if database_configured() and database_driver_available():
-        try:
-            payload = load_json_state(COOKIE_SOURCE_INVENTORY_KEY)
-            if isinstance(payload, dict):
-                platforms = payload.get("platforms") if isinstance(payload.get("platforms"), dict) else {}
-                return {
-                    "platforms": {str(key): value for key, value in platforms.items() if isinstance(value, dict)},
-                    "updated_at": str(payload.get("updated_at") or ""),
-                }
-        except Exception:
-            pass
-    try:
-        if not COOKIE_SOURCE_INVENTORY_PATH.exists():
-            return {"platforms": {}, "updated_at": ""}
-        payload = json.loads(COOKIE_SOURCE_INVENTORY_PATH.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            return {"platforms": {}, "updated_at": ""}
-        platforms = payload.get("platforms") if isinstance(payload.get("platforms"), dict) else {}
-        normalized = {
-            "platforms": {str(key): value for key, value in platforms.items() if isinstance(value, dict)},
-            "updated_at": str(payload.get("updated_at") or ""),
-        }
-        try:
-            save_json_state(COOKIE_SOURCE_INVENTORY_KEY, normalized)
-        except Exception:
-            pass
-        return normalized
-    except Exception:
-        return {"platforms": {}, "updated_at": ""}
-
-
-def _write_cookie_source_inventory_state(payload: dict[str, Any]) -> dict[str, Any]:
-    normalized = {
-        "platforms": payload.get("platforms") if isinstance(payload.get("platforms"), dict) else {},
-        "updated_at": str(payload.get("updated_at") or _now_iso()),
-    }
-    try:
-        if database_configured() and database_driver_available():
-            save_json_state(COOKIE_SOURCE_INVENTORY_KEY, normalized)
-    except Exception:
-        pass
-    try:
-        COOKIE_SOURCE_INVENTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        COOKIE_SOURCE_INVENTORY_PATH.write_text(
-            json.dumps(normalized, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    except Exception:
-        return normalized
-    return normalized
-
-
-def _patch_cookie_source_inventory_state(platform: str, **changes: Any) -> dict[str, Any]:
-    clean_platform = "global" if str(platform or "").strip().lower() == "global" else "cn"
-    now_iso = _now_iso()
-    state = _read_cookie_source_inventory_state()
-    platforms = dict(state.get("platforms") or {})
-    item = dict(platforms.get(clean_platform) or {})
-    for key, value in changes.items():
-        if value is None:
-            continue
-        item[key] = value
-    item["platform"] = clean_platform
-    item["updated_at"] = str(item.get("updated_at") or now_iso)
-    platforms[clean_platform] = item
-    return _write_cookie_source_inventory_state({"platforms": platforms, "updated_at": now_iso})
 
 
 def _cookie_source_sync_due(platforms: set[str]) -> set[str]:
@@ -980,7 +889,6 @@ class SubscriptionManager:
                 platform_created = 0
                 platform_updated = 0
                 seen_urls: set[str] = set()
-                imported_sources: list[dict[str, Any]] = []
                 for source in sources:
                     raw_url = normalize_source_url(str(source.get("url") or ""))
                     mode = str(source.get("mode") or _detect_subscription_mode(raw_url)).strip()
@@ -1006,16 +914,6 @@ class SubscriptionManager:
                     )
                     name = _subscription_import_name(source, mode, platform)
                     if existing:
-                        imported_sources.append(
-                            {
-                                "subscription_id": existing.id,
-                                "url": clean_url,
-                                "mode": mode,
-                                "name": name or existing.name,
-                                "source_kind": str(source.get("source_kind") or ""),
-                                "created": False,
-                            }
-                        )
                         changed_existing = False
                         if name and not str(existing.name or "").strip():
                             existing.name = name
@@ -1044,16 +942,6 @@ class SubscriptionManager:
                     changed = True
                     platform_created += 1
                     created_ids.append(record.id)
-                    imported_sources.append(
-                        {
-                            "subscription_id": record.id,
-                            "url": clean_url,
-                            "mode": mode,
-                            "name": record.name,
-                            "source_kind": str(source.get("source_kind") or ""),
-                            "created": True,
-                        }
-                    )
                     self.task_store.patch_subscription_state(
                         record.id,
                         status="pending" if default_enabled else "idle",
@@ -1067,32 +955,6 @@ class SubscriptionManager:
                         ),
                     )
 
-                _patch_cookie_source_inventory_state(
-                    platform,
-                    account={
-                        "uid": uid,
-                        "handle": str(profile.get("handle") or ""),
-                        "name": str(profile.get("name") or ""),
-                        "avatar_url": str(profile.get("avatar_url") or profile.get("avatar") or ""),
-                    },
-                    default_favorites=default_favorites if isinstance(default_favorites, dict) else {},
-                    followed_authors=followed_author_items,
-                    followed_author_sources={
-                        "page_count": int((followed_authors_page or {}).get("count") or 0),
-                        "api_count": int((followed_authors or {}).get("count") or 0),
-                    },
-                    followed_collections=followed_collections.get("items") if isinstance(followed_collections, dict) else [],
-                    followed_collection_count=int((followed_collections or {}).get("count") or 0),
-                    imported_sources=imported_sources,
-                    source_urls=[
-                        item["url"]
-                        for item in imported_sources
-                        if isinstance(item, dict) and str(item.get("url") or "").strip()
-                    ],
-                    last_sync_at=now_iso,
-                    last_reason=reason,
-                    last_status="success",
-                )
                 _patch_cookie_source_sync_state(
                     platform,
                     requested_at="",
@@ -1121,13 +983,6 @@ class SubscriptionManager:
                 )
             except Exception as exc:
                 message = str(exc)[:240]
-                _patch_cookie_source_inventory_state(
-                    platform,
-                    last_sync_at=now_iso,
-                    last_reason=reason,
-                    last_status="error",
-                    last_message=message,
-                )
                 _patch_cookie_source_sync_state(
                     platform,
                     requested_at="",

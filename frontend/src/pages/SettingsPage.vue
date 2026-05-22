@@ -616,40 +616,35 @@
           <div class="section-card__header">
             <div>
               <span class="eyebrow">系统维护</span>
-              <h2>数据库迁移与信息补全</h2>
+              <h2>现有库信息补全</h2>
             </div>
             <div class="settings-inline-actions">
               <button class="button button-secondary" type="button" :disabled="profileBackfillLoading || profileBackfillSubmitting" @click="loadProfileBackfillStatus">
                 {{ profileBackfillLoading ? "读取中..." : "刷新状态" }}
               </button>
               <button class="button button-primary" type="button" :disabled="profileBackfillSubmitting || profileBackfill.running" @click="triggerProfileBackfill">
-                {{ profileBackfill.running ? profileBackfillRunningLabel : profileBackfillSubmitting ? "提交中..." : "重建数据库索引" }}
+                {{ profileBackfill.running ? "扫描中..." : profileBackfillSubmitting ? "提交中..." : "补全现有库信息" }}
               </button>
             </div>
           </div>
           <p class="archive-form__hint">
-            新版本启动后会自动遍历本地归档库，把卡片级模型信息迁移到 Postgres，用于加快模型库、订阅库和本地库读取。这里也可以手动强制重建索引；随后会继续把缺少详情媒体或评论回复字段的模型加入后台补整理队列。
+            这里只负责扫描本地已归档模型，并把缺少打印配置详情、实例展示媒体或评论回复字段的模型加入归档补整理队列。实际补全会在后台归档队列继续执行，不主动消耗 3MF 下载次数。
           </p>
-          <div class="settings-grid settings-grid--four system-update-grid">
+          <div class="settings-grid settings-grid--three system-update-grid">
             <article class="field-card system-update-stat">
-              <span>数据库索引</span>
-              <strong>{{ profileBackfillDatabaseLabel }}</strong>
-              <small>{{ profileBackfillDatabaseHint }}</small>
+              <span>发现缺失</span>
+              <strong>{{ profileBackfillStats.scanned }}</strong>
+              <small>{{ profileBackfill.started_at ? `最近扫描：${profileBackfill.started_at}` : "尚未执行" }}</small>
             </article>
             <article class="field-card system-update-stat">
-              <span>迁移进度</span>
-              <strong>{{ profileBackfillStats.databaseProcessed }}/{{ profileBackfillStats.databaseTotal }}</strong>
-              <small>{{ profileBackfillStats.databaseFailed || profileBackfillStats.jsonStateFailed ? `失败：${profileBackfillStats.databaseFailed + profileBackfillStats.jsonStateFailed}` : profileBackfillDatabaseProgressHint }}</small>
-            </article>
-            <article class="field-card system-update-stat">
-              <span>缺失补全</span>
+              <span>新增入队</span>
               <strong>{{ profileBackfillStats.queued }}</strong>
-              <small>发现缺失：{{ profileBackfillStats.scanned }}，已在队列：{{ profileBackfillStats.alreadyQueued }}</small>
+              <small>已在队列：{{ profileBackfillStats.alreadyQueued }}</small>
             </article>
             <article class="field-card system-update-stat">
               <span>失败</span>
               <strong>{{ profileBackfillStats.failed }}</strong>
-              <small>{{ profileBackfill.running ? profileBackfillRunningLabel : profileBackfill.finished_at ? `最近结束：${profileBackfill.finished_at}` : "等待执行" }}</small>
+              <small>{{ profileBackfill.running ? "正在扫描并入队" : profileBackfill.finished_at ? `最近扫描结束：${profileBackfill.finished_at}` : "等待执行" }}</small>
             </article>
           </div>
           <div class="form-footer">
@@ -977,75 +972,12 @@ const mobileImportTokenItem = computed(() => (
 ));
 const profileBackfillStats = computed(() => {
   const result = profileBackfill.value.last_result || {};
-  const databaseIndex = result.database_index || {};
-  const jsonState = databaseIndex.json_state || {};
   return {
-    jsonStateProcessed: Number(jsonState.processed || 0),
-    jsonStateUpdated: Number(jsonState.updated || 0),
-    jsonStateFailed: Number(jsonState.failed || 0),
-    databaseTotal: Number(databaseIndex.total || 0),
-    databaseProcessed: Number(databaseIndex.processed || 0),
-    databaseUpdated: Number(databaseIndex.updated || 0),
-    databaseFailed: Number(databaseIndex.failed || 0),
     scanned: Number(result.scanned_candidates || 0),
     queued: Number(result.queued_count || 0),
     alreadyQueued: Number(result.already_queued_count || 0),
     failed: Number(result.failed_count || 0),
   };
-});
-const profileBackfillRunningLabel = computed(() => (
-  profileBackfill.value.phase === "database_migration" ? "迁移中..." : "扫描中..."
-));
-const profileBackfillDatabaseLabel = computed(() => {
-  const database = profileBackfill.value.database || {};
-  if (!database.configured) {
-    return "未配置";
-  }
-  if (!database.driver_available) {
-    return "驱动缺失";
-  }
-  if (profileBackfill.value.phase === "database_migration") {
-    return "迁移中";
-  }
-  if (database.bootstrapped) {
-    return `${Number(database.row_count || 0)} 条`;
-  }
-  if (database.available) {
-    return "待迁移";
-  }
-  return "不可用";
-});
-const profileBackfillDatabaseHint = computed(() => {
-  const database = profileBackfill.value.database || {};
-  const marker = database.marker || {};
-  if (!database.configured) {
-    return "当前未启用 Postgres，页面会继续使用文件扫描。";
-  }
-  if (database.error) {
-    return database.error;
-  }
-  if (profileBackfill.value.running && profileBackfill.value.phase === "database_migration") {
-    return "正在把历史 meta.json 写入数据库。";
-  }
-  if (database.bootstrapped && marker.completed_at) {
-    return `完成于 ${marker.completed_at}`;
-  }
-  if (database.available) {
-    return "启动后会自动迁移，也可手动重建。";
-  }
-  return "等待数据库连接。";
-});
-const profileBackfillDatabaseProgressHint = computed(() => {
-  if (profileBackfill.value.running && profileBackfill.value.phase === "database_migration") {
-    return "迁移过程中页面会自动刷新。";
-  }
-  if (profileBackfillStats.value.databaseUpdated) {
-    return `模型 ${profileBackfillStats.value.databaseUpdated}，运行状态 ${profileBackfillStats.value.jsonStateUpdated}`;
-  }
-  if (profileBackfillStats.value.jsonStateUpdated) {
-    return `运行状态已写入：${profileBackfillStats.value.jsonStateUpdated}`;
-  }
-  return "尚未执行迁移。";
 });
 const profileBackfillStatusText = computed(() => {
   if (statuses.profile_backfill) {
@@ -1054,17 +986,14 @@ const profileBackfillStatusText = computed(() => {
   if (profileBackfill.value.last_error) {
     return profileBackfill.value.last_error;
   }
-  if (profileBackfill.value.running && profileBackfill.value.phase === "database_migration") {
-    return `数据库迁移中：${profileBackfillStats.value.databaseProcessed}/${profileBackfillStats.value.databaseTotal}，页面会自动刷新状态。`;
-  }
   if (profileBackfill.value.running) {
     return "现有库信息补全正在后台扫描并入队，页面会自动刷新状态。";
   }
   const result = profileBackfill.value.last_result || {};
   if (profileBackfill.value.finished_at && Object.keys(result).length > 0) {
-    return `处理完成：模型索引写入 ${profileBackfillStats.value.databaseUpdated} 个，运行状态写入 ${profileBackfillStats.value.jsonStateUpdated} 个，发现 ${profileBackfillStats.value.scanned} 个缺信息模型，新增入队 ${profileBackfillStats.value.queued} 个，已在队列 ${profileBackfillStats.value.alreadyQueued} 个，失败 ${profileBackfillStats.value.failed} 个。`;
+    return `扫描完成：发现 ${profileBackfillStats.value.scanned} 个缺信息模型，新增入队 ${profileBackfillStats.value.queued} 个，已在队列 ${profileBackfillStats.value.alreadyQueued} 个，失败 ${profileBackfillStats.value.failed} 个。`;
   }
-  return profileBackfill.value.message || "启动后会自动迁移历史库；手动重建会重新扫描归档库并刷新数据库索引。";
+  return profileBackfill.value.message || "这里只负责扫描并加入归档队列；实际补全会在后台继续执行，可到任务页查看进度。";
 });
 
 function defaultSystemUpdateState() {
@@ -1107,15 +1036,10 @@ function defaultSystemUpdateState() {
 function defaultProfileBackfillState() {
   return {
     running: false,
-    phase: "idle",
-    database_rebuild_requested: false,
-    force_database_rebuild: false,
-    auto_database_migration: false,
     started_at: "",
     finished_at: "",
     last_error: "",
     last_result: {},
-    database: {},
     message: "",
   };
 }
@@ -1519,7 +1443,7 @@ async function loadProfileBackfillStatus(options = {}) {
 }
 
 async function triggerProfileBackfill() {
-  const shouldProceed = window.confirm("会重新遍历本地归档库，把模型卡片信息写入数据库索引，并把缺少详情媒体或评论回复字段的模型加入后台补整理队列。不会主动下载 3MF。确定继续吗？");
+  const shouldProceed = window.confirm("会扫描本地归档库，并把缺少打印配置详情、实例展示媒体或评论回复字段的模型加入归档补整理队列。这里只负责扫描和入队，不会主动下载 3MF。确定继续吗？");
   if (!shouldProceed) {
     return;
   }
@@ -1530,7 +1454,7 @@ async function triggerProfileBackfill() {
       method: "POST",
     });
     applyProfileBackfillStatus(payload);
-    statuses.profile_backfill = payload.message || "数据库索引重建已提交，后台会继续处理。";
+    statuses.profile_backfill = payload.message || "现有库信息补全扫描已提交，缺失模型会继续在归档队列后台处理。";
   } catch (error) {
     statuses.profile_backfill = error instanceof Error ? error.message : "提交信息补全失败。";
   } finally {

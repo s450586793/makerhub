@@ -33,12 +33,10 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.temp_path = Path(self.temp_dir.name)
         self.original_subscriptions_state_path = task_state_module.SUBSCRIPTIONS_STATE_PATH
         self.original_cookie_source_sync_state_path = subscriptions.COOKIE_SOURCE_SYNC_STATE_PATH
-        self.original_cookie_source_inventory_path = subscriptions.COOKIE_SOURCE_INVENTORY_PATH
         self.original_append_subscription_log = subscriptions._append_subscription_log
 
         task_state_module.SUBSCRIPTIONS_STATE_PATH = self.temp_path / "subscriptions_state.json"
         subscriptions.COOKIE_SOURCE_SYNC_STATE_PATH = self.temp_path / "cookie_source_sync_state.json"
-        subscriptions.COOKIE_SOURCE_INVENTORY_PATH = self.temp_path / "cookie_source_inventory.json"
         subscriptions._append_subscription_log = lambda *_args, **_kwargs: None
 
         self.store = JsonStore(self.temp_path / "config.json")
@@ -68,7 +66,6 @@ class SubscriptionManagerTest(unittest.TestCase):
     def tearDown(self):
         task_state_module.SUBSCRIPTIONS_STATE_PATH = self.original_subscriptions_state_path
         subscriptions.COOKIE_SOURCE_SYNC_STATE_PATH = self.original_cookie_source_sync_state_path
-        subscriptions.COOKIE_SOURCE_INVENTORY_PATH = self.original_cookie_source_inventory_path
         subscriptions._append_subscription_log = self.original_append_subscription_log
         self.temp_dir.cleanup()
 
@@ -459,13 +456,6 @@ class SubscriptionManagerTest(unittest.TestCase):
         states = self.task_store.load_subscriptions_state().get("items") or []
         self.assertEqual(len(states), 4)
         self.assertTrue(all(item["manual_requested_at"] for item in states))
-        inventory = subscriptions._read_cookie_source_inventory_state()
-        cn_inventory = inventory["platforms"]["cn"]
-        self.assertEqual(cn_inventory["account"]["uid"], "2024907479")
-        self.assertEqual(len(cn_inventory["followed_authors"]), 2)
-        self.assertEqual(cn_inventory["followed_collections"][0]["url"], "https://makerworld.com.cn/zh/collections/518732-test")
-        self.assertIn("https://makerworld.com.cn/zh/@s450586793/collections/models", cn_inventory["source_urls"])
-        self.assertIn("https://makerworld.com.cn/zh/@user_123/upload", cn_inventory["source_urls"])
 
     def test_sync_cookie_sources_seeds_default_favorite_account_avatar_metadata(self):
         config = self.store.load()

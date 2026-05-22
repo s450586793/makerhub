@@ -6,7 +6,7 @@ from typing import Any, Optional
 from app.core.settings import ARCHIVE_DIR, STATE_DIR, ensure_app_dirs
 from app.core.timezone import now_iso as china_now_iso
 from app.services.business_logs import append_business_log
-from app.services.catalog import invalidate_archive_snapshot, invalidate_model_detail_cache, upsert_archive_snapshot_model
+from app.services.catalog import invalidate_archive_snapshot, invalidate_model_detail_cache
 from app.services.remote_refresh import _build_missing_3mf_items
 from app.services.task_state import TaskStateStore
 from app.services.three_mf import resolve_model_instance_files
@@ -180,11 +180,6 @@ def repair_model_instance_files(meta_path: Path) -> dict[str, Any]:
 
     if changed:
         _write_json(meta_path, meta)
-        upsert_archive_snapshot_model(
-            model_root.relative_to(ARCHIVE_DIR).as_posix(),
-            "archive_repair_model_changed",
-            broadcast=False,
-        )
 
     model_id = str(meta.get("id") or "").strip()
     missing_items = _build_missing_3mf_items(meta_path, meta, resolved_files=resolved)

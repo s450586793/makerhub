@@ -11,7 +11,6 @@ import requests
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
 
-from app.core.database import database_configured, database_driver_available, load_json_state, save_json_state
 from app.core.settings import ARCHIVE_DIR, CONFIG_PATH, STATE_DIR, ensure_app_dirs
 from app.core.store import JsonStore
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
@@ -38,7 +37,6 @@ from app.services.task_state import TaskStateStore
 
 
 SOURCE_LIBRARY_METADATA_PATH = STATE_DIR / "source_library_metadata.json"
-SOURCE_LIBRARY_METADATA_STATE_KEY = "source_library_metadata"
 SOURCE_LIBRARY_SNAPSHOT_DIR = STATE_DIR / "source_library_snapshots"
 SOURCE_LIBRARY_PAYLOAD_CACHE_PATH = STATE_DIR / "source_library_payload_cache.json"
 SOURCE_LIBRARY_ARCHIVE_MARKER_PATH = STATE_DIR / "archive_snapshot.marker"
@@ -198,17 +196,6 @@ def _extract_collection_id_from_url(url: str) -> str:
 
 
 def _read_metadata_cache_unlocked() -> dict[str, Any]:
-    if database_configured() and database_driver_available():
-        try:
-            payload = load_json_state(SOURCE_LIBRARY_METADATA_STATE_KEY)
-            if isinstance(payload, dict):
-                items = payload.get("items") if isinstance(payload.get("items"), dict) else {}
-                return {
-                    "items": {str(key): value for key, value in items.items() if isinstance(value, dict)},
-                    "updated_at": str(payload.get("updated_at") or ""),
-                }
-        except Exception:
-            pass
     if not SOURCE_LIBRARY_METADATA_PATH.exists():
         return {"items": {}, "updated_at": ""}
     try:
@@ -230,11 +217,6 @@ def _write_metadata_cache_unlocked(payload: dict[str, Any]) -> dict[str, Any]:
         "items": payload.get("items") if isinstance(payload.get("items"), dict) else {},
         "updated_at": str(payload.get("updated_at") or _now_iso()),
     }
-    try:
-        if database_configured() and database_driver_available():
-            save_json_state(SOURCE_LIBRARY_METADATA_STATE_KEY, normalized)
-    except Exception:
-        pass
     SOURCE_LIBRARY_METADATA_PATH.parent.mkdir(parents=True, exist_ok=True)
     temp_path = SOURCE_LIBRARY_METADATA_PATH.with_suffix(".tmp")
     temp_path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")

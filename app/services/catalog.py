@@ -16,11 +16,6 @@ from app.core.settings import ARCHIVE_DIR, CONFIG_PATH, STATE_DIR
 from app.core.store import JsonStore
 from app.core.timezone import from_timestamp as china_from_timestamp, now_iso as china_now_iso, parse_timestamp as china_parse_timestamp
 from app.services.batch_discovery import extract_model_id, normalize_source_url
-from app.services.archive_model_index import (
-    delete_archive_model_index,
-    load_archive_model_index,
-    upsert_archive_model_index,
-)
 from app.services.model_attachments import (
     ATTACHMENT_CATEGORY_LABELS,
     MANUAL_ATTACHMENTS_RELATIVE_DIR,
@@ -229,10 +224,6 @@ def _compose_archive_snapshot(models: list[dict]) -> dict[str, Any]:
 
 
 def _build_archive_snapshot() -> dict[str, Any]:
-    indexed_models = load_archive_model_index(archive_root=ARCHIVE_DIR)
-    if indexed_models is not None:
-        return _compose_archive_snapshot(indexed_models)
-
     models: list[dict] = []
 
     for meta_path in sorted(ARCHIVE_DIR.rglob("meta.json")):
@@ -322,7 +313,6 @@ def upsert_archive_snapshot_model(model_dir: str, reason: str = "", *, broadcast
 
     marker_token = _read_archive_snapshot_marker()
     normalized_model_dir = relative_dir.as_posix()
-    upsert_archive_model_index(normalized_model_dir, model=model, meta_path=meta_path)
     with _ARCHIVE_SNAPSHOT_LOCK:
         snapshot = _ARCHIVE_SNAPSHOT_CACHE.get("snapshot")
         cached_marker_token = str(_ARCHIVE_SNAPSHOT_CACHE.get("marker_token") or "")
@@ -2557,7 +2547,6 @@ def delete_archived_models(model_dirs: list[str]) -> dict:
         "sidecar_removed_count": sum(item.get("sidecar_removed_count", 0) for item in removed),
     }
     if result["removed_count"] > 0:
-        delete_archive_model_index([str(item.get("model_dir") or "") for item in removed])
         invalidate_archive_snapshot("delete_archived_models")
         for item in removed:
             invalidate_model_detail_cache(str(item.get("model_dir") or ""))

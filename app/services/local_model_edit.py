@@ -15,7 +15,7 @@ from fastapi import UploadFile
 
 from app.core.settings import ARCHIVE_DIR, MAX_LOCAL_IMPORT_UPLOAD_BYTES, MAX_MANUAL_ATTACHMENT_BYTES
 from app.core.timezone import now_iso as china_now_iso
-from app.services.catalog import invalidate_archive_snapshot, invalidate_model_detail_cache, upsert_archive_snapshot_model
+from app.services.catalog import invalidate_archive_snapshot, invalidate_model_detail_cache
 from app.services.local_model_preview import (
     apply_generated_preview_image,
     build_local_preview_state,
@@ -89,8 +89,7 @@ def _write_meta(model_root: Path, meta: dict[str, Any]) -> None:
     )
     model_dir = model_root.relative_to(ARCHIVE_DIR.resolve()).as_posix()
     invalidate_model_detail_cache(model_dir)
-    if not upsert_archive_snapshot_model(model_dir, "local_model_edited", broadcast=True):
-        invalidate_archive_snapshot("local_model_edited")
+    invalidate_archive_snapshot("local_model_edited")
 
 
 def _decode_preview_image_data(value: str) -> tuple[bytes, str]:
