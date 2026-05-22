@@ -1248,6 +1248,10 @@ select:focus {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.settings-grid--four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .settings-form {
   display: grid;
   gap: 18px;
@@ -5261,6 +5265,10 @@ html[data-theme="dark"] .gallery-card__source--local-deleted {
 }
 
 @media (max-width: 1240px) {
+  .settings-grid--four {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .stats-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
@@ -5425,6 +5433,7 @@ html[data-theme="dark"] .gallery-card__source--local-deleted {
 
   .settings-grid--two,
   .settings-grid--three,
+  .settings-grid--four,
   .archive-form,
   .token-create-form {
     grid-template-columns: 1fr;

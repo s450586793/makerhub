@@ -12,6 +12,7 @@ services:
       MAKERHUB_BACKGROUND_TASKS: "false"
       MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
       MAKERHUB_WEB_WORKERS: "1"
+      MAKERHUB_DATABASE_URL: postgresql://makerhub:makerhub@makerhub-postgres:5432/makerhub
     volumes:
       - /volume4/docker/docker/makerhub/config:/app/config
       - /volume4/docker/docker/makerhub/logs:/app/logs
@@ -20,6 +21,9 @@ services:
       - /volume2/entertainment/3D打印/makerhub/local:/app/local
       # 允许设置页里的“系统更新”直接通过 Docker API 重建 App 与 Worker 容器
       - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      makerhub-postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   makerhub-worker:
@@ -31,10 +35,30 @@ services:
       MAKERHUB_BACKGROUND_TASKS: "true"
       MAKERHUB_WORKER_CONCURRENCY: "2"
       MAKERHUB_HEAVY_JOB_NICE: "10"
+      MAKERHUB_DATABASE_URL: postgresql://makerhub:makerhub@makerhub-postgres:5432/makerhub
     volumes:
       - /volume4/docker/docker/makerhub/config:/app/config
       - /volume4/docker/docker/makerhub/logs:/app/logs
       - /volume4/docker/docker/makerhub/state:/app/state
       - /volume2/entertainment/3D打印/makerhub:/app/archive
       - /volume2/entertainment/3D打印/makerhub/local:/app/local
+    depends_on:
+      makerhub-postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  makerhub-postgres:
+    image: postgres:16-alpine
+    container_name: makerhub-postgres
+    environment:
+      POSTGRES_DB: makerhub
+      POSTGRES_USER: makerhub
+      POSTGRES_PASSWORD: makerhub
+    volumes:
+      - /volume4/docker/docker/makerhub/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U makerhub -d makerhub"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped

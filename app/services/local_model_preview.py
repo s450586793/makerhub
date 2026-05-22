@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app.core.settings import ARCHIVE_DIR
 from app.core.timezone import now_iso as china_now_iso
 from app.services.legacy_archiver import sanitize_filename
 
@@ -433,4 +434,11 @@ def ensure_local_model_preview(model_root: Path) -> bool:
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     except OSError:
         return False
+    try:
+        model_dir = model_root.resolve().relative_to(ARCHIVE_DIR.resolve()).as_posix()
+    except ValueError:
+        model_dir = model_root.name
+    from app.services.catalog import upsert_archive_snapshot_model
+
+    upsert_archive_snapshot_model(model_dir, "local_preview_pending", broadcast=False)
     return True

@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from app.core.settings import ARCHIVE_DIR, STATE_DIR
 from app.core.timezone import now_iso as china_now_iso
 from app.services.business_logs import append_business_log
-from app.services.catalog import get_model_detail, invalidate_archive_snapshot, invalidate_model_detail_cache
+from app.services.catalog import get_model_detail, invalidate_archive_snapshot, invalidate_model_detail_cache, upsert_archive_snapshot_model
 from app.services.legacy_archiver import sanitize_filename
 from app.services.local_organizer import ORGANIZER_LIBRARY_INDEX_CACHE_PATH
 from app.services.task_state import TaskStateStore
@@ -405,7 +405,8 @@ def merge_local_models(
     flags = _merge_model_flags(task_store, clean_target, clean_sources)
     _rewrite_organize_task_model_dirs(task_store, clean_target, clean_sources)
     _remove_organizer_index_cache()
-    invalidate_archive_snapshot("local_model_merge")
+    if not upsert_archive_snapshot_model(clean_target, "local_model_merge", broadcast=True):
+        invalidate_archive_snapshot("local_model_merge")
     for model_dir in all_model_dirs:
         invalidate_model_detail_cache(model_dir)
 

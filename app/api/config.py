@@ -25,6 +25,7 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from starlette.requests import ClientDisconnect
 
+from app.core.database import database_configured, database_driver_available, load_json_state, save_json_state
 from app.core.store import JsonStore
 from app.core.security import hash_api_token
 from app.core.settings import APP_VERSION, ARCHIVE_DIR, BACKGROUND_TASKS_ENABLED, MAX_LOCAL_IMPORT_UPLOAD_BYTES, STATE_DIR
@@ -75,6 +76,7 @@ from app.services.catalog import (
     get_model_detail,
     invalidate_archive_snapshot,
     invalidate_model_detail_cache,
+    upsert_archive_snapshot_model,
 )
 from app.services.crawler import LegacyCrawlerBridge
 from app.services.business_logs import append_business_log, read_log_entries
@@ -102,10 +104,8 @@ from app.services.archive_repair import (
     run_archive_repair_job,
     write_archive_repair_status,
 )
-from app.services.archive_profile_backfill import (
-    read_profile_backfill_status,
-    write_profile_backfill_status,
-)
+from app.services.archive_model_index import archive_model_index_status
+from app.services.archive_profile_backfill import read_profile_backfill_status, write_profile_backfill_status
 from app.services.batch_discovery import extract_model_id, normalize_source_url
 from app.services.subscriptions import SubscriptionManager
 from app.services.source_library import (
@@ -180,6 +180,7 @@ github_changelog_cache = {
 }
 
 SHARES_STATE_PATH = STATE_DIR / "model_shares.json"
+SHARES_STATE_KEY = "model_shares"
 SHARE_CODE_PREFIX = "MHSHARE1."
 SHARE_CODE_COMPACT_PREFIX = "MHS1."
 SHARE_CODE_OBSCURED_PREFIX = "MH3."
@@ -205,6 +206,7 @@ MODEL_DOWNLOAD_ALL_EXCLUDED_FILENAMES = {
     ".makerhub-manual-attachments.json",
 }
 BAMBU_STUDIO_DOWNLOAD_SECRET_PATH = STATE_DIR / "bambu_studio_download_secret"
+BAMBU_STUDIO_DOWNLOAD_SECRET_KEY = "bambu_studio_download_secret"
 BAMBU_STUDIO_DOWNLOAD_TTL_SECONDS = 10 * 60
 SHARE_RECEIVE_MAX_FILES = 2000
 SHARE_RECEIVE_MAX_TOTAL_BYTES = MAX_LOCAL_IMPORT_UPLOAD_BYTES
@@ -213,6 +215,16 @@ SHARE_RECEIVE_MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 
 
 def _read_shares_state() -> dict:
+    if database_configured() and database_driver_available():
+        try:
+            payload = load_json_state(SHARES_STATE_KEY)
+            if isinstance(payload, dict):
+                items = payload.get("items")
+                if not isinstance(items, list):
+                    payload["items"] = []
+                return payload
+        except Exception:
+            pass
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     if not SHARES_STATE_PATH.exists():
         return {"items": []}
@@ -225,10 +237,20 @@ def _read_shares_state() -> dict:
     items = payload.get("items")
     if not isinstance(items, list):
         payload["items"] = []
+    try:
+        if database_configured() and database_driver_available():
+            save_json_state(SHARES_STATE_KEY, payload)
+    except Exception:
+        pass
     return payload
 
 
 def _write_shares_state(payload: dict) -> None:
+    try:
+        if database_configured() and database_driver_available():
+            save_json_state(SHARES_STATE_KEY, payload)
+    except Exception:
+        pass
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     temp_path = SHARES_STATE_PATH.with_name(f"{SHARES_STATE_PATH.name}.{os.getpid()}.tmp")
     temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -302,6 +324,15 @@ def _create_model_download_all_archive(model_dir: str) -> tuple[Path, str]:
 
 
 def _bambu_studio_download_secret() -> str:
+    if database_configured() and database_driver_available():
+        try:
+            payload = load_json_state(BAMBU_STUDIO_DOWNLOAD_SECRET_KEY)
+            if isinstance(payload, dict):
+                secret = str(payload.get("secret") or "").strip()
+                if secret:
+                    return secret
+        except Exception:
+            pass
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     try:
         secret = BAMBU_STUDIO_DOWNLOAD_SECRET_PATH.read_text(encoding="utf-8").strip()
@@ -310,6 +341,11 @@ def _bambu_studio_download_secret() -> str:
     if not secret:
         secret = secrets.token_urlsafe(32)
         BAMBU_STUDIO_DOWNLOAD_SECRET_PATH.write_text(secret, encoding="utf-8")
+    try:
+        if database_configured() and database_driver_available():
+            save_json_state(BAMBU_STUDIO_DOWNLOAD_SECRET_KEY, {"secret": secret})
+    except Exception:
+        pass
     return secret
 
 
@@ -1512,6 +1548,7 @@ def _import_share_manifest(*, decoded: dict, manifest: dict) -> dict:
         (model_root / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         model_dir = model_root.relative_to(ARCHIVE_DIR.resolve()).as_posix()
         invalidate_model_detail_cache(model_dir)
+        upsert_archive_snapshot_model(model_dir, "share_import", broadcast=False)
         imported.append({"model_dir": model_dir, "title": title})
     if imported:
         invalidate_archive_snapshot("share_import")
@@ -3659,6 +3696,7 @@ async def upload_model_attachment(
     try:
         def _upload_and_load_detail():
             attachment_item = create_manual_attachment(model_dir, file, name=name, category=category)
+            upsert_archive_snapshot_model(model_dir, "manual_attachment_uploaded", broadcast=False)
             return attachment_item, get_model_detail(model_dir)
 
         attachment, detail = await run_task_api(_upload_and_load_detail)
@@ -3693,6 +3731,7 @@ async def remove_model_attachment(model_dir: str, attachment_id: str, request: R
     try:
         def _remove_and_load_detail():
             removed_item = delete_manual_attachment(model_dir, attachment_id)
+            upsert_archive_snapshot_model(model_dir, "manual_attachment_deleted", broadcast=False)
             return removed_item, get_model_detail(model_dir)
 
         removed, detail = await run_task_api(_remove_and_load_detail)
@@ -4854,6 +4893,10 @@ async def start_archive_profile_backfill(request: Request):
         state = write_profile_backfill_status(
             {
                 "running": True,
+                "phase": "database_migration",
+                "database_rebuild_requested": True,
+                "force_database_rebuild": True,
+                "auto_database_migration": False,
                 "started_at": started_at,
                 "finished_at": "",
                 "last_error": "",
@@ -4864,7 +4907,7 @@ async def start_archive_profile_backfill(request: Request):
     state.update(
         {
             "accepted": True,
-            "message": "现有库信息补全扫描已提交，等待后台 worker 执行；缺失模型会继续加入归档队列。",
+            "message": "数据库迁移/索引重建已提交，后台 worker 会先遍历历史库写入数据库，再继续检查缺失信息。",
         }
     )
     return _compact_profile_backfill_status(state)
@@ -4872,6 +4915,10 @@ async def start_archive_profile_backfill(request: Request):
 
 def _compact_profile_backfill_status(status: dict) -> dict:
     payload = dict(status or {})
+    try:
+        payload["database"] = archive_model_index_status()
+    except Exception:
+        payload["database"] = {}
     result = payload.get("last_result")
     if isinstance(result, dict):
         compact_result = dict(result)
