@@ -154,6 +154,10 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-05-22 · v0.6.128
+- 网页一键更新新增 compose 升级保护：检测到旧部署缺少 `MAKERHUB_DATABASE_URL` 时，会阻止继续更新，避免直接升到数据库版本后容器配置不完整
+- 设置页会在旧 compose 下显示“需改 compose”，并给出 App + Worker + Postgres 三容器示例，方便先手动改 compose 再继续后续版本升级
+
 ### 2026-05-22 · v0.6.127
 - 国际区默认收藏夹地址统一为 `makerworld.com/zh/@账号/collections/models`，旧 `/en/` 订阅会自动合并到同一个来源，避免订阅库重复出现默认收藏夹
 - 来源库和订阅库来源卡新增 payload 缓存，缓存过期时先返回旧卡片并后台刷新，减少每次打开页面都重算来源卡导致的等待

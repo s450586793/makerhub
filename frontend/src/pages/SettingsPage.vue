@@ -593,19 +593,23 @@
           </article>
           <article class="field-card system-update-detail">
             <span>一键更新支持</span>
-            <strong>{{ systemUpdate.supported ? "已启用" : "未启用" }}</strong>
+            <strong>{{ systemUpdate.compose_migration_required ? "需改 compose" : systemUpdate.supported ? "已启用" : "未启用" }}</strong>
           </article>
         </div>
 
         <div class="field-card system-update-manual">
-          <span>{{ systemUpdate.supported ? "执行说明" : "如何启用一键更新" }}</span>
+          <span>{{ systemUpdate.compose_migration_required ? "需要先修改 compose" : systemUpdate.supported ? "执行说明" : "如何启用一键更新" }}</span>
+          <template v-if="systemUpdate.compose_migration_required">
+            <p>{{ systemUpdate.compose_migration_reason || systemUpdate.support_reason }}</p>
+            <pre class="system-update-code system-update-code--pre">{{ systemUpdate.compose_example }}</pre>
+          </template>
           <p v-if="systemUpdate.supported">
             更新会复用当前容器名称、挂载、端口和重启策略。App + Worker 部署下会先更新后台 Worker，再更新 App 容器；页面短暂报错通常只是容器正在重启。
           </p>
-          <p v-else>
+          <p v-else-if="!systemUpdate.compose_migration_required">
             首次仍需要手动在部署里挂载 <code>/var/run/docker.sock:/var/run/docker.sock</code>。启用后，这个页面才能直接拉取新镜像并重建容器。
           </p>
-          <code class="system-update-code">{{ manualUpdateCommand }}</code>
+          <code v-if="!systemUpdate.compose_migration_required" class="system-update-code">{{ manualUpdateCommand }}</code>
         </div>
 
         <section class="system-update-changelog system-maintenance-card">
@@ -1018,6 +1022,9 @@ function defaultSystemUpdateState() {
     current_version: "",
     supported: false,
     support_reason: "",
+    compose_migration_required: false,
+    compose_migration_reason: "",
+    compose_example: "",
     docker_socket_mounted: false,
     github_changelog: [],
     github_changelog_checked_at: "",

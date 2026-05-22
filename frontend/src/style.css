@@ -1633,11 +1633,18 @@ html[data-theme="dark"] .organizer-progress-popover {
   border: 1px dashed var(--border);
   border-radius: 14px;
   display: block;
+  max-width: 100%;
   overflow-wrap: anywhere;
   color: var(--text);
   font-size: 13px;
   line-height: 1.5;
   background: var(--surface-soft);
+}
+
+.system-update-code--pre {
+  max-height: 520px;
+  overflow: auto;
+  white-space: pre;
 }
 
 .count-pill--danger {

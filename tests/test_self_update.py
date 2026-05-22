@@ -48,6 +48,122 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             else:
                 self_update.os.environ[self_update.WORKER_IMAGE_REF_ENV] = original_image
 
+    def test_update_capability_requires_postgres_compose_migration(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "state"
+            socket_path = Path(temp_dir) / "docker.sock"
+            socket_path.write_text("", encoding="utf-8")
+
+            original_socket = self_update.DOCKER_SOCKET_PATH
+            original_state_dir = self_update.STATE_DIR
+            original_update_state = self_update.UPDATE_STATE_PATH
+            original_client = self_update.DockerSocketClient
+            original_candidates = self_update._extract_container_id_candidates
+
+            def app_inspect() -> dict:
+                return {
+                    "Id": "app-container-id",
+                    "Name": "/makerhub-app",
+                    "Image": "sha256:current-image",
+                    "Config": {
+                        "Image": "ghcr.io/example/makerhub:latest",
+                        "Env": ["MAKERHUB_ENTRYPOINT=app"],
+                    },
+                    "HostConfig": {
+                        "Binds": [
+                            f"{state_dir}:{state_dir}",
+                            f"{socket_path}:{socket_path}",
+                        ],
+                    },
+                    "Mounts": [],
+                    "NetworkSettings": {"Networks": {"makerhub_default": {"Aliases": ["makerhub-app"]}}},
+                }
+
+            class FakeDockerSocketClient:
+                def __init__(self, *args, **kwargs):
+                    pass
+
+                def inspect_container(self, container_id):
+                    if container_id == "app-container-id":
+                        return app_inspect()
+                    raise RuntimeError(f"missing container {container_id}")
+
+            try:
+                self_update.DOCKER_SOCKET_PATH = socket_path
+                self_update.STATE_DIR = state_dir
+                self_update.UPDATE_STATE_PATH = state_dir / "system_update.json"
+                self_update.DockerSocketClient = FakeDockerSocketClient
+                self_update._extract_container_id_candidates = lambda: ["app-container-id"]
+
+                status = self_update.get_update_status()
+            finally:
+                self_update.DOCKER_SOCKET_PATH = original_socket
+                self_update.STATE_DIR = original_state_dir
+                self_update.UPDATE_STATE_PATH = original_update_state
+                self_update.DockerSocketClient = original_client
+                self_update._extract_container_id_candidates = original_candidates
+
+            self.assertFalse(status["supported"])
+            self.assertTrue(status["compose_migration_required"])
+            self.assertIn("MAKERHUB_DATABASE_URL", status["compose_example"])
+            self.assertIn("makerhub-postgres", status["compose_example"])
+
+    def test_request_system_update_blocks_without_database_url(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "state"
+            socket_path = Path(temp_dir) / "docker.sock"
+            socket_path.write_text("", encoding="utf-8")
+
+            original_socket = self_update.DOCKER_SOCKET_PATH
+            original_state_dir = self_update.STATE_DIR
+            original_update_state = self_update.UPDATE_STATE_PATH
+            original_client = self_update.DockerSocketClient
+            original_candidates = self_update._extract_container_id_candidates
+
+            class FakeDockerSocketClient:
+                def __init__(self, *args, **kwargs):
+                    pass
+
+                def inspect_container(self, container_id):
+                    if container_id != "app-container-id":
+                        raise RuntimeError(f"missing container {container_id}")
+                    return {
+                        "Id": "app-container-id",
+                        "Name": "/makerhub-app",
+                        "Image": "sha256:current-image",
+                        "Config": {
+                            "Image": "ghcr.io/example/makerhub:latest",
+                            "Env": ["MAKERHUB_ENTRYPOINT=app"],
+                        },
+                        "HostConfig": {
+                            "Binds": [
+                                f"{state_dir}:{state_dir}",
+                                f"{socket_path}:{socket_path}",
+                            ],
+                        },
+                        "Mounts": [],
+                        "NetworkSettings": {"Networks": {"makerhub_default": {"Aliases": ["makerhub-app"]}}},
+                    }
+
+            try:
+                self_update.DOCKER_SOCKET_PATH = socket_path
+                self_update.STATE_DIR = state_dir
+                self_update.UPDATE_STATE_PATH = state_dir / "system_update.json"
+                self_update.DockerSocketClient = FakeDockerSocketClient
+                self_update._extract_container_id_candidates = lambda: ["app-container-id"]
+
+                with self.assertRaises(RuntimeError) as context:
+                    self_update.request_system_update(requested_by="admin", target_version="0.6.128")
+            finally:
+                self_update.DOCKER_SOCKET_PATH = original_socket
+                self_update.STATE_DIR = original_state_dir
+                self_update.UPDATE_STATE_PATH = original_update_state
+                self_update.DockerSocketClient = original_client
+                self_update._extract_container_id_candidates = original_candidates
+
+            self.assertIn("MAKERHUB_DATABASE_URL", str(context.exception))
+            self.assertIn("makerhub-postgres", str(context.exception))
+
     def test_replacement_body_applies_app_web_workers_only(self):
         inspect = {
             "Id": "app-container-id",
@@ -160,7 +276,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                     "Id": "api-container-id",
                     "Name": "/makerhub-api",
                     "Image": "sha256:current-image",
-                    "Config": {"Image": "ghcr.io/example/makerhub:latest"},
+                    "Config": {"Image": "ghcr.io/example/makerhub:latest", "Env": ["MAKERHUB_DATABASE_URL=postgresql://makerhub:makerhub@makerhub-postgres:5432/makerhub"]},
                     "HostConfig": {
                         "Binds": [
                             f"{state_dir}:{state_dir}",
@@ -176,7 +292,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                     "Id": "web-container-id",
                     "Name": "/makerhub-web",
                     "Image": "sha256:current-image",
-                    "Config": {"Image": "ghcr.io/example/makerhub:latest"},
+                    "Config": {"Image": "ghcr.io/example/makerhub:latest", "Env": ["MAKERHUB_DATABASE_URL=postgresql://makerhub:makerhub@makerhub-postgres:5432/makerhub"]},
                     "HostConfig": {},
                     "Mounts": [],
                     "NetworkSettings": {"Networks": {"makerhub_default": {"Aliases": ["makerhub-web"]}}},
@@ -265,7 +381,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                     "Id": "app-container-id",
                     "Name": "/makerhub-app",
                     "Image": "sha256:current-image",
-                    "Config": {"Image": "ghcr.io/example/makerhub:latest"},
+                    "Config": {"Image": "ghcr.io/example/makerhub:latest", "Env": ["MAKERHUB_DATABASE_URL=postgresql://makerhub:makerhub@makerhub-postgres:5432/makerhub"]},
                     "HostConfig": {
                         "Binds": [
                             f"{state_dir}:{state_dir}",
@@ -282,7 +398,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                     "Id": "worker-container-id",
                     "Name": "/makerhub-worker",
                     "Image": "sha256:current-image",
-                    "Config": {"Image": "ghcr.io/example/makerhub:latest"},
+                    "Config": {"Image": "ghcr.io/example/makerhub:latest", "Env": ["MAKERHUB_DATABASE_URL=postgresql://makerhub:makerhub@makerhub-postgres:5432/makerhub"]},
                     "HostConfig": {},
                     "Mounts": [],
                     "NetworkSettings": {"Networks": {"makerhub_default": {"Aliases": ["makerhub-worker"]}}},
@@ -368,7 +484,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                             "Id": container_id,
                             "Name": "/makerhub-worker",
                             "Image": "sha256:old-image",
-                            "Config": {"Image": "ghcr.io/example/makerhub:latest"},
+                            "Config": {"Image": "ghcr.io/example/makerhub:latest", "Env": ["MAKERHUB_DATABASE_URL=postgresql://makerhub:makerhub@makerhub-postgres:5432/makerhub"]},
                             "HostConfig": {},
                             "NetworkSettings": {"Networks": {}},
                         }
@@ -440,7 +556,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                         "Id": "new-container-id",
                         "Name": "/makerhub-app",
                         "Image": "sha256:new-image",
-                        "Config": {"Image": "ghcr.io/example/makerhub:latest"},
+                        "Config": {"Image": "ghcr.io/example/makerhub:latest", "Env": ["MAKERHUB_DATABASE_URL=postgresql://makerhub:makerhub@makerhub-postgres:5432/makerhub"]},
                         "HostConfig": {"Binds": [f"{state_dir}:{state_dir}"]},
                         "Mounts": [],
                     }

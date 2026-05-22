@@ -30,6 +30,7 @@ WEB_IMAGE_REF_ENV = "MAKERHUB_WEB_IMAGE_REF"
 WORKER_CONTAINER_NAME_ENV = "MAKERHUB_WORKER_CONTAINER_NAME"
 WORKER_IMAGE_REF_ENV = "MAKERHUB_WORKER_IMAGE_REF"
 RUNTIME_CONFIG_ENV = "MAKERHUB_RUNTIME_CONFIG_JSON"
+DATABASE_URL_ENV = "MAKERHUB_DATABASE_URL"
 _CONTAINER_ID_PATTERN = re.compile(r"[0-9a-f]{12,64}")
 STARTUP_WAIT_TIMEOUT_SECONDS = 20
 STARTUP_WAIT_INTERVAL_SECONDS = 1.0
@@ -39,6 +40,73 @@ IMAGE_CLEANUP_RETRY_DELAY_SECONDS = 60
 IMAGE_CLEANUP_MAX_ATTEMPTS = 5
 _IMAGE_CLEANUP_THREAD: threading.Thread | None = None
 _IMAGE_CLEANUP_LOCK = threading.Lock()
+POSTGRES_COMPOSE_MIGRATION_EXAMPLE = """version: "3.8"
+
+services:
+  makerhub-app:
+    image: ghcr.io/s450586793/makerhub:latest
+    container_name: makerhub-app
+    ports:
+      - "9042:8000"
+    environment:
+      MAKERHUB_ENTRYPOINT: app
+      MAKERHUB_PROCESS_ROLE: app
+      MAKERHUB_BACKGROUND_TASKS: "false"
+      MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
+      MAKERHUB_WEB_WORKERS: "1"
+      MAKERHUB_DATABASE_URL: postgresql://makerhub:makerhub@makerhub-postgres:5432/makerhub
+    volumes:
+      - /volume4/docker/docker/makerhub/config:/app/config
+      - /volume4/docker/docker/makerhub/logs:/app/logs
+      - /volume4/docker/docker/makerhub/state:/app/state
+      - /volume2/entertainment/3D打印/makerhub:/app/archive
+      - /volume2/entertainment/3D打印/makerhub/local:/app/local
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      makerhub-postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  makerhub-worker:
+    image: ghcr.io/s450586793/makerhub:latest
+    container_name: makerhub-worker
+    environment:
+      MAKERHUB_ENTRYPOINT: worker
+      MAKERHUB_PROCESS_ROLE: worker
+      MAKERHUB_BACKGROUND_TASKS: "true"
+      MAKERHUB_WORKER_CONCURRENCY: "2"
+      MAKERHUB_HEAVY_JOB_NICE: "10"
+      MAKERHUB_DATABASE_URL: postgresql://makerhub:makerhub@makerhub-postgres:5432/makerhub
+    volumes:
+      - /volume4/docker/docker/makerhub/config:/app/config
+      - /volume4/docker/docker/makerhub/logs:/app/logs
+      - /volume4/docker/docker/makerhub/state:/app/state
+      - /volume2/entertainment/3D打印/makerhub:/app/archive
+      - /volume2/entertainment/3D打印/makerhub/local:/app/local
+    depends_on:
+      makerhub-postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  makerhub-postgres:
+    image: postgres:16-alpine
+    container_name: makerhub-postgres
+    environment:
+      POSTGRES_DB: makerhub
+      POSTGRES_USER: makerhub
+      POSTGRES_PASSWORD: makerhub
+    volumes:
+      - /volume4/docker/docker/makerhub/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U makerhub -d makerhub"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped"""
+POSTGRES_COMPOSE_MIGRATION_MESSAGE = (
+    "当前版本将归档模型索引迁移到 Postgres。检测到当前容器仍是旧 compose，"
+    "缺少 MAKERHUB_DATABASE_URL / makerhub-postgres 服务；请先按示例 compose 改成 App + Worker + Postgres 三容器后，再执行网页更新。"
+)
 
 
 def _now_iso() -> str:
@@ -633,6 +701,22 @@ def _container_resource_payload(container_inspect: dict[str, Any]) -> dict[str, 
     }
 
 
+def _database_url_from_container(container_inspect: dict[str, Any]) -> str:
+    return str(_env_lookup(container_inspect).get(DATABASE_URL_ENV) or "").strip()
+
+
+def _compose_migration_required(container_inspect: dict[str, Any]) -> bool:
+    return not _database_url_from_container(container_inspect)
+
+
+def _compose_migration_payload() -> dict[str, Any]:
+    return {
+        "compose_migration_required": True,
+        "compose_migration_reason": POSTGRES_COMPOSE_MIGRATION_MESSAGE,
+        "compose_example": POSTGRES_COMPOSE_MIGRATION_EXAMPLE,
+    }
+
+
 def _append_unique_image_id(values: list[str], value: str) -> None:
     image_id = str(value or "").strip()
     if not image_id or image_id in values:
@@ -769,6 +853,9 @@ def get_update_capability() -> dict[str, Any]:
     payload = {
         "supported": False,
         "support_reason": "",
+        "compose_migration_required": False,
+        "compose_migration_reason": "",
+        "compose_example": "",
         "docker_socket_mounted": DOCKER_SOCKET_PATH.exists(),
         "container_name": "",
         "image_ref": "",
@@ -788,6 +875,13 @@ def get_update_capability() -> dict[str, Any]:
         metadata = _resolve_self_container(client)
     except Exception as exc:  # noqa: BLE001
         payload["support_reason"] = _friendly_error_message(exc)
+        return payload
+
+    if _compose_migration_required(metadata.get("inspect") or {}):
+        payload.update(_compose_migration_payload())
+        payload["support_reason"] = POSTGRES_COMPOSE_MIGRATION_MESSAGE
+        payload["container_name"] = str(metadata.get("container_name") or "")
+        payload["image_ref"] = str(metadata.get("image_ref") or "")
         return payload
 
     web_target = _web_update_target(str(metadata.get("image_ref") or ""))
@@ -835,6 +929,9 @@ def get_update_status() -> dict[str, Any]:
         **state,
         "supported": bool(capability.get("supported")),
         "support_reason": str(capability.get("support_reason") or ""),
+        "compose_migration_required": bool(capability.get("compose_migration_required")),
+        "compose_migration_reason": str(capability.get("compose_migration_reason") or ""),
+        "compose_example": str(capability.get("compose_example") or ""),
         "docker_socket_mounted": bool(capability.get("docker_socket_mounted")),
         "container_name": str(capability.get("container_name") or state.get("container_name") or ""),
         "image_ref": str(capability.get("image_ref") or state.get("image_ref") or ""),
@@ -857,6 +954,10 @@ def request_system_update(*, requested_by: str = "", target_version: str = "", f
 
     client = DockerSocketClient(timeout=30)
     metadata = _resolve_self_container(client)
+    if _compose_migration_required(metadata.get("inspect") or {}):
+        raise RuntimeError(
+            f"{POSTGRES_COMPOSE_MIGRATION_MESSAGE}\n\n示例 compose:\n{POSTGRES_COMPOSE_MIGRATION_EXAMPLE}"
+        )
 
     request_id = uuid.uuid4().hex
     helper_name = _helper_container_name(request_id)
