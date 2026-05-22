@@ -196,7 +196,10 @@ def _save_source_metadata_item(source_key: str, payload: dict[str, Any]) -> None
         cache = _read_metadata_cache_unlocked()
         items = dict(cache.get("items") or {})
         current = dict(items.get(source_key) or {})
-        current.update(payload)
+        for key, value in payload.items():
+            if key == "avatar_url" and not str(value or "").strip() and str(current.get(key) or "").strip():
+                continue
+            current[key] = value
         current["last_synced_at"] = _now_iso()
         items[source_key] = current
         _write_metadata_cache_unlocked({"items": items, "updated_at": _now_iso()})
@@ -922,6 +925,8 @@ def _group_author_sources(visible_models: list[dict]) -> list[dict]:
 
 def _subscription_kind(url: str) -> str:
     path = (urlparse(str(url or "")).path or "").lower()
+    if re.search(r"/@[^/]+/collections/models/?$", path):
+        return "favorite"
     if "/collections/" in path:
         return "collection"
     return "favorite"
@@ -1475,6 +1480,11 @@ def _source_identity_from_subscription(url: str, mode: str) -> Optional[dict[str
             "fetch_url": source_url,
         }
     return None
+
+
+def source_identity_key(url: str, mode: str) -> str:
+    identity = _source_identity_from_subscription(url, mode)
+    return str((identity or {}).get("key") or "")
 
 
 def _positive_int(value: Any) -> int:

@@ -154,6 +154,11 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 
 ## 更新记录
 
+### 2026-05-22 · v0.6.126
+- 默认收藏夹来源卡头像改为使用 Cookie 账号头像，国内 / 国际账号都会在关注来源同步时写入来源卡元数据
+- 收藏夹卡片头像位置不再用模型封面兜底，模型图只保留在下方预览区，避免默认收藏夹头像显示成某个模型照片
+- `@账号/collections/models` 默认收藏夹来源统一归类为收藏夹，避免来源卡 metadata key 跑到合集分组
+
 ### 2026-05-22 · v0.6.125
 - 订阅库来源卡模型数统一优先使用最新同步状态，避免旧 metadata 把当前源模型 `310` 覆盖成 `302`，预览遮罩 `+N` 也会随同一个模型数计算
 - 收藏夹抓取在页面 All models 总数存在时，会优先选择最接近该总数的结果，避免局部收藏夹列表被误当成全量
@@ -164,13 +169,13 @@ docker compose pull makerhub-app makerhub-worker && docker compose up -d makerhu
 - Cookie 账号识别会继续探测到 handle；默认收藏夹支持 uid 兜底，国内 / 国际默认收藏夹可自动生成订阅来源
 - 收藏夹模型闭环改用设计分页接口实际 total，国区默认收藏夹按 310/310 判断，不再保留列表统计 354 口径
 
+<details>
+<summary>展开 / 收起更早更新</summary>
+
 ### 2026-05-22 · v0.6.123
 - 设置页保存连接配置改为快速返回：Cookie / 代理保存成功后只登记关注来源同步请求，关注作者与收藏夹导入交给 Worker 后台执行
 - 订阅库管理页删掉重复的页面标题和说明块，顶部功能栏改为与其它页面一致的紧凑一行布局
 - Cookie 认证探针返回网页 HTML 时不再直接提示 Cookie 失效，改为提示可能是站点接口改版、代理跳转或风控页面，减少误判
-
-<details>
-<summary>展开 / 收起更早更新</summary>
 
 ### 2026-05-22 · v0.6.122
 - 网页一键更新优化 App / Worker 同镜像流程：helper 拉取 `latest` 后，Worker / Web 更新会复用已拉取镜像，不再重复拉取同一个镜像

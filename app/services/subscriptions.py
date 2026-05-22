@@ -31,6 +31,8 @@ from app.services.source_library import (
     build_subscription_overview_payload,
     refresh_source_preview_snapshots,
     refresh_subscription_source_metadata,
+    source_identity_key,
+    _save_source_metadata_item,
 )
 from app.services.task_state import TaskStateStore
 
@@ -369,6 +371,28 @@ def _subscription_import_name(source: dict[str, Any], mode: str, platform: str) 
     if "所有模型" in title:
         return f"{site_label} {title}".strip()
     return f"{title or handle or 'MakerWorld'} 收藏夹订阅"
+
+
+def _source_metadata_seed(source: dict[str, Any], mode: str, site: str, canonical_url: str) -> dict[str, Any]:
+    title = str(source.get("title") or source.get("name") or "").strip()
+    avatar_url = str(source.get("avatar_url") or source.get("avatar") or source.get("avatarUrl") or "").strip()
+    cover_url = str(source.get("cover_url") or source.get("coverUrl") or source.get("imageUrl") or "").strip()
+    count = source.get("count") or source.get("model_count") or source.get("remote_model_count")
+    payload: dict[str, Any] = {
+        "kind": "author" if mode == "author_upload" else "favorite" if "/collections/models" in canonical_url else "collection",
+        "canonical_url": canonical_url,
+        "site": site,
+        "error": "",
+    }
+    if title:
+        payload["title"] = title
+    if avatar_url:
+        payload["avatar_url"] = avatar_url
+    if cover_url:
+        payload["cover_url"] = cover_url
+    if count not in (None, ""):
+        payload["remote_model_count"] = count
+    return payload
 
 
 class SubscriptionManager:
@@ -807,6 +831,12 @@ class SubscriptionManager:
                     mode = str(source.get("mode") or _detect_subscription_mode(clean_url)).strip()
                     if mode not in SUBSCRIPTION_MODES:
                         continue
+                    source_key = source_identity_key(clean_url, mode)
+                    if source_key:
+                        _save_source_metadata_item(
+                            source_key,
+                            _source_metadata_seed(source, mode, platform, clean_url),
+                        )
                     existing = next(
                         (item for item in config.subscriptions if normalize_source_url(item.url) == clean_url),
                         None,

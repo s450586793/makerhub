@@ -169,7 +169,7 @@ const props = defineProps({
 const emit = defineEmits(["open", "select"]);
 
 const titleInitial = computed(() => tileInitial(props.card.title || "M"));
-const collectionAvatarUrl = computed(() => props.card.avatar_url || props.card.cover_url || "");
+const collectionAvatarUrl = computed(() => props.card.avatar_url || "");
 const titleIsLong = computed(() => String(props.card.title || "").trim().length > 8);
 const snapshotFailed = ref(false);
 const snapshotUrl = computed(() => {

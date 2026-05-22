@@ -263,6 +263,7 @@ class BatchDiscoveryTest(unittest.TestCase):
 
         self.assertEqual(len(authors), 1)
         self.assertEqual(authors[0]["title"], "Ace Print")
+        self.assertEqual(authors[0]["avatar_url"], "https://example.test/a.jpg")
         self.assertEqual(authors[0]["url"], "https://makerworld.com.cn/zh/@AcePrint/upload")
 
     def test_extract_followed_authors_accepts_frontend_follow_hit_stats(self):
@@ -373,10 +374,11 @@ class BatchDiscoveryTest(unittest.TestCase):
     def test_default_favorites_subscription_source_uses_account_handle(self):
         source = batch_discovery.default_favorites_subscription_source(
             "global",
-            {"handle": "s450586793", "name": "艾斯"},
+            {"handle": "s450586793", "name": "艾斯", "avatar_url": "https://example.test/avatar.jpg"},
         )
 
         self.assertEqual(source["title"], "艾斯 所有模型收藏夹")
+        self.assertEqual(source["avatar_url"], "https://example.test/avatar.jpg")
         self.assertEqual(source["url"], "https://makerworld.com/en/@s450586793/collections/models")
 
     def test_default_favorites_subscription_source_falls_back_to_uid_handle(self):

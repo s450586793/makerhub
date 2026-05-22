@@ -43,6 +43,19 @@ BROWSER_USER_AGENT = (
     "Chrome/135.0.0.0 Safari/537.36"
 )
 
+ACCOUNT_AVATAR_KEYS = (
+    "avatar",
+    "avatarUrl",
+    "avatar_url",
+    "avatarImageUrl",
+    "avatarURI",
+    "headIcon",
+    "portraitUrl",
+    "faceUrl",
+    "headPic",
+    "profileImage",
+)
+
 AUTHOR_BATCH_PAGE_LIMIT = 100
 COLLECTION_BATCH_PAGE_LIMIT = 20
 HTML_BATCH_PAGE_LIMIT = 20
@@ -390,6 +403,28 @@ def _extract_node_handle(node: Any) -> str:
         candidate = _extract_handle_from_url(str(node.get(key) or ""))
         if candidate:
             return candidate
+    return ""
+
+
+def _extract_avatar_url(node: Any) -> str:
+    if not isinstance(node, dict):
+        return ""
+    for key in ACCOUNT_AVATAR_KEYS:
+        value = node.get(key)
+        if isinstance(value, dict):
+            for nested_key in ("url", "src", "avatarUrl", "imageUrl"):
+                nested = str(value.get(nested_key) or "").strip()
+                if nested:
+                    return nested
+        elif isinstance(value, list):
+            for item in value:
+                nested = _extract_avatar_url(item)
+                if nested:
+                    return nested
+        else:
+            candidate = str(value or "").strip()
+            if candidate:
+                return candidate
     return ""
 
 
@@ -1066,7 +1101,7 @@ def _extract_account_profile(payload: Any) -> dict[str, str]:
         uid = _extract_node_uid(node)
         handle = _extract_node_handle(node)
         name = str(node.get("name") or node.get("nickname") or node.get("nickName") or node.get("displayName") or "").strip()
-        avatar = str(node.get("avatar") or node.get("avatarUrl") or node.get("avatar_url") or node.get("avatarImageUrl") or "").strip()
+        avatar = _extract_avatar_url(node)
         lowered_keys = {str(key).lower() for key in node.keys()}
         profile_keys = {
             "name",
@@ -1231,11 +1266,13 @@ def _extract_followed_authors(payload: Any, platform: str) -> list[dict[str, str
             continue
         seen.add(key)
         title = str(node.get("name") or node.get("nickname") or node.get("nickName") or handle).strip() or handle
+        avatar = _extract_avatar_url(node)
         authors.append(
             {
                 "title": title,
                 "handle": handle,
                 "uid": _extract_node_uid(node),
+                "avatar_url": avatar,
                 "url": f"{source_origin}/{lang}/@{quote(handle, safe='@._-')}/upload",
             }
         )
@@ -1625,6 +1662,7 @@ def default_favorites_subscription_source(platform: str, profile: dict[str, str]
     return {
         "title": f"{title_name} 所有模型收藏夹",
         "handle": handle,
+        "avatar_url": str(profile.get("avatar_url") or "").strip(),
         "url": f"{origin}/{lang}/@{quote(handle, safe='@._-')}/collections/models",
     }
 

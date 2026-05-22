@@ -408,6 +408,49 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertEqual(len(states), 4)
         self.assertTrue(all(item["manual_requested_at"] for item in states))
 
+    def test_sync_cookie_sources_seeds_default_favorite_account_avatar_metadata(self):
+        config = self.store.load()
+        config.cookies = [CookiePair(platform="global", cookie="token=ok")]
+        config.subscriptions = []
+        self.store.save(config)
+        saved_metadata = {}
+
+        def fake_save_metadata(source_key, payload):
+            saved_metadata[source_key] = payload
+
+        with patch.object(
+            subscriptions,
+            "discover_cookie_account_profile",
+            return_value={
+                "uid": "2073587493",
+                "handle": "s450586793",
+                "name": "艾斯",
+                "avatar_url": "https://example.test/account.jpg",
+            },
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_followed_authors_from_page",
+            return_value={"count": 0, "items": []},
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_followed_authors",
+            return_value={"count": 0, "items": []},
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_followed_collections",
+            return_value={"count": 0, "items": []},
+        ), patch.object(subscriptions, "_patch_cookie_source_sync_state"), \
+                patch.object(subscriptions, "_save_source_metadata_item", side_effect=fake_save_metadata):
+            result = self.manager.sync_cookie_sources({"global"}, reason="cookie_save")
+
+        config = self.store.load()
+        favorite = next(item for item in config.subscriptions if item.url.endswith("/@s450586793/collections/models"))
+        metadata = saved_metadata[subscriptions.source_identity_key(favorite.url, favorite.mode)]
+        self.assertEqual(result["created_count"], 1)
+        self.assertEqual(metadata["kind"], "favorite")
+        self.assertEqual(metadata["avatar_url"], "https://example.test/account.jpg")
+        self.assertEqual(metadata["title"], "艾斯 所有模型收藏夹")
+
     def test_request_cookie_source_sync_marks_platforms_for_worker(self):
         result = self.manager.request_cookie_source_sync({"cn", "global"}, reason="cookie_save")
         state = subscriptions._read_cookie_source_sync_state()

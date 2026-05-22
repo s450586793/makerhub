@@ -355,6 +355,70 @@ class SourceLibraryTest(unittest.TestCase):
         self.assertEqual(group["model_count"], 310)
         self.assertEqual(groups[group["key"]]["model_count"], 310)
 
+    def test_default_favorite_group_uses_account_avatar_metadata(self):
+        _SOURCE_LIBRARY_GROUP_CACHE.update({"signature": None, "groups": {}, "all_models": (), "sections": ()})
+        subscription = SubscriptionRecord(
+            id="sub-favorite",
+            name="国际 艾斯 所有模型收藏夹",
+            url="https://makerworld.com/zh/@s450586793/collections/models",
+            mode="collection_models",
+        )
+        config = type("ConfigStub", (), {"subscriptions": [subscription]})()
+        source_key = _source_key("favorite", "global", subscription.url)
+        task_store = type(
+            "TaskStoreStub",
+            (),
+            {
+                "load_subscriptions_state": lambda self: {
+                    "items": [
+                        {
+                            "id": "sub-favorite",
+                            "current_items": [],
+                            "tracked_items": [],
+                            "last_discovered_count": 17,
+                        }
+                    ]
+                }
+            },
+        )()
+        store = type("StoreStub", (), {"load": lambda self: config})()
+
+        try:
+            with patch("app.services.source_library._load_models", return_value=([], [])), \
+                    patch(
+                        "app.services.source_library.load_source_metadata_cache",
+                        return_value={"items": {source_key: {"avatar_url": "https://example.test/account.jpg", "cover_url": "https://example.test/model.jpg"}}},
+                    ), \
+                    patch("app.services.source_library._group_cache_signature", return_value=("favorite-avatar",)):
+                groups, _all_models, sections = _group_models(store=store, task_store=task_store)
+
+            group = next(
+                item
+                for section in sections
+                for item in section["items"]
+                if item.get("subscription_id") == "sub-favorite"
+            )
+            self.assertEqual(group["kind"], "favorite")
+            self.assertEqual(group["avatar_url"], "https://example.test/account.jpg")
+            self.assertEqual(group["cover_url"], "https://example.test/model.jpg")
+            self.assertEqual(groups[group["key"]]["avatar_url"], "https://example.test/account.jpg")
+        finally:
+            _SOURCE_LIBRARY_GROUP_CACHE.update({"signature": None, "groups": {}, "all_models": (), "sections": ()})
+
+    def test_source_metadata_keeps_existing_avatar_when_refresh_payload_lacks_one(self):
+        _SOURCE_LIBRARY_GROUP_CACHE.update({"signature": None, "groups": {}, "all_models": (), "sections": ()})
+        with TemporaryDirectory() as temp_dir:
+            metadata_path = Path(temp_dir) / "source_library_metadata.json"
+            with patch("app.services.source_library.SOURCE_LIBRARY_METADATA_PATH", metadata_path):
+                from app.services import source_library
+
+                source_library._save_source_metadata_item("favorite-global-test", {"avatar_url": "https://example.test/account.jpg"})
+                source_library._save_source_metadata_item("favorite-global-test", {"avatar_url": "", "cover_url": "https://example.test/model.jpg"})
+                item = source_library.load_source_metadata_cache()["items"]["favorite-global-test"]
+
+        self.assertEqual(item["avatar_url"], "https://example.test/account.jpg")
+        self.assertEqual(item["cover_url"], "https://example.test/model.jpg")
+
     def test_group_models_reuses_cached_payload_for_same_signature(self):
         _SOURCE_LIBRARY_GROUP_CACHE.update({"signature": None, "groups": {}, "all_models": (), "sections": ()})
         local_model = _model("local-1", source="local")
