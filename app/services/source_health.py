@@ -134,7 +134,7 @@ def _auth_probe_result_from_response(
             result["error"] = (
                 "返回了验证页面，通常表示需要完成网页验证。"
                 if verification_marker
-                else "返回了 HTML 页面，通常表示 Cookie 失效、风控校验未通过，或代理未生效。"
+                else "认证探针返回了网页页面，可能是站点接口改版、代理跳转或风控页面；请优先看其它认证接口是否成功。"
             )
         elif status_code in {401, 403}:
             result["failure_kind"] = "auth_required"

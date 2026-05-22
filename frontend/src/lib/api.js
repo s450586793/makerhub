@@ -23,7 +23,7 @@ function sanitizeApiError(detail) {
     if (["cloudflare", "cf-browser-verification", "cf-chl", "__cf_bm", "cf_clearance"].some((token) => lowered.includes(token))) {
       return "接口返回了风控校验页，通常是 Cookie 失效、代理异常或站点触发了 Cloudflare 校验。";
     }
-    return "接口返回了 HTML 页面，通常是 Cookie 失效、代理错误或站点风控页。";
+    return "接口返回了网页页面，可能是站点接口改版、代理跳转或风控页面。";
   }
   return text.replace(/\s+/g, " ").trim().slice(0, 400);
 }

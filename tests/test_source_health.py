@@ -47,6 +47,21 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(card_map["cn"]["detail"], "MakerWorld 需要验证，前往官网任意下载一个模型。")
         self.assertEqual(card_map["global"]["state"], "ok")
 
+    def test_html_probe_message_does_not_claim_cookie_invalid(self):
+        result = source_health._auth_probe_result_from_response(
+            name="profile",
+            url="https://api.example.test/profile",
+            status_code=200,
+            text="<html><body>not json</body></html>",
+            headers={"content-type": "text/html"},
+            elapsed_ms=12.0,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["failure_kind"], "verification_required")
+        self.assertIn("认证探针返回了网页页面", result["error"])
+        self.assertNotIn("Cookie 失效", result["error"])
+
     def test_missing_3mf_limit_overrides_probe_verification(self):
         original_probe = source_health._probe_platform_status
         source_health._probe_platform_status = lambda platform, *_args, **_kwargs: {

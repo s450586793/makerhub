@@ -3,41 +3,30 @@
     <div class="app-page-toolbar__copy">
       <span class="eyebrow">订阅库管理</span>
       <div class="app-page-toolbar__title-row">
-        <h1>订阅链接与同步明细</h1>
+        <h1>订阅库管理</h1>
       </div>
     </div>
-    <div class="subscription-manage-toolbar__side">
-      <div class="intro-stats app-page-toolbar__stats">
-        <div class="intro-stat">
-          <span>订阅总数</span>
-          <strong>{{ payload.count }}</strong>
-        </div>
-        <div class="intro-stat">
-          <span>启用中</span>
-          <strong>{{ payload.summary.enabled }}</strong>
-        </div>
-        <div class="intro-stat">
-          <span>同步中</span>
-          <strong>{{ payload.summary.running }}</strong>
-        </div>
+    <div class="intro-stats app-page-toolbar__stats">
+      <div class="intro-stat">
+        <span>订阅总数</span>
+        <strong>{{ payload.count }}</strong>
       </div>
-      <div class="subscription-page-tools">
-        <RouterLink class="button button-secondary" to="/subscriptions">返回</RouterLink>
-        <button class="button button-secondary" type="button" @click="openSettingsDialog">订阅设置</button>
+      <div class="intro-stat">
+        <span>启用中</span>
+        <strong>{{ payload.summary.enabled }}</strong>
       </div>
+      <div class="intro-stat">
+        <span>同步中</span>
+        <strong>{{ payload.summary.running }}</strong>
+      </div>
+      <RouterLink class="button button-secondary" to="/subscriptions">返回</RouterLink>
+      <button class="button button-secondary" type="button" @click="openSettingsDialog">订阅设置</button>
     </div>
   </section>
 
   <p v-if="status" class="subscription-page-status">{{ status }}</p>
 
   <section class="library-section">
-    <div class="library-section__head">
-      <div>
-        <h2>订阅库管理</h2>
-        <p>{{ payload.count }} 条订阅记录</p>
-      </div>
-    </div>
-
     <section v-if="payload.items.length" class="subscription-grid">
       <article v-for="item in payload.items" :key="item.id" class="surface section-card subscription-card">
         <div class="section-card__header subscription-card__header">

@@ -145,10 +145,24 @@ def _cookie_source_sync_due(platforms: set[str]) -> set[str]:
     due: set[str] = set()
     for platform in sorted(platforms):
         item = state.get(platform) if isinstance(state.get(platform), dict) else {}
+        requested_at = _parse_iso(str(item.get("requested_at") or ""))
+        if requested_at is not None:
+            due.add(platform)
+            continue
         last_sync_at = _parse_iso(str(item.get("last_sync_at") or ""))
         if last_sync_at is None or now - last_sync_at >= COOKIE_SOURCE_SYNC_INTERVAL:
             due.add(platform)
     return due
+
+
+def _cookie_source_sync_reason(platforms: set[str]) -> str:
+    state = _read_cookie_source_sync_state()
+    for platform in sorted(platforms):
+        item = state.get(platform) if isinstance(state.get(platform), dict) else {}
+        reason = str(item.get("requested_reason") or "").strip()
+        if _parse_iso(str(item.get("requested_at") or "")) is not None and reason:
+            return reason
+    return "scheduled"
 
 
 def _patch_cookie_source_sync_state(platform: str, **changes: Any) -> dict[str, Any]:
@@ -668,6 +682,32 @@ class SubscriptionManager:
 
         return {"queued_count": len(queued_ids), "subscription_ids": queued_ids}
 
+    def request_cookie_source_sync(self, platforms: set[str], *, reason: str = "manual") -> dict:
+        normalized_platforms = {str(item or "").strip().lower() for item in platforms if str(item or "").strip()}
+        normalized_platforms = {item for item in normalized_platforms if item in {"cn", "global"}}
+        if not normalized_platforms:
+            return {"queued_count": 0, "platforms": []}
+
+        now_iso = _now_iso()
+        clean_reason = str(reason or "manual").strip() or "manual"
+        for platform in sorted(normalized_platforms):
+            _patch_cookie_source_sync_state(
+                platform,
+                requested_at=now_iso,
+                requested_reason=clean_reason,
+                last_status="pending",
+                last_message="Cookie 已保存，关注作者和收藏夹同步已交给 worker 后台处理。",
+            )
+
+        _append_subscription_log(
+            "cookie_source_sync_requested",
+            platforms=sorted(normalized_platforms),
+            reason=clean_reason,
+            queued_count=len(normalized_platforms),
+        )
+        self.start()
+        return {"queued_count": len(normalized_platforms), "platforms": sorted(normalized_platforms)}
+
     def sync_cookie_sources(self, platforms: set[str], *, reason: str = "manual") -> dict:
         with self._loop_lock:
             if getattr(self, "_cookie_source_sync_running", False):
@@ -800,6 +840,8 @@ class SubscriptionManager:
 
                 _patch_cookie_source_sync_state(
                     platform,
+                    requested_at="",
+                    requested_reason="",
                     last_sync_at=now_iso,
                     last_status="success",
                     last_message="关注来源同步完成。",
@@ -826,6 +868,8 @@ class SubscriptionManager:
                 message = str(exc)[:240]
                 _patch_cookie_source_sync_state(
                     platform,
+                    requested_at="",
+                    requested_reason="",
                     last_sync_at=now_iso,
                     last_status="error",
                     last_message=message,
@@ -958,7 +1002,7 @@ class SubscriptionManager:
         due_platforms = _cookie_source_sync_due(platforms)
         if not due_platforms:
             return
-        self.sync_cookie_sources(due_platforms, reason="scheduled")
+        self.sync_cookie_sources(due_platforms, reason=_cookie_source_sync_reason(due_platforms))
 
     def _ensure_state_records(self) -> None:
         config = self.store.load()

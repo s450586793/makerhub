@@ -1472,15 +1472,18 @@ async function saveConnections() {
       },
     });
     applyConfigPayload(proxyPayload);
-    await apiRequest("/api/config/cookies", {
+    const cookiePayload = await apiRequest("/api/config/cookies", {
       method: "POST",
       body: [
         { platform: "cn", cookie: connectionForm.cookie_cn },
         { platform: "global", cookie: connectionForm.cookie_global },
       ],
     });
-    await refreshConfig();
-    statuses.connections = "连接设置已保存。";
+    applyConfigPayload(cookiePayload);
+    const queuedCount = Number(cookiePayload?.cookie_source_sync?.queued_count || 0);
+    statuses.connections = queuedCount > 0
+      ? "连接设置已保存，关注来源同步已交给 worker 后台处理。"
+      : "连接设置已保存。";
   } catch (error) {
     statuses.connections = error instanceof Error ? error.message : "保存失败。";
   } finally {

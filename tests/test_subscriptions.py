@@ -32,9 +32,11 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.temp_path = Path(self.temp_dir.name)
         self.original_subscriptions_state_path = task_state_module.SUBSCRIPTIONS_STATE_PATH
+        self.original_cookie_source_sync_state_path = subscriptions.COOKIE_SOURCE_SYNC_STATE_PATH
         self.original_append_subscription_log = subscriptions._append_subscription_log
 
         task_state_module.SUBSCRIPTIONS_STATE_PATH = self.temp_path / "subscriptions_state.json"
+        subscriptions.COOKIE_SOURCE_SYNC_STATE_PATH = self.temp_path / "cookie_source_sync_state.json"
         subscriptions._append_subscription_log = lambda *_args, **_kwargs: None
 
         self.store = JsonStore(self.temp_path / "config.json")
@@ -63,6 +65,7 @@ class SubscriptionManagerTest(unittest.TestCase):
 
     def tearDown(self):
         task_state_module.SUBSCRIPTIONS_STATE_PATH = self.original_subscriptions_state_path
+        subscriptions.COOKIE_SOURCE_SYNC_STATE_PATH = self.original_cookie_source_sync_state_path
         subscriptions._append_subscription_log = self.original_append_subscription_log
         self.temp_dir.cleanup()
 
@@ -382,6 +385,33 @@ class SubscriptionManagerTest(unittest.TestCase):
         states = self.task_store.load_subscriptions_state().get("items") or []
         self.assertEqual(len(states), 3)
         self.assertTrue(all(item["manual_requested_at"] for item in states))
+
+    def test_request_cookie_source_sync_marks_platforms_for_worker(self):
+        result = self.manager.request_cookie_source_sync({"cn", "global"}, reason="cookie_save")
+        state = subscriptions._read_cookie_source_sync_state()
+
+        self.assertEqual(result["queued_count"], 2)
+        self.assertEqual(result["platforms"], ["cn", "global"])
+        self.assertEqual(state["cn"]["last_status"], "pending")
+        self.assertEqual(state["cn"]["requested_reason"], "cookie_save")
+        self.assertTrue(state["cn"]["requested_at"])
+        self.assertEqual(state["global"]["last_status"], "pending")
+
+    def test_maybe_sync_cookie_sources_consumes_requested_platform(self):
+        config = self.store.load()
+        config.cookies = [CookiePair(platform="cn", cookie="token=ok")]
+        self.store.save(config)
+        self.manager.request_cookie_source_sync({"cn"}, reason="cookie_save")
+        calls = []
+        self.manager.sync_cookie_sources = lambda platforms, *, reason="manual": calls.append((set(platforms), reason)) or {
+            "created_count": 0,
+            "updated_count": 0,
+            "platforms": [],
+        }
+
+        self.manager._maybe_sync_cookie_sources()
+
+        self.assertEqual(calls, [({"cn"}, "cookie_save")])
 
 
 if __name__ == "__main__":

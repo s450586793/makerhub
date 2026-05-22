@@ -2751,8 +2751,7 @@ async def save_cookies(payload: list[CookiePair], request: Request):
     )
     saved = store.save(config)
     retry_result = subscription_manager.retry_error_subscriptions_for_platforms(retry_platforms)
-    cookie_sources_result = await run_task_api(
-        subscription_manager.sync_cookie_sources,
+    cookie_sources_result = subscription_manager.request_cookie_source_sync(
         retry_platforms,
         reason="cookie_save",
     )
@@ -2764,14 +2763,13 @@ async def save_cookies(payload: list[CookiePair], request: Request):
             platforms=sorted(retry_platforms),
             queued_count=retry_result.get("queued_count"),
         )
-    if int(cookie_sources_result.get("created_count") or 0) > 0 or int(cookie_sources_result.get("updated_count") or 0) > 0:
+    if int(cookie_sources_result.get("queued_count") or 0) > 0:
         append_business_log(
             "subscription",
-            "cookie_sources_imported",
-            "Cookie 保存后已自动导入关注来源订阅。",
+            "cookie_source_sync_queued",
+            "Cookie 保存后已安排 worker 后台同步关注来源订阅。",
             platforms=sorted(retry_platforms),
-            created_count=cookie_sources_result.get("created_count"),
-            updated_count=cookie_sources_result.get("updated_count"),
+            queued_count=cookie_sources_result.get("queued_count"),
         )
     response = _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
     response["subscription_retry"] = retry_result

@@ -832,16 +832,6 @@ html[data-theme="dark"] .mw-attachment-upload__drop-copy em {
   margin-bottom: 12px;
 }
 
-.subscription-manage-toolbar__side {
-  min-width: 0;
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 14px;
-  flex-wrap: wrap;
-}
-
 .subscription-page-tools {
   display: flex;
   align-items: center;
@@ -3806,20 +3796,6 @@ html[data-theme="dark"] .organizer-progress-popover {
   .organizer-progress-popover {
     left: auto;
     right: 0;
-  }
-
-  .subscription-manage-toolbar__side {
-    width: 100%;
-    justify-content: stretch;
-    flex-wrap: wrap;
-  }
-
-  .subscription-page-tools {
-    justify-content: stretch;
-  }
-
-  .subscription-page-tools > * {
-    width: 100%;
   }
 
   .subscriptions-create-card {
