@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.services import catalog, local_model_edit
+from tests.test_helpers import InMemoryDatabaseState
 
 
 def _upload(filename: str, data: bytes, content_type: str = "application/octet-stream"):
@@ -14,6 +15,13 @@ def _upload(filename: str, data: bytes, content_type: str = "application/octet-s
 
 
 class LocalModelEditTest(unittest.TestCase):
+    def setUp(self):
+        self.db_state = InMemoryDatabaseState()
+        self.db_state.__enter__()
+
+    def tearDown(self):
+        self.db_state.__exit__(None, None, None)
+
     def _write_local_model(self, root: Path) -> Path:
         model_root = root / "LOCAL_Test"
         (model_root / "instances").mkdir(parents=True)
@@ -131,6 +139,24 @@ class LocalModelEditTest(unittest.TestCase):
             self.assertNotIn("onerror", html)
             self.assertNotIn("style=", html)
             self.assertNotIn("javascript:", html)
+
+    def test_summary_html_rewrites_dot_slash_image_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_root = Path(tmp).resolve()
+            model_root = self._write_local_model(archive_root)
+            meta_path = model_root / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["summary"] = {
+                "text": "with image",
+                "html": '<p><img src="./images/cover.jpg"></p>',
+            }
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+            with patch.object(catalog, "ARCHIVE_DIR", archive_root):
+                detail = catalog.get_model_detail("LOCAL_Test")
+
+            self.assertIn('/archive/LOCAL_Test/images/cover.jpg', detail["summary_html"])
+            self.assertNotIn('src="./images/cover.jpg"', detail["summary_html"])
 
     def test_update_metadata_changes_title_and_description(self):
         with tempfile.TemporaryDirectory() as tmp:

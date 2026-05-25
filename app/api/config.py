@@ -25,8 +25,10 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from starlette.requests import ClientDisconnect
 
+from app.core.database import database_status
+from app.core.database_json_state import load_database_json_state, save_database_json_state
 from app.core.store import JsonStore
-from app.core.security import hash_api_token
+from app.core.security import default_admin_password_hash, hash_api_token, verify_password
 from app.core.settings import APP_VERSION, ARCHIVE_DIR, BACKGROUND_TASKS_ENABLED, MAX_LOCAL_IMPORT_UPLOAD_BYTES, STATE_DIR
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
 from app.schemas.models import (
@@ -36,6 +38,8 @@ from app.schemas.models import (
     Missing3mfCancelRequest,
     CookiePair,
     CookieTestRequest,
+    OnlineAccountLoginRequest,
+    OnlineAccountSmsCodeRequest,
     LocalModelDescriptionUpdateRequest,
     LocalModelFileDeleteRequest,
     LocalModelImageCoverRequest,
@@ -61,7 +65,6 @@ from app.schemas.models import (
     SubscriptionCreateRequest,
     SubscriptionSettingsUpdate,
     SubscriptionUpdateRequest,
-    SystemUpdateRequest,
     ThemeSettingsUpdate,
     ThreeMfDownloadLimitsConfig,
     UserSettingsUpdate,
@@ -75,6 +78,7 @@ from app.services.catalog import (
     get_model_detail,
     invalidate_archive_snapshot,
     invalidate_model_detail_cache,
+    upsert_archive_snapshot_model,
 )
 from app.services.crawler import LegacyCrawlerBridge
 from app.services.business_logs import append_business_log, read_log_entries
@@ -102,12 +106,14 @@ from app.services.archive_repair import (
     run_archive_repair_job,
     write_archive_repair_status,
 )
-from app.services.archive_profile_backfill import (
-    read_profile_backfill_status,
-    write_profile_backfill_status,
-)
+from app.services.archive_model_index import archive_model_index_status
+from app.services.archive_profile_backfill import read_profile_backfill_status, write_profile_backfill_status
 from app.services.batch_discovery import extract_model_id, normalize_source_url
-from app.services.subscriptions import SubscriptionManager
+from app.services.subscriptions import (
+    SubscriptionManager,
+    cookie_source_inventory_payload,
+    cookie_source_sync_state_payload,
+)
 from app.services.source_library import (
     SOURCE_LIBRARY_SNAPSHOT_DIR,
     SourceLibraryManager,
@@ -116,9 +122,16 @@ from app.services.source_library import (
     build_state_group_models_payload,
 )
 from app.services.source_health import probe_cookie_auth_status
+from app.services.online_accounts import (
+    OnlineAccountLoginError,
+    OnlineAccountSmsCodeError,
+    login_online_account,
+    online_account_metadata_from_cookie,
+    send_online_account_sms_code,
+)
 from app.services.task_state import TaskStateStore, compact_remote_refresh_state
 from app.services.archive_worker import BATCH_TASK_MODES, detect_archive_mode
-from app.services.self_update import get_update_status, normalize_runtime_resource_config, request_system_update
+from app.services.self_update import normalize_runtime_resource_config
 from app.services.legacy_archiver import sanitize_filename
 
 
@@ -179,7 +192,7 @@ github_changelog_cache = {
     "last_success_at": "",
 }
 
-SHARES_STATE_PATH = STATE_DIR / "model_shares.json"
+SHARES_STATE_KEY = "model_shares"
 SHARE_CODE_PREFIX = "MHSHARE1."
 SHARE_CODE_COMPACT_PREFIX = "MHS1."
 SHARE_CODE_OBSCURED_PREFIX = "MH3."
@@ -204,7 +217,7 @@ MODEL_DOWNLOAD_ALL_EXCLUDED_DIRS = {"packages"}
 MODEL_DOWNLOAD_ALL_EXCLUDED_FILENAMES = {
     ".makerhub-manual-attachments.json",
 }
-BAMBU_STUDIO_DOWNLOAD_SECRET_PATH = STATE_DIR / "bambu_studio_download_secret"
+BAMBU_STUDIO_DOWNLOAD_SECRET_KEY = "bambu_studio_download_secret"
 BAMBU_STUDIO_DOWNLOAD_TTL_SECONDS = 10 * 60
 SHARE_RECEIVE_MAX_FILES = 2000
 SHARE_RECEIVE_MAX_TOTAL_BYTES = MAX_LOCAL_IMPORT_UPLOAD_BYTES
@@ -213,13 +226,7 @@ SHARE_RECEIVE_MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 
 
 def _read_shares_state() -> dict:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    if not SHARES_STATE_PATH.exists():
-        return {"items": []}
-    try:
-        payload = json.loads(SHARES_STATE_PATH.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {"items": []}
+    payload = load_database_json_state(SHARES_STATE_KEY, {"items": []})
     if not isinstance(payload, dict):
         return {"items": []}
     items = payload.get("items")
@@ -229,10 +236,7 @@ def _read_shares_state() -> dict:
 
 
 def _write_shares_state(payload: dict) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    temp_path = SHARES_STATE_PATH.with_name(f"{SHARES_STATE_PATH.name}.{os.getpid()}.tmp")
-    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp_path.replace(SHARES_STATE_PATH)
+    save_database_json_state(SHARES_STATE_KEY, payload)
 
 
 def _safe_download_filename(filename: str, fallback: str = "makerhub-model") -> str:
@@ -302,14 +306,11 @@ def _create_model_download_all_archive(model_dir: str) -> tuple[Path, str]:
 
 
 def _bambu_studio_download_secret() -> str:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        secret = BAMBU_STUDIO_DOWNLOAD_SECRET_PATH.read_text(encoding="utf-8").strip()
-    except OSError:
-        secret = ""
+    payload = load_database_json_state(BAMBU_STUDIO_DOWNLOAD_SECRET_KEY, {})
+    secret = str(payload.get("secret") or "").strip()
     if not secret:
         secret = secrets.token_urlsafe(32)
-        BAMBU_STUDIO_DOWNLOAD_SECRET_PATH.write_text(secret, encoding="utf-8")
+        save_database_json_state(BAMBU_STUDIO_DOWNLOAD_SECRET_KEY, {"secret": secret})
     return secret
 
 
@@ -1512,6 +1513,7 @@ def _import_share_manifest(*, decoded: dict, manifest: dict) -> dict:
         (model_root / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         model_dir = model_root.relative_to(ARCHIVE_DIR.resolve()).as_posix()
         invalidate_model_detail_cache(model_dir)
+        upsert_archive_snapshot_model(model_dir, "share_import", broadcast=False)
         imported.append({"model_dir": model_dir, "title": title})
     if imported:
         invalidate_archive_snapshot("share_import")
@@ -2035,6 +2037,120 @@ def _run_cookie_test(payload: CookieTestRequest) -> dict:
     )
 
 
+def _run_online_account_login(payload: OnlineAccountLoginRequest, proxy_config: ProxyConfig) -> dict:
+    result = login_online_account(
+        platform=payload.platform,
+        username=payload.username,
+        password=payload.password,
+        verification_code=payload.verification_code,
+        proxy_config=proxy_config,
+    )
+    return {
+        "platform": result.platform,
+        "username": result.username,
+        "cookie": result.cookie,
+        "display_name": result.display_name,
+        "account_id": result.account_id,
+        "handle": result.handle,
+        "avatar_url": result.avatar_url,
+        "status": result.status,
+        "message": result.message,
+        "auth_payload": result.auth_payload or {},
+    }
+
+
+def _run_online_account_sms_code(payload: OnlineAccountSmsCodeRequest, proxy_config: ProxyConfig) -> dict:
+    return send_online_account_sms_code(
+        platform=payload.platform,
+        phone=payload.phone,
+        email=payload.email or payload.account,
+        proxy_config=proxy_config,
+    )
+
+
+def _cookie_pair_from_existing(existing: CookiePair | None, *, platform: str, cookie: str = "", metadata: dict | None = None) -> CookiePair:
+    metadata = metadata or {}
+    def field_value(key: str) -> str:
+        if key in metadata:
+            return str(metadata.get(key) or "")
+        return str(getattr(existing, key, "") or "")
+
+    created_at = field_value("created_at") or _now_iso()
+    updated_at = field_value("updated_at") or _now_iso()
+    return CookiePair(
+        platform=platform,
+        cookie=sanitize_cookie_header(cookie if cookie is not None else getattr(existing, "cookie", "") or ""),
+        username=field_value("username"),
+        display_name=field_value("display_name"),
+        account_id=field_value("account_id"),
+        handle=field_value("handle"),
+        avatar_url=field_value("avatar_url"),
+        status=field_value("status"),
+        message=field_value("message"),
+        created_at=created_at,
+        updated_at=updated_at,
+        last_login_at=field_value("last_login_at"),
+        last_tested_at=field_value("last_tested_at"),
+    )
+
+
+def _preserve_account_profile_metadata(metadata: dict, existing: CookiePair) -> dict:
+    next_metadata = dict(metadata or {})
+    username = str(next_metadata.get("username") or existing.username or "").strip()
+    display_name = str(next_metadata.get("display_name") or "").strip()
+    if username and display_name == username and str(existing.display_name or "").strip():
+        next_metadata["display_name"] = ""
+    for key in ("display_name", "account_id", "handle", "avatar_url"):
+        if not str(next_metadata.get(key) or "").strip():
+            existing_value = str(getattr(existing, key, "") or "").strip()
+            if existing_value:
+                next_metadata[key] = existing_value
+    if not str(next_metadata.get("display_name") or "").strip():
+        next_metadata["display_name"] = username
+    return next_metadata
+
+
+def _upsert_cookie_pair(cookies: list[CookiePair], next_pair: CookiePair) -> list[CookiePair]:
+    updated: list[CookiePair] = []
+    inserted = False
+    for item in cookies:
+        if item.platform == next_pair.platform:
+            if not inserted:
+                updated.append(next_pair)
+                inserted = True
+            continue
+        updated.append(item)
+    if not inserted:
+        updated.append(next_pair)
+    return updated
+
+
+def _account_platform_short_label(platform: str) -> str:
+    return "国际" if str(platform or "").strip().lower() == "global" else "国内"
+
+
+def _normalize_account_status_message(platform: str, message: str) -> str:
+    text = str(message or "").strip()
+    if not text:
+        return ""
+    platform_label = _account_platform_short_label(platform)
+    if re.search(r"Cookie\s*部分成功", text) or "接口可访问" in text or re.search(r"\b\d+\s*/\s*\d+\b", text):
+        return f"{platform_label}账号已保存，部分账号信息暂时读取失败；可以点击同步重试。"
+    if "基础认证可用" in text or "接口暂时未通过" in text:
+        return f"{platform_label}账号已保存，部分账号信息暂时读取失败；可以点击同步重试。"
+    if "认证接口可正常访问" in text:
+        return f"{platform_label}账号可用，Cookie 已保存。"
+    if "认证接口返回了登录页或网页页面" in text:
+        return f"{platform_label}账号已保存，但暂时无法读取账号信息；可以点击同步重试。"
+    return text
+
+
+def _public_cookie_payload(item: CookiePair) -> dict:
+    payload = item.model_dump()
+    payload["message"] = _normalize_account_status_message(item.platform, item.message)
+    return payload
+
+
 def _archive_event_snapshot() -> dict:
     queue = task_state_store.load_archive_queue()
     organize_tasks = task_state_store.load_organize_tasks()
@@ -2069,9 +2185,14 @@ def _archive_event_snapshot() -> dict:
 
 
 def _public_config_payload(config) -> dict:
+    default_password = (
+        str(config.user.username or "").strip() == "admin"
+        and verify_password("admin", config.user.password_hash)
+        and str(config.user.password_hash or "").strip() == default_admin_password_hash()
+    )
     return {
         "app_version": APP_VERSION,
-        "cookies": [item.model_dump() for item in config.cookies],
+        "cookies": [_public_cookie_payload(item) for item in config.cookies],
         "proxy": config.proxy.model_dump(),
         "notifications": config.notifications.model_dump(),
         "sharing": config.sharing.model_dump(),
@@ -2087,17 +2208,23 @@ def _public_config_payload(config) -> dict:
             "password_hint": config.user.password_hint,
             "theme_preference": config.user.theme_preference,
             "password_updated_at": config.user.password_updated_at,
-            "default_password": auth_manager.default_password_active(),
+            "default_password": default_password,
         },
-        "api_tokens": [item.model_dump() for item in auth_manager.list_api_tokens()],
+        "api_tokens": [
+            auth_manager._token_view(item).model_dump()
+            for item in sorted(config.api_tokens, key=lambda item: item.created_at, reverse=True)
+        ],
         "subscriptions": [item.model_dump() for item in config.subscriptions],
         "subscription_settings": config.subscription_settings.model_dump(),
+        "cookie_source_inventory": cookie_source_inventory_payload(),
+        "cookie_source_sync_state": cookie_source_sync_state_payload(),
         "missing_3mf": [item.model_dump() for item in config.missing_3mf],
         "organizer": config.organizer.model_dump(),
         "remote_refresh": config.remote_refresh.model_dump(),
         "three_mf_limits": config.three_mf_limits.model_dump(),
         "advanced": config.advanced.model_dump(),
         "runtime": config.runtime.model_dump(),
+        "database": database_status(),
         "remote_refresh_state": compact_remote_refresh_state(
             task_state_store.load_remote_refresh_state(),
             include_current=False,
@@ -2614,26 +2741,6 @@ async def _read_mobile_raw_upload_file(
     return _mobile_raw_upload_from_file(spool, filename, received)
 
 
-@router.get("/bootstrap")
-async def get_bootstrap(request: Request):
-    identity = getattr(request.state, "auth_identity", None) or {}
-    config = await run_ui_io(store.load)
-    payload = {
-        "app_version": APP_VERSION,
-        "session": _session_payload(identity, config=config if identity else None),
-        "theme_preference": config.user.theme_preference if identity else "",
-    }
-    return _with_version_status(payload, await _get_github_version_status(proxy_config=config.proxy))
-
-
-@router.get("/public/makerhub/ping")
-async def public_makerhub_ping():
-    return {
-        "makerhub": True,
-        "app_version": APP_VERSION,
-    }
-
-
 @router.get("/public/shares/{share_id}/manifest")
 async def public_share_manifest(share_id: str, token: str = Query("")):
     try:
@@ -2688,47 +2795,6 @@ async def public_share_file(share_id: str, file_id: str, token: str = Query(""),
     )
 
 
-@router.get("/config")
-async def get_config():
-    config = await run_ui_io(store.load)
-    payload = await run_ui_io(_public_config_payload, config)
-    return _with_version_status(payload, await _get_github_version_status(proxy_config=config.proxy))
-
-
-@router.get("/system/update")
-async def get_system_update(force: bool = Query(False)):
-    config = await run_ui_io(store.load)
-    payload = await run_ui_io(get_update_status)
-    payload = _with_version_status(payload, await _get_github_version_status(force=force, proxy_config=config.proxy))
-    return _with_changelog_status(payload, await _get_github_changelog_status(force=force, proxy_config=config.proxy))
-
-
-@router.get("/system/version")
-async def get_system_version(force: bool = Query(False)):
-    config = await run_ui_io(store.load)
-    payload = {"app_version": APP_VERSION}
-    return _with_version_status(payload, await _get_github_version_status(force=force, proxy_config=config.proxy))
-
-
-@router.post("/system/update")
-async def start_system_update(payload: SystemUpdateRequest, request: Request):
-    _require_session_auth(request)
-    identity = getattr(request.state, "auth_identity", None) or {}
-    requested_by = str(identity.get("username") or "").strip()
-    config = store.load()
-    try:
-        os.environ["MAKERHUB_RUNTIME_CONFIG_JSON"] = json.dumps(config.runtime.model_dump(), ensure_ascii=False)
-        response = request_system_update(
-            requested_by=requested_by,
-            target_version=str(payload.target_version or ""),
-            force=bool(payload.force),
-        )
-        response = _with_version_status(response, await _get_github_version_status(proxy_config=config.proxy))
-        return _with_changelog_status(response, await _get_github_changelog_status(proxy_config=config.proxy))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
 @router.post("/config/cookies")
 async def save_cookies(payload: list[CookiePair], request: Request):
     _require_session_auth(request)
@@ -2738,10 +2804,50 @@ async def save_cookies(payload: list[CookiePair], request: Request):
         for item in payload
         if item.platform in {"cn", "global"} and sanitize_cookie_header(item.cookie)
     }
-    config.cookies = [
-        CookiePair(platform=item.platform, cookie=sanitize_cookie_header(item.cookie))
-        for item in payload
-    ]
+    existing_by_platform = {item.platform: item for item in config.cookies}
+    next_cookies: list[CookiePair] = []
+    for item in payload:
+        existing = existing_by_platform.get(item.platform)
+        clean_cookie = sanitize_cookie_header(item.cookie)
+        metadata = {"updated_at": _now_iso()}
+        if clean_cookie:
+            for key in (
+                "username",
+                "display_name",
+                "account_id",
+                "handle",
+                "avatar_url",
+                "status",
+                "message",
+                "last_login_at",
+                "last_tested_at",
+            ):
+                value = str(getattr(item, key, "") or "").strip()
+                if value:
+                    metadata[key] = value
+        else:
+            metadata.update(
+                {
+                    "username": "",
+                    "display_name": "",
+                    "account_id": "",
+                    "handle": "",
+                    "avatar_url": "",
+                    "status": "",
+                    "message": "",
+                    "last_login_at": "",
+                    "last_tested_at": "",
+                }
+            )
+        next_cookies.append(
+            _cookie_pair_from_existing(
+                existing,
+                platform=item.platform,
+                cookie=clean_cookie,
+                metadata=metadata,
+            )
+        )
+    config.cookies = next_cookies
     append_business_log(
         "settings",
         "cookies_saved",
@@ -2774,6 +2880,116 @@ async def save_cookies(payload: list[CookiePair], request: Request):
     response = _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
     response["subscription_retry"] = retry_result
     response["cookie_source_sync"] = cookie_sources_result
+    return response
+
+
+@router.post("/config/online-accounts/sms-code")
+async def send_config_online_account_sms_code(payload: OnlineAccountSmsCodeRequest, request: Request):
+    _require_session_auth(request)
+    config = store.load()
+    platform = "global" if payload.platform == "global" else "cn"
+    try:
+        result = await run_task_api(_run_online_account_sms_code, payload, config.proxy)
+    except OnlineAccountSmsCodeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    append_business_log(
+        "settings",
+        "online_account_sms_code_sent",
+        "线上账号验证码已发送。",
+        platform=platform,
+        account_suffix=str(payload.email or payload.account or payload.phone or "")[-4:],
+    )
+    return result
+
+
+@router.post("/config/online-accounts/login")
+async def login_config_online_account(payload: OnlineAccountLoginRequest, request: Request):
+    _require_session_auth(request)
+    config = store.load()
+    platform = "global" if payload.platform == "global" else "cn"
+    try:
+        login_result = await run_task_api(_run_online_account_login, payload, config.proxy)
+    except OnlineAccountLoginError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    existing_by_platform = {item.platform: item for item in config.cookies}
+    pair = _cookie_pair_from_existing(
+        existing_by_platform.get(platform),
+        platform=platform,
+        cookie=login_result.get("cookie") or "",
+        metadata={
+            "username": login_result.get("username") or payload.username,
+            "display_name": login_result.get("display_name") or payload.username,
+            "account_id": login_result.get("account_id") or "",
+            "handle": login_result.get("handle") or "",
+            "avatar_url": login_result.get("avatar_url") or "",
+            "status": login_result.get("status") or "ok",
+            "message": login_result.get("message") or "账号已登录，Cookie 已保存。",
+            "last_login_at": _now_iso(),
+            "last_tested_at": _now_iso(),
+        },
+    )
+    config.cookies = _upsert_cookie_pair(config.cookies, pair)
+    append_business_log(
+        "settings",
+        "online_account_saved",
+        "线上账号已保存。",
+        platform=platform,
+        username=payload.username,
+        status=pair.status,
+    )
+    saved = store.save(config)
+    retry_result = subscription_manager.retry_error_subscriptions_for_platforms({platform})
+    cookie_sources_result = subscription_manager.request_cookie_source_sync({platform}, reason="online_account_login")
+    response = _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
+    response["subscription_retry"] = retry_result
+    response["cookie_source_sync"] = cookie_sources_result
+    return response
+
+
+@router.delete("/config/online-accounts/{platform}")
+async def delete_config_online_account(platform: str, request: Request):
+    _require_session_auth(request)
+    clean_platform = "global" if str(platform or "").strip().lower() == "global" else "cn"
+    config = store.load()
+    existing_by_platform = {item.platform: item for item in config.cookies}
+    config.cookies = _upsert_cookie_pair(
+        config.cookies,
+        _cookie_pair_from_existing(
+            existing_by_platform.get(clean_platform),
+            platform=clean_platform,
+            cookie="",
+            metadata={
+                "username": "",
+                "display_name": "",
+                "account_id": "",
+                "handle": "",
+                "avatar_url": "",
+                "status": "",
+                "message": "",
+                "last_login_at": "",
+                "last_tested_at": "",
+            },
+        ),
+    )
+    append_business_log(
+        "settings",
+        "online_account_deleted",
+        "线上账号已移除。",
+        platform=clean_platform,
+    )
+    saved = store.save(config)
+    cleanup_result = subscription_manager.remove_account_imported_subscriptions(clean_platform)
+    cleaned = store.load()
+    response = _with_version_status(_public_config_payload(cleaned), await _get_github_version_status(proxy_config=cleaned.proxy))
+    response["online_account_cleanup"] = cleanup_result
+    response["cookie_source_inventory"] = cookie_source_inventory_payload()
+    response["cookie_source_sync_state"] = cookie_source_sync_state_payload()
     return response
 
 
@@ -2835,6 +3051,74 @@ async def test_cookie(payload: CookieTestRequest, request: Request):
         results=result.get("results") or [],
     )
     return result
+
+
+@router.post("/config/online-accounts/{platform}/test")
+async def test_config_online_account(platform: str, request: Request):
+    _require_session_auth(request)
+    clean_platform = "global" if str(platform or "").strip().lower() == "global" else "cn"
+    config = store.load()
+    target = next((item for item in config.cookies if item.platform == clean_platform), None)
+    if target is None or not sanitize_cookie_header(target.cookie):
+        raise HTTPException(status_code=400, detail="这个平台还没有保存账号 Cookie。")
+    try:
+        result = await run_task_api(
+            _run_cookie_test,
+            CookieTestRequest(platform=clean_platform, cookie=target.cookie, proxy=config.proxy),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    metadata = online_account_metadata_from_cookie(
+        platform=clean_platform,
+        username=target.username,
+        cookie=target.cookie,
+        proxy_config=config.proxy,
+    )
+    metadata = _preserve_account_profile_metadata(metadata, target)
+    metadata["message"] = result.get("message") or metadata.get("message") or ""
+    config.cookies = _upsert_cookie_pair(
+        config.cookies,
+        _cookie_pair_from_existing(
+            target,
+            platform=clean_platform,
+            cookie=target.cookie,
+            metadata=metadata,
+        ),
+    )
+    saved = store.save(config)
+    append_business_log(
+        "settings",
+        "online_account_tested",
+        result.get("message") or "线上账号测试已完成。",
+        ok=bool(result.get("ok")),
+        platform=clean_platform,
+    )
+    response = _public_config_payload(saved)
+    response["test_result"] = result
+    return response
+
+
+@router.post("/config/online-accounts/{platform}/sync")
+async def sync_config_online_account(platform: str, request: Request):
+    _require_session_auth(request)
+    clean_platform = "global" if str(platform or "").strip().lower() == "global" else "cn"
+    config = store.load()
+    target = next((item for item in config.cookies if item.platform == clean_platform), None)
+    if target is None or not sanitize_cookie_header(target.cookie):
+        raise HTTPException(status_code=400, detail="这个平台还没有保存账号 Cookie。")
+
+    cookie_sources_result = subscription_manager.request_cookie_source_sync({clean_platform}, reason="manual")
+    append_business_log(
+        "subscription",
+        "cookie_source_sync_queued",
+        "账号来源同步已提交，worker 会自动导入关注作者和收藏夹订阅。",
+        platform=clean_platform,
+        queued_count=cookie_sources_result.get("queued_count"),
+    )
+    response = _public_config_payload(config)
+    response["cookie_source_sync"] = cookie_sources_result
+    return response
 
 
 @router.post("/config/notifications")
@@ -3659,6 +3943,7 @@ async def upload_model_attachment(
     try:
         def _upload_and_load_detail():
             attachment_item = create_manual_attachment(model_dir, file, name=name, category=category)
+            upsert_archive_snapshot_model(model_dir, "manual_attachment_uploaded", broadcast=False)
             return attachment_item, get_model_detail(model_dir)
 
         attachment, detail = await run_task_api(_upload_and_load_detail)
@@ -3693,6 +3978,7 @@ async def remove_model_attachment(model_dir: str, attachment_id: str, request: R
     try:
         def _remove_and_load_detail():
             removed_item = delete_manual_attachment(model_dir, attachment_id)
+            upsert_archive_snapshot_model(model_dir, "manual_attachment_deleted", broadcast=False)
             return removed_item, get_model_detail(model_dir)
 
         removed, detail = await run_task_api(_remove_and_load_detail)
@@ -4854,6 +5140,10 @@ async def start_archive_profile_backfill(request: Request):
         state = write_profile_backfill_status(
             {
                 "running": True,
+                "phase": "database_migration",
+                "database_rebuild_requested": True,
+                "force_database_rebuild": True,
+                "auto_database_migration": False,
                 "started_at": started_at,
                 "finished_at": "",
                 "last_error": "",
@@ -4864,7 +5154,7 @@ async def start_archive_profile_backfill(request: Request):
     state.update(
         {
             "accepted": True,
-            "message": "现有库信息补全扫描已提交，等待后台 worker 执行；缺失模型会继续加入归档队列。",
+            "message": "数据库索引重建已提交，后台 worker 会先遍历历史库刷新索引，再继续检查缺失信息。",
         }
     )
     return _compact_profile_backfill_status(state)
@@ -4872,6 +5162,10 @@ async def start_archive_profile_backfill(request: Request):
 
 def _compact_profile_backfill_status(status: dict) -> dict:
     payload = dict(status or {})
+    try:
+        payload["database"] = archive_model_index_status()
+    except Exception:
+        payload["database"] = {}
     result = payload.get("last_result")
     if isinstance(result, dict):
         compact_result = dict(result)

@@ -4,8 +4,14 @@ import time
 
 from app.core.settings import APP_VERSION, LOCAL_PREVIEW_POLL_SECONDS, PROCESS_ROLE, ensure_app_dirs
 from app.core.store import JsonStore
+from app.core.timezone import now_iso as china_now_iso
 from app.services.archive_worker import ArchiveTaskManager
-from app.services.archive_profile_backfill import queue_profile_backfill, read_profile_backfill_status
+from app.services.archive_profile_backfill import (
+    queue_profile_backfill,
+    read_profile_backfill_status,
+    should_auto_run_database_migration,
+    write_profile_backfill_status,
+)
 from app.services.business_logs import append_business_log
 from app.services.local_organizer import LocalOrganizerService
 from app.services.local_preview_worker import local_preview_queue_marker_mtime, run_local_preview_generation_once
@@ -62,6 +68,38 @@ def main() -> int:
         queued_count=int(queue.get("queued_count") or 0),
         recovered_active=int(queue.get("recovered_count") or 0),
     )
+    try:
+        initial_backfill_status = read_profile_backfill_status()
+        if (
+            not initial_backfill_status.get("running")
+            and should_auto_run_database_migration()
+        ):
+            write_profile_backfill_status(
+                {
+                    "running": True,
+                    "phase": "database_migration",
+                    "database_rebuild_requested": True,
+                    "force_database_rebuild": False,
+                    "auto_database_migration": True,
+                    "started_at": china_now_iso(),
+                    "finished_at": "",
+                    "last_error": "",
+                    "last_result": {},
+                }
+            )
+            append_business_log(
+                "database",
+                "archive_model_index_auto_migration_queued",
+                "检测到数据库索引未完成，已自动提交全库索引初始化。",
+            )
+    except Exception as exc:
+        append_business_log(
+            "database",
+            "archive_model_index_auto_migration_check_failed",
+            "数据库索引自动初始化检测失败。",
+            level="warning",
+            error=str(exc),
+        )
 
     last_local_preview_poll = 0.0
     last_local_preview_full_scan = 0.0
@@ -72,7 +110,11 @@ def main() -> int:
             archive_manager.ensure_worker_for_pending()
             profile_backfill_status = read_profile_backfill_status()
             if profile_backfill_status.get("running"):
-                queue_profile_backfill(archive_manager)
+                queue_profile_backfill(
+                    archive_manager,
+                    rebuild_database=bool(profile_backfill_status.get("database_rebuild_requested")),
+                    force_database_rebuild=bool(profile_backfill_status.get("force_database_rebuild")),
+                )
             now = time.monotonic()
             marker_mtime = local_preview_queue_marker_mtime()
             marker_changed = bool(marker_mtime and marker_mtime != last_local_preview_marker_mtime)

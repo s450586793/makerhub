@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from app.schemas.models import AppConfig, ThreeMfDownloadLimitsConfig
 from app.services.archive_worker import _three_mf_daily_limits
@@ -9,6 +10,19 @@ from app.services.three_mf_quota import reserve_three_mf_download_slot
 
 
 class ThreeMfQuotaTest(unittest.TestCase):
+    def setUp(self):
+        self.quota_state = {}
+        self.quota_patches = [
+            patch("app.services.three_mf_quota.load_database_json_state", side_effect=lambda _key, default: dict(self.quota_state or default)),
+            patch("app.services.three_mf_quota.save_database_json_state", side_effect=lambda _key, value: self.quota_state.clear() or self.quota_state.update(value) or value),
+        ]
+        for item in self.quota_patches:
+            item.start()
+
+    def tearDown(self):
+        for item in reversed(self.quota_patches):
+            item.stop()
+
     def test_app_config_defaults_daily_limits_to_100_per_site(self):
         config = AppConfig()
 
@@ -30,31 +44,26 @@ class ThreeMfQuotaTest(unittest.TestCase):
 
     def test_reserve_blocks_after_daily_limit_per_site(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            quota_path = Path(temp_dir) / "quota.json"
             lock_path = Path(temp_dir) / "quota.lock"
 
             first = reserve_three_mf_download_slot(
                 url="https://makerworld.com.cn/zh/models/1",
                 limit=2,
-                quota_path=quota_path,
                 lock_path=lock_path,
             )
             second = reserve_three_mf_download_slot(
                 url="https://makerworld.com.cn/zh/models/2",
                 limit=2,
-                quota_path=quota_path,
                 lock_path=lock_path,
             )
             blocked = reserve_three_mf_download_slot(
                 url="https://makerworld.com.cn/zh/models/3",
                 limit=2,
-                quota_path=quota_path,
                 lock_path=lock_path,
             )
             global_first = reserve_three_mf_download_slot(
                 url="https://makerworld.com/zh/models/4",
                 limit=2,
-                quota_path=quota_path,
                 lock_path=lock_path,
             )
 
@@ -70,19 +79,16 @@ class ThreeMfQuotaTest(unittest.TestCase):
 
     def test_zero_daily_limit_is_unlimited_and_does_not_write_quota(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            quota_path = Path(temp_dir) / "quota.json"
             lock_path = Path(temp_dir) / "quota.lock"
 
             first = reserve_three_mf_download_slot(
                 url="https://makerworld.com.cn/zh/models/1",
                 limit=0,
-                quota_path=quota_path,
                 lock_path=lock_path,
             )
             second = reserve_three_mf_download_slot(
                 url="https://makerworld.com.cn/zh/models/2",
                 limit=0,
-                quota_path=quota_path,
                 lock_path=lock_path,
             )
 
@@ -91,7 +97,7 @@ class ThreeMfQuotaTest(unittest.TestCase):
         self.assertEqual(first["limit"], 0)
         self.assertIsNone(first["remaining"])
         self.assertTrue(second["allowed"])
-        self.assertFalse(quota_path.exists())
+        self.assertEqual(self.quota_state, {})
 
 
 if __name__ == "__main__":

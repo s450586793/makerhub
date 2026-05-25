@@ -1,0 +1,249 @@
+import unittest
+from unittest.mock import patch
+
+from app.services.archive_worker import ArchiveTaskManager
+
+
+class ArchiveWorkerBatchRetryTest(unittest.TestCase):
+    def test_refresh_batch_restores_orphaned_parent_from_child_tasks(self):
+        state = {}
+        manager = ArchiveTaskManager(background_enabled=False)
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch.object(manager, "_archived_task_keys", return_value=set()):
+            manager.task_store.save_archive_queue(
+                {
+                    "active": [
+                        {
+                            "id": "child-running",
+                            "url": "https://makerworld.com.cn/zh/models/656269",
+                            "title": "https://makerworld.com.cn/zh/models/656269",
+                            "mode": "single_model",
+                            "status": "running",
+                            "meta": {
+                                "batch_parent_id": "batch-missing",
+                                "batch_source_url": "https://makerworld.com.cn/zh/@ace/upload",
+                            },
+                        }
+                    ],
+                    "queued": [
+                        {
+                            "id": "child-queued",
+                            "url": "https://makerworld.com.cn/zh/models/656270",
+                            "title": "https://makerworld.com.cn/zh/models/656270",
+                            "mode": "single_model",
+                            "status": "queued",
+                            "meta": {
+                                "batch_parent_id": "batch-missing",
+                                "batch_source_url": "https://makerworld.com.cn/zh/@ace/upload",
+                            },
+                        }
+                    ],
+                    "recent_failures": [],
+                }
+            )
+
+            refreshed = manager._refresh_batch_tasks()
+            queue = manager.task_store.load_archive_queue()
+            refreshed_again = manager._refresh_batch_tasks()
+            queue_after_second_refresh = manager.task_store.load_archive_queue()
+
+        self.assertTrue(refreshed)
+        self.assertTrue(refreshed_again)
+        restored_batches = [
+            item
+            for item in queue["active"]
+            if item["id"] == "batch-missing"
+        ]
+        self.assertEqual(len(restored_batches), 1)
+        restored_batch = restored_batches[0]
+        self.assertEqual(restored_batch["mode"], "author_upload")
+        self.assertEqual(restored_batch["progress"], 60)
+        self.assertEqual(
+            restored_batch["message"],
+            "批量归档执行中：成功 0/2，运行中 1，排队中 1，失败 0。",
+        )
+        self.assertEqual(restored_batch["meta"]["batch_progress"]["total"], 2)
+        self.assertEqual(restored_batch["meta"]["batch_progress"]["running"], 1)
+        self.assertEqual(restored_batch["meta"]["batch_progress"]["queued"], 1)
+        expected_items = restored_batch["meta"]["batch_expected_items"]
+        self.assertEqual(
+            {item["task_key"] for item in expected_items},
+            {"model:656269", "model:656270"},
+        )
+        self.assertEqual(
+            len([item for item in queue_after_second_refresh["active"] if item["id"] == "batch-missing"]),
+            1,
+        )
+
+    def test_refresh_batch_restores_parent_removed_from_recent_failures(self):
+        state = {}
+        manager = ArchiveTaskManager(background_enabled=False)
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch.object(manager, "_archived_task_keys", return_value=set()):
+            manager.task_store.save_archive_queue(
+                {
+                    "active": [],
+                    "queued": [
+                        {
+                            "id": "child-queued",
+                            "url": "https://makerworld.com.cn/zh/models/656270",
+                            "title": "https://makerworld.com.cn/zh/models/656270",
+                            "mode": "single_model",
+                            "status": "queued",
+                            "meta": {
+                                "batch_parent_id": "batch-failed",
+                                "batch_source_url": "https://makerworld.com.cn/zh/@ace/upload",
+                            },
+                        }
+                    ],
+                    "recent_failures": [
+                        {
+                            "id": "batch-failed",
+                            "url": "https://makerworld.com.cn/zh/@ace/upload",
+                            "title": "https://makerworld.com.cn/zh/@ace/upload",
+                            "mode": "author_upload",
+                            "status": "failed",
+                            "message": "未找到可用 Cookie，请先到设置页配置对应站点 Cookie。",
+                        }
+                    ],
+                }
+            )
+
+            refreshed = manager._refresh_batch_tasks()
+            queue = manager.task_store.load_archive_queue()
+
+        self.assertTrue(refreshed)
+        self.assertEqual(
+            len([item for item in queue["active"] if item["id"] == "batch-failed"]),
+            1,
+        )
+        self.assertNotIn("batch-failed", {item["id"] for item in queue["recent_failures"]})
+
+    def test_refresh_batch_requeues_transient_failure_beyond_normal_limit(self):
+        state = {}
+        manager = ArchiveTaskManager(background_enabled=False)
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch.object(manager, "_archived_task_keys", return_value=set()):
+            manager.task_store.save_archive_queue(
+                {
+                    "active": [
+                        {
+                            "id": "batch-1",
+                            "url": "https://makerworld.com.cn/zh/@ace/upload",
+                            "mode": "author_upload",
+                            "status": "running",
+                            "meta": {
+                                "batch_expected_items": [
+                                    {
+                                        "url": "https://makerworld.com.cn/zh/models/656269",
+                                        "task_key": "model:656269",
+                                        "model_id": "656269",
+                                        "attempts": 3,
+                                        "status": "failed",
+                                        "last_task_id": "failed-task",
+                                    }
+                                ]
+                            },
+                        }
+                    ],
+                    "queued": [],
+                    "recent_failures": [
+                        {
+                            "id": "failed-task",
+                            "url": "https://makerworld.com.cn/zh/models/656269",
+                            "title": "https://makerworld.com.cn/zh/models/656269",
+                            "status": "failed",
+                            "message": "curl 失败 default: code=6 stderr=curl: (6) Could not resolve host: makerworld.com.cn",
+                        }
+                    ],
+                }
+            )
+
+            refreshed = manager._refresh_batch_tasks()
+            queue = manager.task_store.load_archive_queue()
+
+        self.assertTrue(refreshed)
+        self.assertEqual(queue["failed_count"], 0)
+        self.assertEqual(queue["queued_count"], 1)
+        child = queue["active"][0]["meta"]["batch_expected_items"][0]
+        self.assertEqual(child["status"], "queued")
+        self.assertEqual(child["attempts"], 4)
+        self.assertIn("Could not resolve host", child["last_failure_message"])
+
+    def test_refresh_batch_keeps_non_transient_failure_at_normal_limit(self):
+        state = {}
+        manager = ArchiveTaskManager(background_enabled=False)
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch.object(manager, "_archived_task_keys", return_value=set()):
+            manager.task_store.save_archive_queue(
+                {
+                    "active": [
+                        {
+                            "id": "batch-1",
+                            "url": "https://makerworld.com.cn/zh/@ace/upload",
+                            "mode": "author_upload",
+                            "status": "running",
+                            "meta": {
+                                "batch_expected_items": [
+                                    {
+                                        "url": "https://makerworld.com.cn/zh/models/656269",
+                                        "task_key": "model:656269",
+                                        "model_id": "656269",
+                                        "attempts": 3,
+                                        "status": "failed",
+                                        "last_task_id": "failed-task",
+                                    },
+                                    {
+                                        "url": "https://makerworld.com.cn/zh/models/656270",
+                                        "task_key": "model:656270",
+                                        "model_id": "656270",
+                                        "attempts": 1,
+                                        "status": "queued",
+                                        "last_task_id": "queued-task",
+                                    }
+                                ]
+                            },
+                        }
+                    ],
+                    "queued": [
+                        {
+                            "id": "queued-task",
+                            "url": "https://makerworld.com.cn/zh/models/656270",
+                            "title": "https://makerworld.com.cn/zh/models/656270",
+                            "status": "queued",
+                        }
+                    ],
+                    "recent_failures": [
+                        {
+                            "id": "failed-task",
+                            "url": "https://makerworld.com.cn/zh/models/656269",
+                            "title": "https://makerworld.com.cn/zh/models/656269",
+                            "status": "failed",
+                            "message": "页面被 Cloudflare 验证拦截，请更新 cookie 后重试",
+                        }
+                    ],
+                }
+            )
+
+            refreshed = manager._refresh_batch_tasks()
+            queue = manager.task_store.load_archive_queue()
+
+        self.assertTrue(refreshed)
+        self.assertEqual(queue["failed_count"], 1)
+        self.assertEqual(queue["queued_count"], 1)
+        child = queue["active"][0]["meta"]["batch_expected_items"][0]
+        self.assertEqual(child["status"], "failed")
+        self.assertEqual(child["attempts"], 3)
+        self.assertIn("Cloudflare", child["last_failure_message"])
+
+
+if __name__ == "__main__":
+    unittest.main()

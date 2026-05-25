@@ -1,18 +1,32 @@
 import json
 import os
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from app.core.database_json_state import load_database_json_state, save_database_json_state
 from app.core.settings import ARCHIVE_DIR, STATE_DIR, ensure_app_dirs
 from app.core.timezone import now_iso as china_now_iso
+from app.services.archive_model_index import (
+    archive_model_index_configured,
+    archive_model_index_is_bootstrapped,
+    archive_model_index_status,
+    clear_archive_model_index_bootstrap_marker,
+    mark_archive_model_index_bootstrapped,
+    truncate_archive_model_index,
+    upsert_archive_model_index,
+)
 from app.services.archive_worker import ArchiveTaskManager
 from app.services.business_logs import append_business_log
+from app.services.catalog import _normalize_model, invalidate_archive_snapshot
+from app.services.database_migration import migrate_json_files_to_database, migrate_log_files_to_database
 from app.services.legacy_archiver import PROFILE_DETAIL_SCHEMA_VERSION
 
 
 PROFILE_BACKFILL_STATUS_PATH = STATE_DIR / "archive_profile_backfill_status.json"
+PROFILE_BACKFILL_STATUS_KEY = "archive_profile_backfill_status"
 
 try:
     import fcntl
@@ -48,6 +62,10 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 def _base_profile_backfill_status() -> dict[str, Any]:
     return {
         "running": False,
+        "phase": "idle",
+        "database_rebuild_requested": False,
+        "force_database_rebuild": False,
+        "auto_database_migration": False,
         "started_at": "",
         "finished_at": "",
         "last_error": "",
@@ -59,40 +77,39 @@ def write_profile_backfill_status(payload: dict[str, Any]) -> dict[str, Any]:
     ensure_app_dirs()
     with _status_file_lock():
         current = _base_profile_backfill_status()
-        if PROFILE_BACKFILL_STATUS_PATH.exists():
-            try:
-                existing = _read_json(PROFILE_BACKFILL_STATUS_PATH)
-                if isinstance(existing, dict):
-                    current.update(existing)
-            except (OSError, json.JSONDecodeError):
-                pass
+        existing = load_database_json_state(PROFILE_BACKFILL_STATUS_KEY, {})
+        if isinstance(existing, dict):
+            current.update(existing)
 
         current.update(
             {
                 "running": bool(payload.get("running", current.get("running"))),
+                "phase": str(payload.get("phase", current.get("phase")) or "idle"),
+                "database_rebuild_requested": bool(payload.get("database_rebuild_requested", current.get("database_rebuild_requested"))),
+                "force_database_rebuild": bool(payload.get("force_database_rebuild", current.get("force_database_rebuild"))),
+                "auto_database_migration": bool(payload.get("auto_database_migration", current.get("auto_database_migration"))),
                 "started_at": str(payload.get("started_at", current.get("started_at")) or ""),
                 "finished_at": str(payload.get("finished_at", current.get("finished_at")) or ""),
                 "last_error": str(payload.get("last_error", current.get("last_error")) or ""),
                 "last_result": payload.get("last_result", current.get("last_result")) if isinstance(payload.get("last_result", current.get("last_result")), dict) else {},
             }
         )
-        _write_json(PROFILE_BACKFILL_STATUS_PATH, current)
+        save_database_json_state(PROFILE_BACKFILL_STATUS_KEY, current)
         return current
 
 
 def read_profile_backfill_status() -> dict[str, Any]:
     ensure_app_dirs()
-    if not PROFILE_BACKFILL_STATUS_PATH.exists():
-        return _base_profile_backfill_status()
-    try:
-        payload = _read_json(PROFILE_BACKFILL_STATUS_PATH)
-    except (OSError, json.JSONDecodeError):
-        return _base_profile_backfill_status()
+    payload = load_database_json_state(PROFILE_BACKFILL_STATUS_KEY, {})
     status = _base_profile_backfill_status()
     if isinstance(payload, dict):
         status.update(
             {
                 "running": bool(payload.get("running")),
+                "phase": str(payload.get("phase") or "idle"),
+                "database_rebuild_requested": bool(payload.get("database_rebuild_requested")),
+                "force_database_rebuild": bool(payload.get("force_database_rebuild")),
+                "auto_database_migration": bool(payload.get("auto_database_migration")),
                 "started_at": str(payload.get("started_at") or ""),
                 "finished_at": str(payload.get("finished_at") or ""),
                 "last_error": str(payload.get("last_error") or ""),
@@ -282,24 +299,152 @@ def discover_profile_backfill_candidates(archive_root: Path = ARCHIVE_DIR) -> li
     return candidates
 
 
+def _count_archive_meta_files(archive_root: Path = ARCHIVE_DIR) -> int:
+    return sum(1 for path in archive_root.rglob("meta.json") if path.is_file())
+
+
+def rebuild_archive_model_database_index(
+    *,
+    archive_root: Path = ARCHIVE_DIR,
+    force: bool = False,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    if not archive_model_index_configured():
+        return {
+            "available": False,
+            "skipped": True,
+            "reason": "Postgres 未配置或驱动未安装。",
+            "total": 0,
+            "processed": 0,
+            "failed": 0,
+            "items": [],
+        }
+
+    json_state_result = migrate_json_files_to_database(force=force)
+    log_state_result = migrate_log_files_to_database()
+    total = _count_archive_meta_files(archive_root=archive_root)
+    result: dict[str, Any] = {
+        "available": True,
+        "skipped": False,
+        "forced": bool(force),
+        "json_state": json_state_result,
+        "log_state": log_state_result,
+        "total": total,
+        "processed": 0,
+        "updated": 0,
+        "failed": 0,
+        "items": [],
+    }
+    if force:
+        clear_archive_model_index_bootstrap_marker()
+        truncate_archive_model_index()
+    elif archive_model_index_is_bootstrapped(archive_root=archive_root):
+        result.update(
+            {
+                "skipped": True,
+                "reason": "数据库索引已迁移完成。",
+                "status": archive_model_index_status(archive_root=archive_root),
+            }
+        )
+        return result
+
+    write_profile_backfill_status(
+        {
+            "running": True,
+            "phase": "database_migration",
+            "last_error": "",
+            "last_result": {"database_index": result},
+        }
+    )
+
+    for meta_path in sorted(archive_root.rglob("meta.json")):
+        if not meta_path.is_file():
+            continue
+        try:
+            model = _normalize_model(meta_path, include_detail=False)
+            if not model:
+                raise ValueError("meta.json 无法解析为模型。")
+            model_dir = str(model.get("model_dir") or meta_path.parent.relative_to(archive_root).as_posix())
+            ok = upsert_archive_model_index(model_dir, model=model, meta_path=meta_path)
+            if not ok:
+                raise RuntimeError("数据库写入失败。")
+            result["updated"] += 1
+        except Exception as exc:
+            result["failed"] += 1
+            if len(result["items"]) < 50:
+                result["items"].append(
+                    {
+                        "model_dir": meta_path.parent.name,
+                        "message": str(exc),
+                    }
+                )
+        finally:
+            result["processed"] += 1
+            if result["processed"] == total or result["processed"] % 25 == 0:
+                write_profile_backfill_status(
+                    {
+                        "running": True,
+                        "phase": "database_migration",
+                        "last_result": {"database_index": dict(result)},
+                    }
+                )
+
+    duration = time.monotonic() - started
+    if result["failed"] == 0:
+        mark_archive_model_index_bootstrapped(
+            archive_root=archive_root,
+            processed_count=result["processed"],
+            failed_count=result["failed"],
+            duration_seconds=duration,
+            forced=force,
+        )
+    else:
+        clear_archive_model_index_bootstrap_marker()
+    result["duration_seconds"] = round(duration, 3)
+    result["status"] = archive_model_index_status(archive_root=archive_root)
+    invalidate_archive_snapshot("archive_model_index_rebuilt")
+    append_business_log(
+        "database",
+        "archive_model_index_rebuilt",
+        "归档模型数据库索引重建完成。",
+        total=result["total"],
+        processed=result["processed"],
+        updated=result["updated"],
+        failed=result["failed"],
+        forced=bool(force),
+        duration_seconds=result["duration_seconds"],
+    )
+    return result
+
+
+def should_auto_run_database_migration(archive_root: Path = ARCHIVE_DIR) -> bool:
+    if not archive_model_index_configured():
+        return False
+    return not archive_model_index_is_bootstrapped(archive_root=archive_root)
+
+
 def queue_profile_backfill(
     archive_manager: ArchiveTaskManager,
     *,
     archive_root: Path = ARCHIVE_DIR,
+    rebuild_database: bool = False,
+    force_database_rebuild: bool = False,
 ) -> dict[str, Any]:
-    started_at = china_now_iso()
+    current_status = read_profile_backfill_status()
+    started_at = str(current_status.get("started_at") or "") or china_now_iso()
     write_profile_backfill_status(
         {
             "running": True,
+            "phase": "database_migration" if rebuild_database else "profile_scan",
             "started_at": started_at,
             "finished_at": "",
             "last_error": "",
             "last_result": {},
         }
     )
-    candidates = discover_profile_backfill_candidates(archive_root=archive_root)
     result = {
-        "scanned_candidates": len(candidates),
+        "database_index": {},
+        "scanned_candidates": 0,
         "queued_count": 0,
         "already_queued_count": 0,
         "failed_count": 0,
@@ -307,6 +452,21 @@ def queue_profile_backfill(
         "items": [],
     }
     try:
+        if rebuild_database:
+            result["database_index"] = rebuild_archive_model_database_index(
+                archive_root=archive_root,
+                force=force_database_rebuild,
+            )
+            write_profile_backfill_status(
+                {
+                    "running": True,
+                    "phase": "profile_scan",
+                    "last_result": result,
+                }
+            )
+
+        candidates = discover_profile_backfill_candidates(archive_root=archive_root)
+        result["scanned_candidates"] = len(candidates)
         for item in candidates:
             response = archive_manager.submit_profile_metadata_backfill(
                 item.get("url") or "",
@@ -332,6 +492,10 @@ def queue_profile_backfill(
         write_profile_backfill_status(
             {
                 "running": False,
+                "phase": "completed",
+                "database_rebuild_requested": False,
+                "force_database_rebuild": False,
+                "auto_database_migration": False,
                 "finished_at": finished_at,
                 "last_error": "",
                 "last_result": result,
@@ -348,6 +512,7 @@ def queue_profile_backfill(
         )
         return {
             "running": False,
+            "phase": "completed",
             "started_at": started_at,
             "finished_at": finished_at,
             "last_error": "",
@@ -363,6 +528,10 @@ def queue_profile_backfill(
         write_profile_backfill_status(
             {
                 "running": False,
+                "phase": "failed",
+                "database_rebuild_requested": False,
+                "force_database_rebuild": False,
+                "auto_database_migration": False,
                 "finished_at": finished_at,
                 "last_error": str(exc),
                 "last_result": result,

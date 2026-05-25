@@ -163,6 +163,30 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         self.assertEqual(design["title"], "Scrapling model")
         self.assertEqual(session.calls, [])
 
+    def test_fetch_html_with_curl_retries_transient_dns_failure(self):
+        calls = []
+
+        def fake_run(cmd, capture_output=None, text=None):
+            calls.append(cmd)
+            if len(calls) == 1:
+                return SimpleNamespace(
+                    returncode=6,
+                    stdout=b"",
+                    stderr=b"curl: (6) Could not resolve host: makerworld.com.cn",
+                )
+            return SimpleNamespace(
+                returncode=0,
+                stdout=b"<html><script id=\"__NEXT_DATA__\"></script></html>",
+                stderr=b"",
+            )
+
+        with patch("app.services.legacy_archiver.subprocess.run", side_effect=fake_run):
+            html = legacy_archiver.fetch_html_with_curl("https://makerworld.com.cn/zh/models/1", "")
+
+        self.assertIn("__NEXT_DATA__", html)
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertIn("--http1.1", calls[1])
+
     def test_comment_api_base_candidates_prefer_global_bambulab_api(self):
         candidates = legacy_archiver._comment_api_base_candidates(
             "https://makerworld.com/zh/models/2416065",

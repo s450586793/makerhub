@@ -1,0 +1,81 @@
+# 部署 / 更新
+
+## 职责
+
+- 维护 Dockerfile、compose、entrypoint 和运行环境变量。
+- 支持 App / Worker / Postgres 三容器部署。
+- 提供设置页的一键更新能力：拉镜像、重建 worker/app、延迟清理旧镜像。
+- 检测旧 compose 是否缺少数据库配置，并给出升级保护提示。
+- 维护 README 部署说明、compose 示例、iOS 快捷指令下载链接。
+
+## 不负责
+
+- 不决定具体业务抓取规则。
+- 不在更新流程里同步执行耗时数据迁移；迁移应由 worker 后台跑并显示状态。
+- 不在每次本地改动时自动改版本号或 README；按用户要求，推送时再统一处理。
+
+## 对外契约
+
+### HTTP API
+
+- `GET /api/system/update`
+- `GET /api/system/version`
+- `POST /api/system/update`
+
+### Service 函数/类
+
+- `get_update_capability()`
+- `get_update_status()`
+- `request_system_update()`
+- `mark_update_started_after_restart()`
+- `run_update_helper()`
+- `DockerSocketClient`
+- `normalize_runtime_resource_config()`
+
+## 数据和目录
+
+- 文件:
+  - `compose.yaml`
+  - `Dockerfile`
+  - `docker/entrypoint.sh`
+  - `README.md`
+  - `VERSION`
+- Postgres/JSON state:
+  - 更新状态存于 `makerhub_json_state:system_update`。
+  - 数据库迁移状态由 Core/归档索引模块维护。
+- Docker:
+  - App 挂载 `/var/run/docker.sock` 时才能网页更新。
+  - `makerhub-app` 和 `makerhub-worker` 应使用同一镜像版本。
+
+## 常用测试命令
+
+```bash
+.venv/bin/python -m unittest tests.test_self_update tests.test_github_changelog
+```
+
+compose 或入口脚本改动后，至少检查：
+
+```bash
+git diff --check
+```
+
+## 修改时不能破坏
+
+- 旧单容器或缺少 Postgres 的部署不能被网页更新直接推到不可启动状态；必须提示需要改 compose。
+- 一键更新应先处理 worker，再处理 app，保证页面尽量可恢复。
+- 删除旧镜像必须异步/延迟，不能阻塞实例更新。
+- Docker socket 未挂载时要显示不可用原因，而不是按钮假装可用。
+- App/Worker 资源配置应通过少量清晰环境变量控制，不要制造过多难填配置。
+- README 更新记录默认只展开最新几条，历史折叠；版本号仅在用户要求推送/发布时统一修改。
+
+## 给 Codex 的上下文入口
+
+改 compose、Docker、网页更新、版本/README 时，先读：
+
+- `compose.yaml`
+- `Dockerfile`
+- `docker/entrypoint.sh`
+- `app/services/self_update.py`
+- `app/api/config.py` 中 `/system/update` 段落
+- `frontend/src/pages/SettingsPage.vue` 中系统更新区域
+- `README.md`

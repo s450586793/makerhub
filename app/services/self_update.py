@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from app.core.database_json_state import load_database_json_state, save_database_json_state
 from app.core.settings import APP_VERSION, LOGS_DIR, STATE_DIR
 from app.core.timezone import now_iso as china_now_iso
 from app.services.business_logs import append_business_log
@@ -20,6 +21,7 @@ from app.services.business_logs import append_business_log
 
 DOCKER_SOCKET_PATH = Path("/var/run/docker.sock")
 UPDATE_STATE_PATH = STATE_DIR / "system_update.json"
+UPDATE_STATE_KEY = "system_update"
 ACTIVE_UPDATE_STATUSES = {"queued", "launching_helper", "running", "pending_startup"}
 HELPER_CONTAINER_PREFIX = "makerhub-self-update"
 HELPER_LABEL_KEY = "com.makerhub.self_update.role"
@@ -40,9 +42,7 @@ IMAGE_CLEANUP_RETRY_DELAY_SECONDS = 60
 IMAGE_CLEANUP_MAX_ATTEMPTS = 5
 _IMAGE_CLEANUP_THREAD: threading.Thread | None = None
 _IMAGE_CLEANUP_LOCK = threading.Lock()
-POSTGRES_COMPOSE_MIGRATION_EXAMPLE = """version: "3.8"
-
-services:
+POSTGRES_COMPOSE_MIGRATION_EXAMPLE = """services:
   makerhub-app:
     image: ghcr.io/s450586793/makerhub:latest
     container_name: makerhub-app
@@ -54,14 +54,15 @@ services:
       MAKERHUB_BACKGROUND_TASKS: "false"
       MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
       MAKERHUB_WEB_WORKERS: "1"
-      MAKERHUB_DATABASE_URL: postgresql://makerhub:makerhub@makerhub-postgres:5432/makerhub
+      MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD}@makerhub-postgres:5432/makerhub
     volumes:
       - /volume4/docker/docker/makerhub/config:/app/config
       - /volume4/docker/docker/makerhub/logs:/app/logs
       - /volume4/docker/docker/makerhub/state:/app/state
       - /volume2/entertainment/3D打印/makerhub:/app/archive
       - /volume2/entertainment/3D打印/makerhub/local:/app/local
-      - /var/run/docker.sock:/var/run/docker.sock
+      # 可选：启用设置页“一键更新”才打开；仅建议在可信内网环境使用。
+      # - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       makerhub-postgres:
         condition: service_healthy
@@ -76,7 +77,7 @@ services:
       MAKERHUB_BACKGROUND_TASKS: "true"
       MAKERHUB_WORKER_CONCURRENCY: "2"
       MAKERHUB_HEAVY_JOB_NICE: "10"
-      MAKERHUB_DATABASE_URL: postgresql://makerhub:makerhub@makerhub-postgres:5432/makerhub
+      MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD}@makerhub-postgres:5432/makerhub
     volumes:
       - /volume4/docker/docker/makerhub/config:/app/config
       - /volume4/docker/docker/makerhub/logs:/app/logs
@@ -94,7 +95,7 @@ services:
     environment:
       POSTGRES_DB: makerhub
       POSTGRES_USER: makerhub
-      POSTGRES_PASSWORD: makerhub
+      POSTGRES_PASSWORD: ${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD}
     volumes:
       - /volume4/docker/docker/makerhub/postgres:/var/lib/postgresql/data
     healthcheck:
@@ -146,12 +147,7 @@ def _default_update_state() -> dict[str, Any]:
 
 
 def _read_update_state() -> dict[str, Any]:
-    if not UPDATE_STATE_PATH.exists():
-        return _default_update_state()
-    try:
-        payload = json.loads(UPDATE_STATE_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return _default_update_state()
+    payload = load_database_json_state(UPDATE_STATE_KEY, {})
     state = _default_update_state()
     if isinstance(payload, dict):
         state.update(payload)
@@ -163,9 +159,7 @@ def _write_update_state(payload: dict[str, Any]) -> dict[str, Any]:
     state = _default_update_state()
     state.update(payload)
     state["current_version"] = APP_VERSION
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    UPDATE_STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    return state
+    return save_database_json_state(UPDATE_STATE_KEY, state)
 
 
 def _looks_like_container_id(value: str) -> bool:

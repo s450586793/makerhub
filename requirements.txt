@@ -8,3 +8,4 @@ python-multipart==0.0.27
 croniter==6.0.0
 pillow==12.2.0
 scrapling==0.2.99
+psycopg[binary]==3.2.13

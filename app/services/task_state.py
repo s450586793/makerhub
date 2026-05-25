@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
+from app.core.database_json_state import load_database_json_state, save_database_json_state
 from app.core.settings import LOGS_DIR, STATE_DIR, ensure_app_dirs
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, normalize_three_mf_failure_state
@@ -46,6 +47,22 @@ _ORGANIZER_TERMINAL_LOG_CACHE = {
     "events": [],
 }
 ORGANIZER_STATUS_LOG_LOOKBACK_BYTES = 2 * 1024 * 1024
+_JSON_STATE_KEYS = {
+    ARCHIVE_QUEUE_PATH.resolve(): "archive_queue",
+    MISSING_3MF_PATH.resolve(): "missing_3mf",
+    ORGANIZE_TASKS_PATH.resolve(): "organize_tasks",
+    MODEL_FLAGS_PATH.resolve(): "model_flags",
+    SUBSCRIPTIONS_STATE_PATH.resolve(): "subscriptions_state",
+    REMOTE_REFRESH_STATE_PATH.resolve(): "remote_refresh_state",
+    THREE_MF_LIMIT_GUARD_PATH.resolve(): "three_mf_limit_guard",
+}
+
+
+def _json_state_key_for_path(path: Path) -> str:
+    try:
+        return _JSON_STATE_KEYS.get(path.resolve(), "")
+    except OSError:
+        return ""
 
 
 def _looks_like_html_message(text: str) -> bool:
@@ -149,12 +166,7 @@ def _organize_count_needs_backfill(*, item_count: int, total_count: int) -> bool
 
 
 def _read_active_three_mf_limit_guard() -> dict[str, Any]:
-    if not THREE_MF_LIMIT_GUARD_PATH.exists():
-        return {}
-    try:
-        payload = json.loads(THREE_MF_LIMIT_GUARD_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
+    payload = load_database_json_state("three_mf_limit_guard", {})
     if not isinstance(payload, dict) or not bool(payload.get("active")):
         return {}
 
@@ -813,17 +825,25 @@ class TaskStateStore:
         ensure_app_dirs()
 
     def _read_json(self, path: Path, default: dict) -> dict:
+        state_key = _json_state_key_for_path(path)
+        if state_key:
+            return load_database_json_state(state_key, default)
         if not path.exists():
             self._write_json(path, default)
             return default
 
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             self._write_json(path, default)
             return default
+        return payload
 
     def _write_json(self, path: Path, payload: dict) -> None:
+        state_key = _json_state_key_for_path(path)
+        if state_key:
+            save_database_json_state(state_key, payload)
+            return
         path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

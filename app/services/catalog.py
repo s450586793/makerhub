@@ -12,10 +12,20 @@ from urllib.parse import quote, urlparse
 
 from bs4 import BeautifulSoup
 
-from app.core.settings import ARCHIVE_DIR, CONFIG_PATH, STATE_DIR
+from app.core.database_json_state import (
+    database_json_state_signature,
+    load_database_json_state,
+    save_database_json_state,
+)
+from app.core.settings import ARCHIVE_DIR, STATE_DIR
 from app.core.store import JsonStore
 from app.core.timezone import from_timestamp as china_from_timestamp, now_iso as china_now_iso, parse_timestamp as china_parse_timestamp
 from app.services.batch_discovery import extract_model_id, normalize_source_url
+from app.services.archive_model_index import (
+    delete_archive_model_index,
+    load_archive_model_index,
+    upsert_archive_model_index,
+)
 from app.services.model_attachments import (
     ATTACHMENT_CATEGORY_LABELS,
     MANUAL_ATTACHMENTS_RELATIVE_DIR,
@@ -24,7 +34,7 @@ from app.services.model_attachments import (
 )
 from app.services.profile_rating import normalize_profile_rating
 from app.services.source_health import build_source_health_cards
-from app.services.task_state import MODEL_FLAGS_PATH, SUBSCRIPTIONS_STATE_PATH, TaskStateStore, compact_remote_refresh_state
+from app.services.task_state import TaskStateStore, compact_remote_refresh_state
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, resolve_model_instance_files
 from app.services.local_model_preview import build_local_preview_state
 
@@ -106,6 +116,7 @@ SUMMARY_TAG_ATTRS = {
 }
 _ARCHIVE_SNAPSHOT_LOCK = threading.RLock()
 _ARCHIVE_SNAPSHOT_MARKER_PATH = STATE_DIR / "archive_snapshot.marker"
+_ARCHIVE_SNAPSHOT_MARKER_KEY = "archive_snapshot_marker"
 _ARCHIVE_SNAPSHOT_CACHE: dict[str, Any] = {
     "snapshot": None,
     "dirty": True,
@@ -129,19 +140,22 @@ _DECORATED_MODELS_CACHE: dict[str, Any] = {
 
 
 def _read_archive_snapshot_marker() -> str:
-    try:
-        return _ARCHIVE_SNAPSHOT_MARKER_PATH.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
+    payload = load_database_json_state(_ARCHIVE_SNAPSHOT_MARKER_KEY, {})
+    if isinstance(payload, dict):
+        return str(payload.get("token") or "").strip()
+    return ""
 
 
 def _write_archive_snapshot_marker(reason: str = "") -> str:
     token = f"{time.time_ns()}:{str(reason or '').strip()}"
-    try:
-        _ARCHIVE_SNAPSHOT_MARKER_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _ARCHIVE_SNAPSHOT_MARKER_PATH.write_text(token, encoding="utf-8")
-    except OSError:
-        return ""
+    save_database_json_state(
+        _ARCHIVE_SNAPSHOT_MARKER_KEY,
+        {
+            "token": token,
+            "reason": str(reason or "").strip(),
+            "updated_at": time.time(),
+        },
+    )
     return token
 
 
@@ -224,6 +238,10 @@ def _compose_archive_snapshot(models: list[dict]) -> dict[str, Any]:
 
 
 def _build_archive_snapshot() -> dict[str, Any]:
+    indexed_models = load_archive_model_index(archive_root=ARCHIVE_DIR)
+    if indexed_models is not None:
+        return _compose_archive_snapshot(indexed_models)
+
     models: list[dict] = []
 
     for meta_path in sorted(ARCHIVE_DIR.rglob("meta.json")):
@@ -255,7 +273,7 @@ def get_archive_snapshot(force: bool = False) -> dict[str, Any]:
 def _decorated_models_signature(snapshot: dict[str, Any]) -> tuple[Any, ...]:
     return (
         _archive_snapshot_signature(snapshot),
-        _file_signature(MODEL_FLAGS_PATH),
+        database_json_state_signature("model_flags", {"favorites": [], "printed": [], "deleted": []}),
         _subscription_flags_cache_signature(),
     )
 
@@ -313,6 +331,7 @@ def upsert_archive_snapshot_model(model_dir: str, reason: str = "", *, broadcast
 
     marker_token = _read_archive_snapshot_marker()
     normalized_model_dir = relative_dir.as_posix()
+    upsert_archive_model_index(normalized_model_dir, model=model, meta_path=meta_path)
     with _ARCHIVE_SNAPSHOT_LOCK:
         snapshot = _ARCHIVE_SNAPSHOT_CACHE.get("snapshot")
         cached_marker_token = str(_ARCHIVE_SNAPSHOT_CACHE.get("marker_token") or "")
@@ -767,7 +786,7 @@ def _is_safe_summary_url(value: str, *, allow_fragment: bool = False) -> bool:
         return True
     parsed = urlparse(raw)
     if not parsed.scheme:
-        return raw.startswith(("/", "./", "../"))
+        return raw.startswith(("/", "../"))
     return parsed.scheme.lower() in {"http", "https", "mailto", "tel"}
 
 
@@ -2215,8 +2234,11 @@ def _build_subscription_deleted_index(config: Any, state_payload: dict[str, Any]
     return deleted_by_key
 
 
-def _subscription_flags_cache_signature() -> tuple[tuple[int, int], tuple[int, int]]:
-    return (_file_signature(CONFIG_PATH), _file_signature(SUBSCRIPTIONS_STATE_PATH))
+def _subscription_flags_cache_signature() -> tuple[tuple[str, int], tuple[str, int]]:
+    return (
+        database_json_state_signature("app_config", {}),
+        database_json_state_signature("subscriptions_state", {"items": []}),
+    )
 
 
 def _get_subscription_deleted_index(
@@ -2547,6 +2569,7 @@ def delete_archived_models(model_dirs: list[str]) -> dict:
         "sidecar_removed_count": sum(item.get("sidecar_removed_count", 0) for item in removed),
     }
     if result["removed_count"] > 0:
+        delete_archive_model_index([str(item.get("model_dir") or "") for item in removed])
         invalidate_archive_snapshot("delete_archived_models")
         for item in removed:
             invalidate_model_detail_cache(str(item.get("model_dir") or ""))

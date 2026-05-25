@@ -6,6 +6,23 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    chunkSizeWarningLimit: 800,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules/three")) {
+            return undefined;
+          }
+          if (id.includes("examples/jsm/loaders")) {
+            return "three-loaders";
+          }
+          if (id.includes("examples/jsm/controls")) {
+            return "three-controls";
+          }
+          return "three-core";
+        },
+      },
+    },
   },
   server: {
     host: "0.0.0.0",

@@ -10,9 +10,10 @@ from typing import Any
 
 import requests
 
+from app.core.database_json_state import load_database_json_state, save_database_json_state
 from app.core.settings import STATE_DIR, ensure_app_dirs
 from app.core.timezone import now as china_now, parse_datetime
-from app.services.cookie_utils import sanitize_cookie_header
+from app.services.cookie_utils import extract_auth_token, sanitize_cookie_header
 from app.services.proxy_policy import effective_proxy_cache_state, proxy_mapping
 from app.services.scrapling_fetch import fetch_text as scrapling_fetch_text, scrapling_only
 from app.services.three_mf import (
@@ -25,6 +26,7 @@ from app.services.three_mf import (
 
 
 THREE_MF_LIMIT_GUARD_PATH = STATE_DIR / "three_mf_limit_guard.json"
+THREE_MF_LIMIT_GUARD_KEY = "three_mf_limit_guard"
 SOURCE_HEALTH_CACHE_TTL_SECONDS = 60
 MW_BROWSER_HEADERS = {
     "Accept": "application/json, text/plain, */*",
@@ -47,12 +49,12 @@ PLATFORM_ORIGINS = {
 }
 AUTH_PROBES = {
     "cn": (
-        ("消息计数", "https://makerworld.com.cn/api/v1/user-service/my/message/count"),
-        ("个人偏好", "https://makerworld.com.cn/api/v1/design-user-service/my/preference"),
+        ("消息计数", "https://api.bambulab.cn/v1/user-service/my/message/count"),
+        ("个人偏好", "https://api.bambulab.cn/v1/design-user-service/my/preference"),
     ),
     "global": (
-        ("消息计数", "https://makerworld.com/api/v1/user-service/my/message/count"),
-        ("个人偏好", "https://makerworld.com/api/v1/design-user-service/my/preference"),
+        ("消息计数", "https://api.bambulab.com/v1/user-service/my/message/count"),
+        ("个人偏好", "https://api.bambulab.com/v1/design-user-service/my/preference"),
     ),
 }
 SOURCE_HEALTH_LABELS = {
@@ -103,6 +105,10 @@ def _contains_verification_markers(text: str) -> bool:
     return any(marker in lowered for marker in markers)
 
 
+def _html_failure_kind(text: str) -> str:
+    return "verification_required" if _contains_verification_markers(text) else "html_response"
+
+
 def _auth_probe_result_from_response(
     *,
     name: str,
@@ -130,11 +136,11 @@ def _auth_probe_result_from_response(
         result["engine"] = engine
     if not ok:
         if looks_like_html:
-            result["failure_kind"] = "verification_required"
+            result["failure_kind"] = _html_failure_kind(preview)
             result["error"] = (
                 "返回了验证页面，通常表示需要完成网页验证。"
                 if verification_marker
-                else "认证探针返回了网页页面，可能是站点接口改版、代理跳转或风控页面；请优先看其它认证接口是否成功。"
+                else "认证探针返回了网页页面，可能是站点接口改版、代理跳转或登录页；请优先看其它认证接口是否成功。"
             )
         elif status_code in {401, 403}:
             result["failure_kind"] = "auth_required"
@@ -179,13 +185,7 @@ def _parse_limit_guard_time(value: str) -> datetime | None:
 def _write_limit_guard(payload: dict[str, Any]) -> dict[str, Any]:
     ensure_app_dirs()
     current = _base_limit_guard()
-    if THREE_MF_LIMIT_GUARD_PATH.exists():
-        try:
-            existing = json.loads(THREE_MF_LIMIT_GUARD_PATH.read_text(encoding="utf-8"))
-            if isinstance(existing, dict):
-                current.update(existing)
-        except (OSError, json.JSONDecodeError):
-            pass
+    current.update(load_database_json_state(THREE_MF_LIMIT_GUARD_KEY, current))
     current.update(
         {
             "active": bool(payload.get("active", current.get("active"))),
@@ -198,23 +198,13 @@ def _write_limit_guard(payload: dict[str, Any]) -> dict[str, Any]:
             "instance_id": str(payload.get("instance_id", current.get("instance_id")) or ""),
         }
     )
-    THREE_MF_LIMIT_GUARD_PATH.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
-    return current
+    return save_database_json_state(THREE_MF_LIMIT_GUARD_KEY, current)
 
 
 def _read_limit_guard() -> dict[str, Any]:
     ensure_app_dirs()
-    if not THREE_MF_LIMIT_GUARD_PATH.exists():
-        return _base_limit_guard()
-
-    try:
-        payload = json.loads(THREE_MF_LIMIT_GUARD_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return _base_limit_guard()
-
     state = _base_limit_guard()
-    if isinstance(payload, dict):
-        state.update(payload)
+    state.update(load_database_json_state(THREE_MF_LIMIT_GUARD_KEY, state))
 
     if bool(state.get("active")):
         limited_until = str(state.get("limited_until") or "").strip()
@@ -262,6 +252,12 @@ def _build_request_headers(origin: str, raw_cookie: str) -> dict[str, str]:
     }
     if cookie_header:
         headers["Cookie"] = cookie_header
+        auth_token = extract_auth_token(cookie_header)
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+            headers["token"] = auth_token
+            headers["X-Token"] = auth_token
+            headers["X-Access-Token"] = auth_token
     return headers
 
 
@@ -272,8 +268,10 @@ def _classify_auth_probe_result(result: dict[str, Any]) -> str:
     if failure_kind:
         return failure_kind
     lowered = str(result.get("error") or "").lower()
-    if _contains_verification_markers(lowered) or "html" in lowered:
+    if _contains_verification_markers(lowered):
         return "verification_required"
+    if "html" in lowered or "网页页面" in lowered or "登录页" in lowered:
+        return "html_response"
     status_code = int(result.get("status_code") or 0)
     if status_code in {401, 403}:
         return "auth_required"
@@ -290,18 +288,20 @@ def _build_cookie_auth_message(platform: str, payload: dict[str, Any]) -> str:
     target_count = int(payload.get("target_count") or 0)
     state = str(payload.get("state") or "")
     if target_count > 0 and success_count == target_count:
-        return f"{platform_label} Cookie 测试成功，认证接口可正常访问。"
+        return f"{platform_label}账号可用，Cookie 已保存。"
     if success_count > 0:
-        return f"{platform_label} Cookie 部分成功，{success_count}/{target_count} 个接口可访问。"
+        return f"{platform_label}账号已保存，部分账号信息暂时读取失败；可以点击同步重试。"
     if state == "missing_cookie":
         return f"请先填写{platform_label} Cookie。"
     if state == "verification_required":
         return "MakerWorld 需要验证，前往官网任意下载一个模型。"
     if state == "auth_required":
         return f"{platform_label} Cookie 失效，请重新获取并保存 Cookie。"
+    if state == "html_response":
+        return f"{platform_label}账号已保存，但暂时无法读取账号信息；可以点击同步重试。"
     if state == "download_limited":
         return f"{platform_label}站已到达 3MF 每日下载上限，过零点后会自动恢复。"
-    return f"{platform_label} Cookie 测试失败，认证接口未返回有效结果。"
+    return f"{platform_label}账号测试失败，暂时无法确认 Cookie 是否可用。"
 
 
 def _empty_cookie_auth_payload(platform: str, state: str, status: str, detail: str) -> dict[str, Any]:
@@ -426,6 +426,14 @@ def _probe_auth_endpoints(platform: str, raw_cookie: str, proxy_config: Any) -> 
             "state": "auth_required",
             "status": "Cookie 失效",
             "detail": "",
+        }
+    elif "html_response" in states:
+        payload = {
+            "ok": False,
+            "platform": platform,
+            "state": "html_response",
+            "status": "接口受限",
+            "detail": "认证接口返回了登录页或网页页面，但未检测到验证码/风控标记。",
         }
     else:
         payload = {
@@ -615,9 +623,81 @@ def _status_text_from_failure_state(state: str) -> str:
         return "需要验证"
     if state == "auth_required":
         return "Cookie 失效"
+    if state == "html_response":
+        return "接口受限"
     if state == "probe_limited":
         return "部分受限"
     return "连接异常"
+
+
+def _tone_from_state(state: str) -> str:
+    if state == "ok":
+        return "ok"
+    if state in {"probe_limited", "html_response"}:
+        return "warning"
+    if state == "missing_cookie":
+        return "neutral"
+    return "danger"
+
+
+def _source_health_check(
+    *,
+    source: str,
+    label: str,
+    state: str,
+    status: str,
+    detail: str = "",
+    tone: str = "",
+) -> dict[str, str]:
+    clean_state = str(state or "").strip()
+    clean_status = str(status or "").strip() or _status_text_from_failure_state(clean_state)
+    return {
+        "source": str(source or "").strip(),
+        "label": str(label or "").strip(),
+        "state": clean_state,
+        "status": clean_status,
+        "detail": str(detail or "").strip(),
+        "tone": str(tone or "").strip() or _tone_from_state(clean_state),
+    }
+
+
+def _check_priority(check: dict[str, Any]) -> tuple[int, int, int]:
+    tone_score = {
+        "danger": 30,
+        "warning": 20,
+        "neutral": 10,
+        "ok": 0,
+    }.get(str(check.get("tone") or "").strip(), 0)
+    state_score = three_mf_failure_priority(check.get("state"))
+    source_score = {
+        "account": 2,
+        "download": 1,
+    }.get(str(check.get("source") or "").strip(), 0)
+    return (tone_score, state_score, source_score)
+
+
+def _primary_source_health_check(checks: list[dict[str, str]]) -> dict[str, str]:
+    if not checks:
+        return _source_health_check(
+            source="account",
+            label="账号",
+            state="http_error",
+            status="连接异常",
+            detail="状态检测未返回结果。",
+        )
+    return max(checks, key=_check_priority)
+
+
+def _prefixed_status(check: dict[str, str], checks: list[dict[str, str]]) -> str:
+    status = str(check.get("status") or "").strip() or "连接异常"
+    state = str(check.get("state") or "").strip()
+    if len(checks) <= 1 and state == "ok":
+        return status
+    label = str(check.get("label") or "").strip()
+    if not label:
+        return status
+    separator = " " if status[:1].isascii() else ""
+    return f"{label}{separator}{status}"
 
 
 def build_source_health_cards(
@@ -632,34 +712,56 @@ def build_source_health_cards(
 
     def build_card(platform: str) -> dict[str, Any]:
         probe = _probe_platform_status(platform, str(cookie_map.get(platform) or ""), getattr(config, "proxy", None))
-        state = str(probe.get("state") or "").strip()
-        detail = str(probe.get("detail") or "").strip()
+        account_state = str(probe.get("state") or "").strip()
+        account_detail = str(probe.get("detail") or "").strip()
+        account_status = str(probe.get("status") or "连接异常")
+        account_tone = _tone_from_state(account_state)
+        account_state, account_status, account_detail, account_tone = _soften_probe_verification_with_remote_health(
+            platform,
+            account_state,
+            account_status,
+            account_detail,
+            account_tone,
+            remote_refresh_state,
+        )
+        checks = [
+            _source_health_check(
+                source="account",
+                label="账号",
+                state=account_state,
+                status=account_status,
+                detail=account_detail,
+                tone=account_tone,
+            )
+        ]
         override = missing_overrides.get(platform) or {}
         override_state = str(override.get("state") or "").strip()
-        override_applied = False
-        if (
-            override_state
-            and state != "missing_cookie"
-            and three_mf_failure_priority(override_state) >= three_mf_failure_priority(state)
-        ):
-            state = override_state
-            detail = str(override.get("message") or "").strip()
-            override_applied = True
-        if state in {"verification_required", "cloudflare"}:
-            detail = describe_three_mf_failure(state, detail, url=PLATFORM_ORIGINS.get(platform, ""))
-        if not detail and state == "verification_required":
-            detail = "MakerWorld 需要验证，前往官网任意下载一个模型。"
-        status = _status_text_from_failure_state(state) if override_applied else str(probe.get("status") or "连接异常")
-        tone = "ok" if state == "ok" else "danger"
-        if not override_applied:
-            state, status, detail, tone = _soften_probe_verification_with_remote_health(
-                platform,
-                state,
-                status,
-                detail,
-                tone,
-                remote_refresh_state,
+        if override_state:
+            download_detail = str(override.get("message") or "").strip()
+            if override_state in {"verification_required", "cloudflare"}:
+                download_detail = describe_three_mf_failure(
+                    override_state,
+                    download_detail,
+                    url=PLATFORM_ORIGINS.get(platform, ""),
+                )
+            if not download_detail and override_state == "verification_required":
+                download_detail = "MakerWorld 需要验证，前往官网任意下载一个模型。"
+            checks.append(
+                _source_health_check(
+                    source="download",
+                    label="3MF 下载",
+                    state=override_state,
+                    status=_status_text_from_failure_state(override_state),
+                    detail=download_detail,
+                    tone=_tone_from_state(override_state),
+                )
             )
+
+        primary = _primary_source_health_check(checks)
+        state = str(primary.get("state") or "").strip()
+        status = _prefixed_status(primary, checks)
+        detail = str(primary.get("detail") or "").strip()
+        tone = str(primary.get("tone") or "").strip() or _tone_from_state(state)
         return {
             "key": platform,
             "title": SOURCE_HEALTH_LABELS.get(platform, platform),
@@ -667,8 +769,9 @@ def build_source_health_cards(
             "detail": detail,
             "tone": tone,
             "state": state,
+            "checks": checks,
             "url": PLATFORM_ORIGINS.get(platform, ""),
-            "action_label": "去验证" if state in {"verification_required", "cloudflare"} else "打开官网",
+            "action_label": "去验证" if any(item.get("state") in {"verification_required", "cloudflare"} for item in checks) else "打开官网",
         }
 
     with ThreadPoolExecutor(max_workers=len(platforms)) as executor:

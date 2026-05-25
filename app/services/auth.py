@@ -1,11 +1,10 @@
-import json
 import threading
 from datetime import timedelta
-from pathlib import Path
 from typing import Iterable, Optional
 
 from fastapi import Request
 
+from app.core.database_json_state import load_database_json_state, save_database_json_state
 from app.core.security import (
     default_admin_password_hash,
     generate_api_token,
@@ -26,6 +25,7 @@ LOGIN_FAILURE_WINDOW_SECONDS = 15 * 60
 LOGIN_FAILURE_LOCK_SECONDS = 5 * 60
 LOGIN_FAILURE_LIMIT = 5
 SESSIONS_PATH = STATE_DIR / "auth_sessions.json"
+SESSIONS_STATE_KEY = "auth_sessions"
 TOKEN_PERMISSION_LABELS = {
     "archive_write": "提交归档任务",
     "mobile_import": "移动端/本地导入",
@@ -64,7 +64,7 @@ def token_status(record: ApiTokenRecord, now=None) -> str:
 
 
 class AuthManager:
-    def __init__(self, store: Optional[JsonStore] = None, sessions_path: Path = SESSIONS_PATH) -> None:
+    def __init__(self, store: Optional[JsonStore] = None, sessions_path=SESSIONS_PATH) -> None:
         self.store = store or JsonStore()
         self.sessions_path = sessions_path
         self._login_failures: dict[str, dict[str, float]] = {}
@@ -72,29 +72,14 @@ class AuthManager:
         ensure_app_dirs()
 
     def _read_sessions(self) -> dict:
-        if not self.sessions_path.exists():
-            payload = {"items": []}
-            self._write_sessions(payload)
-            return payload
-
-        try:
-            payload = json.loads(self.sessions_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            payload = {"items": []}
-            self._write_sessions(payload)
-            return payload
-
+        payload = load_database_json_state(SESSIONS_STATE_KEY, {"items": []})
         if not isinstance(payload, dict):
             payload = {"items": []}
         payload["items"] = payload.get("items") if isinstance(payload.get("items"), list) else []
         return payload
 
     def _write_sessions(self, payload: dict) -> None:
-        self.sessions_path.parent.mkdir(parents=True, exist_ok=True)
-        self.sessions_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        save_database_json_state(SESSIONS_STATE_KEY, payload)
 
     def _prune_sessions(self, payload: dict) -> dict:
         now = china_now()

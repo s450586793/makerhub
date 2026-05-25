@@ -6,21 +6,22 @@
 <section class="page-intro">
   <div>
     <span class="eyebrow">设置</span>
-    <h1>连接、通知、用户与整理配置</h1>
-    <p>国内 Cookie、国际 Cookie 与 HTTP 代理统一收在“连接设置”，其它项按单页内标签管理。</p>
+    <h1>线上账号、代理、通知、用户与整理配置</h1>
+    <p>线上平台账号和 HTTP 代理分开管理，其它项按单页内标签管理。</p>
   </div>
 </section>
 
 <section class="surface">
   <div class="settings-tabs">
-    <button class="settings-tab is-active" type="button" data-settings-tab="connections">连接设置</button>
+    <button class="settings-tab is-active" type="button" data-settings-tab="accounts">线上账号</button>
+    <button class="settings-tab" type="button" data-settings-tab="proxy">代理</button>
     <button class="settings-tab" type="button" data-settings-tab="notifications">通知</button>
     <button class="settings-tab" type="button" data-settings-tab="user">用户</button>
     <button class="settings-tab" type="button" data-settings-tab="organizer">整理</button>
   </div>
 
-  <div class="settings-panel is-active" data-settings-panel="connections">
-    <form class="settings-form" data-save-kind="connections">
+  <div class="settings-panel is-active" data-settings-panel="accounts">
+    <form class="settings-form" data-save-kind="accounts">
       <div class="settings-grid settings-grid--two">
         <label class="field-card">
           <span>国内 Cookie</span>
@@ -53,6 +54,15 @@
           </div>
         </label>
       </div>
+      <div class="form-footer">
+        <button class="button button-primary" type="submit">保存 Cookie</button>
+        <span class="form-status" data-form-status></span>
+      </div>
+    </form>
+  </div>
+
+  <div class="settings-panel" data-settings-panel="proxy">
+    <form class="settings-form" data-save-kind="proxy">
       <div class="settings-grid settings-grid--three">
         <label class="field-card">
           <span>启用 HTTP 代理</span>
@@ -71,7 +81,7 @@
         </label>
       </div>
       <div class="form-footer">
-        <button class="button button-primary" type="submit">保存连接设置</button>
+        <button class="button button-primary" type="submit">保存代理设置</button>
         <span class="form-status" data-form-status></span>
       </div>
     </form>

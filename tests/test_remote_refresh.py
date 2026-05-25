@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from datetime import datetime
+from unittest.mock import patch
 
 from app.core.store import JsonStore
 from app.services import remote_refresh
@@ -21,10 +22,28 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         self.original_remote_refresh_state_path = task_state_module.REMOTE_REFRESH_STATE_PATH
         self.original_append_remote_refresh_log = remote_refresh._append_remote_refresh_log
         self.original_append_business_log = remote_refresh.append_business_log
+        self.original_invalidate_archive_snapshot = remote_refresh.invalidate_archive_snapshot
 
         task_state_module.REMOTE_REFRESH_STATE_PATH = self.temp_path / "remote_refresh_state.json"
         remote_refresh._append_remote_refresh_log = lambda *_args, **_kwargs: None
         remote_refresh.append_business_log = lambda *_args, **_kwargs: None
+        remote_refresh.invalidate_archive_snapshot = lambda *_args, **_kwargs: None
+        self.db_state = {}
+        self.db_patches = [
+            patch.object(
+                task_state_module,
+                "load_database_json_state",
+                side_effect=lambda key, default: dict(self.db_state.get(key) or default),
+            ),
+            patch.object(
+                task_state_module,
+                "save_database_json_state",
+                side_effect=lambda key, value: self.db_state.__setitem__(key, value) or value,
+            ),
+            patch.object(remote_refresh, "_read_three_mf_limit_guard", return_value={}),
+        ]
+        for item in self.db_patches:
+            item.start()
 
         self.store = JsonStore(self.temp_path / "config.json")
         config = self.store.load()
@@ -41,9 +60,12 @@ class RemoteRefreshManagerTest(unittest.TestCase):
 
     def tearDown(self):
         self.manager._set_batch_running(False)
+        for item in reversed(self.db_patches):
+            item.stop()
         task_state_module.REMOTE_REFRESH_STATE_PATH = self.original_remote_refresh_state_path
         remote_refresh._append_remote_refresh_log = self.original_append_remote_refresh_log
         remote_refresh.append_business_log = self.original_append_business_log
+        remote_refresh.invalidate_archive_snapshot = self.original_invalidate_archive_snapshot
         self.temp_dir.cleanup()
 
     def test_manual_trigger_marks_state_running_when_accepted(self):
@@ -166,6 +188,32 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         self.assertEqual(state["status"], "running")
         self.assertTrue(state["running"])
         self.assertEqual(state["current_item"]["id"], "m1")
+
+    def test_tick_when_service_busy_uses_configured_cron_without_scheduler_error(self):
+        config = self.store.load()
+        config.remote_refresh.enabled = True
+        config.remote_refresh.cron = "0 2 * * *"
+        self.store.save(config)
+        self.task_store.patch_remote_refresh_state(
+            status="idle",
+            running=False,
+            next_run_at="2026-05-19T10:00:00+08:00",
+            scheduled_cron="0 2 * * *",
+            last_message="等待下一轮源端刷新。",
+        )
+        self.manager._service_busy = lambda: True
+        original_now = remote_refresh._now
+        remote_refresh._now = lambda: datetime.fromisoformat("2026-05-19T12:00:00+08:00")
+
+        try:
+            self.manager._tick()
+        finally:
+            remote_refresh._now = original_now
+
+        state = self.task_store.load_remote_refresh_state()
+        self.assertEqual(state["status"], "idle")
+        self.assertEqual(state["scheduled_cron"], "0 2 * * *")
+        self.assertIn("延后 60 秒", state["last_message"])
 
     def test_asset_signature_ignores_volatile_cdn_query_params(self):
         existing_meta = {

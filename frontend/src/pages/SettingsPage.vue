@@ -21,53 +21,163 @@
       </button>
     </div>
 
-    <div v-show="activeTab === 'connections'" class="settings-panel is-active">
-      <form class="settings-form" @submit.prevent="saveConnections">
-        <div class="settings-grid settings-grid--two">
-          <label class="field-card">
-            <span>国内 Cookie</span>
-            <SecretTextarea v-model="connectionForm.cookie_cn" placeholder="makerworld.com.cn Cookie" />
-            <div class="settings-inline-actions">
-              <button class="button button-secondary button-small" type="button" :disabled="testing.cookie_cn" @click="testCookie('cn')">
-                {{ testing.cookie_cn ? "测试中..." : "测试国内 Cookie" }}
-              </button>
-              <span class="form-status">{{ statuses.cookie_cn }}</span>
+    <div v-show="activeTab === 'accounts'" class="settings-panel is-active">
+      <section class="settings-form token-card online-account-card">
+        <div class="section-card__header">
+          <div>
+            <span class="eyebrow">线上账号</span>
+            <h2>平台账号</h2>
+          </div>
+          <button class="button button-primary button-small" type="button" @click="openAccountDialog">
+            添加账号
+          </button>
+        </div>
+
+        <div v-if="onlineAccountItems.length" class="online-account-list">
+          <article v-for="item in onlineAccountItems" :key="item.platform" class="online-account-item">
+            <div class="online-account-item__avatar">
+              <img v-if="item.avatar_url" :src="item.avatar_url" :alt="item.displayName">
+              <span v-else>{{ item.avatarFallback }}</span>
             </div>
-          </label>
-          <label class="field-card">
-            <span>国际 Cookie</span>
-            <SecretTextarea v-model="connectionForm.cookie_global" placeholder="makerworld.com Cookie" />
-            <div class="settings-inline-actions">
-              <button class="button button-secondary button-small" type="button" :disabled="testing.cookie_global" @click="testCookie('global')">
-                {{ testing.cookie_global ? "测试中..." : "测试国际 Cookie" }}
-              </button>
-              <span class="form-status">{{ statuses.cookie_global }}</span>
+            <div class="online-account-item__main">
+              <div class="online-account-item__title">
+                <strong>{{ item.displayName }}</strong>
+                <span :class="['shared-list-item__status', item.statusClass]">{{ item.statusLabel }}</span>
+              </div>
+              <div class="online-account-item__meta">
+                <span>{{ item.platformLabel }}</span>
+                <span v-if="item.handle">@{{ item.handle }}</span>
+                <span v-if="item.username" class="online-account-item__phone">{{ item.username }}</span>
+                <span>{{ item.updatedText }}</span>
+              </div>
+              <div class="online-account-item__stats">
+                <span>关注作者 <strong>{{ item.followedAuthorCountText }}</strong></span>
+                <span>关注收藏夹 <strong>{{ item.followedCollectionCountText }}</strong></span>
+                <span>默认收藏夹 <strong>{{ item.defaultFavoritesCountText }}</strong></span>
+              </div>
+              <p>{{ item.message }}</p>
+              <p v-if="item.sourceSyncText" class="online-account-item__sync-note">{{ item.sourceSyncText }}</p>
             </div>
-          </label>
+            <div class="online-account-item__actions">
+              <button
+                class="button button-secondary button-small"
+                type="button"
+                :disabled="testing[`cookie_${item.platform}`]"
+                @click="testSavedAccount(item.platform)"
+              >
+                {{ testing[`cookie_${item.platform}`] ? "测试中..." : "测试" }}
+              </button>
+              <button
+                class="button button-secondary button-small"
+                type="button"
+                :disabled="testing[`sync_${item.platform}`]"
+                @click="syncSavedAccount(item.platform)"
+              >
+                {{ testing[`sync_${item.platform}`] ? "同步中..." : "同步" }}
+              </button>
+              <button class="button button-secondary button-small" type="button" @click="openAccountDialog(item.platform)">
+                重新登录
+              </button>
+              <button class="button button-danger button-small" type="button" @click="deleteAccount(item.platform)">
+                删除
+              </button>
+            </div>
+          </article>
+        </div>
+        <p v-else class="empty-copy">当前还没有线上账号。</p>
+        <span v-if="statuses.accounts" class="form-status">{{ statuses.accounts }}</span>
+      </section>
+
+      <div
+        v-if="accountDialogOpen"
+        class="submit-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="account-create-dialog-title"
+        @click="closeAccountDialog"
+      >
+        <div class="submit-dialog__panel token-create-dialog__panel" @click.stop>
+          <h2 id="account-create-dialog-title">添加线上账号</h2>
+          <form class="token-create-dialog__form" @submit.prevent="submitAccountLogin">
+            <label class="field-card">
+              <span>平台</span>
+              <select v-model="accountDialog.platform">
+                <option value="cn">MakerWorld 国区</option>
+                <option value="global">MakerWorld 国际</option>
+              </select>
+            </label>
+            <label class="field-card">
+              <span>{{ accountLoginLabel }}</span>
+              <input
+                v-model.trim="accountDialog.username"
+                :type="accountLoginInputType"
+                :autocomplete="accountLoginAutocomplete"
+                :inputmode="accountLoginInputMode"
+                :placeholder="accountLoginPlaceholder"
+              >
+            </label>
+            <label class="field-card">
+              <span>验证码</span>
+              <div class="online-account-code-field">
+                <input v-model.trim="accountDialog.verification_code" type="text" autocomplete="one-time-code" inputmode="numeric" maxlength="8" :placeholder="accountCodePlaceholder">
+                <button
+                  class="button button-secondary button-small"
+                  type="button"
+                  :disabled="accountDialog.saving || accountDialog.sendingCode || accountDialog.codeCountdown > 0"
+                  @click="sendAccountSmsCode"
+                >
+                  {{ accountDialog.codeCountdown > 0 ? `${accountDialog.codeCountdown}s` : (accountDialog.sendingCode ? "发送中..." : "发送验证码") }}
+                </button>
+              </div>
+            </label>
+            <label class="online-account-consent">
+              <input v-model="accountDialog.consent" type="checkbox">
+              <span>我已阅读并同意用户协议和隐私政策。</span>
+            </label>
+            <p class="archive-form__hint">{{ accountLoginHint }}</p>
+            <p v-if="accountDialog.error" class="form-status is-error">{{ accountDialog.error }}</p>
+            <div class="submit-dialog__actions">
+              <button class="button button-secondary" type="button" :disabled="accountDialog.saving" @click="closeAccountDialog">取消</button>
+              <button class="button button-primary" type="submit" :disabled="accountDialog.saving">
+                {{ accountDialog.saving ? "登录中..." : "确定" }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div v-show="activeTab === 'proxy'" class="settings-panel is-active">
+      <form class="settings-form token-card" @submit.prevent="saveProxySettings">
+        <div class="section-card__header">
+          <div>
+            <span class="eyebrow">代理</span>
+            <h2>HTTP 代理</h2>
+          </div>
         </div>
         <div class="settings-grid settings-grid--three">
           <label class="field-card">
             <span>启用 HTTP 代理</span>
             <button
-              :class="['subscription-switch', connectionForm.proxy_enabled && 'is-on']"
+              :class="['subscription-switch', proxyForm.enabled && 'is-on']"
               type="button"
-              :disabled="testing.proxy || connectionSaving"
-              @click="connectionForm.proxy_enabled = !connectionForm.proxy_enabled"
+              :disabled="testing.proxy || proxySaving"
+              @click="proxyForm.enabled = !proxyForm.enabled"
             >
               <span class="subscription-switch__track" aria-hidden="true">
                 <span class="subscription-switch__thumb"></span>
               </span>
-              <span class="subscription-switch__label">{{ connectionForm.proxy_enabled ? "启用中" : "已停用" }}</span>
+              <span class="subscription-switch__label">{{ proxyForm.enabled ? "启用中" : "已停用" }}</span>
             </button>
-            <small class="archive-form__hint">开启后归档、订阅与源端刷新请求会带上当前代理设置。</small>
+            <small class="archive-form__hint">开启后归档、订阅与源端刷新请求会带上当前代理设置；国内站会按代理策略直连。</small>
           </label>
           <label class="field-card">
             <span>HTTP Proxy</span>
-            <input v-model="connectionForm.http_proxy" type="text" placeholder="http://127.0.0.1:7890">
+            <input v-model="proxyForm.http_proxy" type="text" placeholder="http://127.0.0.1:7890">
           </label>
           <label class="field-card">
             <span>HTTPS Proxy</span>
-            <input v-model="connectionForm.https_proxy" type="text" placeholder="http://127.0.0.1:7890">
+            <input v-model="proxyForm.https_proxy" type="text" placeholder="http://127.0.0.1:7890">
           </label>
         </div>
         <div class="settings-inline-actions">
@@ -77,10 +187,10 @@
           <span class="form-status">{{ statuses.proxy }}</span>
         </div>
         <div class="form-footer">
-          <button class="button button-primary" type="submit" :disabled="connectionSaving">
-            {{ connectionSaving ? "保存中..." : "保存连接设置" }}
+          <button class="button button-primary" type="submit" :disabled="proxySaving">
+            {{ proxySaving ? "保存中..." : "保存代理设置" }}
           </button>
-          <span class="form-status">{{ statuses.connections }}</span>
+          <span class="form-status">{{ statuses.proxy_save }}</span>
         </div>
       </form>
     </div>
@@ -456,7 +566,7 @@
               <option value="legacy">旧流程</option>
               <option value="scrapling_only">仅 Scrapling</option>
             </select>
-            <small class="archive-form__hint">默认 Scrapling 优先；旧流程会继续作为回退兜底。</small>
+            <small class="archive-form__hint">默认 Scrapling 优先；同一抓取方式最多尝试 3 次，再切换到下一个候选方式。</small>
           </label>
           <label class="field-card field-card--switch">
             <span>Scrapling 浏览器兜底</span>
@@ -616,35 +726,40 @@
           <div class="section-card__header">
             <div>
               <span class="eyebrow">系统维护</span>
-              <h2>现有库信息补全</h2>
+              <h2>数据库索引与历史信息补全</h2>
             </div>
             <div class="settings-inline-actions">
               <button class="button button-secondary" type="button" :disabled="profileBackfillLoading || profileBackfillSubmitting" @click="loadProfileBackfillStatus">
                 {{ profileBackfillLoading ? "读取中..." : "刷新状态" }}
               </button>
               <button class="button button-primary" type="button" :disabled="profileBackfillSubmitting || profileBackfill.running" @click="triggerProfileBackfill">
-                {{ profileBackfill.running ? "扫描中..." : profileBackfillSubmitting ? "提交中..." : "补全现有库信息" }}
+                {{ profileBackfill.running ? profileBackfillRunningLabel : profileBackfillSubmitting ? "提交中..." : "手动重建索引" }}
               </button>
             </div>
           </div>
           <p class="archive-form__hint">
-            这里只负责扫描本地已归档模型，并把缺少打印配置详情、实例展示媒体或评论回复字段的模型加入归档补整理队列。实际补全会在后台归档队列继续执行，不主动消耗 3MF 下载次数。
+            首次连接新数据库时会自动遍历已有本地归档库，把卡片级模型信息写入 Postgres 索引，用于加快模型库、订阅库和本地库读取。索引已完成后无需再处理；这里仅保留手动重建和历史缺失信息补全入口。
           </p>
-          <div class="settings-grid settings-grid--three system-update-grid">
+          <div class="settings-grid settings-grid--four system-update-grid">
             <article class="field-card system-update-stat">
-              <span>发现缺失</span>
-              <strong>{{ profileBackfillStats.scanned }}</strong>
-              <small>{{ profileBackfill.started_at ? `最近扫描：${profileBackfill.started_at}` : "尚未执行" }}</small>
+              <span>数据库索引</span>
+              <strong>{{ profileBackfillDatabaseLabel }}</strong>
+              <small>{{ profileBackfillDatabaseHint }}</small>
             </article>
             <article class="field-card system-update-stat">
-              <span>新增入队</span>
+              <span>索引进度</span>
+              <strong>{{ profileBackfillStats.databaseProcessed }}/{{ profileBackfillStats.databaseTotal }}</strong>
+              <small>{{ profileBackfillStats.databaseFailed || profileBackfillStats.jsonStateFailed ? `失败：${profileBackfillStats.databaseFailed + profileBackfillStats.jsonStateFailed}` : profileBackfillDatabaseProgressHint }}</small>
+            </article>
+            <article class="field-card system-update-stat">
+              <span>缺失补全</span>
               <strong>{{ profileBackfillStats.queued }}</strong>
-              <small>已在队列：{{ profileBackfillStats.alreadyQueued }}</small>
+              <small>发现缺失：{{ profileBackfillStats.scanned }}，已在队列：{{ profileBackfillStats.alreadyQueued }}</small>
             </article>
             <article class="field-card system-update-stat">
               <span>失败</span>
               <strong>{{ profileBackfillStats.failed }}</strong>
-              <small>{{ profileBackfill.running ? "正在扫描并入队" : profileBackfill.finished_at ? `最近扫描结束：${profileBackfill.finished_at}` : "等待执行" }}</small>
+              <small>{{ profileBackfill.running ? profileBackfillRunningLabel : profileBackfill.finished_at ? `最近结束：${profileBackfill.finished_at}` : "等待执行" }}</small>
             </article>
           </div>
           <div class="form-footer">
@@ -753,7 +868,6 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 
-import SecretTextarea from "../components/SecretTextarea.vue";
 import ThemeSegment from "../components/ThemeSegment.vue";
 import { appState, applyConfigPayload, refreshConfig, saveThemePreference } from "../lib/appState";
 import { apiRequest } from "../lib/api";
@@ -764,7 +878,8 @@ const router = useRouter();
 
 const tabs = [
   { key: "system", label: "系统" },
-  { key: "connections", label: "连接设置" },
+  { key: "accounts", label: "线上账号" },
+  { key: "proxy", label: "代理" },
   { key: "organizer", label: "本地整理" },
   { key: "tokens", label: "Token" },
   { key: "sharing", label: "模型分享" },
@@ -789,14 +904,25 @@ const runtimeResourcesSaving = ref(false);
 const profileBackfill = ref(defaultProfileBackfillState());
 const profileBackfillLoading = ref(false);
 const profileBackfillSubmitting = ref(false);
-const connectionSaving = ref(false);
+const proxySaving = ref(false);
+const accountDialogOpen = ref(false);
+let accountCodeTimer = null;
 
-const connectionForm = reactive({
-  cookie_cn: "",
-  cookie_global: "",
-  proxy_enabled: false,
+const proxyForm = reactive({
+  enabled: false,
   http_proxy: "",
   https_proxy: "",
+});
+const accountDialog = reactive({
+  platform: "cn",
+  username: "",
+  password: "",
+  verification_code: "",
+  consent: false,
+  sendingCode: false,
+  codeCountdown: 0,
+  saving: false,
+  error: "",
 });
 const notificationsForm = reactive({
   enabled: false,
@@ -869,10 +995,9 @@ const passwordForm = reactive({
   confirm_password: "",
 });
 const statuses = reactive({
-  connections: "",
-  cookie_cn: "",
-  cookie_global: "",
+  accounts: "",
   proxy: "",
+  proxy_save: "",
   organizer: "",
   mobile_import: "",
   sharing: "",
@@ -925,6 +1050,50 @@ const githubVersionText = computed(() => {
   return "读取中";
 });
 const expiredShareCount = computed(() => sharedShares.value.filter((item) => item.expired).length);
+const onlineAccountItems = computed(() => {
+  const cookies = Array.isArray(config.value?.cookies) ? config.value.cookies : [];
+  const inventoryByPlatform = config.value?.cookie_source_inventory?.platforms || {};
+  const syncStateByPlatform = config.value?.cookie_source_sync_state || {};
+  return cookies
+    .filter((item) => ["cn", "global"].includes(item.platform) && hasAccountCookie(item))
+    .map((item) => {
+      const inventoryAccount = inventoryByPlatform[item.platform]?.account || {};
+      const mergedItem = {
+        ...item,
+        display_name: item.display_name || inventoryAccount.name || "",
+        account_id: item.account_id || inventoryAccount.uid || "",
+        handle: item.handle || inventoryAccount.handle || "",
+        avatar_url: item.avatar_url || inventoryAccount.avatar_url || "",
+      };
+      const displayName = accountDisplayName(mergedItem);
+      const status = String(item.status || "").trim();
+      const sourceStats = accountSourceStats(
+        inventoryByPlatform[item.platform],
+        syncStateByPlatform[item.platform],
+      );
+      return {
+        ...mergedItem,
+        displayName,
+        avatarFallback: accountAvatarFallback(mergedItem, displayName),
+        platformLabel: accountPlatformLabel(item.platform),
+        statusLabel: accountStatusLabel(mergedItem),
+        statusClass: accountStatusClass(mergedItem),
+        updatedText: formatAccountDate(item.updated_at || item.last_login_at || item.last_tested_at),
+        message: accountMessageText(mergedItem, status),
+        ...sourceStats,
+      };
+    });
+});
+const isGlobalAccountDialog = computed(() => accountDialog.platform === "global");
+const accountLoginLabel = computed(() => isGlobalAccountDialog.value ? "邮箱" : "手机号");
+const accountLoginInputType = computed(() => isGlobalAccountDialog.value ? "email" : "tel");
+const accountLoginAutocomplete = computed(() => isGlobalAccountDialog.value ? "email" : "tel");
+const accountLoginInputMode = computed(() => isGlobalAccountDialog.value ? "email" : "tel");
+const accountLoginPlaceholder = computed(() => isGlobalAccountDialog.value ? "请输入邮箱地址" : "请输入手机号");
+const accountCodePlaceholder = computed(() => isGlobalAccountDialog.value ? "邮箱验证码" : "短信验证码");
+const accountLoginHint = computed(() => isGlobalAccountDialog.value
+  ? "提交后会使用邮箱和邮箱验证码登录 MakerWorld 国际站，并自动保存返回的 Cookie。"
+  : "提交后会使用手机号和短信验证码登录 MakerWorld 国区，并自动保存返回的 Cookie。");
 const systemUpdateStatusLabel = computed(() => {
   const labelMap = {
     idle: "空闲",
@@ -972,12 +1141,75 @@ const mobileImportTokenItem = computed(() => (
 ));
 const profileBackfillStats = computed(() => {
   const result = profileBackfill.value.last_result || {};
+  const databaseIndex = result.database_index || {};
+  const jsonState = databaseIndex.json_state || {};
   return {
+    jsonStateProcessed: Number(jsonState.processed || 0),
+    jsonStateUpdated: Number(jsonState.updated || 0),
+    jsonStateFailed: Number(jsonState.failed || 0),
+    databaseTotal: Number(databaseIndex.total || 0),
+    databaseProcessed: Number(databaseIndex.processed || 0),
+    databaseUpdated: Number(databaseIndex.updated || 0),
+    databaseFailed: Number(databaseIndex.failed || 0),
     scanned: Number(result.scanned_candidates || 0),
     queued: Number(result.queued_count || 0),
     alreadyQueued: Number(result.already_queued_count || 0),
     failed: Number(result.failed_count || 0),
   };
+});
+const profileBackfillRunningLabel = computed(() => (
+  profileBackfill.value.phase === "database_migration" ? "索引中..." : "扫描中..."
+));
+const profileBackfillDatabaseLabel = computed(() => {
+  const database = profileBackfill.value.database || {};
+  if (!database.configured) {
+    return "未配置";
+  }
+  if (!database.driver_available) {
+    return "驱动缺失";
+  }
+  if (profileBackfill.value.running && profileBackfill.value.phase === "database_migration") {
+    return "索引中";
+  }
+  if (database.bootstrapped) {
+    return `已完成 ${Number(database.row_count || 0)} 条`;
+  }
+  if (database.available) {
+    return "待初始化";
+  }
+  return "不可用";
+});
+const profileBackfillDatabaseHint = computed(() => {
+  const database = profileBackfill.value.database || {};
+  const marker = database.marker || {};
+  if (!database.configured) {
+    return "当前未启用 Postgres，页面会继续使用文件扫描。";
+  }
+  if (database.error) {
+    return database.error;
+  }
+  if (profileBackfill.value.running && profileBackfill.value.phase === "database_migration") {
+    return "正在把已有模型信息写入数据库索引。";
+  }
+  if (database.bootstrapped && marker.completed_at) {
+    return `完成于 ${marker.completed_at}`;
+  }
+  if (database.available) {
+    return "启动后会自动初始化索引，也可手动重建。";
+  }
+  return "等待数据库连接。";
+});
+const profileBackfillDatabaseProgressHint = computed(() => {
+  if (profileBackfill.value.running && profileBackfill.value.phase === "database_migration") {
+    return "索引过程中页面会自动刷新。";
+  }
+  if (profileBackfillStats.value.databaseUpdated) {
+    return `模型 ${profileBackfillStats.value.databaseUpdated}，运行状态 ${profileBackfillStats.value.jsonStateUpdated}`;
+  }
+  if (profileBackfillStats.value.jsonStateUpdated) {
+    return `运行状态已写入：${profileBackfillStats.value.jsonStateUpdated}`;
+  }
+  return "尚未初始化索引。";
 });
 const profileBackfillStatusText = computed(() => {
   if (statuses.profile_backfill) {
@@ -986,14 +1218,17 @@ const profileBackfillStatusText = computed(() => {
   if (profileBackfill.value.last_error) {
     return profileBackfill.value.last_error;
   }
+  if (profileBackfill.value.running && profileBackfill.value.phase === "database_migration") {
+    return `数据库索引初始化中：${profileBackfillStats.value.databaseProcessed}/${profileBackfillStats.value.databaseTotal}，页面会自动刷新状态。`;
+  }
   if (profileBackfill.value.running) {
     return "现有库信息补全正在后台扫描并入队，页面会自动刷新状态。";
   }
   const result = profileBackfill.value.last_result || {};
   if (profileBackfill.value.finished_at && Object.keys(result).length > 0) {
-    return `扫描完成：发现 ${profileBackfillStats.value.scanned} 个缺信息模型，新增入队 ${profileBackfillStats.value.queued} 个，已在队列 ${profileBackfillStats.value.alreadyQueued} 个，失败 ${profileBackfillStats.value.failed} 个。`;
+    return `处理完成：模型索引写入 ${profileBackfillStats.value.databaseUpdated} 个，运行状态写入 ${profileBackfillStats.value.jsonStateUpdated} 个，发现 ${profileBackfillStats.value.scanned} 个缺信息模型，新增入队 ${profileBackfillStats.value.queued} 个，已在队列 ${profileBackfillStats.value.alreadyQueued} 个，失败 ${profileBackfillStats.value.failed} 个。`;
   }
-  return profileBackfill.value.message || "这里只负责扫描并加入归档队列；实际补全会在后台继续执行，可到任务页查看进度。";
+  return profileBackfill.value.message || "首次连接新数据库后会自动初始化历史库索引；手动重建会重新扫描归档库并刷新数据库索引。";
 });
 
 function defaultSystemUpdateState() {
@@ -1036,10 +1271,15 @@ function defaultSystemUpdateState() {
 function defaultProfileBackfillState() {
   return {
     running: false,
+    phase: "idle",
+    database_rebuild_requested: false,
+    force_database_rebuild: false,
+    auto_database_migration: false,
     started_at: "",
     finished_at: "",
     last_error: "",
     last_result: {},
+    database: {},
     message: "",
   };
 }
@@ -1102,6 +1342,150 @@ function tokenPermissionLabels(permissions) {
 function formatTokenDate(value) {
   const text = String(value || "").trim();
   return text || "永不过期";
+}
+
+function hasAccountCookie(item) {
+  return Boolean(String(item?.cookie || "").trim());
+}
+
+function accountPlatformLabel(platform) {
+  return platform === "global" ? "MakerWorld 国际" : "MakerWorld 国区";
+}
+
+function accountDisplayName(item) {
+  const displayName = String(item?.display_name || "").trim();
+  if (displayName) return displayName;
+  const handle = String(item?.handle || "").trim().replace(/^@+/, "");
+  if (handle) return `@${handle}`;
+  const username = String(item?.username || "").trim();
+  return username || accountPlatformLabel(item?.platform);
+}
+
+function accountAvatarFallback(item, displayName) {
+  const source = String(displayName || item?.handle || item?.username || "").trim().replace(/^@+/, "");
+  return source.slice(0, 1).toUpperCase() || "U";
+}
+
+function accountStatusLabel(item) {
+  const status = String(item?.status || "").trim();
+  if (status === "ok") return "正常";
+  if (status === "auth_required") return "Cookie 失效";
+  if (status === "verification_required") return "需要验证";
+  if (status === "html_response") return "读取受限";
+  if (status === "http_error") return "连接异常";
+  if (status) return "需检查";
+  return "已保存";
+}
+
+function accountStatusClass(item) {
+  const status = String(item?.status || "").trim();
+  if (!status || status === "ok") return "";
+  if (status === "html_response") return "is-warning";
+  return "is-expired";
+}
+
+function coerceAccountCount(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === "") {
+      continue;
+    }
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return Math.floor(parsed);
+    }
+  }
+  return null;
+}
+
+function accountCountText(value) {
+  return value === null || value === undefined ? "未同步" : String(value);
+}
+
+function accountMessageText(item, status) {
+  const platformLabel = accountPlatformShortLabel(item?.platform);
+  const raw = String(item?.message || "").trim();
+  if (raw) {
+    if (/Cookie\s*部分成功/.test(raw) || /接口可访问/.test(raw) || /\b\d+\s*\/\s*\d+\b/.test(raw)) {
+      return `${platformLabel}账号已保存，部分账号信息暂时读取失败；可以点击同步重试。`;
+    }
+    if (/基础认证可用/.test(raw) || /接口暂时未通过/.test(raw)) {
+      return `${platformLabel}账号已保存，部分账号信息暂时读取失败；可以点击同步重试。`;
+    }
+    if (/认证接口可正常访问/.test(raw)) {
+      return `${platformLabel}账号可用，Cookie 已保存。`;
+    }
+    if (/认证接口返回了登录页或网页页面/.test(raw)) {
+      return `${platformLabel}账号已保存，但暂时无法读取账号信息；可以点击同步重试。`;
+    }
+    return raw;
+  }
+  return status === "ok" ? `${platformLabel}账号可用，Cookie 已保存。` : "已保存账号，建议测试一次。";
+}
+
+function accountPlatformShortLabel(platform) {
+  return platform === "global" ? "国际" : "国内";
+}
+
+function accountSourceStats(inventory, syncState) {
+  const sourceInventory = inventory && typeof inventory === "object" ? inventory : {};
+  const sourceSync = syncState && typeof syncState === "object" ? syncState : {};
+  const defaultFavorites = sourceInventory.default_favorites && typeof sourceInventory.default_favorites === "object"
+    ? sourceInventory.default_favorites
+    : {};
+  const followedAuthors = Array.isArray(sourceInventory.followed_authors)
+    ? sourceInventory.followed_authors
+    : [];
+  const followedCollections = Array.isArray(sourceInventory.followed_collections)
+    ? sourceInventory.followed_collections
+    : [];
+  const followedAuthorCount = coerceAccountCount(
+    sourceSync.followed_author_count,
+    followedAuthors.length ? followedAuthors.length : "",
+  );
+  const followedCollectionCount = coerceAccountCount(
+    sourceSync.followed_collection_count,
+    sourceInventory.followed_collection_count,
+    followedCollections.length ? followedCollections.length : "",
+  );
+  const defaultFavoritesCount = coerceAccountCount(
+    sourceSync.default_favorites_count,
+    defaultFavorites.count,
+    defaultFavorites.model_count,
+    defaultFavorites.remote_model_count,
+    defaultFavorites.url || sourceSync.default_favorites_found ? 1 : "",
+  );
+  const lastSyncAt = sourceSync.last_sync_at || sourceInventory.last_sync_at || "";
+  const lastStatus = String(sourceSync.last_status || sourceInventory.last_status || "").trim();
+  let sourceSyncText = "";
+  if (lastStatus === "pending") {
+    sourceSyncText = "账号信息同步已排队，完成后会更新关注作者和收藏夹数量。";
+  } else if (lastStatus === "error") {
+    sourceSyncText = sourceSync.last_message || sourceInventory.last_message || "来源同步失败。";
+  } else if (lastSyncAt) {
+    sourceSyncText = `来源同步：${formatAccountDate(lastSyncAt)}`;
+  }
+
+  return {
+    followedAuthorCountText: accountCountText(followedAuthorCount),
+    followedCollectionCountText: accountCountText(followedCollectionCount),
+    defaultFavoritesCountText: accountCountText(defaultFavoritesCount),
+    sourceSyncText,
+  };
+}
+
+function formatAccountDate(value) {
+  const text = String(value || "").trim();
+  if (!text) return "未记录时间";
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) {
+    return text;
+  }
+  return parsed.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function tokenStatusLabel(item) {
@@ -1199,11 +1583,9 @@ function applyConfigToForms(payload) {
   for (const item of payload.cookies || []) {
     cookies[item.platform] = item.cookie || "";
   }
-  connectionForm.cookie_cn = cookies.cn || "";
-  connectionForm.cookie_global = cookies.global || "";
-  connectionForm.proxy_enabled = Boolean(payload.proxy?.enabled);
-  connectionForm.http_proxy = payload.proxy?.http_proxy || "";
-  connectionForm.https_proxy = payload.proxy?.https_proxy || "";
+  proxyForm.enabled = Boolean(payload.proxy?.enabled);
+  proxyForm.http_proxy = payload.proxy?.http_proxy || "";
+  proxyForm.https_proxy = payload.proxy?.https_proxy || "";
   threeMfLimitsForm.cn_daily_limit = normalizeDailyThreeMfLimit(payload.three_mf_limits?.cn_daily_limit);
   threeMfLimitsForm.global_daily_limit = normalizeDailyThreeMfLimit(payload.three_mf_limits?.global_daily_limit);
   advancedForm.scraping_engine = ["legacy", "scrapling_first", "scrapling_only"].includes(payload.advanced?.scraping_engine)
@@ -1247,7 +1629,8 @@ function applyConfigToForms(payload) {
 }
 
 function setActiveTab(tab) {
-  activeTab.value = tabs.some((item) => item.key === tab) ? tab : "system";
+  const normalizedTab = tab === "connections" ? "accounts" : tab;
+  activeTab.value = tabs.some((item) => item.key === normalizedTab) ? normalizedTab : "system";
   if (route.query.tab !== activeTab.value) {
     router.replace({ path: "/settings", query: { tab: activeTab.value } });
   }
@@ -1261,7 +1644,7 @@ function setActiveTab(tab) {
 }
 
 async function load() {
-  const payload = config.value || await refreshConfig();
+  const payload = await refreshConfig();
   applyConfigToForms(payload);
   setActiveTab(typeof route.query.tab === "string" ? route.query.tab : "system");
 }
@@ -1313,6 +1696,7 @@ function clearProfileBackfillTimer() {
 function clearTimers() {
   clearSystemUpdateTimer();
   clearProfileBackfillTimer();
+  clearAccountCodeTimer();
 }
 
 function scheduleProfileBackfillPolling() {
@@ -1443,7 +1827,7 @@ async function loadProfileBackfillStatus(options = {}) {
 }
 
 async function triggerProfileBackfill() {
-  const shouldProceed = window.confirm("会扫描本地归档库，并把缺少打印配置详情、实例展示媒体或评论回复字段的模型加入归档补整理队列。这里只负责扫描和入队，不会主动下载 3MF。确定继续吗？");
+  const shouldProceed = window.confirm("会重新遍历本地归档库，把模型卡片信息写入数据库索引，并把缺少详情媒体或评论回复字段的模型加入后台补整理队列。不会主动下载 3MF。确定手动重建索引吗？");
   if (!shouldProceed) {
     return;
   }
@@ -1454,7 +1838,7 @@ async function triggerProfileBackfill() {
       method: "POST",
     });
     applyProfileBackfillStatus(payload);
-    statuses.profile_backfill = payload.message || "现有库信息补全扫描已提交，缺失模型会继续在归档队列后台处理。";
+    statuses.profile_backfill = payload.message || "数据库索引重建已提交，后台会继续处理。";
   } catch (error) {
     statuses.profile_backfill = error instanceof Error ? error.message : "提交信息补全失败。";
   } finally {
@@ -1463,38 +1847,194 @@ async function triggerProfileBackfill() {
   }
 }
 
-async function saveConnections() {
-  if (connectionSaving.value) {
+function resetAccountDialog(platform = "cn") {
+  accountDialog.platform = platform === "global" ? "global" : "cn";
+  accountDialog.username = "";
+  accountDialog.password = "";
+  accountDialog.verification_code = "";
+  accountDialog.consent = false;
+  accountDialog.sendingCode = false;
+  accountDialog.codeCountdown = 0;
+  accountDialog.error = "";
+  clearAccountCodeTimer();
+}
+
+function openAccountDialog(platform = "cn") {
+  resetAccountDialog(platform);
+  accountDialogOpen.value = true;
+}
+
+function closeAccountDialog() {
+  if (accountDialog.saving || accountDialog.sendingCode) {
     return;
   }
-  connectionSaving.value = true;
-  statuses.connections = "";
+  accountDialogOpen.value = false;
+  resetAccountDialog(accountDialog.platform);
+}
+
+function clearAccountCodeTimer() {
+  if (accountCodeTimer) {
+    window.clearInterval(accountCodeTimer);
+    accountCodeTimer = null;
+  }
+}
+
+function startAccountCodeCountdown(seconds = 60) {
+  clearAccountCodeTimer();
+  accountDialog.codeCountdown = seconds;
+  accountCodeTimer = window.setInterval(() => {
+    accountDialog.codeCountdown = Math.max(0, accountDialog.codeCountdown - 1);
+    if (accountDialog.codeCountdown <= 0) {
+      clearAccountCodeTimer();
+    }
+  }, 1000);
+}
+
+async function sendAccountSmsCode() {
+  if (accountDialog.sendingCode || accountDialog.codeCountdown > 0) {
+    return;
+  }
+  accountDialog.error = "";
+  statuses.accounts = "";
+  if (!accountDialog.username) {
+    accountDialog.error = `请先填写${accountLoginLabel.value}。`;
+    return;
+  }
+  if (!accountDialog.consent) {
+    accountDialog.error = "请先勾选用户协议和隐私政策。";
+    return;
+  }
+  accountDialog.sendingCode = true;
   try {
-    const proxyPayload = await apiRequest("/api/config/proxy", {
+    const payload = await apiRequest("/api/config/online-accounts/sms-code", {
       method: "POST",
       body: {
-        enabled: connectionForm.proxy_enabled,
-        http_proxy: connectionForm.http_proxy,
-        https_proxy: connectionForm.https_proxy,
+        platform: accountDialog.platform,
+        phone: isGlobalAccountDialog.value ? "" : accountDialog.username,
+        email: isGlobalAccountDialog.value ? accountDialog.username : "",
       },
     });
-    applyConfigPayload(proxyPayload);
-    const cookiePayload = await apiRequest("/api/config/cookies", {
-      method: "POST",
-      body: [
-        { platform: "cn", cookie: connectionForm.cookie_cn },
-        { platform: "global", cookie: connectionForm.cookie_global },
-      ],
-    });
-    applyConfigPayload(cookiePayload);
-    const queuedCount = Number(cookiePayload?.cookie_source_sync?.queued_count || 0);
-    statuses.connections = queuedCount > 0
-      ? "连接设置已保存，关注来源同步已交给 worker 后台处理。"
-      : "连接设置已保存。";
+    statuses.accounts = payload?.message || "验证码已发送。";
+    startAccountCodeCountdown(60);
   } catch (error) {
-    statuses.connections = error instanceof Error ? error.message : "保存失败。";
+    accountDialog.error = error instanceof Error ? error.message : "验证码发送失败。";
   } finally {
-    connectionSaving.value = false;
+    accountDialog.sendingCode = false;
+  }
+}
+
+async function submitAccountLogin() {
+  if (accountDialog.saving) {
+    return;
+  }
+  if (!accountDialog.username) {
+    accountDialog.error = `请填写${accountLoginLabel.value}。`;
+    return;
+  }
+  if (!accountDialog.verification_code) {
+    accountDialog.error = `请填写${accountCodePlaceholder.value}。`;
+    return;
+  }
+  if (!accountDialog.consent) {
+    accountDialog.error = "请先勾选用户协议和隐私政策。";
+    return;
+  }
+  accountDialog.saving = true;
+  accountDialog.error = "";
+  statuses.accounts = "";
+  try {
+    const payload = await apiRequest("/api/config/online-accounts/login", {
+      method: "POST",
+      body: {
+        platform: accountDialog.platform,
+        username: accountDialog.username,
+        verification_code: accountDialog.verification_code,
+      },
+    });
+    applyConfigPayload(payload);
+    applyConfigToForms(payload);
+    statuses.accounts = "";
+    accountDialogOpen.value = false;
+    resetAccountDialog(accountDialog.platform);
+  } catch (error) {
+    accountDialog.error = error instanceof Error ? error.message : "登录失败。";
+  } finally {
+    accountDialog.saving = false;
+  }
+}
+
+async function testSavedAccount(platform) {
+  const key = platform === "global" ? "cookie_global" : "cookie_cn";
+  testing[key] = true;
+  statuses.accounts = "";
+  try {
+    const payload = await apiRequest(`/api/config/online-accounts/${encodeURIComponent(platform)}/test`, {
+      method: "POST",
+    });
+    applyConfigPayload(payload);
+    applyConfigToForms(payload);
+    statuses.accounts = "";
+  } catch (error) {
+    statuses.accounts = error instanceof Error ? error.message : "测试失败。";
+  } finally {
+    testing[key] = false;
+  }
+}
+
+async function syncSavedAccount(platform) {
+  const key = `sync_${platform === "global" ? "global" : "cn"}`;
+  testing[key] = true;
+  statuses.accounts = "";
+  try {
+    const payload = await apiRequest(`/api/config/online-accounts/${encodeURIComponent(platform)}/sync`, {
+      method: "POST",
+    });
+    applyConfigPayload(payload);
+    applyConfigToForms(payload);
+    statuses.accounts = "";
+  } catch (error) {
+    statuses.accounts = error instanceof Error ? error.message : "提交同步失败。";
+  } finally {
+    testing[key] = false;
+  }
+}
+
+async function deleteAccount(platform) {
+  const label = accountPlatformLabel(platform);
+  if (!window.confirm(`确认删除 ${label} 账号吗？删除后对应站点的归档和订阅会缺少 Cookie。`)) {
+    return;
+  }
+  statuses.accounts = "";
+  try {
+    const payload = await apiRequest(`/api/config/online-accounts/${encodeURIComponent(platform)}`, {
+      method: "DELETE",
+    });
+    applyConfigPayload(payload);
+    applyConfigToForms(payload);
+    statuses.accounts = "账号已删除。";
+  } catch (error) {
+    statuses.accounts = error instanceof Error ? error.message : "删除失败。";
+  }
+}
+
+async function saveProxySettings() {
+  if (proxySaving.value) {
+    return;
+  }
+  proxySaving.value = true;
+  statuses.proxy_save = "";
+  try {
+    const payload = await apiRequest("/api/config/proxy", {
+      method: "POST",
+      body: buildProxyPayload(),
+    });
+    applyConfigPayload(payload);
+    applyConfigToForms(payload);
+    statuses.proxy_save = "代理设置已保存。";
+  } catch (error) {
+    statuses.proxy_save = error instanceof Error ? error.message : "保存失败。";
+  } finally {
+    proxySaving.value = false;
   }
 }
 
@@ -1602,32 +2142,10 @@ async function saveSharing() {
 
 function buildProxyPayload() {
   return {
-    enabled: connectionForm.proxy_enabled,
-    http_proxy: connectionForm.http_proxy,
-    https_proxy: connectionForm.https_proxy,
+    enabled: proxyForm.enabled,
+    http_proxy: proxyForm.http_proxy,
+    https_proxy: proxyForm.https_proxy,
   };
-}
-
-async function testCookie(platform) {
-  const key = platform === "global" ? "cookie_global" : "cookie_cn";
-  const cookie = platform === "global" ? connectionForm.cookie_global : connectionForm.cookie_cn;
-  testing[key] = true;
-  statuses[key] = "";
-  try {
-    const response = await apiRequest("/api/config/cookies/test", {
-      method: "POST",
-      body: {
-        platform,
-        cookie,
-        proxy: buildProxyPayload(),
-      },
-    });
-    statuses[key] = response.message || "测试完成。";
-  } catch (error) {
-    statuses[key] = error instanceof Error ? error.message : "测试失败。";
-  } finally {
-    testing[key] = false;
-  }
 }
 
 async function testProxy() {

@@ -57,12 +57,14 @@ class ModelDownloadArchiveTest(unittest.TestCase):
             (model_root / "attachments" / "demo.3mf").write_bytes(b"wrong")
             (model_root / "meta.json").write_text(json.dumps({"title": "Demo"}, ensure_ascii=False), encoding="utf-8")
 
-            secret_path = state_root / "bambu_secret"
+            state = {}
             with patch.object(config_api, "ARCHIVE_DIR", archive_root), \
-                patch.object(config_api, "STATE_DIR", state_root), \
-                patch.object(config_api, "BAMBU_STUDIO_DOWNLOAD_SECRET_PATH", secret_path):
+                    patch.object(config_api, "STATE_DIR", state_root), \
+                    patch.object(config_api, "load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                    patch.object(config_api, "save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
                 expires_at = 4102444800
                 signature = config_api._bambu_download_signature("LOCAL_Demo", "demo.3mf", expires_at)
+                self.assertIn("bambu_studio_download_secret", state)
                 self.assertEqual(
                     signature,
                     config_api._bambu_download_signature("LOCAL_Demo", "demo.3mf", expires_at),

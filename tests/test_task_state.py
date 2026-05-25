@@ -160,22 +160,22 @@ class OrganizeTaskStateTest(unittest.TestCase):
 
 class ArchiveQueueStateTest(unittest.TestCase):
     def test_clear_recent_failures_preserves_active_and_queued_tasks(self):
-        with TemporaryDirectory() as temp_dir:
-            archive_queue_path = Path(temp_dir) / "archive_queue.json"
-            store = TaskStateStore()
-            with patch("app.services.task_state.ARCHIVE_QUEUE_PATH", archive_queue_path):
-                store.save_archive_queue(
-                    {
-                        "active": [{"id": "active-1", "title": "正在跑", "status": "running"}],
-                        "queued": [{"id": "queued-1", "title": "等一下", "status": "queued"}],
-                        "recent_failures": [
-                            {"id": "failed-1", "title": "失败 A", "status": "failed"},
-                            {"id": "failed-2", "title": "失败 B", "status": "failed"},
-                        ],
-                    }
-                )
+        state = {}
+        store = TaskStateStore()
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
+            store.save_archive_queue(
+                {
+                    "active": [{"id": "active-1", "title": "正在跑", "status": "running"}],
+                    "queued": [{"id": "queued-1", "title": "等一下", "status": "queued"}],
+                    "recent_failures": [
+                        {"id": "failed-1", "title": "失败 A", "status": "failed"},
+                        {"id": "failed-2", "title": "失败 B", "status": "failed"},
+                    ],
+                }
+            )
 
-                queue = store.clear_archive_recent_failures()
+            queue = store.clear_archive_recent_failures()
 
         self.assertEqual(queue["cleared_count"], 2)
         self.assertEqual(queue["failed_count"], 0)

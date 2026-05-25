@@ -1,4 +1,3 @@
-import json
 import threading
 import time
 import uuid
@@ -9,6 +8,7 @@ from urllib.parse import urlparse
 
 from croniter import CroniterBadCronError, croniter
 
+from app.core.database_json_state import load_database_json_state, save_database_json_state
 from app.core.settings import BACKGROUND_TASKS_ENABLED, LOGS_DIR, STATE_DIR
 from app.core.store import JsonStore
 from app.core.timezone import ensure_timezone, now as china_now, now_iso as china_now_iso, parse_datetime
@@ -17,6 +17,7 @@ from app.services.cookie_utils import sanitize_cookie_header
 from app.services.archive_worker import ArchiveTaskManager, detect_archive_mode
 from app.services.batch_discovery import (
     default_favorites_subscription_source,
+    discover_cookie_account_home_summary,
     discover_cookie_account_profile,
     discover_cookie_followed_authors,
     discover_cookie_followed_authors_from_page,
@@ -24,7 +25,8 @@ from app.services.batch_discovery import (
     extract_model_id,
     normalize_source_url,
 )
-from app.services.business_logs import append_business_log
+from app.services.business_logs import append_business_log, append_structured_log
+from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot, invalidate_model_detail_cache
 from app.services.process_jobs import run_discover_batch_urls_job
 from app.services.proxy_policy import temporary_proxy_env
 from app.services.source_library import (
@@ -42,6 +44,9 @@ DEFAULT_SUBSCRIPTION_CRON = "0 */6 * * *"
 SUBSCRIPTION_MODES = {"author_upload", "collection_models"}
 SUBSCRIPTION_LOG_PATH = LOGS_DIR / "subscriptions.log"
 COOKIE_SOURCE_SYNC_STATE_PATH = STATE_DIR / "cookie_source_sync_state.json"
+COOKIE_SOURCE_SYNC_STATE_KEY = "cookie_source_sync_state"
+COOKIE_SOURCE_INVENTORY_PATH = STATE_DIR / "cookie_source_inventory.json"
+COOKIE_SOURCE_INVENTORY_KEY = "cookie_source_inventory"
 SUBSCRIPTION_POLL_SECONDS = 20
 SUBSCRIPTION_RUNNING_STALE_AFTER = timedelta(hours=6)
 COOKIE_SOURCE_SYNC_INTERVAL = timedelta(hours=6)
@@ -71,22 +76,7 @@ def _parse_iso(value: str) -> Optional[datetime]:
 
 
 def _append_subscription_log(event: str, **payload: Any) -> None:
-    try:
-        SUBSCRIPTION_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with SUBSCRIPTION_LOG_PATH.open("a", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps(
-                    {
-                        "time": _now_iso(),
-                        "event": event,
-                        **payload,
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        return
+    append_structured_log(SUBSCRIPTION_LOG_PATH.name, event, category="subscription", **payload)
     if event in {
         "initialized",
         "metadata_refreshed",
@@ -122,25 +112,57 @@ def _append_subscription_log(event: str, **payload: Any) -> None:
 
 
 def _read_cookie_source_sync_state() -> dict[str, Any]:
-    try:
-        if not COOKIE_SOURCE_SYNC_STATE_PATH.exists():
-            return {}
-        payload = json.loads(COOKIE_SOURCE_SYNC_STATE_PATH.read_text(encoding="utf-8"))
-        return payload if isinstance(payload, dict) else {}
-    except Exception:
-        return {}
+    return load_database_json_state(COOKIE_SOURCE_SYNC_STATE_KEY, {})
 
 
 def _write_cookie_source_sync_state(payload: dict[str, Any]) -> dict[str, Any]:
-    try:
-        COOKIE_SOURCE_SYNC_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        COOKIE_SOURCE_SYNC_STATE_PATH.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    except Exception:
-        return payload
-    return payload
+    return save_database_json_state(COOKIE_SOURCE_SYNC_STATE_KEY, payload)
+
+
+def _read_cookie_source_inventory_state() -> dict[str, Any]:
+    payload = load_database_json_state(COOKIE_SOURCE_INVENTORY_KEY, {"platforms": {}, "updated_at": ""})
+    platforms = payload.get("platforms") if isinstance(payload.get("platforms"), dict) else {}
+    return {
+        "platforms": {str(key): value for key, value in platforms.items() if isinstance(value, dict)},
+        "updated_at": str(payload.get("updated_at") or ""),
+    }
+
+
+def _write_cookie_source_inventory_state(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = {
+        "platforms": payload.get("platforms") if isinstance(payload.get("platforms"), dict) else {},
+        "updated_at": str(payload.get("updated_at") or _now_iso()),
+    }
+    return save_database_json_state(COOKIE_SOURCE_INVENTORY_KEY, normalized)
+
+
+def cookie_source_sync_state_payload() -> dict[str, Any]:
+    state = _read_cookie_source_sync_state()
+    return {
+        platform: dict(item)
+        for platform, item in state.items()
+        if platform in {"cn", "global"} and isinstance(item, dict)
+    }
+
+
+def cookie_source_inventory_payload() -> dict[str, Any]:
+    return _read_cookie_source_inventory_state()
+
+
+def _patch_cookie_source_inventory_state(platform: str, **changes: Any) -> dict[str, Any]:
+    clean_platform = "global" if str(platform or "").strip().lower() == "global" else "cn"
+    now_iso = _now_iso()
+    state = _read_cookie_source_inventory_state()
+    platforms = dict(state.get("platforms") or {})
+    item = dict(platforms.get(clean_platform) or {})
+    for key, value in changes.items():
+        if value is None:
+            continue
+        item[key] = value
+    item["platform"] = clean_platform
+    item["updated_at"] = str(item.get("updated_at") or now_iso)
+    platforms[clean_platform] = item
+    return _write_cookie_source_inventory_state({"platforms": platforms, "updated_at": now_iso})
 
 
 def _cookie_source_sync_due(platforms: set[str]) -> set[str]:
@@ -202,6 +224,82 @@ def _select_cookie(url: str, config) -> str:
     return sanitize_cookie_header(cookie_map.get(platform) or "")
 
 
+def _account_profile_fallback(cookie_pair: Any) -> dict[str, str]:
+    if cookie_pair is None:
+        return {}
+    account_id = str(getattr(cookie_pair, "account_id", "") or "").strip()
+    handle = str(getattr(cookie_pair, "handle", "") or "").strip().lstrip("@")
+    return {
+        "uid": account_id,
+        "handle": handle,
+        "name": str(getattr(cookie_pair, "display_name", "") or getattr(cookie_pair, "username", "") or "").strip(),
+        "avatar_url": str(getattr(cookie_pair, "avatar_url", "") or "").strip(),
+    }
+
+
+def _account_platform_label(platform: str) -> str:
+    return "国际" if str(platform or "").strip().lower() == "global" else "国内"
+
+
+def _account_sync_success_message(platform: str) -> str:
+    return f"{_account_platform_label(platform)}账号已同步，账号信息已更新。"
+
+
+def _merge_cookie_account_profile(discovered: dict[str, Any], fallback: dict[str, str]) -> dict[str, Any]:
+    profile = dict(discovered or {})
+    for key, value in (fallback or {}).items():
+        if value and not str(profile.get(key) or "").strip():
+            profile[key] = value
+    merged: dict[str, Any] = {
+        "platform": str(profile.get("platform") or ""),
+        "uid": str(profile.get("uid") or ""),
+        "handle": str(profile.get("handle") or "").lstrip("@"),
+        "name": str(profile.get("name") or ""),
+        "avatar_url": str(profile.get("avatar_url") or profile.get("avatar") or ""),
+    }
+    for key in ("follow_count", "liked_collection_count", "collection_count"):
+        value = _first_non_negative_int(profile.get(key))
+        if value is not None:
+            merged[key] = value
+    return merged
+
+
+def _merge_cookie_account_summary(profile: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(profile or {})
+    for key in ("uid", "handle", "name", "avatar_url"):
+        value = str((summary or {}).get(key) or "").strip()
+        if value and not str(merged.get(key) or "").strip():
+            merged[key] = value
+    result: dict[str, Any] = {
+        "platform": str(merged.get("platform") or (summary or {}).get("platform") or ""),
+        "uid": str(merged.get("uid") or ""),
+        "handle": str(merged.get("handle") or "").lstrip("@"),
+        "name": str(merged.get("name") or ""),
+        "avatar_url": str(merged.get("avatar_url") or merged.get("avatar") or ""),
+    }
+    for key in ("follow_count", "liked_collection_count", "collection_count"):
+        value = _first_non_negative_int(merged.get(key), (summary or {}).get(key))
+        if value is not None:
+            result[key] = value
+    return result
+
+
+def _first_non_negative_int(*values: Any) -> Optional[int]:
+    first_zero: Optional[int] = None
+    for value in values:
+        if value is None or value == "":
+            continue
+        try:
+            parsed = int(str(value).replace(",", "").strip())
+        except Exception:
+            continue
+        if parsed > 0:
+            return parsed
+        if parsed == 0 and first_zero is None:
+            first_zero = parsed
+    return first_zero
+
+
 def _canonical_subscription_url(url: str, mode: str = "") -> str:
     clean_url = normalize_source_url(url)
     if (mode or _detect_subscription_mode(clean_url)) == "collection_models":
@@ -253,6 +351,8 @@ def _better_default_favorite_name(current: str, candidate: str) -> str:
     if not candidate_text:
         return current_text
     if not current_text:
+        return candidate_text
+    if "的收藏夹" in candidate_text and "的收藏夹" not in current_text:
         return candidate_text
     if "所有模型收藏夹" in candidate_text and "所有模型收藏夹" not in current_text:
         return candidate_text
@@ -322,6 +422,32 @@ def _merge_source_items(*groups: list[dict]) -> list[dict]:
 def _deleted_source_items(current_items: list[dict], tracked_items: list[dict]) -> list[dict]:
     current_keys = {item["task_key"] for item in _normalize_source_items(current_items)}
     return [item for item in _normalize_source_items(tracked_items) if item["task_key"] not in current_keys]
+
+
+def _source_item_lookup_keys(items: list[Any]) -> set[str]:
+    keys: set[str] = set()
+    for item in _normalize_source_items(items):
+        task_key = str(item.get("task_key") or "").strip()
+        model_id = str(item.get("model_id") or "").strip()
+        url = normalize_source_url(str(item.get("url") or ""))
+        if task_key:
+            keys.add(task_key)
+        if model_id:
+            keys.add(f"model:{model_id}")
+        if url:
+            keys.add(url)
+    return keys
+
+
+def _archive_model_keys(item: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    model_id = str(item.get("id") or "").strip()
+    origin_url = normalize_source_url(str(item.get("origin_url") or ""))
+    if model_id:
+        keys.add(f"model:{model_id}")
+    if origin_url:
+        keys.add(origin_url)
+    return keys
 
 
 def _strict_expected_total(discovered: dict) -> Optional[int]:
@@ -426,6 +552,8 @@ def _subscription_import_name(source: dict[str, Any], mode: str, platform: str) 
     site_label = "国际" if platform == "global" else "国内"
     if mode == "author_upload":
         return f"{title or handle or 'MakerWorld'} 作者订阅"
+    if "的收藏夹" in title:
+        return title
     if "所有模型" in title:
         return f"{site_label} {title}".strip()
     return f"{title or handle or 'MakerWorld'} 收藏夹订阅"
@@ -708,6 +836,141 @@ class SubscriptionManager:
             "subscriptions": self.list_payload(),
         }
 
+    def remove_account_imported_subscriptions(self, platform: str) -> dict:
+        clean_platform = "global" if str(platform or "").strip().lower() == "global" else "cn"
+        inventory = _read_cookie_source_inventory_state()
+        platform_inventory = dict((inventory.get("platforms") or {}).get(clean_platform) or {})
+        imported_sources = [
+            item
+            for item in platform_inventory.get("imported_sources") or []
+            if isinstance(item, dict)
+        ]
+        imported_urls = {
+            _subscription_identity_url(str(item.get("url") or ""), str(item.get("mode") or ""))
+            for item in imported_sources
+            if str(item.get("url") or "").strip()
+        }
+        imported_urls.update(
+            _subscription_identity_url(str(url or ""), _detect_subscription_mode(str(url or "")))
+            for url in platform_inventory.get("source_urls") or []
+            if str(url or "").strip()
+        )
+        imported_urls = {url for url in imported_urls if url}
+
+        imported_ids = {
+            str(item.get("subscription_id") or "").strip()
+            for item in imported_sources
+            if str(item.get("subscription_id") or "").strip()
+        }
+
+        config = self.store.load()
+        state_payload = self.task_store.load_subscriptions_state()
+        state_map = {
+            str(item.get("id") or ""): item
+            for item in state_payload.get("items") or []
+        }
+
+        removed_records: list[SubscriptionRecord] = []
+        kept_records: list[SubscriptionRecord] = []
+        for record in config.subscriptions:
+            record_url = _subscription_identity_url(record.url, record.mode)
+            if (
+                record.id in imported_ids
+                or record_url in imported_urls
+            ) and _platform_for_url(record.url) == clean_platform:
+                removed_records.append(record)
+                continue
+            kept_records.append(record)
+
+        removed_ids = [item.id for item in removed_records]
+        source_keys: set[str] = set()
+        for subscription_id in removed_ids:
+            state = state_map.get(subscription_id) or {}
+            source_keys.update(_source_item_lookup_keys(state.get("current_items") or []))
+            source_keys.update(_source_item_lookup_keys(state.get("tracked_items") or []))
+
+        deleted_model_dirs: list[str] = []
+        if source_keys:
+            archive_snapshot = get_archive_snapshot()
+            for model in archive_snapshot.get("models") or []:
+                model_dir = str(model.get("model_dir") or "").strip().strip("/")
+                if not model_dir:
+                    continue
+                if not (_archive_model_keys(model) & source_keys):
+                    continue
+
+                self.task_store.update_model_flag(model_dir, "deleted", True)
+                model_id = str(model.get("id") or "").strip()
+                origin_url = normalize_source_url(str(model.get("origin_url") or ""))
+                if model_id:
+                    self.task_store.remove_missing_3mf_for_model(model_id)
+                self.task_store.remove_recent_failures_for_model(model_id, url=origin_url)
+                invalidate_model_detail_cache(model_dir)
+                deleted_model_dirs.append(model_dir)
+
+        if removed_records:
+            config.subscriptions = kept_records
+            self.store.save(config)
+            self.task_store.remove_subscription_state(removed_ids)
+
+        if deleted_model_dirs:
+            invalidate_archive_snapshot("online_account_deleted")
+
+        now_iso = _now_iso()
+        platforms = dict(inventory.get("platforms") or {})
+        platform_inventory.update(
+            {
+                "followed_authors": [],
+                "followed_author_sources": {},
+                "followed_collections": [],
+                "followed_author_count": 0,
+                "followed_collection_count": 0,
+                "imported_sources": [],
+                "source_urls": [],
+                "last_status": "deleted",
+                "last_message": "线上账号已删除，关注来源订阅已移除。",
+                "deleted_at": now_iso,
+                "updated_at": now_iso,
+            }
+        )
+        platforms[clean_platform] = platform_inventory
+        _write_cookie_source_inventory_state({"platforms": platforms, "updated_at": now_iso})
+        _patch_cookie_source_sync_state(
+            clean_platform,
+            requested_at="",
+            requested_reason="",
+            last_status="deleted",
+            last_message="线上账号已删除，关注来源同步已停止。",
+        )
+
+        _append_subscription_log(
+            "online_account_sources_removed",
+            platform=clean_platform,
+            subscription_ids=removed_ids,
+            subscription_count=len(removed_ids),
+            local_deleted_count=len(deleted_model_dirs),
+        )
+        append_business_log(
+            "subscription",
+            "online_account_sources_removed",
+            "线上账号删除后，已移除该账号导入的关注来源订阅，并把对应模型标记为本地删除。",
+            platform=clean_platform,
+            subscription_count=len(removed_ids),
+            local_deleted_count=len(deleted_model_dirs),
+        )
+
+        return {
+            "success": True,
+            "platform": clean_platform,
+            "removed_subscription_ids": removed_ids,
+            "removed_subscription_count": len(removed_ids),
+            "local_deleted_model_dirs": deleted_model_dirs,
+            "local_deleted_count": len(deleted_model_dirs),
+            "message": (
+                f"已移除 {len(removed_ids)} 个账号关注来源订阅，并标记 {len(deleted_model_dirs)} 个模型为本地删除。"
+            ),
+        }
+
     def request_sync(self, subscription_id: str) -> dict:
         clean_id = str(subscription_id or "").strip()
         if not clean_id:
@@ -824,9 +1087,13 @@ class SubscriptionManager:
             return {"created_count": 0, "updated_count": 0, "platforms": []}
 
         config = self.store.load()
-        cookie_map = {
-            str(item.platform or "").strip().lower(): sanitize_cookie_header(item.cookie)
+        cookie_pairs = {
+            str(item.platform or "").strip().lower(): item
             for item in getattr(config, "cookies", [])
+        }
+        cookie_map = {
+            platform: sanitize_cookie_header(getattr(item, "cookie", "") or "")
+            for platform, item in cookie_pairs.items()
         }
         default_cron = _validate_cron(getattr(config.subscription_settings, "default_cron", "") or DEFAULT_SUBSCRIPTION_CRON)
         default_enabled = bool(getattr(config.subscription_settings, "default_enabled", True))
@@ -853,7 +1120,12 @@ class SubscriptionManager:
 
             try:
                 with temporary_proxy_env(config.proxy, "", platform=platform):
-                    profile = discover_cookie_account_profile(platform, raw_cookie)
+                    profile = _merge_cookie_account_profile(
+                        discover_cookie_account_profile(platform, raw_cookie),
+                        _account_profile_fallback(cookie_pairs.get(platform)),
+                    )
+                    account_summary = discover_cookie_account_home_summary(platform, raw_cookie, profile)
+                    profile = _merge_cookie_account_summary(profile, account_summary)
                     uid = str(profile.get("uid") or "").strip()
                     sources: list[dict[str, Any]] = []
 
@@ -885,10 +1157,26 @@ class SubscriptionManager:
                     for item in followed_collections.get("items") or []:
                         if item.get("url"):
                             sources.append({**item, "mode": "collection_models", "source_kind": "followed_collection"})
+                    followed_author_count = _first_non_negative_int(
+                        profile.get("follow_count") if isinstance(profile, dict) else None,
+                        account_summary.get("follow_count") if isinstance(account_summary, dict) else None,
+                        (followed_authors_page or {}).get("total"),
+                        (followed_authors or {}).get("total"),
+                        (followed_authors_page or {}).get("count"),
+                        (followed_authors or {}).get("count"),
+                        len(followed_author_items),
+                    ) or 0
+                    followed_collection_count = _first_non_negative_int(
+                        profile.get("liked_collection_count") if isinstance(profile, dict) else None,
+                        account_summary.get("liked_collection_count") if isinstance(account_summary, dict) else None,
+                        (followed_collections or {}).get("count"),
+                        len((followed_collections or {}).get("items") or []),
+                    ) or 0
 
                 platform_created = 0
                 platform_updated = 0
                 seen_urls: set[str] = set()
+                imported_sources: list[dict[str, Any]] = []
                 for source in sources:
                     raw_url = normalize_source_url(str(source.get("url") or ""))
                     mode = str(source.get("mode") or _detect_subscription_mode(raw_url)).strip()
@@ -914,8 +1202,24 @@ class SubscriptionManager:
                     )
                     name = _subscription_import_name(source, mode, platform)
                     if existing:
+                        imported_sources.append(
+                            {
+                                "subscription_id": existing.id,
+                                "url": clean_url,
+                                "mode": mode,
+                                "name": name or existing.name,
+                                "source_kind": str(source.get("source_kind") or ""),
+                                "created": False,
+                            }
+                        )
                         changed_existing = False
-                        if name and not str(existing.name or "").strip():
+                        if name and (
+                            not str(existing.name or "").strip()
+                            or (
+                                str(source.get("source_kind") or "") == "default_favorites"
+                                and existing.name != name
+                            )
+                        ):
                             existing.name = name
                             changed_existing = True
                         if not existing.enabled and default_enabled:
@@ -942,6 +1246,16 @@ class SubscriptionManager:
                     changed = True
                     platform_created += 1
                     created_ids.append(record.id)
+                    imported_sources.append(
+                        {
+                            "subscription_id": record.id,
+                            "url": clean_url,
+                            "mode": mode,
+                            "name": record.name,
+                            "source_kind": str(source.get("source_kind") or ""),
+                            "created": True,
+                        }
+                    )
                     self.task_store.patch_subscription_state(
                         record.id,
                         status="pending" if default_enabled else "idle",
@@ -955,6 +1269,60 @@ class SubscriptionManager:
                         ),
                     )
 
+                cookie_pair = cookie_pairs.get(platform)
+                if cookie_pair is not None:
+                    profile_updates = {
+                        "display_name": str(profile.get("name") or "").strip(),
+                        "account_id": uid,
+                        "handle": str(profile.get("handle") or "").strip(),
+                        "avatar_url": str(profile.get("avatar_url") or "").strip(),
+                    }
+                    for key, value in profile_updates.items():
+                        if value and str(getattr(cookie_pair, key, "") or "").strip() != value:
+                            setattr(cookie_pair, key, value)
+                            changed = True
+                    if (
+                        profile_updates["display_name"]
+                        and profile_updates["account_id"]
+                        and profile_updates["handle"]
+                        and profile_updates["avatar_url"]
+                    ):
+                        success_message = _account_sync_success_message(platform)
+                        if str(getattr(cookie_pair, "message", "") or "").strip() != success_message:
+                            cookie_pair.message = success_message
+                            changed = True
+                    if changed:
+                        cookie_pair.updated_at = now_iso
+
+                _patch_cookie_source_inventory_state(
+                    platform,
+                    account={
+                        "uid": uid,
+                        "handle": str(profile.get("handle") or ""),
+                        "name": str(profile.get("name") or ""),
+                        "avatar_url": str(profile.get("avatar_url") or profile.get("avatar") or ""),
+                    },
+                    default_favorites=default_favorites if isinstance(default_favorites, dict) else {},
+                    followed_authors=followed_author_items,
+                    followed_author_sources={
+                        "page_count": int((followed_authors_page or {}).get("count") or 0),
+                        "page_total": (followed_authors_page or {}).get("total"),
+                        "api_count": int((followed_authors or {}).get("count") or 0),
+                        "api_total": (followed_authors or {}).get("total"),
+                    },
+                    followed_collections=followed_collections.get("items") if isinstance(followed_collections, dict) else [],
+                    followed_collection_count=followed_collection_count,
+                    followed_author_count=followed_author_count,
+                    imported_sources=imported_sources,
+                    source_urls=[
+                        item["url"]
+                        for item in imported_sources
+                        if isinstance(item, dict) and str(item.get("url") or "").strip()
+                    ],
+                    last_sync_at=now_iso,
+                    last_reason=reason,
+                    last_status="success",
+                )
                 _patch_cookie_source_sync_state(
                     platform,
                     requested_at="",
@@ -965,10 +1333,13 @@ class SubscriptionManager:
                     last_created_count=platform_created,
                     last_updated_count=platform_updated,
                     default_favorites_found=bool(default_favorites.get("url")),
-                    followed_author_count=len(followed_author_items),
-                    followed_collection_count=int((followed_collections or {}).get("count") or 0),
+                    default_favorites_count=1 if default_favorites.get("url") else 0,
+                    followed_author_count=followed_author_count,
+                    followed_collection_count=followed_collection_count,
                     account_uid=uid,
                     account_handle=str(profile.get("handle") or ""),
+                    account_name=str(profile.get("name") or ""),
+                    account_avatar_url=str(profile.get("avatar_url") or ""),
                 )
                 platform_results.append(
                     {
@@ -977,12 +1348,20 @@ class SubscriptionManager:
                         "created_count": platform_created,
                         "updated_count": platform_updated,
                         "default_favorites_found": bool(default_favorites.get("url")),
-                        "followed_author_count": len(followed_author_items),
-                        "followed_collection_count": int((followed_collections or {}).get("count") or 0),
+                        "default_favorites_count": 1 if default_favorites.get("url") else 0,
+                        "followed_author_count": followed_author_count,
+                        "followed_collection_count": followed_collection_count,
                     }
                 )
             except Exception as exc:
                 message = str(exc)[:240]
+                _patch_cookie_source_inventory_state(
+                    platform,
+                    last_sync_at=now_iso,
+                    last_reason=reason,
+                    last_status="error",
+                    last_message=message,
+                )
                 _patch_cookie_source_sync_state(
                     platform,
                     requested_at="",

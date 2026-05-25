@@ -13,9 +13,17 @@ from app.api import config as config_api
 from app.core.security import hash_api_token
 from app.core.store import JsonStore
 from app.schemas.models import ApiTokenRecord, AppConfig, MobileImportConfig
+from tests.test_helpers import InMemoryDatabaseState
 
 
 class MobileImportTokenTest(unittest.TestCase):
+    def setUp(self):
+        self.db_state = InMemoryDatabaseState()
+        self.db_state.__enter__()
+
+    def tearDown(self):
+        self.db_state.__exit__(None, None, None)
+
     def _request(self, token: str):
         return SimpleNamespace(
             headers={"Authorization": f"Bearer {token}"} if token else {},

@@ -11,7 +11,13 @@ import requests
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
 
-from app.core.settings import ARCHIVE_DIR, CONFIG_PATH, STATE_DIR, ensure_app_dirs
+from app.core.database_json_state import (
+    database_json_state_signature,
+    load_database_json_state,
+    load_database_json_state_version,
+    save_database_json_state,
+)
+from app.core.settings import ARCHIVE_DIR, STATE_DIR, ensure_app_dirs
 from app.core.store import JsonStore
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
 from app.services.batch_discovery import (
@@ -32,14 +38,14 @@ from app.services.catalog import (
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.legacy_archiver import extract_next_data, fetch_html_with_requests, parse_cookies
 from app.services.proxy_policy import proxy_mapping, temporary_proxy_env
-from app.services import task_state as task_state_module
 from app.services.task_state import TaskStateStore
 
 
 SOURCE_LIBRARY_METADATA_PATH = STATE_DIR / "source_library_metadata.json"
+SOURCE_LIBRARY_METADATA_STATE_KEY = "source_library_metadata"
 SOURCE_LIBRARY_SNAPSHOT_DIR = STATE_DIR / "source_library_snapshots"
 SOURCE_LIBRARY_PAYLOAD_CACHE_PATH = STATE_DIR / "source_library_payload_cache.json"
-SOURCE_LIBRARY_ARCHIVE_MARKER_PATH = STATE_DIR / "archive_snapshot.marker"
+SOURCE_LIBRARY_ARCHIVE_MARKER_KEY = "archive_snapshot_marker"
 SOURCE_LIBRARY_METADATA_TTL_SECONDS = 12 * 60 * 60
 SOURCE_LIBRARY_PAYLOAD_CACHE_VERSION = 1
 SOURCE_LIBRARY_PAYLOAD_REFRESH_MIN_SECONDS = 45
@@ -196,14 +202,7 @@ def _extract_collection_id_from_url(url: str) -> str:
 
 
 def _read_metadata_cache_unlocked() -> dict[str, Any]:
-    if not SOURCE_LIBRARY_METADATA_PATH.exists():
-        return {"items": {}, "updated_at": ""}
-    try:
-        payload = json.loads(SOURCE_LIBRARY_METADATA_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"items": {}, "updated_at": ""}
-    if not isinstance(payload, dict):
-        return {"items": {}, "updated_at": ""}
+    payload = load_database_json_state(SOURCE_LIBRARY_METADATA_STATE_KEY, {"items": {}, "updated_at": ""})
     items = payload.get("items") if isinstance(payload.get("items"), dict) else {}
     return {
         "items": {str(key): value for key, value in items.items() if isinstance(value, dict)},
@@ -217,11 +216,7 @@ def _write_metadata_cache_unlocked(payload: dict[str, Any]) -> dict[str, Any]:
         "items": payload.get("items") if isinstance(payload.get("items"), dict) else {},
         "updated_at": str(payload.get("updated_at") or _now_iso()),
     }
-    SOURCE_LIBRARY_METADATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = SOURCE_LIBRARY_METADATA_PATH.with_suffix(".tmp")
-    temp_path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp_path.replace(SOURCE_LIBRARY_METADATA_PATH)
-    return normalized
+    return save_database_json_state(SOURCE_LIBRARY_METADATA_STATE_KEY, normalized)
 
 
 def load_source_metadata_cache() -> dict[str, Any]:
@@ -278,14 +273,13 @@ def _directory_signature(path: Path) -> tuple[int, int, int]:
 
 
 def _source_library_payload_signature(store: Optional[JsonStore] = None) -> tuple[Any, ...]:
-    config_path = Path(getattr(store, "path", None) or CONFIG_PATH)
     return (
         SOURCE_LIBRARY_PAYLOAD_CACHE_VERSION,
-        _file_signature(config_path),
-        _file_signature(task_state_module.SUBSCRIPTIONS_STATE_PATH),
-        _file_signature(task_state_module.MODEL_FLAGS_PATH),
-        _file_signature(SOURCE_LIBRARY_ARCHIVE_MARKER_PATH),
-        _file_signature(SOURCE_LIBRARY_METADATA_PATH),
+        database_json_state_signature("app_config", {}),
+        database_json_state_signature("subscriptions_state", {"items": []}),
+        database_json_state_signature("model_flags", {"favorites": [], "printed": [], "deleted": []}),
+        load_database_json_state_version(SOURCE_LIBRARY_ARCHIVE_MARKER_KEY),
+        database_json_state_signature(SOURCE_LIBRARY_METADATA_STATE_KEY, {"items": {}, "updated_at": ""}),
         _directory_signature(SOURCE_LIBRARY_SNAPSHOT_DIR),
     )
 
@@ -450,7 +444,7 @@ def _source_library_payload_from_cache_or_build(
 def _group_cache_signature() -> tuple[Any, ...]:
     return (
         get_decorated_models_signature(),
-        _file_signature(SOURCE_LIBRARY_METADATA_PATH),
+        database_json_state_signature(SOURCE_LIBRARY_METADATA_STATE_KEY, {"items": {}, "updated_at": ""}),
         _directory_signature(SOURCE_LIBRARY_SNAPSHOT_DIR),
     )
 

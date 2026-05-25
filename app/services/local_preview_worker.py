@@ -4,9 +4,11 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
+from app.core.database_json_state import load_database_json_state, save_database_json_state
 from app.core.settings import (
     ARCHIVE_DIR,
     LOCAL_PREVIEW_MAX_BYTES,
@@ -30,24 +32,30 @@ SUPPORTED_PREVIEW_SUFFIXES = {".3mf", ".obj", ".stl"}
 RENDERER_SCRIPT = ROOT_DIR / "app" / "services" / "local_preview_renderer.mjs"
 DEFAULT_RENDER_SIZE = 720
 PREVIEW_QUEUE_MARKER_PATH = STATE_DIR / "local_preview_queue.marker"
+PREVIEW_QUEUE_MARKER_KEY = "local_preview_queue_marker"
 
 
 def mark_local_preview_queue_updated(reason: str = "") -> None:
-    try:
-        PREVIEW_QUEUE_MARKER_PATH.parent.mkdir(parents=True, exist_ok=True)
-        PREVIEW_QUEUE_MARKER_PATH.write_text(
-            json.dumps({"updated_at": china_now_iso(), "reason": str(reason or "")}, ensure_ascii=False),
-            encoding="utf-8",
-        )
-    except OSError:
-        return
+    save_database_json_state(
+        PREVIEW_QUEUE_MARKER_KEY,
+        {
+            "updated_at": china_now_iso(),
+            "reason": str(reason or ""),
+            "version": time.time_ns(),
+        },
+    )
 
 
 def local_preview_queue_marker_mtime() -> float:
-    try:
-        return PREVIEW_QUEUE_MARKER_PATH.stat().st_mtime
-    except OSError:
-        return 0.0
+    payload = load_database_json_state(PREVIEW_QUEUE_MARKER_KEY, {})
+    if isinstance(payload, dict):
+        try:
+            version = float(payload.get("version") or 0)
+        except (TypeError, ValueError):
+            version = 0.0
+        if version > 0:
+            return version
+    return 0.0
 
 
 def _read_meta(meta_path: Path) -> dict[str, Any] | None:

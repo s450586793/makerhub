@@ -409,14 +409,14 @@ class SourceLibraryTest(unittest.TestCase):
 
     def test_source_metadata_keeps_existing_avatar_when_refresh_payload_lacks_one(self):
         _SOURCE_LIBRARY_GROUP_CACHE.update({"signature": None, "groups": {}, "all_models": (), "sections": ()})
-        with TemporaryDirectory() as temp_dir:
-            metadata_path = Path(temp_dir) / "source_library_metadata.json"
-            with patch("app.services.source_library.SOURCE_LIBRARY_METADATA_PATH", metadata_path):
-                from app.services import source_library
+        state = {}
+        with patch("app.services.source_library.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.source_library.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
+            from app.services import source_library
 
-                source_library._save_source_metadata_item("favorite-global-test", {"avatar_url": "https://example.test/account.jpg"})
-                source_library._save_source_metadata_item("favorite-global-test", {"avatar_url": "", "cover_url": "https://example.test/model.jpg"})
-                item = source_library.load_source_metadata_cache()["items"]["favorite-global-test"]
+            source_library._save_source_metadata_item("favorite-global-test", {"avatar_url": "https://example.test/account.jpg"})
+            source_library._save_source_metadata_item("favorite-global-test", {"avatar_url": "", "cover_url": "https://example.test/model.jpg"})
+            item = source_library.load_source_metadata_cache()["items"]["favorite-global-test"]
 
         self.assertEqual(item["avatar_url"], "https://example.test/account.jpg")
         self.assertEqual(item["cover_url"], "https://example.test/model.jpg")

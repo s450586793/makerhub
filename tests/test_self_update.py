@@ -1,11 +1,33 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app.services import self_update
 
 
 class SelfUpdateSplitDeploymentTest(unittest.TestCase):
+    def setUp(self):
+        self.state = {}
+        self.db_patches = [
+            patch.object(
+                self_update,
+                "load_database_json_state",
+                side_effect=lambda key, default: dict(self.state.get(key) or default),
+            ),
+            patch.object(
+                self_update,
+                "save_database_json_state",
+                side_effect=lambda key, value: self.state.__setitem__(key, value) or value,
+            ),
+        ]
+        for item in self.db_patches:
+            item.start()
+
+    def tearDown(self):
+        for item in reversed(self.db_patches):
+            item.stop()
+
     def test_web_update_target_uses_current_image_when_web_image_is_not_set(self):
         original_name = self_update.os.environ.get(self_update.WEB_CONTAINER_NAME_ENV)
         original_image = self_update.os.environ.get(self_update.WEB_IMAGE_REF_ENV)

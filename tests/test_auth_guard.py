@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from app.core.security import hash_api_token
 from app.core.store import JsonStore
 from app.schemas.models import ApiTokenRecord, AppConfig
+from app.core.api_permissions import api_token_permission_for_request, is_public_api_route, is_session_only_api_route
 from app.services.auth import AuthManager
 from app import main as main_app
 from app.api import auth as auth_api
@@ -28,6 +29,19 @@ def _token_record(raw_token: str, permissions: list[str]) -> ApiTokenRecord:
 
 
 class AuthGuardTokenPermissionTest(unittest.TestCase):
+    def setUp(self):
+        self.sessions_state = {}
+        self.auth_patches = [
+            patch("app.services.auth.load_database_json_state", side_effect=lambda _key, default: dict(self.sessions_state or default)),
+            patch("app.services.auth.save_database_json_state", side_effect=lambda _key, value: self.sessions_state.clear() or self.sessions_state.update(value) or value),
+        ]
+        for item in self.auth_patches:
+            item.start()
+
+    def tearDown(self):
+        for item in reversed(self.auth_patches):
+            item.stop()
+
     def _request(self, raw_token: str):
         return SimpleNamespace(
             cookies={},
@@ -36,10 +50,30 @@ class AuthGuardTokenPermissionTest(unittest.TestCase):
         )
 
     def test_route_permission_mapping_keeps_sensitive_config_session_only(self):
-        self.assertEqual(main_app._api_token_permission_for_request("POST", "/api/archive"), "archive_write")
-        self.assertEqual(main_app._api_token_permission_for_request("GET", "/api/models"), "models_read")
-        self.assertEqual(main_app._api_token_permission_for_request("GET", "/api/config"), "")
-        self.assertEqual(main_app._api_token_permission_for_request("POST", "/api/config/cookies"), "")
+        self.assertEqual(api_token_permission_for_request("POST", "/api/archive"), "archive_write")
+        self.assertEqual(api_token_permission_for_request("GET", "/api/models"), "models_read")
+        self.assertEqual(api_token_permission_for_request("GET", "/api/config"), "")
+        self.assertEqual(api_token_permission_for_request("POST", "/api/config/cookies"), "")
+        self.assertTrue(is_session_only_api_route("GET", "/api/config"))
+        self.assertTrue(is_session_only_api_route("POST", "/api/config/cookies"))
+
+    def test_every_api_route_has_explicit_auth_policy(self):
+        unresolved = []
+        for route in main_app.app.routes:
+            path = getattr(route, "path", "")
+            methods = getattr(route, "methods", set()) or set()
+            if not str(path).startswith("/api/"):
+                continue
+            for method in sorted(methods - {"HEAD", "OPTIONS"}):
+                if (
+                    is_public_api_route(path)
+                    or api_token_permission_for_request(method, path)
+                    or is_session_only_api_route(method, path)
+                ):
+                    continue
+                unresolved.append(f"{method} {path}")
+
+        self.assertEqual(unresolved, [])
 
     def test_archive_token_cannot_be_used_as_global_api_token(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -89,6 +123,19 @@ class AuthGuardTokenPermissionTest(unittest.TestCase):
 
 
 class AuthLoginHardeningTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.sessions_state = {}
+        self.auth_patches = [
+            patch("app.services.auth.load_database_json_state", side_effect=lambda _key, default: dict(self.sessions_state or default)),
+            patch("app.services.auth.save_database_json_state", side_effect=lambda _key, value: self.sessions_state.clear() or self.sessions_state.update(value) or value),
+        ]
+        for item in self.auth_patches:
+            item.start()
+
+    def tearDown(self):
+        for item in reversed(self.auth_patches):
+            item.stop()
+
     def _login_request(self, *, scheme: str = "http", headers: Optional[dict] = None, host: str = "127.0.0.1"):
         return SimpleNamespace(
             headers=headers or {},

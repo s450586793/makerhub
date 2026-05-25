@@ -355,8 +355,49 @@ class BatchDiscoveryTest(unittest.TestCase):
 
         self.assertEqual(result["path"], "/user/2024907479/follows")
         self.assertEqual(result["count"], 3)
+        self.assertEqual(result["total"], 3)
         self.assertEqual([item["handle"] for item in result["items"]], ["AcePrint", "BeePrint", "CatPrint"])
         self.assertEqual([call["params"]["offset"] for call in calls], [0, 2])
+
+    def test_discover_cookie_followed_authors_continues_when_api_caps_page_size(self):
+        calls = []
+
+        def fake_api_get_json(_session, **kwargs):
+            calls.append(kwargs)
+            if kwargs["path"] != "/user/2024907479/follows":
+                return None
+            offset = int((kwargs.get("params") or {}).get("offset") or 0)
+            if offset == 0:
+                return {
+                    "hits": [
+                        {"uid": index, "name": f"Author {index}", "publicInstanceUploadCount": index}
+                        for index in range(1, 21)
+                    ],
+                    "total": 27,
+                }
+            if offset == 20:
+                return {
+                    "hits": [
+                        {"uid": index, "name": f"Author {index}", "publicInstanceUploadCount": index}
+                        for index in range(21, 28)
+                    ],
+                    "total": 27,
+                }
+            return {"hits": [], "total": 27}
+
+        with patch.object(batch_discovery, "_api_get_json", side_effect=fake_api_get_json), \
+                patch.object(batch_discovery, "_append_discovery_debug"):
+            result = batch_discovery.discover_cookie_followed_authors(
+                "cn",
+                "token=ok",
+                uid="2024907479",
+                max_pages=4,
+                limit=100,
+            )
+
+        self.assertEqual(result["count"], 27)
+        self.assertEqual(result["total"], 27)
+        self.assertEqual([call["params"]["offset"] for call in calls], [0, 20])
 
     def test_resolve_author_uid_accepts_user_uid_handle(self):
         with patch.object(batch_discovery, "_api_get_json") as api_get_json, \
@@ -377,9 +418,56 @@ class BatchDiscoveryTest(unittest.TestCase):
             {"handle": "s450586793", "name": "艾斯", "avatar_url": "https://example.test/avatar.jpg"},
         )
 
-        self.assertEqual(source["title"], "艾斯 所有模型收藏夹")
+        self.assertEqual(source["title"], "艾斯的收藏夹")
         self.assertEqual(source["avatar_url"], "https://example.test/avatar.jpg")
         self.assertEqual(source["url"], "https://makerworld.com/zh/@s450586793/collections/models")
+
+    def test_extract_user_info_from_next_data_reads_profile_and_counts(self):
+        summary = batch_discovery._extract_user_info_from_next_data(
+            {
+                "props": {
+                    "pageProps": {
+                        "userInfo": {
+                            "uid": 2024907479,
+                            "name": "艾斯",
+                            "handle": "s450586793",
+                            "avatar": "https://example.test/avatar.jpg",
+                            "followCount": 27,
+                            "likeCount": 1,
+                            "collectionCount": 6,
+                            "favoritesCount": {"publicCount": 2, "privateCount": 3, "likedCount": 1},
+                        }
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(summary["uid"], "2024907479")
+        self.assertEqual(summary["name"], "艾斯")
+        self.assertEqual(summary["handle"], "s450586793")
+        self.assertEqual(summary["avatar_url"], "https://example.test/avatar.jpg")
+        self.assertEqual(summary["follow_count"], 27)
+        self.assertEqual(summary["liked_collection_count"], 1)
+
+    def test_extract_account_profile_reads_profile_counts(self):
+        profile = batch_discovery._extract_account_profile(
+            {
+                "uid": 2024907479,
+                "name": "艾斯",
+                "handle": "s450586793",
+                "avatar": "https://example.test/avatar.jpg",
+                "followCount": 27,
+                "likeCount": 1,
+                "collectionCount": 6,
+            }
+        )
+
+        self.assertEqual(profile["uid"], "2024907479")
+        self.assertEqual(profile["name"], "艾斯")
+        self.assertEqual(profile["handle"], "s450586793")
+        self.assertEqual(profile["avatar_url"], "https://example.test/avatar.jpg")
+        self.assertEqual(profile["follow_count"], 27)
+        self.assertEqual(profile["liked_collection_count"], 1)
 
     def test_default_favorites_subscription_source_falls_back_to_uid_handle(self):
         source = batch_discovery.default_favorites_subscription_source(
@@ -418,6 +506,21 @@ class BatchDiscoveryTest(unittest.TestCase):
         self.assertEqual(profile["uid"], "2073587493")
         self.assertEqual(profile["handle"], "s450586793")
 
+    def test_api_headers_include_bearer_token_from_cookie(self):
+        session = requests.Session()
+        session.headers.update({"User-Agent": "MakerHub-Test"})
+
+        headers = batch_discovery._build_api_headers(
+            session,
+            "token=access-token; refreshToken=refresh-token",
+            "https://makerworld.com.cn/zh",
+        )
+
+        self.assertEqual(headers["Authorization"], "Bearer access-token")
+        self.assertEqual(headers["token"], "access-token")
+        self.assertEqual(headers["X-Token"], "access-token")
+        self.assertEqual(headers["X-Access-Token"], "access-token")
+
     def test_extract_model_source_items_prefers_hit_design_id_order(self):
         payload = {
             "hits": [
@@ -451,6 +554,26 @@ class BatchDiscoveryTest(unittest.TestCase):
         self.assertEqual(len(collections), 1)
         self.assertEqual(collections[0]["title"], "关注收藏夹")
         self.assertTrue(collections[0]["url"].startswith("https://makerworld.com.cn/zh/collections/518732"))
+
+    def test_followed_collection_discovery_stops_after_probe_budget(self):
+        calls = []
+
+        def fake_api_get_json(_session, **kwargs):
+            calls.append(kwargs)
+            return None
+
+        with patch.object(batch_discovery, "_api_get_json", side_effect=fake_api_get_json), \
+                patch.object(batch_discovery, "_append_discovery_debug") as debug_log:
+            result = batch_discovery.discover_cookie_followed_collections(
+                "cn",
+                "token=ok",
+                uid="2024907479",
+                max_probe_count=3,
+            )
+
+        self.assertEqual(result["items"], [])
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(debug_log.call_args.args[0], "cookie_followed_collections_probe_budget_exhausted")
 
     def test_collection_design_params_include_handle(self):
         params = batch_discovery._collection_designs_param_candidates(

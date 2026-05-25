@@ -18,6 +18,17 @@ def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
 class CookiePair(BaseModel):
     platform: str
     cookie: str = ""
+    username: str = ""
+    display_name: str = ""
+    account_id: str = ""
+    handle: str = ""
+    avatar_url: str = ""
+    status: str = ""
+    message: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+    last_login_at: str = ""
+    last_tested_at: str = ""
 
 
 class ProxyConfig(BaseModel):
@@ -31,6 +42,20 @@ class CookieTestRequest(BaseModel):
     platform: Literal["cn", "global"] = "cn"
     cookie: str = ""
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
+
+
+class OnlineAccountLoginRequest(BaseModel):
+    platform: Literal["cn", "global"] = "cn"
+    username: str = ""
+    password: str = ""
+    verification_code: str = ""
+
+
+class OnlineAccountSmsCodeRequest(BaseModel):
+    platform: Literal["cn", "global"] = "cn"
+    phone: str = ""
+    email: str = ""
+    account: str = ""
 
 
 class NotificationConfig(BaseModel):

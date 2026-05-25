@@ -16,7 +16,7 @@ from typing import Any, Optional
 from app.core.settings import ARCHIVE_DIR, LOGS_DIR, STATE_DIR
 from app.core.store import JsonStore
 from app.core.timezone import from_timestamp as china_from_timestamp, now_iso as china_now_iso, parse_datetime
-from app.services.business_logs import append_business_log
+from app.services.business_logs import append_business_log, append_structured_log
 from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot, upsert_archive_snapshot_model
 from app.services.legacy_archiver import sanitize_filename
 from app.services.local_import_upload import (
@@ -75,12 +75,7 @@ def _confirm_model_visible_in_snapshot(model_dir: str) -> bool:
 
 
 def _append_organizer_log(event: str, **payload) -> None:
-    try:
-        ORGANIZER_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with ORGANIZER_LOG_PATH.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"time": _now_iso(), "event": event, **payload}, ensure_ascii=False) + "\n")
-    except OSError:
-        return
+    append_structured_log(ORGANIZER_LOG_PATH.name, event, category="organizer", **payload)
     if event in {
         "worker_started",
         "worker_timeout",

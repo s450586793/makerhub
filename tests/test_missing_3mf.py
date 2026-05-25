@@ -1,7 +1,9 @@
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import app.services.archive_worker as archive_worker_module
 import app.services.legacy_archiver as legacy_archiver_module
@@ -9,6 +11,7 @@ import app.services.task_state as task_state_module
 from app.services.legacy_archiver import (
     _build_instance_api_candidates,
     _missing_3mf_failure_for_skipped_fetch,
+    download_file,
     fetch_instance_3mf,
 )
 from app.services.archive_worker import ArchiveTaskManager
@@ -58,7 +61,8 @@ class Missing3mfTest(unittest.TestCase):
             ]
         }
 
-        normalized = _normalize_missing_3mf(payload)
+        with patch.object(task_state_module, "load_database_json_state", return_value={}):
+            normalized = _normalize_missing_3mf(payload)
 
         self.assertEqual(len(normalized["items"]), 1)
         self.assertEqual(normalized["items"][0]["model_id"], "2")
@@ -105,7 +109,8 @@ class Missing3mfTest(unittest.TestCase):
             ]
         }
 
-        normalized = _normalize_missing_3mf(payload)
+        with patch.object(task_state_module, "load_database_json_state", return_value={}):
+            normalized = _normalize_missing_3mf(payload)
 
         self.assertEqual(len(normalized["items"]), 1)
         self.assertEqual(normalized["items"][0]["status"], "verification_required")
@@ -124,44 +129,35 @@ class Missing3mfTest(unittest.TestCase):
             ]
         }
 
-        normalized = _normalize_missing_3mf(payload)
+        with patch.object(task_state_module, "load_database_json_state", return_value={}):
+            normalized = _normalize_missing_3mf(payload)
 
         self.assertEqual(len(normalized["items"]), 1)
         self.assertEqual(normalized["items"][0]["status"], "queued")
 
     def test_download_limited_message_uses_current_limit_guard_date(self):
-        original_guard_path = task_state_module.THREE_MF_LIMIT_GUARD_PATH
-        try:
-            with tempfile.TemporaryDirectory() as temp_dir:
-                task_state_module.THREE_MF_LIMIT_GUARD_PATH = Path(temp_dir) / "three_mf_limit_guard.json"
-                task_state_module.THREE_MF_LIMIT_GUARD_PATH.write_text(
-                    """
-{
-  "active": true,
-  "limited_until": "2099-01-02T00:00:00+08:00",
-  "last_hit_at": "2099-01-01T01:22:00+08:00",
-  "message": "国区返回了每日下载上限，今日暂停自动重试，自动重试暂停至 2026-04-26 00:00。",
-  "reason": "download_limited",
-  "model_url": "https://makerworld.com.cn/zh/models/2193050"
-}
-""".strip(),
-                    encoding="utf-8",
-                )
-                payload = {
-                    "items": [
-                        {
-                            "model_id": "2193050",
-                            "title": "0.2mm 层高, 2 层墙, 15% 填充",
-                            "status": "download_limited",
-                            "model_url": "https://makerworld.com.cn/zh/models/2193050",
-                            "message": "国区返回了每日下载上限，今日暂停自动重试，自动重试暂停至 2026-04-26 00:00。",
-                        }
-                    ]
+        guard_state = {
+            "active": True,
+            "limited_until": "2099-01-02T00:00:00+08:00",
+            "last_hit_at": "2099-01-01T01:22:00+08:00",
+            "message": "国区返回了每日下载上限，今日暂停自动重试，自动重试暂停至 2026-04-26 00:00。",
+            "reason": "download_limited",
+            "model_url": "https://makerworld.com.cn/zh/models/2193050",
+        }
+        payload = {
+            "items": [
+                {
+                    "model_id": "2193050",
+                    "title": "0.2mm 层高, 2 层墙, 15% 填充",
+                    "status": "download_limited",
+                    "model_url": "https://makerworld.com.cn/zh/models/2193050",
+                    "message": "国区返回了每日下载上限，今日暂停自动重试，自动重试暂停至 2026-04-26 00:00。",
                 }
+            ]
+        }
 
-                normalized = _normalize_missing_3mf(payload)
-        finally:
-            task_state_module.THREE_MF_LIMIT_GUARD_PATH = original_guard_path
+        with patch.object(task_state_module, "load_database_json_state", return_value=guard_state):
+            normalized = _normalize_missing_3mf(payload)
 
         self.assertEqual(len(normalized["items"]), 1)
         self.assertEqual(normalized["items"][0]["status"], "download_limited")
@@ -171,24 +167,27 @@ class Missing3mfTest(unittest.TestCase):
         )
 
     def test_manual_missing_retry_clears_stale_limit_guard_and_queues(self):
-        original_guard_path = archive_worker_module.THREE_MF_LIMIT_GUARD_PATH
         original_select_cookie = archive_worker_module._select_cookie
         try:
-            with tempfile.TemporaryDirectory() as temp_dir:
-                archive_worker_module.THREE_MF_LIMIT_GUARD_PATH = Path(temp_dir) / "three_mf_limit_guard.json"
-                archive_worker_module.THREE_MF_LIMIT_GUARD_PATH.write_text(
-                    """
-{
-  "active": true,
-  "limited_until": "2099-01-02T00:00:00+08:00",
-  "last_hit_at": "2099-01-01T01:22:00+08:00",
-  "message": "国区返回了每日下载上限，今日暂停自动重试。",
-  "reason": "download_limited",
-  "model_url": "https://makerworld.com.cn/zh/models/2193050"
-}
-""".strip(),
-                    encoding="utf-8",
-                )
+            guard_state = {
+                "active": True,
+                "limited_until": "2099-01-02T00:00:00+08:00",
+                "last_hit_at": "2099-01-01T01:22:00+08:00",
+                "message": "国区返回了每日下载上限，今日暂停自动重试。",
+                "reason": "download_limited",
+                "model_url": "https://makerworld.com.cn/zh/models/2193050",
+            }
+
+            def load_guard(_key, default):
+                return dict(guard_state or default)
+
+            def save_guard(_key, payload):
+                guard_state.clear()
+                guard_state.update(payload)
+                return payload
+
+            with patch.object(archive_worker_module, "load_database_json_state", side_effect=load_guard), \
+                    patch.object(archive_worker_module, "save_database_json_state", side_effect=save_guard):
                 manager = ArchiveTaskManager()
                 manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[]))
                 updates = []
@@ -209,7 +208,6 @@ class Missing3mfTest(unittest.TestCase):
                 )
                 guard_state = archive_worker_module._read_three_mf_limit_guard()
         finally:
-            archive_worker_module.THREE_MF_LIMIT_GUARD_PATH = original_guard_path
             archive_worker_module._select_cookie = original_select_cookie
 
         self.assertTrue(result["accepted"])
@@ -316,6 +314,44 @@ class Missing3mfTest(unittest.TestCase):
         self.assertEqual(failure["state"], "available")
         self.assertEqual(used_api_url, calls[0][0])
         self.assertIn("Cookie", calls[0][1]["headers"])
+
+    def test_fake_three_mf_fetch_skips_remote_calls(self):
+        class FailingSession:
+            headers = {"User-Agent": "test-agent"}
+
+            def get(self, *_args, **_kwargs):
+                raise AssertionError("fake 3MF mode must not call the remote API")
+
+        with patch.dict("os.environ", {"MAKERHUB_FAKE_THREE_MF_DOWNLOADS": "true"}):
+            name, url, used_api_url, failure = fetch_instance_3mf(
+                FailingSession(),
+                2864062,
+                "token=abc",
+                api_url="https://makerworld.com.cn/api/v1/design-service/instance/2864062/f3mf?type=download&fileType=",
+                origin="https://makerworld.com.cn",
+            )
+
+        self.assertEqual(name, "2864062.3mf")
+        self.assertEqual(url, "makerhub://fake-3mf/2864062.3mf")
+        self.assertIn("/instance/2864062/f3mf", used_api_url)
+        self.assertEqual(failure["state"], "available")
+
+    def test_fake_three_mf_download_writes_placeholder_zip(self):
+        class FailingSession:
+            def get(self, *_args, **_kwargs):
+                raise AssertionError("fake 3MF mode must not download the binary")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dest = Path(temp_dir) / "fake.3mf"
+            with patch.dict("os.environ", {"MAKERHUB_FAKE_THREE_MF_DOWNLOADS": "true"}):
+                download_file(FailingSession(), "https://example.test/real.3mf", dest)
+
+            self.assertTrue(dest.exists())
+            with zipfile.ZipFile(dest) as archive:
+                self.assertIn("3D/3dmodel.model", archive.namelist())
+                metadata = archive.read("Metadata/makerhub_fake_download.json").decode("utf-8")
+            self.assertIn("MakerHub", metadata)
+            self.assertIn("real.3mf", metadata)
 
 
 if __name__ == "__main__":

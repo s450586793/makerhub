@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.services import catalog, local_import_upload, local_organizer
+from tests.test_helpers import InMemoryDatabaseState
 
 
 class FakeTaskStore:
@@ -109,6 +110,13 @@ def _stage_test_file(root: Path, relative_path: str, data: bytes) -> tuple[Path,
 
 
 class LocalImportUploadTest(unittest.TestCase):
+    def setUp(self):
+        self.db_state = InMemoryDatabaseState()
+        self.db_state.__enter__()
+
+    def tearDown(self):
+        self.db_state.__exit__(None, None, None)
+
     def test_organizer_run_once_processes_queued_package_import(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()

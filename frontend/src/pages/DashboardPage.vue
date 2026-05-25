@@ -81,6 +81,17 @@
               <span class="dashboard-hero__status-text">{{ item.status }}</span>
             </div>
             <span v-if="item.detail" class="dashboard-hero__status-detail">{{ item.detail }}</span>
+            <div v-if="item.checks?.length" class="dashboard-hero__check-list">
+              <span
+                v-for="check in item.checks"
+                :key="`${item.key || item.title}-${check.source || check.label}`"
+                :class="['dashboard-hero__check', check.tone && `is-${check.tone}`]"
+                :title="check.detail || undefined"
+              >
+                <span>{{ check.label }}</span>
+                <strong>{{ check.status }}</strong>
+              </span>
+            </div>
             <span v-if="item.url && item.action_label" class="dashboard-hero__status-action">{{ item.action_label }}</span>
           </component>
         </div>

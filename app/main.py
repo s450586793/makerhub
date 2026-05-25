@@ -11,6 +11,7 @@ from app.api.config import remote_refresh_manager
 from app.api.config import source_library_manager
 from app.api.config import subscription_manager
 from app.api.config import router as config_router
+from app.api.system import router as system_router
 from app.api.web import router as web_router
 from app.core.settings import (
     APP_VERSION,
@@ -23,6 +24,7 @@ from app.core.settings import (
     ROOT_DIR,
     ensure_app_dirs,
 )
+from app.core.api_permissions import api_token_permission_for_request
 from app.services.auth import AuthManager
 from app.services.business_logs import append_business_log
 from app.services.request_threads import shutdown_request_threads
@@ -48,43 +50,6 @@ SPA_SHELL_PATHS = {
     "/logs",
     "/detail-preview",
 }
-
-
-def _api_token_permission_for_request(method: str, path: str) -> str:
-    clean_method = str(method or "").upper()
-    clean_path = str(path or "")
-
-    if clean_path.startswith("/api/mobile-import"):
-        return "mobile_import"
-
-    if clean_path in {"/api/archive", "/api/archive/preview"} and clean_method == "POST":
-        return "archive_write"
-
-    if clean_method == "GET" and clean_path.startswith("/archive/"):
-        return "models_read"
-
-    if clean_method != "GET":
-        return ""
-
-    if clean_path in {
-        "/api/dashboard",
-        "/api/models",
-        "/api/models/flags",
-        "/api/source-library",
-        "/api/subscriptions",
-        "/api/tasks",
-        "/api/remote-refresh",
-    }:
-        return "models_read"
-
-    if (
-        clean_path.startswith("/api/models/")
-        or clean_path.startswith("/api/source-library/")
-        or clean_path.startswith("/api/events/")
-    ):
-        return "models_read"
-
-    return ""
 
 
 def _apply_cache_headers(path: str, response):
@@ -182,7 +147,7 @@ async def auth_guard(request: Request, call_next):
         response = await call_next(request)
         return _apply_cache_headers(path, response)
 
-    api_token_permission = _api_token_permission_for_request(request.method, path)
+    api_token_permission = api_token_permission_for_request(request.method, path)
     identity = auth_manager.resolve_request_auth(request, api_token_permission=api_token_permission)
     request.state.auth_identity = identity or {}
 
@@ -224,4 +189,5 @@ if FRONTEND_DIST_DIR.exists():
 app.mount("/archive", StaticFiles(directory=str(ARCHIVE_DIR)), name="archive")
 app.include_router(web_router)
 app.include_router(auth_router)
+app.include_router(system_router)
 app.include_router(config_router)

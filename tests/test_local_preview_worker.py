@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.services import catalog, local_preview_worker
+from tests.test_helpers import InMemoryDatabaseState
 
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"preview"
@@ -63,6 +64,13 @@ def _write_model(root: Path, *, cover: str = "", legacy_cover: bool = False) -> 
 
 
 class LocalPreviewWorkerTest(unittest.TestCase):
+    def setUp(self):
+        self.db_state = InMemoryDatabaseState()
+        self.db_state.__enter__()
+
+    def tearDown(self):
+        self.db_state.__exit__(None, None, None)
+
     def test_worker_generates_three_preview_and_replaces_legacy_svg(self):
         with tempfile.TemporaryDirectory() as tmp:
             archive_root = Path(tmp).resolve()

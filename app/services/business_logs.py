@@ -1,14 +1,21 @@
+import hashlib
 import json
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
-from app.core.settings import LOGS_DIR
-from app.core.timezone import from_timestamp as china_from_timestamp, now_iso as china_now_iso
+from app.core.database import (
+    database_configured,
+    database_connection,
+    database_driver_available,
+    initialize_database,
+    jsonb_value,
+)
+from app.core.timezone import now_iso as china_now_iso
 
 
 BUSINESS_LOG_NAME = "business.log"
-BUSINESS_LOG_PATH = LOGS_DIR / BUSINESS_LOG_NAME
 SENSITIVE_KEY_PARTS = (
     "cookie",
     "token",
@@ -23,7 +30,9 @@ SENSITIVE_KEY_PARTS = (
     "manifest_url",
     "share_url",
 )
-_LOG_LOCK = threading.Lock()
+_DB_LOGS_READY = False
+_DB_LOGS_LOCK = threading.Lock()
+DATABASE_LOG_MAX_ATTEMPTS = 3
 
 
 def _now_iso() -> str:
@@ -57,6 +66,128 @@ def _safe_value(value: Any, *, key: str = "") -> Any:
     return str(value)
 
 
+def _safe_log_name(file_name: str = BUSINESS_LOG_NAME) -> str:
+    name = Path(str(file_name or BUSINESS_LOG_NAME)).name
+    if not name.endswith(".log"):
+        return BUSINESS_LOG_NAME
+    return name
+
+
+def _database_logs_enabled() -> bool:
+    return database_configured() and database_driver_available()
+
+
+def _ensure_database_logs_ready() -> bool:
+    global _DB_LOGS_READY
+    if not _database_logs_enabled():
+        return False
+    if _DB_LOGS_READY:
+        return True
+    with _DB_LOGS_LOCK:
+        if _DB_LOGS_READY:
+            return True
+        initialize_database()
+        _DB_LOGS_READY = True
+    return True
+
+
+def _raw_hash(file_name: str, raw: str) -> str:
+    return hashlib.sha1(f"{file_name}\0{raw}".encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _entry_for_db(entry: dict[str, Any], *, file_name: str, raw: str = "") -> dict[str, Any]:
+    payload = {
+        str(key): value
+        for key, value in entry.items()
+        if key not in {"time", "level", "category", "event", "message"}
+    }
+    raw_text = raw or json.dumps(entry, ensure_ascii=False)
+    return {
+        "file_name": _safe_log_name(file_name),
+        "time_text": str(entry.get("time") or ""),
+        "level": str(entry.get("level") or "info").lower(),
+        "category": str(entry.get("category") or _safe_log_name(file_name).replace(".log", "")),
+        "event": str(entry.get("event") or "event"),
+        "message": str(entry.get("message") or ""),
+        "payload": payload,
+        "raw": raw_text,
+        "raw_hash": _raw_hash(_safe_log_name(file_name), raw_text),
+    }
+
+
+def append_database_log_entry(file_name: str, entry: dict[str, Any], *, raw: str = "") -> bool:
+    if not isinstance(entry, dict) or not _database_logs_enabled():
+        return False
+    payload = _entry_for_db(entry, file_name=file_name, raw=raw)
+    for attempt in range(1, DATABASE_LOG_MAX_ATTEMPTS + 1):
+        try:
+            if not _ensure_database_logs_ready():
+                return False
+            with database_connection() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO makerhub_logs (
+                        file_name,
+                        time_text,
+                        level,
+                        category,
+                        event,
+                        message,
+                        payload,
+                        raw,
+                        raw_hash,
+                        created_at
+                    )
+                    VALUES (
+                        %(file_name)s,
+                        %(time_text)s,
+                        %(level)s,
+                        %(category)s,
+                        %(event)s,
+                        %(message)s,
+                        %(payload)s,
+                        %(raw)s,
+                        %(raw_hash)s,
+                        now()
+                    )
+                    ON CONFLICT (file_name, raw_hash) DO NOTHING
+                    """,
+                    {
+                        **payload,
+                        "payload": jsonb_value(payload["payload"]),
+                    },
+                )
+            return True
+        except Exception:
+            if attempt >= DATABASE_LOG_MAX_ATTEMPTS:
+                return False
+            time.sleep(0.05 * attempt)
+    return False
+
+
+def append_structured_log(
+    file_name: str,
+    event: str,
+    *,
+    level: str = "info",
+    category: str = "",
+    message: str = "",
+    time_text: str = "",
+    **payload: Any,
+) -> None:
+    safe_file_name = _safe_log_name(file_name)
+    entry: dict[str, Any] = {
+        "time": str(time_text or _now_iso()),
+        "level": str(level or "info").lower(),
+        "category": str(category or safe_file_name.replace(".log", "")).strip() or safe_file_name.replace(".log", ""),
+        "event": str(event or "event").strip() or "event",
+        "message": str(message or "").strip(),
+        **{str(key): _safe_value(value, key=str(key)) for key, value in payload.items()},
+    }
+    line = json.dumps(entry, ensure_ascii=False)
+    append_database_log_entry(safe_file_name, entry, raw=line)
+
+
 def append_business_log(
     category: str,
     event: str,
@@ -74,11 +205,8 @@ def append_business_log(
         **{str(key): _safe_value(value, key=str(key)) for key, value in fields.items()},
     }
     try:
-        LOGS_DIR.mkdir(parents=True, exist_ok=True)
         line = json.dumps(entry, ensure_ascii=False)
-        with _LOG_LOCK:
-            with BUSINESS_LOG_PATH.open("a", encoding="utf-8") as handle:
-                handle.write(line + "\n")
+        append_database_log_entry(BUSINESS_LOG_NAME, entry, raw=line)
         print(
             f"[makerhub][{entry['level']}][{entry['category']}] {entry['event']} {entry['message']}".strip(),
             flush=True,
@@ -88,61 +216,45 @@ def append_business_log(
 
 
 def list_log_files() -> list[dict[str, Any]]:
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    paths = {BUSINESS_LOG_PATH}
-    paths.update(path for path in LOGS_DIR.glob("*.log") if path.is_file())
-    items: list[dict[str, Any]] = []
-    for path in sorted(paths, key=lambda item: (item.name != BUSINESS_LOG_NAME, item.name)):
-        try:
-            stat = path.stat()
-            modified_at = china_from_timestamp(stat.st_mtime).isoformat(timespec="seconds")
-            size = stat.st_size
-            exists = True
-        except OSError:
-            modified_at = ""
-            size = 0
-            exists = False
-        items.append(
-            {
-                "name": path.name,
-                "size": size,
-                "modified_at": modified_at,
-                "exists": exists,
-                "primary": path.name == BUSINESS_LOG_NAME,
-            }
-        )
-    return items
+    return list(_database_log_file_items().values())
 
 
-def _safe_log_path(file_name: str) -> Path:
-    name = Path(str(file_name or BUSINESS_LOG_NAME)).name
-    if not name.endswith(".log"):
-        name = BUSINESS_LOG_NAME
-    return LOGS_DIR / name
-
-
-def _tail_lines(path: Path, limit: int) -> list[str]:
-    if not path.exists() or not path.is_file():
-        return []
-    max_lines = max(int(limit or 1), 1)
-    chunk_size = 64 * 1024
-    data = bytearray()
+def _database_log_file_items() -> dict[str, dict[str, Any]]:
+    if not _database_logs_enabled():
+        return {}
     try:
-        with path.open("rb") as handle:
-            handle.seek(0, 2)
-            position = handle.tell()
-            while position > 0 and data.count(b"\n") <= max_lines:
-                read_size = min(chunk_size, position)
-                position -= read_size
-                handle.seek(position)
-                data[:0] = handle.read(read_size)
-    except OSError:
-        return []
+        if not _ensure_database_logs_ready():
+            return {}
+        with database_connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    file_name,
+                    count(*) AS count,
+                    max(created_at) AS modified_at
+                FROM makerhub_logs
+                GROUP BY file_name
+                """
+            ).fetchall()
+    except Exception:
+        return {}
 
-    return [
-        line.decode("utf-8", errors="replace")
-        for line in data.splitlines()[-max_lines:]
-    ]
+    items: dict[str, dict[str, Any]] = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        name = _safe_log_name(str(row.get("file_name") or BUSINESS_LOG_NAME))
+        modified_at = row.get("modified_at")
+        items[name] = {
+            "name": name,
+            "size": 0,
+            "modified_at": modified_at.isoformat(timespec="seconds") if hasattr(modified_at, "isoformat") else str(modified_at or ""),
+            "exists": True,
+            "primary": name == BUSINESS_LOG_NAME,
+            "database": True,
+            "count": int(row.get("count") or 0),
+        }
+    return items
 
 
 def _parse_log_line(line: str, source: str) -> dict[str, Any]:
@@ -179,20 +291,72 @@ def _parse_log_line(line: str, source: str) -> dict[str, Any]:
     }
 
 
+def _log_entry_from_database_row(row: dict[str, Any]) -> dict[str, Any]:
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    return {
+        "time": str(row.get("time_text") or ""),
+        "level": str(row.get("level") or "info"),
+        "category": str(row.get("category") or str(row.get("file_name") or "").replace(".log", "")),
+        "event": str(row.get("event") or "event"),
+        "message": str(row.get("message") or ""),
+        "payload": payload,
+        "raw": str(row.get("raw") or ""),
+    }
+
+
+def _read_database_log_entries(file_name: str, *, limit: int, query: str = "") -> list[dict[str, Any]]:
+    if not _database_logs_enabled():
+        return []
+    safe_file_name = _safe_log_name(file_name)
+    search = str(query or "").strip()
+    try:
+        if not _ensure_database_logs_ready():
+            return []
+        with database_connection() as connection:
+            if search:
+                rows = connection.execute(
+                    """
+                    SELECT file_name, time_text, level, category, event, message, payload, raw
+                    FROM makerhub_logs
+                    WHERE file_name = %s
+                      AND (
+                        raw ILIKE %s
+                        OR message ILIKE %s
+                        OR event ILIKE %s
+                        OR category ILIKE %s
+                      )
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT %s
+                    """,
+                    (safe_file_name, f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%", int(limit)),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT file_name, time_text, level, category, event, message, payload, raw
+                    FROM makerhub_logs
+                    WHERE file_name = %s
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT %s
+                    """,
+                    (safe_file_name, int(limit)),
+                ).fetchall()
+    except Exception:
+        return []
+    return [_log_entry_from_database_row(row) for row in rows or [] if isinstance(row, dict)]
+
+
 def read_log_entries(file_name: str = BUSINESS_LOG_NAME, *, limit: int = 300, query: str = "") -> dict[str, Any]:
     safe_limit = min(max(int(limit or 300), 1), 2000)
-    path = _safe_log_path(file_name)
-    search = str(query or "").strip().lower()
-    tail_limit = min(max(safe_limit * (8 if search else 1), safe_limit), 10000)
-    raw_lines = _tail_lines(path, tail_limit)
-    if search:
-        raw_lines = [line for line in raw_lines if search in line.lower()]
-    entries = [_parse_log_line(line, path.name) for line in reversed(raw_lines[-safe_limit:])]
+    safe_file_name = _safe_log_name(file_name)
+    database_files = _database_log_file_items()
+    database_entries = _read_database_log_entries(safe_file_name, limit=safe_limit, query=query)
     return {
-        "file": path.name,
-        "entries": entries,
-        "count": len(entries),
+        "file": safe_file_name,
+        "entries": database_entries,
+        "count": len(database_entries),
         "limit": safe_limit,
         "query": query,
-        "files": list_log_files(),
+        "files": list(database_files.values()),
+        "source": "database" if _database_logs_enabled() else "database_unavailable",
     }

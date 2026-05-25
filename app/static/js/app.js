@@ -257,19 +257,23 @@ async function submitSettingsForm(form) {
   const kind = form.dataset.saveKind;
   const formData = new FormData(form);
 
-  if (kind === "connections") {
+  if (kind === "accounts") {
     const cookieCn = readSecretValue(form.querySelector('[name="cookie_cn"]'));
     const cookieGlobal = readSecretValue(form.querySelector('[name="cookie_global"]'));
     await postJson("/api/config/cookies", [
       { platform: "cn", cookie: cookieCn },
       { platform: "global", cookie: cookieGlobal },
     ]);
+    return "Cookie 已保存";
+  }
+
+  if (kind === "proxy") {
     await postJson("/api/config/proxy", {
       enabled: formData.get("proxy_enabled") === "on",
       http_proxy: String(formData.get("http_proxy") || ""),
       https_proxy: String(formData.get("https_proxy") || ""),
     });
-    return "连接设置已保存";
+    return "代理设置已保存";
   }
 
   if (kind === "notifications") {

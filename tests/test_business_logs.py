@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from app.services import business_logs
 
@@ -26,6 +27,57 @@ class BusinessLogsTest(unittest.TestCase):
         self.assertEqual(payload["public_base_url"], "***")
         self.assertEqual(payload["nested"]["token"], "***")
         self.assertEqual(payload["safe_count"], 2)
+
+    def test_append_business_log_writes_database_only(self):
+        captured = []
+
+        with patch.object(
+            business_logs,
+            "append_database_log_entry",
+            side_effect=lambda file_name, entry, raw="": captured.append((file_name, entry, raw)) or True,
+        ), patch("builtins.print"):
+            business_logs.append_business_log("sharing", "share_created", "ok", token="secret", safe=1)
+
+        self.assertEqual(captured[0][0], "business.log")
+        self.assertEqual(captured[0][1]["token"], "***")
+        self.assertEqual(captured[0][1]["safe"], 1)
+        self.assertIn("share_created", captured[0][2])
+
+    def test_read_log_entries_prefers_database(self):
+        with patch.object(
+            business_logs,
+            "_database_log_file_items",
+            return_value={
+                "business.log": {
+                    "name": "business.log",
+                    "size": 0,
+                    "modified_at": "2026-05-22T10:00:00+08:00",
+                    "exists": True,
+                    "primary": True,
+                    "database": True,
+                    "count": 1,
+                }
+            },
+        ), patch.object(
+            business_logs,
+            "_read_database_log_entries",
+            return_value=[
+                {
+                    "time": "2026-05-22T10:00:00+08:00",
+                    "level": "info",
+                    "category": "settings",
+                    "event": "saved",
+                    "message": "ok",
+                    "payload": {},
+                    "raw": "{}",
+                }
+            ],
+        ), patch.object(business_logs, "_database_logs_enabled", return_value=True):
+            payload = business_logs.read_log_entries("business.log")
+
+        self.assertEqual(payload["source"], "database")
+        self.assertEqual(payload["entries"][0]["event"], "saved")
+        self.assertEqual(payload["files"][0]["database"], True)
 
 
 if __name__ == "__main__":

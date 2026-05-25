@@ -25,7 +25,7 @@ from app.services.archive_worker import (
     detect_archive_mode,
 )
 from app.services.batch_discovery import normalize_source_url
-from app.services.business_logs import append_business_log
+from app.services.business_logs import append_business_log, append_structured_log
 from app.services.catalog import (
     get_archive_snapshot,
     invalidate_archive_snapshot,
@@ -160,12 +160,7 @@ def _next_run_at(cron_expr: str, base: Optional[datetime] = None) -> str:
 
 
 def _append_remote_refresh_log(event: str, **payload: Any) -> None:
-    try:
-        REMOTE_REFRESH_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with REMOTE_REFRESH_LOG_PATH.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"time": _now_iso(), "event": event, **payload}, ensure_ascii=False) + "\n")
-    except Exception:
-        return
+    append_structured_log(REMOTE_REFRESH_LOG_PATH.name, event, category="remote_refresh", **payload)
 
 
 def _select_cookie(url: str, config) -> str:
@@ -1358,6 +1353,7 @@ class RemoteRefreshManager:
 
         config = self.store.load()
         refresh_config = config.remote_refresh
+        normalized_cron = _validate_cron(refresh_config.cron)
         state = self._ensure_state()
         manual_requested = bool(str(state.get("manual_requested_at") or "").strip())
         if not refresh_config.enabled and not manual_requested:
@@ -1815,7 +1811,11 @@ class RemoteRefreshManager:
                         missing_3mf_items,
                         finalized.get("added_instance_tokens") or set(),
                     )
-                    effective_limit_guard = limit_guard_state or _read_three_mf_limit_guard()
+                    effective_limit_guard = (
+                        _read_three_mf_limit_guard()
+                        if limit_guard_state is None
+                        else limit_guard_state
+                    )
                     can_enqueue_new_download = (
                         bool(pending_download_items)
                         and self.archive_manager is not None

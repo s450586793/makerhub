@@ -8,6 +8,7 @@ import sys
 import subprocess
 import threading
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from fnmatch import fnmatchcase
 from html import escape, unescape
@@ -267,6 +268,10 @@ CONNECT_TIMEOUT_SECONDS = 15
 READ_TIMEOUT_SECONDS = 30
 THREE_MF_DOWNLOAD_WAIT_MIN_SECONDS = 5.0
 THREE_MF_DOWNLOAD_WAIT_MAX_SECONDS = 10.0
+CURL_TRANSIENT_ERROR_CODES = {5, 6, 7, 28, 35, 52, 55, 56, 92}
+FAKE_THREE_MF_DOWNLOAD_ENV = "MAKERHUB_FAKE_THREE_MF_DOWNLOADS"
+FAKE_THREE_MF_DOWNLOAD_URL_PREFIX = "makerhub://fake-3mf/"
+FAKE_THREE_MF_DOWNLOAD_MESSAGE = "本地 Docker 已启用 3MF 假下载，不会请求 MakerWorld 实际文件。"
 COMMENT_ASSET_DOWNLOAD_WORKERS = 4
 SHARED_AVATAR_REL_DIR = "_shared/avatars"
 VERBOSE_THREE_MF_FETCH_LOG = os.getenv("MAKERHUB_VERBOSE_THREE_MF_FETCH_LOG", "").strip().lower() in {
@@ -317,6 +322,8 @@ def _three_mf_download_wait_range() -> tuple[float, float]:
 
 
 def _three_mf_download_wait_seconds() -> float:
+    if fake_three_mf_downloads_enabled():
+        return 0.0
     min_wait, max_wait = _three_mf_download_wait_range()
     if max_wait <= 0:
         return 0.0
@@ -333,6 +340,78 @@ def _wait_before_three_mf_download(reason: str = "", logger=None) -> float:
     log(logger, f"[3MF] 随机等待 {wait_seconds:.1f}s 后继续{label}")
     time.sleep(wait_seconds)
     return wait_seconds
+
+
+def fake_three_mf_downloads_enabled() -> bool:
+    return str(os.getenv(FAKE_THREE_MF_DOWNLOAD_ENV, "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "enabled",
+    }
+
+
+def _is_three_mf_fake_download_target(url: str, dest: Path) -> bool:
+    if str(url or "").startswith(FAKE_THREE_MF_DOWNLOAD_URL_PREFIX):
+        return True
+    return dest.suffix.lower() == ".3mf"
+
+
+def _fake_three_mf_download_url(inst_id: Any) -> str:
+    safe_id = sanitize_filename(str(inst_id or "model")) or "model"
+    return f"{FAKE_THREE_MF_DOWNLOAD_URL_PREFIX}{safe_id}.3mf"
+
+
+def _write_fake_three_mf_file(dest: Path, source_url: str) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    temp_dest = dest.with_name(f"{dest.name}.{os.getpid()}.{threading.get_ident()}.part")
+    payload = {
+        "fake": True,
+        "generator": "MakerHub",
+        "source_url": str(source_url or ""),
+        "message": FAKE_THREE_MF_DOWNLOAD_MESSAGE,
+        "generated_at": china_now_iso(),
+    }
+    model_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xml:lang="zh-CN" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <metadata name="Title">MakerHub fake 3MF placeholder</metadata>
+  <metadata name="MakerHubFakeDownload">true</metadata>
+  <resources/>
+  <build/>
+</model>
+"""
+    rels_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+</Relationships>
+"""
+    content_types_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
+  <Default Extension="json" ContentType="application/json"/>
+</Types>
+"""
+    try:
+        with zipfile.ZipFile(temp_dest, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("[Content_Types].xml", content_types_xml)
+            archive.writestr("_rels/.rels", rels_xml)
+            archive.writestr("3D/3dmodel.model", model_xml)
+            archive.writestr(
+                "Metadata/makerhub_fake_download.json",
+                json.dumps(payload, ensure_ascii=False, indent=2),
+            )
+        temp_dest.replace(dest)
+    except Exception:
+        try:
+            if temp_dest.exists():
+                temp_dest.unlink()
+        except Exception:
+            pass
+        raise
+
+
 _OFFLINE_TEMPLATE_CACHE_LOCK = threading.RLock()
 _OFFLINE_TEMPLATE_CACHE: dict[str, Any] = {
     "signature": (),
@@ -407,6 +486,10 @@ def download_file(
 ):
     if dest.exists() and not overwrite:
         log("存在，跳过：", dest)
+        return
+    if fake_three_mf_downloads_enabled() and _is_three_mf_fake_download_target(url, dest):
+        _write_fake_three_mf_file(dest, url)
+        log("[3MF] 假下载已写入：", dest)
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
     temp_dest = dest.with_name(f"{dest.name}.{os.getpid()}.{threading.get_ident()}.part")
@@ -683,7 +766,7 @@ def fetch_html_with_curl(url: str, raw_cookie: str) -> str:
             break
         err_msg = result.stderr.decode(errors="ignore") if result.stderr else ""
         failed_messages.append(f"{variant}: code={result.returncode} stderr={err_msg[:220]}")
-        if result.returncode not in {28, 35, 56, 92}:
+        if result.returncode not in CURL_TRANSIENT_ERROR_CODES:
             break
     if result is None or result.returncode != 0:
         raise RuntimeError(f"curl 失败 {'; '.join(failed_messages)[:500]}")
@@ -4044,6 +4127,12 @@ def fetch_instance_3mf(
     获取实例的 3MF 下载地址，允许外部传入 api_url，并自动回退不同 API Host。
     返回: (name, url, used_api_url, failure_info)
     """
+    if fake_three_mf_downloads_enabled():
+        fake_name = f"{sanitize_filename(str(inst_id or 'model')) or 'model'}.3mf"
+        return fake_name, _fake_three_mf_download_url(inst_id), api_url or "", {
+            "state": "available",
+            "message": FAKE_THREE_MF_DOWNLOAD_MESSAGE,
+        }
     effective_cookie = sanitize_cookie_header(raw_cookie) or _session_cookie_header(session)
     candidates = _build_instance_api_candidates(inst_id, api_url, origin, api_host_hint)
     auth_token = _extract_auth_token(effective_cookie)
@@ -6337,7 +6426,7 @@ def rebuild_once(meta_path: Path, progress_callback=None, logger=None, build_off
         emit_progress(
             progress_callback,
             84 + min(int(processed_instances * 10 / total_instance_steps), 10),
-            f"正在下载实例文件（{processed_instances}/{len(instances)}）",
+            f"{'正在写入 3MF 占位文件' if fake_three_mf_downloads_enabled() else '正在下载实例文件'}（{processed_instances}/{len(instances)}）",
             {"current": processed_instances, "total": len(instances)},
         )
     _log_perf(
@@ -6812,7 +6901,18 @@ def archive_model(
         )
         existing_file_name = str(existing_inst.get("fileName") or "").strip()
         existing_file_available = bool(existing_file_name and (planned_instances_dir / existing_file_name).exists())
-        if three_mf_fetch_paused and url3mf and not existing_file_available:
+        if fake_three_mf_downloads_enabled() and not three_mf_fetch_paused:
+            name3mf, url3mf, used_api_url, failure_info = fetch_instance_3mf(
+                sess,
+                inst_id,
+                raw_cookie_header,
+                api_url,
+                api_host_hint=api_host_hint,
+                origin=origin,
+            )
+            if url3mf:
+                fetched_hint_hits += 1
+        elif three_mf_fetch_paused and url3mf and not existing_file_available:
             url3mf = ""
             skipped_due_limit += 1
             failure_info = _missing_3mf_failure_for_skipped_fetch(

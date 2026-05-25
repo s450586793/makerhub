@@ -9,6 +9,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from app.core.settings import LOGS_DIR
+from app.services.business_logs import append_structured_log
 from app.services.cookie_utils import extract_auth_token, sanitize_cookie_header
 from app.services.legacy_archiver import (
     extract_next_data,
@@ -90,12 +91,7 @@ def normalize_source_url(url: str) -> str:
 
 
 def _append_discovery_debug(event: str, **payload: Any) -> None:
-    try:
-        LOGS_DIR.mkdir(parents=True, exist_ok=True)
-        with DISCOVERY_DEBUG_LOG.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"event": event, **payload}, ensure_ascii=False) + "\n")
-    except Exception:
-        return
+    append_structured_log(DISCOVERY_DEBUG_LOG.name, event, category="discovery", **payload)
 
 
 def normalize_model_url(url: str, fallback_base: str = "https://makerworld.com.cn") -> str:
@@ -194,6 +190,12 @@ def _build_api_headers(session: requests.Session, raw_cookie: str, referer: str)
     headers["Origin"] = _origin_from_url(referer or "https://makerworld.com.cn/")
     if cookie_header:
         headers["Cookie"] = cookie_header
+        auth_token = extract_auth_token(cookie_header)
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+            headers["token"] = auth_token
+            headers["X-Token"] = auth_token
+            headers["X-Access-Token"] = auth_token
     return headers
 
 
@@ -1094,14 +1096,17 @@ def _makerworld_model_path_lang(platform: str) -> str:
     return "en" if str(platform or "").strip().lower() == "global" else "zh"
 
 
-def _extract_account_profile(payload: Any) -> dict[str, str]:
-    best: dict[str, str] = {}
+def _extract_account_profile(payload: Any) -> dict[str, Any]:
+    best: dict[str, Any] = {}
     best_score = -1
     for node in _iter_dicts(payload):
         uid = _extract_node_uid(node)
         handle = _extract_node_handle(node)
         name = str(node.get("name") or node.get("nickname") or node.get("nickName") or node.get("displayName") or "").strip()
         avatar = _extract_avatar_url(node)
+        follow_count = _safe_positive_int(node.get("followCount"))
+        liked_collection_count = _safe_positive_int(node.get("likeCount"))
+        collection_count = _safe_positive_int(node.get("collectionCount"))
         lowered_keys = {str(key).lower() for key in node.keys()}
         profile_keys = {
             "name",
@@ -1126,6 +1131,12 @@ def _extract_account_profile(payload: Any) -> dict[str, str]:
             score += 2
         if avatar:
             score += 1
+        if follow_count is not None:
+            score += 2
+        if liked_collection_count is not None:
+            score += 2
+        if collection_count is not None:
+            score += 1
         if profile_keys & lowered_keys:
             score += 2
         if score > best_score:
@@ -1136,10 +1147,62 @@ def _extract_account_profile(payload: Any) -> dict[str, str]:
                 "name": name,
                 "avatar_url": avatar,
             }
+            if follow_count is not None:
+                best["follow_count"] = follow_count
+            if liked_collection_count is not None:
+                best["liked_collection_count"] = liked_collection_count
+            if collection_count is not None:
+                best["collection_count"] = collection_count
     return best
 
 
-def discover_cookie_account_profile(platform: str, raw_cookie: str) -> dict[str, str]:
+def _extract_user_info_from_next_data(payload: Any) -> dict[str, Any]:
+    best: dict[str, Any] = {}
+    best_score = -1
+    for node in _iter_dicts(payload):
+        if not isinstance(node, dict):
+            continue
+        handle = _extract_node_handle(node)
+        uid = _extract_node_uid(node)
+        name = str(node.get("name") or node.get("nickname") or node.get("nickName") or node.get("displayName") or "").strip()
+        avatar = _extract_avatar_url(node)
+        if not (handle or uid or name or avatar):
+            continue
+        score = 0
+        if "userInfo" in node:
+            score += 8
+        if uid:
+            score += 4
+        if handle:
+            score += 4
+        if name:
+            score += 2
+        if avatar:
+            score += 1
+        for key in ("followCount", "likeCount", "favoritesCount", "collectionCount"):
+            if key in node:
+                score += 2
+        if score <= best_score:
+            continue
+        best_score = score
+        best = {
+            "uid": uid,
+            "handle": handle,
+            "name": name,
+            "avatar_url": avatar,
+            "follow_count": _safe_positive_int(node.get("followCount")),
+            "liked_collection_count": _safe_positive_int(node.get("likeCount")),
+            "collection_count": _safe_positive_int(node.get("collectionCount")),
+        }
+        favorites_count = node.get("favoritesCount")
+        if isinstance(favorites_count, dict):
+            best["favorites_public_count"] = _safe_positive_int(favorites_count.get("publicCount"))
+            best["favorites_private_count"] = _safe_positive_int(favorites_count.get("privateCount"))
+            best["favorites_liked_count"] = _safe_positive_int(favorites_count.get("likedCount"))
+    return best
+
+
+def discover_cookie_account_profile(platform: str, raw_cookie: str) -> dict[str, Any]:
     clean_platform = "global" if str(platform or "").strip().lower() == "global" else "cn"
     source_url = _platform_source_url(clean_platform)
     session = requests.Session()
@@ -1156,7 +1219,7 @@ def discover_cookie_account_profile(platform: str, raw_cookie: str) -> dict[str,
         ("design-user-service", "/my/preference"),
         ("user-service", "/my/message/count"),
     ]
-    best_profile: dict[str, str] = {}
+    best_profile: dict[str, Any] = {}
     for service_name, path in candidates:
         payload = _api_get_json(
             session,
@@ -1175,19 +1238,33 @@ def discover_cookie_account_profile(platform: str, raw_cookie: str) -> dict[str,
             path=path,
             has_uid=bool(profile.get("uid")),
             has_handle=bool(profile.get("handle")),
+            has_name=bool(profile.get("name")),
+            has_avatar=bool(profile.get("avatar_url")),
+            follow_count=profile.get("follow_count"),
+            liked_collection_count=profile.get("liked_collection_count"),
         )
-        if profile.get("uid") or profile.get("handle"):
+        if profile.get("uid") or profile.get("handle") or profile.get("name") or profile.get("avatar_url"):
             if not best_profile:
                 best_profile = dict(profile)
             else:
                 for key, value in profile.items():
                     if value and not best_profile.get(key):
                         best_profile[key] = value
-            if best_profile.get("handle"):
+            if (
+                best_profile.get("handle")
+                and best_profile.get("name")
+                and (
+                    best_profile.get("avatar_url")
+                    or (
+                        best_profile.get("follow_count") is not None
+                        and best_profile.get("liked_collection_count") is not None
+                    )
+                )
+            ):
                 best_profile["platform"] = clean_platform
                 return best_profile
 
-    if best_profile.get("uid") or best_profile.get("handle"):
+    if best_profile.get("uid") or best_profile.get("handle") or best_profile.get("name") or best_profile.get("avatar_url"):
         best_profile["platform"] = clean_platform
         return best_profile
     return {"platform": clean_platform, "uid": "", "handle": "", "name": "", "avatar_url": ""}
@@ -1355,6 +1432,57 @@ def _following_page_url(platform: str, profile: dict[str, str]) -> str:
     return f"{origin}/{lang}/@{quote(handle, safe='@._-')}/following"
 
 
+def _account_collections_models_page_url(platform: str, profile: dict[str, str]) -> str:
+    handle = _profile_handle_or_uid_handle(profile)
+    if not handle:
+        return ""
+    origin = _platform_origin(platform)
+    lang = _makerworld_model_path_lang(platform)
+    return f"{origin}/{lang}/@{quote(handle, safe='@._-')}/collections/models"
+
+
+def discover_cookie_account_home_summary(
+    platform: str,
+    raw_cookie: str,
+    profile: dict[str, str],
+) -> dict[str, Any]:
+    clean_platform = "global" if str(platform or "").strip().lower() == "global" else "cn"
+    source_url = _account_collections_models_page_url(clean_platform, profile)
+    if not source_url:
+        return {"platform": clean_platform, "source_url": ""}
+
+    session = requests.Session()
+    session.headers.update({"User-Agent": BROWSER_USER_AGENT})
+    session.cookies.update(parse_cookies(raw_cookie))
+    try:
+        html_text = _fetch_listing_html(session, source_url, raw_cookie)
+        next_data = extract_next_data(html_text)
+    except Exception as exc:
+        _append_discovery_debug(
+            "cookie_account_home_summary_error",
+            platform=clean_platform,
+            source_url=source_url,
+            error=str(exc)[:160],
+        )
+        return {"platform": clean_platform, "source_url": source_url}
+
+    summary = _extract_user_info_from_next_data(next_data)
+    summary["platform"] = clean_platform
+    summary["source_url"] = source_url
+    _append_discovery_debug(
+        "cookie_account_home_summary",
+        platform=clean_platform,
+        source_url=source_url,
+        has_uid=bool(summary.get("uid")),
+        has_handle=bool(summary.get("handle")),
+        has_name=bool(summary.get("name")),
+        has_avatar=bool(summary.get("avatar_url")),
+        follow_count=summary.get("follow_count"),
+        liked_collection_count=summary.get("liked_collection_count"),
+    )
+    return summary
+
+
 def discover_cookie_followed_authors_from_page(
     platform: str,
     raw_cookie: str,
@@ -1416,10 +1544,12 @@ def discover_cookie_followed_authors(
     seen_urls: set[str] = set()
     pages_scanned = 0
     selected_path = ""
+    selected_total: Optional[int] = None
 
     for path in _followed_author_path_candidates(uid):
         offset = 0
         path_discovered: list[dict[str, str]] = []
+        path_total: Optional[int] = None
         for _ in range(max_pages):
             payload = None
             authors: list[dict[str, str]] = []
@@ -1440,12 +1570,17 @@ def discover_cookie_followed_authors(
                 if payload is None:
                     continue
                 authors = _extract_followed_authors(payload, clean_platform)
+                hits_payload = _extract_hits_payload(payload) or payload
+                total = _extract_total_count(hits_payload, len(authors)) if isinstance(hits_payload, dict) else len(authors)
+                if total is not None:
+                    path_total = total
                 _append_discovery_debug(
                     "cookie_followed_authors_probe",
                     platform=clean_platform,
                     path=path,
                     params=params,
                     authors=len(authors),
+                    total=total,
                 )
                 if authors:
                     selected_path = path
@@ -1464,23 +1599,27 @@ def discover_cookie_followed_authors(
             hits_payload = _extract_hits_payload(payload) or payload
             has_next = _extract_has_next(hits_payload) if isinstance(hits_payload, dict) else None
             total = _extract_total_count(hits_payload, len(authors)) if isinstance(hits_payload, dict) else len(authors)
+            if total is not None:
+                path_total = total
             if has_next is False:
                 break
             if total is not None and len(path_discovered) >= total:
                 break
             if new_count == 0 and offset > 0:
                 break
-            if len(authors) < limit and has_next is not True:
+            if len(authors) < limit and has_next is not True and (total is None or len(path_discovered) >= total):
                 break
             offset += max(len(authors), 1)
         if path_discovered:
             discovered.extend(path_discovered)
+            selected_total = path_total
             break
 
     return {
         "platform": clean_platform,
         "items": discovered,
         "count": len(discovered),
+        "total": selected_total,
         "pages_scanned": pages_scanned,
         "path": selected_path,
     }
@@ -1542,11 +1681,6 @@ def _followed_collection_path_candidates(uid: str) -> list[str]:
         "/favorites/followed",
         "/favorites/v2/following",
         "/favorites/v2/followed",
-        "/favoriteslist/following",
-        "/collection/following",
-        "/collection/followed",
-        "/collections/following",
-        "/collections/followed",
     ]
     if clean_uid:
         candidates.extend(
@@ -1574,8 +1708,9 @@ def discover_cookie_followed_collections(
     raw_cookie: str,
     *,
     uid: str = "",
-    max_pages: int = 6,
+    max_pages: int = 1,
     limit: int = COOKIE_SOURCE_PAGE_LIMIT,
+    max_probe_count: int = 18,
 ) -> dict[str, Any]:
     clean_platform = "global" if str(platform or "").strip().lower() == "global" else "cn"
     source_url = _platform_source_url(clean_platform)
@@ -1586,6 +1721,7 @@ def discover_cookie_followed_collections(
     seen_urls: set[str] = set()
     pages_scanned = 0
     selected_path = ""
+    probe_count = 0
 
     for path in _followed_collection_path_candidates(uid):
         offset = 0
@@ -1594,6 +1730,20 @@ def discover_cookie_followed_collections(
             payload = None
             collections: list[dict[str, Any]] = []
             for params in _followed_author_param_candidates(uid, offset, limit):
+                if probe_count >= max_probe_count:
+                    _append_discovery_debug(
+                        "cookie_followed_collections_probe_budget_exhausted",
+                        platform=clean_platform,
+                        max_probe_count=max_probe_count,
+                    )
+                    return {
+                        "platform": clean_platform,
+                        "items": discovered,
+                        "count": len(discovered),
+                        "pages_scanned": pages_scanned,
+                        "path": selected_path,
+                    }
+                probe_count += 1
                 payload = _api_get_json(
                     session,
                     source_url=source_url,
@@ -1660,7 +1810,7 @@ def default_favorites_subscription_source(platform: str, profile: dict[str, str]
     lang = "zh"
     title_name = str(profile.get("name") or handle).strip() or handle
     return {
-        "title": f"{title_name} 所有模型收藏夹",
+        "title": f"{title_name}的收藏夹",
         "handle": handle,
         "avatar_url": str(profile.get("avatar_url") or "").strip(),
         "url": f"{origin}/{lang}/@{quote(handle, safe='@._-')}/collections/models",

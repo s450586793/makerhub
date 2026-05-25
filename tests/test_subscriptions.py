@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from app.core.store import JsonStore
 from app.schemas.models import CookiePair, SubscriptionRecord
+from app.services import source_library
 from app.services import subscriptions
 from app.services.subscriptions import SubscriptionManager
 import app.services.task_state as task_state_module
@@ -33,11 +34,48 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.temp_path = Path(self.temp_dir.name)
         self.original_subscriptions_state_path = task_state_module.SUBSCRIPTIONS_STATE_PATH
         self.original_cookie_source_sync_state_path = subscriptions.COOKIE_SOURCE_SYNC_STATE_PATH
+        self.original_cookie_source_inventory_path = subscriptions.COOKIE_SOURCE_INVENTORY_PATH
         self.original_append_subscription_log = subscriptions._append_subscription_log
 
         task_state_module.SUBSCRIPTIONS_STATE_PATH = self.temp_path / "subscriptions_state.json"
         subscriptions.COOKIE_SOURCE_SYNC_STATE_PATH = self.temp_path / "cookie_source_sync_state.json"
+        subscriptions.COOKIE_SOURCE_INVENTORY_PATH = self.temp_path / "cookie_source_inventory.json"
         subscriptions._append_subscription_log = lambda *_args, **_kwargs: None
+        self.db_state = {}
+        self.db_patches = [
+            patch.object(
+                task_state_module,
+                "load_database_json_state",
+                side_effect=lambda key, default: dict(self.db_state.get(key) or default),
+            ),
+            patch.object(
+                task_state_module,
+                "save_database_json_state",
+                side_effect=lambda key, value: self.db_state.__setitem__(key, value) or value,
+            ),
+            patch.object(
+                subscriptions,
+                "load_database_json_state",
+                side_effect=lambda key, default: dict(self.db_state.get(key) or default),
+            ),
+            patch.object(
+                subscriptions,
+                "save_database_json_state",
+                side_effect=lambda key, value: self.db_state.__setitem__(key, value) or value,
+            ),
+            patch.object(
+                source_library,
+                "load_database_json_state",
+                side_effect=lambda key, default: dict(self.db_state.get(key) or default),
+            ),
+            patch.object(
+                source_library,
+                "save_database_json_state",
+                side_effect=lambda key, value: self.db_state.__setitem__(key, value) or value,
+            ),
+        ]
+        for item in self.db_patches:
+            item.start()
 
         self.store = JsonStore(self.temp_path / "config.json")
         config = self.store.load()
@@ -64,8 +102,11 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.manager._refresh_subscription_source_metadata = lambda *_args, **_kwargs: None
 
     def tearDown(self):
+        for item in reversed(self.db_patches):
+            item.stop()
         task_state_module.SUBSCRIPTIONS_STATE_PATH = self.original_subscriptions_state_path
         subscriptions.COOKIE_SOURCE_SYNC_STATE_PATH = self.original_cookie_source_sync_state_path
+        subscriptions.COOKIE_SOURCE_INVENTORY_PATH = self.original_cookie_source_inventory_path
         subscriptions._append_subscription_log = self.original_append_subscription_log
         self.temp_dir.cleanup()
 
@@ -385,7 +426,24 @@ class SubscriptionManagerTest(unittest.TestCase):
         with patch.object(
             subscriptions,
             "discover_cookie_account_profile",
-            return_value={"uid": "2024907479", "handle": "s450586793", "name": "艾斯"},
+            return_value={
+                "uid": "2024907479",
+                "handle": "s450586793",
+                "name": "艾斯",
+                "follow_count": 27,
+                "liked_collection_count": 1,
+            },
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_account_home_summary",
+            return_value={
+                "uid": "2024907479",
+                "handle": "s450586793",
+                "name": "艾斯",
+                "avatar_url": "https://example.test/avatar.jpg",
+                "follow_count": 0,
+                "liked_collection_count": 0,
+            },
         ), patch.object(
             subscriptions,
             "discover_cookie_followed_authors_from_page",
@@ -405,6 +463,7 @@ class SubscriptionManagerTest(unittest.TestCase):
             "discover_cookie_followed_authors",
             return_value={
                 "count": 1,
+                "total": 27,
                 "items": [
                     {
                         "title": "Whitt Labs",
@@ -432,13 +491,6 @@ class SubscriptionManagerTest(unittest.TestCase):
                     }
                 ],
             },
-        ), patch.object(
-            subscriptions,
-            "default_favorites_subscription_source",
-            return_value={
-                "title": "艾斯 所有模型收藏夹",
-                "url": "https://makerworld.com.cn/zh/@s450586793/collections/models",
-            },
         ), patch.object(subscriptions, "_patch_cookie_source_sync_state"):
             result = self.manager.sync_cookie_sources({"cn"}, reason="cookie_save")
             second = self.manager.sync_cookie_sources({"cn"}, reason="cookie_save")
@@ -448,6 +500,7 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertEqual(result["created_count"], 4)
         self.assertEqual(second["created_count"], 0)
         self.assertIn("https://makerworld.com.cn/zh/@s450586793/collections/models", urls)
+        self.assertEqual(urls["https://makerworld.com.cn/zh/@s450586793/collections/models"].name, "艾斯的收藏夹")
         self.assertIn("https://makerworld.com.cn/zh/@GLB_Whittlabs/upload", urls)
         self.assertIn("https://makerworld.com.cn/zh/@user_123/upload", urls)
         self.assertIn("https://makerworld.com.cn/zh/collections/518732-test", urls)
@@ -456,6 +509,23 @@ class SubscriptionManagerTest(unittest.TestCase):
         states = self.task_store.load_subscriptions_state().get("items") or []
         self.assertEqual(len(states), 4)
         self.assertTrue(all(item["manual_requested_at"] for item in states))
+        inventory = subscriptions._read_cookie_source_inventory_state()
+        cn_inventory = inventory["platforms"]["cn"]
+        self.assertEqual(cn_inventory["account"]["uid"], "2024907479")
+        self.assertEqual(cn_inventory["account"]["name"], "艾斯")
+        self.assertEqual(cn_inventory["account"]["avatar_url"], "https://example.test/avatar.jpg")
+        self.assertEqual(cn_inventory["followed_author_count"], 27)
+        self.assertEqual(cn_inventory["followed_collection_count"], 1)
+        self.assertEqual(len(cn_inventory["followed_authors"]), 2)
+        self.assertEqual(cn_inventory["followed_collections"][0]["url"], "https://makerworld.com.cn/zh/collections/518732-test")
+        self.assertIn("https://makerworld.com.cn/zh/@s450586793/collections/models", cn_inventory["source_urls"])
+        self.assertIn("https://makerworld.com.cn/zh/@user_123/upload", cn_inventory["source_urls"])
+        saved_cookie = next(item for item in config.cookies if item.platform == "cn")
+        self.assertEqual(saved_cookie.display_name, "艾斯")
+        self.assertEqual(saved_cookie.account_id, "2024907479")
+        self.assertEqual(saved_cookie.handle, "s450586793")
+        self.assertEqual(saved_cookie.avatar_url, "https://example.test/avatar.jpg")
+        self.assertEqual(saved_cookie.message, "国内账号已同步，账号信息已更新。")
 
     def test_sync_cookie_sources_seeds_default_favorite_account_avatar_metadata(self):
         config = self.store.load()
@@ -478,6 +548,10 @@ class SubscriptionManagerTest(unittest.TestCase):
             },
         ), patch.object(
             subscriptions,
+            "discover_cookie_account_home_summary",
+            return_value={},
+        ), patch.object(
+            subscriptions,
             "discover_cookie_followed_authors_from_page",
             return_value={"count": 0, "items": []},
         ), patch.object(
@@ -498,7 +572,56 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertEqual(result["created_count"], 1)
         self.assertEqual(metadata["kind"], "favorite")
         self.assertEqual(metadata["avatar_url"], "https://example.test/account.jpg")
-        self.assertEqual(metadata["title"], "艾斯 所有模型收藏夹")
+        self.assertEqual(metadata["title"], "艾斯的收藏夹")
+
+    def test_sync_cookie_sources_uses_saved_account_metadata_when_profile_is_sparse(self):
+        config = self.store.load()
+        config.cookies = [
+            CookiePair(
+                platform="cn",
+                cookie="token=ok",
+                username="18651510352",
+                display_name="艾斯",
+                account_id="2024907479",
+                handle="s450586793",
+                avatar_url="https://example.test/account.jpg",
+            )
+        ]
+        config.subscriptions = []
+        self.store.save(config)
+
+        with patch.object(
+            subscriptions,
+            "discover_cookie_account_profile",
+            return_value={"platform": "cn", "uid": "", "handle": "", "name": "", "avatar_url": ""},
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_account_home_summary",
+            return_value={},
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_followed_authors_from_page",
+            return_value={"count": 0, "items": []},
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_followed_authors",
+            return_value={"count": 0, "items": []},
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_followed_collections",
+            return_value={"count": 0, "items": []},
+        ):
+            result = self.manager.sync_cookie_sources({"cn"}, reason="manual")
+
+        config = self.store.load()
+        favorite = next(item for item in config.subscriptions if item.url.endswith("/@s450586793/collections/models"))
+        inventory = subscriptions._read_cookie_source_inventory_state()["platforms"]["cn"]
+        sync_state = subscriptions._read_cookie_source_sync_state()["cn"]
+        self.assertEqual(result["created_count"], 1)
+        self.assertEqual(favorite.name, "艾斯的收藏夹")
+        self.assertEqual(inventory["account"]["uid"], "2024907479")
+        self.assertEqual(inventory["account"]["handle"], "s450586793")
+        self.assertEqual(sync_state["default_favorites_count"], 1)
 
     def test_request_cookie_source_sync_marks_platforms_for_worker(self):
         result = self.manager.request_cookie_source_sync({"cn", "global"}, reason="cookie_save")
@@ -510,6 +633,32 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertEqual(state["cn"]["requested_reason"], "cookie_save")
         self.assertTrue(state["cn"]["requested_at"])
         self.assertEqual(state["global"]["last_status"], "pending")
+
+    def test_cookie_source_public_payloads_expose_source_state(self):
+        subscriptions._write_cookie_source_inventory_state(
+            {
+                "platforms": {
+                    "cn": {
+                        "followed_authors": [{"url": "https://makerworld.com.cn/zh/@ace/upload"}],
+                        "followed_collection_count": 2,
+                    }
+                },
+                "updated_at": "2026-05-23T21:00:00+08:00",
+            }
+        )
+        subscriptions._write_cookie_source_sync_state(
+            {
+                "cn": {"last_status": "success", "followed_author_count": 1},
+                "other": {"last_status": "ignored"},
+            }
+        )
+
+        inventory = subscriptions.cookie_source_inventory_payload()
+        sync_state = subscriptions.cookie_source_sync_state_payload()
+
+        self.assertEqual(inventory["platforms"]["cn"]["followed_collection_count"], 2)
+        self.assertEqual(sync_state["cn"]["followed_author_count"], 1)
+        self.assertNotIn("other", sync_state)
 
     def test_maybe_sync_cookie_sources_consumes_requested_platform(self):
         config = self.store.load()
@@ -526,6 +675,149 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.manager._maybe_sync_cookie_sources()
 
         self.assertEqual(calls, [({"cn"}, "cookie_save")])
+
+    def test_remove_account_imported_subscriptions_removes_sources_and_marks_archived_models_deleted(self):
+        config = self.store.load()
+        config.cookies = [CookiePair(platform="cn", cookie="token=ok")]
+        config.subscriptions = [
+            SubscriptionRecord(
+                id="sub-account-author",
+                name="关注作者",
+                url="https://makerworld.com.cn/zh/@followed/upload",
+                mode="author_upload",
+                cron="0 * * * *",
+                enabled=True,
+            ),
+            SubscriptionRecord(
+                id="sub-manual",
+                name="手工订阅",
+                url="https://makerworld.com.cn/zh/@manual/upload",
+                mode="author_upload",
+                cron="0 * * * *",
+                enabled=True,
+            ),
+        ]
+        self.store.save(config)
+        self.task_store.patch_subscription_state(
+            "sub-account-author",
+            status="success",
+            current_items=[
+                {
+                    "task_key": "model:1001",
+                    "model_id": "1001",
+                    "url": "https://makerworld.com.cn/zh/models/1001",
+                }
+            ],
+            tracked_items=[
+                {
+                    "task_key": "model:1001",
+                    "model_id": "1001",
+                    "url": "https://makerworld.com.cn/zh/models/1001",
+                },
+                {
+                    "task_key": "model:1002",
+                    "model_id": "1002",
+                    "url": "https://makerworld.com.cn/zh/models/1002",
+                },
+            ],
+        )
+        self.task_store.patch_subscription_state(
+            "sub-manual",
+            status="success",
+            current_items=[
+                {
+                    "task_key": "model:2001",
+                    "model_id": "2001",
+                    "url": "https://makerworld.com.cn/zh/models/2001",
+                }
+            ],
+            tracked_items=[
+                {
+                    "task_key": "model:2001",
+                    "model_id": "2001",
+                    "url": "https://makerworld.com.cn/zh/models/2001",
+                }
+            ],
+        )
+        subscriptions._write_cookie_source_inventory_state(
+            {
+                "platforms": {
+                    "cn": {
+                        "imported_sources": [
+                            {
+                                "subscription_id": "sub-account-author",
+                                "url": "https://makerworld.com.cn/zh/@followed/upload",
+                                "mode": "author_upload",
+                                "source_kind": "followed_author",
+                            }
+                        ],
+                        "source_urls": ["https://makerworld.com.cn/zh/@followed/upload"],
+                        "followed_authors": [{"url": "https://makerworld.com.cn/zh/@followed/upload"}],
+                    }
+                },
+                "updated_at": "2026-05-25T00:00:00+08:00",
+            }
+        )
+
+        archive_snapshot = {
+            "models": (
+                {
+                    "model_dir": "remote/model-1001",
+                    "id": "1001",
+                    "origin_url": "https://makerworld.com.cn/zh/models/1001",
+                },
+                {
+                    "model_dir": "remote/model-1002",
+                    "id": "1002",
+                    "origin_url": "https://makerworld.com.cn/zh/models/1002",
+                },
+                {
+                    "model_dir": "remote/model-2001",
+                    "id": "2001",
+                    "origin_url": "https://makerworld.com.cn/zh/models/2001",
+                },
+            )
+        }
+
+        with patch.object(subscriptions, "get_archive_snapshot", return_value=archive_snapshot), \
+                patch.object(subscriptions, "invalidate_archive_snapshot") as invalidate_snapshot, \
+                patch.object(subscriptions, "invalidate_model_detail_cache") as invalidate_detail:
+            result = self.manager.remove_account_imported_subscriptions("cn")
+
+        config = self.store.load()
+        states = self.task_store.load_subscriptions_state().get("items") or []
+        flags = self.task_store.load_model_flags()
+        inventory = subscriptions._read_cookie_source_inventory_state()["platforms"]["cn"]
+
+        self.assertEqual(result["removed_subscription_ids"], ["sub-account-author"])
+        self.assertEqual(result["local_deleted_count"], 2)
+        self.assertEqual([item.id for item in config.subscriptions], ["sub-manual"])
+        self.assertEqual([item["id"] for item in states], ["sub-manual"])
+        self.assertEqual(set(flags["deleted"]), {"remote/model-1001", "remote/model-1002"})
+        self.assertEqual(inventory["last_status"], "deleted")
+        self.assertEqual(inventory["imported_sources"], [])
+        self.assertEqual(inventory["source_urls"], [])
+        invalidate_snapshot.assert_called_once_with("online_account_deleted")
+        self.assertEqual(invalidate_detail.call_count, 2)
+
+    def test_remove_account_imported_subscriptions_ignores_untracked_cookie_loss(self):
+        config = self.store.load()
+        config.subscriptions = [
+            SubscriptionRecord(
+                id="sub-manual",
+                name="手工订阅",
+                url="https://makerworld.com.cn/zh/@manual/upload",
+                mode="author_upload",
+                cron="0 * * * *",
+                enabled=True,
+            )
+        ]
+        self.store.save(config)
+
+        result = self.manager.remove_account_imported_subscriptions("cn")
+
+        self.assertEqual(result["removed_subscription_count"], 0)
+        self.assertEqual([item.id for item in self.store.load().subscriptions], ["sub-manual"])
 
 
 if __name__ == "__main__":

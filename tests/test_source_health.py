@@ -14,7 +14,7 @@ class SourceHealthCardsTest(unittest.TestCase):
         source_health.ThreadPoolExecutor = self.original_executor
         source_health._limit_guard_for_platform = self.original_limit_guard_for_platform
 
-    def test_missing_3mf_verification_overrides_probe_ok(self):
+    def test_missing_3mf_verification_is_displayed_alongside_probe_ok(self):
         original_probe = source_health._probe_platform_status
         source_health._probe_platform_status = lambda platform, *_args, **_kwargs: {
             "platform": platform,
@@ -43,11 +43,14 @@ class SourceHealthCardsTest(unittest.TestCase):
 
         card_map = {item["key"]: item for item in cards}
         self.assertEqual(card_map["cn"]["state"], "verification_required")
-        self.assertEqual(card_map["cn"]["status"], "需要验证")
+        self.assertEqual(card_map["cn"]["status"], "3MF 下载需要验证")
         self.assertEqual(card_map["cn"]["detail"], "MakerWorld 需要验证，前往官网任意下载一个模型。")
         self.assertEqual(card_map["global"]["state"], "ok")
+        checks = {item["source"]: item for item in card_map["cn"]["checks"]}
+        self.assertEqual(checks["account"]["status"], "连接正常")
+        self.assertEqual(checks["download"]["status"], "需要验证")
 
-    def test_html_probe_message_does_not_claim_cookie_invalid(self):
+    def test_html_probe_without_verification_markers_is_interface_limited(self):
         result = source_health._auth_probe_result_from_response(
             name="profile",
             url="https://api.example.test/profile",
@@ -58,9 +61,70 @@ class SourceHealthCardsTest(unittest.TestCase):
         )
 
         self.assertFalse(result["ok"])
-        self.assertEqual(result["failure_kind"], "verification_required")
+        self.assertEqual(result["failure_kind"], "html_response")
         self.assertIn("认证探针返回了网页页面", result["error"])
         self.assertNotIn("Cookie 失效", result["error"])
+        self.assertEqual(source_health._classify_auth_probe_result(result), "html_response")
+
+    def test_html_probe_with_verification_markers_still_requires_verification(self):
+        result = source_health._auth_probe_result_from_response(
+            name="profile",
+            url="https://api.example.test/profile",
+            status_code=200,
+            text="<html><body>cf-browser-verification</body></html>",
+            headers={"content-type": "text/html"},
+            elapsed_ms=12.0,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["failure_kind"], "verification_required")
+        self.assertIn("验证页面", result["error"])
+
+    def test_cookie_partial_success_message_avoids_probe_count_jargon(self):
+        message = source_health._build_cookie_auth_message(
+            "cn",
+            {
+                "success_count": 1,
+                "target_count": 2,
+                "results": [
+                    {"target": "消息计数", "ok": True},
+                    {"target": "个人偏好", "ok": False},
+                ],
+            },
+        )
+
+        self.assertIn("国内账号已保存", message)
+        self.assertIn("部分账号信息暂时读取失败", message)
+        self.assertNotIn("1/2", message)
+        self.assertNotIn("接口可访问", message)
+        self.assertNotIn("个人偏好", message)
+
+    def test_html_response_message_does_not_ask_for_verification(self):
+        message = source_health._build_cookie_auth_message(
+            "cn",
+            {
+                "state": "html_response",
+                "success_count": 0,
+                "target_count": 1,
+                "results": [
+                    {"target": "消息计数", "ok": False, "failure_kind": "html_response"},
+                ],
+            },
+        )
+
+        self.assertIn("暂时无法读取账号信息", message)
+        self.assertNotIn("需要验证", message)
+
+    def test_cookie_probe_headers_include_bearer_token_from_cookie(self):
+        headers = source_health._build_request_headers(
+            "https://makerworld.com.cn",
+            "token=access-token; refreshToken=refresh-token",
+        )
+
+        self.assertEqual(headers["Authorization"], "Bearer access-token")
+        self.assertEqual(headers["token"], "access-token")
+        self.assertEqual(headers["X-Token"], "access-token")
+        self.assertEqual(headers["X-Access-Token"], "access-token")
 
     def test_missing_3mf_limit_overrides_probe_verification(self):
         original_probe = source_health._probe_platform_status
@@ -97,8 +161,11 @@ class SourceHealthCardsTest(unittest.TestCase):
 
         card_map = {item["key"]: item for item in cards}
         self.assertEqual(card_map["cn"]["state"], "download_limited")
-        self.assertEqual(card_map["cn"]["status"], "到达每日上限")
+        self.assertEqual(card_map["cn"]["status"], "3MF 下载到达每日上限")
         self.assertIn("2026-04-27 00:00", card_map["cn"]["detail"])
+        checks = {item["source"]: item for item in card_map["cn"]["checks"]}
+        self.assertEqual(checks["account"]["status"], "需要验证")
+        self.assertEqual(checks["download"]["status"], "到达每日上限")
 
     def test_stale_missing_3mf_limit_message_uses_current_guard(self):
         original_probe = source_health._probe_platform_status
@@ -137,6 +204,9 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(card_map["cn"]["state"], "download_limited")
         self.assertIn("2026-04-27 00:00", card_map["cn"]["detail"])
         self.assertNotIn("2026-04-26 00:00", card_map["cn"]["detail"])
+        checks = {item["source"]: item for item in card_map["cn"]["checks"]}
+        self.assertEqual(checks["account"]["status"], "连接正常")
+        self.assertEqual(checks["download"]["status"], "到达每日上限")
 
     def test_stale_missing_3mf_limit_without_guard_does_not_override_probe_ok(self):
         original_probe = source_health._probe_platform_status
@@ -231,7 +301,7 @@ class SourceHealthCardsTest(unittest.TestCase):
         finally:
             session.close()
 
-    def test_missing_3mf_message_only_verification_overrides_probe_ok(self):
+    def test_missing_3mf_message_only_verification_is_displayed_alongside_probe_ok(self):
         original_probe = source_health._probe_platform_status
         source_health._probe_platform_status = lambda platform, *_args, **_kwargs: {
             "platform": platform,
@@ -260,7 +330,10 @@ class SourceHealthCardsTest(unittest.TestCase):
 
         card_map = {item["key"]: item for item in cards}
         self.assertEqual(card_map["cn"]["state"], "verification_required")
-        self.assertEqual(card_map["cn"]["status"], "需要验证")
+        self.assertEqual(card_map["cn"]["status"], "3MF 下载需要验证")
+        checks = {item["source"]: item for item in card_map["cn"]["checks"]}
+        self.assertEqual(checks["account"]["status"], "连接正常")
+        self.assertEqual(checks["download"]["status"], "需要验证")
 
     def test_retrying_missing_3mf_does_not_override_probe_ok(self):
         original_probe = source_health._probe_platform_status
@@ -331,11 +404,12 @@ class SourceHealthCardsTest(unittest.TestCase):
 
         card_map = {item["key"]: item for item in cards}
         self.assertEqual(card_map["cn"]["state"], "probe_limited")
-        self.assertEqual(card_map["cn"]["status"], "部分受限")
+        self.assertEqual(card_map["cn"]["status"], "账号部分受限")
         self.assertEqual(card_map["cn"]["tone"], "warning")
         self.assertIn("认证探针返回验证页", card_map["cn"]["detail"])
+        self.assertEqual(card_map["cn"]["checks"][0]["status"], "部分受限")
 
-    def test_missing_3mf_verification_stays_danger_even_when_refresh_succeeds(self):
+    def test_missing_3mf_verification_stays_danger_even_when_probe_is_softened_by_refresh(self):
         original_probe = source_health._probe_platform_status
         source_health._probe_platform_status = lambda platform, *_args, **_kwargs: {
             "platform": platform,
@@ -373,8 +447,11 @@ class SourceHealthCardsTest(unittest.TestCase):
 
         card_map = {item["key"]: item for item in cards}
         self.assertEqual(card_map["cn"]["state"], "verification_required")
-        self.assertEqual(card_map["cn"]["status"], "需要验证")
+        self.assertEqual(card_map["cn"]["status"], "3MF 下载需要验证")
         self.assertEqual(card_map["cn"]["tone"], "danger")
+        checks = {item["source"]: item for item in card_map["cn"]["checks"]}
+        self.assertEqual(checks["account"]["status"], "部分受限")
+        self.assertEqual(checks["download"]["status"], "需要验证")
 
 class InlineExecutor:
     def __init__(self, *args, **kwargs):

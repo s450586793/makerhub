@@ -1,4 +1,3 @@
-import json
 import re
 import threading
 import time
@@ -9,6 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
 
+from app.core.database_json_state import load_database_json_state, save_database_json_state
 from app.core.settings import ARCHIVE_DIR, BACKGROUND_TASKS_ENABLED, LOGS_DIR, STATE_DIR, ensure_app_dirs
 from app.core.store import JsonStore
 from app.core.timezone import now as china_now, parse_datetime
@@ -19,7 +19,7 @@ from app.services.batch_discovery import (
     normalize_source_url,
     resolve_batch_source_name,
 )
-from app.services.business_logs import append_business_log
+from app.services.business_logs import append_business_log, append_structured_log
 from app.services.catalog import (
     get_archive_snapshot,
     invalidate_archive_snapshot,
@@ -38,12 +38,27 @@ from app.services.three_mf import (
 BATCH_TASK_MODES = {"author_upload", "collection_models"}
 BATCH_QUEUE_LOG_PATH = LOGS_DIR / "batch_queue.log"
 MAX_BATCH_CHILD_REQUEUE_ATTEMPTS = 3
+MAX_BATCH_CHILD_TRANSIENT_REQUEUE_ATTEMPTS = 5
 ACTIVE_BATCH_IDLE_POLL_SECONDS = 2.0
 PROFILE_BACKFILL_TASK_COOLDOWN_SECONDS = 0.5
 COLLECTION_DETAIL_RE = re.compile(r"/(?:[a-z]{2}/)?collections/\d+(?:-[^/?#]+)?(?:[/?#]|$)", re.I)
 THREE_MF_LIMIT_GUARD_PATH = STATE_DIR / "three_mf_limit_guard.json"
+THREE_MF_LIMIT_GUARD_KEY = "three_mf_limit_guard"
 THREE_MF_LIMIT_DEFAULT_MESSAGE = "已达到 MakerWorld 每日下载上限，今日暂停自动重试。"
 DEFAULT_THREE_MF_DAILY_LIMIT = 100
+BATCH_CHILD_TRANSIENT_CURL_ERROR_CODES = {5, 6, 7, 28, 35, 52, 55, 56, 92}
+BATCH_CHILD_TRANSIENT_FAILURE_TOKENS = (
+    "could not resolve host",
+    "name or service not known",
+    "ns_error_unknown_host",
+    "connection timed out",
+    "operation timed out",
+    "failed to connect",
+    "connection reset",
+    "connection refused",
+    "temporarily unavailable",
+    "timed out",
+)
 
 
 def _normalize_three_mf_daily_limit(value: Any, fallback: int = DEFAULT_THREE_MF_DAILY_LIMIT) -> int:
@@ -120,23 +135,35 @@ def _queue_item_key(item: dict) -> str:
     return _task_key(item.get("url") or item.get("title") or "")
 
 
+def _is_transient_batch_child_failure(message: str) -> bool:
+    lowered = str(message or "").strip().lower()
+    if not lowered:
+        return False
+
+    for match in re.finditer(r"code=(\d+)", lowered):
+        try:
+            if int(match.group(1)) in BATCH_CHILD_TRANSIENT_CURL_ERROR_CODES:
+                return True
+        except ValueError:
+            continue
+
+    return any(token in lowered for token in BATCH_CHILD_TRANSIENT_FAILURE_TOKENS)
+
+
+def _failure_message_from_queue_item(item: Optional[dict[str, Any]]) -> str:
+    if not isinstance(item, dict):
+        return ""
+    return str(item.get("message") or item.get("detail") or "").strip()
+
+
 def _append_batch_queue_log(event: str, **payload: Any) -> None:
-    try:
-        BATCH_QUEUE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with BATCH_QUEUE_LOG_PATH.open("a", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps(
-                    {
-                        "time": china_now().isoformat(),
-                        "event": event,
-                        **payload,
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        return
+    append_structured_log(
+        BATCH_QUEUE_LOG_PATH.name,
+        event,
+        category="archive",
+        time_text=china_now().isoformat(),
+        **payload,
+    )
 
 
 def _log_archive(event: str, message: str = "", level: str = "info", **payload: Any) -> None:
@@ -170,13 +197,7 @@ def _parse_three_mf_limit_time(value: str) -> Optional[datetime]:
 def _write_three_mf_limit_guard(payload: dict[str, Any]) -> dict[str, Any]:
     ensure_app_dirs()
     current = _base_three_mf_limit_guard()
-    if THREE_MF_LIMIT_GUARD_PATH.exists():
-        try:
-            existing = json.loads(THREE_MF_LIMIT_GUARD_PATH.read_text(encoding="utf-8"))
-            if isinstance(existing, dict):
-                current.update(existing)
-        except (OSError, json.JSONDecodeError):
-            pass
+    current.update(load_database_json_state(THREE_MF_LIMIT_GUARD_KEY, current))
 
     current.update(
         {
@@ -190,23 +211,13 @@ def _write_three_mf_limit_guard(payload: dict[str, Any]) -> dict[str, Any]:
             "instance_id": str(payload.get("instance_id", current.get("instance_id")) or ""),
         }
     )
-    THREE_MF_LIMIT_GUARD_PATH.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
-    return current
+    return save_database_json_state(THREE_MF_LIMIT_GUARD_KEY, current)
 
 
 def _read_three_mf_limit_guard() -> dict[str, Any]:
     ensure_app_dirs()
-    if not THREE_MF_LIMIT_GUARD_PATH.exists():
-        return _base_three_mf_limit_guard()
-
-    try:
-        payload = json.loads(THREE_MF_LIMIT_GUARD_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return _base_three_mf_limit_guard()
-
     state = _base_three_mf_limit_guard()
-    if isinstance(payload, dict):
-        state.update(payload)
+    state.update(load_database_json_state(THREE_MF_LIMIT_GUARD_KEY, state))
 
     if bool(state.get("active")):
         limited_until = str(state.get("limited_until") or "").strip()
@@ -219,12 +230,12 @@ def _read_three_mf_limit_guard() -> dict[str, Any]:
 
 
 def _is_three_mf_limit_guard_active(state: Optional[dict[str, Any]] = None) -> bool:
-    current = state or _read_three_mf_limit_guard()
+    current = _read_three_mf_limit_guard() if state is None else state
     return bool(current.get("active"))
 
 
 def _is_three_mf_limit_guard_active_for_url(url: str, state: Optional[dict[str, Any]] = None) -> bool:
-    current = state or _read_three_mf_limit_guard()
+    current = _read_three_mf_limit_guard() if state is None else state
     if not _is_three_mf_limit_guard_active(current):
         return False
     guard_source = normalize_makerworld_source(url=current.get("model_url"))
@@ -240,7 +251,7 @@ def _three_mf_limit_until() -> str:
 
 
 def _three_mf_limit_message(state: Optional[dict[str, Any]] = None) -> str:
-    current = state or _read_three_mf_limit_guard()
+    current = _read_three_mf_limit_guard() if state is None else state
     base_message = str(current.get("message") or "").strip() or THREE_MF_LIMIT_DEFAULT_MESSAGE
     if "自动重试暂停至" in base_message:
         base_message = base_message.split("自动重试暂停至", 1)[0].rstrip("，,。 ")
@@ -461,6 +472,7 @@ class ArchiveTaskManager:
                         "attempts": 1,
                         "status": "",
                         "last_task_id": "",
+                        "last_failure_message": "",
                     }
                 )
                 continue
@@ -478,11 +490,194 @@ class ArchiveTaskManager:
                     "attempts": max(int(raw.get("attempts") or 1), 1),
                     "status": str(raw.get("status") or "").strip(),
                     "last_task_id": str(raw.get("last_task_id") or raw.get("child_task_id") or "").strip(),
+                    "last_failure_message": str(raw.get("last_failure_message") or "").strip()[:400],
                 }
             )
         return normalized
 
+    def _requeue_batch_child(
+        self,
+        *,
+        batch_id: str,
+        batch_url: str,
+        item: dict[str, Any],
+        attempts: int,
+        retry_limit: int,
+        transient: bool = False,
+        failure_message: str = "",
+    ) -> str:
+        if transient:
+            self.task_store.remove_recent_failures_for_model(
+                str(item.get("model_id") or ""),
+                str(item.get("url") or ""),
+            )
+
+        child_task_id = self._enqueue_single_task(
+            item.get("url") or "",
+            message=f"批量任务补回：{batch_url}",
+            mode="single_model",
+            meta={
+                "batch_parent_id": batch_id,
+                "batch_source_url": batch_url,
+                "batch_requeued": True,
+            },
+        )
+        item["attempts"] = attempts + 1
+        item["last_task_id"] = child_task_id
+        item["status"] = "queued"
+        if failure_message:
+            item["last_failure_message"] = failure_message[:400]
+        _append_batch_queue_log(
+            "child_requeued",
+            batch_task_id=batch_id,
+            batch_url=batch_url,
+            child_task_id=child_task_id,
+            model_url=item.get("url") or "",
+            model_id=item.get("model_id") or "",
+            task_key=item.get("task_key") or "",
+            attempts=item["attempts"],
+            retry_limit=retry_limit,
+            transient=transient,
+            failure_message=(failure_message or "")[:400],
+        )
+        return child_task_id
+
+    def _restore_orphaned_batch_parents(self) -> int:
+        restored_count = 0
+
+        def _mutate(payload: dict) -> dict:
+            nonlocal restored_count
+            active_items = list(payload.get("active") or [])
+            queued_items = list(payload.get("queued") or [])
+            failed_items = list(payload.get("recent_failures") or [])
+            existing_task_ids = {
+                str(item.get("id") or "").strip()
+                for item in active_items + queued_items
+                if str(item.get("id") or "").strip()
+            }
+
+            groups: dict[str, dict[str, Any]] = {}
+            for section, status in (
+                (active_items, "running"),
+                (queued_items, "queued"),
+                (failed_items, "failed"),
+            ):
+                for child in section:
+                    meta = child.get("meta") if isinstance(child.get("meta"), dict) else {}
+                    batch_parent_id = str(meta.get("batch_parent_id") or "").strip()
+                    if not batch_parent_id or batch_parent_id in existing_task_ids:
+                        continue
+
+                    batch_source_url = normalize_source_url(str(meta.get("batch_source_url") or ""))
+                    if not batch_source_url:
+                        continue
+
+                    group = groups.setdefault(
+                        batch_parent_id,
+                        {
+                            "batch_url": batch_source_url,
+                            "children": [],
+                        },
+                    )
+                    if not group.get("batch_url"):
+                        group["batch_url"] = batch_source_url
+
+                    child_url = normalize_source_url(str(child.get("url") or child.get("title") or ""))
+                    key = str(meta.get("batch_task_key") or "").strip() or _task_key(child_url)
+                    if not child_url or not key:
+                        continue
+                    try:
+                        attempts = max(int(meta.get("batch_attempts") or 1), 1)
+                    except (TypeError, ValueError):
+                        attempts = 1
+
+                    group["children"].append(
+                        {
+                            "url": child_url,
+                            "task_key": key,
+                            "model_id": str(meta.get("model_id") or extract_model_id(child_url) or "").strip(),
+                            "attempts": attempts,
+                            "status": status,
+                            "last_task_id": str(child.get("id") or "").strip(),
+                            "last_failure_message": _failure_message_from_queue_item(child)[:400],
+                        }
+                    )
+
+            restored_parents: list[dict[str, Any]] = []
+            now_text = china_now().isoformat()
+            for batch_parent_id, group in groups.items():
+                children = group.get("children") or []
+                if not children:
+                    continue
+                if not any(item.get("status") in {"queued", "running"} for item in children):
+                    continue
+
+                batch_url = normalize_source_url(str(group.get("batch_url") or ""))
+                mode = detect_archive_mode(batch_url)
+                if mode not in BATCH_TASK_MODES:
+                    mode = "author_upload"
+
+                restored_parents.append(
+                    {
+                        "id": batch_parent_id,
+                        "url": batch_url,
+                        "title": batch_url,
+                        "mode": mode,
+                        "status": "running",
+                        "progress": 60,
+                        "message": "批量任务已恢复，正在同步子任务状态。",
+                        "updated_at": now_text,
+                        "meta": {
+                            "batch_expected_items": children,
+                            "batch_restored": True,
+                            "batch_restored_at": now_text,
+                            "batch_progress": {
+                                "total": len(children),
+                                "completed": 0,
+                                "failed": sum(1 for item in children if item.get("status") == "failed"),
+                                "running": sum(1 for item in children if item.get("status") == "running"),
+                                "queued": sum(1 for item in children if item.get("status") == "queued"),
+                                "remaining": len(children),
+                            },
+                        },
+                    }
+                )
+                _append_batch_queue_log(
+                    "batch_parent_restored",
+                    batch_task_id=batch_parent_id,
+                    batch_url=batch_url,
+                    total=len(children),
+                    running=sum(1 for item in children if item.get("status") == "running"),
+                    queued=sum(1 for item in children if item.get("status") == "queued"),
+                    failed=sum(1 for item in children if item.get("status") == "failed"),
+                )
+                _log_archive(
+                    "batch_parent_restored",
+                    "检测到批量子任务仍在队列中，已恢复批量父任务进度跟踪。",
+                    task_id=batch_parent_id,
+                    url=batch_url,
+                    total=len(children),
+                )
+
+            if not restored_parents:
+                restored_count = 0
+                return payload
+
+            restored_count = len(restored_parents)
+            payload["active"] = restored_parents + active_items
+            restored_parent_ids = {str(item.get("id") or "") for item in restored_parents}
+            payload["recent_failures"] = [
+                item
+                for item in failed_items
+                if str(item.get("id") or "") not in restored_parent_ids
+            ]
+            return payload
+
+        self.task_store._update_archive_queue(_mutate)
+        return restored_count
+
     def _refresh_batch_tasks(self) -> bool:
+        restored_count = self._restore_orphaned_batch_parents()
         snapshot = self._queue_state_snapshot()
         active_items = snapshot["active"]
         batch_tasks = [
@@ -492,7 +687,7 @@ class ArchiveTaskManager:
             and self._normalize_batch_expected_items((item.get("meta") or {}).get("batch_expected_items"))
         ]
         if not batch_tasks:
-            return False
+            return restored_count > 0
 
         active_batch_ids = {str(item.get("id") or "") for item in batch_tasks}
         active_child_by_key = {
@@ -550,6 +745,28 @@ class ArchiveTaskManager:
                     continue
 
                 if key in failed_by_key:
+                    failure_message = _failure_message_from_queue_item(failed_by_key.get(key))
+                    if failure_message and item.get("last_failure_message") != failure_message[:400]:
+                        item["last_failure_message"] = failure_message[:400]
+                        updated = True
+                    attempts = max(int(item.get("attempts") or 1), 1)
+                    if (
+                        _is_transient_batch_child_failure(failure_message)
+                        and attempts < MAX_BATCH_CHILD_TRANSIENT_REQUEUE_ATTEMPTS
+                    ):
+                        child_task_id = self._requeue_batch_child(
+                            batch_id=batch_id,
+                            batch_url=batch_url,
+                            item=item,
+                            attempts=attempts,
+                            retry_limit=MAX_BATCH_CHILD_TRANSIENT_REQUEUE_ATTEMPTS,
+                            transient=True,
+                            failure_message=failure_message,
+                        )
+                        queued_by_key[key] = {"id": child_task_id, "url": item.get("url") or ""}
+                        queued_count += 1
+                        updated = True
+                        continue
                     if status != "failed":
                         item["status"] = "failed"
                         updated = True
@@ -558,31 +775,35 @@ class ArchiveTaskManager:
 
                 attempts = max(int(item.get("attempts") or 1), 1)
                 if attempts < MAX_BATCH_CHILD_REQUEUE_ATTEMPTS:
-                    child_task_id = self._enqueue_single_task(
-                        item.get("url") or "",
-                        message=f"批量任务补回：{batch_url}",
-                        mode="single_model",
-                        meta={
-                            "batch_parent_id": batch_id,
-                            "batch_source_url": batch_url,
-                            "batch_requeued": True,
-                        },
+                    child_task_id = self._requeue_batch_child(
+                        batch_id=batch_id,
+                        batch_url=batch_url,
+                        item=item,
+                        attempts=attempts,
+                        retry_limit=MAX_BATCH_CHILD_REQUEUE_ATTEMPTS,
                     )
-                    item["attempts"] = attempts + 1
-                    item["last_task_id"] = child_task_id
-                    item["status"] = "queued"
+                    queued_by_key[key] = {"id": child_task_id, "url": item.get("url") or ""}
                     queued_count += 1
                     updated = True
-                    _append_batch_queue_log(
-                        "child_requeued",
-                        batch_task_id=batch_id,
+                    continue
+
+                failure_message = str(item.get("last_failure_message") or "").strip()
+                if (
+                    _is_transient_batch_child_failure(failure_message)
+                    and attempts < MAX_BATCH_CHILD_TRANSIENT_REQUEUE_ATTEMPTS
+                ):
+                    child_task_id = self._requeue_batch_child(
+                        batch_id=batch_id,
                         batch_url=batch_url,
-                        child_task_id=child_task_id,
-                        model_url=item.get("url") or "",
-                        model_id=item.get("model_id") or "",
-                        task_key=key,
-                        attempts=item["attempts"],
+                        item=item,
+                        attempts=attempts,
+                        retry_limit=MAX_BATCH_CHILD_TRANSIENT_REQUEUE_ATTEMPTS,
+                        transient=True,
+                        failure_message=failure_message,
                     )
+                    queued_by_key[key] = {"id": child_task_id, "url": item.get("url") or ""}
+                    queued_count += 1
+                    updated = True
                     continue
 
                 if status != "failed":
@@ -941,7 +1162,7 @@ class ArchiveTaskManager:
         return "缺失 3MF" in message
 
     def _pause_missing_3mf_retry_tasks_for_limit(self, state: Optional[dict[str, Any]] = None) -> int:
-        guard_state = state or _read_three_mf_limit_guard()
+        guard_state = _read_three_mf_limit_guard() if state is None else state
         if not _is_three_mf_limit_guard_active(guard_state):
             return 0
 
