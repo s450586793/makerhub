@@ -46,7 +46,7 @@
 - Docker:
   - 默认 compose 挂载 `/var/run/docker.sock`，设置页可直接网页更新。
   - `depends_on` 与 Postgres `healthcheck` 作为高级可选注释保留，默认不启用。
-  - 默认目录布局为 `/app/config/{config,logs,state}` 与 `/app/data/{archive,local}`，compose 只映射 `/app/config`、`/app/data` 和 Postgres 数据目录。
+  - 默认目录布局为 `/app/config/{config,logs,state}` 与 `/app/data`，compose 只映射 `/app/config`、`/app/data` 和 Postgres 数据目录。
   - `makerhub-app` 和 `makerhub-worker` 应使用同一镜像版本。
 
 ## 常用测试命令

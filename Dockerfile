@@ -16,7 +16,7 @@ ENV PYTHONUNBUFFERED=1
 ENV MAKERHUB_CONFIG_DIR=/app/config/config
 ENV MAKERHUB_LOGS_DIR=/app/config/logs
 ENV MAKERHUB_STATE_DIR=/app/config/state
-ENV MAKERHUB_ARCHIVE_DIR=/app/data/archive
+ENV MAKERHUB_ARCHIVE_DIR=/app/data
 ENV MAKERHUB_LOCAL_DIR=/app/data/local
 
 RUN apt-get update \
@@ -26,7 +26,7 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 RUN scrapling install
-RUN mkdir -p /app/config/config /app/config/logs /app/config/state /app/data/archive /app/data/local
+RUN mkdir -p /app/config/config /app/config/logs /app/config/state /app/data /app/data/local
 
 COPY app ./app
 COPY VERSION ./VERSION

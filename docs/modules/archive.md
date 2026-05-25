@@ -55,7 +55,7 @@
   - `makerhub_json_state:three_mf_limit_guard`
   - `archive_model_index`
 - 文件:
-  - `/app/data/archive/<model_dir>/`
+  - `/app/data/<model_dir>/`
   - 历史日志迁移输入：`/app/config/logs/business.log`
   - 历史日志迁移输入：`/app/config/logs/batch_queue.log`
   - 历史日志迁移输入：`/app/config/logs/batch_discovery.log`

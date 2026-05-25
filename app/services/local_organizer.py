@@ -339,11 +339,7 @@ class LocalOrganizerService:
         try:
             source_resolved = source_dir.resolve()
             library_resolved = library_root.resolve()
-            if (
-                source_resolved == library_resolved
-                or library_resolved.is_relative_to(source_resolved)
-                or source_resolved.is_relative_to(library_resolved)
-            ):
+            if source_resolved == library_resolved or library_resolved.is_relative_to(source_resolved):
                 _append_organizer_log(
                     "invalid_config",
                     source_dir=str(source_dir),

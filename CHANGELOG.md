@@ -1,9 +1,15 @@
 # 更新说明
 
+## 2026-05-25 · v0.7.2
+
+- 归档模型根目录统一为 `/app/data`，旧 DSM 模型目录不需要再手动移动到 `archive/` 子目录。
+- 兼容旧镜像继承的 `MAKERHUB_ARCHIVE_DIR=/app/data/archive` 环境变量，启动时会自动按 `/app/data` 识别模型库。
+- 默认本地整理入口仍为 `/app/data/local`，允许它位于模型库根目录内，避免默认配置被误判为无效。
+
 ## 2026-05-25 · v0.7.1
 
 - 修复 V0.7.0 新目录布局下，老用户把历史归档模型仍放在 `/app/data` 根目录时，模型库、订阅库和本地库为空的问题。
-- 新布局仍优先使用 `/app/data/archive`；当该目录没有模型、但 `/app/data` 根目录存在旧模型 `meta.json` 时，会自动回退读取旧归档根，避免升级后看不到历史模型。
+- 新布局会在 `/app/data/archive` 为空但 `/app/data` 根目录存在旧模型 `meta.json` 时，自动回退读取旧归档根，避免升级后看不到历史模型。
 - 手动重建数据库索引会跟随实际识别到的归档根目录重新写入，之前错误生成的 0 条索引不会继续遮挡旧数据。
 
 ## 2026-05-25 · v0.7.0
@@ -17,7 +23,7 @@ V0.7.0 是 MakerHub 的数据库化架构版本。这个版本把运行期结构
 - `docker.sock` 挂载默认开启，设置页可直接执行网页一键更新。
 - `depends_on` 和 Postgres `healthcheck` 默认注释保留，高级部署需要时可自行打开。
 - 默认 compose 直接写入示例数据库密码，不再要求单独创建 `.env`。
-- 容器目录收敛为 `/app/config/{config,logs,state}` 与 `/app/data/{archive,local}`，默认 compose 只需映射 `/app/config`、`/app/data` 和 Postgres 数据目录。
+- 容器目录收敛为 `/app/config/{config,logs,state}` 与 `/app/data`，默认 compose 只需映射 `/app/config`、`/app/data` 和 Postgres 数据目录。
 - GitHub Actions Docker 发布会继续推送 `latest` 和 `sha` 标签，并增加根目录 `VERSION` 对应的版本标签。
 
 ### 数据库化
@@ -60,7 +66,7 @@ V0.7.0 是 MakerHub 的数据库化架构版本。这个版本把运行期结构
 
 - 升级到 V0.7.0 前，请先把 compose 改成 App / Worker / Postgres 三容器。
 - 默认数据库密码写在 compose 里，正式使用前建议替换为自己的纯英文数字密码。
-- 旧宿主机归档根目录需要按新布局整理为 `data/archive` 和 `data/local` 两个子目录，再映射到容器 `/app/data`。
+- 旧宿主机归档根目录可以直接映射到容器 `/app/data`，历史模型目录不需要移动；本地导入入口保留为 `/app/data/local`。
 - 模型文件、图片、附件和历史 `meta.json` 不会被迁移过程删除。
 - 如果设置页提示“需改 compose”，请先手动更新 compose，再执行网页一键更新。
 

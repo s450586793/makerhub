@@ -54,10 +54,10 @@
   - `archive_model_index`
   - `makerhub_json_state:model_flags`
 - 文件:
-  - `/app/data/archive/<model_dir>/meta.json`
-  - `/app/data/archive/<model_dir>/images/`
-  - `/app/data/archive/<model_dir>/files/`
-  - `/app/data/archive/<model_dir>/attachments/`
+  - `/app/data/<model_dir>/meta.json`
+  - `/app/data/<model_dir>/images/`
+  - `/app/data/<model_dir>/files/`
+  - `/app/data/<model_dir>/attachments/`
   - 附件 sidecar 文件由 `model_attachments.py` 管理。
 
 ## 常用测试命令

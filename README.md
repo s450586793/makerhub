@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.7.1`
+> 当前版本：`v0.7.2`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -64,7 +64,7 @@ MakerHub 是一个面向个人 NAS、DSM、Unraid、Portainer 和自托管服务
 
 ```bash
 mkdir -p /volume4/docker/docker/makerhub/{config,postgres}
-mkdir -p "/volume2/entertainment/3D打印/makerhub"/{archive,local}
+mkdir -p "/volume2/entertainment/3D打印/makerhub/local"
 ```
 
 目录含义：
@@ -72,7 +72,7 @@ mkdir -p "/volume2/entertainment/3D打印/makerhub"/{archive,local}
 - `/app/config/config`：运行配置和旧配置迁移输入。
 - `/app/config/state`：旧任务状态、marker、系统状态迁移输入、上传暂存、预览队列 marker 和少量运行临时状态。
 - `/app/config/logs`：旧日志迁移输入；新业务日志写入 Postgres。
-- `/app/data/archive`：归档模型、图片、附件、模型文件和历史 `meta.json`。
+- `/app/data`：归档模型、图片、附件、模型文件和历史 `meta.json`。旧 DSM 模型目录可以继续直接放在这里。
 - `/app/data/local`：本地导入和整理入口。
 - `/var/lib/postgresql/data`：Postgres 数据库目录。
 
@@ -174,7 +174,7 @@ docker compose up -d
 
 如果设置页提示“需改 compose”，说明当前容器缺少 `MAKERHUB_DATABASE_URL`、`makerhub-postgres`，或仍使用旧 `/app/archive`、`/app/local` 分散挂载。请先升级 compose，再使用网页一键更新。
 
-旧部署如果原来把模型直接放在宿主机 `/volume2/entertainment/3D打印/makerhub` 根目录下，新布局建议把历史模型目录移动到 `/volume2/entertainment/3D打印/makerhub/archive/`，本地导入入口保留在 `/volume2/entertainment/3D打印/makerhub/local/`。这样容器内路径就分别是 `/app/data/archive` 和 `/app/data/local`。
+旧部署如果原来把模型直接放在宿主机 `/volume2/entertainment/3D打印/makerhub` 根目录下，不需要移动历史模型目录。继续把这个目录映射到容器 `/app/data` 即可；本地导入入口保留在宿主机 `/volume2/entertainment/3D打印/makerhub/local/`，容器内就是 `/app/data/local`。
 
 手动更新命令：
 
@@ -206,10 +206,16 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-05-25 · v0.7.2
+
+- 归档模型根目录统一为 `/app/data`，旧 DSM 模型目录不需要再手动移动到 `archive/` 子目录。
+- 兼容旧镜像继承的 `MAKERHUB_ARCHIVE_DIR=/app/data/archive` 环境变量，启动时会自动按 `/app/data` 识别模型库。
+- 默认本地整理入口 `/app/data/local` 可位于模型库根目录内，避免默认配置被误判为无效。
+
 ### 2026-05-25 · v0.7.1
 
 - 修复老用户按新 compose 映射 `/app/data` 后，历史模型仍在 `/app/data` 根目录导致模型库、订阅库和本地库为空的问题。
-- 新布局优先读取 `/app/data/archive`；如果该目录没有模型但 `/app/data` 根目录有旧模型，会自动兼容旧归档根并恢复历史模型显示。
+- 如果旧镜像仍按 `/app/data/archive` 读取，但历史模型仍在 `/app/data` 根目录，会自动兼容旧归档根并恢复历史模型显示。
 
 ### 2026-05-25 · v0.7.0
 
@@ -220,7 +226,7 @@ uvicorn app.main:app --reload
 - 首页 MW 状态拆分为 `账号` 与 `3MF 下载` 检查项，下载验证、每日上限、接口受限和 Cookie 问题会分别显示。
 - 在线账号、Cookie 认证探针和 MakerWorld/Bambu API 请求链路优化，减少普通 HTML/登录页被误判为“需要验证”。
 - 系统更新加入 compose 升级保护，旧部署缺少数据库配置时会提示先改 compose，避免网页更新后容器不可用。
-- 容器目录收敛为 `/app/config/{config,logs,state}` 与 `/app/data/{archive,local}`，默认 compose 只需映射 `/app/config`、`/app/data` 和 Postgres 数据目录。
+- 容器目录收敛为 `/app/config/{config,logs,state}` 与 `/app/data`，默认 compose 只需映射 `/app/config`、`/app/data` 和 Postgres 数据目录。
 - 重写 README、补充功能介绍、Compose 安装方式和 V0.7.0 更新说明。
 
 ### 2026-05-22 · v0.6.128

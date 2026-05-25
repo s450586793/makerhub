@@ -42,7 +42,7 @@
   - `makerhub_json_state:model_flags`
   - `archive_model_index`
 - 文件:
-  - `/app/data/archive/<model_dir>/meta.json`
+  - `/app/data/<model_dir>/meta.json`
   - `/app/config/state/remote_refresh_state.json`
   - `/app/config/logs/remote_refresh.log` 仅作为历史日志迁移输入。
 

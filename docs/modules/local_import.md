@@ -63,7 +63,7 @@
   - `archive_model_index` 最终模型索引。
 - 文件:
   - `/app/data/local`：导入入口和本地整理工作目录。
-  - `/app/data/archive/LOCAL_*`：本地模型最终目录。
+  - `/app/data/LOCAL_*`：本地模型最终目录。
   - `/app/config/logs/organizer.log` 仅作为历史日志迁移输入。
   - `/app/config/state/organize_tasks.json` 仅作为旧部署迁移输入。
 

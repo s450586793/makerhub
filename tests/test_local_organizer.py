@@ -220,6 +220,44 @@ class LocalOrganizerTest(unittest.TestCase):
         self.assertEqual(service._display_title_for_analysis(source_path, {}), "移动端导入")
         self.assertEqual(service._target_filename_for_analysis(source_path, {}), "wechat-upload.3mf")
 
+    def test_run_once_allows_local_source_inside_data_library_root(self):
+        with TemporaryDirectory() as tmp:
+            data_root = Path(tmp) / "data"
+            source_dir = data_root / "local"
+            source_dir.mkdir(parents=True)
+            candidate = source_dir / "demo.3mf"
+            candidate.write_bytes(b"demo-3mf")
+
+            store = SimpleNamespace(
+                load=lambda: SimpleNamespace(
+                    organizer=SimpleNamespace(
+                        source_dir=source_dir.as_posix(),
+                        target_dir=data_root.as_posix(),
+                        move_files=False,
+                    )
+                )
+            )
+            service = local_organizer.LocalOrganizerService(
+                store=store,
+                task_store=FakeTaskStore(),
+            )
+
+            with patch.object(service, "_poll_worker"), \
+                patch.object(service, "_queue_local_package_candidates"), \
+                patch.object(service, "_iter_candidates", return_value=[candidate]), \
+                patch.object(service, "_sync_candidate_queue", return_value=[]), \
+                patch.object(service, "_spawn_worker") as spawn_worker, \
+                patch.object(local_organizer, "_append_organizer_log") as append_log:
+                service.run_once()
+
+            invalid_events = [
+                call
+                for call in append_log.call_args_list
+                if call.args and call.args[0] == "invalid_config"
+            ]
+            self.assertEqual(invalid_events, [])
+            spawn_worker.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

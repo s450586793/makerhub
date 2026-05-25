@@ -235,7 +235,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
         try:
             self_update.STATE_DIR = Path("/app/config/state")
             self_update.LOGS_DIR = Path("/app/config/logs")
-            self_update.ARCHIVE_DIR = Path("/app/data/archive")
+            self_update.ARCHIVE_DIR = Path("/app/data")
             self_update.LOCAL_DIR = Path("/app/data/local")
 
             state_mount = self_update._state_mount_spec_from_inspect(inspect)
@@ -270,7 +270,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
         original_local_dir = self_update.LOCAL_DIR
         try:
             self_update.STATE_DIR = Path("/app/config/state")
-            self_update.ARCHIVE_DIR = Path("/app/data/archive")
+            self_update.ARCHIVE_DIR = Path("/app/data")
             self_update.LOCAL_DIR = Path("/app/data/local")
 
             migration_required = self_update._compose_migration_required(inspect)

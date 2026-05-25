@@ -8,7 +8,7 @@
 
 新版本的目标不是继续保留 `meta.json` 兼容副本，而是把它降级为一次性迁移输入：
 
-- 老用户升级时，迁移按钮扫描旧归档目录里的 `meta.json`，新布局默认为 `/app/data/archive/**/meta.json`，把里面的结构化字段导入 Postgres。
+- 老用户升级时，迁移按钮扫描旧归档目录里的 `meta.json`，新布局默认为 `/app/data/**/meta.json`，把里面的结构化字段导入 Postgres。
 - 迁移成功后，运行期不再从 `meta.json` 读取模型元数据。
 - 新归档、新本地导入、新编辑、新源端刷新都直接写数据库，不再写新的 `meta.json`。
 - 旧 `meta.json` 可以暂时留在磁盘上作为历史文件，但新代码不依赖它，也不把它当恢复源。
@@ -34,7 +34,7 @@
 | 业务日志 | Postgres `makerhub_logs` | 历史 `/app/config/logs/*.log` 只做迁移输入；默认 compose 不单独映射 logs | 页面日志从数据库读 |
 | 模型卡片、来源、作者、封面、时间、搜索字段 | Postgres `archive_model_index` 或后续模型表 | 老 `meta.json` 只做迁移输入 | 模型库列表直接读数据库 |
 | 模型详情完整结构 | Postgres JSONB 字段或后续详情表 | 老 `meta.json` 只做迁移输入 | 新归档和新编辑直接入库 |
-| 模型文件、图片、附件、3MF/STL/STEP/OBJ/PDF/Excel | 文件系统 `/app/data/archive` | 是 | 不写入数据库 |
+| 模型文件、图片、附件、3MF/STL/STEP/OBJ/PDF/Excel | 文件系统 `/app/data` | 是 | 不写入数据库 |
 | 本地导入入口、整理中目录、临时上传目录 | 文件系统 `/app/data/local` 和临时目录 | 是 | 数据库只记录进度和结果 |
 | 迁移运行记录、失败项、重试状态 | Postgres，建议新增迁移运行表 | 可选导出日志 | 用于按钮进度、失败重试和审计 |
 
@@ -71,7 +71,7 @@
 | `flags` | 收藏、已打印、本地删除、源端删除等状态 |
 | `raw_source_payload` | 必要时保存源端原始结构，方便后续字段演进 |
 
-文件本体仍在 `/app/data/archive`，数据库只保存路径和结构化信息。
+文件本体仍在 `/app/data`，数据库只保存路径和结构化信息。
 
 ### `makerhub_migration_runs`
 
@@ -140,7 +140,7 @@
 - 检查 Postgres 驱动和连接可用。
 - 初始化核心表和索引表。
 - 检查 Worker 是否在运行，或至少能被 App 提交后台任务。
-- 检查 `/app/data/archive`、`/app/data/local`、`/app/config/config`、`/app/config/state` 是否可读；如果存在旧日志目录 `/app/config/logs`，再导入历史日志。
+- 检查 `/app/data`、`/app/data/local`、`/app/config/config`、`/app/config/state` 是否可读；如果存在旧日志目录 `/app/config/logs`，再导入历史日志。
 
 预检失败时不进入迁移，页面显示明确原因。
 
@@ -183,7 +183,7 @@
 
 ### 4. 导入历史模型数据
 
-扫描 `/app/data/archive/**/meta.json`：
+扫描 `/app/data/**/meta.json`：
 
 - 读取并标准化模型。
 - 写入或更新数据库模型主数据，包括卡片、详情、文件清单、图片引用、附件引用、评论/评分/源端状态等结构化字段。
