@@ -1270,13 +1270,14 @@ def discover_cookie_account_profile(platform: str, raw_cookie: str) -> dict[str,
     return {"platform": clean_platform, "uid": "", "handle": "", "name": "", "avatar_url": ""}
 
 
+def _is_synthetic_user_handle(value: Any) -> bool:
+    return re.fullmatch(r"user_\d+", str(value or "").strip().lstrip("@"), flags=re.I) is not None
+
+
 def _profile_handle_or_uid_handle(profile: dict[str, str]) -> str:
     handle = str(profile.get("handle") or "").strip().lstrip("@")
-    if handle:
+    if handle and not _is_synthetic_user_handle(handle):
         return handle
-    uid = _coerce_numeric_string(profile.get("uid"))
-    if uid:
-        return f"user_{uid}"
     return ""
 
 
@@ -1308,11 +1309,6 @@ def _looks_like_author_follow_node(node: Any) -> bool:
     )
 
 
-def _fallback_author_handle_from_uid(node: Any) -> str:
-    uid = _extract_node_uid(node)
-    return f"user_{uid}" if uid else ""
-
-
 def _extract_followed_authors(payload: Any, platform: str) -> list[dict[str, str]]:
     source_origin = _platform_origin(platform)
     lang = _makerworld_model_path_lang(platform)
@@ -1335,8 +1331,8 @@ def _extract_followed_authors(payload: Any, platform: str) -> list[dict[str, str
     for node in candidate_nodes:
         if not _looks_like_author_follow_node(node):
             continue
-        handle = _extract_node_handle(node) or _fallback_author_handle_from_uid(node)
-        if not handle:
+        handle = _extract_node_handle(node)
+        if not handle or _is_synthetic_user_handle(handle):
             continue
         key = handle.lower()
         if key in seen:
@@ -2015,10 +2011,9 @@ def _resolve_author_uid_from_sample_models(
 
 
 def _resolve_author_uid(session: requests.Session, source_url: str, raw_cookie: str, handle: str) -> str:
-    fallback_uid = _coerce_numeric_string(re.sub(r"^user_", "", str(handle or "").strip(), flags=re.I))
-    if fallback_uid:
-        _append_discovery_debug("author_uid_resolved", handle=handle, uid=fallback_uid, mode="user_uid_handle")
-        return fallback_uid
+    if _is_synthetic_user_handle(handle):
+        _append_discovery_debug("author_uid_missing", handle=handle, reason="synthetic_uid_handle")
+        return ""
 
     uid = _resolve_uid_by_handle_api(
         session,
@@ -2054,10 +2049,9 @@ def _resolve_collection_owner_uid(
     raw_cookie: str,
     handle: str,
 ) -> str:
-    fallback_uid = _coerce_numeric_string(re.sub(r"^user_", "", str(handle or "").strip(), flags=re.I))
-    if fallback_uid:
-        _append_discovery_debug("collection_owner_uid_resolved", handle=handle, uid=fallback_uid, mode="user_uid_handle")
-        return fallback_uid
+    if _is_synthetic_user_handle(handle):
+        _append_discovery_debug("collection_owner_uid_missing", handle=handle, reason="synthetic_uid_handle")
+        return ""
 
     uid = _resolve_uid_by_handle_api(
         session,

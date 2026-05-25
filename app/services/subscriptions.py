@@ -1,3 +1,4 @@
+import re
 import threading
 import time
 import uuid
@@ -309,6 +310,15 @@ def _canonical_subscription_url(url: str, mode: str = "") -> str:
 
 def _subscription_identity_url(url: str, mode: str = "") -> str:
     return _canonical_subscription_url(url, mode)
+
+
+def _is_synthetic_user_handle(value: Any) -> bool:
+    return re.fullmatch(r"user_\d+", str(value or "").strip().lstrip("@"), flags=re.I) is not None
+
+
+def _source_url_has_synthetic_user_handle(url: str) -> bool:
+    parsed = urlparse(normalize_source_url(url))
+    return any(part.startswith("@") and _is_synthetic_user_handle(part[1:]) for part in parsed.path.split("/"))
 
 
 def _subscription_identity_key(record: SubscriptionRecord) -> tuple[str, str]:
@@ -1036,6 +1046,62 @@ class SubscriptionManager:
 
         return {"queued_count": len(queued_ids), "subscription_ids": queued_ids}
 
+    def _remove_imported_synthetic_user_subscriptions(self, platform: str, inventory_item: dict[str, Any]) -> tuple[int, list[str]]:
+        imported_sources = [
+            item
+            for item in inventory_item.get("imported_sources") or []
+            if isinstance(item, dict)
+        ]
+        stale_urls = {
+            _subscription_identity_url(str(item.get("url") or ""), str(item.get("mode") or ""))
+            for item in imported_sources
+            if str(item.get("source_kind") or "") == "followed_author"
+            and _source_url_has_synthetic_user_handle(str(item.get("url") or ""))
+        }
+        stale_urls.update(
+            _subscription_identity_url(str(item.get("url") or ""), "author_upload")
+            for item in inventory_item.get("followed_authors") or []
+            if isinstance(item, dict) and _source_url_has_synthetic_user_handle(str(item.get("url") or ""))
+        )
+        stale_urls = {url for url in stale_urls if url}
+        if not stale_urls:
+            return 0, []
+
+        config = self.store.load()
+        removed_ids: list[str] = []
+        kept_records: list[SubscriptionRecord] = []
+        for record in config.subscriptions:
+            identity_url = _subscription_identity_url(record.url, record.mode)
+            if (
+                record.mode == "author_upload"
+                and _platform_for_url(record.url) == platform
+                and identity_url in stale_urls
+            ):
+                removed_ids.append(record.id)
+                continue
+            kept_records.append(record)
+
+        if not removed_ids:
+            return 0, []
+
+        config.subscriptions = kept_records
+        self.store.save(config)
+        self.task_store.remove_subscription_state(removed_ids)
+        _append_subscription_log(
+            "cookie_source_synthetic_user_subscriptions_removed",
+            platform=platform,
+            count=len(removed_ids),
+            subscription_ids=removed_ids,
+        )
+        append_business_log(
+            "subscription",
+            "cookie_source_synthetic_user_subscriptions_removed",
+            "已清理账号关注同步误导入的无效 user_数字作者订阅。",
+            platform=platform,
+            subscription_count=len(removed_ids),
+        )
+        return len(removed_ids), removed_ids
+
     def request_cookie_source_sync(self, platforms: set[str], *, reason: str = "manual") -> dict:
         normalized_platforms = {str(item or "").strip().lower() for item in platforms if str(item or "").strip()}
         normalized_platforms = {item for item in normalized_platforms if item in {"cn", "global"}}
@@ -1119,6 +1185,16 @@ class SubscriptionManager:
                 continue
 
             try:
+                inventory = _read_cookie_source_inventory_state()
+                previous_platform_inventory = dict((inventory.get("platforms") or {}).get(platform) or {})
+                removed_synthetic_count, removed_synthetic_ids = self._remove_imported_synthetic_user_subscriptions(
+                    platform,
+                    previous_platform_inventory,
+                )
+                if removed_synthetic_count:
+                    config = self.store.load()
+                    changed = True
+
                 with temporary_proxy_env(config.proxy, "", platform=platform):
                     profile = _merge_cookie_account_profile(
                         discover_cookie_account_profile(platform, raw_cookie),
@@ -1141,6 +1217,8 @@ class SubscriptionManager:
                     for author_result in (followed_authors_page, followed_authors):
                         for author in author_result.get("items") or []:
                             url = normalize_source_url(str(author.get("url") or ""))
+                            if not url or _source_url_has_synthetic_user_handle(url):
+                                continue
                             author_uid = str(author.get("uid") or "").strip()
                             author_handle = str(author.get("handle") or "").strip().lower()
                             author_key = f"uid:{author_uid}" if author_uid else f"handle:{author_handle}" if author_handle else url
@@ -1172,6 +1250,7 @@ class SubscriptionManager:
                         (followed_collections or {}).get("count"),
                         len((followed_collections or {}).get("items") or []),
                     ) or 0
+                    skipped_author_count = max(followed_author_count - len(followed_author_items), 0)
 
                 platform_created = 0
                 platform_updated = 0
@@ -1332,9 +1411,12 @@ class SubscriptionManager:
                     last_message="关注来源同步完成。",
                     last_created_count=platform_created,
                     last_updated_count=platform_updated,
+                    last_removed_invalid_count=removed_synthetic_count,
                     default_favorites_found=bool(default_favorites.get("url")),
                     default_favorites_count=1 if default_favorites.get("url") else 0,
                     followed_author_count=followed_author_count,
+                    imported_followed_author_count=len(followed_author_items),
+                    skipped_followed_author_count=skipped_author_count,
                     followed_collection_count=followed_collection_count,
                     account_uid=uid,
                     account_handle=str(profile.get("handle") or ""),
@@ -1347,9 +1429,13 @@ class SubscriptionManager:
                         "status": "success",
                         "created_count": platform_created,
                         "updated_count": platform_updated,
+                        "removed_invalid_count": removed_synthetic_count,
+                        "removed_invalid_subscription_ids": removed_synthetic_ids,
                         "default_favorites_found": bool(default_favorites.get("url")),
                         "default_favorites_count": 1 if default_favorites.get("url") else 0,
                         "followed_author_count": followed_author_count,
+                        "imported_followed_author_count": len(followed_author_items),
+                        "skipped_followed_author_count": skipped_author_count,
                         "followed_collection_count": followed_collection_count,
                     }
                 )

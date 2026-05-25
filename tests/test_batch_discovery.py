@@ -266,7 +266,7 @@ class BatchDiscoveryTest(unittest.TestCase):
         self.assertEqual(authors[0]["avatar_url"], "https://example.test/a.jpg")
         self.assertEqual(authors[0]["url"], "https://makerworld.com.cn/zh/@AcePrint/upload")
 
-    def test_extract_followed_authors_accepts_frontend_follow_hit_stats(self):
+    def test_extract_followed_authors_skips_uid_only_frontend_follow_hits(self):
         payload = {
             "hits": [
                 {
@@ -284,9 +284,7 @@ class BatchDiscoveryTest(unittest.TestCase):
 
         authors = batch_discovery._extract_followed_authors(payload, "cn")
 
-        self.assertEqual(len(authors), 1)
-        self.assertEqual(authors[0]["handle"], "user_2024907479")
-        self.assertEqual(authors[0]["url"], "https://makerworld.com.cn/zh/@user_2024907479/upload")
+        self.assertEqual(authors, [])
 
     def test_extract_followed_authors_accepts_next_data_followers(self):
         payload = {
@@ -370,7 +368,12 @@ class BatchDiscoveryTest(unittest.TestCase):
             if offset == 0:
                 return {
                     "hits": [
-                        {"uid": index, "name": f"Author {index}", "publicInstanceUploadCount": index}
+                        {
+                            "uid": index,
+                            "handle": f"Author{index}",
+                            "name": f"Author {index}",
+                            "publicInstanceUploadCount": index,
+                        }
                         for index in range(1, 21)
                     ],
                     "total": 27,
@@ -378,7 +381,12 @@ class BatchDiscoveryTest(unittest.TestCase):
             if offset == 20:
                 return {
                     "hits": [
-                        {"uid": index, "name": f"Author {index}", "publicInstanceUploadCount": index}
+                        {
+                            "uid": index,
+                            "handle": f"Author{index}",
+                            "name": f"Author {index}",
+                            "publicInstanceUploadCount": index,
+                        }
                         for index in range(21, 28)
                     ],
                     "total": 27,
@@ -401,7 +409,7 @@ class BatchDiscoveryTest(unittest.TestCase):
 
     def test_resolve_author_uid_accepts_user_uid_handle(self):
         with patch.object(batch_discovery, "_api_get_json") as api_get_json, \
-                patch.object(batch_discovery, "_append_discovery_debug"):
+                patch.object(batch_discovery, "_append_discovery_debug") as debug_log:
             uid = batch_discovery._resolve_author_uid(
                 requests.Session(),
                 "https://makerworld.com.cn/zh/@user_2024907479/upload",
@@ -409,8 +417,9 @@ class BatchDiscoveryTest(unittest.TestCase):
                 "user_2024907479",
             )
 
-        self.assertEqual(uid, "2024907479")
+        self.assertEqual(uid, "")
         api_get_json.assert_not_called()
+        debug_log.assert_called_with("author_uid_missing", handle="user_2024907479", reason="synthetic_uid_handle")
 
     def test_default_favorites_subscription_source_uses_account_handle(self):
         source = batch_discovery.default_favorites_subscription_source(
@@ -469,14 +478,13 @@ class BatchDiscoveryTest(unittest.TestCase):
         self.assertEqual(profile["follow_count"], 27)
         self.assertEqual(profile["liked_collection_count"], 1)
 
-    def test_default_favorites_subscription_source_falls_back_to_uid_handle(self):
+    def test_default_favorites_subscription_source_requires_real_handle(self):
         source = batch_discovery.default_favorites_subscription_source(
             "global",
             {"uid": "2073587493", "handle": "", "name": "艾斯"},
         )
 
-        self.assertEqual(source["handle"], "user_2073587493")
-        self.assertEqual(source["url"], "https://makerworld.com/zh/@user_2073587493/collections/models")
+        self.assertEqual(source, {})
 
     def test_extract_account_profile_ignores_plain_counter_id(self):
         profile = batch_discovery._extract_account_profile(
