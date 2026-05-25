@@ -8,6 +8,7 @@ FRONTEND_DIR = ROOT_DIR / "frontend"
 FRONTEND_DIST_DIR = FRONTEND_DIR / "dist"
 FRONTEND_INDEX_PATH = FRONTEND_DIST_DIR / "index.html"
 VERSION_PATH = ROOT_DIR / "VERSION"
+DEFAULT_CONTAINER_ARCHIVE_DIR = Path("/app/data/archive")
 
 
 def _resolve_app_version() -> str:
@@ -53,6 +54,35 @@ def _resolve_dir(env_name: str, fallback: Path) -> Path:
     return fallback
 
 
+def _path_has_direct_model_dirs(path: Path) -> bool:
+    try:
+        children = list(path.iterdir())
+    except OSError:
+        return False
+    for child in children:
+        if child.is_dir() and (child / "meta.json").is_file():
+            return True
+    return False
+
+
+def _archive_root_has_models(path: Path) -> bool:
+    if _path_has_direct_model_dirs(path):
+        return True
+    return _path_has_direct_model_dirs(path / "local") or _path_has_direct_model_dirs(path / "local" / "shared")
+
+
+def _resolve_archive_dir(env_name: str, fallback: Path) -> Path:
+    raw = str(os.getenv(env_name, "")).strip()
+    configured = Path(raw).expanduser() if raw else fallback
+    if configured not in {fallback, DEFAULT_CONTAINER_ARCHIVE_DIR}:
+        return configured
+
+    legacy_parent = configured.parent
+    if not _archive_root_has_models(configured) and _archive_root_has_models(legacy_parent):
+        return legacy_parent
+    return configured
+
+
 def _resolve_int(env_name: str, fallback: int) -> int:
     raw = str(os.getenv(env_name, "")).strip()
     if not raw:
@@ -67,7 +97,7 @@ def _resolve_int(env_name: str, fallback: int) -> int:
 CONFIG_DIR = _resolve_dir("MAKERHUB_CONFIG_DIR", RUNTIME_DIR / "config" / "config")
 LOGS_DIR = _resolve_dir("MAKERHUB_LOGS_DIR", RUNTIME_DIR / "config" / "logs")
 STATE_DIR = _resolve_dir("MAKERHUB_STATE_DIR", RUNTIME_DIR / "config" / "state")
-ARCHIVE_DIR = _resolve_dir("MAKERHUB_ARCHIVE_DIR", RUNTIME_DIR / "data" / "archive")
+ARCHIVE_DIR = _resolve_archive_dir("MAKERHUB_ARCHIVE_DIR", RUNTIME_DIR / "data" / "archive")
 LOCAL_DIR = _resolve_dir("MAKERHUB_LOCAL_DIR", RUNTIME_DIR / "data" / "local")
 MAX_MANUAL_ATTACHMENT_BYTES = _resolve_int("MAKERHUB_MAX_MANUAL_ATTACHMENT_BYTES", 128 * 1024 * 1024)
 MAX_LOCAL_IMPORT_UPLOAD_BYTES = _resolve_int("MAKERHUB_MAX_LOCAL_IMPORT_UPLOAD_BYTES", 4 * 1024 * 1024 * 1024)

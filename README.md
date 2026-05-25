@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.7.0`
+> 当前版本：`v0.7.1`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -12,7 +12,7 @@ MakerHub 是一个面向个人 NAS、DSM、Unraid、Portainer 和自托管服务
 
 你可以归档单个模型，也可以批量归档作者页、收藏夹、合集；可以创建订阅定时同步新模型；也可以把手机、网页或本地文件夹里的 `3MF`、`STL`、`STEP`、`OBJ`、压缩包和附件导入 MakerHub。V0.7.0 开始推荐使用 App / Worker / Postgres 三容器部署：App 负责页面和 API，Worker 负责后台抓取、整理和迁移，Postgres 保存结构化配置、任务状态、业务日志和模型卡片索引。
 
-## V0.7.0 重点
+## V0.7.x 重点
 
 - 数据库化运行状态：配置、Cookie / Token、订阅、来源库 metadata、任务状态、分享记录、限流状态、系统更新状态和业务日志进入 Postgres。
 - 模型索引入库：归档模型卡片索引写入 `archive_model_index`，模型库、订阅库和来源库读取更稳定。
@@ -206,6 +206,11 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-05-25 · v0.7.1
+
+- 修复老用户按新 compose 映射 `/app/data` 后，历史模型仍在 `/app/data` 根目录导致模型库、订阅库和本地库为空的问题。
+- 新布局优先读取 `/app/data/archive`；如果该目录没有模型但 `/app/data` 根目录有旧模型，会自动兼容旧归档根并恢复历史模型显示。
+
 ### 2026-05-25 · v0.7.0
 
 - 版本号升级到 `v0.7.0`，发布为数据库化架构版本。
@@ -235,4 +240,4 @@ uvicorn app.main:app --reload
 - 收藏夹卡片头像位置不再用模型封面兜底，模型图只保留在下方预览区。
 - `@账号/collections/models` 默认收藏夹来源统一归类为收藏夹，避免 metadata key 跑到合集分组。
 
-更多 V0.7.0 细节见 [CHANGELOG.md](CHANGELOG.md)。
+更多 V0.7.x 细节见 [CHANGELOG.md](CHANGELOG.md)。
