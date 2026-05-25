@@ -17,6 +17,7 @@ from app.core.database_json_state import load_database_json_state, save_database
 from app.core.settings import APP_VERSION, ARCHIVE_DIR, LOCAL_DIR, LOGS_DIR, STATE_DIR
 from app.core.timezone import now_iso as china_now_iso
 from app.services.business_logs import append_business_log
+from app.services.state_events import publish_state_event
 
 
 DOCKER_SOCKET_PATH = Path("/var/run/docker.sock")
@@ -156,7 +157,17 @@ def _write_update_state(payload: dict[str, Any]) -> dict[str, Any]:
     state = _default_update_state()
     state.update(payload)
     state["current_version"] = APP_VERSION
-    return save_database_json_state(UPDATE_STATE_KEY, state)
+    saved = save_database_json_state(UPDATE_STATE_KEY, state)
+    publish_state_event(
+        UPDATE_STATE_KEY,
+        "system_update.changed",
+        {
+            "status": saved.get("status") or "idle",
+            "phase": saved.get("phase") or "idle",
+            "request_id": saved.get("request_id") or "",
+        },
+    )
+    return saved
 
 
 def _looks_like_container_id(value: str) -> bool:

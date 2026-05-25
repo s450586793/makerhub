@@ -29,6 +29,7 @@ from app.services.auth import AuthManager
 from app.services.business_logs import append_business_log
 from app.services.request_threads import shutdown_request_threads
 from app.services.self_update import mark_update_started_after_restart
+from app.services.state_events import start_state_event_listener
 
 
 ensure_app_dirs()
@@ -88,6 +89,7 @@ async def favicon() -> Response:
 @app.on_event("startup")
 async def resume_archive_queue() -> None:
     mark_update_started_after_restart()
+    start_state_event_listener()
     queue = {"recovered_count": 0, "queued_count": 0}
     if BACKGROUND_TASKS_ENABLED:
         queue = config_crawler.manager.resume_pending_tasks()

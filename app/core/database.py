@@ -1,9 +1,11 @@
+import json
 import os
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any, Iterator, Optional
 
-DATABASE_SCHEMA_VERSION = 1
+DATABASE_SCHEMA_VERSION = 2
 DATABASE_SCHEMA_METADATA_KEY = "database_schema_version"
+DATABASE_STATE_EVENT_CHANNEL = "makerhub_state_events"
 
 
 try:  # pragma: no cover - exercised in deployed images with the dependency installed.
@@ -108,6 +110,23 @@ def initialize_database() -> bool:
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
             """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS makerhub_state_events (
+                id BIGSERIAL PRIMARY KEY,
+                type TEXT NOT NULL DEFAULT 'state.changed',
+                scope TEXT NOT NULL DEFAULT '',
+                payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS makerhub_state_events_created_idx ON makerhub_state_events (created_at DESC, id DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS makerhub_state_events_scope_idx ON makerhub_state_events (scope)"
         )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS makerhub_logs_file_created_idx ON makerhub_logs (file_name, created_at DESC, id DESC)"
@@ -215,3 +234,67 @@ def delete_json_state(key: str) -> bool:
     with database_connection() as connection:
         connection.execute("DELETE FROM makerhub_json_state WHERE key = %s", (clean_key,))
     return True
+
+
+def append_state_event(event_type: str, scope: str, payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    clean_type = str(event_type or "").strip() or "state.changed"
+    clean_scope = str(scope or "").strip()
+    if not clean_scope:
+        raise ValueError("状态事件 scope 不能为空。")
+    initialize_database()
+    event_payload = payload if isinstance(payload, dict) else {}
+    with database_connection() as connection:
+        row = connection.execute(
+            """
+            INSERT INTO makerhub_state_events (type, scope, payload, created_at)
+            VALUES (%s, %s, %s, now())
+            RETURNING id, type, scope, payload, created_at
+            """,
+            (clean_type, clean_scope, jsonb_value(event_payload)),
+        ).fetchone()
+        event = dict(row or {})
+        event_id = int(event.get("id") or 0)
+        notify_payload = json.dumps(
+            {
+                "id": event_id,
+                "type": clean_type,
+                "scope": clean_scope,
+            },
+            ensure_ascii=False,
+        )
+        connection.execute("SELECT pg_notify(%s, %s)", (DATABASE_STATE_EVENT_CHANNEL, notify_payload))
+    return event
+
+
+def list_state_events_after(last_id: int = 0, *, limit: int = 100) -> list[dict[str, Any]]:
+    try:
+        clean_last_id = max(0, int(last_id or 0))
+    except (TypeError, ValueError):
+        clean_last_id = 0
+    try:
+        clean_limit = int(limit or 100)
+    except (TypeError, ValueError):
+        clean_limit = 100
+    clean_limit = max(1, min(clean_limit, 500))
+    initialize_database()
+    with database_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, type, scope, payload, created_at
+            FROM makerhub_state_events
+            WHERE id > %s
+            ORDER BY id ASC
+            LIMIT %s
+            """,
+            (clean_last_id, clean_limit),
+        ).fetchall()
+    return [dict(row or {}) for row in (rows or [])]
+
+
+def latest_state_event_id() -> int:
+    initialize_database()
+    with database_connection() as connection:
+        row = connection.execute("SELECT COALESCE(MAX(id), 0) AS id FROM makerhub_state_events").fetchone()
+    if isinstance(row, dict):
+        return int(row.get("id") or 0)
+    return 0

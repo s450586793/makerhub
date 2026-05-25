@@ -20,6 +20,7 @@ from app.services import (
     three_mf_quota,
 )
 from app.services import business_logs
+from app.services import state_events
 from app.services import subscriptions
 from app.services.task_state import TaskStateStore
 
@@ -404,6 +405,66 @@ class DatabaseStatusTest(unittest.TestCase):
         self.assertFalse(status["configured"])
         self.assertFalse(status["available"])
         self.assertEqual(status["expected_schema_version"], database.DATABASE_SCHEMA_VERSION)
+
+
+class StateEventsTest(unittest.TestCase):
+    def test_normalize_state_event_converts_created_at_and_payload(self):
+        row = {
+            "id": 7,
+            "type": "archive.completed",
+            "scope": "archive_queue",
+            "payload": {"count": 1, "nested": {"value": object()}},
+            "created_at": "2026-05-26T10:00:00+08:00",
+        }
+
+        event = state_events.normalize_state_event(row)
+
+        self.assertEqual(event["id"], 7)
+        self.assertEqual(event["type"], "archive.completed")
+        self.assertEqual(event["scope"], "archive_queue")
+        self.assertEqual(event["created_at"], "2026-05-26T10:00:00+08:00")
+        self.assertIsInstance(event["payload"]["nested"]["value"], str)
+
+    def test_append_state_event_inserts_event_and_notifies(self):
+        calls = []
+
+        class FakeResult:
+            def __init__(self, row=None):
+                self.row = row or {}
+
+            def fetchone(self):
+                return self.row
+
+        class FakeConnection:
+            def execute(self, sql, params=None):
+                calls.append((sql, params))
+                if "RETURNING id" in sql:
+                    return FakeResult(
+                        {
+                            "id": 12,
+                            "type": "state.changed",
+                            "scope": "archive_queue",
+                            "payload": {"queued_count": 1},
+                            "created_at": "now",
+                        }
+                    )
+                return FakeResult()
+
+        class FakeContext:
+            def __enter__(self):
+                return FakeConnection()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        with patch.object(database, "initialize_database", return_value=True), \
+                patch.object(database, "database_connection", return_value=FakeContext()):
+            event = database.append_state_event("state.changed", "archive_queue", {"queued_count": 1})
+
+        self.assertEqual(event["id"], 12)
+        self.assertIn("INSERT INTO makerhub_state_events", calls[0][0])
+        self.assertIn("pg_notify", calls[1][0])
+        self.assertEqual(calls[1][1][0], database.DATABASE_STATE_EVENT_CHANNEL)
 
 
 if __name__ == "__main__":

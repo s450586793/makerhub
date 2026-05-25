@@ -197,6 +197,7 @@ import { RouterLink } from "vue-router";
 import CronField from "../components/CronField.vue";
 import { apiRequest } from "../lib/api";
 import { formatServerDateTime } from "../lib/helpers";
+import { subscribeStateRefresh } from "../lib/stateEvents";
 import {
   DEFAULT_SUBSCRIPTION_SETTINGS,
   createEmptySubscriptionsPayload,
@@ -223,27 +224,12 @@ const settingsDialog = reactive({
   saving: false,
   form: mergeSubscriptionSettings(),
 });
-let refreshTimer = null;
-
-function syncAutoRefresh() {
-  const hasRunning = payload.value.items.some((item) => item.running);
-  if (hasRunning && !refreshTimer) {
-    refreshTimer = window.setInterval(() => {
-      void load({ silent: true });
-    }, 5000);
-    return;
-  }
-  if (!hasRunning && refreshTimer) {
-    window.clearInterval(refreshTimer);
-    refreshTimer = null;
-  }
-}
+let unsubscribeStateRefresh = null;
 
 async function load({ silent = false } = {}) {
   try {
     const response = await apiRequest("/api/subscriptions");
     payload.value = normalizeSubscriptionsPayload(response);
-    syncAutoRefresh();
   } catch (error) {
     if (!silent) {
       status.value = error instanceof Error ? error.message : "订阅数据加载失败。";
@@ -386,7 +372,6 @@ async function deleteSubscription(item) {
     });
     status.value = response.message || "订阅已删除。";
     payload.value = normalizeSubscriptionsPayload(response.subscriptions || {});
-    syncAutoRefresh();
   } catch (error) {
     status.value = error instanceof Error ? error.message : "删除失败。";
   } finally {
@@ -401,12 +386,19 @@ function formatDateTime(value) {
 }
 
 onMounted(async () => {
+  unsubscribeStateRefresh = subscribeStateRefresh(
+    ["subscriptions_state"],
+    () => {
+      void load({ silent: true });
+    },
+  );
   await load();
 });
 
 onBeforeUnmount(() => {
-  if (refreshTimer) {
-    window.clearInterval(refreshTimer);
+  if (typeof unsubscribeStateRefresh === "function") {
+    unsubscribeStateRefresh();
+    unsubscribeStateRefresh = null;
   }
 });
 </script>

@@ -871,6 +871,7 @@ import { RouterLink, useRoute, useRouter } from "vue-router";
 import ThemeSegment from "../components/ThemeSegment.vue";
 import { appState, applyConfigPayload, refreshConfig, saveThemePreference } from "../lib/appState";
 import { apiRequest } from "../lib/api";
+import { subscribeStateRefresh } from "../lib/stateEvents";
 
 
 const route = useRoute();
@@ -907,6 +908,7 @@ const profileBackfillSubmitting = ref(false);
 const proxySaving = ref(false);
 const accountDialogOpen = ref(false);
 let accountCodeTimer = null;
+let unsubscribeStateRefresh = null;
 
 const proxyForm = reactive({
   enabled: false,
@@ -1020,9 +1022,6 @@ const testing = reactive({
   proxy: false,
   sharing: false,
 });
-let systemUpdateTimer = null;
-let profileBackfillTimer = null;
-
 const config = computed(() => appState.config);
 const systemUpdateActive = computed(() => ["queued", "launching_helper", "running", "pending_startup"].includes(systemUpdate.value.status));
 const canTriggerSystemUpdate = computed(() => (
@@ -1643,6 +1642,18 @@ function setActiveTab(tab) {
   }
 }
 
+function refreshSystemPanelFromEvent() {
+  if (activeTab.value !== "system") {
+    return;
+  }
+  if (!systemUpdateLoading.value && !systemUpdateSubmitting.value) {
+    void loadSystemUpdateStatus({ silent: true });
+  }
+  if (!profileBackfillLoading.value && !profileBackfillSubmitting.value) {
+    void loadProfileBackfillStatus({ silent: true });
+  }
+}
+
 async function load() {
   const payload = await refreshConfig();
   applyConfigToForms(payload);
@@ -1669,44 +1680,12 @@ async function loadSharedShares(options = {}) {
   }
 }
 
-function clearSystemUpdateTimer() {
-  if (systemUpdateTimer) {
-    window.clearTimeout(systemUpdateTimer);
-    systemUpdateTimer = null;
-  }
-}
-
-function scheduleSystemUpdatePolling() {
-  clearSystemUpdateTimer();
-  if (!systemUpdateActive.value) {
-    return;
-  }
-  systemUpdateTimer = window.setTimeout(() => {
-    loadSystemUpdateStatus({ silent: true });
-  }, 3000);
-}
-
-function clearProfileBackfillTimer() {
-  if (profileBackfillTimer) {
-    window.clearTimeout(profileBackfillTimer);
-    profileBackfillTimer = null;
-  }
-}
-
 function clearTimers() {
-  clearSystemUpdateTimer();
-  clearProfileBackfillTimer();
   clearAccountCodeTimer();
-}
-
-function scheduleProfileBackfillPolling() {
-  clearProfileBackfillTimer();
-  if (!profileBackfill.value.running) {
-    return;
+  if (typeof unsubscribeStateRefresh === "function") {
+    unsubscribeStateRefresh();
+    unsubscribeStateRefresh = null;
   }
-  profileBackfillTimer = window.setTimeout(() => {
-    loadProfileBackfillStatus({ silent: true });
-  }, 3000);
 }
 
 async function loadSystemUpdateStatus(options = {}) {
@@ -1746,7 +1725,6 @@ async function loadSystemUpdateStatus(options = {}) {
     if (!silent) {
       systemUpdateLoading.value = false;
     }
-    scheduleSystemUpdatePolling();
   }
 }
 
@@ -1775,7 +1753,6 @@ async function runSystemUpdate(confirmMessage) {
     statuses.system_update = error instanceof Error ? error.message : "提交更新任务失败。";
   } finally {
     systemUpdateSubmitting.value = false;
-    scheduleSystemUpdatePolling();
   }
 }
 
@@ -1822,7 +1799,6 @@ async function loadProfileBackfillStatus(options = {}) {
     if (!silent) {
       profileBackfillLoading.value = false;
     }
-    scheduleProfileBackfillPolling();
   }
 }
 
@@ -1843,7 +1819,6 @@ async function triggerProfileBackfill() {
     statuses.profile_backfill = error instanceof Error ? error.message : "提交信息补全失败。";
   } finally {
     profileBackfillSubmitting.value = false;
-    scheduleProfileBackfillPolling();
   }
 }
 
@@ -2440,6 +2415,12 @@ watch(() => route.query.tab, (value) => {
   setActiveTab(typeof value === "string" ? value : "system");
 });
 
-onMounted(load);
+onMounted(() => {
+  unsubscribeStateRefresh = subscribeStateRefresh(
+    ["system_update", "archive_profile_backfill_status"],
+    refreshSystemPanelFromEvent,
+  );
+  void load();
+});
 onBeforeUnmount(clearTimers);
 </script>

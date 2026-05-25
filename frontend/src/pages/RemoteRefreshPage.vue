@@ -263,11 +263,10 @@ import CronField from "../components/CronField.vue";
 import { applyConfigPayload } from "../lib/appState";
 import { apiRequest } from "../lib/api";
 import { encodeModelPath, formatServerDateTime } from "../lib/helpers";
+import { subscribeStateRefresh } from "../lib/stateEvents";
 
 
 const HISTORY_PAGE_SIZE = 12;
-const ACTIVE_REFRESH_INTERVAL_MS = 5000;
-const IDLE_REFRESH_INTERVAL_MS = 60000;
 const status = ref("");
 const loading = ref(true);
 const saving = ref(false);
@@ -286,6 +285,7 @@ const historyFilterOptions = [
 ];
 let refreshTimer = null;
 let disposed = false;
+let unsubscribeStateRefresh = null;
 
 const recentHistory = computed(() => {
   const items = remoteRefreshState.value?.recent_items;
@@ -453,10 +453,9 @@ function scheduleRefresh() {
   if (disposed || typeof window === "undefined" || document.hidden) {
     return;
   }
-  const interval = remoteRefreshState.value?.running ? ACTIVE_REFRESH_INTERVAL_MS : IDLE_REFRESH_INTERVAL_MS;
   refreshTimer = window.setTimeout(() => {
     void load({ silent: true });
-  }, interval);
+  }, 300);
 }
 
 async function load({ silent = false } = {}) {
@@ -476,7 +475,6 @@ async function load({ silent = false } = {}) {
     }
   } finally {
     loading.value = false;
-    scheduleRefresh();
   }
   return ok;
 }
@@ -517,7 +515,6 @@ async function runRemoteRefreshManually() {
     status.value = error instanceof Error ? error.message : "手动同步触发失败。";
   } finally {
     manualSyncing.value = false;
-    scheduleRefresh();
   }
 }
 
@@ -531,6 +528,10 @@ function handleVisibilityChange() {
 
 onMounted(async () => {
   disposed = false;
+  unsubscribeStateRefresh = subscribeStateRefresh(
+    ["remote_refresh_state"],
+    scheduleRefresh,
+  );
   document.addEventListener("visibilitychange", handleVisibilityChange);
   await load();
 });
@@ -538,6 +539,10 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   disposed = true;
   clearRefreshTimer();
+  if (typeof unsubscribeStateRefresh === "function") {
+    unsubscribeStateRefresh();
+    unsubscribeStateRefresh = null;
+  }
   document.removeEventListener("visibilitychange", handleVisibilityChange);
 });
 </script>

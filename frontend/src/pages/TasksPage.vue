@@ -276,6 +276,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
 
 import { apiRequest } from "../lib/api";
+import { subscribeStateRefresh } from "../lib/stateEvents";
 import { encodeModelPath } from "../lib/helpers";
 
 
@@ -328,9 +329,8 @@ const recentFailureStatus = ref("");
 let refreshTimer = null;
 let loadingTasks = false;
 let disposed = false;
+let unsubscribeStateRefresh = null;
 const TASKS_PAGE_SIZE = 5;
-const ACTIVE_REFRESH_INTERVAL_MS = 5000;
-const IDLE_REFRESH_INTERVAL_MS = 30000;
 const activeVisibleLimit = ref(TASKS_PAGE_SIZE);
 const queuedVisibleLimit = ref(TASKS_PAGE_SIZE);
 const failureVisibleLimit = ref(TASKS_PAGE_SIZE);
@@ -421,26 +421,14 @@ function clearRefreshTimer() {
   }
 }
 
-function hasTrackedWork() {
-  const current = payload.value;
-  const missingItems = current.missing_3mf?.items || [];
-  return Boolean(
-    Number(current.summary?.running_or_queued || 0)
-      || Number(current.organize_tasks?.running_count || 0)
-      || Number(current.organize_tasks?.queued_count || 0)
-      || missingItems.some((item) => ["queued", "running"].includes(String(item?.status || "").toLowerCase())),
-  );
-}
-
-function syncAutoRefresh() {
+function refreshFromStateEvent() {
   clearRefreshTimer();
   if (disposed || typeof window === "undefined" || document.hidden) {
     return;
   }
-  const delay = hasTrackedWork() ? ACTIVE_REFRESH_INTERVAL_MS : IDLE_REFRESH_INTERVAL_MS;
   refreshTimer = window.setTimeout(() => {
     void load();
-  }, delay);
+  }, 250);
 }
 
 async function load() {
@@ -455,7 +443,6 @@ async function load() {
     }
   } finally {
     loadingTasks = false;
-    syncAutoRefresh();
   }
 }
 
@@ -629,6 +616,10 @@ async function cancelMissing(item) {
 
 onMounted(() => {
   disposed = false;
+  unsubscribeStateRefresh = subscribeStateRefresh(
+    ["archive_queue", "missing_3mf", "organize_tasks"],
+    refreshFromStateEvent,
+  );
   document.addEventListener("visibilitychange", handleVisibilityChange);
   void load();
 });
@@ -636,6 +627,10 @@ onMounted(() => {
 onBeforeUnmount(() => {
   disposed = true;
   clearRefreshTimer();
+  if (typeof unsubscribeStateRefresh === "function") {
+    unsubscribeStateRefresh();
+    unsubscribeStateRefresh = null;
+  }
   document.removeEventListener("visibilitychange", handleVisibilityChange);
 });
 </script>

@@ -281,12 +281,12 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
 
 import { apiRequest } from "../lib/api";
-import { subscribeArchiveCompletion } from "../lib/archiveEvents";
 import { formatServerDateTime } from "../lib/helpers";
+import { subscribeStateRefresh } from "../lib/stateEvents";
 
 
 const defaultAutomationOverview = {
@@ -390,26 +390,8 @@ const hasActiveWork = computed(() => Boolean(
 ));
 
 let requestInFlight = false;
-let refreshTimer = null;
-let unsubscribeArchiveEvents = null;
+let unsubscribeStateRefresh = null;
 let refreshWhenVisible = false;
-
-function clearRefreshTimer() {
-  if (refreshTimer) {
-    window.clearTimeout(refreshTimer);
-    refreshTimer = null;
-  }
-}
-
-function scheduleRefresh() {
-  clearRefreshTimer();
-  if (typeof window === "undefined" || document.hidden || !hasActiveWork.value) {
-    return;
-  }
-  refreshTimer = window.setTimeout(() => {
-    void load();
-  }, 10000);
-}
 
 async function load({ initial = false } = {}) {
   if (requestInFlight) {
@@ -426,7 +408,6 @@ async function load({ initial = false } = {}) {
   } finally {
     loading.value = false;
     requestInFlight = false;
-    scheduleRefresh();
   }
 }
 
@@ -440,16 +421,13 @@ function handleArchiveCompleted() {
 
 function handleVisibilityChange() {
   if (document.hidden) {
-    clearRefreshTimer();
     return;
   }
   const shouldRefresh = refreshWhenVisible;
   refreshWhenVisible = false;
   if (shouldRefresh || hasActiveWork.value) {
     void load();
-    return;
   }
-  scheduleRefresh();
 }
 
 function formatDateTime(value, fallback = "未安排") {
@@ -495,21 +473,19 @@ function remoteRefreshPillClass(item) {
   return "";
 }
 
-watch(hasActiveWork, () => {
-  scheduleRefresh();
-});
-
 onMounted(async () => {
   await load({ initial: true });
-  unsubscribeArchiveEvents = subscribeArchiveCompletion(handleArchiveCompleted);
+  unsubscribeStateRefresh = subscribeStateRefresh(
+    ["archive_queue", "missing_3mf", "organize_tasks", "subscriptions_state", "remote_refresh_state"],
+    handleArchiveCompleted,
+  );
   document.addEventListener("visibilitychange", handleVisibilityChange);
 });
 
 onBeforeUnmount(() => {
-  clearRefreshTimer();
-  if (typeof unsubscribeArchiveEvents === "function") {
-    unsubscribeArchiveEvents();
-    unsubscribeArchiveEvents = null;
+  if (typeof unsubscribeStateRefresh === "function") {
+    unsubscribeStateRefresh();
+    unsubscribeStateRefresh = null;
   }
   document.removeEventListener("visibilitychange", handleVisibilityChange);
 });

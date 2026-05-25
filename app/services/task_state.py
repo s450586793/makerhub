@@ -9,6 +9,7 @@ from typing import Any, Optional
 from app.core.database_json_state import load_database_json_state, save_database_json_state
 from app.core.settings import LOGS_DIR, STATE_DIR, ensure_app_dirs
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
+from app.services.state_events import publish_state_event, task_counts_payload
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, normalize_three_mf_failure_state
 
 try:
@@ -824,6 +825,12 @@ class TaskStateStore:
     def __init__(self) -> None:
         ensure_app_dirs()
 
+    def _publish_state_event(self, scope: str, state: dict, event_type: str = "state.changed", payload: Optional[dict] = None) -> None:
+        event_payload = task_counts_payload(state)
+        if isinstance(payload, dict):
+            event_payload.update(payload)
+        publish_state_event(scope, event_type, event_payload)
+
     def _read_json(self, path: Path, default: dict) -> dict:
         state_key = _json_state_key_for_path(path)
         if state_key:
@@ -892,7 +899,9 @@ class TaskStateStore:
             updated = updater(payload)
             if updated is None:
                 updated = payload
-            return self._save_archive_queue_unlocked(updated)
+            result = self._save_archive_queue_unlocked(updated)
+        self._publish_state_event("archive_queue", result)
+        return result
 
     def _load_missing_3mf_unlocked(self, fallback_items: Optional[list[dict]] = None) -> dict:
         payload = self._read_json(MISSING_3MF_PATH, {"items": []})
@@ -911,7 +920,9 @@ class TaskStateStore:
             updated = updater(payload)
             if updated is None:
                 updated = payload
-            return self._save_missing_3mf_unlocked(updated)
+            result = self._save_missing_3mf_unlocked(updated)
+        self._publish_state_event("missing_3mf", result)
+        return result
 
     def _load_subscriptions_state_unlocked(self) -> dict:
         payload = self._read_json(SUBSCRIPTIONS_STATE_PATH, {"items": []})
@@ -973,7 +984,9 @@ class TaskStateStore:
             updated = updater(payload)
             if updated is None:
                 updated = payload
-            return self._save_organize_tasks_unlocked(updated)
+            result = self._save_organize_tasks_unlocked(updated)
+        self._publish_state_event("organize_tasks", result)
+        return result
 
     def _save_subscriptions_state_unlocked(self, payload: dict) -> dict:
         normalized = _normalize_subscription_state(payload)
@@ -991,7 +1004,9 @@ class TaskStateStore:
             updated = updater(payload)
             if updated is None:
                 updated = payload
-            return self._save_subscriptions_state_unlocked(updated)
+            result = self._save_subscriptions_state_unlocked(updated)
+        self._publish_state_event("subscriptions_state", result)
+        return result
 
     def _update_remote_refresh_state(self, updater) -> dict:
         with _STATE_LOCK, self._state_file_lock(REMOTE_REFRESH_STATE_PATH):
@@ -999,15 +1014,21 @@ class TaskStateStore:
             updated = updater(payload)
             if updated is None:
                 updated = payload
-            return self._save_remote_refresh_state_unlocked(updated)
+            result = self._save_remote_refresh_state_unlocked(updated)
+        self._publish_state_event("remote_refresh_state", result)
+        return result
 
     def save_archive_queue(self, payload: dict) -> dict:
         with _STATE_LOCK, self._state_file_lock(ARCHIVE_QUEUE_PATH):
-            return self._save_archive_queue_unlocked(payload)
+            result = self._save_archive_queue_unlocked(payload)
+        self._publish_state_event("archive_queue", result)
+        return result
 
     def save_missing_3mf(self, payload: dict) -> dict:
         with _STATE_LOCK, self._state_file_lock(MISSING_3MF_PATH):
-            return self._save_missing_3mf_unlocked(payload)
+            result = self._save_missing_3mf_unlocked(payload)
+        self._publish_state_event("missing_3mf", result)
+        return result
 
     def load_archive_queue(self) -> dict:
         with _STATE_LOCK:
@@ -1023,11 +1044,15 @@ class TaskStateStore:
 
     def save_organize_tasks(self, payload: dict) -> dict:
         with _STATE_LOCK, self._state_file_lock(ORGANIZE_TASKS_PATH):
-            return self._save_organize_tasks_unlocked(payload)
+            result = self._save_organize_tasks_unlocked(payload)
+        self._publish_state_event("organize_tasks", result)
+        return result
 
     def save_subscriptions_state(self, payload: dict) -> dict:
         with _STATE_LOCK, self._state_file_lock(SUBSCRIPTIONS_STATE_PATH):
-            return self._save_subscriptions_state_unlocked(payload)
+            result = self._save_subscriptions_state_unlocked(payload)
+        self._publish_state_event("subscriptions_state", result)
+        return result
 
     def load_subscriptions_state(self) -> dict:
         with _STATE_LOCK:
@@ -1035,7 +1060,9 @@ class TaskStateStore:
 
     def save_remote_refresh_state(self, payload: dict) -> dict:
         with _STATE_LOCK, self._state_file_lock(REMOTE_REFRESH_STATE_PATH):
-            return self._save_remote_refresh_state_unlocked(payload)
+            result = self._save_remote_refresh_state_unlocked(payload)
+        self._publish_state_event("remote_refresh_state", result)
+        return result
 
     def load_remote_refresh_state(self) -> dict:
         with _STATE_LOCK:
@@ -1156,18 +1183,43 @@ class TaskStateStore:
         return self._update_archive_queue(_mutate)
 
     def complete_archive_task(self, task_id: str) -> dict:
+        completed_item: Optional[dict[str, Any]] = None
+
         def _mutate(payload: dict) -> dict:
+            nonlocal completed_item
+            active_items = []
+            for item in payload.get("active") or []:
+                normalized = _normalize_task_item(item, "running")
+                if normalized["id"] == task_id:
+                    completed_item = normalized
+                    continue
+                active_items.append(normalized)
             payload["active"] = [
-                _normalize_task_item(item, "running")
-                for item in (payload.get("active") or [])
-                if _normalize_task_item(item, "running")["id"] != task_id
+                item
+                for item in active_items
             ]
             return payload
 
-        return self._update_archive_queue(_mutate)
+        queue = self._update_archive_queue(_mutate)
+        if completed_item is not None:
+            self._publish_state_event(
+                "archive_queue",
+                queue,
+                "archive.completed",
+                {
+                    "id": completed_item.get("id") or "",
+                    "mode": completed_item.get("mode") or "",
+                    "url": completed_item.get("url") or "",
+                    "title": completed_item.get("title") or "",
+                },
+            )
+        return queue
 
     def fail_archive_task(self, task_id: str, message: str) -> dict:
+        failed_item_payload: Optional[dict[str, Any]] = None
+
         def _mutate(payload: dict) -> dict:
+            nonlocal failed_item_payload
             failed_item = None
             active = []
             for item in payload.get("active") or []:
@@ -1195,13 +1247,28 @@ class TaskStateStore:
             if failed_item is not None:
                 recent_failures.insert(0, failed_item)
                 recent_failures = recent_failures[:20]
+                failed_item_payload = failed_item
 
             payload["active"] = active
             payload["queued"] = queued
             payload["recent_failures"] = recent_failures
             return payload
 
-        return self._update_archive_queue(_mutate)
+        queue = self._update_archive_queue(_mutate)
+        if failed_item_payload is not None:
+            self._publish_state_event(
+                "archive_queue",
+                queue,
+                "archive.failed",
+                {
+                    "id": failed_item_payload.get("id") or "",
+                    "mode": failed_item_payload.get("mode") or "",
+                    "url": failed_item_payload.get("url") or "",
+                    "title": failed_item_payload.get("title") or "",
+                    "message": failed_item_payload.get("message") or "",
+                },
+            )
+        return queue
 
     def requeue_active_tasks(self, message: str = "服务重启后自动恢复") -> dict:
         recovered_count = 0
@@ -1450,7 +1517,21 @@ class TaskStateStore:
                 "count": total_count,
             }
 
-        return self._update_organize_tasks(_mutate)
+        tasks = self._update_organize_tasks(_mutate)
+        if str(target.get("status") or "").strip().lower() == "success":
+            self._publish_state_event(
+                "organize_tasks",
+                tasks,
+                "organize.completed",
+                {
+                    "id": target.get("id") or target_id,
+                    "title": target.get("title") or "",
+                    "model_dir": target.get("model_dir") or "",
+                    "source_path": target.get("source_path") or "",
+                    "snapshot_ready": bool(target.get("snapshot_ready")),
+                },
+            )
+        return tasks
 
     def update_missing_3mf_status(
         self,

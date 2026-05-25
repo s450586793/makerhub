@@ -135,6 +135,7 @@ import ShareDialog from "../components/ShareDialog.vue";
 import SourceLibraryCard from "../components/SourceLibraryCard.vue";
 import { apiRequest } from "../lib/api";
 import { getPageCache, setPageCache } from "../lib/pageCache";
+import { subscribeStateRefresh } from "../lib/stateEvents";
 import {
   DEFAULT_SUBSCRIPTION_SETTINGS,
   createEmptySubscriptionsPayload,
@@ -156,7 +157,7 @@ const createDialog = reactive({
   name: "",
   cron: DEFAULT_SUBSCRIPTION_SETTINGS.default_cron,
 });
-let refreshTimer = null;
+let unsubscribeStateRefresh = null;
 
 const sourceSections = computed(() => (
   payload.value.sections.filter((section) => section?.key === "subscription_sources")
@@ -199,22 +200,7 @@ function hydrateSubscriptionsPageFromCache() {
   }
   payload.value = normalizeSubscriptionsPayload(cached.payload);
   initialLoaded.value = true;
-  syncAutoRefresh();
   return true;
-}
-
-function syncAutoRefresh() {
-  const hasRunning = payload.value.items.some((item) => item.running);
-  if (hasRunning && !refreshTimer) {
-    refreshTimer = window.setInterval(() => {
-      void load({ silent: true });
-    }, 5000);
-    return;
-  }
-  if (!hasRunning && refreshTimer) {
-    window.clearInterval(refreshTimer);
-    refreshTimer = null;
-  }
 }
 
 function resetCreateForm() {
@@ -229,7 +215,6 @@ async function load({ silent = false } = {}) {
     payload.value = normalizeSubscriptionsPayload(response);
     initialLoaded.value = true;
     rememberSubscriptionsPage();
-    syncAutoRefresh();
   } catch (error) {
     if (!silent) {
       status.value = error instanceof Error ? error.message : "订阅数据加载失败。";
@@ -343,7 +328,6 @@ async function createSubscription() {
     });
     payload.value = normalizeSubscriptionsPayload(response.subscriptions || {});
     rememberSubscriptionsPage();
-    syncAutoRefresh();
     status.value = response.message || "订阅已创建。";
     closeCreateDialog(true);
     resetCreateForm();
@@ -356,13 +340,20 @@ async function createSubscription() {
 }
 
 onMounted(async () => {
+  unsubscribeStateRefresh = subscribeStateRefresh(
+    ["subscriptions_state", "source_library", "archive_queue"],
+    () => {
+      void load({ silent: true });
+    },
+  );
   hydrateSubscriptionsPageFromCache();
   await load();
 });
 
 onBeforeUnmount(() => {
-  if (refreshTimer) {
-    window.clearInterval(refreshTimer);
+  if (typeof unsubscribeStateRefresh === "function") {
+    unsubscribeStateRefresh();
+    unsubscribeStateRefresh = null;
   }
 });
 </script>

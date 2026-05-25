@@ -183,6 +183,42 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(queue["active"][0]["id"], "active-1")
         self.assertEqual(queue["queued"][0]["id"], "queued-1")
 
+    def test_state_update_publishes_event_after_save(self):
+        state = {}
+        events = []
+        store = TaskStateStore()
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.publish_state_event", side_effect=lambda scope, event_type, payload: events.append((scope, event_type, payload))):
+            queue = store.enqueue_archive_task({"id": "task-1", "title": "Demo"})
+
+        self.assertEqual(queue["queued_count"], 1)
+        self.assertEqual(state["archive_queue"]["queued"][0]["id"], "task-1")
+        self.assertEqual(events[-1][0], "archive_queue")
+        self.assertEqual(events[-1][1], "state.changed")
+        self.assertEqual(events[-1][2]["queued_count"], 1)
+
+    def test_completed_archive_task_publishes_semantic_event(self):
+        state = {}
+        events = []
+        store = TaskStateStore()
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.publish_state_event", side_effect=lambda scope, event_type, payload: events.append((scope, event_type, payload))):
+            store.save_archive_queue(
+                {
+                    "active": [{"id": "task-1", "title": "Demo", "url": "https://example.com/models/1", "mode": "single_model"}],
+                    "queued": [],
+                    "recent_failures": [],
+                }
+            )
+            queue = store.complete_archive_task("task-1")
+
+        self.assertEqual(queue["running_count"], 0)
+        self.assertEqual(events[-1][1], "archive.completed")
+        self.assertEqual(events[-1][2]["id"], "task-1")
+        self.assertEqual(events[-1][2]["url"], "https://example.com/models/1")
+
 
 if __name__ == "__main__":
     unittest.main()

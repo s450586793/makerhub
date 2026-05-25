@@ -25,7 +25,7 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from starlette.requests import ClientDisconnect
 
-from app.core.database import database_status
+from app.core.database import DATABASE_STATE_EVENT_CHANNEL, database_status
 from app.core.database_json_state import load_database_json_state, save_database_json_state
 from app.core.store import JsonStore
 from app.core.security import default_admin_password_hash, hash_api_token, verify_password
@@ -122,6 +122,12 @@ from app.services.source_library import (
     build_state_group_models_payload,
 )
 from app.services.source_health import probe_cookie_auth_status
+from app.services.state_events import (
+    StateEventWaiter,
+    current_state_event_id,
+    fetch_state_events_after,
+    start_state_event_listener,
+)
 from app.services.online_accounts import (
     OnlineAccountLoginError,
     OnlineAccountSmsCodeError,
@@ -4846,72 +4852,103 @@ async def sync_subscription(subscription_id: str, request: Request):
 @router.get("/events/archive")
 async def stream_archive_events(request: Request):
     async def event_stream():
-        snapshot = await run_ui_io(_archive_event_snapshot)
-        previous_active = dict(snapshot["active"])
-        previous_organize_success = set(snapshot["organize_success"])
+        last_id = _last_event_id(request)
+        if last_id <= 0:
+            last_id = current_state_event_id()
+        yield "event: ready\ndata: {}\n\n"
 
+        waiter = StateEventWaiter()
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                events = await run_ui_io(fetch_state_events_after, last_id, limit=100)
+                for event in events:
+                    last_id = max(last_id, int(event.get("id") or 0))
+                    if event.get("type") not in {"archive.completed", "organize.completed"}:
+                        continue
+                    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+                    completed = [
+                        {
+                            "id": payload.get("id") or "",
+                            "url": payload.get("url") or "",
+                            "title": payload.get("title") or "",
+                            "kind": "local_organize" if event.get("type") == "organize.completed" else "archive",
+                        }
+                    ]
+                    yield (
+                        f"id: {event.get('id') or last_id}\n"
+                        "event: archive_completed\n"
+                        f"data: {json.dumps({'completed': completed}, ensure_ascii=False)}\n\n"
+                    )
+                if events:
+                    continue
+                await waiter.wait()
+        finally:
+            waiter.close()
+
+    start_state_event_listener()
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _last_event_id(request: Request) -> int:
+    raw = request.headers.get("last-event-id") or request.query_params.get("last_event_id") or "0"
+    try:
+        return max(0, int(raw or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+@router.get("/events/state")
+async def stream_state_events(request: Request):
+    async def event_stream():
+        last_id = _last_event_id(request)
+        if last_id <= 0:
+            last_id = current_state_event_id()
         yield (
             "event: ready\n"
-            f"data: {json.dumps({'running_count': snapshot['running_count'], 'queued_count': snapshot['queued_count'], 'failed_count': snapshot['failed_count']}, ensure_ascii=False)}\n\n"
+            f"data: {json.dumps({'last_event_id': last_id, 'channel': DATABASE_STATE_EVENT_CHANNEL}, ensure_ascii=False)}\n\n"
         )
 
+        waiter = StateEventWaiter()
         heartbeat_tick = 0
-        while True:
-            if await request.is_disconnected():
-                break
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
 
-            snapshot = await run_ui_io(_archive_event_snapshot)
-            current_active = dict(snapshot["active"])
-            recent_failures = set(snapshot["recent_failures"])
-            current_organize_success = set(snapshot["organize_success"])
-            completed = []
-
-            for identity, metadata in previous_active.items():
-                if identity in current_active:
+                events = await run_ui_io(fetch_state_events_after, last_id, limit=100)
+                for event in events:
+                    last_id = max(last_id, int(event.get("id") or 0))
+                    yield (
+                        f"id: {event.get('id') or last_id}\n"
+                        f"event: {event.get('type') or 'state.changed'}\n"
+                        f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    )
+                if events:
+                    heartbeat_tick = 0
                     continue
 
-                task_mode = str(metadata.get("mode") or "")
-                task_url = str(metadata.get("url") or "")
-                if not task_mode and "/models/" in task_url:
-                    task_mode = "single_model"
-                if task_mode != "single_model":
+                woke = await waiter.wait()
+                if woke:
                     continue
-                if identity in recent_failures:
-                    continue
-
-                completed.append(
-                    {
-                        "id": identity,
-                        "url": task_url,
-                        "title": str(metadata.get("title") or ""),
-                    }
-                )
-
-            for success_id in sorted(current_organize_success - previous_organize_success):
-                completed.append(
-                    {
-                        "id": success_id,
-                        "url": "",
-                        "title": "本地整理完成",
-                        "kind": "local_organize",
-                    }
-                )
-
-            if completed:
+                heartbeat_tick += 1
                 yield (
-                    "event: archive_completed\n"
-                    f"data: {json.dumps({'completed': completed, 'running_count': snapshot['running_count'], 'queued_count': snapshot['queued_count'], 'failed_count': snapshot['failed_count']}, ensure_ascii=False)}\n\n"
+                    "event: ping\n"
+                    f"data: {json.dumps({'tick': heartbeat_tick, 'last_event_id': last_id}, ensure_ascii=False)}\n\n"
                 )
+        finally:
+            waiter.close()
 
-            previous_active = current_active
-            previous_organize_success = current_organize_success
-            heartbeat_tick += 1
-            if heartbeat_tick >= 15:
-                heartbeat_tick = 0
-                yield "event: ping\ndata: {}\n\n"
-
-            await asyncio.sleep(1)
-
+    start_state_event_listener()
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",

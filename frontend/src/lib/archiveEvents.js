@@ -1,23 +1,27 @@
+import { subscribeStateEvents } from "./stateEvents";
+
+
 export function subscribeArchiveCompletion(onComplete) {
-  if (typeof window === "undefined" || typeof EventSource === "undefined") {
+  if (typeof onComplete !== "function") {
     return () => {};
   }
 
-  const eventSource = new EventSource("/api/events/archive");
-
-  const handleArchiveCompleted = (event) => {
-    try {
-      const payload = JSON.parse(event.data || "{}");
-      onComplete(payload);
-    } catch (error) {
-      console.error("归档完成事件解析失败", error);
+  return subscribeStateEvents((event) => {
+    const type = event?.type || "";
+    if (!["archive.completed", "organize.completed"].includes(type)) {
+      return;
     }
-  };
-
-  eventSource.addEventListener("archive_completed", handleArchiveCompleted);
-
-  return () => {
-    eventSource.removeEventListener("archive_completed", handleArchiveCompleted);
-    eventSource.close();
-  };
+    const payload = event?.payload || {};
+    onComplete({
+      completed: [
+        {
+          id: payload.id || "",
+          url: payload.url || "",
+          title: payload.title || "",
+          kind: type === "organize.completed" ? "local_organize" : "archive",
+        },
+      ],
+      event,
+    });
+  });
 }

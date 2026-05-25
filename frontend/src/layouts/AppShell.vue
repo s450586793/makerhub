@@ -86,12 +86,11 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { RouterLink, RouterView, useRoute } from "vue-router";
 
 import UserMenu from "../components/UserMenu.vue";
-import { appState, currentUser, logoutSession, refreshVersionStatus, saveThemePreference } from "../lib/appState";
+import { appState, currentUser, logoutSession, saveThemePreference } from "../lib/appState";
 
 
 const route = useRoute();
 const COMPACT_MEDIA_QUERY = "(max-width: 980px)";
-const VERSION_REFRESH_INTERVAL_MS = 60 * 1000;
 const logoUrl = "/static/img/makerhub-logo.png";
 const NAV_CONTEXT_ROOTS = {
   subscriptions: "/subscriptions",
@@ -106,8 +105,6 @@ const sidebarInnerRef = ref(null);
 
 let compactMediaQuery = null;
 let mediaListener = null;
-let versionRefreshTimer = 0;
-let versionRefreshInFlight = false;
 let sidebarResetFrame = 0;
 
 const sidebarVisible = computed(() => (
@@ -258,49 +255,6 @@ function onWindowKeydown(event) {
   }
 }
 
-async function refreshVersionPanel({ force = false } = {}) {
-  if (versionRefreshInFlight || !appState.session.authenticated) {
-    return;
-  }
-  versionRefreshInFlight = true;
-  try {
-    await refreshVersionStatus({ force });
-  } catch (error) {
-    console.error("版本信息刷新失败", error);
-  } finally {
-    versionRefreshInFlight = false;
-  }
-}
-
-function clearVersionRefreshTimer() {
-  if (versionRefreshTimer) {
-    window.clearInterval(versionRefreshTimer);
-    versionRefreshTimer = 0;
-  }
-}
-
-function startVersionRefreshTimer() {
-  clearVersionRefreshTimer();
-  if (typeof window === "undefined") {
-    return;
-  }
-  versionRefreshTimer = window.setInterval(() => {
-    if (!document.hidden) {
-      void refreshVersionPanel({ force: true });
-    }
-  }, VERSION_REFRESH_INTERVAL_MS);
-}
-
-function onDocumentVisibilityChange() {
-  if (!document.hidden) {
-    void refreshVersionPanel({ force: false });
-  }
-}
-
-function onWindowFocus() {
-  void refreshVersionPanel({ force: false });
-}
-
 watch(() => route.fullPath, () => {
   closeSidebar();
 });
@@ -330,14 +284,9 @@ onMounted(() => {
   }
 
   window.addEventListener("keydown", onWindowKeydown);
-  window.addEventListener("focus", onWindowFocus);
-  document.addEventListener("visibilitychange", onDocumentVisibilityChange);
-  startVersionRefreshTimer();
-  void refreshVersionPanel({ force: false });
 });
 
 onBeforeUnmount(() => {
-  clearVersionRefreshTimer();
   document.body.classList.remove("sidebar-overlay-open");
   if (sidebarResetFrame) {
     window.cancelAnimationFrame(sidebarResetFrame);
@@ -351,7 +300,5 @@ onBeforeUnmount(() => {
     }
   }
   window.removeEventListener("keydown", onWindowKeydown);
-  window.removeEventListener("focus", onWindowFocus);
-  document.removeEventListener("visibilitychange", onDocumentVisibilityChange);
 });
 </script>

@@ -201,10 +201,9 @@ import SourceLibraryCard from "../components/SourceLibraryCard.vue";
 import { apiRequest, apiUploadRequest } from "../lib/api";
 import { refreshConfig } from "../lib/appState";
 import { deletePageCache, deletePageCacheByPrefix, getPageCache, setPageCache } from "../lib/pageCache";
+import { subscribeStateRefresh } from "../lib/stateEvents";
 
 
-const ACTIVE_REFRESH_INTERVAL_MS = 5000;
-const IDLE_REFRESH_INTERVAL_MS = 30000;
 const RECENT_IMPORT_PENDING_GRACE_MS = 10 * 60 * 1000;
 const IMPORT_PROGRESS_STORAGE_KEY = "makerhub:local-import-progress";
 const IMPORT_PROGRESS_STALE_MS = 30 * 60 * 1000;
@@ -296,6 +295,7 @@ const importUploadProgress = reactive({
 const organizerProgressOpen = ref(false);
 let refreshTimer = null;
 let disposed = false;
+let unsubscribeStateRefresh = null;
 let sourceLibraryRefreshDeferred = false;
 
 function rememberOrganizerPage() {
@@ -1134,11 +1134,9 @@ function syncTaskTimer() {
   if (disposed || typeof window === "undefined" || document.hidden) {
     return;
   }
-  const active = hasActiveOrganizeTasks();
-  const delay = active ? ACTIVE_REFRESH_INTERVAL_MS : IDLE_REFRESH_INTERVAL_MS;
   refreshTimer = window.setTimeout(() => {
-    void load({ silent: true, refreshLibrary: !active || !hasSourceLibraryPayload() });
-  }, delay);
+    void load({ silent: true, refreshLibrary: !hasActiveOrganizeTasks() || !hasSourceLibraryPayload() });
+  }, 300);
 }
 
 async function load({ silent = false, refreshLibrary = true } = {}) {
@@ -1184,8 +1182,6 @@ async function load({ silent = false, refreshLibrary = true } = {}) {
     loading.value = false;
     if (shouldRefreshDeferredLibrary && !disposed && typeof window !== "undefined" && !document.hidden) {
       void load({ silent: true, refreshLibrary: true });
-    } else {
-      syncTaskTimer();
     }
   }
 }
@@ -1652,6 +1648,10 @@ function handleVisibilityChange() {
 
 onMounted(() => {
   disposed = false;
+  unsubscribeStateRefresh = subscribeStateRefresh(
+    ["organize_tasks", "archive_queue", "source_library"],
+    syncTaskTimer,
+  );
   document.addEventListener("click", closeOrganizerProgressPopover);
   document.addEventListener("visibilitychange", handleVisibilityChange);
   hydrateOrganizerPageFromCache();
@@ -1662,6 +1662,10 @@ onMounted(() => {
 onBeforeUnmount(() => {
   disposed = true;
   clearTaskTimer();
+  if (typeof unsubscribeStateRefresh === "function") {
+    unsubscribeStateRefresh();
+    unsubscribeStateRefresh = null;
+  }
   document.removeEventListener("click", closeOrganizerProgressPopover);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
 });

@@ -23,6 +23,7 @@ from app.services.business_logs import append_business_log
 from app.services.catalog import _normalize_model, invalidate_archive_snapshot
 from app.services.database_migration import migrate_json_files_to_database, migrate_log_files_to_database
 from app.services.legacy_archiver import PROFILE_DETAIL_SCHEMA_VERSION
+from app.services.state_events import publish_state_event
 
 
 PROFILE_BACKFILL_STATUS_PATH = STATE_DIR / "archive_profile_backfill_status.json"
@@ -95,6 +96,16 @@ def write_profile_backfill_status(payload: dict[str, Any]) -> dict[str, Any]:
             }
         )
         save_database_json_state(PROFILE_BACKFILL_STATUS_KEY, current)
+        publish_state_event(
+            PROFILE_BACKFILL_STATUS_KEY,
+            "profile_backfill.changed",
+            {
+                "running": bool(current.get("running")),
+                "phase": current.get("phase") or "idle",
+                "finished_at": current.get("finished_at") or "",
+                "last_error": current.get("last_error") or "",
+            },
+        )
         return current
 
 

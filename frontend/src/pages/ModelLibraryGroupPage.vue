@@ -368,13 +368,27 @@ function buildRouteQuery(options = {}) {
 
 function endpointBase() {
   if (route.name === "model-library-state") {
-    return `/api/source-library/states/${encodeURIComponent(String(route.params.stateKey || ""))}`;
+    const stateKey = String(route.params.stateKey || "").trim();
+    return stateKey ? `/api/source-library/states/${encodeURIComponent(stateKey)}` : "";
   }
-  return `/api/source-library/sources/${encodeURIComponent(String(route.params.sourceType || ""))}/${encodeURIComponent(String(route.params.sourceKey || ""))}`;
+  const sourceType = String(route.params.sourceType || "").trim();
+  const sourceKey = String(route.params.sourceKey || "").trim();
+  if (!sourceType || !sourceKey) {
+    return "";
+  }
+  return `/api/source-library/sources/${encodeURIComponent(sourceType)}/${encodeURIComponent(sourceKey)}`;
 }
 
 async function fetchPage(page, options = {}) {
-  return apiRequest(`${endpointBase()}?${buildQuery(page, options).toString()}`);
+  const endpoint = endpointBase();
+  if (!endpoint) {
+    return {
+      ...defaultGroupPayload(),
+      view: view.value,
+      page,
+    };
+  }
+  return apiRequest(`${endpoint}?${buildQuery(page, options).toString()}`);
 }
 
 function mergeUniqueModelItems(currentItems = [], incomingItems = []) {
