@@ -55,12 +55,12 @@
   - `makerhub_json_state:three_mf_limit_guard`
   - `archive_model_index`
 - 文件:
-  - `/app/archive/<model_dir>/`
-  - `/app/logs/business.log`
-  - `/app/logs/batch_queue.log`
-  - `/app/logs/batch_discovery.log`
-  - `/app/state/archive_queue.json`
-  - `/app/state/missing_3mf.json`
+  - `/app/data/archive/<model_dir>/`
+  - 历史日志迁移输入：`/app/config/logs/business.log`
+  - 历史日志迁移输入：`/app/config/logs/batch_queue.log`
+  - 历史日志迁移输入：`/app/config/logs/batch_discovery.log`
+  - 旧状态迁移输入：`/app/config/state/archive_queue.json`
+  - 旧状态迁移输入：`/app/config/state/missing_3mf.json`
 
 ## 常用测试命令
 
@@ -91,4 +91,3 @@
 - `app/services/three_mf_quota.py`
 - `app/services/archive_repair.py`
 - `app/services/archive_profile_backfill.py`
-

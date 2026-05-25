@@ -42,9 +42,9 @@
   - `makerhub_json_state:model_flags`
   - `archive_model_index`
 - 文件:
-  - `/app/archive/<model_dir>/meta.json`
-  - `/app/state/remote_refresh_state.json`
-  - `/app/logs/remote_refresh.log`
+  - `/app/data/archive/<model_dir>/meta.json`
+  - `/app/config/state/remote_refresh_state.json`
+  - `/app/config/logs/remote_refresh.log` 仅作为历史日志迁移输入。
 
 ## 常用测试命令
 
@@ -70,4 +70,3 @@
 - `app/services/catalog.py` 中 remote sync/评论标准化相关函数
 - `app/api/config.py` 中 `/remote-refresh` 段落
 - `frontend/src/pages/RemoteRefreshPage.vue`
-

@@ -44,7 +44,9 @@
   - 更新状态存于 `makerhub_json_state:system_update`。
   - 数据库迁移状态由 Core/归档索引模块维护。
 - Docker:
-  - App 挂载 `/var/run/docker.sock` 时才能网页更新。
+  - 默认 compose 挂载 `/var/run/docker.sock`，设置页可直接网页更新。
+  - `depends_on` 与 Postgres `healthcheck` 作为高级可选注释保留，默认不启用。
+  - 默认目录布局为 `/app/config/{config,logs,state}` 与 `/app/data/{archive,local}`，compose 只映射 `/app/config`、`/app/data` 和 Postgres 数据目录。
   - `makerhub-app` 和 `makerhub-worker` 应使用同一镜像版本。
 
 ## 常用测试命令
@@ -61,7 +63,7 @@ git diff --check
 
 ## 修改时不能破坏
 
-- 旧单容器或缺少 Postgres 的部署不能被网页更新直接推到不可启动状态；必须提示需要改 compose。
+- 旧单容器、缺少 Postgres 或仍使用旧分散目录挂载的部署不能被网页更新直接推到不可启动状态；必须提示需要改 compose。
 - 一键更新应先处理 worker，再处理 app，保证页面尽量可恢复。
 - 删除旧镜像必须异步/延迟，不能阻塞实例更新。
 - Docker socket 未挂载时要显示不可用原因，而不是按钮假装可用。

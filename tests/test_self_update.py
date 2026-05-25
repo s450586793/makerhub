@@ -6,6 +6,9 @@ from unittest.mock import patch
 from app.services import self_update
 
 
+ROOT_DIR = Path(__file__).resolve().parents[1]
+
+
 class SelfUpdateSplitDeploymentTest(unittest.TestCase):
     def setUp(self):
         self.state = {}
@@ -27,6 +30,21 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
     def tearDown(self):
         for item in reversed(self.db_patches):
             item.stop()
+
+    def test_repository_compose_defaults_match_simple_deployment_policy(self):
+        compose_text = (ROOT_DIR / "compose.yaml").read_text(encoding="utf-8")
+
+        self.assertIn("makerhub_password_123456", compose_text)
+        self.assertIn("/var/run/docker.sock:/var/run/docker.sock", compose_text)
+        self.assertNotIn("MAKERHUB_POSTGRES_PASSWORD", compose_text)
+        self.assertNotIn("    depends_on:", compose_text)
+        self.assertNotIn("    healthcheck:", compose_text)
+        self.assertIn("/app/config", compose_text)
+        self.assertIn("/app/data", compose_text)
+        self.assertNotIn("/app/logs", compose_text)
+        self.assertNotIn("/app/state", compose_text)
+        self.assertNotIn("/app/archive", compose_text)
+        self.assertNotIn("/app/local", compose_text)
 
     def test_web_update_target_uses_current_image_when_web_image_is_not_set(self):
         original_name = self_update.os.environ.get(self_update.WEB_CONTAINER_NAME_ENV)
@@ -129,6 +147,17 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             self.assertTrue(status["compose_migration_required"])
             self.assertIn("MAKERHUB_DATABASE_URL", status["compose_example"])
             self.assertIn("makerhub-postgres", status["compose_example"])
+            self.assertIn("makerhub_password_123456", status["compose_example"])
+            self.assertIn("/var/run/docker.sock:/var/run/docker.sock", status["compose_example"])
+            self.assertNotIn("MAKERHUB_POSTGRES_PASSWORD", status["compose_example"])
+            self.assertNotIn("    depends_on:", status["compose_example"])
+            self.assertNotIn("    healthcheck:", status["compose_example"])
+            self.assertIn("/app/config", status["compose_example"])
+            self.assertIn("/app/data", status["compose_example"])
+            self.assertNotIn("/app/logs", status["compose_example"])
+            self.assertNotIn("/app/state", status["compose_example"])
+            self.assertNotIn("/app/archive", status["compose_example"])
+            self.assertNotIn("/app/local", status["compose_example"])
 
     def test_request_system_update_blocks_without_database_url(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -185,6 +214,72 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
 
             self.assertIn("MAKERHUB_DATABASE_URL", str(context.exception))
             self.assertIn("makerhub-postgres", str(context.exception))
+
+    def test_parent_config_and_data_mounts_satisfy_compose_layout(self):
+        inspect = {
+            "Config": {
+                "Env": ["MAKERHUB_DATABASE_URL=postgresql://makerhub:makerhub@makerhub-postgres:5432/makerhub"],
+            },
+            "HostConfig": {
+                "Binds": [
+                    "/host/makerhub/config:/app/config",
+                    "/host/makerhub/data:/app/data",
+                ],
+            },
+            "Mounts": [],
+        }
+        original_state_dir = self_update.STATE_DIR
+        original_logs_dir = self_update.LOGS_DIR
+        original_archive_dir = self_update.ARCHIVE_DIR
+        original_local_dir = self_update.LOCAL_DIR
+        try:
+            self_update.STATE_DIR = Path("/app/config/state")
+            self_update.LOGS_DIR = Path("/app/config/logs")
+            self_update.ARCHIVE_DIR = Path("/app/data/archive")
+            self_update.LOCAL_DIR = Path("/app/data/local")
+
+            state_mount = self_update._state_mount_spec_from_inspect(inspect)
+            logs_mount = self_update._mount_spec_from_inspect(inspect, self_update.LOGS_DIR)
+            migration_required = self_update._compose_migration_required(inspect)
+        finally:
+            self_update.STATE_DIR = original_state_dir
+            self_update.LOGS_DIR = original_logs_dir
+            self_update.ARCHIVE_DIR = original_archive_dir
+            self_update.LOCAL_DIR = original_local_dir
+
+        self.assertEqual(state_mount, "/host/makerhub/config/state:/app/config/state")
+        self.assertEqual(logs_mount, "/host/makerhub/config/logs:/app/config/logs")
+        self.assertFalse(migration_required)
+
+    def test_old_archive_and_local_mounts_require_layout_migration(self):
+        inspect = {
+            "Config": {
+                "Env": ["MAKERHUB_DATABASE_URL=postgresql://makerhub:makerhub@makerhub-postgres:5432/makerhub"],
+            },
+            "HostConfig": {
+                "Binds": [
+                    "/host/makerhub/state:/app/config/state",
+                    "/host/makerhub/archive:/app/archive",
+                    "/host/makerhub/local:/app/local",
+                ],
+            },
+            "Mounts": [],
+        }
+        original_state_dir = self_update.STATE_DIR
+        original_archive_dir = self_update.ARCHIVE_DIR
+        original_local_dir = self_update.LOCAL_DIR
+        try:
+            self_update.STATE_DIR = Path("/app/config/state")
+            self_update.ARCHIVE_DIR = Path("/app/data/archive")
+            self_update.LOCAL_DIR = Path("/app/data/local")
+
+            migration_required = self_update._compose_migration_required(inspect)
+        finally:
+            self_update.STATE_DIR = original_state_dir
+            self_update.ARCHIVE_DIR = original_archive_dir
+            self_update.LOCAL_DIR = original_local_dir
+
+        self.assertTrue(migration_required)
 
     def test_replacement_body_applies_app_web_workers_only(self):
         inspect = {
@@ -273,12 +368,15 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
     def test_request_system_update_passes_web_container_to_helper(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_dir = Path(temp_dir) / "state"
+            data_dir = Path(temp_dir) / "data"
             socket_path = Path(temp_dir) / "docker.sock"
             socket_path.write_text("", encoding="utf-8")
 
             original_socket = self_update.DOCKER_SOCKET_PATH
             original_state_dir = self_update.STATE_DIR
             original_logs_dir = self_update.LOGS_DIR
+            original_archive_dir = self_update.ARCHIVE_DIR
+            original_local_dir = self_update.LOCAL_DIR
             original_update_state = self_update.UPDATE_STATE_PATH
             original_client = self_update.DockerSocketClient
             original_candidates = self_update._extract_container_id_candidates
@@ -302,8 +400,10 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                     "HostConfig": {
                         "Binds": [
                             f"{state_dir}:{state_dir}",
+                            f"{data_dir}:{data_dir}",
                             f"{socket_path}:{socket_path}",
                         ],
+                        "NetworkMode": "makerhub_default",
                     },
                     "Mounts": [],
                     "NetworkSettings": {"Networks": {"makerhub_default": {"Aliases": ["makerhub-api"]}}},
@@ -341,6 +441,8 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             try:
                 self_update.DOCKER_SOCKET_PATH = socket_path
                 self_update.STATE_DIR = state_dir
+                self_update.ARCHIVE_DIR = data_dir / "archive"
+                self_update.LOCAL_DIR = data_dir / "local"
                 self_update.UPDATE_STATE_PATH = state_dir / "system_update.json"
                 self_update.DockerSocketClient = FakeDockerSocketClient
                 self_update._extract_container_id_candidates = lambda: ["api-container-id"]
@@ -355,6 +457,8 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             finally:
                 self_update.DOCKER_SOCKET_PATH = original_socket
                 self_update.STATE_DIR = original_state_dir
+                self_update.ARCHIVE_DIR = original_archive_dir
+                self_update.LOCAL_DIR = original_local_dir
                 self_update.UPDATE_STATE_PATH = original_update_state
                 self_update.DockerSocketClient = original_client
                 self_update._extract_container_id_candidates = original_candidates
@@ -372,18 +476,26 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             self.assertIn("makerhub-web", command)
             self.assertIn("--web-image-ref", command)
             self.assertIn("ghcr.io/example/makerhub:latest", command)
+            self.assertIn(
+                "MAKERHUB_DATABASE_URL=postgresql://makerhub:makerhub@makerhub-postgres:5432/makerhub",
+                created[0]["body"]["Env"],
+            )
+            self.assertEqual(created[0]["body"]["HostConfig"]["NetworkMode"], "makerhub_default")
             self.assertEqual(started, [created[0]["name"] + "-id"])
             self.assertEqual(written_state["old_image_ids"], ["sha256:current-image"])
 
     def test_request_system_update_passes_worker_container_to_helper(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_dir = Path(temp_dir) / "state"
+            data_dir = Path(temp_dir) / "data"
             socket_path = Path(temp_dir) / "docker.sock"
             socket_path.write_text("", encoding="utf-8")
 
             original_socket = self_update.DOCKER_SOCKET_PATH
             original_state_dir = self_update.STATE_DIR
             original_logs_dir = self_update.LOGS_DIR
+            original_archive_dir = self_update.ARCHIVE_DIR
+            original_local_dir = self_update.LOCAL_DIR
             original_update_state = self_update.UPDATE_STATE_PATH
             original_client = self_update.DockerSocketClient
             original_candidates = self_update._extract_container_id_candidates
@@ -407,6 +519,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                     "HostConfig": {
                         "Binds": [
                             f"{state_dir}:{state_dir}",
+                            f"{data_dir}:{data_dir}",
                             f"{socket_path}:{socket_path}",
                             f"{state_dir.parent / 'logs'}:{state_dir.parent / 'logs'}",
                         ],
@@ -448,6 +561,8 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                 self_update.DOCKER_SOCKET_PATH = socket_path
                 self_update.STATE_DIR = state_dir
                 self_update.LOGS_DIR = state_dir.parent / "logs"
+                self_update.ARCHIVE_DIR = data_dir / "archive"
+                self_update.LOCAL_DIR = data_dir / "local"
                 self_update.UPDATE_STATE_PATH = state_dir / "system_update.json"
                 self_update.DockerSocketClient = FakeDockerSocketClient
                 self_update._extract_container_id_candidates = lambda: ["app-container-id"]
@@ -463,6 +578,8 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                 self_update.DOCKER_SOCKET_PATH = original_socket
                 self_update.STATE_DIR = original_state_dir
                 self_update.LOGS_DIR = original_logs_dir
+                self_update.ARCHIVE_DIR = original_archive_dir
+                self_update.LOCAL_DIR = original_local_dir
                 self_update.UPDATE_STATE_PATH = original_update_state
                 self_update.DockerSocketClient = original_client
                 self_update._extract_container_id_candidates = original_candidates

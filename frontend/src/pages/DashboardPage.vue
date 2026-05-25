@@ -262,7 +262,7 @@
             <div class="dashboard-mini-card__meta">
               <span>
                 <strong>扫描目录</strong>
-                {{ automation.organizer.source_dir || "/app/local" }}
+                {{ automation.organizer.source_dir || "/app/data/local" }}
               </span>
               <span>
                 <strong>最近记录</strong>

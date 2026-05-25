@@ -316,6 +316,31 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
         self.assertEqual(self.state["archive_snapshot_marker"]["token"], "legacy-archive-token")
         self.assertEqual(self.state["local_preview_queue_marker"]["token"], "legacy-preview-token")
 
+    def test_database_migration_reads_legacy_config_path_under_parent_config_mount(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_root = Path(tmp) / "config"
+            new_config_dir = config_root / "config"
+            legacy_config_path = config_root / "config.json"
+            new_config_path = new_config_dir / "config.json"
+            legacy_config_path.parent.mkdir(parents=True, exist_ok=True)
+            legacy_config_path.write_text(
+                AppConfig(cookies=[CookiePair(platform="cn", cookie="token=legacy-parent")]).model_dump_json(),
+                encoding="utf-8",
+            )
+            with patch.object(database_migration, "CONFIG_PATH", new_config_path), \
+                    patch.object(database_migration, "CONFIG_DIR", new_config_dir), \
+                    patch.object(database_migration, "LEGACY_CONFIG_PATH", legacy_config_path), \
+                    patch.object(
+                        database_migration,
+                        "JSON_STATE_FILE_MIGRATIONS",
+                        (("app_config", new_config_path, {}),),
+                    ):
+                result = database_migration.migrate_json_files_to_database(force=True)
+
+        self.assertEqual(result["updated"], 2)
+        self.assertEqual(self.state["app_config"]["cookies"][0]["cookie"], "token=legacy-parent")
+        self.assertEqual(result["items"][0]["path"], legacy_config_path.as_posix())
+
 
 class DatabaseStatusTest(unittest.TestCase):
     def test_database_status_reports_unconfigured_without_file_fallback(self):

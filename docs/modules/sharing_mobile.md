@@ -55,7 +55,7 @@
   - 分享记录 state。
   - `makerhub_json_state:organize_tasks` 用于上传后整理进度。
 - 文件:
-  - `/app/local`：移动端上传落地后进入本地整理。
+  - `/app/data/local`：移动端上传落地后进入本地整理。
   - `docs/ios-makerhub-shortcut.md`
   - `docs/makerhub-ios-shortcut-template.json`
   - `docs/推送到 MakerHub.shortcut`
@@ -92,4 +92,3 @@ npm --prefix frontend run build
 - `frontend/src/components/ShareDialog.vue`
 - `frontend/src/pages/SettingsPage.vue` 中分享和 Token 设置
 - `docs/ios-makerhub-shortcut.md`
-

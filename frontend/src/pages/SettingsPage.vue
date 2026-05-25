@@ -240,12 +240,12 @@
         <div class="settings-grid settings-grid--two">
           <label class="field-card">
             <span>本地整理扫描目录</span>
-            <input v-model="organizerForm.source_dir" type="text" placeholder="/app/local">
+            <input v-model="organizerForm.source_dir" type="text" placeholder="/app/data/local">
             <small class="archive-form__hint">Worker 会从这里扫描候选 3MF 文件。</small>
           </label>
           <label class="field-card">
             <span>整理目标目录</span>
-            <input v-model="organizerForm.target_dir" type="text" placeholder="/app/archive">
+            <input v-model="organizerForm.target_dir" type="text" placeholder="/app/data/archive">
             <small class="archive-form__hint">整理后的模型会写入归档库。</small>
           </label>
         </div>

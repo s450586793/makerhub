@@ -56,17 +56,17 @@
   - `archive_snapshot_marker`
   - `local_preview_queue_marker`
 - 旧文件迁移输入:
-  - `/app/state/archive_queue.json`
-  - `/app/state/missing_3mf.json`
-  - `/app/state/organize_tasks.json`
-  - `/app/state/subscriptions_state.json`
-  - `/app/state/remote_refresh_state.json`
-  - `/app/state/three_mf_daily_quota.json`
-  - `/app/state/archive_repair_status.json`
-  - `/app/state/archive_profile_backfill_status.json`
-  - `/app/state/archive_snapshot.marker`
-  - `/app/state/local_preview_queue.marker`
-  - `/app/logs/*.log`
+  - `/app/config/state/archive_queue.json`
+  - `/app/config/state/missing_3mf.json`
+  - `/app/config/state/organize_tasks.json`
+  - `/app/config/state/subscriptions_state.json`
+  - `/app/config/state/remote_refresh_state.json`
+  - `/app/config/state/three_mf_daily_quota.json`
+  - `/app/config/state/archive_repair_status.json`
+  - `/app/config/state/archive_profile_backfill_status.json`
+  - `/app/config/state/archive_snapshot.marker`
+  - `/app/config/state/local_preview_queue.marker`
+  - `/app/config/logs/*.log`
 
 ## 常用测试命令
 

@@ -8,8 +8,10 @@ V0.7.0 是 MakerHub 的数据库化架构版本。这个版本把运行期结构
 
 - 默认 Compose 升级为 `makerhub-app`、`makerhub-worker`、`makerhub-postgres` 三容器。
 - 新增 `MAKERHUB_DATABASE_URL` 运行配置，App 和 Worker 共用同一个 Postgres。
-- 新增数据库健康检查，App / Worker 会等待 Postgres 可用后启动。
-- Docker 网页一键更新的 `docker.sock` 挂载改为可选，降低默认部署风险。
+- `docker.sock` 挂载默认开启，设置页可直接执行网页一键更新。
+- `depends_on` 和 Postgres `healthcheck` 默认注释保留，高级部署需要时可自行打开。
+- 默认 compose 直接写入示例数据库密码，不再要求单独创建 `.env`。
+- 容器目录收敛为 `/app/config/{config,logs,state}` 与 `/app/data/{archive,local}`，默认 compose 只需映射 `/app/config`、`/app/data` 和 Postgres 数据目录。
 - GitHub Actions Docker 发布会继续推送 `latest` 和 `sha` 标签，并增加根目录 `VERSION` 对应的版本标签。
 
 ### 数据库化
@@ -18,6 +20,7 @@ V0.7.0 是 MakerHub 的数据库化架构版本。这个版本把运行期结构
 - 新增 `archive_model_index` 模型卡片索引，用于模型库、订阅库、来源库和本地库快速读取。
 - 配置、Cookie / Token、登录 session、订阅状态、来源库 metadata、分享记录、归档队列、缺失 `3MF`、本地整理任务、源端刷新状态、系统更新状态、配额/限流状态和业务日志迁移到 Postgres。
 - 首次连接数据库时会自动导入旧 JSON 状态、历史日志和模型卡片索引。
+- 旧 `/app/config/config.json` 会作为兼容迁移输入读取，新版本运行期配置写入 `/app/config/config/config.json` 或数据库。
 - 设置页保留“数据库索引与历史信息补全”区域，可手动重建历史模型索引。
 
 ### MakerWorld 状态与账号
@@ -37,7 +40,7 @@ V0.7.0 是 MakerHub 的数据库化架构版本。这个版本把运行期结构
 
 ### 系统更新
 
-- 旧 compose 缺少 `MAKERHUB_DATABASE_URL` 或 Postgres 服务时，网页一键更新会阻止继续，并提示先升级 compose。
+- 旧 compose 缺少 `MAKERHUB_DATABASE_URL`、Postgres 服务或仍使用旧分散目录挂载时，网页一键更新会阻止继续，并提示先升级 compose。
 - App / Worker 同镜像更新流程继续保留，避免只更新一个容器导致版本不一致。
 - 更新状态、目标版本和失败原因写入数据库状态，重启后仍可在设置页查看。
 
@@ -50,7 +53,8 @@ V0.7.0 是 MakerHub 的数据库化架构版本。这个版本把运行期结构
 ### 升级注意
 
 - 升级到 V0.7.0 前，请先把 compose 改成 App / Worker / Postgres 三容器。
-- `.env` 必须设置 `MAKERHUB_POSTGRES_PASSWORD`。
+- 默认数据库密码写在 compose 里，正式使用前建议替换为自己的纯英文数字密码。
+- 旧宿主机归档根目录需要按新布局整理为 `data/archive` 和 `data/local` 两个子目录，再映射到容器 `/app/data`。
 - 模型文件、图片、附件和历史 `meta.json` 不会被迁移过程删除。
 - 如果设置页提示“需改 compose”，请先手动更新 compose，再执行网页一键更新。
 

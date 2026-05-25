@@ -13,11 +13,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1
-ENV MAKERHUB_CONFIG_DIR=/app/config
-ENV MAKERHUB_LOGS_DIR=/app/logs
-ENV MAKERHUB_STATE_DIR=/app/state
-ENV MAKERHUB_ARCHIVE_DIR=/app/archive
-ENV MAKERHUB_LOCAL_DIR=/app/local
+ENV MAKERHUB_CONFIG_DIR=/app/config/config
+ENV MAKERHUB_LOGS_DIR=/app/config/logs
+ENV MAKERHUB_STATE_DIR=/app/config/state
+ENV MAKERHUB_ARCHIVE_DIR=/app/data/archive
+ENV MAKERHUB_LOCAL_DIR=/app/data/local
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends chromium curl libarchive-tools nodejs \
@@ -26,7 +26,7 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 RUN scrapling install
-RUN mkdir -p /app/config /app/logs /app/state /app/archive /app/local
+RUN mkdir -p /app/config/config /app/config/logs /app/config/state /app/data/archive /app/data/local
 
 COPY app ./app
 COPY VERSION ./VERSION

@@ -1150,7 +1150,7 @@ class LocalOrganizerService:
             return True
 
         # Organizer-generated 3MF files always live under `<model_dir>/instances/`.
-        # When `/app/local` is mounted to the same host path as `/app/archive/local`,
+        # When the local import directory points inside the archive tree,
         # we must skip those files or the organizer will recursively re-import itself.
         if "instances" in relative.parts[:-1]:
             return True

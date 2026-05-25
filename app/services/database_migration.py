@@ -12,7 +12,7 @@ from app.core.database import (
     load_json_state,
     save_json_state,
 )
-from app.core.settings import CONFIG_PATH, LOGS_DIR, STATE_DIR
+from app.core.settings import CONFIG_DIR, CONFIG_PATH, LOGS_DIR, STATE_DIR
 from app.services.business_logs import append_business_log, append_database_log_entry, _parse_log_line
 from app.services.source_library import SOURCE_LIBRARY_METADATA_PATH
 from app.services.subscriptions import COOKIE_SOURCE_INVENTORY_PATH, COOKIE_SOURCE_SYNC_STATE_PATH
@@ -48,6 +48,7 @@ JSON_STATE_FILE_MIGRATIONS: tuple[tuple[str, Path, dict[str, Any]], ...] = (
     ("archive_snapshot_marker", STATE_DIR / "archive_snapshot.marker", {}),
     ("local_preview_queue_marker", STATE_DIR / "local_preview_queue.marker", {}),
 )
+LEGACY_CONFIG_PATH = CONFIG_DIR.parent / "config.json"
 BAMBU_STUDIO_SECRET_STATE_KEY = "bambu_studio_download_secret"
 BAMBU_STUDIO_SECRET_PATH = STATE_DIR / "bambu_studio_download_secret"
 LOG_FILE_IMPORT_LIMIT = 200_000
@@ -76,6 +77,32 @@ def _read_marker_file(path: Path, default: dict[str, Any]) -> dict[str, Any]:
         "reason": "legacy_marker",
         "updated_at": "",
     }
+
+
+def _config_migration_paths(path: Path) -> list[Path]:
+    if path != CONFIG_PATH:
+        return [path]
+    paths = [path]
+    try:
+        duplicate = LEGACY_CONFIG_PATH.resolve() == path.resolve()
+    except OSError:
+        duplicate = LEGACY_CONFIG_PATH == path
+    if not duplicate:
+        paths.append(LEGACY_CONFIG_PATH)
+    return paths
+
+
+def _read_json_migration_payload(key: str, path: Path, default: dict[str, Any]) -> tuple[dict[str, Any], Path]:
+    read_paths = _config_migration_paths(path) if key == "app_config" else [path]
+    for candidate in read_paths:
+        payload = (
+            _read_marker_file(candidate, default)
+            if key in {"archive_snapshot_marker", "local_preview_queue_marker"}
+            else _read_json_file(candidate, default)
+        )
+        if payload:
+            return payload, candidate
+    return dict(default), read_paths[0]
 
 
 def _json_state_exists(key: str) -> bool:
@@ -109,14 +136,11 @@ def migrate_json_files_to_database(*, force: bool = False) -> dict[str, Any]:
                 item["status"] = "exists"
                 result["items"].append(item)
                 continue
-            payload = (
-                _read_marker_file(path, default)
-                if key in {"archive_snapshot_marker", "local_preview_queue_marker"}
-                else _read_json_file(path, default)
-            )
+            payload, source_path = _read_json_migration_payload(key, path, default)
             save_json_state(key, payload)
             result["updated"] += 1
             item["status"] = "updated"
+            item["path"] = source_path.as_posix()
             item["count"] = len(payload.get("items") or []) if isinstance(payload.get("items"), list) else len(payload)
         except Exception as exc:
             result["failed"] += 1

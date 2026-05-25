@@ -14,7 +14,7 @@ from typing import Any
 from urllib.parse import quote
 
 from app.core.database_json_state import load_database_json_state, save_database_json_state
-from app.core.settings import APP_VERSION, LOGS_DIR, STATE_DIR
+from app.core.settings import APP_VERSION, ARCHIVE_DIR, LOCAL_DIR, LOGS_DIR, STATE_DIR
 from app.core.timezone import now_iso as china_now_iso
 from app.services.business_logs import append_business_log
 
@@ -54,18 +54,15 @@ POSTGRES_COMPOSE_MIGRATION_EXAMPLE = """services:
       MAKERHUB_BACKGROUND_TASKS: "false"
       MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
       MAKERHUB_WEB_WORKERS: "1"
-      MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD}@makerhub-postgres:5432/makerhub
+      MAKERHUB_DATABASE_URL: postgresql://makerhub:makerhub_password_123456@makerhub-postgres:5432/makerhub
     volumes:
       - /volume4/docker/docker/makerhub/config:/app/config
-      - /volume4/docker/docker/makerhub/logs:/app/logs
-      - /volume4/docker/docker/makerhub/state:/app/state
-      - /volume2/entertainment/3D打印/makerhub:/app/archive
-      - /volume2/entertainment/3D打印/makerhub/local:/app/local
-      # 可选：启用设置页“一键更新”才打开；仅建议在可信内网环境使用。
-      # - /var/run/docker.sock:/var/run/docker.sock
-    depends_on:
-      makerhub-postgres:
-        condition: service_healthy
+      - /volume2/entertainment/3D打印/makerhub:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    # 高级可选：如果希望 App 等 Postgres 健康后再启动，取消下面三行注释，并同时打开 Postgres 的 healthcheck。
+    # depends_on:
+    #   makerhub-postgres:
+    #     condition: service_healthy
     restart: unless-stopped
 
   makerhub-worker:
@@ -77,16 +74,14 @@ POSTGRES_COMPOSE_MIGRATION_EXAMPLE = """services:
       MAKERHUB_BACKGROUND_TASKS: "true"
       MAKERHUB_WORKER_CONCURRENCY: "2"
       MAKERHUB_HEAVY_JOB_NICE: "10"
-      MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD}@makerhub-postgres:5432/makerhub
+      MAKERHUB_DATABASE_URL: postgresql://makerhub:makerhub_password_123456@makerhub-postgres:5432/makerhub
     volumes:
       - /volume4/docker/docker/makerhub/config:/app/config
-      - /volume4/docker/docker/makerhub/logs:/app/logs
-      - /volume4/docker/docker/makerhub/state:/app/state
-      - /volume2/entertainment/3D打印/makerhub:/app/archive
-      - /volume2/entertainment/3D打印/makerhub/local:/app/local
-    depends_on:
-      makerhub-postgres:
-        condition: service_healthy
+      - /volume2/entertainment/3D打印/makerhub:/app/data
+    # 高级可选：如果希望 Worker 等 Postgres 健康后再启动，取消下面三行注释，并同时打开 Postgres 的 healthcheck。
+    # depends_on:
+    #   makerhub-postgres:
+    #     condition: service_healthy
     restart: unless-stopped
 
   makerhub-postgres:
@@ -95,18 +90,20 @@ POSTGRES_COMPOSE_MIGRATION_EXAMPLE = """services:
     environment:
       POSTGRES_DB: makerhub
       POSTGRES_USER: makerhub
-      POSTGRES_PASSWORD: ${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: makerhub_password_123456
     volumes:
       - /volume4/docker/docker/makerhub/postgres:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U makerhub -d makerhub"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+    # 高级可选：需要配合上面的 depends_on 使用时再打开。
+    # healthcheck:
+    #   test: ["CMD-SHELL", "pg_isready -U makerhub -d makerhub"]
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 10
     restart: unless-stopped"""
 POSTGRES_COMPOSE_MIGRATION_MESSAGE = (
     "当前版本将归档模型索引迁移到 Postgres。检测到当前容器仍是旧 compose，"
-    "缺少 MAKERHUB_DATABASE_URL / makerhub-postgres 服务；请先按示例 compose 改成 App + Worker + Postgres 三容器后，再执行网页更新。"
+    "缺少 MAKERHUB_DATABASE_URL / makerhub-postgres 服务，或仍使用旧的 /app/state、/app/archive、/app/local 分散挂载；"
+    "请先按示例 compose 改成 App + Worker + Postgres 三容器，并使用 /app/config + /app/data 新目录布局后，再执行网页更新。"
 )
 
 
@@ -175,37 +172,33 @@ def _parse_bind_destination(bind_spec: str) -> tuple[str, str, str]:
     return parts[0], parts[1], parts[2]
 
 
-def _state_mount_spec_from_inspect(container_inspect: dict[str, Any]) -> str:
-    state_dir = str(STATE_DIR)
-    for bind in container_inspect.get("HostConfig", {}).get("Binds") or []:
-        _, destination, _ = _parse_bind_destination(bind)
-        if destination == state_dir:
-            return str(bind)
+def _path_within_mount(destination: str, target: str) -> bool:
+    if destination == target:
+        return True
+    destination_path = destination.rstrip("/")
+    return bool(destination_path and target.startswith(f"{destination_path}/"))
 
-    for mount in container_inspect.get("Mounts") or []:
-        if str(mount.get("Destination") or "") != state_dir:
-            continue
-        mount_type = str(mount.get("Type") or "")
-        if mount_type == "volume" and mount.get("Name"):
-            source = str(mount.get("Name") or "")
-        else:
-            source = str(mount.get("Source") or "")
-        if not source:
-            continue
-        suffix = ":ro" if mount.get("RW") is False else ""
-        return f"{source}:{state_dir}{suffix}"
-    return ""
+
+def _join_mount_subpath(source: str, destination: str, target: str) -> str:
+    if destination == target:
+        return source
+    relative = target.removeprefix(destination.rstrip("/")).lstrip("/")
+    if not relative:
+        return source
+    return f"{source.rstrip('/')}/{relative}"
 
 
 def _mount_spec_from_inspect(container_inspect: dict[str, Any], destination_path: Path | str) -> str:
     destination_path_text = str(destination_path)
     for bind in container_inspect.get("HostConfig", {}).get("Binds") or []:
-        _, destination, _ = _parse_bind_destination(bind)
-        if destination == destination_path_text:
-            return str(bind)
+        source, destination, options = _parse_bind_destination(bind)
+        if _path_within_mount(destination, destination_path_text):
+            mounted_source = _join_mount_subpath(source, destination, destination_path_text)
+            return ":".join(part for part in (mounted_source, destination_path_text, options) if part)
 
     for mount in container_inspect.get("Mounts") or []:
-        if str(mount.get("Destination") or "") != destination_path_text:
+        destination = str(mount.get("Destination") or "")
+        if not _path_within_mount(destination, destination_path_text):
             continue
         mount_type = str(mount.get("Type") or "")
         if mount_type == "volume" and mount.get("Name"):
@@ -215,8 +208,13 @@ def _mount_spec_from_inspect(container_inspect: dict[str, Any], destination_path
         if not source:
             continue
         suffix = ":ro" if mount.get("RW") is False else ""
-        return f"{source}:{destination_path_text}{suffix}"
+        mounted_source = _join_mount_subpath(source, destination, destination_path_text)
+        return f"{mounted_source}:{destination_path_text}{suffix}"
     return ""
+
+
+def _state_mount_spec_from_inspect(container_inspect: dict[str, Any]) -> str:
+    return _mount_spec_from_inspect(container_inspect, STATE_DIR)
 
 
 def _same_image_ref(left: str, right: str) -> bool:
@@ -695,12 +693,28 @@ def _container_resource_payload(container_inspect: dict[str, Any]) -> dict[str, 
     }
 
 
+def _helper_network_mode(container_inspect: dict[str, Any]) -> str:
+    network_mode = str((container_inspect.get("HostConfig") or {}).get("NetworkMode") or "").strip()
+    if network_mode and network_mode != "none":
+        return network_mode
+    networks = (container_inspect.get("NetworkSettings") or {}).get("Networks") or {}
+    if isinstance(networks, dict):
+        for name in networks:
+            clean = str(name or "").strip()
+            if clean and clean != "none":
+                return clean
+    return "bridge"
+
+
 def _database_url_from_container(container_inspect: dict[str, Any]) -> str:
     return str(_env_lookup(container_inspect).get(DATABASE_URL_ENV) or "").strip()
 
 
 def _compose_migration_required(container_inspect: dict[str, Any]) -> bool:
-    return not _database_url_from_container(container_inspect)
+    if not _database_url_from_container(container_inspect):
+        return True
+    required_paths = (STATE_DIR, ARCHIVE_DIR, LOCAL_DIR)
+    return any(not _mount_spec_from_inspect(container_inspect, path) for path in required_paths)
 
 
 def _compose_migration_payload() -> dict[str, Any]:
@@ -1019,15 +1033,19 @@ def request_system_update(*, requested_by: str = "", target_version: str = "", f
     logs_mount = str(metadata.get("logs_mount") or "").strip()
     if logs_mount:
         helper_binds.append(logs_mount)
+    helper_env = [
+        f"MAKERHUB_STATE_DIR={STATE_DIR}",
+        f"MAKERHUB_LOGS_DIR={LOGS_DIR}",
+        f"{RUNTIME_CONFIG_ENV}={json.dumps(runtime_config, ensure_ascii=False, separators=(',', ':'))}",
+        "PYTHONUNBUFFERED=1",
+    ]
+    database_url = _database_url_from_container(metadata.get("inspect") or {})
+    if database_url:
+        helper_env.append(f"{DATABASE_URL_ENV}={database_url}")
     helper_body = {
         "Image": helper_image,
         "Cmd": helper_cmd,
-        "Env": [
-            f"MAKERHUB_STATE_DIR={STATE_DIR}",
-            f"MAKERHUB_LOGS_DIR={LOGS_DIR}",
-            f"{RUNTIME_CONFIG_ENV}={json.dumps(runtime_config, ensure_ascii=False, separators=(',', ':'))}",
-            "PYTHONUNBUFFERED=1",
-        ],
+        "Env": helper_env,
         "Labels": {
             HELPER_LABEL_KEY: HELPER_LABEL_VALUE,
             "com.makerhub.self_update.request_id": request_id,
@@ -1035,7 +1053,7 @@ def request_system_update(*, requested_by: str = "", target_version: str = "", f
         "HostConfig": {
             "AutoRemove": True,
             "Binds": helper_binds,
-            "NetworkMode": "none",
+            "NetworkMode": _helper_network_mode(metadata.get("inspect") or {}),
             "RestartPolicy": {"Name": "no"},
         },
     }

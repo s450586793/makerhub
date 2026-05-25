@@ -83,10 +83,11 @@
   - `source_library_metadata`
   - `model_shares`
 - 旧文件迁移输入:
-  - `/app/config/config.json`
-  - `/app/state/*.json`
-  - `/app/state/*.marker`
-  - `/app/logs/*.log`
+  - `/app/config/config/config.json`
+  - 兼容旧部署的 `/app/config/config.json`
+  - `/app/config/state/*.json`
+  - `/app/config/state/*.marker`
+  - `/app/config/logs/*.log`
 
 ## 常用测试命令
 
@@ -97,7 +98,7 @@
 ## 修改时不能破坏
 
 - 数据库版本的结构化状态必须落在 Postgres；未配置 `MAKERHUB_DATABASE_URL` 时应提示升级 compose，而不是继续新增文件状态分支。
-- 业务日志运行期必须读写 `makerhub_logs`；旧 `/app/logs/*.log` 只作为迁移输入。
+- 业务日志运行期必须读写 `makerhub_logs`；旧 `/app/config/logs/*.log` 只作为迁移输入。
 - 保存 Cookie/Token/分享码/公网地址不能把明文写进业务日志。
 - Token 权限必须由后端校验，前端隐藏按钮不能替代后端权限。
 - 保存设置后要更新资源限制和相关后台任务触发逻辑。

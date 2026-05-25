@@ -46,12 +46,27 @@ class JsonStore:
         save_database_json_state(self._CONFIG_STATE_KEY, payload)
         return True
 
+    def _file_payload_paths(self) -> list[Path]:
+        paths = [self.path]
+        if self._uses_database():
+            legacy_path = CONFIG_DIR.parent / "config.json"
+            try:
+                duplicate = legacy_path.resolve() == self.path.resolve()
+            except OSError:
+                duplicate = legacy_path == self.path
+            if not duplicate:
+                paths.append(legacy_path)
+        return paths
+
     def _load_file_payload(self) -> dict:
-        try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-        return payload if isinstance(payload, dict) else {}
+        for path in self._file_payload_paths():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict):
+                return payload
+        return {}
 
     @staticmethod
     def _merge_missing_cookie_values(payload: dict, file_payload: dict) -> bool:

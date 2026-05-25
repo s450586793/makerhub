@@ -5,7 +5,7 @@
 - 统一处理三个入口：
   - Web 端上传。
   - iOS 快捷指令上传。
-  - `/app/local` 文件夹放入文件/文件夹。
+  - `/app/data/local` 文件夹放入文件/文件夹。
 - 按文件类型整理本地模型：
   - 单/多个纯 3MF：按 3MF 指纹和模型 identity 分模型或合并配置。
   - STL/STEP/OBJ 等模型文件：作为同一个本地模型导入。
@@ -62,10 +62,10 @@
   - `makerhub_json_state:model_flags`
   - `archive_model_index` 最终模型索引。
 - 文件:
-  - `/app/local`：导入入口和本地整理工作目录。
-  - `/app/archive/LOCAL_*`：本地模型最终目录。
-  - `/app/logs/organizer.log`
-  - `/app/state/organize_tasks.json` 仅作为旧部署迁移输入。
+  - `/app/data/local`：导入入口和本地整理工作目录。
+  - `/app/data/archive/LOCAL_*`：本地模型最终目录。
+  - `/app/config/logs/organizer.log` 仅作为历史日志迁移输入。
+  - `/app/config/state/organize_tasks.json` 仅作为旧部署迁移输入。
 
 ## 常用测试命令
 
