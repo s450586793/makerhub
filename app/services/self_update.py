@@ -654,6 +654,17 @@ def _backup_container_name(container_name: str, request_id: str) -> str:
     return f"{base_name}-backup-{request_id[:8]}"
 
 
+def _container_display_name(container_inspect: dict[str, Any], fallback: str = "") -> str:
+    name = str(container_inspect.get("Name") or "").strip().lstrip("/")
+    return name or str(fallback or "").strip()
+
+
+def _assert_container_name(container_inspect: dict[str, Any], expected_name: str) -> None:
+    actual_name = _container_display_name(container_inspect)
+    if actual_name != str(expected_name or "").strip():
+        raise RuntimeError(f"新容器名称异常：期望 {expected_name}，实际 {actual_name or 'unknown'}。")
+
+
 def _resolve_self_container(client: DockerSocketClient) -> dict[str, Any]:
     last_error = ""
     for candidate in _extract_container_id_candidates():
@@ -670,7 +681,7 @@ def _resolve_self_container(client: DockerSocketClient) -> dict[str, Any]:
 
         return {
             "container_id": str(inspect.get("Id") or candidate),
-            "container_name": str(inspect.get("Name") or "").lstrip("/"),
+            "container_name": _container_display_name(inspect),
             "image_ref": str((inspect.get("Config") or {}).get("Image") or ""),
             "container_image_id": str(inspect.get("Image") or ""),
             "state_mount": state_mount,
@@ -1321,9 +1332,9 @@ def _replace_related_container(
 ) -> dict[str, str]:
     container_inspect = client.inspect_container(container_ref)
     old_container_id = str(container_inspect.get("Id") or container_ref)
-    container_name = str(container_inspect.get("Name") or "").lstrip("/") or str(container_ref or "")
+    container_name = _container_display_name(container_inspect, str(container_ref or ""))
     replacement_container_id = ""
-    replacement_container_name = _replacement_container_name(container_name, request_id)
+    replacement_container_name = container_name
     backup_container_name = _backup_container_name(container_name, request_id)
     old_container_renamed = False
     replacement_container_renamed = False
@@ -1382,7 +1393,11 @@ def _replace_related_container(
             runtime_config=runtime_config,
             role=role,
         )
-        replacement_container_id = client.create_container(replacement_body, name=replacement_container_name)
+        client.stop_container(old_container_id, timeout_seconds=10)
+        client.rename_container(old_container_id, name=backup_container_name)
+        old_container_renamed = True
+        replacement_container_id = client.create_container(replacement_body, name=container_name)
+        replacement_container_renamed = True
         state_fields: dict[str, str] = {}
         if role in {"web", "worker"}:
             state_fields[f"{role}_replacement_container_id"] = replacement_container_id
@@ -1394,11 +1409,6 @@ def _replace_related_container(
             message=_format_update_step_message(role_label, "正在切换旧实例"),
             **state_fields,
         )
-        client.stop_container(old_container_id, timeout_seconds=10)
-        client.rename_container(old_container_id, name=backup_container_name)
-        old_container_renamed = True
-        client.rename_container(replacement_container_id, name=container_name)
-        replacement_container_renamed = True
         _update_state_from_helper(
             request_id,
             status="running",
@@ -1407,7 +1417,8 @@ def _replace_related_container(
             **state_fields,
         )
         client.start_container(replacement_container_id)
-        _wait_for_replacement_container(client, replacement_container_id)
+        started_inspect = _wait_for_replacement_container(client, replacement_container_id)
+        _assert_container_name(started_inspect, container_name)
         try:
             client.remove_container(old_container_id, force=True)
         except Exception as exc:  # noqa: BLE001
@@ -1425,7 +1436,7 @@ def _replace_related_container(
             "container_name": container_name,
             "old_container_id": old_container_id,
             "replacement_container_id": replacement_container_id,
-            "replacement_container_name": replacement_container_name if not replacement_container_renamed else container_name,
+            "replacement_container_name": container_name,
         }
     except Exception as exc:  # noqa: BLE001
         rollback_error = ""
@@ -1503,7 +1514,7 @@ def run_update_helper(
 
     try:
         container_inspect = client.inspect_container(container_id)
-        container_name = str(container_inspect.get("Name") or "").lstrip("/")
+        container_name = _container_display_name(container_inspect, str(container_id or ""))
         _update_state_from_helper(
             request_id,
             status="running",
@@ -1617,22 +1628,20 @@ def run_update_helper(
             runtime_config=runtime_config,
             role="app",
         )
-        replacement_container_name = _replacement_container_name(container_name, request_id)
+        replacement_container_name = container_name
         backup_container_name = _backup_container_name(container_name, request_id)
-        replacement_container_id = client.create_container(replacement_body, name=replacement_container_name)
 
         current_phase = "switching"
         _update_state_from_helper(
             request_id,
             status="running",
             phase="switching",
-            message="新容器已准备，正在切换服务实例。",
-            replacement_container_id=replacement_container_id,
+            message="新容器配置已准备，正在切换服务实例。",
         )
         client.stop_container(container_id, timeout_seconds=10)
         client.rename_container(container_id, name=backup_container_name)
         old_container_renamed = True
-        client.rename_container(replacement_container_id, name=container_name)
+        replacement_container_id = client.create_container(replacement_body, name=container_name)
         replacement_container_renamed = True
 
         current_phase = "starting"
@@ -1644,7 +1653,8 @@ def run_update_helper(
             replacement_container_id=replacement_container_id,
         )
         client.start_container(replacement_container_id)
-        _wait_for_replacement_container(client, replacement_container_id)
+        started_inspect = _wait_for_replacement_container(client, replacement_container_id)
+        _assert_container_name(started_inspect, container_name)
 
         try:
             client.remove_container(container_id, force=True)
