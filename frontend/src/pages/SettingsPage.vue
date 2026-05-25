@@ -560,18 +560,18 @@
 
         <div class="settings-grid settings-grid--two">
           <label class="field-card">
-            <span>页面 / API 抓取方式</span>
+            <span>抓取模式</span>
             <select v-model="advancedForm.scraping_engine">
-              <option value="scrapling_first">Scrapling 优先</option>
-              <option value="legacy">旧流程</option>
-              <option value="scrapling_only">仅 Scrapling</option>
+              <option value="scrapling_first">自动模式</option>
+              <option value="legacy">兼容模式</option>
+              <option value="scrapling_only">增强模式</option>
             </select>
-            <small class="archive-form__hint">默认 Scrapling 优先；同一抓取方式最多尝试 3 次，再切换到下一个候选方式。</small>
+            <small class="archive-form__hint">推荐自动模式。源站接口不稳定或返回异常时，会自动换一种方式重试。</small>
           </label>
           <label class="field-card field-card--switch">
-            <span>Scrapling 浏览器兜底</span>
-            <label class="switch"><input v-model="advancedForm.scrapling_browser_fallback" type="checkbox"><span>启用隐身浏览器抓取</span></label>
-            <small class="archive-form__hint">静态请求遇到验证页或非 JSON 时再启用，适合归档、源端刷新和评论补全。</small>
+            <span>验证页自动处理</span>
+            <label class="switch"><input v-model="advancedForm.scrapling_browser_fallback" type="checkbox"><span>需要时启用隐身浏览器</span></label>
+            <small class="archive-form__hint">遇到验证页、登录页或接口返回异常时再启用，适合归档、源端刷新和评论补全。</small>
           </label>
         </div>
 

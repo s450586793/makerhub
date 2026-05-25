@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import time
 from pathlib import Path
@@ -49,6 +50,8 @@ JSON_STATE_FILE_MIGRATIONS: tuple[tuple[str, Path, dict[str, Any]], ...] = (
     ("local_preview_queue_marker", STATE_DIR / "local_preview_queue.marker", {}),
 )
 LEGACY_CONFIG_PATH = CONFIG_DIR.parent / "config.json"
+LEGACY_STATE_DIR = Path(os.getenv("MAKERHUB_LEGACY_STATE_DIR", "/app/state"))
+LEGACY_LOGS_DIR = Path(os.getenv("MAKERHUB_LEGACY_LOGS_DIR", "/app/logs"))
 BAMBU_STUDIO_SECRET_STATE_KEY = "bambu_studio_download_secret"
 BAMBU_STUDIO_SECRET_PATH = STATE_DIR / "bambu_studio_download_secret"
 LOG_FILE_IMPORT_LIMIT = 200_000
@@ -92,17 +95,92 @@ def _config_migration_paths(path: Path) -> list[Path]:
     return paths
 
 
+def _unique_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in paths:
+        try:
+            key = path.resolve().as_posix()
+        except OSError:
+            key = path.as_posix()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
+def _state_migration_paths(path: Path) -> list[Path]:
+    paths = [path]
+    if path.name:
+        paths.append(LEGACY_STATE_DIR / path.name)
+    return _unique_paths(paths)
+
+
+def _migration_paths_for_key(key: str, path: Path) -> list[Path]:
+    if key == "app_config":
+        return _config_migration_paths(path)
+    return _state_migration_paths(path)
+
+
+def _payload_equivalent(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    try:
+        return json.dumps(left, ensure_ascii=False, sort_keys=True, default=str) == json.dumps(
+            right,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+    except (TypeError, ValueError):
+        return left == right
+
+
+def _payload_has_user_data(payload: dict[str, Any], default: dict[str, Any]) -> bool:
+    if not isinstance(payload, dict) or not payload:
+        return False
+    if default and _payload_equivalent(payload, default):
+        return False
+    if not default:
+        return True
+    for value in payload.values():
+        if isinstance(value, (list, dict)) and value:
+            return True
+        if isinstance(value, str) and value.strip():
+            return True
+        if isinstance(value, bool) and value:
+            return True
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value:
+            return True
+    return False
+
+
 def _read_json_migration_payload(key: str, path: Path, default: dict[str, Any]) -> tuple[dict[str, Any], Path]:
-    read_paths = _config_migration_paths(path) if key == "app_config" else [path]
+    read_paths = _migration_paths_for_key(key, path)
+    candidates: list[tuple[dict[str, Any], Path, bool]] = []
     for candidate in read_paths:
+        exists = candidate.exists()
         payload = (
             _read_marker_file(candidate, default)
             if key in {"archive_snapshot_marker", "local_preview_queue_marker"}
             else _read_json_file(candidate, default)
         )
-        if payload:
+        candidates.append((payload, candidate, exists))
+        if exists and _payload_has_user_data(payload, default):
+            return payload, candidate
+    for payload, candidate, exists in candidates:
+        if exists and not _payload_equivalent(payload, default):
+            return payload, candidate
+    for payload, candidate, exists in candidates:
+        if exists:
             return payload, candidate
     return dict(default), read_paths[0]
+
+
+def _load_existing_json_state(key: str) -> Any:
+    try:
+        return load_json_state(key)
+    except Exception:
+        return None
 
 
 def _json_state_exists(key: str) -> bool:
@@ -131,15 +209,23 @@ def migrate_json_files_to_database(*, force: bool = False) -> dict[str, Any]:
         item = {"key": key, "path": path.as_posix(), "status": "skipped"}
         try:
             result["processed"] += 1
-            if not force and _json_state_exists(key):
-                result["skipped"] += 1
-                item["status"] = "exists"
-                result["items"].append(item)
-                continue
             payload, source_path = _read_json_migration_payload(key, path, default)
+            if not force:
+                existing = _load_existing_json_state(key)
+                if existing is not None:
+                    existing_payload = existing if isinstance(existing, dict) else {}
+                    source_has_data = _payload_has_user_data(payload, default)
+                    existing_has_data = _payload_has_user_data(existing_payload, default)
+                    if existing_has_data or not source_has_data:
+                        result["skipped"] += 1
+                        item["status"] = "exists"
+                        item["path"] = source_path.as_posix()
+                        continue
+                    item["status"] = "backfilled"
             save_json_state(key, payload)
             result["updated"] += 1
-            item["status"] = "updated"
+            if item["status"] == "skipped":
+                item["status"] = "updated"
             item["path"] = source_path.as_posix()
             item["count"] = len(payload.get("items") or []) if isinstance(payload.get("items"), list) else len(payload)
         except Exception as exc:
@@ -200,10 +286,13 @@ def migrate_log_files_to_database(*, limit_per_file: int = LOG_FILE_IMPORT_LIMIT
         result["reason"] = "Postgres 未配置或驱动未安装。"
         return result
 
-    try:
-        log_paths = sorted(path for path in LOGS_DIR.glob("*.log") if path.is_file())
-    except OSError:
-        log_paths = []
+    log_paths: list[Path] = []
+    for logs_dir in _unique_paths([LOGS_DIR, LEGACY_LOGS_DIR]):
+        try:
+            log_paths.extend(path for path in logs_dir.glob("*.log") if path.is_file())
+        except OSError:
+            continue
+    log_paths = sorted(_unique_paths(log_paths))
 
     for path in log_paths:
         item = {

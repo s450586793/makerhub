@@ -341,6 +341,60 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
         self.assertEqual(self.state["app_config"]["cookies"][0]["cookie"], "token=legacy-parent")
         self.assertEqual(result["items"][0]["path"], legacy_config_path.as_posix())
 
+    def test_database_migration_backfills_empty_model_flags_from_legacy_state_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_root = Path(tmp) / "config" / "state"
+            legacy_state_root = Path(tmp) / "state"
+            model_flags_path = state_root / "model_flags.json"
+            legacy_flags_path = legacy_state_root / "model_flags.json"
+            legacy_flags_path.parent.mkdir(parents=True, exist_ok=True)
+            legacy_flags_path.write_text(
+                '{"favorites": [], "printed": [], "deleted": ["remote/model-1"]}',
+                encoding="utf-8",
+            )
+            self.state["model_flags"] = {"favorites": [], "printed": [], "deleted": []}
+
+            with patch.object(database_migration, "MODEL_FLAGS_PATH", model_flags_path), \
+                    patch.object(database_migration, "LEGACY_STATE_DIR", legacy_state_root), \
+                    patch.object(
+                        database_migration,
+                        "JSON_STATE_FILE_MIGRATIONS",
+                        (("model_flags", model_flags_path, {"favorites": [], "printed": [], "deleted": []}),),
+                    ):
+                result = database_migration.migrate_json_files_to_database(force=False)
+
+        self.assertEqual(self.state["model_flags"]["deleted"], ["remote/model-1"])
+        self.assertEqual(result["updated"], 2)
+        self.assertEqual(result["items"][0]["status"], "backfilled")
+        self.assertEqual(result["items"][0]["path"], legacy_flags_path.as_posix())
+
+    def test_database_migration_keeps_existing_model_flags_when_database_has_user_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_root = Path(tmp) / "config" / "state"
+            legacy_state_root = Path(tmp) / "state"
+            model_flags_path = state_root / "model_flags.json"
+            legacy_flags_path = legacy_state_root / "model_flags.json"
+            legacy_flags_path.parent.mkdir(parents=True, exist_ok=True)
+            legacy_flags_path.write_text(
+                '{"favorites": [], "printed": [], "deleted": ["legacy/model"]}',
+                encoding="utf-8",
+            )
+            self.state["model_flags"] = {"favorites": [], "printed": [], "deleted": ["db/model"]}
+
+            with patch.object(database_migration, "MODEL_FLAGS_PATH", model_flags_path), \
+                    patch.object(database_migration, "LEGACY_STATE_DIR", legacy_state_root), \
+                    patch.object(
+                        database_migration,
+                        "JSON_STATE_FILE_MIGRATIONS",
+                        (("model_flags", model_flags_path, {"favorites": [], "printed": [], "deleted": []}),),
+                    ):
+                result = database_migration.migrate_json_files_to_database(force=False)
+
+        self.assertEqual(self.state["model_flags"]["deleted"], ["db/model"])
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["items"][0]["status"], "exists")
+
 
 class DatabaseStatusTest(unittest.TestCase):
     def test_database_status_reports_unconfigured_without_file_fallback(self):

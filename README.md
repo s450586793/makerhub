@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.7.2`
+> 当前版本：`v0.7.3`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -63,7 +63,7 @@ MakerHub 是一个面向个人 NAS、DSM、Unraid、Portainer 和自托管服务
 按自己的 NAS 路径创建目录。下面以 DSM 路径为例：
 
 ```bash
-mkdir -p /volume4/docker/docker/makerhub/{config,postgres}
+mkdir -p /volume4/docker/docker/makerhub/{config,logs,state,postgres}
 mkdir -p "/volume2/entertainment/3D打印/makerhub/local"
 ```
 
@@ -76,7 +76,7 @@ mkdir -p "/volume2/entertainment/3D打印/makerhub/local"
 - `/app/data/local`：本地导入和整理入口。
 - `/var/lib/postgresql/data`：Postgres 数据库目录。
 
-默认 compose 只需要映射 `/app/config`、`/app/data` 和 Postgres 数据目录，容器内部会自己创建上面的子目录。
+默认 compose 会把宿主机 `/volume4/docker/docker/makerhub` 映射到容器 `/app/config`，这样旧版平级的 `config`、`logs`、`state` 会直接对应到 `/app/config/config`、`/app/config/logs`、`/app/config/state`。
 
 ### 2. 使用完整 `compose.yaml`
 
@@ -97,7 +97,7 @@ services:
       MAKERHUB_WEB_WORKERS: "1"
       MAKERHUB_DATABASE_URL: postgresql://makerhub:makerhub_password_123456@makerhub-postgres:5432/makerhub
     volumes:
-      - /volume4/docker/docker/makerhub/config:/app/config
+      - /volume4/docker/docker/makerhub:/app/config
       - /volume2/entertainment/3D打印/makerhub:/app/data
       - /var/run/docker.sock:/var/run/docker.sock
     # 高级可选：如果希望 App 等 Postgres 健康后再启动，取消下面三行注释，并同时打开 Postgres 的 healthcheck。
@@ -117,7 +117,7 @@ services:
       MAKERHUB_HEAVY_JOB_NICE: "10"
       MAKERHUB_DATABASE_URL: postgresql://makerhub:makerhub_password_123456@makerhub-postgres:5432/makerhub
     volumes:
-      - /volume4/docker/docker/makerhub/config:/app/config
+      - /volume4/docker/docker/makerhub:/app/config
       - /volume2/entertainment/3D打印/makerhub:/app/data
     # 高级可选：如果希望 Worker 等 Postgres 健康后再启动，取消下面三行注释，并同时打开 Postgres 的 healthcheck。
     # depends_on:
@@ -159,7 +159,7 @@ http://你的服务器IP:9042
 
 首次启动数据库版本后，Worker 会自动迁移旧配置、Cookie / Token、订阅、任务状态、来源库 metadata、分享记录、更新状态、历史业务日志和模型卡片索引。迁移不会移动或删除模型文件。
 
-`/app/logs`、`/app/state`、`/app/archive`、`/app/local` 默认不再单独映射。新业务日志写入 Postgres；旧日志如果要迁移，放在宿主机 `/volume4/docker/docker/makerhub/config/logs`，容器内就是 `/app/config/logs`。
+`/app/logs`、`/app/state`、`/app/archive`、`/app/local` 默认不再单独映射。新业务日志写入 Postgres；旧日志和旧状态保留在宿主机 `/volume4/docker/docker/makerhub/logs`、`/volume4/docker/docker/makerhub/state` 时，容器内会分别显示为 `/app/config/logs`、`/app/config/state` 并参与迁移。
 
 ## 从旧版升级
 
@@ -206,6 +206,13 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-05-26 · v0.7.3
+
+- 默认 Compose 将宿主机 MakerHub 配置父目录映射到 `/app/config`，App 和 Worker 共享旧版 `config`、`logs`、`state` 平级目录，方便老用户直接升级。
+- 数据库迁移会在数据库仍为空默认状态时，从旧 `/app/state` 补回模型删除标记、订阅状态等运行数据，恢复本地删除和源端删除列表。
+- 设置页抓取模式文案改为自动模式、兼容模式、增强模式，避免暴露内部抓取优先级。
+- 网页一键更新提示中的 Compose 示例同步为父目录挂载。
+
 ### 2026-05-25 · v0.7.2
 
 - 归档模型根目录统一为 `/app/data`，旧 DSM 模型目录不需要再手动移动到 `archive/` 子目录。
@@ -226,7 +233,7 @@ uvicorn app.main:app --reload
 - 首页 MW 状态拆分为 `账号` 与 `3MF 下载` 检查项，下载验证、每日上限、接口受限和 Cookie 问题会分别显示。
 - 在线账号、Cookie 认证探针和 MakerWorld/Bambu API 请求链路优化，减少普通 HTML/登录页被误判为“需要验证”。
 - 系统更新加入 compose 升级保护，旧部署缺少数据库配置时会提示先改 compose，避免网页更新后容器不可用。
-- 容器目录收敛为 `/app/config/{config,logs,state}` 与 `/app/data`，默认 compose 只需映射 `/app/config`、`/app/data` 和 Postgres 数据目录。
+- 容器目录收敛为 `/app/config/{config,logs,state}` 与 `/app/data`，默认 compose 将宿主机 MakerHub 配置父目录映射到 `/app/config`，同时映射 `/app/data` 和 Postgres 数据目录。
 - 重写 README、补充功能介绍、Compose 安装方式和 V0.7.0 更新说明。
 
 ### 2026-05-22 · v0.6.128

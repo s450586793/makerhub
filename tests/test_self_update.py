@@ -39,7 +39,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
         self.assertNotIn("MAKERHUB_POSTGRES_PASSWORD", compose_text)
         self.assertNotIn("    depends_on:", compose_text)
         self.assertNotIn("    healthcheck:", compose_text)
-        self.assertIn("/app/config", compose_text)
+        self.assertIn("/volume4/docker/docker/makerhub:/app/config", compose_text)
         self.assertIn("/app/data", compose_text)
         self.assertNotIn("/app/logs", compose_text)
         self.assertNotIn("/app/state", compose_text)
@@ -152,7 +152,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             self.assertNotIn("MAKERHUB_POSTGRES_PASSWORD", status["compose_example"])
             self.assertNotIn("    depends_on:", status["compose_example"])
             self.assertNotIn("    healthcheck:", status["compose_example"])
-            self.assertIn("/app/config", status["compose_example"])
+            self.assertIn("/volume4/docker/docker/makerhub:/app/config", status["compose_example"])
             self.assertIn("/app/data", status["compose_example"])
             self.assertNotIn("/app/logs", status["compose_example"])
             self.assertNotIn("/app/state", status["compose_example"])
@@ -215,14 +215,14 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             self.assertIn("MAKERHUB_DATABASE_URL", str(context.exception))
             self.assertIn("makerhub-postgres", str(context.exception))
 
-    def test_parent_config_and_data_mounts_satisfy_compose_layout(self):
+    def test_config_parent_and_data_mounts_satisfy_compose_layout(self):
         inspect = {
             "Config": {
                 "Env": ["MAKERHUB_DATABASE_URL=postgresql://makerhub:makerhub@makerhub-postgres:5432/makerhub"],
             },
             "HostConfig": {
                 "Binds": [
-                    "/host/makerhub/config:/app/config",
+                    "/host/makerhub:/app/config",
                     "/host/makerhub/data:/app/data",
                 ],
             },
@@ -247,8 +247,8 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             self_update.ARCHIVE_DIR = original_archive_dir
             self_update.LOCAL_DIR = original_local_dir
 
-        self.assertEqual(state_mount, "/host/makerhub/config/state:/app/config/state")
-        self.assertEqual(logs_mount, "/host/makerhub/config/logs:/app/config/logs")
+        self.assertEqual(state_mount, "/host/makerhub/state:/app/config/state")
+        self.assertEqual(logs_mount, "/host/makerhub/logs:/app/config/logs")
         self.assertFalse(migration_required)
 
     def test_old_archive_and_local_mounts_require_layout_migration(self):

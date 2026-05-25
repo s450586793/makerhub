@@ -56,7 +56,7 @@ POSTGRES_COMPOSE_MIGRATION_EXAMPLE = """services:
       MAKERHUB_WEB_WORKERS: "1"
       MAKERHUB_DATABASE_URL: postgresql://makerhub:makerhub_password_123456@makerhub-postgres:5432/makerhub
     volumes:
-      - /volume4/docker/docker/makerhub/config:/app/config
+      - /volume4/docker/docker/makerhub:/app/config
       - /volume2/entertainment/3D打印/makerhub:/app/data
       - /var/run/docker.sock:/var/run/docker.sock
     # 高级可选：如果希望 App 等 Postgres 健康后再启动，取消下面三行注释，并同时打开 Postgres 的 healthcheck。
@@ -76,7 +76,7 @@ POSTGRES_COMPOSE_MIGRATION_EXAMPLE = """services:
       MAKERHUB_HEAVY_JOB_NICE: "10"
       MAKERHUB_DATABASE_URL: postgresql://makerhub:makerhub_password_123456@makerhub-postgres:5432/makerhub
     volumes:
-      - /volume4/docker/docker/makerhub/config:/app/config
+      - /volume4/docker/docker/makerhub:/app/config
       - /volume2/entertainment/3D打印/makerhub:/app/data
     # 高级可选：如果希望 Worker 等 Postgres 健康后再启动，取消下面三行注释，并同时打开 Postgres 的 healthcheck。
     # depends_on:
