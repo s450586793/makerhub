@@ -531,10 +531,22 @@ def _apply_runtime_resource_config(
     role: str,
 ) -> None:
     runtime = normalize_runtime_resource_config(runtime_config)
-    if role == "app":
-        body["Env"] = _set_env_value(body.get("Env") or [], "MAKERHUB_WEB_WORKERS", runtime.get("web_workers") or 1)
-    elif role == "worker":
-        body["Env"] = _set_env_value(body.get("Env") or [], "MAKERHUB_WORKER_CONCURRENCY", runtime.get("worker_concurrency") or 2)
+    normalized_role = str(role or "app").strip().lower()
+    env = body.get("Env") or []
+    if normalized_role == "worker":
+        body["Cmd"] = ["worker"]
+        env = _set_env_value(env, "MAKERHUB_ENTRYPOINT", "worker")
+        env = _set_env_value(env, "MAKERHUB_PROCESS_ROLE", "worker")
+        env = _set_env_value(env, "MAKERHUB_BACKGROUND_TASKS", "true")
+        env = _set_env_value(env, "MAKERHUB_WORKER_CONCURRENCY", runtime.get("worker_concurrency") or 2)
+        body["Env"] = env
+    elif normalized_role in {"app", "web"}:
+        body["Cmd"] = ["app"]
+        env = _set_env_value(env, "MAKERHUB_ENTRYPOINT", "app")
+        env = _set_env_value(env, "MAKERHUB_PROCESS_ROLE", "app")
+        env = _set_env_value(env, "MAKERHUB_BACKGROUND_TASKS", "false")
+        env = _set_env_value(env, "MAKERHUB_WEB_WORKERS", runtime.get("web_workers") or 1)
+        body["Env"] = env
 
 
 def _build_replacement_container_body(

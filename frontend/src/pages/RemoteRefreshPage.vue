@@ -267,6 +267,8 @@ import { subscribeStateRefresh } from "../lib/stateEvents";
 
 
 const HISTORY_PAGE_SIZE = 12;
+const REMOTE_REFRESH_ACTIVE_REFRESH_MS = 5000;
+const REMOTE_REFRESH_IDLE_REFRESH_MS = 1200;
 const status = ref("");
 const loading = ref(true);
 const saving = ref(false);
@@ -284,6 +286,9 @@ const historyFilterOptions = [
   { value: "issues", label: "异常与跳过" },
 ];
 let refreshTimer = null;
+let refreshInFlight = false;
+let refreshPending = false;
+let lastRefreshAt = 0;
 let disposed = false;
 let unsubscribeStateRefresh = null;
 
@@ -446,16 +451,53 @@ function clearRefreshTimer() {
     window.clearTimeout(refreshTimer);
     refreshTimer = null;
   }
+  refreshPending = false;
+}
+
+function canRefreshVisibleState() {
+  return !disposed && typeof window !== "undefined" && (typeof document === "undefined" || !document.hidden);
 }
 
 function scheduleRefresh() {
-  clearRefreshTimer();
-  if (disposed || typeof window === "undefined" || document.hidden) {
+  if (!canRefreshVisibleState()) {
     return;
   }
+  if (refreshInFlight) {
+    refreshPending = true;
+    return;
+  }
+  if (refreshTimer) {
+    return;
+  }
+  const intervalMs = remoteRefreshState.value?.running
+    ? REMOTE_REFRESH_ACTIVE_REFRESH_MS
+    : REMOTE_REFRESH_IDLE_REFRESH_MS;
+  const elapsedMs = lastRefreshAt ? Date.now() - lastRefreshAt : intervalMs;
+  const waitMs = Math.max(intervalMs - elapsedMs, 0);
   refreshTimer = window.setTimeout(() => {
-    void load({ silent: true });
-  }, 300);
+    refreshTimer = null;
+    void runScheduledRefresh();
+  }, waitMs);
+}
+
+async function runScheduledRefresh() {
+  if (!canRefreshVisibleState()) {
+    return;
+  }
+  if (refreshInFlight) {
+    refreshPending = true;
+    return;
+  }
+  refreshInFlight = true;
+  try {
+    await load({ silent: true });
+  } finally {
+    refreshInFlight = false;
+    if (refreshPending) {
+      refreshPending = false;
+      scheduleRefresh();
+    }
+  }
 }
 
 async function load({ silent = false } = {}) {
@@ -475,6 +517,7 @@ async function load({ silent = false } = {}) {
     }
   } finally {
     loading.value = false;
+    lastRefreshAt = Date.now();
   }
   return ok;
 }

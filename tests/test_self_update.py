@@ -287,7 +287,13 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             "Name": "/makerhub-app",
             "Config": {
                 "Image": "ghcr.io/example/makerhub:latest",
-                "Env": ["MAKERHUB_ENTRYPOINT=app", "MAKERHUB_WEB_WORKERS=1"],
+                "Cmd": ["worker"],
+                "Env": [
+                    "MAKERHUB_ENTRYPOINT=worker",
+                    "MAKERHUB_PROCESS_ROLE=worker",
+                    "MAKERHUB_BACKGROUND_TASKS=true",
+                    "MAKERHUB_WEB_WORKERS=1",
+                ],
             },
             "HostConfig": {"NanoCpus": 2_000_000_000, "CpusetCpus": "0-1", "CpuShares": 2048},
             "NetworkSettings": {"Networks": {}},
@@ -303,6 +309,10 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             role="app",
         )
 
+        self.assertEqual(body["Cmd"], ["app"])
+        self.assertIn("MAKERHUB_ENTRYPOINT=app", body["Env"])
+        self.assertIn("MAKERHUB_PROCESS_ROLE=app", body["Env"])
+        self.assertIn("MAKERHUB_BACKGROUND_TASKS=false", body["Env"])
         self.assertIn("MAKERHUB_WEB_WORKERS=3", body["Env"])
         self.assertNotIn("HostConfig", body)
 
@@ -312,7 +322,13 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             "Name": "/makerhub-worker",
             "Config": {
                 "Image": "ghcr.io/example/makerhub:latest",
-                "Env": ["MAKERHUB_ENTRYPOINT=worker", "MAKERHUB_WORKER_CONCURRENCY=1"],
+                "Cmd": ["app"],
+                "Env": [
+                    "MAKERHUB_ENTRYPOINT=app",
+                    "MAKERHUB_PROCESS_ROLE=app",
+                    "MAKERHUB_BACKGROUND_TASKS=false",
+                    "MAKERHUB_WORKER_CONCURRENCY=1",
+                ],
             },
             "HostConfig": {"NanoCpus": 4_000_000_000, "CpusetCpus": "2-5", "CpuShares": 768},
             "NetworkSettings": {"Networks": {}},
@@ -328,6 +344,10 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             role="worker",
         )
 
+        self.assertEqual(body["Cmd"], ["worker"])
+        self.assertIn("MAKERHUB_ENTRYPOINT=worker", body["Env"])
+        self.assertIn("MAKERHUB_PROCESS_ROLE=worker", body["Env"])
+        self.assertIn("MAKERHUB_BACKGROUND_TASKS=true", body["Env"])
         self.assertIn("MAKERHUB_WORKER_CONCURRENCY=4", body["Env"])
         self.assertNotIn("HostConfig", body)
 
@@ -701,6 +721,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             pulled: list[str] = []
             phases: list[str] = []
             operations: list[tuple[str, str, str | None]] = []
+            created_bodies: list[dict] = []
 
             original_state_dir = self_update.STATE_DIR
             original_update_state = self_update.UPDATE_STATE_PATH
@@ -721,7 +742,16 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                             "Id": container_id,
                             "Name": "/makerhub-worker",
                             "Image": "sha256:old-image",
-                            "Config": {"Image": "ghcr.io/example/makerhub:latest", "Env": ["MAKERHUB_DATABASE_URL=postgresql://makerhub:makerhub@makerhub-postgres:5432/makerhub"]},
+                            "Config": {
+                                "Image": "ghcr.io/example/makerhub:latest",
+                                "Cmd": ["app"],
+                                "Env": [
+                                    "MAKERHUB_ENTRYPOINT=app",
+                                    "MAKERHUB_PROCESS_ROLE=app",
+                                    "MAKERHUB_BACKGROUND_TASKS=false",
+                                    "MAKERHUB_DATABASE_URL=postgresql://makerhub:makerhub@makerhub-postgres:5432/makerhub",
+                                ],
+                            },
                             "HostConfig": {},
                             "NetworkSettings": {"Networks": {}},
                         }
@@ -730,6 +760,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                         pulled.append(image_ref)
 
                     def create_container(self, _body, *, name=""):
+                        created_bodies.append(_body)
                         operations.append(("create", "", name))
                         return f"{name}-id"
 
@@ -772,6 +803,10 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             self.assertEqual(pulled, [])
             self.assertIn("creating_worker", phases)
             self.assertIn("starting_worker", phases)
+            self.assertEqual(created_bodies[0]["Cmd"], ["worker"])
+            self.assertIn("MAKERHUB_ENTRYPOINT=worker", created_bodies[0]["Env"])
+            self.assertIn("MAKERHUB_PROCESS_ROLE=worker", created_bodies[0]["Env"])
+            self.assertIn("MAKERHUB_BACKGROUND_TASKS=true", created_bodies[0]["Env"])
             self.assertEqual(
                 operations[:4],
                 [
