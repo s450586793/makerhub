@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from app.schemas.models import AppConfig, ThreeMfDownloadLimitsConfig
 from app.services.archive_worker import _three_mf_daily_limits
-from app.services.three_mf_quota import reserve_three_mf_download_slot
+from app.services.three_mf_quota import reserve_three_mf_download_slot, reset_three_mf_daily_quota
 
 
 class ThreeMfQuotaTest(unittest.TestCase):
@@ -98,6 +98,30 @@ class ThreeMfQuotaTest(unittest.TestCase):
         self.assertIsNone(first["remaining"])
         self.assertTrue(second["allowed"])
         self.assertEqual(self.quota_state, {})
+
+    def test_reset_daily_quota_clears_only_matching_site(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lock_path = Path(temp_dir) / "quota.lock"
+
+            reserve_three_mf_download_slot(
+                url="https://makerworld.com.cn/zh/models/1",
+                limit=2,
+                lock_path=lock_path,
+            )
+            reserve_three_mf_download_slot(
+                url="https://makerworld.com/zh/models/2",
+                limit=2,
+                lock_path=lock_path,
+            )
+            result = reset_three_mf_daily_quota(
+                url="https://makerworld.com/zh/models/2",
+                lock_path=lock_path,
+            )
+
+        self.assertTrue(result["reset"])
+        self.assertEqual(result["source"], "global")
+        self.assertIn("cn", self.quota_state["items"])
+        self.assertNotIn("global", self.quota_state["items"])
 
 
 if __name__ == "__main__":

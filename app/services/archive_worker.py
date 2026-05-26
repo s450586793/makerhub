@@ -34,6 +34,7 @@ from app.services.three_mf import (
     normalize_makerworld_source,
     normalize_three_mf_failure_state,
 )
+from app.services.three_mf_quota import reset_three_mf_daily_quota
 
 BATCH_TASK_MODES = {"author_upload", "collection_models"}
 BATCH_QUEUE_LOG_PATH = LOGS_DIR / "batch_queue.log"
@@ -315,6 +316,20 @@ def _clear_three_mf_limit_guard_for_manual_retry(url: str = "") -> bool:
         previous_limited_until=guard_state.get("limited_until") or "",
     )
     return True
+
+
+def _reset_three_mf_daily_quota_for_manual_retry(url: str = "") -> dict[str, Any]:
+    result = reset_three_mf_daily_quota(url=url)
+    if result.get("reset"):
+        append_business_log(
+            "missing_3mf",
+            "daily_quota_reset_for_manual_retry",
+            "手动重试缺失 3MF，已重置该站点今天的 MakerHub 自动下载计数。",
+            model_url=normalize_source_url(url),
+            source=result.get("source") or "",
+            previous=result.get("previous") or {},
+        )
+    return result
 
 
 def _missing_3mf_message_from_result(
@@ -1252,6 +1267,7 @@ class ArchiveTaskManager:
             }
 
         _clear_three_mf_limit_guard_for_manual_retry(clean_url)
+        _reset_three_mf_daily_quota_for_manual_retry(clean_url)
 
         self.task_store.update_missing_3mf_status(
             model_id=clean_model_id,
@@ -1353,6 +1369,13 @@ class ArchiveTaskManager:
                 previous_limited_until=limit_guard.get("limited_until") or "",
             )
             _clear_three_mf_limit_guard_for_manual_retry()
+        sources_reset: set[str] = set()
+        for item in items:
+            item_url = normalize_source_url(str(item.get("model_url") or ""))
+            source = normalize_makerworld_source(url=item_url)
+            if source in {"cn", "global"} and source not in sources_reset:
+                _reset_three_mf_daily_quota_for_manual_retry(item_url)
+                sources_reset.add(source)
         accepted = 0
         queued = 0
         failed = 0

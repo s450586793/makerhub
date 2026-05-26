@@ -187,7 +187,8 @@ class Missing3mfTest(unittest.TestCase):
                 return payload
 
             with patch.object(archive_worker_module, "load_database_json_state", side_effect=load_guard), \
-                    patch.object(archive_worker_module, "save_database_json_state", side_effect=save_guard):
+                    patch.object(archive_worker_module, "save_database_json_state", side_effect=save_guard), \
+                    patch.object(archive_worker_module, "reset_three_mf_daily_quota", return_value={"reset": False, "source": "cn"}):
                 manager = ArchiveTaskManager()
                 manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[]))
                 updates = []
@@ -215,6 +216,38 @@ class Missing3mfTest(unittest.TestCase):
         self.assertTrue(submitted[0]["force"])
         self.assertFalse(guard_state["active"])
         self.assertEqual(updates[-1]["status"], "queued")
+
+    def test_manual_missing_retry_resets_daily_quota_before_queueing(self):
+        original_select_cookie = archive_worker_module._select_cookie
+        quota_calls = []
+        try:
+            with patch.object(archive_worker_module, "load_database_json_state", side_effect=lambda _key, default: dict(default)), \
+                    patch.object(archive_worker_module, "save_database_json_state", side_effect=lambda _key, payload: payload), \
+                    patch.object(archive_worker_module, "reset_three_mf_daily_quota", side_effect=lambda **kwargs: quota_calls.append(kwargs) or {"reset": True, "source": "global", "previous": {"used": 100}}):
+                manager = ArchiveTaskManager()
+                manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[]))
+                manager.task_store = SimpleNamespace(
+                    update_missing_3mf_status=lambda **_payload: None
+                )
+                submitted = []
+                manager.submit = lambda url, force=False, meta=None, **_: submitted.append(
+                    {"url": url, "force": force, "meta": meta}
+                ) or {"accepted": True, "task_id": "task-1", "message": "queued"}
+                archive_worker_module._select_cookie = lambda *_: "cookie"
+
+                result = manager.retry_missing_3mf(
+                    model_url="https://makerworld.com/zh/models/2193050",
+                    model_id="2193050",
+                    title="Demo",
+                    instance_id="profile-1",
+                )
+        finally:
+            archive_worker_module._select_cookie = original_select_cookie
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(quota_calls, [{"url": "https://makerworld.com/zh/models/2193050"}])
+        self.assertEqual(len(submitted), 1)
+        self.assertTrue(submitted[0]["force"])
 
     def test_cn_instance_api_candidates_prefer_bambulab_api(self):
         candidates = _build_instance_api_candidates(

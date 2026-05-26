@@ -156,3 +156,27 @@ def reserve_three_mf_download_slot(
             "date": today,
             "reset_at": reset_at,
         }
+
+
+def reset_three_mf_daily_quota(
+    *,
+    source: Any = "",
+    url: Any = "",
+    lock_path=THREE_MF_DAILY_QUOTA_LOCK_PATH,
+) -> dict[str, Any]:
+    normalized_source = normalize_makerworld_source(source=source, url=url)
+    if normalized_source not in {"cn", "global"}:
+        return {"reset": False, "source": normalized_source}
+
+    with _quota_file_lock(lock_path):
+        payload = _read_payload()
+        items = payload.get("items") if isinstance(payload.get("items"), dict) else {}
+        existing = items.pop(normalized_source, None)
+        payload["items"] = items
+        _write_payload(payload)
+
+    return {
+        "reset": isinstance(existing, dict),
+        "source": normalized_source,
+        "previous": existing if isinstance(existing, dict) else {},
+    }

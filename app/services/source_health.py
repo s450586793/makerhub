@@ -661,6 +661,40 @@ def _source_health_check(
     }
 
 
+def _softened_historical_download_check(state: str, detail: str, *, account_state: str = "") -> dict[str, str]:
+    prefix = (
+        "账号连接正常"
+        if account_state == "ok"
+        else "账号检测为部分受限，但最近源端刷新仍可用"
+    )
+    if state in {"verification_required", "cloudflare"}:
+        return _source_health_check(
+            source="download",
+            label="3MF 下载",
+            state="historical_3mf_issue",
+            status="历史失败待重试",
+            detail=f"{prefix}；部分历史缺失 3MF 曾遇到验证页，已不作为账号验证失败处理，请在任务页重试。",
+            tone="warning",
+        )
+    if state == "auth_required":
+        return _source_health_check(
+            source="download",
+            label="3MF 下载",
+            state="historical_3mf_issue",
+            status="历史失败待重试",
+            detail=f"{prefix}；部分历史缺失 3MF 曾记录登录态异常，已不作为当前 Cookie 失效处理，请在任务页重试。",
+            tone="warning",
+        )
+    return _source_health_check(
+        source="download",
+        label="3MF 下载",
+        state=state,
+        status=_status_text_from_failure_state(state),
+        detail=detail,
+        tone=_tone_from_state(state),
+    )
+
+
 def _check_priority(check: dict[str, Any]) -> tuple[int, int, int]:
     tone_score = {
         "danger": 30,
@@ -746,16 +780,19 @@ def build_source_health_cards(
                 )
             if not download_detail and override_state == "verification_required":
                 download_detail = "MakerWorld 需要验证，前往官网任意下载一个模型。"
-            checks.append(
-                _source_health_check(
-                    source="download",
-                    label="3MF 下载",
-                    state=override_state,
-                    status=_status_text_from_failure_state(override_state),
-                    detail=download_detail,
-                    tone=_tone_from_state(override_state),
+            if account_state in {"ok", "probe_limited"} and override_state in {"verification_required", "cloudflare", "auth_required"}:
+                checks.append(_softened_historical_download_check(override_state, download_detail, account_state=account_state))
+            else:
+                checks.append(
+                    _source_health_check(
+                        source="download",
+                        label="3MF 下载",
+                        state=override_state,
+                        status=_status_text_from_failure_state(override_state),
+                        detail=download_detail,
+                        tone=_tone_from_state(override_state),
+                    )
                 )
-            )
 
         primary = _primary_source_health_check(checks)
         state = str(primary.get("state") or "").strip()

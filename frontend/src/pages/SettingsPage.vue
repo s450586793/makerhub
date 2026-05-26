@@ -549,12 +549,12 @@
           <label class="field-card">
             <span>国区每日 3MF 下载上限</span>
             <input v-model.number="threeMfLimitsForm.cn_daily_limit" type="number" min="0" step="1">
-            <small class="archive-form__hint">默认 100，填 0 表示不限制；达到上限后，国区缺失 3MF 会暂停到次日 00:00。</small>
+            <small class="archive-form__hint">这是 MakerHub 自动下载保护额度，不是 MakerWorld 账号手动下载限制。默认 100，填 0 表示不限制；达到后国区缺失 3MF 会暂停到次日 00:00。</small>
           </label>
           <label class="field-card">
             <span>国际区每日 3MF 下载上限</span>
             <input v-model.number="threeMfLimitsForm.global_daily_limit" type="number" min="0" step="1">
-            <small class="archive-form__hint">默认 100，填 0 表示不限制；达到上限后，国际区缺失 3MF 会暂停到次日 00:00。</small>
+            <small class="archive-form__hint">这是 MakerHub 自动下载保护额度，不是 MakerWorld 账号手动下载限制。默认 100，填 0 表示不限制；达到后国际区缺失 3MF 会暂停到次日 00:00。</small>
           </label>
         </div>
 

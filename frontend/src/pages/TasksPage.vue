@@ -201,9 +201,10 @@
             v-if="payload.missing_3mf.items.length"
             class="button button-secondary button-small"
             type="button"
+            :disabled="retryingAllMissing"
             @click="retryAllMissing"
           >
-            全部重试
+            {{ retryingAllMissing ? "提交中..." : "全部重试" }}
           </button>
           <span class="count-pill">{{ payload.missing_3mf.count }} 项</span>
         </div>
@@ -324,6 +325,7 @@ const missingStatus = ref("");
 const submittingArchive = ref(false);
 const confirmingArchiveMode = ref("");
 const pendingMissingActionKey = ref("");
+const retryingAllMissing = ref(false);
 const clearingRecentFailures = ref(false);
 const recentFailureStatus = ref("");
 let refreshTimer = null;
@@ -375,7 +377,7 @@ function formatMissingStatus(status) {
   if (normalized === "failed") return "失败";
   if (normalized === "verification_required" || normalized === "cloudflare") return "需要验证";
   if (normalized === "auth_required") return "Cookie 失效";
-  if (normalized === "download_limited") return "到达每日上限";
+  if (normalized === "download_limited") return "到达自动下载上限";
   if (normalized === "not_found") return "源端无文件";
   return status || "missing";
 }
@@ -582,6 +584,7 @@ async function clearRecentFailures() {
 }
 
 async function retryAllMissing() {
+  retryingAllMissing.value = true;
   try {
     const response = await apiRequest("/api/tasks/missing-3mf/retry-all", {
       method: "POST",
@@ -590,6 +593,8 @@ async function retryAllMissing() {
     await load();
   } catch (error) {
     missingStatus.value = error instanceof Error ? error.message : "重试失败。";
+  } finally {
+    retryingAllMissing.value = false;
   }
 }
 
