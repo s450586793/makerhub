@@ -66,6 +66,7 @@ def _base_profile_backfill_status() -> dict[str, Any]:
         "phase": "idle",
         "database_rebuild_requested": False,
         "force_database_rebuild": False,
+        "database_only": False,
         "auto_database_migration": False,
         "started_at": "",
         "finished_at": "",
@@ -88,6 +89,7 @@ def write_profile_backfill_status(payload: dict[str, Any]) -> dict[str, Any]:
                 "phase": str(payload.get("phase", current.get("phase")) or "idle"),
                 "database_rebuild_requested": bool(payload.get("database_rebuild_requested", current.get("database_rebuild_requested"))),
                 "force_database_rebuild": bool(payload.get("force_database_rebuild", current.get("force_database_rebuild"))),
+                "database_only": bool(payload.get("database_only", current.get("database_only"))),
                 "auto_database_migration": bool(payload.get("auto_database_migration", current.get("auto_database_migration"))),
                 "started_at": str(payload.get("started_at", current.get("started_at")) or ""),
                 "finished_at": str(payload.get("finished_at", current.get("finished_at")) or ""),
@@ -104,6 +106,7 @@ def write_profile_backfill_status(payload: dict[str, Any]) -> dict[str, Any]:
                 "phase": current.get("phase") or "idle",
                 "finished_at": current.get("finished_at") or "",
                 "last_error": current.get("last_error") or "",
+                "database_only": bool(current.get("database_only")),
             },
         )
         return current
@@ -120,6 +123,7 @@ def read_profile_backfill_status() -> dict[str, Any]:
                 "phase": str(payload.get("phase") or "idle"),
                 "database_rebuild_requested": bool(payload.get("database_rebuild_requested")),
                 "force_database_rebuild": bool(payload.get("force_database_rebuild")),
+                "database_only": bool(payload.get("database_only")),
                 "auto_database_migration": bool(payload.get("auto_database_migration")),
                 "started_at": str(payload.get("started_at") or ""),
                 "finished_at": str(payload.get("finished_at") or ""),
@@ -440,6 +444,7 @@ def queue_profile_backfill(
     archive_root: Path = ARCHIVE_DIR,
     rebuild_database: bool = False,
     force_database_rebuild: bool = False,
+    database_only: bool = False,
 ) -> dict[str, Any]:
     current_status = read_profile_backfill_status()
     started_at = str(current_status.get("started_at") or "") or china_now_iso()
@@ -450,6 +455,7 @@ def queue_profile_backfill(
             "started_at": started_at,
             "finished_at": "",
             "last_error": "",
+            "database_only": bool(database_only),
             "last_result": {},
         }
     )
@@ -468,10 +474,44 @@ def queue_profile_backfill(
                 archive_root=archive_root,
                 force=force_database_rebuild,
             )
+            if database_only:
+                finished_at = china_now_iso()
+                write_profile_backfill_status(
+                    {
+                        "running": False,
+                        "phase": "completed",
+                        "database_rebuild_requested": False,
+                        "force_database_rebuild": False,
+                        "database_only": False,
+                        "auto_database_migration": False,
+                        "finished_at": finished_at,
+                        "last_error": "",
+                        "last_result": result,
+                    }
+                )
+                append_business_log(
+                    "database",
+                    "archive_model_index_worker_rebuild_completed",
+                    "归档模型数据库索引后台重建完成。",
+                    processed=int(result["database_index"].get("processed") or 0),
+                    updated=int(result["database_index"].get("updated") or 0),
+                    failed=int(result["database_index"].get("failed") or 0),
+                    skipped=bool(result["database_index"].get("skipped")),
+                )
+                return {
+                    "running": False,
+                    "phase": "completed",
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                    "last_error": "",
+                    "last_result": result,
+                    "message": "数据库索引重建完成。",
+                }
             write_profile_backfill_status(
                 {
                     "running": True,
                     "phase": "profile_scan",
+                    "database_only": False,
                     "last_result": result,
                 }
             )
@@ -506,6 +546,7 @@ def queue_profile_backfill(
                 "phase": "completed",
                 "database_rebuild_requested": False,
                 "force_database_rebuild": False,
+                "database_only": False,
                 "auto_database_migration": False,
                 "finished_at": finished_at,
                 "last_error": "",
@@ -542,6 +583,7 @@ def queue_profile_backfill(
                 "phase": "failed",
                 "database_rebuild_requested": False,
                 "force_database_rebuild": False,
+                "database_only": False,
                 "auto_database_migration": False,
                 "finished_at": finished_at,
                 "last_error": str(exc),

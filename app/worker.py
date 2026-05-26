@@ -80,6 +80,7 @@ def main() -> int:
                     "phase": "database_migration",
                     "database_rebuild_requested": True,
                     "force_database_rebuild": False,
+                    "database_only": False,
                     "auto_database_migration": True,
                     "started_at": china_now_iso(),
                     "finished_at": "",
@@ -114,6 +115,7 @@ def main() -> int:
                     archive_manager,
                     rebuild_database=bool(profile_backfill_status.get("database_rebuild_requested")),
                     force_database_rebuild=bool(profile_backfill_status.get("force_database_rebuild")),
+                    database_only=bool(profile_backfill_status.get("database_only")),
                 )
             now = time.monotonic()
             marker_mtime = local_preview_queue_marker_mtime()

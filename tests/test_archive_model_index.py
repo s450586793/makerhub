@@ -152,6 +152,61 @@ class ArchiveModelIndexTest(unittest.TestCase):
             self.assertEqual(loaded[0]["model_dir"], "LOCAL_Demo")
             self.assertEqual(loaded[0]["title"], "Demo")
 
+    def test_stale_database_index_returns_snapshot_and_queues_worker_rebuild(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_root = Path(tmp).resolve()
+            _write_meta(archive_root, "LOCAL_Demo", "Demo")
+            meta_path = archive_root / "LOCAL_Demo" / "meta.json"
+            state = {}
+
+            def load_state(_key, default):
+                return dict(state or default)
+
+            def save_state(_key, payload):
+                state.clear()
+                state.update(payload)
+                return payload
+
+            with patch.object(catalog, "ARCHIVE_DIR", archive_root), \
+                patch.object(archive_model_index, "ARCHIVE_DIR", archive_root), \
+                patch.object(archive_model_index, "load_database_json_state", side_effect=load_state), \
+                patch.object(archive_model_index, "save_database_json_state", side_effect=save_state), \
+                patch.object(archive_model_index, "publish_state_event"):
+                model = catalog._normalize_model(meta_path, include_detail=False)
+                self.assertTrue(model)
+                archive_model_index.upsert_archive_model_index("LOCAL_Demo", model=model, meta_path=meta_path)
+                archive_model_index.mark_archive_model_index_bootstrapped(archive_root=archive_root, processed_count=1)
+                meta_path.write_text(
+                    json.dumps(
+                        {
+                            "id": "1",
+                            "title": "Demo changed",
+                            "source": "local",
+                            "collectDate": "2026-05-22 12:00",
+                            "author": {"name": "Ace"},
+                            "instances": [],
+                            "staleMarker": "force-signature-change",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+
+                loaded = archive_model_index.load_archive_model_index(archive_root=archive_root)
+
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded[0]["model_dir"], "LOCAL_Demo")
+            self.assertEqual(loaded[0]["title"], "Demo")
+            self.assertTrue(state["running"])
+            self.assertEqual(state["phase"], "database_migration")
+            self.assertTrue(state["database_rebuild_requested"])
+            self.assertTrue(state["force_database_rebuild"])
+            self.assertTrue(state["database_only"])
+            database_index = state["last_result"]["database_index"]
+            self.assertEqual(database_index["requested_by"], "archive_model_index_stale_rows")
+            self.assertEqual(database_index["stale_count"], 1)
+            self.assertEqual(database_index["stale_model_dirs"], ["LOCAL_Demo"])
+
     def test_rebuild_skips_when_marker_exists_unless_forced(self):
         with tempfile.TemporaryDirectory() as tmp:
             archive_root = Path(tmp).resolve()
@@ -203,6 +258,45 @@ class ArchiveModelIndexTest(unittest.TestCase):
             self.assertEqual(database_result["processed"], 1)
             self.assertEqual(database_result["updated"], 1)
             self.assertTrue(archive_model_index.archive_model_index_is_bootstrapped(archive_root=archive_root))
+
+    def test_queue_profile_backfill_database_only_skips_profile_scan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_root = Path(tmp).resolve()
+            _write_meta(archive_root, "LOCAL_Demo", "Demo")
+            manager = SimpleNamespace(submit_profile_metadata_backfill=lambda *_args, **_kwargs: {"accepted": True})
+
+            status_state = {}
+
+            def load_status(_key, default):
+                return dict(status_state or default)
+
+            def save_status(_key, payload):
+                status_state.clear()
+                status_state.update(payload)
+                return payload
+
+            with patch.object(archive_profile_backfill, "load_database_json_state", side_effect=load_status), \
+                patch.object(archive_profile_backfill, "save_database_json_state", side_effect=save_status), \
+                patch.object(archive_profile_backfill, "append_business_log"), \
+                patch.object(archive_profile_backfill, "invalidate_archive_snapshot"), \
+                patch.object(archive_profile_backfill, "discover_profile_backfill_candidates", side_effect=AssertionError("profile scan should not run")), \
+                patch.object(catalog, "ARCHIVE_DIR", archive_root):
+                result = archive_profile_backfill.queue_profile_backfill(
+                    manager,
+                    archive_root=archive_root,
+                    rebuild_database=True,
+                    force_database_rebuild=True,
+                    database_only=True,
+                )
+
+            self.assertEqual(result["phase"], "completed")
+            self.assertEqual(result["message"], "数据库索引重建完成。")
+            self.assertFalse(status_state["running"])
+            self.assertFalse(status_state["database_only"])
+            self.assertEqual(status_state["last_result"]["scanned_candidates"], 0)
+            database_result = status_state["last_result"]["database_index"]
+            self.assertEqual(database_result["processed"], 1)
+            self.assertEqual(database_result["updated"], 1)
 
 
 if __name__ == "__main__":

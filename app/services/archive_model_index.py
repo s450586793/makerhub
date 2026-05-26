@@ -14,19 +14,23 @@ from app.core.database import (
     initialize_database,
     jsonb_value,
 )
+from app.core.database_json_state import load_database_json_state, save_database_json_state
 from app.core.settings import ARCHIVE_DIR
 from app.core.timezone import now_iso as china_now_iso
 from app.services.business_logs import append_business_log
+from app.services.state_events import publish_state_event
 
 
 MODEL_INDEX_SCHEMA_VERSION = 1
 BOOTSTRAP_METADATA_KEY = "archive_model_index_bootstrap"
+PROFILE_BACKFILL_STATUS_KEY = "archive_profile_backfill_status"
 _SCHEMA_LOCK = threading.Lock()
 _SCHEMA_READY = False
 _LAST_WARNING_AT = 0.0
 _DB_RETRY_AFTER = 0.0
 _WARNING_INTERVAL_SECONDS = 300
 _DATABASE_RETRY_SECONDS = 30
+_STALE_MODEL_DIR_SAMPLE_LIMIT = 50
 
 
 def _warn_once(event: str, message: str, **fields: Any) -> None:
@@ -51,6 +55,63 @@ def _database_temporarily_unavailable() -> bool:
 def _mark_database_unavailable() -> None:
     global _DB_RETRY_AFTER
     _DB_RETRY_AFTER = time.monotonic() + _DATABASE_RETRY_SECONDS
+
+
+def _request_archive_model_index_rebuild(stale_model_dirs: list[str]) -> bool:
+    stale_count = len(stale_model_dirs)
+    if stale_count <= 0:
+        return False
+    try:
+        current = load_database_json_state(PROFILE_BACKFILL_STATUS_KEY, {})
+        if isinstance(current, dict) and current.get("running"):
+            return False
+        sample = stale_model_dirs[:_STALE_MODEL_DIR_SAMPLE_LIMIT]
+        payload: dict[str, Any] = {
+            "running": True,
+            "phase": "database_migration",
+            "database_rebuild_requested": True,
+            "force_database_rebuild": True,
+            "database_only": True,
+            "auto_database_migration": False,
+            "started_at": china_now_iso(),
+            "finished_at": "",
+            "last_error": "",
+            "last_result": {
+                "database_index": {
+                    "requested_by": "archive_model_index_stale_rows",
+                    "stale_count": stale_count,
+                    "stale_model_dirs": sample,
+                    "stale_model_dirs_truncated": stale_count > len(sample),
+                }
+            },
+        }
+        save_database_json_state(PROFILE_BACKFILL_STATUS_KEY, payload)
+        publish_state_event(
+            PROFILE_BACKFILL_STATUS_KEY,
+            "profile_backfill.changed",
+            {
+                "running": True,
+                "phase": "database_migration",
+                "database_only": True,
+                "stale_count": stale_count,
+            },
+        )
+        append_business_log(
+            "database",
+            "archive_model_index_rebuild_requested",
+            "归档模型数据库索引已交给 worker 后台重建。",
+            stale_count=stale_count,
+            sample_model_dirs=sample,
+        )
+        return True
+    except Exception as exc:
+        _warn_once(
+            "archive_model_index_rebuild_request_failed",
+            "归档模型数据库索引后台重建请求写入失败。",
+            error=str(exc),
+            count=stale_count,
+        )
+        return False
 
 
 def archive_model_index_configured() -> bool:
@@ -413,17 +474,16 @@ def load_archive_model_index(archive_root: Path = ARCHIVE_DIR) -> Optional[list[
                 stored_size = 0
             if current_mtime_ns != stored_mtime_ns or current_size != stored_size:
                 stale_model_dirs.append(model_dir)
-                continue
         payload = row.get("model_json") if isinstance(row, dict) else None
         if isinstance(payload, dict):
             models.append(dict(payload))
     if stale_model_dirs:
+        _request_archive_model_index_rebuild(stale_model_dirs)
         _warn_once(
             "archive_model_index_stale_rows_detected",
-            "发现归档模型数据库索引与 meta.json 不一致，将从模型 meta.json 重建当前快照。",
+            "发现归档模型数据库索引与 meta.json 不一致，已提交 worker 后台重建；本次继续使用数据库快照。",
             count=len(stale_model_dirs),
         )
-        return None
     return models
 
 

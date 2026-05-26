@@ -250,6 +250,7 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
         self.assertEqual(repair_status["progress"]["done"], 2)
         self.assertEqual(self.state["archive_profile_backfill_status"]["phase"], "database_migration")
         self.assertTrue(backfill_status["auto_database_migration"])
+        self.assertFalse(backfill_status["database_only"])
         self.assertEqual(self.state["system_update"]["target_version"], "9.9.9")
         self.assertEqual(update_status["phase"], "installing")
 

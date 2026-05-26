@@ -5180,6 +5180,7 @@ async def start_archive_profile_backfill(request: Request):
                 "phase": "database_migration",
                 "database_rebuild_requested": True,
                 "force_database_rebuild": True,
+                "database_only": False,
                 "auto_database_migration": False,
                 "started_at": started_at,
                 "finished_at": "",
