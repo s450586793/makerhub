@@ -738,13 +738,6 @@ class ArchiveTaskManager:
                 item["task_key"] = key
                 status = str(item.get("status") or "").strip()
 
-                if key in archived_keys:
-                    if status != "archived":
-                        item["status"] = "archived"
-                        updated = True
-                    completed_count += 1
-                    continue
-
                 if key in active_child_by_key:
                     if status != "running":
                         item["status"] = "running"
@@ -757,6 +750,13 @@ class ArchiveTaskManager:
                         item["status"] = "queued"
                         updated = True
                     queued_count += 1
+                    continue
+
+                if key in archived_keys:
+                    if status != "archived":
+                        item["status"] = "archived"
+                        updated = True
+                    completed_count += 1
                     continue
 
                 if key in failed_by_key:

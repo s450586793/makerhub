@@ -77,6 +77,58 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
             1,
         )
 
+    def test_refresh_batch_prefers_live_child_before_archived_key(self):
+        state = {}
+        manager = ArchiveTaskManager(background_enabled=False)
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch.object(manager, "_archived_task_keys", return_value={"model:973599"}):
+            manager.task_store.save_archive_queue(
+                {
+                    "active": [
+                        {
+                            "id": "batch-1",
+                            "url": "https://makerworld.com/zh/@ace/upload",
+                            "mode": "author_upload",
+                            "status": "running",
+                            "meta": {
+                                "batch_expected_items": [
+                                    {
+                                        "url": "https://makerworld.com/zh/models/973599",
+                                        "task_key": "model:973599",
+                                        "model_id": "973599",
+                                        "attempts": 1,
+                                        "status": "queued",
+                                        "last_task_id": "missing-3mf-task",
+                                    }
+                                ]
+                            },
+                        }
+                    ],
+                    "queued": [
+                        {
+                            "id": "missing-3mf-task",
+                            "url": "https://makerworld.com/zh/models/973599",
+                            "title": "https://makerworld.com/zh/models/973599",
+                            "mode": "single_model",
+                            "status": "queued",
+                            "message": "等待重新下载缺失 3MF",
+                            "meta": {"missing_3mf_retry": True},
+                        }
+                    ],
+                    "recent_failures": [],
+                }
+            )
+
+            refreshed = manager._refresh_batch_tasks()
+            queue = manager.task_store.load_archive_queue()
+
+        self.assertTrue(refreshed)
+        self.assertEqual(queue["active"][0]["meta"]["batch_progress"]["queued"], 1)
+        self.assertEqual(queue["queued_count"], 1)
+        self.assertEqual(queue["active"][0]["meta"]["batch_expected_items"][0]["status"], "queued")
+
     def test_refresh_batch_restores_parent_removed_from_recent_failures(self):
         state = {}
         manager = ArchiveTaskManager(background_enabled=False)
