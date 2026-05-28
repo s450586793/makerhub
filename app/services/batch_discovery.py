@@ -83,9 +83,15 @@ def normalize_source_url(url: str) -> str:
 
     parsed = urlparse(absolute)
     path = parsed.path or ""
+    author_match = AUTHOR_UPLOAD_RE.search(path)
+    if author_match:
+        handle = author_match.group(1)
+        normalized_path = f"/zh/@{quote(handle, safe='@._-')}/upload"
+        return urlunparse(parsed._replace(path=normalized_path, query="", fragment=""))
     if AUTHOR_ROOT_RE.fullmatch(path):
-        normalized_path = f"{path.rstrip('/')}/upload"
-        return urlunparse(parsed._replace(path=normalized_path))
+        handle = path.rstrip("/").split("@", 1)[-1]
+        normalized_path = f"/zh/@{quote(handle, safe='@._-')}/upload"
+        return urlunparse(parsed._replace(path=normalized_path, query="", fragment=""))
 
     return absolute
 

@@ -1629,7 +1629,7 @@ class SubscriptionManager:
 
         for record in list(config.subscriptions):
             canonical_url = _canonical_subscription_url(record.url, record.mode)
-            if canonical_url and canonical_url != normalize_source_url(record.url):
+            if canonical_url and canonical_url != str(record.url or "").strip():
                 record.url = canonical_url
                 changed = True
             key = _subscription_identity_key(record)

@@ -527,6 +527,73 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertEqual(saved_cookie.avatar_url, "https://example.test/avatar.jpg")
         self.assertEqual(saved_cookie.message, "国内账号已同步，账号信息已更新。")
 
+    def test_sync_cookie_sources_canonicalizes_imported_author_urls(self):
+        config = self.store.load()
+        config.cookies = [CookiePair(platform="global", cookie="token=ok")]
+        config.subscriptions = []
+        self.store.save(config)
+
+        with patch.object(
+            subscriptions,
+            "discover_cookie_account_profile",
+            return_value={
+                "uid": "2073587493",
+                "handle": "owner",
+                "name": "Owner",
+            },
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_account_home_summary",
+            return_value={},
+        ), patch.object(
+            subscriptions,
+            "default_favorites_subscription_source",
+            return_value={},
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_followed_authors_from_page",
+            return_value={
+                "count": 1,
+                "total": 1,
+                "items": [
+                    {
+                        "title": "Oierre",
+                        "handle": "Oierre",
+                        "uid": "1",
+                        "url": "https://makerworld.com/en/@Oierre/upload",
+                    }
+                ],
+            },
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_followed_authors",
+            return_value={
+                "count": 1,
+                "total": 1,
+                "items": [
+                    {
+                        "title": "Oierre",
+                        "handle": "Oierre",
+                        "uid": "1",
+                        "url": "https://makerworld.com/@Oierre/upload?appSharePlatform=copy",
+                    }
+                ],
+            },
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_followed_collections",
+            return_value={"count": 0, "items": []},
+        ), patch.object(subscriptions, "_patch_cookie_source_sync_state"):
+            result = self.manager.sync_cookie_sources({"global"}, reason="cookie_save")
+
+        config = self.store.load()
+        inventory = subscriptions._read_cookie_source_inventory_state()["platforms"]["global"]
+
+        self.assertEqual(result["created_count"], 1)
+        self.assertEqual([item.url for item in config.subscriptions], ["https://makerworld.com/zh/@Oierre/upload"])
+        self.assertEqual(inventory["followed_authors"][0]["url"], "https://makerworld.com/zh/@Oierre/upload")
+        self.assertEqual(inventory["source_urls"], ["https://makerworld.com/zh/@Oierre/upload"])
+
     def test_sync_cookie_sources_seeds_default_favorite_account_avatar_metadata(self):
         config = self.store.load()
         config.cookies = [CookiePair(platform="global", cookie="token=ok")]
@@ -633,6 +700,26 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertEqual(state["cn"]["requested_reason"], "cookie_save")
         self.assertTrue(state["cn"]["requested_at"])
         self.assertEqual(state["global"]["last_status"], "pending")
+
+    def test_list_payload_canonicalizes_existing_author_subscription_urls(self):
+        config = self.store.load()
+        config.subscriptions = [
+            SubscriptionRecord(
+                id="sub-old-author",
+                name="Oierre 作者订阅",
+                url="https://makerworld.com/en/@Oierre/upload?appSharePlatform=copy",
+                mode="author_upload",
+                cron="0 * * * *",
+                enabled=True,
+            )
+        ]
+        self.store.save(config)
+
+        with patch.object(subscriptions, "build_subscription_overview_payload", return_value={}):
+            payload = self.manager.list_payload()
+
+        self.assertEqual(payload["items"][0]["url"], "https://makerworld.com/zh/@Oierre/upload")
+        self.assertEqual(self.store.load().subscriptions[0].url, "https://makerworld.com/zh/@Oierre/upload")
 
     def test_cookie_source_public_payloads_expose_source_state(self):
         subscriptions._write_cookie_source_inventory_state(

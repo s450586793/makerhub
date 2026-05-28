@@ -7,6 +7,18 @@ from app.services import batch_discovery
 
 
 class BatchDiscoveryTest(unittest.TestCase):
+    def test_normalize_source_url_canonicalizes_author_upload_links_to_zh(self):
+        cases = {
+            "https://makerworld.com/en/@Oierre/upload": "https://makerworld.com/zh/@Oierre/upload",
+            "https://makerworld.com/@Oierre/upload?appSharePlatform=copy": "https://makerworld.com/zh/@Oierre/upload",
+            "https://makerworld.com.cn/@Xy.Shy/upload?appSharePlatform=copy": "https://makerworld.com.cn/zh/@Xy.Shy/upload",
+            "https://makerworld.com.cn/zh/@LC.Figure": "https://makerworld.com.cn/zh/@LC.Figure/upload",
+        }
+
+        for raw_url, expected in cases.items():
+            with self.subTest(raw_url=raw_url):
+                self.assertEqual(batch_discovery.normalize_source_url(raw_url), expected)
+
     def test_resolve_uid_by_handle_prefers_user_search_api(self):
         calls = []
 
