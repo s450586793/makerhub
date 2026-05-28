@@ -1603,7 +1603,7 @@ def _extract_version_from_response(response: requests.Response, source_kind: str
     return _extract_github_text_from_response(response, source_kind).strip()
 
 
-def _parse_github_changelog(markdown: str, *, limit: int = 4) -> list[dict]:
+def _parse_github_changelog(markdown: str, *, limit: int = 3) -> list[dict]:
     section_text = str(markdown or "")
     marker = "## 更新记录"
     marker_index = section_text.find(marker)
@@ -1614,6 +1614,9 @@ def _parse_github_changelog(markdown: str, *, limit: int = 4) -> list[dict]:
     next_section_match = re.search(r"^##\s+", section_text, flags=re.MULTILINE)
     if next_section_match:
         section_text = section_text[:next_section_match.start()]
+    details_match = re.search(r"^<details\b", section_text, flags=re.IGNORECASE | re.MULTILINE)
+    if details_match:
+        section_text = section_text[:details_match.start()]
 
     entries: list[dict] = []
     current_entry: dict | None = None
@@ -1723,7 +1726,7 @@ def _read_latest_github_changelog(proxy_config: ProxyConfig | None = None) -> di
                 )
                 response.raise_for_status()
                 markdown = _extract_github_text_from_response(response, source_kind)
-                items = _parse_github_changelog(markdown, limit=4)
+                items = _parse_github_changelog(markdown, limit=3)
                 if not items:
                     raise ValueError("README 中未解析到更新记录")
                 return {

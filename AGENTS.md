@@ -12,3 +12,9 @@ Important current UI direction:
 - Avoid blue-purple gradients, decorative blobs, glassmorphism, emoji icons, and oversized hero sections.
 - Use 6px or 8px radii for normal business UI; keep nested cards and tiny repeated blocks under control.
 - Check dark mode whenever adding surfaces, borders, generated images, file lists, or overlays.
+
+Release and Git notes:
+
+- Only push to GitHub when the user explicitly asks to push.
+- Every user-facing change needs a version bump and update notes before release: patch for small fixes, minor for feature-level changes, major for breaking or migration-heavy changes.
+- Keep README update notes focused: show only the latest three releases directly and place older notes in a collapsed section.
