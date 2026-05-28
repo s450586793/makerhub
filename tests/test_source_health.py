@@ -45,6 +45,9 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(card_map["cn"]["state"], "historical_3mf_issue")
         self.assertEqual(card_map["cn"]["status"], "3MF 下载历史失败待重试")
         self.assertIn("账号连接正常", card_map["cn"]["detail"])
+        self.assertEqual(card_map["cn"].get("action_label"), "进入任务页")
+        self.assertEqual(card_map["cn"].get("route"), "/tasks")
+        self.assertNotIn("url", card_map["cn"])
         self.assertEqual(card_map["global"]["state"], "ok")
         checks = {item["source"]: item for item in card_map["cn"]["checks"]}
         self.assertEqual(checks["account"]["status"], "连接正常")

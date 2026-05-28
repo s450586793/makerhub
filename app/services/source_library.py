@@ -97,6 +97,12 @@ DEFAULT_STATE_SORT_ORDER = {
     "source_deleted": 2,
     "local_deleted": 3,
 }
+SOURCE_LIBRARY_REMOTE_KINDS = {"author", "collection", "favorite"}
+SOURCE_LIBRARY_SNAPSHOT_KINDS = {
+    *SOURCE_LIBRARY_REMOTE_KINDS,
+    "local",
+    *DEFAULT_STATE_SORT_ORDER.keys(),
+}
 
 
 def _now_iso() -> str:
@@ -519,6 +525,9 @@ def _source_preview_snapshot_filename(source_key: str, signature: str) -> str:
 
 
 def _source_preview_snapshot_metadata(group: dict[str, Any], metadata: dict[str, Any], previews: list[dict]) -> str:
+    group_kind = str(group.get("kind") or "")
+    if group_kind in SOURCE_LIBRARY_REMOTE_KINDS and metadata.get("preview_snapshot_had_image") is False:
+        return ""
     signature = _source_preview_snapshot_signature(group, previews)
     if metadata.get("preview_snapshot_signature") != signature:
         return ""
@@ -1278,8 +1287,8 @@ def _group_models(store: Optional[JsonStore] = None, task_store: Optional[TaskSt
     author_groups = [_finalize_group(group, visible_by_dir, metadata_cache.get(group["key"]) or {}) for group in author_groups_raw]
     collection_groups = [_finalize_group(group, visible_by_dir, metadata_cache.get(group["key"]) or {}) for group in collection_groups_raw]
     favorite_groups = [_finalize_group(group, visible_by_dir, metadata_cache.get(group["key"]) or {}) for group in favorite_groups_raw]
-    local_groups = [_finalize_group(group, visible_by_dir, {}) for group in _group_local_sources(visible_models)]
-    state_groups = [_finalize_group(group, models_by_dir, {}) for group in _group_state_cards(all_models, visible_models)]
+    local_groups = [_finalize_group(group, visible_by_dir, metadata_cache.get(group["key"]) or {}) for group in _group_local_sources(visible_models)]
+    state_groups = [_finalize_group(group, models_by_dir, metadata_cache.get(group["key"]) or {}) for group in _group_state_cards(all_models, visible_models)]
 
     groups = {
         group["key"]: group
@@ -1788,18 +1797,25 @@ def refresh_source_preview_snapshots(
     store: Optional[JsonStore] = None,
     task_store: Optional[TaskStateStore] = None,
     limit: Optional[int] = None,
+    source_keys: Optional[set[str]] = None,
 ) -> dict[str, Any]:
     store = store or JsonStore()
     task_store = task_store or TaskStateStore()
     groups, _, _ = _group_models(store=store, task_store=task_store)
     metadata_cache = load_source_metadata_cache().get("items") or {}
+    source_key_filter = {
+        str(item or "").strip()
+        for item in (source_keys or set())
+        if str(item or "").strip()
+    }
 
     candidates = [
         group
         for group in groups.values()
-        if str(group.get("kind") or "") in {"author", "collection", "favorite"}
+        if str(group.get("kind") or "") in SOURCE_LIBRARY_SNAPSHOT_KINDS
         and str(group.get("key") or "")
-        and list(group.get("preview_models") or [])
+        and (not source_key_filter or str(group.get("key") or "") in source_key_filter)
+        and (list(group.get("preview_models") or []) or str(group.get("kind") or "") not in SOURCE_LIBRARY_REMOTE_KINDS)
     ]
     candidates.sort(key=lambda item: (-_group_sort_timestamp(item), str(item.get("title") or "")))
     if limit is not None:

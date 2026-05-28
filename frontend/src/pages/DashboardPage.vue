@@ -65,19 +65,11 @@
           <component
             v-for="item in payload.system_status"
             :key="item.key || item.title"
-            :is="needsBrowserVerification(item) ? 'button' : item.url ? 'a' : 'div'"
+            :is="dashboardStatusElementKind(item)"
             :class="[
               'dashboard-hero__status',
               item.tone && `is-${item.tone}`,
-              (item.url || needsBrowserVerification(item)) && 'dashboard-hero__status--link',
-              needsBrowserVerification(item) && 'dashboard-hero__status--button',
             ]"
-            :type="needsBrowserVerification(item) ? 'button' : undefined"
-            :disabled="needsBrowserVerification(item) && verifyingPlatform === item.key ? true : undefined"
-            :href="!needsBrowserVerification(item) && item.url ? item.url : undefined"
-            :target="!needsBrowserVerification(item) && item.url ? '_blank' : undefined"
-            :rel="!needsBrowserVerification(item) && item.url ? 'noreferrer noopener' : undefined"
-            @click="needsBrowserVerification(item) ? startBrowserVerificationFromCard(item) : undefined"
           >
             <strong>{{ item.title }}</strong>
             <div class="dashboard-hero__status-line">
@@ -96,13 +88,31 @@
                 <strong>{{ check.status }}</strong>
               </span>
             </div>
-            <span
-              v-if="needsBrowserVerification(item)"
+            <button
+              v-if="dashboardStatusAction(item)?.kind === 'browser-verification'"
               class="dashboard-hero__status-action dashboard-hero__status-action--button"
+              type="button"
+              :disabled="verifyingPlatform === item.key"
+              @click="startBrowserVerificationFromCard(item)"
             >
-              {{ verifyingPlatform === item.key ? "创建中..." : item.action_label }}
-            </span>
-            <span v-else-if="item.url && item.action_label" class="dashboard-hero__status-action">{{ item.action_label }}</span>
+              {{ verifyingPlatform === item.key ? "创建中..." : dashboardStatusAction(item).label }}
+            </button>
+            <RouterLink
+              v-else-if="dashboardStatusAction(item)?.kind === 'route'"
+              class="dashboard-hero__status-action dashboard-hero__status-action--link"
+              :to="dashboardStatusAction(item).to"
+            >
+              {{ dashboardStatusAction(item).label }}
+            </RouterLink>
+            <a
+              v-else-if="dashboardStatusAction(item)?.kind === 'external'"
+              class="dashboard-hero__status-action dashboard-hero__status-action--link"
+              :href="dashboardStatusAction(item).href"
+              target="_blank"
+              rel="noreferrer noopener"
+            >
+              {{ dashboardStatusAction(item).label }}
+            </a>
           </component>
         </div>
       </section>
@@ -295,6 +305,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { RouterLink, useRouter } from "vue-router";
 
 import { apiRequest } from "../lib/api";
+import { dashboardStatusAction, dashboardStatusElementKind } from "../lib/dashboardStatus";
 import { formatServerDateTime } from "../lib/helpers";
 import { subscribeStateRefresh } from "../lib/stateEvents";
 
@@ -444,14 +455,6 @@ function handleVisibilityChange() {
 
 function formatDateTime(value, fallback = "未安排") {
   return formatServerDateTime(value, { fallback });
-}
-
-function needsBrowserVerification(item) {
-  if (!item || !item.key) {
-    return false;
-  }
-  const checks = Array.isArray(item.checks) ? item.checks : [];
-  return item.action_label === "去验证" && checks.some((check) => ["verification_required", "cloudflare", "auth_required"].includes(String(check?.state || "")));
 }
 
 function verificationItemForPlatform(platform) {

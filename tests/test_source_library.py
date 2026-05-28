@@ -488,6 +488,55 @@ class SourceLibraryTest(unittest.TestCase):
         self.assertTrue(payload["cache"]["stale"])
         schedule_refresh.assert_called_once()
 
+    def test_group_models_exposes_state_preview_snapshot_metadata(self):
+        _SOURCE_LIBRARY_GROUP_CACHE.update({"signature": None, "groups": {}, "all_models": (), "sections": ()})
+        group = _base_group(
+            key="local_favorite",
+            kind="local_favorite",
+            card_kind="collection",
+            title="本地收藏",
+            subtitle="已在 MakerHub 标记收藏",
+            site="local",
+            route_kind="state",
+        )
+        signature = _source_preview_snapshot_signature(group, [])
+
+        try:
+            with TemporaryDirectory() as temp_dir:
+                snapshot_dir = Path(temp_dir)
+                snapshot_path = snapshot_dir / f"local-favorite-{signature[:12]}.webp"
+                Image.new("RGB", (8, 8), "white").save(snapshot_path, "WEBP")
+                metadata = {
+                    "items": {
+                        "local_favorite": {
+                            "preview_snapshot_signature": signature,
+                            "preview_snapshot_filename": snapshot_path.name,
+                            "preview_snapshot_had_image": False,
+                        }
+                    }
+                }
+
+                with patch("app.services.source_library.SOURCE_LIBRARY_SNAPSHOT_DIR", snapshot_dir), \
+                        patch("app.services.source_library._group_cache_signature", return_value=("state-preview-metadata",)), \
+                        patch("app.services.source_library._load_models", return_value=([], [])), \
+                        patch("app.services.source_library._group_subscription_sources", return_value=([], [], [])), \
+                        patch("app.services.source_library.load_source_metadata_cache", return_value=metadata):
+                    groups, _all_models, sections = _group_models()
+
+            state_group = groups["local_favorite"]
+            section_group = next(
+                item
+                for section in sections
+                if section.get("key") == "states"
+                for item in section.get("items") or []
+                if item.get("key") == "local_favorite"
+            )
+            self.assertIn("preview_snapshot_url", state_group)
+            self.assertIn(snapshot_path.name, state_group["preview_snapshot_url"])
+            self.assertEqual(section_group["preview_snapshot_url"], state_group["preview_snapshot_url"])
+        finally:
+            _SOURCE_LIBRARY_GROUP_CACHE.update({"signature": None, "groups": {}, "all_models": (), "sections": ()})
+
     def test_finalize_group_exposes_matching_preview_snapshot(self):
         group = _base_group(
             key="author-cn-test",
@@ -515,6 +564,71 @@ class SourceLibraryTest(unittest.TestCase):
                     {
                         "preview_snapshot_signature": signature,
                         "preview_snapshot_filename": snapshot_path.name,
+                    },
+                )
+
+        self.assertIn("preview_snapshot_url", finalized)
+        self.assertIn(snapshot_path.name, finalized["preview_snapshot_url"])
+
+    def test_finalize_group_ignores_placeholder_only_preview_snapshot(self):
+        group = _base_group(
+            key="author-cn-test",
+            kind="author",
+            card_kind="author",
+            title="Ace",
+            subtitle="@ace",
+            site="cn",
+        )
+        group["model_dirs"] = ["model-1"]
+        model = _model("model-1", source="cn")
+        model["local_flags"]["deleted"] = False
+        model["cover_url"] = "/archive/model-1/missing.webp"
+        previews = [{"model_dir": "model-1", "title": "model-1", "cover_url": "/archive/model-1/missing.webp"}]
+        signature = _source_preview_snapshot_signature(group, previews)
+
+        with TemporaryDirectory() as temp_dir:
+            snapshot_dir = Path(temp_dir)
+            snapshot_path = snapshot_dir / f"author-cn-test-{signature[:12]}.webp"
+            Image.new("RGB", (8, 8), "white").save(snapshot_path, "WEBP")
+            with patch("app.services.source_library.SOURCE_LIBRARY_SNAPSHOT_DIR", snapshot_dir):
+                finalized = _finalize_group(
+                    group,
+                    {"model-1": model},
+                    {
+                        "preview_snapshot_signature": signature,
+                        "preview_snapshot_filename": snapshot_path.name,
+                        "preview_snapshot_had_image": False,
+                    },
+                )
+
+        self.assertNotIn("preview_snapshot_url", finalized)
+        self.assertEqual(finalized["preview_models"][0]["cover_url"], "/archive/model-1/missing.webp")
+
+    def test_finalize_state_group_exposes_placeholder_only_preview_snapshot(self):
+        group = _base_group(
+            key="local_favorite",
+            kind="local_favorite",
+            card_kind="collection",
+            title="本地收藏",
+            subtitle="已在 MakerHub 标记收藏",
+            site="local",
+            route_kind="state",
+        )
+        previews: list[dict] = []
+        signature = _source_preview_snapshot_signature(group, previews)
+
+        with TemporaryDirectory() as temp_dir:
+            snapshot_dir = Path(temp_dir)
+            snapshot_path = snapshot_dir / f"local-favorite-{signature[:12]}.webp"
+            Image.new("RGB", (8, 8), "white").save(snapshot_path, "WEBP")
+            with patch("app.services.source_library.SOURCE_LIBRARY_SNAPSHOT_DIR", snapshot_dir):
+                finalized = _finalize_group(
+                    group,
+                    {},
+                    {
+                        "preview_snapshot_signature": signature,
+                        "preview_snapshot_filename": snapshot_path.name,
+                        "preview_snapshot_had_image": False,
                     },
                 )
 
@@ -559,6 +673,90 @@ class SourceLibraryTest(unittest.TestCase):
             self.assertTrue(item.get("preview_snapshot_filename", "").endswith(".webp"))
             self.assertTrue((snapshot_dir / item["preview_snapshot_filename"]).is_file())
             self.assertTrue(item.get("preview_snapshot_url", "").startswith("/api/source-library/snapshots/"))
+
+    def test_refresh_source_preview_snapshots_can_limit_to_source_keys(self):
+        first_group = _base_group(
+            key="author-cn-first",
+            kind="author",
+            card_kind="author",
+            title="First",
+            subtitle="@first",
+            site="cn",
+        )
+        first_group["preview_models"] = [
+            {"model_dir": "model-1", "title": "model-1", "cover_url": "/archive/model-1/cover.webp"}
+        ]
+        second_group = _base_group(
+            key="author-cn-second",
+            kind="author",
+            card_kind="author",
+            title="Second",
+            subtitle="@second",
+            site="cn",
+        )
+        second_group["preview_models"] = [
+            {"model_dir": "model-2", "title": "model-2", "cover_url": "/archive/model-2/cover.webp"}
+        ]
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_root = root / "archive"
+            snapshot_dir = root / "snapshots"
+            for model_dir in ("model-1", "model-2"):
+                cover_path = archive_root / model_dir / "cover.webp"
+                cover_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (24, 24), "red").save(cover_path, "WEBP")
+            metadata: dict[str, dict] = {"items": {}}
+
+            def save_metadata(source_key: str, payload: dict) -> None:
+                metadata["items"].setdefault(source_key, {}).update(payload)
+
+            with patch("app.services.source_library.ARCHIVE_DIR", archive_root), \
+                    patch("app.services.source_library.SOURCE_LIBRARY_SNAPSHOT_DIR", snapshot_dir), \
+                    patch("app.services.source_library._group_models", return_value=({"author-cn-first": first_group, "author-cn-second": second_group}, [], [])), \
+                    patch("app.services.source_library.load_source_metadata_cache", return_value=metadata), \
+                    patch("app.services.source_library._save_source_snapshot_metadata", side_effect=save_metadata), \
+                    patch("app.services.source_library.append_business_log"):
+                result = refresh_source_preview_snapshots(source_keys={"author-cn-first"})
+
+            self.assertEqual(result["total"], 1)
+            self.assertEqual(result["generated"], 1)
+            self.assertIn("author-cn-first", metadata["items"])
+            self.assertNotIn("author-cn-second", metadata["items"])
+
+    def test_refresh_source_preview_snapshots_includes_empty_state_groups(self):
+        group = _base_group(
+            key="local_favorite",
+            kind="local_favorite",
+            card_kind="collection",
+            title="本地收藏",
+            subtitle="已在 MakerHub 标记收藏",
+            site="local",
+            route_kind="state",
+        )
+        group["preview_models"] = []
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            snapshot_dir = root / "snapshots"
+            metadata: dict[str, dict] = {"items": {}}
+
+            def save_metadata(source_key: str, payload: dict) -> None:
+                metadata["items"].setdefault(source_key, {}).update(payload)
+
+            with patch("app.services.source_library.SOURCE_LIBRARY_SNAPSHOT_DIR", snapshot_dir), \
+                    patch("app.services.source_library._group_models", return_value=({"local_favorite": group}, [], [])), \
+                    patch("app.services.source_library.load_source_metadata_cache", return_value=metadata), \
+                    patch("app.services.source_library._save_source_snapshot_metadata", side_effect=save_metadata), \
+                    patch("app.services.source_library.append_business_log"):
+                result = refresh_source_preview_snapshots()
+
+            item = metadata["items"].get("local_favorite") or {}
+            self.assertEqual(result["total"], 1)
+            self.assertEqual(result["generated"], 1)
+            self.assertFalse(item.get("preview_snapshot_had_image"))
+            self.assertTrue(item.get("preview_snapshot_filename", "").endswith(".webp"))
+            self.assertTrue((snapshot_dir / item["preview_snapshot_filename"]).is_file())
 
     def test_preview_snapshot_gap_is_transparent_for_dark_theme(self):
         group = _base_group(

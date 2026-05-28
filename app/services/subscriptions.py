@@ -702,7 +702,7 @@ class SubscriptionManager:
                 initialized = self._initialize_subscription_state(record)
                 initialized = self._enqueue_initialized_subscription_items(record, initialized)
                 initial_enqueue_count = int(initialized.get("last_enqueued_count") or 0)
-                self._refresh_source_preview_snapshots(record.id)
+                self._refresh_source_preview_snapshots(record.id, subscription=record)
             else:
                 initialized = self.task_store.patch_subscription_state(
                     record.id,
@@ -809,7 +809,7 @@ class SubscriptionManager:
                 target.id,
                 last_message="订阅已更新，并已按新链接重新初始化。",
             )
-            self._refresh_source_preview_snapshots(target.id)
+            self._refresh_source_preview_snapshots(target.id, subscription=target)
         else:
             updates = {
                 "next_run_at": _next_run_at(target.cron) if target.enabled else "",
@@ -1907,7 +1907,7 @@ class SubscriptionManager:
                 enqueued=enqueued_count,
                 deleted=len(deleted_items),
             )
-            self._refresh_source_preview_snapshots(subscription.id)
+            self._refresh_source_preview_snapshots(subscription.id, subscription=subscription)
         except Exception as exc:
             failed_at = _now()
             self.task_store.patch_subscription_state(
@@ -1959,9 +1959,19 @@ class SubscriptionManager:
                 error=str(exc),
             )
 
-    def _refresh_source_preview_snapshots(self, subscription_id: str = "") -> None:
+    def _refresh_source_preview_snapshots(self, subscription_id: str = "", subscription: SubscriptionRecord | None = None) -> None:
         try:
-            result = refresh_source_preview_snapshots(force=False, store=self.store, task_store=self.task_store)
+            source_keys = set()
+            if subscription is not None:
+                source_key = source_identity_key(subscription.url, subscription.mode)
+                if source_key:
+                    source_keys.add(source_key)
+            result = refresh_source_preview_snapshots(
+                force=False,
+                store=self.store,
+                task_store=self.task_store,
+                source_keys=source_keys or None,
+            )
             _append_subscription_log(
                 "preview_snapshots_refreshed",
                 subscription_id=subscription_id,

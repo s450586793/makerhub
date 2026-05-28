@@ -799,7 +799,7 @@ def build_source_health_cards(
         status = _prefixed_status(primary, checks)
         detail = str(primary.get("detail") or "").strip()
         tone = str(primary.get("tone") or "").strip() or _tone_from_state(state)
-        return {
+        card = {
             "key": platform,
             "title": SOURCE_HEALTH_LABELS.get(platform, platform),
             "status": status,
@@ -807,9 +807,17 @@ def build_source_health_cards(
             "tone": tone,
             "state": state,
             "checks": checks,
-            "url": PLATFORM_ORIGINS.get(platform, ""),
-            "action_label": "去验证" if any(item.get("state") in {"verification_required", "cloudflare"} for item in checks) else "打开官网",
         }
+        if any(item.get("state") in {"verification_required", "cloudflare"} for item in checks):
+            card["url"] = PLATFORM_ORIGINS.get(platform, "")
+            card["action_label"] = "去验证"
+        elif any(item.get("state") == "historical_3mf_issue" for item in checks):
+            card["route"] = "/tasks"
+            card["action_label"] = "进入任务页"
+        else:
+            card["url"] = PLATFORM_ORIGINS.get(platform, "")
+            card["action_label"] = "打开官网"
+        return card
 
     with ThreadPoolExecutor(max_workers=len(platforms)) as executor:
         results = list(executor.map(build_card, platforms))

@@ -2046,6 +2046,15 @@ html[data-theme="dark"] .organizer-progress-popover {
   font-weight: 700;
 }
 
+.dashboard-hero__status-action--link {
+  width: fit-content;
+  text-decoration: none;
+}
+
+.dashboard-hero__status-action--link:hover {
+  text-decoration: underline;
+}
+
 .dashboard-hero__check-list {
   display: flex;
   flex-wrap: wrap;
