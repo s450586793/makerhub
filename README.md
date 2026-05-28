@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.8.2`
+> 当前版本：`v0.8.3`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,13 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-05-29 · v0.8.3
+
+- 修复 Worker 在数据库索引/历史信息补全长任务中同步阻塞主循环，导致新建浏览器验证会话一直停在“等待 worker 打开验证浏览器”的问题。
+- 浏览器验证输入现在只在远程画面已运行时接收，避免排队态鼠标事件持续写入会话状态。
+- 新增 worker 接收浏览器验证会话的业务日志，后续线上排查可以直接区分“会话已创建”和“worker 已接管”。
+- 增加浏览器验证 worker 轮询、排队态输入保护和 profile backfill 异步执行回归测试。
+
 ### 2026-05-29 · v0.8.2
 
 - 修复线上账号关注作者自动导入订阅时保留 MakerWorld `/en/` 作者页链接的问题，统一保存为 `/zh/@作者/upload`。
@@ -221,15 +228,15 @@ uvicorn app.main:app --reload
 - 修复 App 配置多个 Web worker 时，一键更新重启状态和旧镜像清理可能被多个 worker 重复写入的问题。
 - 增加自更新、订阅来源卡、来源健康卡和首页状态卡回归测试。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-05-28 · v0.8.0
 
 - 新增内置浏览器验证流程，下载 `3MF` 遇到 MakerWorld 验证时可从首页或任务页进入验证页面，完成后由 Worker 继续原下载流程。
 - 验证证明只在内存中以一次性 proof id 传递，不写入数据库、状态文件、API 响应或前端页面。
 - Worker 镜像默认安装浏览器运行依赖，现有 App / Worker / Postgres 架构内即可完成验证，不需要新增容器。
 - 模型卡片和详情链接补充短链接展示与复制能力，归档索引增加对应字段和回归测试。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-05-27 · v0.7.11
 
