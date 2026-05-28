@@ -335,7 +335,7 @@ class BrowserVerificationStore:
         saved_command: dict[str, Any] = {}
         items = []
         for item in state.get("items") or []:
-            if item.get("id") == clean_id and item.get("status") in {"queued", "starting", "running", "verified", "retrying"}:
+            if item.get("id") == clean_id and item.get("status") in {"running", "verified", "retrying"}:
                 next_item = dict(item)
                 seq = int(next_item.get("input_seq") or 0) + 1
                 command["seq"] = seq
@@ -458,6 +458,15 @@ class BrowserVerificationRuntime:
                     )
                     self._threads[session_id] = thread
                     thread.start()
+                    target = session.get("target") if isinstance(session.get("target"), dict) else {}
+                    append_business_log(
+                        "missing_3mf",
+                        "browser_verification_session_worker_started",
+                        "浏览器验证 worker 已接收会话。",
+                        session_id=session_id,
+                        platform=str(session.get("platform") or ""),
+                        model_id=str(target.get("model_id") or ""),
+                    )
                     started += 1
         return {"started": started, "running": len(self._threads)}
 

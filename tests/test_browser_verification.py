@@ -255,6 +255,7 @@ class BrowserVerificationSessionTest(unittest.TestCase):
                 patch.object(browser_verification_module, "save_database_json_state", side_effect=lambda _key, payload: state.clear() or state.update(payload) or payload):
             store = BrowserVerificationStore()
             session = store.create_session({"model_url": "https://makerworld.com.cn/zh/models/1063416"})
+            store.update_session(session["id"], status="running")
             command = store.enqueue_input(
                 session["id"],
                 {
@@ -272,6 +273,22 @@ class BrowserVerificationSessionTest(unittest.TestCase):
         self.assertEqual(commands[0]["y"], 240)
         self.assertNotIn("text", commands[0])
         self.assertEqual(commands_after_consume, [])
+
+    def test_input_commands_are_rejected_before_browser_is_running(self):
+        state = {}
+
+        with patch.object(browser_verification_module, "load_database_json_state", side_effect=lambda _key, default: dict(state or default)), \
+                patch.object(browser_verification_module, "save_database_json_state", side_effect=lambda _key, payload: state.clear() or state.update(payload) or payload):
+            store = BrowserVerificationStore()
+            session = store.create_session({"model_url": "https://makerworld.com.cn/zh/models/1063416"})
+            command = store.enqueue_input(session["id"], {"type": "mousemove", "x": 10, "y": 20})
+            loaded = store.get_session(session["id"])
+            commands = store.consume_input_commands(session["id"])
+
+        self.assertEqual(command, {})
+        self.assertEqual(loaded["status"], "queued")
+        self.assertEqual(loaded["input_seq"], 0)
+        self.assertEqual(commands, [])
 
     def test_retry_after_verification_omits_origin_only_primary(self):
         retry_calls = []
@@ -298,6 +315,50 @@ class BrowserVerificationSessionTest(unittest.TestCase):
 
 
 class BrowserVerificationWorkerTest(unittest.TestCase):
+    def test_runtime_logs_when_worker_accepts_browser_verification_session(self):
+        class FakeThread:
+            def __init__(self, target=None, args=(), kwargs=None, name="", daemon=False):
+                self.target = target
+                self.args = args
+                self.kwargs = kwargs or {}
+                self.name = name
+                self.daemon = daemon
+                self.started = False
+
+            def start(self):
+                self.started = True
+
+            def is_alive(self):
+                return self.started
+
+        store = SimpleNamespace(
+            active_or_queued_sessions=lambda: [
+                {
+                    "id": "bv_1234567890abcdef",
+                    "status": "queued",
+                    "platform": "global",
+                    "target": {"model_id": "959378"},
+                }
+            ]
+        )
+        runtime = browser_verification_module.BrowserVerificationRuntime(store=store)
+        log_calls = []
+
+        with patch.object(browser_verification_module.threading, "Thread", FakeThread), \
+                patch.object(browser_verification_module, "append_business_log", side_effect=lambda *args, **kwargs: log_calls.append((args, kwargs))):
+            result = runtime.poll_once()
+
+        self.assertEqual(result["started"], 1)
+        self.assertTrue(
+            any(
+                call[0][:2] == ("missing_3mf", "browser_verification_session_worker_started")
+                and call[1].get("session_id") == "bv_1234567890abcdef"
+                and call[1].get("platform") == "global"
+                and call[1].get("model_id") == "959378"
+                for call in log_calls
+            )
+        )
+
     def test_worker_main_polls_browser_verification_runtime_with_archive_manager(self):
         class OneLoopEvent:
             def __init__(self):
@@ -391,6 +452,74 @@ class BrowserVerificationWorkerTest(unittest.TestCase):
                 for call in log_calls
             )
         )
+        local_organizer_service.return_value.stop.assert_called_once_with()
+
+    def test_worker_main_starts_profile_backfill_async_and_keeps_browser_polling(self):
+        class TwoLoopEvent:
+            def __init__(self):
+                self.wait_calls = 0
+
+            def set(self):
+                self.wait_calls = 99
+
+            def wait(self, _seconds):
+                self.wait_calls += 1
+                return self.wait_calls > 2
+
+        class FakeThread:
+            def __init__(self, target=None, args=(), kwargs=None, name="", daemon=False):
+                self.target = target
+                self.args = args
+                self.kwargs = kwargs or {}
+                self.name = name
+                self.daemon = daemon
+                self.started = False
+
+            def start(self):
+                self.started = True
+
+            def is_alive(self):
+                return self.started
+
+        fake_archive_manager = Mock(name="archive_manager")
+        fake_archive_manager.resume_pending_tasks.return_value = {"queued_count": 0, "recovered_count": 0}
+        fake_archive_manager.ensure_worker_for_pending.return_value = {"queued_count": 0}
+        fake_runtime = Mock(name="browser_verification_runtime")
+        fake_runtime.poll_once.return_value = {"started": 0, "running": 0}
+        created_threads = []
+
+        def make_thread(*args, **kwargs):
+            thread = FakeThread(*args, **kwargs)
+            created_threads.append(thread)
+            return thread
+
+        with patch.object(worker_module.signal, "signal"), \
+                patch.object(worker_module.threading, "Event", TwoLoopEvent), \
+                patch.object(worker_module.threading, "Thread", side_effect=make_thread), \
+                patch.object(worker_module, "JsonStore", return_value=Mock()), \
+                patch.object(worker_module, "TaskStateStore", return_value=Mock()), \
+                patch.object(worker_module, "ArchiveTaskManager", return_value=fake_archive_manager), \
+                patch.object(worker_module, "SubscriptionManager"), \
+                patch.object(worker_module, "LocalOrganizerService") as local_organizer_service, \
+                patch.object(worker_module, "SourceLibraryManager"), \
+                patch.object(worker_module, "RemoteRefreshManager"), \
+                patch.object(worker_module, "BrowserVerificationRuntime", return_value=fake_runtime), \
+                patch.object(worker_module, "read_profile_backfill_status", return_value={"running": True, "phase": "database_migration", "database_rebuild_requested": True}), \
+                patch.object(worker_module, "should_auto_run_database_migration", return_value=False), \
+                patch.object(worker_module, "queue_profile_backfill", return_value={"running": False}) as queue_profile_backfill, \
+                patch.object(worker_module, "local_preview_queue_marker_mtime", return_value=0.0), \
+                patch.object(worker_module, "run_local_preview_generation_once", return_value={"processed": False}), \
+                patch.object(worker_module, "append_business_log"):
+            result = worker_module.main()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(fake_runtime.poll_once.call_count, 2)
+        self.assertEqual(queue_profile_backfill.call_count, 0)
+        self.assertEqual(len(created_threads), 1)
+        self.assertEqual(created_threads[0].name, "makerhub-profile-backfill")
+        self.assertTrue(created_threads[0].daemon)
+        self.assertEqual(created_threads[0].args[0], fake_archive_manager)
+        self.assertTrue(created_threads[0].args[1]["database_rebuild_requested"])
         local_organizer_service.return_value.stop.assert_called_once_with()
 
 

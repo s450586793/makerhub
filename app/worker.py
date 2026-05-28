@@ -26,6 +26,43 @@ WORKER_POLL_SECONDS = 2.0
 LOCAL_PREVIEW_IDLE_POLL_SECONDS = 15 * 60
 
 
+def _start_profile_backfill_worker(
+    archive_manager: ArchiveTaskManager,
+    profile_backfill_status: dict,
+) -> threading.Thread:
+    options = {
+        "database_rebuild_requested": bool(profile_backfill_status.get("database_rebuild_requested")),
+        "force_database_rebuild": bool(profile_backfill_status.get("force_database_rebuild")),
+        "database_only": bool(profile_backfill_status.get("database_only")),
+    }
+    thread = threading.Thread(
+        target=_run_profile_backfill_worker,
+        args=(archive_manager, options),
+        name="makerhub-profile-backfill",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def _run_profile_backfill_worker(archive_manager: ArchiveTaskManager, options: dict) -> None:
+    try:
+        queue_profile_backfill(
+            archive_manager,
+            rebuild_database=bool(options.get("database_rebuild_requested")),
+            force_database_rebuild=bool(options.get("force_database_rebuild")),
+            database_only=bool(options.get("database_only")),
+        )
+    except Exception as exc:
+        append_business_log(
+            "archive_backfill",
+            "profile_backfill_worker_failed",
+            "现有库信息补全后台线程失败。",
+            level="error",
+            error=str(exc),
+        )
+
+
 def main() -> int:
     ensure_app_dirs()
     stop_event = threading.Event()
@@ -111,6 +148,7 @@ def main() -> int:
     last_local_preview_full_scan = 0.0
     last_local_preview_marker_mtime = local_preview_queue_marker_mtime()
     local_preview_active = False
+    profile_backfill_thread: threading.Thread | None = None
     try:
         while not stop_event.wait(WORKER_POLL_SECONDS):
             archive_manager.ensure_worker_for_pending()
@@ -125,13 +163,10 @@ def main() -> int:
                     error=str(exc),
                 )
             profile_backfill_status = read_profile_backfill_status()
-            if profile_backfill_status.get("running"):
-                queue_profile_backfill(
-                    archive_manager,
-                    rebuild_database=bool(profile_backfill_status.get("database_rebuild_requested")),
-                    force_database_rebuild=bool(profile_backfill_status.get("force_database_rebuild")),
-                    database_only=bool(profile_backfill_status.get("database_only")),
-                )
+            if profile_backfill_thread is not None and not profile_backfill_thread.is_alive():
+                profile_backfill_thread = None
+            if profile_backfill_status.get("running") and profile_backfill_thread is None:
+                profile_backfill_thread = _start_profile_backfill_worker(archive_manager, profile_backfill_status)
             now = time.monotonic()
             marker_mtime = local_preview_queue_marker_mtime()
             marker_changed = bool(marker_mtime and marker_mtime != last_local_preview_marker_mtime)
