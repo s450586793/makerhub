@@ -240,6 +240,22 @@ class BrowserVerificationSessionTest(unittest.TestCase):
         self.assertNotIn("secret", str(session))
         self.assertNotIn("secret", str(loaded))
 
+    def test_create_session_reuses_active_same_platform_session(self):
+        state = {}
+
+        with patch.object(browser_verification_module, "load_database_json_state", side_effect=lambda _key, default: dict(state or default)), \
+                patch.object(browser_verification_module, "save_database_json_state", side_effect=lambda _key, payload: state.clear() or state.update(payload) or payload):
+            store = BrowserVerificationStore()
+            first = store.create_session({"model_url": "https://makerworld.com/zh/models/959378"})
+            store.update_session(first["id"], status="running", message="验证浏览器已打开，请在画面中完成验证。")
+
+            second = store.create_session({"model_url": "https://makerworld.com/zh/models/123456"})
+            sessions = store.list_sessions()
+
+        self.assertEqual(second["id"], first["id"])
+        self.assertEqual(second["status"], "running")
+        self.assertEqual(len(sessions), 1)
+
     def test_proof_store_returns_once_and_does_not_expose_secret_in_state(self):
         proof_store.clear()
         proof_id = proof_store.store("proof-secret")
@@ -358,6 +374,108 @@ class BrowserVerificationWorkerTest(unittest.TestCase):
                 for call in log_calls
             )
         )
+
+    def test_runtime_does_not_start_second_session_for_busy_platform_profile(self):
+        class FakeThread:
+            def __init__(self, target=None, args=(), kwargs=None, name="", daemon=False):
+                self.target = target
+                self.args = args
+                self.kwargs = kwargs or {}
+                self.name = name
+                self.daemon = daemon
+                self.started = False
+
+            def start(self):
+                self.started = True
+
+            def is_alive(self):
+                return self.started
+
+        old_session = {
+            "id": "bv_old_global",
+            "status": "running",
+            "platform": "global",
+            "target": {"model_id": "959378"},
+        }
+        new_session = {
+            "id": "bv_new_global",
+            "status": "queued",
+            "platform": "global",
+            "message": "等待 worker 打开验证浏览器。",
+            "target": {"model_id": "959378"},
+        }
+        calls = {"count": 0}
+        updates = []
+
+        def active_sessions():
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return [old_session]
+            return [new_session, old_session]
+
+        store = SimpleNamespace(
+            active_or_queued_sessions=active_sessions,
+            update_session=lambda session_id, **changes: updates.append((session_id, changes)) or {"id": session_id, **changes},
+        )
+        runtime = browser_verification_module.BrowserVerificationRuntime(store=store)
+        log_calls = []
+
+        with patch.object(browser_verification_module.threading, "Thread", FakeThread), \
+                patch.object(browser_verification_module, "append_business_log", side_effect=lambda *args, **kwargs: log_calls.append((args, kwargs))):
+            first = runtime.poll_once()
+            second = runtime.poll_once()
+
+        self.assertEqual(first["started"], 1)
+        self.assertEqual(second["started"], 0)
+        self.assertEqual(second["running"], 1)
+        self.assertEqual(
+            [call[1].get("session_id") for call in log_calls if call[0][:2] == ("missing_3mf", "browser_verification_session_worker_started")],
+            ["bv_old_global"],
+        )
+        self.assertEqual(updates[0][0], "bv_new_global")
+        self.assertEqual(updates[0][1]["status"], "queued")
+        self.assertEqual(updates[0][1]["message"], "同平台验证浏览器正在使用中，请先完成或取消已有验证会话。")
+
+    def test_runtime_allows_parallel_sessions_for_different_platform_profiles(self):
+        class FakeThread:
+            def __init__(self, target=None, args=(), kwargs=None, name="", daemon=False):
+                self.target = target
+                self.args = args
+                self.kwargs = kwargs or {}
+                self.name = name
+                self.daemon = daemon
+                self.started = False
+
+            def start(self):
+                self.started = True
+
+            def is_alive(self):
+                return self.started
+
+        store = SimpleNamespace(
+            active_or_queued_sessions=lambda: [
+                {
+                    "id": "bv_cn",
+                    "status": "queued",
+                    "platform": "cn",
+                    "target": {"model_id": "1063416"},
+                },
+                {
+                    "id": "bv_global",
+                    "status": "queued",
+                    "platform": "global",
+                    "target": {"model_id": "959378"},
+                },
+            ],
+        )
+        runtime = browser_verification_module.BrowserVerificationRuntime(store=store)
+
+        with patch.object(browser_verification_module.threading, "Thread", FakeThread), \
+                patch.object(browser_verification_module, "append_business_log"):
+            result = runtime.poll_once()
+
+        self.assertEqual(result["started"], 2)
+        self.assertEqual(result["running"], 2)
 
     def test_worker_main_polls_browser_verification_runtime_with_archive_manager(self):
         class OneLoopEvent:

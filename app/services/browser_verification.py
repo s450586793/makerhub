@@ -32,6 +32,7 @@ BROWSER_VERIFICATION_INPUT_LIMIT = 100
 BROWSER_VERIFICATION_SESSION_LIMIT = 20
 BROWSER_VERIFICATION_DEFAULT_VIEWPORT = {"width": 1365, "height": 768}
 VERIFICATION_RETRY_STATES = {"verification_required", "cloudflare", "auth_required"}
+BROWSER_VERIFICATION_ACTIVE_STATES = {"queued", "starting", "running", "verified", "retrying"}
 SENSITIVE_REQUEST_HEADER_KEYS = {
     "x-bbl-captcha-result",
     "cookie",
@@ -258,6 +259,18 @@ class BrowserVerificationStore:
         item = raw_item if isinstance(raw_item, dict) else {}
         target = _safe_target(item)
         platform = _platform_from_item({**item, **target})
+        state = self.load_state()
+        for existing in state.get("items") or []:
+            if existing.get("platform") == platform and existing.get("status") in BROWSER_VERIFICATION_ACTIVE_STATES:
+                if existing.get("status") in {"queued", "starting"}:
+                    updated = self.update_session(
+                        existing.get("id") or "",
+                        message="同平台已有验证会话，请先完成或取消已有验证会话。",
+                    )
+                else:
+                    updated = _public_session(existing)
+                if updated:
+                    return updated
         now = _now()
         session = _normalize_session(
             {
@@ -272,7 +285,6 @@ class BrowserVerificationStore:
                 "viewport": dict(BROWSER_VERIFICATION_DEFAULT_VIEWPORT),
             }
         )
-        state = self.load_state()
         items = [entry for entry in state.get("items") or [] if entry.get("id") != session["id"]]
         state["items"] = [session, *items]
         self.save_state(state)
@@ -317,7 +329,7 @@ class BrowserVerificationStore:
         return [
             item
             for item in self.load_state().get("items") or []
-            if item.get("status") in {"queued", "starting", "running", "verified", "retrying"}
+            if item.get("status") in BROWSER_VERIFICATION_ACTIVE_STATES
         ]
 
     def next_queued_session(self) -> dict[str, Any]:
@@ -401,6 +413,11 @@ def _origin_for_platform(platform: str) -> str:
     return "https://makerworld.com" if platform == "global" else "https://makerworld.com.cn"
 
 
+def _profile_key_for_session(session: dict[str, Any]) -> str:
+    platform = str(session.get("platform") or "cn").strip()
+    return "global" if platform == "global" else "cn"
+
+
 def _cookie_domain(platform: str) -> str:
     return ".makerworld.com" if platform == "global" else ".makerworld.com.cn"
 
@@ -439,17 +456,33 @@ class BrowserVerificationRuntime:
     def __post_init__(self) -> None:
         self._lock = threading.RLock()
         self._threads: dict[str, threading.Thread] = {}
+        self._thread_profile_keys: dict[str, str] = {}
 
     def poll_once(self) -> dict[str, Any]:
         started = 0
         with self._lock:
             live_ids = {key for key, thread in self._threads.items() if thread.is_alive()}
             self._threads = {key: thread for key, thread in self._threads.items() if key in live_ids}
+            self._thread_profile_keys = {
+                key: profile_key
+                for key, profile_key in self._thread_profile_keys.items()
+                if key in live_ids
+            }
+            busy_profile_keys = set(self._thread_profile_keys.values())
             for session in self.store.active_or_queued_sessions():
                 session_id = str(session.get("id") or "")
                 if not session_id or session_id in self._threads:
                     continue
                 if session.get("status") in {"queued", "starting", "running"}:
+                    profile_key = _profile_key_for_session(session)
+                    if profile_key in busy_profile_keys:
+                        if session.get("status") == "queued":
+                            self.store.update_session(
+                                session_id,
+                                status="queued",
+                                message="同平台验证浏览器正在使用中，请先完成或取消已有验证会话。",
+                            )
+                        continue
                     thread = threading.Thread(
                         target=self._run_session_guarded,
                         args=(session_id,),
@@ -457,6 +490,8 @@ class BrowserVerificationRuntime:
                         daemon=True,
                     )
                     self._threads[session_id] = thread
+                    self._thread_profile_keys[session_id] = profile_key
+                    busy_profile_keys.add(profile_key)
                     thread.start()
                     target = session.get("target") if isinstance(session.get("target"), dict) else {}
                     append_business_log(
