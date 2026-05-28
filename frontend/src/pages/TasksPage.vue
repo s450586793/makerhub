@@ -224,7 +224,7 @@
         >
           <span>
             <RouterLink
-              v-if="item.model_dir"
+              v-if="missingDetailPath(item)"
               class="task-model-link"
               :to="missingDetailPath(item)"
             >
@@ -241,6 +241,15 @@
           </span>
           <span>
             <span class="missing-actions">
+            <button
+              v-if="needsBrowserVerification(item)"
+              class="button button-primary button-small"
+              type="button"
+              :disabled="isMissingActionBusy(item)"
+              @click="startBrowserVerification(item)"
+            >
+              去验证
+            </button>
             <button
               class="button button-secondary button-small"
               type="button"
@@ -274,13 +283,14 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { RouterLink } from "vue-router";
+import { RouterLink, useRouter } from "vue-router";
 
 import { apiRequest } from "../lib/api";
 import { subscribeStateRefresh } from "../lib/stateEvents";
 import { encodeModelPath } from "../lib/helpers";
 
 
+const router = useRouter();
 const payload = ref({
   archive_queue: {
     active: [],
@@ -366,8 +376,13 @@ function retryLabel(item) {
   return "重新下载";
 }
 
+function needsBrowserVerification(item) {
+  const status = String(item?.status || "").toLowerCase();
+  return ["verification_required", "cloudflare", "auth_required"].includes(status);
+}
+
 function missingDetailPath(item) {
-  return encodeModelPath(item?.model_dir || "");
+  return encodeModelPath(item || "");
 }
 
 function formatMissingStatus(status) {
@@ -535,6 +550,33 @@ async function submitArchiveFromDialog(createSubscription) {
     closeArchiveSubmitDialog();
   } finally {
     confirmingArchiveMode.value = "";
+  }
+}
+
+async function startBrowserVerification(item) {
+  pendingMissingActionKey.value = getMissingKey(item);
+  try {
+    const session = await apiRequest("/api/browser-verification/sessions", {
+      method: "POST",
+      body: {
+        model_id: item.model_id || "",
+        model_url: item.model_url || "",
+        title: item.title || "",
+        instance_id: item.instance_id || "",
+        api_url: item.api_url || "",
+        captcha_id: item.captcha_id || item.verification?.captcha_id || "",
+        source: item.source || "",
+      },
+    });
+    if (!session?.id) {
+      throw new Error("验证会话创建失败。");
+    }
+    missingStatus.value = "验证会话已创建。";
+    await router.push(`/browser-verification/${encodeURIComponent(session.id)}`);
+  } catch (error) {
+    missingStatus.value = error instanceof Error ? error.message : "创建验证会话失败。";
+  } finally {
+    pendingMissingActionKey.value = "";
   }
 }
 

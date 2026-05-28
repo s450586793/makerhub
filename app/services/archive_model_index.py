@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from pathlib import Path
@@ -21,9 +22,11 @@ from app.services.business_logs import append_business_log
 from app.services.state_events import publish_state_event
 
 
-MODEL_INDEX_SCHEMA_VERSION = 1
+MODEL_INDEX_SCHEMA_VERSION = 2
 BOOTSTRAP_METADATA_KEY = "archive_model_index_bootstrap"
 PROFILE_BACKFILL_STATUS_KEY = "archive_profile_backfill_status"
+LOCAL_SHORT_KEY_START = 100001
+LOCAL_SHORT_KEY_PREFIX = "local"
 _SCHEMA_LOCK = threading.Lock()
 _SCHEMA_READY = False
 _LAST_WARNING_AT = 0.0
@@ -31,6 +34,7 @@ _DB_RETRY_AFTER = 0.0
 _WARNING_INTERVAL_SECONDS = 300
 _DATABASE_RETRY_SECONDS = 30
 _STALE_MODEL_DIR_SAMPLE_LIMIT = 50
+_SHORT_KEY_PATTERN = re.compile(r"^[a-z]+[0-9]+$")
 
 
 def _warn_once(event: str, message: str, **fields: Any) -> None:
@@ -136,6 +140,7 @@ def ensure_archive_model_index_schema() -> bool:
                     """
                     CREATE TABLE IF NOT EXISTS archive_model_index (
                         model_dir TEXT PRIMARY KEY,
+                        short_key TEXT NOT NULL DEFAULT '',
                         model_id TEXT NOT NULL DEFAULT '',
                         title TEXT NOT NULL DEFAULT '',
                         source TEXT NOT NULL DEFAULT '',
@@ -157,7 +162,13 @@ def ensure_archive_model_index_schema() -> bool:
                     """
                 )
                 connection.execute(
+                    "ALTER TABLE archive_model_index ADD COLUMN IF NOT EXISTS short_key TEXT NOT NULL DEFAULT ''"
+                )
+                connection.execute(
                     "CREATE INDEX IF NOT EXISTS archive_model_index_source_idx ON archive_model_index (source)"
+                )
+                connection.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS archive_model_index_short_key_idx ON archive_model_index (short_key) WHERE short_key <> ''"
                 )
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS archive_model_index_model_id_idx ON archive_model_index (model_id)"
@@ -194,6 +205,133 @@ def _meta_signature(meta_path: Path) -> tuple[int, int]:
     return (int(stat.st_mtime_ns), int(stat.st_size))
 
 
+def _remote_short_key(source: str, model_id: str) -> str:
+    clean_source = str(source or "").strip().lower()
+    clean_model_id = re.sub(r"\D+", "", str(model_id or ""))
+    if not clean_model_id:
+        return ""
+    if clean_source == "cn":
+        return f"mwcn{clean_model_id}"
+    if clean_source == "global":
+        return f"mwg{clean_model_id}"
+    return ""
+
+
+def _local_short_key_number(value: str) -> int:
+    raw = str(value or "").strip().lower()
+    if not raw.startswith(LOCAL_SHORT_KEY_PREFIX):
+        return 0
+    suffix = raw[len(LOCAL_SHORT_KEY_PREFIX):]
+    if not suffix.isdigit():
+        return 0
+    try:
+        return int(suffix)
+    except ValueError:
+        return 0
+
+
+def _next_local_short_key(connection: Any) -> str:
+    rows = connection.execute(
+        "SELECT short_key FROM archive_model_index WHERE short_key LIKE %s",
+        (f"{LOCAL_SHORT_KEY_PREFIX}%",),
+    ).fetchall()
+    max_number = LOCAL_SHORT_KEY_START - 1
+    for row in rows or []:
+        value = row.get("short_key") if isinstance(row, dict) else ""
+        max_number = max(max_number, _local_short_key_number(str(value or "")))
+    return f"{LOCAL_SHORT_KEY_PREFIX}{max_number + 1}"
+
+
+def _existing_short_key(connection: Any, model_dir: str) -> str:
+    row = connection.execute(
+        "SELECT short_key FROM archive_model_index WHERE model_dir = %s",
+        (model_dir,),
+    ).fetchone()
+    if not isinstance(row, dict):
+        return ""
+    return str(row.get("short_key") or "").strip()
+
+
+def _short_key_owner(connection: Any, short_key: str) -> str:
+    clean_short_key = str(short_key or "").strip()
+    if not clean_short_key:
+        return ""
+    row = connection.execute(
+        "SELECT model_dir FROM archive_model_index WHERE short_key = %s",
+        (clean_short_key,),
+    ).fetchone()
+    if not isinstance(row, dict):
+        return ""
+    return str(row.get("model_dir") or "").strip().strip("/")
+
+
+def _assign_short_key(connection: Any, *, model_dir: str, model: dict[str, Any]) -> str:
+    existing = _existing_short_key(connection, model_dir)
+    if existing:
+        return existing
+
+    source = str(model.get("source") or "").strip().lower()
+    remote_key = _remote_short_key(source, str(model.get("id") or ""))
+    if remote_key:
+        owner = _short_key_owner(connection, remote_key)
+        return remote_key if not owner or owner == model_dir else ""
+    if source == "local":
+        return _next_local_short_key(connection)
+    return ""
+
+
+def _model_with_short_detail_path(model: dict[str, Any], short_key: str) -> dict[str, Any]:
+    payload = dict(model)
+    clean_short_key = str(short_key or "").strip()
+    if clean_short_key:
+        payload["short_key"] = clean_short_key
+        payload["detail_path"] = f"/models/{clean_short_key}"
+    else:
+        payload.pop("short_key", None)
+        payload["detail_path"] = ""
+    return payload
+
+
+def is_model_short_key(value: str) -> bool:
+    clean_value = str(value or "").strip().strip("/").lower()
+    if not clean_value:
+        return False
+    if clean_value.startswith("mwcn"):
+        return clean_value[4:].isdigit()
+    if clean_value.startswith("mwg"):
+        return clean_value[3:].isdigit()
+    if clean_value.startswith(LOCAL_SHORT_KEY_PREFIX):
+        return clean_value[len(LOCAL_SHORT_KEY_PREFIX):].isdigit()
+    return bool(_SHORT_KEY_PATTERN.fullmatch(clean_value))
+
+
+def resolve_model_dir_from_short_key(short_key: str) -> str:
+    clean_short_key = str(short_key or "").strip().strip("/").lower()
+    if not is_model_short_key(clean_short_key):
+        return ""
+    if _database_temporarily_unavailable():
+        return ""
+    try:
+        if not ensure_archive_model_index_schema():
+            return ""
+        with database_connection() as connection:
+            row = connection.execute(
+                "SELECT model_dir FROM archive_model_index WHERE short_key = %s",
+                (clean_short_key,),
+            ).fetchone()
+        if not isinstance(row, dict):
+            return ""
+        return str(row.get("model_dir") or "").strip().strip("/")
+    except Exception as exc:
+        _warn_once(
+            "archive_model_short_key_resolve_failed",
+            "模型短链接解析失败。",
+            error=str(exc),
+            short_key=clean_short_key,
+        )
+        return ""
+
+
 def upsert_archive_model_index(
     model_dir: str,
     *,
@@ -213,10 +351,19 @@ def upsert_archive_model_index(
         meta_mtime_ns, meta_size = _meta_signature(meta_path)
         author = model.get("author") if isinstance(model.get("author"), dict) else {}
         with database_connection() as connection:
+            short_key = _assign_short_key(connection, model_dir=clean_model_dir, model=model)
+            indexed_model = _model_with_short_detail_path(model, short_key)
+            if short_key:
+                model["short_key"] = short_key
+                model["detail_path"] = indexed_model["detail_path"]
+            else:
+                model.pop("short_key", None)
+                model["detail_path"] = ""
             connection.execute(
                 """
                 INSERT INTO archive_model_index (
                     model_dir,
+                    short_key,
                     model_id,
                     title,
                     source,
@@ -237,6 +384,7 @@ def upsert_archive_model_index(
                 )
                 VALUES (
                     %(model_dir)s,
+                    %(short_key)s,
                     %(model_id)s,
                     %(title)s,
                     %(source)s,
@@ -256,6 +404,10 @@ def upsert_archive_model_index(
                     now()
                 )
                 ON CONFLICT (model_dir) DO UPDATE SET
+                    short_key = CASE
+                        WHEN archive_model_index.short_key <> '' THEN archive_model_index.short_key
+                        ELSE EXCLUDED.short_key
+                    END,
                     model_id = EXCLUDED.model_id,
                     title = EXCLUDED.title,
                     source = EXCLUDED.source,
@@ -275,20 +427,21 @@ def upsert_archive_model_index(
                 """,
                 {
                     "model_dir": clean_model_dir,
-                    "model_id": str(model.get("id") or ""),
-                    "title": str(model.get("title") or ""),
-                    "source": str(model.get("source") or ""),
-                    "origin_url": str(model.get("origin_url") or ""),
+                    "short_key": short_key,
+                    "model_id": str(indexed_model.get("id") or ""),
+                    "title": str(indexed_model.get("title") or ""),
+                    "source": str(indexed_model.get("source") or ""),
+                    "origin_url": str(indexed_model.get("origin_url") or ""),
                     "author_name": str(author.get("name") or ""),
                     "author_url": str(author.get("url") or ""),
-                    "cover_url": str(model.get("cover_url") or ""),
-                    "cover_remote_url": str(model.get("cover_remote_url") or ""),
-                    "collect_ts": int(model.get("collect_ts") or 0),
-                    "publish_ts": int(model.get("publish_ts") or 0),
+                    "cover_url": str(indexed_model.get("cover_url") or ""),
+                    "cover_remote_url": str(indexed_model.get("cover_remote_url") or ""),
+                    "collect_ts": int(indexed_model.get("collect_ts") or 0),
+                    "publish_ts": int(indexed_model.get("publish_ts") or 0),
                     "meta_path": meta_path.as_posix(),
                     "meta_mtime_ns": meta_mtime_ns,
                     "meta_size": meta_size,
-                    "model_json": jsonb_value(model),
+                    "model_json": jsonb_value(indexed_model),
                     "meta_json": jsonb_value(meta_payload),
                 },
             )

@@ -13,6 +13,7 @@ from app.core.settings import ARCHIVE_DIR, BACKGROUND_TASKS_ENABLED, LOGS_DIR, S
 from app.core.store import JsonStore
 from app.core.timezone import now as china_now, parse_datetime
 from app.services.cookie_utils import sanitize_cookie_header
+from app.services.browser_verification import consume_browser_verification_proof
 from app.services.batch_discovery import (
     extract_model_id,
     normalize_model_url,
@@ -1230,7 +1231,14 @@ class ArchiveTaskManager:
         )
         return len(paused_items)
 
-    def retry_missing_3mf(self, model_url: str, model_id: str = "", title: str = "", instance_id: str = "") -> dict:
+    def retry_missing_3mf(
+        self,
+        model_url: str,
+        model_id: str = "",
+        title: str = "",
+        instance_id: str = "",
+        browser_verification_proof_id: str = "",
+    ) -> dict:
         clean_url = normalize_source_url(model_url)
         clean_model_id = str(model_id or "").strip()
         if not clean_url and clean_model_id:
@@ -1287,6 +1295,7 @@ class ArchiveTaskManager:
                 "model_url": clean_url,
                 "title": title,
                 "instance_id": instance_id,
+                "browser_verification_proof_id": str(browser_verification_proof_id or "").strip(),
             },
         )
         if result.get("accepted"):
@@ -1320,6 +1329,100 @@ class ArchiveTaskManager:
                 message=message,
             )
         return result
+
+    def retry_verification_missing_3mf(self, *, platform: str, primary: Optional[dict] = None, proof_id: str = "") -> dict:
+        normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
+        primary_item = primary if isinstance(primary, dict) else {}
+        proof_key = str(proof_id or "").strip()
+        verification_states = {"verification_required", "cloudflare", "auth_required"}
+        missing_payload = self.task_store.load_missing_3mf()
+        candidates: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+
+        def _candidate_key(item: dict[str, Any]) -> tuple[str, str, str, str]:
+            return (
+                str(item.get("model_id") or "").strip(),
+                str(item.get("model_url") or "").strip(),
+                str(item.get("title") or "").strip(),
+                str(item.get("instance_id") or "").strip(),
+            )
+
+        for raw_item in [primary_item, *(missing_payload.get("items") or [])]:
+            if not isinstance(raw_item, dict):
+                continue
+            item_url = normalize_source_url(str(raw_item.get("model_url") or ""))
+            item_platform = normalize_makerworld_source(raw_item.get("source"), item_url)
+            if normalized_platform and item_platform and item_platform != normalized_platform:
+                continue
+            state = normalize_three_mf_failure_state(
+                raw_item.get("status") or raw_item.get("downloadState") or "",
+                raw_item.get("message") or raw_item.get("downloadMessage") or "",
+                url=item_url,
+            )
+            if state not in verification_states:
+                continue
+            candidate = {
+                "model_url": item_url,
+                "model_id": str(raw_item.get("model_id") or raw_item.get("id") or extract_model_id(item_url) or "").strip(),
+                "title": str(raw_item.get("title") or raw_item.get("name") or "").strip(),
+                "instance_id": str(raw_item.get("instance_id") or raw_item.get("profileId") or raw_item.get("instanceId") or "").strip(),
+            }
+            key = _candidate_key(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(candidate)
+
+        if hasattr(self.task_store, "mark_missing_3mf_retrying"):
+            self.task_store.mark_missing_3mf_retrying(
+                candidates,
+                status="queued",
+                message="验证已完成，等待重新下载 3MF",
+            )
+
+        accepted = 0
+        queued = 0
+        failed = 0
+        last_message = ""
+        for item in candidates:
+            result = self.retry_missing_3mf(
+                model_url=item["model_url"],
+                model_id=item["model_id"],
+                title=item["title"],
+                instance_id=item["instance_id"],
+                browser_verification_proof_id=proof_key,
+            )
+            last_message = str(result.get("message") or "")
+            if result.get("accepted"):
+                accepted += 1
+            elif "已经在归档队列中" in last_message:
+                queued += 1
+            else:
+                failed += 1
+
+        append_business_log(
+            "missing_3mf",
+            "verification_retry_completed",
+            "验证完成后已重试同平台验证类 3MF 任务。",
+            platform=normalized_platform,
+            total=len(candidates),
+            accepted=accepted,
+            queued=queued,
+            failed=failed,
+        )
+        return {
+            "accepted": accepted > 0 or queued > 0,
+            "accepted_count": accepted,
+            "queued_count": queued,
+            "failed_count": failed,
+            "total_count": len(candidates),
+            "message": (
+                f"验证后重试完成：新增入队 {accepted} 个，已在队列 {queued} 个，失败 {failed} 个。"
+                if candidates
+                else "当前没有同平台验证类 3MF 任务。"
+            ),
+            "last_message": last_message,
+        }
 
     def cancel_missing_3mf(self, model_id: str = "", model_url: str = "", title: str = "", instance_id: str = "") -> dict:
         clean_model_id = str(model_id or "").strip()
@@ -2000,6 +2103,17 @@ class ArchiveTaskManager:
             )
 
         cn_daily_limit, global_daily_limit = _three_mf_daily_limits(config)
+        browser_verification_proof_id = str(meta.get("browser_verification_proof_id") or "").strip()
+        if browser_verification_proof_id:
+            scrubbed_meta = dict(meta)
+            scrubbed_meta["browser_verification_proof_id"] = ""
+            meta = scrubbed_meta
+            self.task_store.update_active_task(task_id, meta=meta)
+        three_mf_captcha_result_header = (
+            consume_browser_verification_proof(browser_verification_proof_id)
+            if browser_verification_proof_id
+            else ""
+        )
         with _temporary_proxy_env(config, url):
             result = run_archive_model_job(
                 url=url,
@@ -2020,6 +2134,7 @@ class ArchiveTaskManager:
                 three_mf_daily_limit_global=global_daily_limit,
                 existing_model_dir=existing_model_dir,
                 proxy_config=config.proxy,
+                three_mf_captcha_result_header=three_mf_captcha_result_header,
             )
 
         missing_items = []

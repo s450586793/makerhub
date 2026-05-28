@@ -211,6 +211,7 @@ def _run_archive_model_entry(queue, payload: dict[str, Any]) -> None:
                 three_mf_daily_limit_cn=_normalize_three_mf_daily_limit(payload.get("three_mf_daily_limit_cn")),
                 three_mf_daily_limit_global=_normalize_three_mf_daily_limit(payload.get("three_mf_daily_limit_global")),
                 existing_model_dir=str(payload.get("existing_model_dir") or ""),
+                three_mf_captcha_result_header=str(payload.get("three_mf_captcha_result_header") or ""),
             )
         _emit_finished(queue, payload, "result", result)
     except Exception as exc:
@@ -407,6 +408,7 @@ def run_archive_model_job(
     three_mf_daily_limit_global: int = 100,
     existing_model_dir: str = "",
     proxy_config: Any = None,
+    three_mf_captcha_result_header: str = "",
 ) -> dict[str, Any]:
     with resource_slot("makerworld_page_api", detail=normalize_source_url(url)):
         proxy_payload = _proxy_config_payload(proxy_config)
@@ -430,6 +432,7 @@ def run_archive_model_job(
                     three_mf_daily_limit_cn=three_mf_daily_limit_cn,
                     three_mf_daily_limit_global=three_mf_daily_limit_global,
                     existing_model_dir=existing_model_dir,
+                    three_mf_captcha_result_header=str(three_mf_captcha_result_header or ""),
                 )
         return _run_process_job(
             _run_archive_model_entry,
@@ -451,6 +454,7 @@ def run_archive_model_job(
                 "three_mf_daily_limit_global": three_mf_daily_limit_global,
                 "existing_model_dir": existing_model_dir,
                 "proxy_config": proxy_payload,
+                "three_mf_captcha_result_header": str(three_mf_captcha_result_header or ""),
             },
             progress_callback=progress_callback,
         )

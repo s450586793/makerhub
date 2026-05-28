@@ -45,6 +45,8 @@ SOURCE_LABELS = {
     "local": "本地模型",
 }
 
+LOCAL_SHORT_KEY_PREFIX = "local"
+
 LEGACY_CURL_FAILURE_MARKER = "No such file or directory: 'curl'"
 DETAIL_COMMENTS_PAGE_SIZE = 20
 SUMMARY_ALLOWED_TAGS = {
@@ -1977,6 +1979,20 @@ def _normalize_source(meta: dict, relative_dir: Path) -> str:
     return "local"
 
 
+def _model_short_key(source: str, model_id: str, model_dir: str) -> str:
+    clean_source = str(source or "").strip().lower()
+    clean_model_id = re.sub(r"\D+", "", str(model_id or ""))
+    if clean_source == "cn" and clean_model_id:
+        return f"mwcn{clean_model_id}"
+    if clean_source == "global" and clean_model_id:
+        return f"mwg{clean_model_id}"
+    if clean_source == "local":
+        explicit = re.sub(r"\D+", "", str(model_id or ""))
+        if explicit:
+            return f"{LOCAL_SHORT_KEY_PREFIX}{explicit}"
+    return ""
+
+
 def _sample_cover_lines(title: str) -> list[str]:
     clean_title = re.sub(r"\s+", " ", str(title or "Makerhub")).strip() or "Makerhub"
     max_chars = 14
@@ -2085,12 +2101,14 @@ def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[
     publish_value = _extract_publish_value(meta)
     publish_ts = _parse_timestamp(publish_value)
 
+    model_id = str(meta.get("id") or "")
+    short_key = _model_short_key(source, model_id, relative_dir.as_posix())
     payload = {
         "model_dir": relative_dir.as_posix(),
-        "detail_path": f"/models/{quote(relative_dir.as_posix(), safe='/')}",
+        "detail_path": f"/models/{short_key}" if short_key else "",
         "meta_path": meta_path.as_posix(),
         "title": str(meta.get("title") or relative_dir.name),
-        "id": str(meta.get("id") or ""),
+        "id": model_id,
         "source": source,
         "source_label": SOURCE_LABELS.get(source, "本地模型"),
         "origin_url": str(meta.get("url") or ""),
@@ -2119,6 +2137,8 @@ def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[
         "publish_date": _format_date(publish_value),
         "remote_sync": _normalize_remote_sync(meta),
     }
+    if short_key:
+        payload["short_key"] = short_key
     if source == "local":
         local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
         payload["local_import"] = {
@@ -2587,10 +2607,10 @@ def build_tasks_payload(
     missing_3mf = store.load_missing_3mf(fallback_items=missing_fallback)
     needs_snapshot = archive_snapshot is not None or resolve_missing_model_dirs or prune_recent_failures
     snapshot = archive_snapshot or (get_archive_snapshot() if needs_snapshot else None)
-    model_dir_by_id = {}
+    model_by_id = {}
     if resolve_missing_model_dirs and isinstance(snapshot, dict):
-        model_dir_by_id = {
-            str(item.get("id") or "").strip(): str(item.get("model_dir") or "").strip().strip("/")
+        model_by_id = {
+            str(item.get("id") or "").strip(): item
             for item in snapshot.get("models") or []
             if str(item.get("id") or "").strip() and str(item.get("model_dir") or "").strip()
         }
@@ -2598,7 +2618,9 @@ def build_tasks_payload(
     for raw_item in missing_3mf.get("items") or []:
         item = dict(raw_item or {})
         model_id = str(item.get("model_id") or "").strip()
-        item["model_dir"] = str(item.get("model_dir") or model_dir_by_id.get(model_id, "")).strip().strip("/")
+        matched_model = model_by_id.get(model_id) if model_id else None
+        item["model_dir"] = str(item.get("model_dir") or (matched_model or {}).get("model_dir") or "").strip().strip("/")
+        item["detail_path"] = str(item.get("detail_path") or (matched_model or {}).get("detail_path") or "").strip()
         missing_items.append(item)
     missing_3mf["items"] = missing_items
     if prune_recent_failures and isinstance(snapshot, dict):

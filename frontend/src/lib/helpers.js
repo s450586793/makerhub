@@ -56,14 +56,23 @@ export function formatDate(value) {
 }
 
 
-export function encodeModelPath(modelDir) {
-  const value = String(modelDir || "").replace(/^\/+/, "");
-  const encoded = value
-    .split("/")
-    .filter((segment) => segment.length > 0)
-    .map((segment) => encodeURIComponent(segment))
-    .join("/");
-  return `/models/${encoded}`;
+export function encodeModelPath(model) {
+  if (model && typeof model === "object") {
+    const explicit = String(model.detail_path || "").trim();
+    if (explicit) {
+      return explicit;
+    }
+    const modelId = String(model.id || "").replace(/\D+/g, "");
+    const source = String(model.source || "").trim().toLowerCase();
+    if (source === "cn" && modelId) {
+      return `/models/mwcn${modelId}`;
+    }
+    if (source === "global" && modelId) {
+      return `/models/mwg${modelId}`;
+    }
+  }
+  const raw = String(model || "").trim().replace(/^\/+/, "");
+  return /^(?:mwcn|mwg|local)\d+$/.test(raw) ? `/models/${raw}` : "";
 }
 
 export function normalizeProfileRating(value) {

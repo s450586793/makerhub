@@ -256,6 +256,27 @@ def _normalize_missing_3mf(payload: Any, fallback_items: Optional[list[dict]] = 
                 "updated_at": str(item.get("updated_at") or item.get("time") or ""),
             }
         )
+        normalized_item = normalized[-1]
+        api_url = str(item.get("api_url") or item.get("apiUrl") or "").strip()
+        if api_url:
+            normalized_item["api_url"] = api_url
+        source = normalize_makerworld_source(item.get("source"), item_url)
+        if source:
+            normalized_item["source"] = source
+        verification = item.get("verification") if isinstance(item.get("verification"), dict) else {}
+        captcha_id = str(
+            item.get("captcha_id")
+            or item.get("captchaId")
+            or verification.get("captcha_id")
+            or verification.get("captchaId")
+            or ""
+        ).strip()
+        if captcha_id:
+            normalized_item["captcha_id"] = captcha_id
+            normalized_item["verification"] = {
+                "captcha_id": captcha_id,
+                "provider": str(verification.get("provider") or "geetest"),
+            }
 
     return {"items": normalized}
 

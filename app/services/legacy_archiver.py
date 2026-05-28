@@ -4028,6 +4028,23 @@ def _stringify_3mf_failure_payload(payload) -> str:
         return str(payload)
 
 
+def _extract_three_mf_verification_payload(payload) -> dict[str, str]:
+    if not isinstance(payload, dict):
+        return {}
+    captcha_id = str(
+        payload.get("captchaId")
+        or payload.get("captcha_id")
+        or payload.get("captchaID")
+        or ""
+    ).strip()
+    if not captcha_id:
+        return {}
+    return {
+        "captcha_id": captcha_id,
+        "provider": "geetest",
+    }
+
+
 def _classify_3mf_fetch_failure(
     *,
     status_code: int = 0,
@@ -4056,10 +4073,14 @@ def _classify_3mf_fetch_failure(
             "challenge",
         )
     ):
-        return {
+        result = {
             "state": "verification_required",
             "message": describe_three_mf_failure("verification_required", source=normalized_source),
         }
+        verification = _extract_three_mf_verification_payload(payload)
+        if verification:
+            result["verification"] = verification
+        return result
     if "每日下载上限" in combined or ("download" in combined and "limit" in combined and "daily" in combined):
         return {
             "state": "download_limited",
@@ -4122,6 +4143,7 @@ def fetch_instance_3mf(
     api_url: str = None,
     api_host_hint: Optional[str] = None,
     origin: Optional[str] = None,
+    captcha_result_header: str = "",
 ):
     """
     获取实例的 3MF 下载地址，允许外部传入 api_url，并自动回退不同 API Host。
@@ -4164,6 +4186,9 @@ def fetch_instance_3mf(
                 headers["token"] = auth_token
                 headers["X-Token"] = auth_token
                 headers["X-Access-Token"] = auth_token
+            clean_captcha_result = str(captcha_result_header or "").strip()
+            if clean_captcha_result:
+                headers["x-bbl-captcha-result"] = clean_captcha_result
             data = None
             scrapling_result = None
             payload, scrapling_result = fetch_json_with_scrapling(
@@ -4381,6 +4406,12 @@ def fetch_instance_3mf(
                 f"X-Token: {auth_token}",
                 "-H",
                 f"X-Access-Token: {auth_token}",
+            ])
+        clean_captcha_result = str(captcha_result_header or "").strip()
+        if clean_captcha_result:
+            cmd.extend([
+                "-H",
+                f"x-bbl-captcha-result: {clean_captcha_result}",
             ])
         cmd.append(candidate)
         try:
@@ -6548,6 +6579,7 @@ def archive_model(
     three_mf_daily_limit_cn: int = 100,
     three_mf_daily_limit_global: int = 100,
     existing_model_dir: str = "",
+    three_mf_captcha_result_header: str = "",
 ):
     """
     对外主入口：采集 + 下载文件 + 生成 meta，并整理归档目录。
@@ -6909,6 +6941,7 @@ def archive_model(
                 api_url,
                 api_host_hint=api_host_hint,
                 origin=origin,
+                captcha_result_header=three_mf_captcha_result_header,
             )
             if url3mf:
                 fetched_hint_hits += 1
@@ -6973,6 +7006,8 @@ def archive_model(
                     three_mf_skip_message = str((failure_info or {}).get("message") or three_mf_skip_message or "")
         failure_state = str((failure_info or {}).get("state") or "").strip()
         failure_message = str((failure_info or {}).get("message") or "").strip()
+        verification_info = (failure_info or {}).get("verification") if isinstance((failure_info or {}).get("verification"), dict) else {}
+        captcha_id = str(verification_info.get("captcha_id") or "").strip()
         profile_details = normalize_profile_details(inst, plates, existing_inst)
         inst_record = {
             "id": inst_id,
@@ -7022,6 +7057,12 @@ def archive_model(
             "downloadMessage": "" if url3mf else failure_message,
             "fileName": str(existing_inst.get("fileName") or "").strip(),
         }
+        if captcha_id and not url3mf:
+            inst_record["captchaId"] = captcha_id
+            inst_record["verification"] = {
+                "captcha_id": captcha_id,
+                "provider": str(verification_info.get("provider") or "geetest"),
+            }
         # 在构建 meta 阶段就写入 fileName，保证后续语义清晰：
         # title=展示名，name=来源名，fileName=本地真实文件名。
         inst_list.append(inst_record)

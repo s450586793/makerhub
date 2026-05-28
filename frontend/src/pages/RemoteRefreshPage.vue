@@ -225,9 +225,9 @@
 
           <div class="remote-refresh-history__links">
             <RouterLink
-              v-if="historyModelDir(item)"
+              v-if="historyDetailPath(item)"
               class="section-link"
-              :to="encodeModelPath(historyModelDir(item))"
+              :to="historyDetailPath(item)"
             >
               查看本地详情
             </RouterLink>
@@ -437,8 +437,8 @@ function historyIsIssue(item) {
   return ["failed", "skipped"].includes(String(item?.status || "").trim());
 }
 
-function historyModelDir(item) {
-  return String(item?.meta?.model_dir || "").trim().replace(/^\/+/, "");
+function historyDetailPath(item) {
+  return encodeModelPath(item?.meta || "");
 }
 
 function applyHistoryFilter(value) {

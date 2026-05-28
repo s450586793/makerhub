@@ -22,7 +22,7 @@ from urllib.parse import quote, unquote, urljoin, urlparse
 
 import requests
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.requests import ClientDisconnect
 
 from app.core.database import DATABASE_STATE_EVENT_CHANNEL, database_status
@@ -35,6 +35,8 @@ from app.schemas.models import (
     AdvancedRuntimeConfig,
     ArchiveRequest,
     BambuStudioDownloadLinkRequest,
+    BrowserVerificationInputRequest,
+    BrowserVerificationSessionRequest,
     Missing3mfCancelRequest,
     CookiePair,
     CookieTestRequest,
@@ -106,9 +108,10 @@ from app.services.archive_repair import (
     run_archive_repair_job,
     write_archive_repair_status,
 )
-from app.services.archive_model_index import archive_model_index_status
+from app.services.archive_model_index import archive_model_index_status, resolve_model_dir_from_short_key
 from app.services.archive_profile_backfill import read_profile_backfill_status, write_profile_backfill_status
 from app.services.batch_discovery import extract_model_id, normalize_source_url
+from app.services.browser_verification import browser_verification_store
 from app.services.subscriptions import (
     SubscriptionManager,
     cookie_source_inventory_payload,
@@ -257,8 +260,16 @@ def _safe_download_filename(filename: str, fallback: str = "makerhub-model") -> 
     return f"{safe_stem}{safe_suffix}"
 
 
+def _resolve_model_route_key(value: str) -> str:
+    clean_value = str(value or "").strip().strip("/")
+    if not clean_value:
+        return ""
+    resolved = resolve_model_dir_from_short_key(clean_value)
+    return resolved or clean_value
+
+
 def _resolve_archive_model_root(model_dir: str) -> Path:
-    clean_model_dir = str(model_dir or "").strip().strip("/")
+    clean_model_dir = _resolve_model_route_key(model_dir)
     if not clean_model_dir:
         raise ValueError("模型不存在。")
     archive_root = ARCHIVE_DIR.resolve()
@@ -3812,7 +3823,8 @@ async def get_model_detail_comments(
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
 ):
-    payload = await run_web_io(get_model_comments_page, model_dir, offset=offset, limit=limit)
+    resolved_model_dir = _resolve_model_route_key(model_dir)
+    payload = await run_web_io(get_model_comments_page, resolved_model_dir, offset=offset, limit=limit)
     if payload is None:
         raise HTTPException(status_code=404, detail="模型不存在。")
     return payload
@@ -3837,7 +3849,7 @@ async def download_model_all_files(model_dir: str, background_tasks: BackgroundT
 @router.post("/models/{model_dir:path}/bambu-studio-link")
 async def create_bambu_studio_download_link(model_dir: str, payload: BambuStudioDownloadLinkRequest, request: Request):
     _require_session_auth(request)
-    clean_model_dir = str(model_dir or "").strip().strip("/")
+    clean_model_dir = _resolve_model_route_key(model_dir)
     clean_file_name = str(payload.file_name or "").strip()
     try:
         _resolve_bambu_download_file(clean_model_dir, clean_file_name)
@@ -3891,7 +3903,8 @@ async def backfill_model_source_metadata(model_dir: str, request: Request):
     _require_session_auth(request)
 
     def _submit_backfill() -> dict:
-        detail = get_model_detail(model_dir, include_detail=True)
+        resolved_model_dir = _resolve_model_route_key(model_dir)
+        detail = get_model_detail(resolved_model_dir, include_detail=True)
         if detail is None:
             raise ValueError("模型不存在。")
 
@@ -3902,8 +3915,8 @@ async def backfill_model_source_metadata(model_dir: str, request: Request):
 
         response = crawler.manager.submit_profile_metadata_backfill(
             origin_url,
-            model_dir=str(detail.get("model_dir") or model_dir),
-            title=str(detail.get("title") or model_dir),
+            model_dir=str(detail.get("model_dir") or resolved_model_dir),
+            title=str(detail.get("title") or resolved_model_dir),
         )
         append_business_log(
             "model",
@@ -3911,14 +3924,14 @@ async def backfill_model_source_metadata(model_dir: str, request: Request):
             response.get("message") or "源端信息补全已提交。",
             accepted=bool(response.get("accepted")),
             queued=bool(response.get("queued")),
-            model_dir=str(detail.get("model_dir") or model_dir),
+            model_dir=str(detail.get("model_dir") or resolved_model_dir),
             url=origin_url,
             task_id=response.get("task_id"),
         )
         return {
             **response,
             "success": bool(response.get("accepted") or response.get("queued")),
-            "model_dir": str(detail.get("model_dir") or model_dir),
+            "model_dir": str(detail.get("model_dir") or resolved_model_dir),
         }
 
     try:
@@ -3931,7 +3944,8 @@ async def backfill_model_source_metadata(model_dir: str, request: Request):
 
 @router.get("/models/{model_dir:path}")
 async def get_model_detail_data(model_dir: str):
-    detail = await run_web_io(get_model_detail, model_dir)
+    resolved_model_dir = _resolve_model_route_key(model_dir)
+    detail = await run_web_io(get_model_detail, resolved_model_dir)
     if detail is None:
         raise HTTPException(status_code=404, detail="模型不存在。")
     return detail
@@ -3946,11 +3960,12 @@ async def upload_model_attachment(
     category: str = Form("assembly"),
 ):
     _require_session_auth(request)
+    resolved_model_dir = _resolve_model_route_key(model_dir)
     try:
         def _upload_and_load_detail():
-            attachment_item = create_manual_attachment(model_dir, file, name=name, category=category)
-            upsert_archive_snapshot_model(model_dir, "manual_attachment_uploaded", broadcast=False)
-            return attachment_item, get_model_detail(model_dir)
+            attachment_item = create_manual_attachment(resolved_model_dir, file, name=name, category=category)
+            upsert_archive_snapshot_model(resolved_model_dir, "manual_attachment_uploaded", broadcast=False)
+            return attachment_item, get_model_detail(resolved_model_dir)
 
         attachment, detail = await run_task_api(_upload_and_load_detail)
     except ValueError as exc:
@@ -3965,7 +3980,7 @@ async def upload_model_attachment(
         "model",
         "attachment_uploaded",
         "模型附件已上传。",
-        model_dir=model_dir,
+        model_dir=resolved_model_dir,
         attachment_id=attachment.get("id"),
         attachment_name=attachment.get("name"),
         category=category,
@@ -3981,11 +3996,12 @@ async def upload_model_attachment(
 @router.delete("/models/{model_dir:path}/attachments/{attachment_id}")
 async def remove_model_attachment(model_dir: str, attachment_id: str, request: Request):
     _require_session_auth(request)
+    resolved_model_dir = _resolve_model_route_key(model_dir)
     try:
         def _remove_and_load_detail():
-            removed_item = delete_manual_attachment(model_dir, attachment_id)
-            upsert_archive_snapshot_model(model_dir, "manual_attachment_deleted", broadcast=False)
-            return removed_item, get_model_detail(model_dir)
+            removed_item = delete_manual_attachment(resolved_model_dir, attachment_id)
+            upsert_archive_snapshot_model(resolved_model_dir, "manual_attachment_deleted", broadcast=False)
+            return removed_item, get_model_detail(resolved_model_dir)
 
         removed, detail = await run_task_api(_remove_and_load_detail)
     except ValueError as exc:
@@ -3998,7 +4014,7 @@ async def remove_model_attachment(model_dir: str, attachment_id: str, request: R
         "model",
         "attachment_deleted",
         "模型附件已删除。",
-        model_dir=model_dir,
+        model_dir=resolved_model_dir,
         attachment_id=attachment_id,
         removed=removed,
     )
@@ -4017,10 +4033,11 @@ async def update_local_model_description_data(
     request: Request,
 ):
     _require_session_auth(request)
+    resolved_model_dir = _resolve_model_route_key(model_dir)
     try:
         def _update_and_load_detail():
-            result = update_local_model_description(model_dir, payload.description)
-            return result, get_model_detail(model_dir)
+            result = update_local_model_description(resolved_model_dir, payload.description)
+            return result, get_model_detail(resolved_model_dir)
 
         result, detail = await run_task_api(_update_and_load_detail)
     except ValueError as exc:
@@ -4033,7 +4050,7 @@ async def update_local_model_description_data(
         "model",
         "local_model_description_updated",
         "本地模型描述已更新。",
-        model_dir=model_dir,
+        model_dir=resolved_model_dir,
     )
     return {
         "success": True,
@@ -4050,14 +4067,15 @@ async def update_local_model_metadata_data(
     request: Request,
 ):
     _require_session_auth(request)
+    resolved_model_dir = _resolve_model_route_key(model_dir)
     try:
         def _update_and_load_detail():
             result = update_local_model_metadata(
-                model_dir,
+                resolved_model_dir,
                 title=payload.title,
                 description=payload.description,
             )
-            return result, get_model_detail(model_dir)
+            return result, get_model_detail(resolved_model_dir)
 
         result, detail = await run_task_api(_update_and_load_detail)
     except ValueError as exc:
@@ -4070,7 +4088,7 @@ async def update_local_model_metadata_data(
         "model",
         "local_model_metadata_updated",
         "本地模型信息已更新。",
-        model_dir=model_dir,
+        model_dir=resolved_model_dir,
         title=result.get("title"),
     )
     return {
@@ -4088,11 +4106,12 @@ async def upload_local_model_files(
     files: list[UploadFile] = File(...),
 ):
     _require_session_auth(request)
+    resolved_model_dir = _resolve_model_route_key(model_dir)
     uploaded = []
     try:
         def _upload_and_load_detail():
-            items = [add_local_model_file(model_dir, file) for file in files]
-            return items, get_model_detail(model_dir)
+            items = [add_local_model_file(resolved_model_dir, file) for file in files]
+            return items, get_model_detail(resolved_model_dir)
 
         uploaded, detail = await run_task_api(_upload_and_load_detail)
     except ValueError as exc:
@@ -4108,7 +4127,7 @@ async def upload_local_model_files(
         "model",
         "local_model_files_uploaded",
         "本地模型文件已上传。",
-        model_dir=model_dir,
+        model_dir=resolved_model_dir,
         count=len(uploaded),
     )
     return {
@@ -4126,10 +4145,11 @@ async def remove_local_model_file(
     request: Request,
 ):
     _require_session_auth(request)
+    resolved_model_dir = _resolve_model_route_key(model_dir)
     try:
         def _remove_and_load_detail():
-            removed_item = delete_local_model_file(model_dir, payload.instance_key)
-            return removed_item, get_model_detail(model_dir)
+            removed_item = delete_local_model_file(resolved_model_dir, payload.instance_key)
+            return removed_item, get_model_detail(resolved_model_dir)
 
         removed, detail = await run_task_api(_remove_and_load_detail)
     except ValueError as exc:
@@ -4142,7 +4162,7 @@ async def remove_local_model_file(
         "model",
         "local_model_file_deleted",
         "本地模型文件已删除。",
-        model_dir=model_dir,
+        model_dir=resolved_model_dir,
         instance_key=payload.instance_key,
     )
     return {
@@ -4160,11 +4180,12 @@ async def upload_local_model_images(
     files: list[UploadFile] = File(...),
 ):
     _require_session_auth(request)
+    resolved_model_dir = _resolve_model_route_key(model_dir)
     uploaded = []
     try:
         def _upload_and_load_detail():
-            items = [add_local_model_image(model_dir, file) for file in files]
-            return items, get_model_detail(model_dir)
+            items = [add_local_model_image(resolved_model_dir, file) for file in files]
+            return items, get_model_detail(resolved_model_dir)
 
         uploaded, detail = await run_task_api(_upload_and_load_detail)
     except ValueError as exc:
@@ -4180,7 +4201,7 @@ async def upload_local_model_images(
         "model",
         "local_model_images_uploaded",
         "本地模型图片已上传。",
-        model_dir=model_dir,
+        model_dir=resolved_model_dir,
         count=len(uploaded),
     )
     return {
@@ -4198,10 +4219,11 @@ async def remove_local_model_image(
     request: Request,
 ):
     _require_session_auth(request)
+    resolved_model_dir = _resolve_model_route_key(model_dir)
     try:
         def _remove_and_load_detail():
-            removed_item = delete_local_model_image(model_dir, payload.rel_path)
-            return removed_item, get_model_detail(model_dir)
+            removed_item = delete_local_model_image(resolved_model_dir, payload.rel_path)
+            return removed_item, get_model_detail(resolved_model_dir)
 
         removed, detail = await run_task_api(_remove_and_load_detail)
     except ValueError as exc:
@@ -4214,7 +4236,7 @@ async def remove_local_model_image(
         "model",
         "local_model_image_deleted",
         "本地模型图片已删除。",
-        model_dir=model_dir,
+        model_dir=resolved_model_dir,
         rel_path=payload.rel_path,
     )
     return {
@@ -4232,10 +4254,11 @@ async def update_local_model_cover_image(
     request: Request,
 ):
     _require_session_auth(request)
+    resolved_model_dir = _resolve_model_route_key(model_dir)
     try:
         def _update_and_load_detail():
-            updated_item = set_local_model_cover_image(model_dir, payload.rel_path)
-            return updated_item, get_model_detail(model_dir)
+            updated_item = set_local_model_cover_image(resolved_model_dir, payload.rel_path)
+            return updated_item, get_model_detail(resolved_model_dir)
 
         updated, detail = await run_task_api(_update_and_load_detail)
     except ValueError as exc:
@@ -4248,7 +4271,7 @@ async def update_local_model_cover_image(
         "model",
         "local_model_cover_updated",
         "本地模型封面已更新。",
-        model_dir=model_dir,
+        model_dir=resolved_model_dir,
         rel_path=payload.rel_path,
     )
     return {
@@ -4266,16 +4289,17 @@ async def save_local_model_preview_image(
     request: Request,
 ):
     _require_session_auth(request)
+    resolved_model_dir = _resolve_model_route_key(model_dir)
     try:
         def _save_and_load_detail():
             result = save_local_model_generated_preview(
-                model_dir,
+                resolved_model_dir,
                 image_data=payload.image_data,
                 mime_type=payload.mime_type,
                 source_instance_key=payload.source_instance_key,
                 source_file_name=payload.source_file_name,
             )
-            return result, get_model_detail(model_dir)
+            return result, get_model_detail(resolved_model_dir)
 
         result, detail = await run_task_api(_save_and_load_detail)
     except ValueError as exc:
@@ -4288,7 +4312,7 @@ async def save_local_model_preview_image(
         "model",
         "local_model_preview_generated",
         "本地模型 Three.js 封面已生成。",
-        model_dir=model_dir,
+        model_dir=resolved_model_dir,
         source_file_name=payload.source_file_name,
     )
     return {
@@ -4306,16 +4330,17 @@ async def save_local_model_preview_image_failure(
     request: Request,
 ):
     _require_session_auth(request)
+    resolved_model_dir = _resolve_model_route_key(model_dir)
     try:
         def _save_and_load_detail():
             result = save_local_model_generated_preview_failure(
-                model_dir,
+                resolved_model_dir,
                 message=payload.message,
                 status=payload.status,
                 source_instance_key=payload.source_instance_key,
                 source_file_name=payload.source_file_name,
             )
-            return result, get_model_detail(model_dir)
+            return result, get_model_detail(resolved_model_dir)
 
         result, detail = await run_task_api(_save_and_load_detail)
     except ValueError as exc:
@@ -4328,7 +4353,7 @@ async def save_local_model_preview_image_failure(
         "model",
         "local_model_preview_failed",
         "本地模型 Three.js 封面生成失败。",
-        model_dir=model_dir,
+        model_dir=resolved_model_dir,
         source_file_name=payload.source_file_name,
         status=payload.status,
         error=payload.message,
@@ -4680,6 +4705,64 @@ async def get_tasks_data():
         return build_tasks_payload(missing_fallback=fallback_items)
 
     return await run_ui_io(_tasks_payload)
+
+
+@router.get("/browser-verification/sessions")
+async def list_browser_verification_sessions(request: Request):
+    _require_session_auth(request)
+    sessions = await run_ui_io(browser_verification_store.list_sessions)
+    return {"items": sessions}
+
+
+@router.post("/browser-verification/sessions")
+async def create_browser_verification_session(payload: BrowserVerificationSessionRequest, request: Request):
+    _require_session_auth(request)
+    item = payload.model_dump()
+    return await run_task_api(browser_verification_store.create_session, item)
+
+
+@router.get("/browser-verification/sessions/{session_id}")
+async def get_browser_verification_session(session_id: str, request: Request):
+    _require_session_auth(request)
+    session = await run_ui_io(browser_verification_store.get_session, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="验证会话不存在。")
+    return session
+
+
+@router.post("/browser-verification/sessions/{session_id}/input")
+async def enqueue_browser_verification_input(
+    session_id: str,
+    payload: BrowserVerificationInputRequest,
+    request: Request,
+):
+    _require_session_auth(request)
+    command = await run_task_api(
+        browser_verification_store.enqueue_input,
+        session_id,
+        payload.model_dump(),
+    )
+    if not command:
+        raise HTTPException(status_code=404, detail="验证会话不存在或不可接收输入。")
+    return {"success": True, "command": command}
+
+
+@router.get("/browser-verification/sessions/{session_id}/screenshot")
+async def get_browser_verification_screenshot(session_id: str, request: Request):
+    _require_session_auth(request)
+    content, media_type = await run_ui_io(browser_verification_store.read_screenshot, session_id)
+    if not content:
+        return Response(status_code=204)
+    return Response(content=content, media_type=media_type)
+
+
+@router.post("/browser-verification/sessions/{session_id}/cancel")
+async def cancel_browser_verification_session(session_id: str, request: Request):
+    _require_session_auth(request)
+    session = await run_task_api(browser_verification_store.cancel_session, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="验证会话不存在。")
+    return session
 
 
 @router.post("/tasks/recent-failures/clear")

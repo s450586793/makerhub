@@ -65,15 +65,19 @@
           <component
             v-for="item in payload.system_status"
             :key="item.key || item.title"
-            :is="item.url ? 'a' : 'div'"
+            :is="needsBrowserVerification(item) ? 'button' : item.url ? 'a' : 'div'"
             :class="[
               'dashboard-hero__status',
               item.tone && `is-${item.tone}`,
-              item.url && 'dashboard-hero__status--link',
+              (item.url || needsBrowserVerification(item)) && 'dashboard-hero__status--link',
+              needsBrowserVerification(item) && 'dashboard-hero__status--button',
             ]"
-            :href="item.url || undefined"
-            :target="item.url ? '_blank' : undefined"
-            :rel="item.url ? 'noreferrer noopener' : undefined"
+            :type="needsBrowserVerification(item) ? 'button' : undefined"
+            :disabled="needsBrowserVerification(item) && verifyingPlatform === item.key ? true : undefined"
+            :href="!needsBrowserVerification(item) && item.url ? item.url : undefined"
+            :target="!needsBrowserVerification(item) && item.url ? '_blank' : undefined"
+            :rel="!needsBrowserVerification(item) && item.url ? 'noreferrer noopener' : undefined"
+            @click="needsBrowserVerification(item) ? startBrowserVerificationFromCard(item) : undefined"
           >
             <strong>{{ item.title }}</strong>
             <div class="dashboard-hero__status-line">
@@ -92,7 +96,13 @@
                 <strong>{{ check.status }}</strong>
               </span>
             </div>
-            <span v-if="item.url && item.action_label" class="dashboard-hero__status-action">{{ item.action_label }}</span>
+            <span
+              v-if="needsBrowserVerification(item)"
+              class="dashboard-hero__status-action dashboard-hero__status-action--button"
+            >
+              {{ verifyingPlatform === item.key ? "创建中..." : item.action_label }}
+            </span>
+            <span v-else-if="item.url && item.action_label" class="dashboard-hero__status-action">{{ item.action_label }}</span>
           </component>
         </div>
       </section>
@@ -282,13 +292,14 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { RouterLink } from "vue-router";
+import { RouterLink, useRouter } from "vue-router";
 
 import { apiRequest } from "../lib/api";
 import { formatServerDateTime } from "../lib/helpers";
 import { subscribeStateRefresh } from "../lib/stateEvents";
 
 
+const router = useRouter();
 const defaultAutomationOverview = {
   subscriptions: {
     count: 0,
@@ -326,6 +337,7 @@ const defaultAutomationOverview = {
 };
 
 const loading = ref(true);
+const verifyingPlatform = ref("");
 const dashboardLoadingStatusCards = [1, 2, 3];
 const dashboardLoadingStatCards = [1, 2, 3, 4];
 const dashboardLoadingMiniCards = [1, 2, 3, 4];
@@ -432,6 +444,68 @@ function handleVisibilityChange() {
 
 function formatDateTime(value, fallback = "未安排") {
   return formatServerDateTime(value, { fallback });
+}
+
+function needsBrowserVerification(item) {
+  if (!item || !item.key) {
+    return false;
+  }
+  const checks = Array.isArray(item.checks) ? item.checks : [];
+  return item.action_label === "去验证" && checks.some((check) => ["verification_required", "cloudflare", "auth_required"].includes(String(check?.state || "")));
+}
+
+function verificationItemForPlatform(platform) {
+  const items = payload.value?.task_summary?.missing_3mf || [];
+  return items.find((item) => String(item?.source || "").toLowerCase() === platform && needsMissingVerification(item))
+    || items.find((item) => platformFromModelUrl(item?.model_url) === platform && needsMissingVerification(item))
+    || null;
+}
+
+function needsMissingVerification(item) {
+  return ["verification_required", "cloudflare", "auth_required"].includes(String(item?.status || "").toLowerCase());
+}
+
+function platformFromModelUrl(value) {
+  const url = String(value || "");
+  if (url.includes("makerworld.com.cn")) {
+    return "cn";
+  }
+  if (url.includes("makerworld.com/") || url === "https://makerworld.com") {
+    return "global";
+  }
+  return "";
+}
+
+function platformOrigin(platform) {
+  return platform === "global" ? "https://makerworld.com" : "https://makerworld.com.cn";
+}
+
+async function startBrowserVerificationFromCard(item) {
+  const platform = String(item?.key || "cn").toLowerCase() === "global" ? "global" : "cn";
+  verifyingPlatform.value = platform;
+  const missingItem = verificationItemForPlatform(platform);
+  try {
+    const session = await apiRequest("/api/browser-verification/sessions", {
+      method: "POST",
+      body: {
+        model_id: missingItem?.model_id || "",
+        model_url: missingItem?.model_url || platformOrigin(platform),
+        title: missingItem?.title || item.title || "",
+        instance_id: missingItem?.instance_id || "",
+        api_url: missingItem?.api_url || "",
+        captcha_id: missingItem?.captcha_id || missingItem?.verification?.captcha_id || "",
+        source: platform,
+      },
+    });
+    if (!session?.id) {
+      throw new Error("验证会话创建失败。");
+    }
+    await router.push(`/browser-verification/${encodeURIComponent(session.id)}`);
+  } catch (error) {
+    console.error("创建浏览器验证会话失败", error);
+  } finally {
+    verifyingPlatform.value = "";
+  }
 }
 
 function subscriptionStatusLabel(item) {

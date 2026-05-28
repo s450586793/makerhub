@@ -20,12 +20,55 @@ ENV MAKERHUB_ARCHIVE_DIR=/app/data
 ENV MAKERHUB_LOCAL_DIR=/app/data/local
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends chromium curl libarchive-tools nodejs \
+    && apt-get install -y --no-install-recommends \
+        chromium \
+        curl \
+        libarchive-tools \
+        nodejs \
+        libnss3 \
+        libnspr4 \
+        libatk1.0-0 \
+        libatk-bridge2.0-0 \
+        libcups2 \
+        libdbus-1-3 \
+        libdrm2 \
+        libxkbcommon0 \
+        libatspi2.0-0 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxfixes3 \
+        libxrandr2 \
+        libgbm1 \
+        libpango-1.0-0 \
+        libcairo2 \
+        libasound2 \
+        libx11-xcb1 \
+        libfontconfig1 \
+        libx11-6 \
+        libxcb1 \
+        libxext6 \
+        libxshmfence1 \
+        libglib2.0-0 \
+        libgtk-3-0 \
+        libpangocairo-1.0-0 \
+        libcairo-gobject2 \
+        libgdk-pixbuf-2.0-0 \
+        libxss1 \
+        libxtst6 \
+        fonts-liberation \
+        fonts-noto-color-emoji \
+        fonts-unifont \
+        fonts-freefont-ttf \
+        fonts-ipafont-gothic \
+        fonts-wqy-zenhei \
+        fonts-tlwg-loma-otf \
+        xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 RUN scrapling install
+RUN python -c "from cloakbrowser import ensure_binary; ensure_binary()"
 RUN mkdir -p /app/config/config /app/config/logs /app/config/state /app/data /app/data/local
 
 COPY app ./app

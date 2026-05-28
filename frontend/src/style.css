@@ -190,6 +190,116 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   grid-template-columns: minmax(120px, 160px) minmax(160px, 1fr) minmax(260px, 1.5fr) auto;
 }
 
+.dashboard-hero__status--button {
+  appearance: none;
+  font: inherit;
+  text-align: left;
+}
+
+.dashboard-hero__status--button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.dashboard-hero__status-action--button {
+  width: fit-content;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.browser-verification-toolbar .intro-stat {
+  min-width: 92px;
+}
+
+.browser-verification-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.browser-verification-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.browser-verification-viewer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: 14px;
+  align-items: start;
+}
+
+.browser-verification-frame {
+  position: relative;
+  min-height: 360px;
+  aspect-ratio: 1365 / 768;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-strong);
+  outline: none;
+}
+
+.browser-verification-frame:focus {
+  border-color: color-mix(in srgb, var(--brand) 70%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 18%, transparent);
+}
+
+.browser-verification-screenshot {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  user-select: none;
+}
+
+.browser-verification-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: 6px;
+  padding: 20px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.browser-verification-empty strong {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.browser-verification-side {
+  display: grid;
+  gap: 8px;
+}
+
+.browser-verification-side__item {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  display: grid;
+  gap: 3px;
+  background: var(--surface-soft);
+}
+
+.browser-verification-side__item span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.browser-verification-side__item strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 13px;
+}
+
 html[data-theme="dark"] .mw-attachment-upload__file.mw-attachment-upload__drop.is-dragging {
   border-color: color-mix(in srgb, var(--brand) 66%, rgba(255, 255, 255, 0.22));
   background: color-mix(in srgb, var(--brand) 15%, rgba(17, 24, 39, 0.92));
@@ -5296,6 +5406,23 @@ select:focus {
 }
 
 @media (max-width: 720px) {
+  .browser-verification-viewer {
+    grid-template-columns: 1fr;
+  }
+
+  .browser-verification-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .browser-verification-actions .button {
+    flex: 1 1 auto;
+  }
+
+  .browser-verification-frame {
+    min-height: 220px;
+  }
+
   .library-toolbar {
     align-items: flex-start;
     flex-direction: column;

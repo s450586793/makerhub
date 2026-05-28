@@ -188,9 +188,28 @@ const deletedSourceTitle = computed(() => {
   return `源端已删除该模型：${items.map((item) => item.name || item.url || "未命名来源").join("、")}`;
 });
 
+const detailPath = computed(() => {
+  const explicit = String(props.model.detail_path || "").trim();
+  if (explicit) {
+    return explicit;
+  }
+  const modelId = String(props.model.id || "").replace(/\D+/g, "");
+  const source = String(props.model.source || "").trim().toLowerCase();
+  if (source === "cn" && modelId) {
+    return `/models/mwcn${modelId}`;
+  }
+  if (source === "global" && modelId) {
+    return `/models/mwg${modelId}`;
+  }
+  return "";
+});
+
 function handleCardClick() {
   if (props.selectMode) {
     emit("select", props.model.model_dir);
+    return;
+  }
+  if (!detailPath.value) {
     return;
   }
   primeModelDetailCache();
@@ -205,10 +224,7 @@ function handleCardClick() {
     query.return_context = props.returnContext;
   }
   router.push({
-    name: "model-detail",
-    params: {
-      modelDir: String(props.model.model_dir || ""),
-    },
+    path: detailPath.value,
     query,
   });
 }
@@ -218,7 +234,9 @@ function primeModelDetailCache() {
   if (!modelDir) {
     return;
   }
-  setPageCache(`${DETAIL_CACHE_PREFIX}${modelDir}`, {
+  const routeKey = detailPath.value.replace(/^\/models\//, "").trim();
+  const cacheKeys = new Set([modelDir, routeKey].filter(Boolean));
+  const payload = {
     detail: {
       ...props.model,
       gallery: props.model.cover_url
@@ -238,7 +256,10 @@ function primeModelDetailCache() {
       summary_html: "",
       summary_text: "",
     },
-  });
+  };
+  for (const cacheKey of cacheKeys) {
+    setPageCache(`${DETAIL_CACHE_PREFIX}${cacheKey}`, payload);
+  }
 }
 
 function onCoverError() {

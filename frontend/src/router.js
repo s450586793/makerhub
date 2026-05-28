@@ -5,6 +5,7 @@ import { appState, bootstrapApp } from "./lib/appState";
 
 
 const BODY_CLASSES = ["login-page", "detail-page", "detail-page--makerworld"];
+const BrowserVerificationPage = () => import("./pages/BrowserVerificationPage.vue");
 const DashboardPage = () => import("./pages/DashboardPage.vue");
 const DetailPreviewPage = () => import("./pages/DetailPreviewPage.vue");
 const LoginPage = () => import("./pages/LoginPage.vue");
@@ -121,6 +122,14 @@ const routes = [
         component: TasksPage,
         meta: {
           title: "任务 | makerhub",
+        },
+      },
+      {
+        path: "browser-verification/:sessionId",
+        name: "browser-verification",
+        component: BrowserVerificationPage,
+        meta: {
+          title: "3MF 验证 | makerhub",
         },
       },
       {

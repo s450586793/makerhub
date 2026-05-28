@@ -278,6 +278,26 @@ class Missing3mfCancelRequest(BaseModel):
     instance_id: str = ""
 
 
+class BrowserVerificationSessionRequest(BaseModel):
+    model_id: str = ""
+    model_url: str = ""
+    title: str = ""
+    instance_id: str = ""
+    api_url: str = ""
+    captcha_id: str = ""
+    source: str = "cn"
+
+
+class BrowserVerificationInputRequest(BaseModel):
+    type: Literal["click", "mousemove", "mousedown", "mouseup", "wheel", "key", "text"]
+    x: int = 0
+    y: int = 0
+    delta_x: int = 0
+    delta_y: int = 0
+    key: str = ""
+    text: str = ""
+
+
 class OrganizeTask(BaseModel):
     source_dir: str = str(LOCAL_DIR)
     target_dir: str = str(ARCHIVE_DIR)

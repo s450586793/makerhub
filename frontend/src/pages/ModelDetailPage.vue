@@ -1351,7 +1351,13 @@ const modelDir = computed(() => {
   }
   return decodeRouteValue(raw);
 });
-const shareDialogModelDirs = computed(() => (modelDir.value ? [modelDir.value] : []));
+const apiModelDir = computed(() => String(detail.value?.model_dir || modelDir.value || "").trim());
+const shareDialogModelDirs = computed(() => (apiModelDir.value ? [apiModelDir.value] : []));
+
+function isShortModelRouteKey(value) {
+  const raw = String(value || "").trim();
+  return /^mwcn\d+$/.test(raw) || /^mwg\d+$/.test(raw) || /^local\d+$/.test(raw);
+}
 
 function normalizeInternalReturnPath(value) {
   const raw = String(value || "").trim();
@@ -1644,7 +1650,7 @@ function bambuStudioOpenHref(downloadUrl, filename) {
 }
 
 const downloadAllHref = computed(() => {
-  const value = String(detail.value?.model_dir || modelDir.value || "").trim();
+  const value = apiModelDir.value;
   return value ? `/api/models/${encodeURIComponent(value)}/download-all` : "";
 });
 
@@ -2005,7 +2011,7 @@ async function openBambuStudio() {
   bambuStudioOpening.value = true;
   bambuStudioError.value = "";
   try {
-    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/bambu-studio-link`, {
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(apiModelDir.value)}/bambu-studio-link`, {
       method: "POST",
       body: {
         file_name: heroDownloadFilename.value,
@@ -3293,7 +3299,7 @@ async function submitLocalMetadata() {
   localEditBusy.value = true;
   resetLocalEditFeedback();
   try {
-    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/local/metadata`, {
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(apiModelDir.value)}/local/metadata`, {
       method: "PATCH",
       body: {
         title: localEditDialog.value.title,
@@ -3322,7 +3328,7 @@ async function uploadLocalEditFiles(endpoint, files, fallbackMessage) {
     formData.append("files", file);
   }
   try {
-    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/local/${endpoint}`, {
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(apiModelDir.value)}/local/${endpoint}`, {
       method: "POST",
       body: formData,
     });
@@ -3361,7 +3367,7 @@ async function deleteLocalModelFile(profile) {
   localEditBusy.value = true;
   resetLocalEditFeedback();
   try {
-    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/local/files`, {
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(apiModelDir.value)}/local/files`, {
       method: "DELETE",
       body: {
         instance_key: profile.instance_key,
@@ -3386,7 +3392,7 @@ async function deleteLocalModelImage(image) {
   localEditBusy.value = true;
   resetLocalEditFeedback();
   try {
-    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/local/images`, {
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(apiModelDir.value)}/local/images`, {
       method: "DELETE",
       body: {
         rel_path: image.rel_path,
@@ -3408,7 +3414,7 @@ async function setLocalModelCoverImage(image) {
   localEditBusy.value = true;
   resetLocalEditFeedback();
   try {
-    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/local/images/cover`, {
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(apiModelDir.value)}/local/images/cover`, {
       method: "PATCH",
       body: {
         rel_path: image.rel_path,
@@ -3519,9 +3525,9 @@ async function applyDetailPayload(payload, { syncHash = true, cache = true } = {
     setMainMedia("", preparedPayload?.cover_url || "", preparedPayload?.cover_remote_url || "", preparedPayload?.title || "");
   }
   if (cache && preparedPayload) {
-    setPageCache(detailCacheKey(preparedPayload.model_dir || modelDir.value), {
-      detail: preparedPayload,
-    });
+    const cachePayload = { detail: preparedPayload };
+    setPageCache(detailCacheKey(preparedPayload.model_dir || modelDir.value), cachePayload);
+    setPageCache(detailCacheKey(modelDir.value), cachePayload);
   }
   scheduleCommentsRender();
   await nextTick();
@@ -3562,7 +3568,7 @@ async function loadMoreComments() {
   commentsLoadError.value = "";
   try {
     const payload = await apiRequest(
-      `/api/models/${encodeURIComponent(modelDir.value)}/comments?offset=${commentsNextOffset.value}&limit=${INITIAL_COMMENT_BATCH}`,
+      `/api/models/${encodeURIComponent(apiModelDir.value)}/comments?offset=${commentsNextOffset.value}&limit=${INITIAL_COMMENT_BATCH}`,
     );
     rawComments.value = [...rawComments.value, ...(Array.isArray(payload.items) ? payload.items : [])];
     comments.value = prepareComments(rawComments.value);
@@ -3584,7 +3590,7 @@ async function submitSourceBackfill() {
   sourceBackfillMessage.value = "";
   sourceBackfillError.value = "";
   try {
-    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/source-backfill`, {
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(apiModelDir.value)}/source-backfill`, {
       method: "POST",
       body: {},
     });
@@ -3675,7 +3681,7 @@ async function submitAttachmentUpload() {
   }
 
   try {
-    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/attachments`, {
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(apiModelDir.value)}/attachments`, {
       method: "POST",
       body: formData,
     });
@@ -3713,7 +3719,7 @@ async function removeAttachment(attachment) {
   }
 
   try {
-    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}/attachments/${encodeURIComponent(attachment.id)}`, {
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(apiModelDir.value)}/attachments/${encodeURIComponent(attachment.id)}`, {
       method: "DELETE",
     });
     await applyDetailPayload(payload.detail);
@@ -3741,7 +3747,7 @@ async function load() {
     await applyDetailPayload(cached.detail, { cache: false });
   }
   try {
-    const payload = await apiRequest(`/api/models/${encodeURIComponent(modelDir.value)}`);
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(apiModelDir.value)}`);
     await applyDetailPayload(payload);
   } catch (error) {
     if (!hasCachedDetail) {
@@ -3758,6 +3764,12 @@ watch(modelDir, (value) => {
     resetDetailViewState();
     loading.value = false;
     errorMessage.value = "模型不存在。";
+    return;
+  }
+  if (!isShortModelRouteKey(value)) {
+    resetDetailViewState();
+    loading.value = false;
+    errorMessage.value = "模型短链接无效。";
     return;
   }
   load();
