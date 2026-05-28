@@ -117,6 +117,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
+import { buildModelDetailRoute, storeModelReturnState } from "../lib/modelNavigation";
 import { setPageCache } from "../lib/pageCache";
 
 
@@ -213,20 +214,22 @@ function handleCardClick() {
     return;
   }
   primeModelDetailCache();
-  const query = {};
-  if (props.returnTo) {
-    query.return_to = props.returnTo;
-  }
-  if (props.returnLabel) {
-    query.return_label = props.returnLabel;
-  }
-  if (props.returnContext) {
-    query.return_context = props.returnContext;
-  }
-  router.push({
-    path: detailPath.value,
-    query,
+  storeModelReturnState(browserSessionStorage(), detailPath.value, {
+    returnTo: props.returnTo,
+    returnContext: props.returnContext,
   });
+  const route = buildModelDetailRoute(detailPath.value, {
+    returnTo: props.returnTo,
+    returnLabel: props.returnLabel,
+    returnContext: props.returnContext,
+  });
+  if (route) {
+    router.push(route);
+  }
+}
+
+function browserSessionStorage() {
+  return typeof window === "undefined" ? null : window.sessionStorage;
 }
 
 function primeModelDetailCache() {

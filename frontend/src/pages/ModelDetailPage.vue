@@ -1102,11 +1102,17 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onErrorCaptured, onMounted, ref, shallowRef, watch } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 
 import ShareDialog from "../components/ShareDialog.vue";
 import { apiRequest } from "../lib/api";
 import { formatProfileRating } from "../lib/helpers";
+import {
+  getStoredModelReturnState,
+  inferModelReturnContext,
+  normalizeModelReturnContext,
+  storeModelReturnStateFromRoute,
+} from "../lib/modelNavigation";
 import { getPageCache, setPageCache } from "../lib/pageCache";
 import {
   buildInteractivePreviewScene,
@@ -1119,6 +1125,7 @@ import {
 
 
 const route = useRoute();
+const router = useRouter();
 
 function formatBytes(bytes) {
   const size = Number(bytes || 0);
@@ -1368,35 +1375,11 @@ function normalizeInternalReturnPath(value) {
 }
 
 function normalizeReturnContext(value) {
-  const raw = Array.isArray(value) ? value[0] : value;
-  const normalized = String(raw || "").trim();
-  return ["subscriptions", "organizer"].includes(normalized) ? normalized : "";
+  return normalizeModelReturnContext(value);
 }
 
 function returnContextFromPath(value) {
-  const raw = normalizeInternalReturnPath(value);
-  if (!raw) {
-    return "";
-  }
-  try {
-    const url = new URL(raw, "http://makerhub.local");
-    const explicit = normalizeReturnContext(url.searchParams.get("nav_context"));
-    if (explicit) {
-      return explicit;
-    }
-    if (url.pathname.startsWith("/models/state/")) {
-      return "organizer";
-    }
-    if (url.pathname.startsWith("/models/source/local/")) {
-      return "organizer";
-    }
-    if (url.pathname.startsWith("/models/source/")) {
-      return "subscriptions";
-    }
-  } catch {
-    return "";
-  }
-  return "";
+  return inferModelReturnContext(value);
 }
 
 function historyBackPath() {
@@ -1406,10 +1389,17 @@ function historyBackPath() {
   return normalizeInternalReturnPath(window.history?.state?.back || "");
 }
 
+function browserSessionStorage() {
+  return typeof window === "undefined" ? null : window.sessionStorage;
+}
+
 const detailBackContext = computed(() => {
   const returnTo = Array.isArray(route.query.return_to) ? route.query.return_to[0] : route.query.return_to;
+  const stored = getStoredModelReturnState(browserSessionStorage(), `/models/${modelDir.value}`);
   return normalizeReturnContext(route.query.return_context)
     || returnContextFromPath(returnTo)
+    || normalizeReturnContext(stored.returnContext)
+    || returnContextFromPath(stored.returnTo)
     || returnContextFromPath(historyBackPath());
 });
 const detailBackTarget = computed(() => {
@@ -1417,6 +1407,11 @@ const detailBackTarget = computed(() => {
   const normalizedReturnTo = normalizeInternalReturnPath(returnTo);
   if (normalizedReturnTo) {
     return normalizedReturnTo;
+  }
+  const stored = getStoredModelReturnState(browserSessionStorage(), `/models/${modelDir.value}`);
+  const normalizedStoredReturnTo = normalizeInternalReturnPath(stored.returnTo);
+  if (normalizedStoredReturnTo) {
+    return normalizedStoredReturnTo;
   }
   const normalizedHistoryBack = historyBackPath();
   if (normalizedHistoryBack) {
@@ -3759,6 +3754,14 @@ async function load() {
 }
 
 watch(modelDir, (value) => {
+  if (
+    value
+    && (route.query.return_to || route.query.return_label || route.query.return_context)
+    && typeof window !== "undefined"
+  ) {
+    storeModelReturnStateFromRoute(window.sessionStorage, `/models/${value}`, route.query);
+    router.replace({ path: route.path, hash: route.hash });
+  }
   resetAttachmentUploadState({ keepCategory: false });
   if (!value) {
     resetDetailViewState();

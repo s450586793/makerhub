@@ -87,6 +87,7 @@ import { RouterLink, RouterView, useRoute } from "vue-router";
 
 import UserMenu from "../components/UserMenu.vue";
 import { appState, currentUser, logoutSession, saveThemePreference } from "../lib/appState";
+import { getStoredModelReturnState, inferModelReturnContext, normalizeModelReturnContext } from "../lib/modelNavigation";
 
 
 const route = useRoute();
@@ -128,9 +129,14 @@ const githubVersionText = computed(() => {
   return "读取中";
 });
 const activeNavRoot = computed(() => {
+  const storedReturnState = route.path.startsWith("/models/")
+    ? getStoredModelReturnState(browserSessionStorage(), route.path)
+    : {};
   const explicit = normalizeNavContext(route.query.nav_context)
     || normalizeNavContext(route.query.return_context)
     || navContextFromReturnTo(route.query.return_to)
+    || normalizeNavContext(storedReturnState.returnContext)
+    || navContextFromReturnTo(storedReturnState.returnTo)
     || navContextFromHistoryBack();
   if (explicit) {
     return NAV_CONTEXT_ROOTS[explicit] || "";
@@ -161,34 +167,11 @@ function firstQueryValue(value) {
 }
 
 function normalizeNavContext(value) {
-  const normalized = String(firstQueryValue(value) || "").trim();
-  return Object.prototype.hasOwnProperty.call(NAV_CONTEXT_ROOTS, normalized) ? normalized : "";
+  return normalizeModelReturnContext(firstQueryValue(value));
 }
 
 function navContextFromReturnTo(value) {
-  const raw = String(firstQueryValue(value) || "").trim();
-  if (!raw || !raw.startsWith("/") || raw.startsWith("//")) {
-    return "";
-  }
-  try {
-    const url = new URL(raw, "http://makerhub.local");
-    const explicit = normalizeNavContext(url.searchParams.get("nav_context"));
-    if (explicit) {
-      return explicit;
-    }
-    if (url.pathname.startsWith("/models/state/")) {
-      return "organizer";
-    }
-    if (url.pathname.startsWith("/models/source/local/")) {
-      return "organizer";
-    }
-    if (url.pathname.startsWith("/models/source/")) {
-      return "subscriptions";
-    }
-  } catch {
-    return "";
-  }
-  return "";
+  return inferModelReturnContext(firstQueryValue(value));
 }
 
 function navContextFromHistoryBack() {
@@ -196,6 +179,10 @@ function navContextFromHistoryBack() {
     return "";
   }
   return navContextFromReturnTo(window.history?.state?.back || "");
+}
+
+function browserSessionStorage() {
+  return typeof window === "undefined" ? null : window.sessionStorage;
 }
 
 async function handleThemeChange(preference) {
