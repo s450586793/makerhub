@@ -214,7 +214,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 }
 
 .browser-verification-shell {
-  width: min(1120px, calc(100vw - 24px));
+  width: min(680px, calc(100vw - 24px));
   min-height: 100vh;
   min-height: 100dvh;
   margin: 0 auto;
@@ -273,7 +273,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 }
 
 .browser-verification-stats .intro-stat {
-  min-width: 92px;
+  min-width: 76px;
 }
 
 .browser-verification-panel {
@@ -296,15 +296,15 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 
 .browser-verification-viewer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 220px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   align-items: start;
 }
 
 .browser-verification-frame {
   position: relative;
-  min-height: 420px;
-  aspect-ratio: 1024 / 720;
+  min-height: 460px;
+  aspect-ratio: 520 / 640;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -321,7 +321,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   width: 100%;
   height: 100%;
   display: block;
-  object-fit: contain;
+  object-fit: fill;
   user-select: none;
 }
 
@@ -342,7 +342,7 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 }
 
 .browser-verification-side {
-  display: grid;
+  display: none;
   gap: 8px;
 }
 
@@ -5484,7 +5484,7 @@ select:focus {
 
 @media (max-width: 720px) {
   .browser-verification-shell {
-    width: min(100vw - 16px, 1120px);
+    width: min(100vw - 16px, 680px);
     padding: 8px 0;
   }
 
@@ -5516,7 +5516,7 @@ select:focus {
   }
 
   .browser-verification-frame {
-    min-height: 220px;
+    min-height: 360px;
   }
 
   .library-toolbar {

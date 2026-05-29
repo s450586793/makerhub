@@ -34,7 +34,7 @@ test("browser verification opens a focused lightweight popup", () => {
     {
       path: "about:blank",
       name: "makerhub-3mf-verification",
-      features: "popup=yes,width=1120,height=820,left=80,top=60",
+      features: "popup=yes,width=640,height=720,left=120,top=60",
     },
   ]);
   assert.equal(popup.location.href, "/browser-verification/bv_123");
@@ -70,7 +70,7 @@ test("browser verification can reserve popup before async session creation", () 
   assert.deepEqual(calls[0], {
     path: "about:blank",
     name: "makerhub-3mf-verification",
-    features: "popup=yes,width=1120,height=820,left=80,top=60",
+    features: "popup=yes,width=640,height=720,left=120,top=60",
   });
   assert.equal(popup.document.title, "3MF 验证 | makerhub");
 

@@ -1,4 +1,6 @@
 import unittest
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -343,6 +345,20 @@ class BrowserVerificationSessionTest(unittest.TestCase):
             "https://makerworld.com.cn/api/v1/design-service/instance/1063416/f3mf?type=download&fileType=",
         )
 
+    def test_verification_start_url_synthesizes_3mf_api_url_from_instance_id(self):
+        session = {
+            "platform": "global",
+            "target": {
+                "model_url": "https://makerworld.com/zh/models/802319",
+                "instance_id": "742440",
+            },
+        }
+
+        self.assertEqual(
+            browser_verification_module._verification_start_url(session),
+            "https://makerworld.com/api/v1/design-service/instance/742440/f3mf?type=download&fileType=",
+        )
+
     def test_verification_start_url_falls_back_to_model_page_without_3mf_api_url(self):
         session = {
             "platform": "cn",
@@ -423,6 +439,64 @@ class BrowserVerificationSessionTest(unittest.TestCase):
         launch_context.assert_called_once()
         self.assertEqual(fake_page.urls, ["https://makerworld.com.cn/zh/models/1063416"])
         self.assertTrue(any(change.get("status") == "running" for _session_id, change in updates))
+
+    def test_write_screenshot_crops_verification_box_and_exposes_offset_viewport(self):
+        updates = []
+        screenshot_calls = []
+        current = {"screenshot_version": 4}
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SimpleNamespace(
+                screenshot_path=lambda _session_id: Path(tmp) / "bv_crop.jpg",
+                get_session=lambda _session_id: dict(current),
+                update_session=lambda _session_id, **changes: updates.append(changes) or changes,
+            )
+            runtime = browser_verification_module.BrowserVerificationRuntime(store=store)
+            page = SimpleNamespace(screenshot=lambda **kwargs: screenshot_calls.append(kwargs))
+
+            with patch.object(
+                runtime,
+                "_verification_clip",
+                return_value={"x": 120, "y": 90, "width": 360, "height": 430},
+            ):
+                runtime._write_screenshot(page, "bv_crop")
+
+        self.assertEqual(
+            screenshot_calls[0]["clip"],
+            {"x": 120, "y": 90, "width": 360, "height": 430},
+        )
+        self.assertEqual(updates[0]["screenshot_version"], 5)
+        self.assertEqual(
+            updates[0]["viewport"],
+            {
+                "width": 360,
+                "height": 430,
+                "offset_x": 120,
+                "offset_y": 90,
+                "cropped": True,
+            },
+        )
+
+    def test_apply_input_offsets_coordinates_for_cropped_viewport(self):
+        clicks = []
+        page = SimpleNamespace(
+            mouse=SimpleNamespace(
+                click=lambda x, y: clicks.append((x, y)),
+                move=lambda *_args: None,
+                down=lambda: None,
+                up=lambda: None,
+                wheel=lambda *_args: None,
+            ),
+            keyboard=SimpleNamespace(press=lambda *_args: None, type=lambda *_args: None),
+        )
+        runtime = browser_verification_module.BrowserVerificationRuntime()
+
+        runtime._apply_input(
+            page,
+            {"type": "click", "x": 11, "y": 22},
+            {"viewport": {"offset_x": 120, "offset_y": 90}},
+        )
+
+        self.assertEqual(clicks, [(131, 112)])
 
 
 class BrowserVerificationWorkerTest(unittest.TestCase):

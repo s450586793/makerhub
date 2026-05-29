@@ -452,6 +452,11 @@ def _verification_start_url(session: dict[str, Any]) -> str:
     api_url = normalize_source_url(str(target.get("api_url") or ""))
     if api_url and "/f3mf" in urlparse(api_url).path:
         return api_url
+    instance_id = _safe_text(target.get("instance_id") or "", 120)
+    if instance_id:
+        platform = str(session.get("platform") or _platform_from_item(target) or "cn")
+        origin = _origin_for_platform(platform)
+        return f"{origin}/api/v1/design-service/instance/{instance_id}/f3mf?type=download&fileType="
     model_url = normalize_source_url(str(target.get("model_url") or ""))
     if model_url:
         return model_url
@@ -614,7 +619,7 @@ class BrowserVerificationRuntime:
                 if not current or current.get("status") in {"cancelled", "completed", "failed"}:
                     return
                 for command in self.store.consume_input_commands(session_id):
-                    self._apply_input(page, command)
+                    self._apply_input(page, command, current)
                 self._write_screenshot(page, session_id)
                 proof_id = captured_proof.get("id") or current.get("proof_id") or ""
                 if proof_id:
@@ -707,21 +712,100 @@ class BrowserVerificationRuntime:
         )
         time.sleep(0.2)
 
+    def _verification_clip(self, page: Any) -> dict[str, int]:
+        try:
+            raw_clip = page.evaluate(
+                """
+                () => {
+                  const selectors = [
+                    '.geetest_panel',
+                    '.geetest_box',
+                    '.geetest_popup_box',
+                    '.geetest_widget',
+                    '[class*="geetest"]',
+                    '[class*="captcha"]',
+                    '[id*="captcha"]',
+                    '[class*="verify"]'
+                  ];
+                  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1024;
+                  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 720;
+                  for (const selector of selectors) {
+                    for (const element of document.querySelectorAll(selector)) {
+                      const rect = element.getBoundingClientRect();
+                      const style = window.getComputedStyle(element);
+                      if (
+                        rect.width >= 180 &&
+                        rect.height >= 160 &&
+                        rect.right > 0 &&
+                        rect.bottom > 0 &&
+                        rect.left < viewportWidth &&
+                        rect.top < viewportHeight &&
+                        style.visibility !== 'hidden' &&
+                        style.display !== 'none' &&
+                        Number(style.opacity || '1') > 0.05
+                      ) {
+                        const pad = 24;
+                        const x = Math.max(0, Math.floor(rect.left - pad));
+                        const y = Math.max(0, Math.floor(rect.top - pad));
+                        const right = Math.min(viewportWidth, Math.ceil(rect.right + pad));
+                        const bottom = Math.min(viewportHeight, Math.ceil(rect.bottom + pad));
+                        return { x, y, width: right - x, height: bottom - y };
+                      }
+                    }
+                  }
+                  return null;
+                }
+                """
+            )
+        except Exception:
+            return {}
+        if not isinstance(raw_clip, dict):
+            return {}
+        try:
+            x = max(0, int(float(raw_clip.get("x") or 0)))
+            y = max(0, int(float(raw_clip.get("y") or 0)))
+            width = max(1, int(float(raw_clip.get("width") or 0)))
+            height = max(1, int(float(raw_clip.get("height") or 0)))
+        except (TypeError, ValueError):
+            return {}
+        return {"x": x, "y": y, "width": width, "height": height}
+
     def _write_screenshot(self, page: Any, session_id: str) -> None:
         path = self.store.screenshot_path(session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
+        clip = self._verification_clip(page)
+        screenshot_kwargs: dict[str, Any] = {
+            "path": str(path),
+            "type": "jpeg",
+            "quality": 82,
+            "timeout": 5000,
+        }
+        if clip:
+            screenshot_kwargs["clip"] = dict(clip)
         try:
-            page.screenshot(path=str(path), type="jpeg", quality=82, timeout=5000)
+            page.screenshot(**screenshot_kwargs)
         except Exception:
             return
         current = self.store.get_session(session_id)
         version = int(current.get("screenshot_version") or 0) + 1 if current else 1
-        self.store.update_session(session_id, screenshot_version=version, viewport=dict(BROWSER_VERIFICATION_DEFAULT_VIEWPORT))
+        viewport = (
+            {
+                "width": int(clip["width"]),
+                "height": int(clip["height"]),
+                "offset_x": int(clip["x"]),
+                "offset_y": int(clip["y"]),
+                "cropped": True,
+            }
+            if clip
+            else dict(BROWSER_VERIFICATION_DEFAULT_VIEWPORT)
+        )
+        self.store.update_session(session_id, screenshot_version=version, viewport=viewport)
 
-    def _apply_input(self, page: Any, command: dict[str, Any]) -> None:
+    def _apply_input(self, page: Any, command: dict[str, Any], session: Optional[dict[str, Any]] = None) -> None:
         command_type = str(command.get("type") or "")
-        x = int(command.get("x") or 0)
-        y = int(command.get("y") or 0)
+        viewport = session.get("viewport") if isinstance(session, dict) and isinstance(session.get("viewport"), dict) else {}
+        x = int(command.get("x") or 0) + int(viewport.get("offset_x") or 0)
+        y = int(command.get("y") or 0) + int(viewport.get("offset_y") or 0)
         if command_type == "click":
             page.mouse.click(x, y)
         elif command_type == "mousemove":
