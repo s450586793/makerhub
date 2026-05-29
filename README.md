@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.8.5`
+> 当前版本：`v0.8.6`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-05-29 · v0.8.6
+
+- 修复浏览器验证轻量弹窗直达 `/browser-verification/:sessionId` 时后端返回 404 JSON 的问题。
+- 后端 Web 路由现在会把验证弹窗地址交给前端 SPA，并对该路径禁用缓存，避免旧页面残留。
+- 增加登录态直达验证弹窗的回归测试。
+
 ### 2026-05-29 · v0.8.5
 
 - 3MF 浏览器验证页改为独立轻量窗口，不再嵌在主工作台侧边栏布局里。
@@ -220,15 +226,15 @@ uvicorn app.main:app --reload
 - 清理订阅库里历史遗留的 `@user_数字` 作者订阅错误项，避免这些源站 404 链接反复同步失败。
 - 增加浏览器验证 profile 复用、索引进度写入和历史订阅清理回归测试。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-05-29 · v0.8.3
 
 - 修复 Worker 在数据库索引/历史信息补全长任务中同步阻塞主循环，导致新建浏览器验证会话一直停在“等待 worker 打开验证浏览器”的问题。
 - 浏览器验证输入现在只在远程画面已运行时接收，避免排队态鼠标事件持续写入会话状态。
 - 新增 worker 接收浏览器验证会话的业务日志，后续线上排查可以直接区分“会话已创建”和“worker 已接管”。
 - 增加浏览器验证 worker 轮询、排队态输入保护和 profile backfill 异步执行回归测试。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-05-29 · v0.8.2
 

@@ -50,6 +50,7 @@ SPA_SHELL_PATHS = {
     "/tasks",
     "/logs",
     "/detail-preview",
+    "/browser-verification",
 }
 
 
@@ -71,6 +72,7 @@ def _apply_cache_headers(path: str, response):
         or path.startswith("/static/")
         or path in SPA_SHELL_PATHS
         or path.startswith("/models/")
+        or path.startswith("/browser-verification/")
     ):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         response.headers["Pragma"] = "no-cache"
