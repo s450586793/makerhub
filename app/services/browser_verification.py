@@ -30,7 +30,7 @@ BROWSER_VERIFICATION_SCREENSHOT_DIR = BROWSER_VERIFICATION_DIR / "screenshots"
 BROWSER_VERIFICATION_PROFILE_DIR = BROWSER_VERIFICATION_DIR / "profiles"
 BROWSER_VERIFICATION_INPUT_LIMIT = 100
 BROWSER_VERIFICATION_SESSION_LIMIT = 20
-BROWSER_VERIFICATION_DEFAULT_VIEWPORT = {"width": 1365, "height": 768}
+BROWSER_VERIFICATION_DEFAULT_VIEWPORT = {"width": 1024, "height": 720}
 VERIFICATION_RETRY_STATES = {"verification_required", "cloudflare", "auth_required"}
 BROWSER_VERIFICATION_ACTIVE_STATES = {"queued", "starting", "running", "verified", "retrying"}
 SENSITIVE_REQUEST_HEADER_KEYS = {
@@ -447,6 +447,14 @@ def _select_cookie_for_platform(config: Any, platform: str) -> str:
     return ""
 
 
+def _verification_start_url(session: dict[str, Any]) -> str:
+    target = session.get("target") if isinstance(session.get("target"), dict) else {}
+    api_url = normalize_source_url(str(target.get("api_url") or ""))
+    if api_url and "/f3mf" in urlparse(api_url).path:
+        return api_url
+    raise ValueError("缺少 3MF 下载接口，无法打开轻量验证页面。")
+
+
 @dataclass
 class BrowserVerificationRuntime:
     store: BrowserVerificationStore = browser_verification_store
@@ -543,6 +551,18 @@ class BrowserVerificationRuntime:
             )
             return
 
+        try:
+            start_url = _verification_start_url(session)
+        except ValueError as exc:
+            self.store.update_session(
+                session_id,
+                status="failed",
+                error=str(exc),
+                message="验证会话无法启动。",
+                finished_at=_now(),
+            )
+            return
+
         self._ensure_browser_dirs()
         self._ensure_virtual_display()
         context = None
@@ -577,8 +597,6 @@ class BrowserVerificationRuntime:
                     return
 
             page.on("request", _capture_request)
-            target = session.get("target") if isinstance(session.get("target"), dict) else {}
-            start_url = target.get("model_url") or _origin_for_platform(platform)
             self.store.update_session(session_id, status="running", message="验证浏览器已打开，请在画面中完成验证。")
             page.goto(start_url, wait_until="domcontentloaded", timeout=45000)
             deadline = time.time() + 15 * 60
@@ -600,7 +618,7 @@ class BrowserVerificationRuntime:
                         finished_at=_now(),
                     )
                     return
-                time.sleep(0.75)
+                time.sleep(1.5)
             self.store.update_session(
                 session_id,
                 status="expired",
@@ -627,7 +645,16 @@ class BrowserVerificationRuntime:
             "headless": False,
             "humanize": True,
             "viewport": dict(BROWSER_VERIFICATION_DEFAULT_VIEWPORT),
-            "args": ["--no-sandbox", "--disable-dev-shm-usage"],
+            "args": [
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-background-networking",
+                "--disable-background-timer-throttling",
+                "--disable-component-update",
+                "--disable-extensions",
+                "--disable-sync",
+                "--metrics-recording-only",
+            ],
         }
         if proxy:
             kwargs["proxy"] = proxy

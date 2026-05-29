@@ -286,6 +286,12 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { RouterLink, useRouter } from "vue-router";
 
 import { apiRequest } from "../lib/api";
+import {
+  browserVerificationPath,
+  closeBrowserVerificationWindow,
+  navigateBrowserVerificationWindow,
+  reserveBrowserVerificationWindow,
+} from "../lib/browserVerificationWindow";
 import { subscribeStateRefresh } from "../lib/stateEvents";
 import { encodeModelPath } from "../lib/helpers";
 
@@ -555,6 +561,7 @@ async function submitArchiveFromDialog(createSubscription) {
 
 async function startBrowserVerification(item) {
   pendingMissingActionKey.value = getMissingKey(item);
+  const reservedWindow = reserveBrowserVerificationWindow();
   try {
     const session = await apiRequest("/api/browser-verification/sessions", {
       method: "POST",
@@ -572,8 +579,11 @@ async function startBrowserVerification(item) {
       throw new Error("验证会话创建失败。");
     }
     missingStatus.value = "验证会话已创建。";
-    await router.push(`/browser-verification/${encodeURIComponent(session.id)}`);
+    if (!navigateBrowserVerificationWindow(reservedWindow, session.id)) {
+      await router.push(browserVerificationPath(session.id));
+    }
   } catch (error) {
+    closeBrowserVerificationWindow(reservedWindow);
     missingStatus.value = error instanceof Error ? error.message : "创建验证会话失败。";
   } finally {
     pendingMissingActionKey.value = "";

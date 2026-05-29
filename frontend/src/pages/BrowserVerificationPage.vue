@@ -1,99 +1,99 @@
 <template>
-  <section class="surface surface--filters page-intro app-page-toolbar browser-verification-toolbar">
-    <div class="app-page-toolbar__copy">
-      <span class="eyebrow">3MF 验证</span>
-      <div class="app-page-toolbar__title-row">
+  <main class="browser-verification-shell">
+    <section class="browser-verification-topbar">
+      <div class="browser-verification-topbar__copy">
+        <span class="eyebrow">3MF 验证</span>
         <h1>{{ titleText }}</h1>
+        <span class="browser-verification-target">{{ targetSubtitle }}</span>
       </div>
-    </div>
-    <div class="intro-stats app-page-toolbar__stats">
-      <div class="intro-stat">
-        <span>平台</span>
-        <strong>{{ platformLabel }}</strong>
+      <div class="browser-verification-stats">
+        <div class="intro-stat">
+          <span>平台</span>
+          <strong>{{ platformLabel }}</strong>
+        </div>
+        <div class="intro-stat">
+          <span>状态</span>
+          <strong>{{ statusText }}</strong>
+        </div>
+        <div class="intro-stat">
+          <span>截图</span>
+          <strong>{{ session?.screenshot_version || 0 }}</strong>
+        </div>
       </div>
-      <div class="intro-stat">
-        <span>状态</span>
-        <strong>{{ statusText }}</strong>
-      </div>
-      <div class="intro-stat">
-        <span>截图</span>
-        <strong>{{ session?.screenshot_version || 0 }}</strong>
-      </div>
-    </div>
-  </section>
+    </section>
 
-  <section class="surface section-card browser-verification-panel">
-    <div class="section-card__header section-card__header--compact">
-      <div>
-        <span class="eyebrow">{{ targetSubtitle }}</span>
-        <h2>{{ panelHeading }}</h2>
+    <section class="browser-verification-panel">
+      <div class="section-card__header section-card__header--compact">
+        <div>
+          <h2>{{ panelHeading }}</h2>
+        </div>
+        <div class="browser-verification-actions">
+          <RouterLink class="button button-secondary button-small" to="/tasks">返回任务</RouterLink>
+          <button class="button button-secondary button-small" type="button" :disabled="loading" @click="refreshNow">
+            刷新
+          </button>
+          <button
+            class="button button-danger button-small"
+            type="button"
+            :disabled="cancelling || isFinished"
+            @click="cancelSession"
+          >
+            {{ cancelling ? "取消中..." : "取消" }}
+          </button>
+        </div>
       </div>
-      <div class="browser-verification-actions">
-        <RouterLink class="button button-secondary button-small" to="/tasks">返回任务</RouterLink>
-        <button class="button button-secondary button-small" type="button" :disabled="loading" @click="refreshNow">
-          刷新
-        </button>
-        <button
-          class="button button-danger button-small"
-          type="button"
-          :disabled="cancelling || isFinished"
-          @click="cancelSession"
+
+      <span v-if="messageText" :class="['form-status', isError && 'is-error', isCompleted && 'is-success']">{{ messageText }}</span>
+
+      <div class="browser-verification-viewer">
+        <div
+          ref="viewerRef"
+          class="browser-verification-frame"
+          tabindex="0"
+          role="application"
+          @click="sendPointerCommand('click', $event)"
+          @mousemove="handleMouseMove"
+          @mousedown.prevent="sendPointerCommand('mousedown', $event)"
+          @mouseup.prevent="sendPointerCommand('mouseup', $event)"
+          @wheel.prevent="sendWheelCommand"
+          @keydown.prevent="sendKeyCommand"
+          @paste.prevent="sendPasteCommand"
         >
-          {{ cancelling ? "取消中..." : "取消" }}
-        </button>
+          <img
+            v-if="screenshotUrl"
+            class="browser-verification-screenshot"
+            :src="screenshotUrl"
+            alt=""
+            draggable="false"
+            @load="screenshotLoaded = true"
+            @error="screenshotLoaded = false"
+          >
+          <div v-if="!screenshotUrl || !screenshotLoaded" class="browser-verification-empty">
+            <strong>{{ emptyTitle }}</strong>
+            <span>{{ emptyMessage }}</span>
+          </div>
+        </div>
+        <aside class="browser-verification-side">
+          <div class="browser-verification-side__item">
+            <span>模型 ID</span>
+            <strong>{{ session?.target?.model_id || "-" }}</strong>
+          </div>
+          <div class="browser-verification-side__item">
+            <span>配置</span>
+            <strong>{{ session?.target?.instance_id || "-" }}</strong>
+          </div>
+          <div class="browser-verification-side__item">
+            <span>Captcha</span>
+            <strong>{{ session?.captcha_id || "-" }}</strong>
+          </div>
+          <div class="browser-verification-side__item">
+            <span>重试结果</span>
+            <strong>{{ retryResultText }}</strong>
+          </div>
+        </aside>
       </div>
-    </div>
-
-    <span v-if="messageText" :class="['form-status', isError && 'is-error', isCompleted && 'is-success']">{{ messageText }}</span>
-
-    <div class="browser-verification-viewer">
-      <div
-        ref="viewerRef"
-        class="browser-verification-frame"
-        tabindex="0"
-        role="application"
-        @click="sendPointerCommand('click', $event)"
-        @mousemove="handleMouseMove"
-        @mousedown.prevent="sendPointerCommand('mousedown', $event)"
-        @mouseup.prevent="sendPointerCommand('mouseup', $event)"
-        @wheel.prevent="sendWheelCommand"
-        @keydown.prevent="sendKeyCommand"
-        @paste.prevent="sendPasteCommand"
-      >
-        <img
-          v-if="screenshotUrl"
-          class="browser-verification-screenshot"
-          :src="screenshotUrl"
-          alt=""
-          draggable="false"
-          @load="screenshotLoaded = true"
-          @error="screenshotLoaded = false"
-        >
-        <div v-if="!screenshotUrl || !screenshotLoaded" class="browser-verification-empty">
-          <strong>{{ emptyTitle }}</strong>
-          <span>{{ emptyMessage }}</span>
-        </div>
-      </div>
-      <aside class="browser-verification-side">
-        <div class="browser-verification-side__item">
-          <span>模型 ID</span>
-          <strong>{{ session?.target?.model_id || "-" }}</strong>
-        </div>
-        <div class="browser-verification-side__item">
-          <span>配置</span>
-          <strong>{{ session?.target?.instance_id || "-" }}</strong>
-        </div>
-        <div class="browser-verification-side__item">
-          <span>Captcha</span>
-          <strong>{{ session?.captcha_id || "-" }}</strong>
-        </div>
-        <div class="browser-verification-side__item">
-          <span>重试结果</span>
-          <strong>{{ retryResultText }}</strong>
-        </div>
-      </aside>
-    </div>
-  </section>
+    </section>
+  </main>
 </template>
 
 <script setup>

@@ -329,6 +329,59 @@ class BrowserVerificationSessionTest(unittest.TestCase):
         self.assertEqual(retry_calls[0]["primary"], {})
         self.assertEqual(retry_calls[0]["proof_id"], "proof-1")
 
+    def test_verification_start_url_prefers_3mf_api_url(self):
+        session = {
+            "platform": "cn",
+            "target": {
+                "model_url": "https://makerworld.com.cn/zh/models/1063416",
+                "api_url": "https://makerworld.com.cn/api/v1/design-service/instance/1063416/f3mf?type=download&fileType=",
+            },
+        }
+
+        self.assertEqual(
+            browser_verification_module._verification_start_url(session),
+            "https://makerworld.com.cn/api/v1/design-service/instance/1063416/f3mf?type=download&fileType=",
+        )
+
+    def test_verification_start_url_requires_3mf_api_url(self):
+        session = {
+            "platform": "cn",
+            "target": {
+                "model_url": "https://makerworld.com.cn/zh/models/1063416",
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "缺少 3MF 下载接口"):
+            browser_verification_module._verification_start_url(session)
+
+    def test_run_session_fails_without_3mf_api_url_before_launching_browser(self):
+        session = {
+            "id": "bv_no_api",
+            "status": "queued",
+            "platform": "cn",
+            "target": {"model_url": "https://makerworld.com.cn/zh/models/1063416"},
+        }
+        updates = []
+        store = SimpleNamespace(
+            get_session=lambda _session_id: session,
+            update_session=lambda session_id, **changes: updates.append((session_id, changes)) or {**session, **changes},
+        )
+        runtime = browser_verification_module.BrowserVerificationRuntime(
+            store=store,
+            json_store=SimpleNamespace(
+                load=lambda: SimpleNamespace(cookies=[SimpleNamespace(platform="cn", cookie="token=ok")], proxy=SimpleNamespace())
+            ),
+        )
+
+        with patch.object(runtime, "_launch_context") as launch_context, \
+                patch.object(runtime, "_ensure_virtual_display") as ensure_display:
+            runtime._run_session("bv_no_api")
+
+        launch_context.assert_not_called()
+        ensure_display.assert_not_called()
+        self.assertTrue(any(change.get("status") == "failed" for _session_id, change in updates))
+        self.assertTrue(any("缺少 3MF 下载接口" in change.get("error", "") for _session_id, change in updates))
+
 
 class BrowserVerificationWorkerTest(unittest.TestCase):
     def test_runtime_logs_when_worker_accepts_browser_verification_session(self):
