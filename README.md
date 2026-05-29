@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.8.4`
+> 当前版本：`v0.8.5`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,13 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-05-29 · v0.8.5
+
+- 3MF 浏览器验证页改为独立轻量窗口，不再嵌在主工作台侧边栏布局里。
+- 首页和归档任务入口会优先打开验证专用弹窗；弹窗被拦截时才回退到当前页跳转。
+- Worker 打开验证时优先进入缺失项的 `/f3mf` 下载接口，不再加载完整模型详情页；缺少接口地址时会直接报错，不启动浏览器。
+- 降低验证浏览器 viewport 和截图刷新频率，并增加轻量 Chromium 启动参数，减少验证任务占用。
+
 ### 2026-05-29 · v0.8.4
 
 - 修复浏览器验证会话复用同一 Chromium profile 时可能互相阻塞的问题，同平台已有验证窗口时会复用当前会话。
@@ -220,15 +227,15 @@ uvicorn app.main:app --reload
 - 新增 worker 接收浏览器验证会话的业务日志，后续线上排查可以直接区分“会话已创建”和“worker 已接管”。
 - 增加浏览器验证 worker 轮询、排队态输入保护和 profile backfill 异步执行回归测试。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-05-29 · v0.8.2
 
 - 修复线上账号关注作者自动导入订阅时保留 MakerWorld `/en/` 作者页链接的问题，统一保存为 `/zh/@作者/upload`。
 - 修复从 MakerWorld 分享入口导入的作者订阅保留 `appSharePlatform=copy` 等分享参数的问题，订阅库显示和访问使用干净短链接。
 - 已保存的旧作者订阅链接会在订阅列表/状态初始化时自动写回规范化地址，不需要手动删除重建。
 - 增加 URL 规范化、关注作者自动导入和旧订阅自修回归测试。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-05-28 · v0.8.1
 
