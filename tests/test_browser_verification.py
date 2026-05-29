@@ -343,7 +343,7 @@ class BrowserVerificationSessionTest(unittest.TestCase):
             "https://makerworld.com.cn/api/v1/design-service/instance/1063416/f3mf?type=download&fileType=",
         )
 
-    def test_verification_start_url_requires_3mf_api_url(self):
+    def test_verification_start_url_falls_back_to_model_page_without_3mf_api_url(self):
         session = {
             "platform": "cn",
             "target": {
@@ -351,10 +351,12 @@ class BrowserVerificationSessionTest(unittest.TestCase):
             },
         }
 
-        with self.assertRaisesRegex(ValueError, "缺少 3MF 下载接口"):
-            browser_verification_module._verification_start_url(session)
+        self.assertEqual(
+            browser_verification_module._verification_start_url(session),
+            "https://makerworld.com.cn/zh/models/1063416",
+        )
 
-    def test_run_session_fails_without_3mf_api_url_before_launching_browser(self):
+    def test_run_session_opens_model_page_without_3mf_api_url(self):
         session = {
             "id": "bv_no_api",
             "status": "queued",
@@ -362,9 +364,46 @@ class BrowserVerificationSessionTest(unittest.TestCase):
             "target": {"model_url": "https://makerworld.com.cn/zh/models/1063416"},
         }
         updates = []
+        current_session = dict(session)
+
+        def get_session(_session_id):
+            return dict(current_session)
+
+        def update_session(session_id, **changes):
+            current_session.update(changes)
+            updates.append((session_id, dict(changes)))
+            return dict(current_session)
+
+        class FakePage:
+            def __init__(self):
+                self.urls = []
+                self.mouse = SimpleNamespace(click=lambda *_args, **_kwargs: None, move=lambda *_args, **_kwargs: None, down=lambda: None, up=lambda: None, wheel=lambda *_args, **_kwargs: None)
+                self.keyboard = SimpleNamespace(press=lambda *_args, **_kwargs: None, type=lambda *_args, **_kwargs: None)
+
+            def set_viewport_size(self, _viewport):
+                pass
+
+            def on(self, _event, _callback):
+                pass
+
+            def goto(self, url, **_kwargs):
+                self.urls.append(url)
+                current_session["status"] = "cancelled"
+
+            def screenshot(self, **_kwargs):
+                pass
+
+        fake_page = FakePage()
+        context = SimpleNamespace(
+            pages=[fake_page],
+            add_cookies=lambda _cookies: None,
+            close=lambda: None,
+        )
         store = SimpleNamespace(
-            get_session=lambda _session_id: session,
-            update_session=lambda session_id, **changes: updates.append((session_id, changes)) or {**session, **changes},
+            get_session=get_session,
+            update_session=update_session,
+            consume_input_commands=lambda _session_id: [],
+            screenshot_path=lambda _session_id: browser_verification_module.BROWSER_VERIFICATION_SCREENSHOT_DIR / "unit-test.jpg",
         )
         runtime = browser_verification_module.BrowserVerificationRuntime(
             store=store,
@@ -373,14 +412,17 @@ class BrowserVerificationSessionTest(unittest.TestCase):
             ),
         )
 
-        with patch.object(runtime, "_launch_context") as launch_context, \
-                patch.object(runtime, "_ensure_virtual_display") as ensure_display:
+        with patch.object(runtime, "_launch_context", return_value=context) as launch_context, \
+                patch.object(runtime, "_ensure_virtual_display") as ensure_display, \
+                patch.object(runtime, "_ensure_browser_dirs") as ensure_dirs, \
+                patch.object(browser_verification_module.time, "sleep", return_value=None):
             runtime._run_session("bv_no_api")
 
-        launch_context.assert_not_called()
-        ensure_display.assert_not_called()
-        self.assertTrue(any(change.get("status") == "failed" for _session_id, change in updates))
-        self.assertTrue(any("缺少 3MF 下载接口" in change.get("error", "") for _session_id, change in updates))
+        ensure_dirs.assert_called_once()
+        ensure_display.assert_called_once()
+        launch_context.assert_called_once()
+        self.assertEqual(fake_page.urls, ["https://makerworld.com.cn/zh/models/1063416"])
+        self.assertTrue(any(change.get("status") == "running" for _session_id, change in updates))
 
 
 class BrowserVerificationWorkerTest(unittest.TestCase):

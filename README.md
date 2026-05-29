@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.8.6`
+> 当前版本：`v0.8.7`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-05-29 · v0.8.7
+
+- 修复历史缺失 3MF 记录没有 `/f3mf` 接口时浏览器验证直接失败的问题；现在会回退打开 MakerWorld 模型页，引导点击下载 3MF 后完成验证。
+- 保留已有 `/f3mf` 接口的轻量直达验证路径，避免影响新缺失项的快速验证流程。
+- 增加无接口 fallback 打开模型页的回归测试。
+
 ### 2026-05-29 · v0.8.6
 
 - 修复浏览器验证轻量弹窗直达 `/browser-verification/:sessionId` 时后端返回 404 JSON 的问题。
@@ -219,15 +225,15 @@ uvicorn app.main:app --reload
 - Worker 打开验证时优先进入缺失项的 `/f3mf` 下载接口，不再加载完整模型详情页；缺少接口地址时会直接报错，不启动浏览器。
 - 降低验证浏览器 viewport 和截图刷新频率，并增加轻量 Chromium 启动参数，减少验证任务占用。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-05-29 · v0.8.4
 
 - 修复浏览器验证会话复用同一 Chromium profile 时可能互相阻塞的问题，同平台已有验证窗口时会复用当前会话。
 - 修复数据库索引重建进入历史迁移阶段时设置页长期显示 `索引中 0/0` 的问题，索引任务会先写入可见进度。
 - 清理订阅库里历史遗留的 `@user_数字` 作者订阅错误项，避免这些源站 404 链接反复同步失败。
 - 增加浏览器验证 profile 复用、索引进度写入和历史订阅清理回归测试。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-05-29 · v0.8.3
 

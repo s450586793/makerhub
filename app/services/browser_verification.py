@@ -452,7 +452,11 @@ def _verification_start_url(session: dict[str, Any]) -> str:
     api_url = normalize_source_url(str(target.get("api_url") or ""))
     if api_url and "/f3mf" in urlparse(api_url).path:
         return api_url
-    raise ValueError("缺少 3MF 下载接口，无法打开轻量验证页面。")
+    model_url = normalize_source_url(str(target.get("model_url") or ""))
+    if model_url:
+        return model_url
+    platform = str(session.get("platform") or "cn")
+    return _origin_for_platform(platform)
 
 
 @dataclass
@@ -597,7 +601,12 @@ class BrowserVerificationRuntime:
                     return
 
             page.on("request", _capture_request)
-            self.store.update_session(session_id, status="running", message="验证浏览器已打开，请在画面中完成验证。")
+            running_message = (
+                "验证浏览器已打开，请在画面中点击下载 3MF 并完成验证。"
+                if "/f3mf" not in urlparse(start_url).path
+                else "验证浏览器已打开，请在画面中完成验证。"
+            )
+            self.store.update_session(session_id, status="running", message=running_message)
             page.goto(start_url, wait_until="domcontentloaded", timeout=45000)
             deadline = time.time() + 15 * 60
             while time.time() < deadline:
