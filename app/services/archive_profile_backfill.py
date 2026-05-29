@@ -318,6 +318,17 @@ def _count_archive_meta_files(archive_root: Path = ARCHIVE_DIR) -> int:
     return sum(1 for path in archive_root.rglob("meta.json") if path.is_file())
 
 
+def _write_database_index_progress(result: dict[str, Any]) -> None:
+    write_profile_backfill_status(
+        {
+            "running": True,
+            "phase": "database_migration",
+            "last_error": "",
+            "last_result": {"database_index": dict(result)},
+        }
+    )
+
+
 def rebuild_archive_model_database_index(
     *,
     archive_root: Path = ARCHIVE_DIR,
@@ -335,42 +346,45 @@ def rebuild_archive_model_database_index(
             "items": [],
         }
 
-    json_state_result = migrate_json_files_to_database(force=force)
-    log_state_result = migrate_log_files_to_database()
+    if not force and archive_model_index_is_bootstrapped(archive_root=archive_root):
+        return {
+            "available": True,
+            "skipped": True,
+            "forced": False,
+            "json_state": {},
+            "log_state": {},
+            "reason": "数据库索引已迁移完成。",
+            "total": _count_archive_meta_files(archive_root=archive_root),
+            "processed": 0,
+            "updated": 0,
+            "failed": 0,
+            "items": [],
+            "status": archive_model_index_status(archive_root=archive_root),
+        }
+
     total = _count_archive_meta_files(archive_root=archive_root)
     result: dict[str, Any] = {
         "available": True,
         "skipped": False,
         "forced": bool(force),
-        "json_state": json_state_result,
-        "log_state": log_state_result,
+        "json_state": {},
+        "log_state": {},
         "total": total,
         "processed": 0,
         "updated": 0,
         "failed": 0,
         "items": [],
     }
+    _write_database_index_progress(result)
+
+    result["json_state"] = migrate_json_files_to_database(force=force)
+    _write_database_index_progress(result)
+    result["log_state"] = migrate_log_files_to_database()
+    _write_database_index_progress(result)
+
     if force:
         clear_archive_model_index_bootstrap_marker()
         truncate_archive_model_index()
-    elif archive_model_index_is_bootstrapped(archive_root=archive_root):
-        result.update(
-            {
-                "skipped": True,
-                "reason": "数据库索引已迁移完成。",
-                "status": archive_model_index_status(archive_root=archive_root),
-            }
-        )
-        return result
-
-    write_profile_backfill_status(
-        {
-            "running": True,
-            "phase": "database_migration",
-            "last_error": "",
-            "last_result": {"database_index": result},
-        }
-    )
 
     for meta_path in sorted(archive_root.rglob("meta.json")):
         if not meta_path.is_file():
@@ -396,13 +410,7 @@ def rebuild_archive_model_database_index(
         finally:
             result["processed"] += 1
             if result["processed"] == total or result["processed"] % 25 == 0:
-                write_profile_backfill_status(
-                    {
-                        "running": True,
-                        "phase": "database_migration",
-                        "last_result": {"database_index": dict(result)},
-                    }
-                )
+                _write_database_index_progress(result)
 
     duration = time.monotonic() - started
     if result["failed"] == 0:

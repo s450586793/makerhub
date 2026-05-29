@@ -357,6 +357,8 @@ class ArchiveModelIndexTest(unittest.TestCase):
             archive_model_index.mark_archive_model_index_bootstrapped(archive_root=archive_root, processed_count=1)
 
             with patch.object(archive_profile_backfill, "write_profile_backfill_status"), \
+                patch.object(archive_profile_backfill, "migrate_json_files_to_database", side_effect=AssertionError("state migration should not run when database index is already bootstrapped")), \
+                patch.object(archive_profile_backfill, "migrate_log_files_to_database", side_effect=AssertionError("log migration should not run when database index is already bootstrapped")), \
                 patch.object(archive_profile_backfill, "invalidate_archive_snapshot"), \
                 patch.object(archive_profile_backfill, "append_business_log"), \
                 patch.object(catalog, "ARCHIVE_DIR", archive_root), \
@@ -401,6 +403,49 @@ class ArchiveModelIndexTest(unittest.TestCase):
             self.assertEqual(database_result["processed"], 1)
             self.assertEqual(database_result["updated"], 1)
             self.assertTrue(archive_model_index.archive_model_index_is_bootstrapped(archive_root=archive_root))
+
+    def test_database_rebuild_publishes_progress_before_state_migrations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_root = Path(tmp).resolve()
+            _write_meta(archive_root, "LOCAL_Demo", "Demo")
+
+            status_state = {}
+
+            def load_status(_key, default):
+                return dict(status_state or default)
+
+            def save_status(_key, payload):
+                status_state.clear()
+                status_state.update(payload)
+                return payload
+
+            def assert_progress_is_visible():
+                database_index = status_state.get("last_result", {}).get("database_index", {})
+                self.assertEqual(database_index.get("total"), 1)
+                self.assertEqual(database_index.get("processed"), 0)
+
+            def migrate_json_after_progress_is_visible(*, force=False):
+                assert_progress_is_visible()
+                status_state.clear()
+                status_state.update({"running": True, "phase": "database_migration", "last_result": {}})
+                return {"available": True, "processed": 0, "updated": 0, "failed": 0, "forced": bool(force)}
+
+            def migrate_logs_after_progress_is_visible():
+                assert_progress_is_visible()
+                return {"available": True, "processed_files": 0, "processed_lines": 0, "updated": 0, "failed": 0}
+
+            with patch.object(archive_profile_backfill, "load_database_json_state", side_effect=load_status), \
+                patch.object(archive_profile_backfill, "save_database_json_state", side_effect=save_status), \
+                patch.object(archive_profile_backfill, "migrate_json_files_to_database", side_effect=migrate_json_after_progress_is_visible), \
+                patch.object(archive_profile_backfill, "migrate_log_files_to_database", side_effect=migrate_logs_after_progress_is_visible), \
+                patch.object(archive_profile_backfill, "append_business_log"), \
+                patch.object(archive_profile_backfill, "invalidate_archive_snapshot"), \
+                patch.object(catalog, "ARCHIVE_DIR", archive_root), \
+                patch.object(archive_profile_backfill, "ARCHIVE_DIR", archive_root):
+                archive_profile_backfill.rebuild_archive_model_database_index(
+                    archive_root=archive_root,
+                    force=True,
+                )
 
     def test_queue_profile_backfill_database_only_skips_profile_scan(self):
         with tempfile.TemporaryDirectory() as tmp:
