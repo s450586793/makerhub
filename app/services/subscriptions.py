@@ -321,6 +321,16 @@ def _source_url_has_synthetic_user_handle(url: str) -> bool:
     return any(part.startswith("@") and _is_synthetic_user_handle(part[1:]) for part in parsed.path.split("/"))
 
 
+def _is_legacy_error_synthetic_user_subscription(record: SubscriptionRecord, state: dict[str, Any], platform: str) -> bool:
+    if str(record.mode or "").strip() != "author_upload":
+        return False
+    if _platform_for_url(record.url) != platform:
+        return False
+    if not _source_url_has_synthetic_user_handle(record.url):
+        return False
+    return str((state or {}).get("status") or "").strip() == "error"
+
+
 def _subscription_identity_key(record: SubscriptionRecord) -> tuple[str, str]:
     return (str(record.mode or "").strip(), _subscription_identity_url(record.url, record.mode))
 
@@ -1064,18 +1074,25 @@ class SubscriptionManager:
             if isinstance(item, dict) and _source_url_has_synthetic_user_handle(str(item.get("url") or ""))
         )
         stale_urls = {url for url in stale_urls if url}
-        if not stale_urls:
-            return 0, []
 
         config = self.store.load()
+        state_payload = self.task_store.load_subscriptions_state()
+        state_map = {
+            str(item.get("id") or ""): item
+            for item in state_payload.get("items") or []
+            if isinstance(item, dict)
+        }
         removed_ids: list[str] = []
         kept_records: list[SubscriptionRecord] = []
         for record in config.subscriptions:
             identity_url = _subscription_identity_url(record.url, record.mode)
             if (
-                record.mode == "author_upload"
-                and _platform_for_url(record.url) == platform
-                and identity_url in stale_urls
+                (
+                    record.mode == "author_upload"
+                    and _platform_for_url(record.url) == platform
+                    and identity_url in stale_urls
+                )
+                or _is_legacy_error_synthetic_user_subscription(record, state_map.get(record.id) or {}, platform)
             ):
                 removed_ids.append(record.id)
                 continue

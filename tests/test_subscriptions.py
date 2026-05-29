@@ -831,6 +831,76 @@ class SubscriptionManagerTest(unittest.TestCase):
         )
         self.assertEqual(state_ids, ["sub-good-account-author", "sub-manual-bad"])
 
+    def test_sync_cookie_sources_removes_legacy_error_synthetic_user_author_subscriptions(self):
+        config = self.store.load()
+        config.cookies = [CookiePair(platform="global", cookie="token=ok")]
+        config.subscriptions = [
+            SubscriptionRecord(
+                id="sub-legacy-bad",
+                name="旧错误作者订阅",
+                url="https://makerworld.com/zh/@user_2595475119/upload",
+                mode="author_upload",
+                cron="0 * * * *",
+                enabled=True,
+            ),
+            SubscriptionRecord(
+                id="sub-manual-bad",
+                name="未失败的手工作者订阅",
+                url="https://makerworld.com/zh/@user_999/upload",
+                mode="author_upload",
+                cron="0 * * * *",
+                enabled=True,
+            ),
+            SubscriptionRecord(
+                id="sub-good-author",
+                name="真实作者订阅",
+                url="https://makerworld.com/zh/@RealMaker/upload",
+                mode="author_upload",
+                cron="0 * * * *",
+                enabled=True,
+            ),
+        ]
+        self.store.save(config)
+        self.task_store.patch_subscription_state(
+            "sub-legacy-bad",
+            status="error",
+            last_message="未能在页面中识别模型链接，请确认链接与 Cookie 是否有效。",
+        )
+        self.task_store.patch_subscription_state("sub-manual-bad", status="idle")
+        self.task_store.patch_subscription_state("sub-good-author", status="error")
+        subscriptions._write_cookie_source_inventory_state(
+            {
+                "platforms": {
+                    "global": {
+                        "imported_sources": [],
+                        "source_urls": [],
+                        "followed_authors": [],
+                    }
+                },
+                "updated_at": "2026-05-29T00:00:00+08:00",
+            }
+        )
+
+        with patch.object(subscriptions, "discover_cookie_account_profile", return_value={"uid": "1", "handle": "owner", "name": "Owner"}), \
+                patch.object(subscriptions, "discover_cookie_account_home_summary", return_value={"uid": "1", "handle": "owner", "name": "Owner"}), \
+                patch.object(subscriptions, "default_favorites_subscription_source", return_value={}), \
+                patch.object(subscriptions, "discover_cookie_followed_authors_from_page", return_value={"items": [], "count": 0, "total": 0}), \
+                patch.object(subscriptions, "discover_cookie_followed_authors", return_value={"items": [], "count": 0, "total": 0}), \
+                patch.object(subscriptions, "discover_cookie_followed_collections", return_value={"items": [], "count": 0}):
+            result = self.manager.sync_cookie_sources({"global"}, reason="scheduled")
+
+        config = self.store.load()
+        state_ids = [item["id"] for item in self.task_store.load_subscriptions_state().get("items") or []]
+        platform_result = result["platforms"][0]
+
+        self.assertEqual(platform_result["removed_invalid_count"], 1)
+        self.assertEqual(platform_result["removed_invalid_subscription_ids"], ["sub-legacy-bad"])
+        self.assertEqual(
+            [item.id for item in config.subscriptions],
+            ["sub-manual-bad", "sub-good-author"],
+        )
+        self.assertEqual(state_ids, ["sub-manual-bad", "sub-good-author"])
+
     def test_maybe_sync_cookie_sources_consumes_requested_platform(self):
         config = self.store.load()
         config.cookies = [CookiePair(platform="cn", cookie="token=ok")]
