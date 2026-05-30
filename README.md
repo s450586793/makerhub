@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.8.9`
+> 当前版本：`v0.8.10`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-05-30 · v0.8.10
+
+- 修复浏览器验证旧 `/f3mf` 入口可能打开 `makerworld.com/api/...` 后直接返回 403 JSON 的问题；现在会优先改用对应区域的 `api.bambulab.*` 3MF 下载接口。
+- 验证浏览器会同时注入 MakerWorld 站点域和 Bambu API 域 Cookie，并补齐 token 请求头，减少直连 API 验证时的权限失败。
+- 验证页移除模型标题、平台、状态、截图数、模型 ID 等元信息，只保留远程验证画面和必要操作按钮。
+
 ### 2026-05-29 · v0.8.9
 
 - 浏览器验证弹窗改为紧凑窗口，验证页只展示主要验证画面，不再铺满整张 MakerWorld 页面。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - 保留完全缺少配置 ID 的模型页 fallback，避免历史异常数据无法打开验证浏览器。
 - 增加配置 ID 合成 3MF 下载接口的回归测试。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-05-29 · v0.8.7
 
 - 修复历史缺失 3MF 记录没有 `/f3mf` 接口时浏览器验证直接失败的问题；现在会回退打开 MakerWorld 模型页，引导点击下载 3MF 后完成验证。
 - 保留已有 `/f3mf` 接口的轻量直达验证路径，避免影响新缺失项的快速验证流程。
 - 增加无接口 fallback 打开模型页的回归测试。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-05-29 · v0.8.6
 

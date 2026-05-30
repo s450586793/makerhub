@@ -10,3 +10,16 @@ test("browser verification route uses standalone light shell", () => {
   assert.match(source, standaloneRoutePattern);
   assert.doesNotMatch(shellChildrenBlock, /name:\s*"browser-verification"/);
 });
+
+test("browser verification page only renders the validation surface", () => {
+  const source = readFileSync(new URL("../pages/BrowserVerificationPage.vue", import.meta.url), "utf8");
+
+  assert.doesNotMatch(source, /browser-verification-topbar/);
+  assert.doesNotMatch(source, /browser-verification-stats/);
+  assert.doesNotMatch(source, />平台</);
+  assert.doesNotMatch(source, />状态</);
+  assert.doesNotMatch(source, />截图</);
+  assert.doesNotMatch(source, />模型 ID</);
+  assert.doesNotMatch(source, />配置</);
+  assert.doesNotMatch(source, />Captcha</);
+});

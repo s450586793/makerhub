@@ -218,62 +218,9 @@ html[data-theme="dark"] .mw-profile-filament-chip {
   min-height: 100vh;
   min-height: 100dvh;
   margin: 0 auto;
-  padding: 14px 0;
+  padding: 8px 0;
   display: grid;
   align-content: start;
-  gap: 12px;
-}
-
-.browser-verification-topbar {
-  min-width: 0;
-  padding: 14px 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  background: var(--surface);
-  box-shadow: var(--shadow);
-}
-
-.browser-verification-topbar__copy {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.browser-verification-topbar h1 {
-  min-width: 0;
-  margin: 0;
-  overflow: hidden;
-  color: var(--text);
-  font-size: 20px;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.browser-verification-target {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.browser-verification-stats {
-  display: flex;
-  align-items: stretch;
-  justify-content: flex-end;
-  gap: 8px;
-  flex: 0 0 auto;
-}
-
-.browser-verification-stats .intro-stat {
-  min-width: 76px;
 }
 
 .browser-verification-panel {
@@ -339,33 +286,6 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 .browser-verification-empty strong {
   color: var(--text);
   font-size: 15px;
-}
-
-.browser-verification-side {
-  display: none;
-  gap: 8px;
-}
-
-.browser-verification-side__item {
-  min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  display: grid;
-  gap: 3px;
-  background: var(--surface-soft);
-}
-
-.browser-verification-side__item span {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.browser-verification-side__item strong {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--text);
-  font-size: 13px;
 }
 
 html[data-theme="dark"] .mw-attachment-upload__file.mw-attachment-upload__drop.is-dragging {
@@ -5486,20 +5406,6 @@ select:focus {
   .browser-verification-shell {
     width: min(100vw - 16px, 680px);
     padding: 8px 0;
-  }
-
-  .browser-verification-topbar {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .browser-verification-stats {
-    justify-content: stretch;
-  }
-
-  .browser-verification-stats .intro-stat {
-    min-width: 0;
-    flex: 1 1 0;
   }
 
   .browser-verification-viewer {

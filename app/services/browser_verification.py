@@ -18,7 +18,7 @@ from app.core.store import JsonStore
 from app.core.timezone import now_iso as china_now_iso
 from app.services.batch_discovery import extract_model_id, normalize_model_url, normalize_source_url
 from app.services.business_logs import append_business_log
-from app.services.cookie_utils import parse_cookie_values, sanitize_cookie_header
+from app.services.cookie_utils import extract_auth_token, parse_cookie_values, sanitize_cookie_header
 from app.services.proxy_policy import proxy_url
 from app.services.state_events import publish_state_event
 from app.services.three_mf import normalize_makerworld_source, normalize_three_mf_failure_state
@@ -413,30 +413,41 @@ def _origin_for_platform(platform: str) -> str:
     return "https://makerworld.com" if platform == "global" else "https://makerworld.com.cn"
 
 
+def _api_origin_for_platform(platform: str) -> str:
+    return "https://api.bambulab.com" if platform == "global" else "https://api.bambulab.cn"
+
+
+def _instance_f3mf_api_url(instance_id: str, platform: str) -> str:
+    origin = _api_origin_for_platform(platform)
+    return f"{origin}/v1/design-service/instance/{instance_id}/f3mf?type=download&fileType=3mf"
+
+
 def _profile_key_for_session(session: dict[str, Any]) -> str:
     platform = str(session.get("platform") or "cn").strip()
     return "global" if platform == "global" else "cn"
 
 
-def _cookie_domain(platform: str) -> str:
-    return ".makerworld.com" if platform == "global" else ".makerworld.com.cn"
+def _cookie_domains(platform: str) -> tuple[str, ...]:
+    if platform == "global":
+        return (".makerworld.com", ".api.bambulab.com")
+    return (".makerworld.com.cn", ".api.bambulab.cn")
 
 
 def _cookies_for_context(raw_cookie: str, platform: str) -> list[dict[str, Any]]:
-    domain = _cookie_domain(platform)
     cookies = []
-    for name, value in parse_cookie_values(raw_cookie).items():
-        cookies.append(
-            {
-                "name": name,
-                "value": value,
-                "domain": domain,
-                "path": "/",
-                "httpOnly": False,
-                "secure": True,
-                "sameSite": "Lax",
-            }
-        )
+    for domain in _cookie_domains(platform):
+        for name, value in parse_cookie_values(raw_cookie).items():
+            cookies.append(
+                {
+                    "name": name,
+                    "value": value,
+                    "domain": domain,
+                    "path": "/",
+                    "httpOnly": False,
+                    "secure": True,
+                    "sameSite": "Lax",
+                }
+            )
     return cookies
 
 
@@ -447,20 +458,65 @@ def _select_cookie_for_platform(config: Any, platform: str) -> str:
     return ""
 
 
+def _auth_headers_for_cookie(raw_cookie: str) -> dict[str, str]:
+    auth_token = extract_auth_token(raw_cookie)
+    if not auth_token:
+        return {}
+    return {
+        "Authorization": f"Bearer {auth_token}",
+        "token": auth_token,
+        "X-Token": auth_token,
+        "X-Access-Token": auth_token,
+    }
+
+
+def _is_bambu_api_url(url: str) -> bool:
+    host = (urlparse(str(url or "")).hostname or "").lower()
+    return host in {"api.bambulab.com", "api.bambulab.cn"}
+
+
+def _bambu_api_auth_headers(url: str, request_headers: Any, auth_headers: dict[str, str]) -> Optional[dict[str, str]]:
+    if not auth_headers or not _is_bambu_api_url(url):
+        return None
+    headers = {str(key): str(value) for key, value in (request_headers or {}).items()}
+    headers.update(auth_headers)
+    return headers
+
+
+def _continue_bambu_api_request(route: Any, request: Any, auth_headers: dict[str, str]) -> None:
+    headers = _bambu_api_auth_headers(
+        str(getattr(request, "url", "") or ""),
+        getattr(request, "headers", {}) or {},
+        auth_headers,
+    )
+    if headers is None:
+        route.continue_()
+        return
+    route.continue_(headers=headers)
+
+
+def _instance_id_from_api_url(api_url: str) -> str:
+    path_parts = [part for part in urlparse(api_url).path.split("/") if part]
+    for index, part in enumerate(path_parts):
+        if part == "instance" and index + 1 < len(path_parts):
+            return _safe_text(path_parts[index + 1], 120)
+    return ""
+
+
 def _verification_start_url(session: dict[str, Any]) -> str:
     target = session.get("target") if isinstance(session.get("target"), dict) else {}
     api_url = normalize_source_url(str(target.get("api_url") or ""))
+    platform = str(session.get("platform") or _platform_from_item(target) or "cn")
+    instance_id = _safe_text(target.get("instance_id") or _instance_id_from_api_url(api_url), 120)
     if api_url and "/f3mf" in urlparse(api_url).path:
+        if instance_id and "api.bambulab" not in urlparse(api_url).netloc.lower():
+            return _instance_f3mf_api_url(instance_id, platform)
         return api_url
-    instance_id = _safe_text(target.get("instance_id") or "", 120)
     if instance_id:
-        platform = str(session.get("platform") or _platform_from_item(target) or "cn")
-        origin = _origin_for_platform(platform)
-        return f"{origin}/api/v1/design-service/instance/{instance_id}/f3mf?type=download&fileType="
+        return _instance_f3mf_api_url(instance_id, platform)
     model_url = normalize_source_url(str(target.get("model_url") or ""))
     if model_url:
         return model_url
-    platform = str(session.get("platform") or "cn")
     return _origin_for_platform(platform)
 
 
@@ -581,6 +637,9 @@ class BrowserVerificationRuntime:
             if cookies:
                 context.add_cookies(cookies)
             page = context.pages[0] if getattr(context, "pages", None) else context.new_page()
+            auth_headers = _auth_headers_for_cookie(raw_cookie)
+            if auth_headers and hasattr(page, "route"):
+                page.route("**/*", lambda route, request: _continue_bambu_api_request(route, request, auth_headers))
             page.set_viewport_size(dict(BROWSER_VERIFICATION_DEFAULT_VIEWPORT))
             captured_proof = {"id": ""}
 

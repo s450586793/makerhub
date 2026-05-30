@@ -266,6 +266,40 @@ class BrowserVerificationSessionTest(unittest.TestCase):
         self.assertEqual(proof_store.pop(proof_id), "proof-secret")
         self.assertEqual(proof_store.pop(proof_id), "")
 
+    def test_cookies_for_context_include_site_and_api_domains(self):
+        cookies = browser_verification_module._cookies_for_context("token=abc; session=def", "global")
+        domains = {cookie["domain"] for cookie in cookies}
+
+        self.assertEqual(domains, {".makerworld.com", ".api.bambulab.com"})
+        self.assertEqual(len(cookies), 4)
+
+    def test_auth_headers_for_cookie_include_bearer_token(self):
+        headers = browser_verification_module._auth_headers_for_cookie("token=access-token; session=def")
+
+        self.assertEqual(headers["Authorization"], "Bearer access-token")
+        self.assertEqual(headers["token"], "access-token")
+        self.assertEqual(headers["X-Token"], "access-token")
+        self.assertEqual(headers["X-Access-Token"], "access-token")
+
+    def test_bambu_api_auth_headers_only_apply_to_api_domain(self):
+        auth_headers = {"Authorization": "Bearer access-token"}
+
+        self.assertEqual(
+            browser_verification_module._bambu_api_auth_headers(
+                "https://api.bambulab.com/v1/design-service/instance/1/f3mf",
+                {"Accept": "application/json"},
+                auth_headers,
+            ),
+            {"Accept": "application/json", "Authorization": "Bearer access-token"},
+        )
+        self.assertIsNone(
+            browser_verification_module._bambu_api_auth_headers(
+                "https://makerworld.com/zh/models/1",
+                {"Accept": "text/html"},
+                auth_headers,
+            )
+        )
+
     def test_input_commands_are_append_only_and_redacted(self):
         state = {}
 
@@ -336,13 +370,42 @@ class BrowserVerificationSessionTest(unittest.TestCase):
             "platform": "cn",
             "target": {
                 "model_url": "https://makerworld.com.cn/zh/models/1063416",
+                "api_url": "https://api.bambulab.cn/v1/design-service/instance/1063416/f3mf?type=download&fileType=3mf",
+            },
+        }
+
+        self.assertEqual(
+            browser_verification_module._verification_start_url(session),
+            "https://api.bambulab.cn/v1/design-service/instance/1063416/f3mf?type=download&fileType=3mf",
+        )
+
+    def test_verification_start_url_rewrites_makerworld_f3mf_to_preferred_api_when_instance_id_present(self):
+        session = {
+            "platform": "global",
+            "target": {
+                "model_url": "https://makerworld.com/zh/models/802319",
+                "instance_id": "742440",
+                "api_url": "https://makerworld.com/api/v1/design-service/instance/742440/f3mf?type=download&fileType=",
+            },
+        }
+
+        self.assertEqual(
+            browser_verification_module._verification_start_url(session),
+            "https://api.bambulab.com/v1/design-service/instance/742440/f3mf?type=download&fileType=3mf",
+        )
+
+    def test_verification_start_url_rewrites_makerworld_f3mf_by_parsing_instance_id_from_url(self):
+        session = {
+            "platform": "cn",
+            "target": {
+                "model_url": "https://makerworld.com.cn/zh/models/1063416",
                 "api_url": "https://makerworld.com.cn/api/v1/design-service/instance/1063416/f3mf?type=download&fileType=",
             },
         }
 
         self.assertEqual(
             browser_verification_module._verification_start_url(session),
-            "https://makerworld.com.cn/api/v1/design-service/instance/1063416/f3mf?type=download&fileType=",
+            "https://api.bambulab.cn/v1/design-service/instance/1063416/f3mf?type=download&fileType=3mf",
         )
 
     def test_verification_start_url_synthesizes_3mf_api_url_from_instance_id(self):
@@ -356,7 +419,21 @@ class BrowserVerificationSessionTest(unittest.TestCase):
 
         self.assertEqual(
             browser_verification_module._verification_start_url(session),
-            "https://makerworld.com/api/v1/design-service/instance/742440/f3mf?type=download&fileType=",
+            "https://api.bambulab.com/v1/design-service/instance/742440/f3mf?type=download&fileType=3mf",
+        )
+
+    def test_verification_start_url_synthesizes_cn_3mf_api_url_from_instance_id(self):
+        session = {
+            "platform": "cn",
+            "target": {
+                "model_url": "https://makerworld.com.cn/zh/models/1063416",
+                "instance_id": "1063416",
+            },
+        }
+
+        self.assertEqual(
+            browser_verification_module._verification_start_url(session),
+            "https://api.bambulab.cn/v1/design-service/instance/1063416/f3mf?type=download&fileType=3mf",
         )
 
     def test_verification_start_url_falls_back_to_model_page_without_3mf_api_url(self):
@@ -402,6 +479,10 @@ class BrowserVerificationSessionTest(unittest.TestCase):
             def on(self, _event, _callback):
                 pass
 
+            def route(self, pattern, callback):
+                self.route_pattern = pattern
+                self.route_callback = callback
+
             def goto(self, url, **_kwargs):
                 self.urls.append(url)
                 current_session["status"] = "cancelled"
@@ -438,6 +519,7 @@ class BrowserVerificationSessionTest(unittest.TestCase):
         ensure_display.assert_called_once()
         launch_context.assert_called_once()
         self.assertEqual(fake_page.urls, ["https://makerworld.com.cn/zh/models/1063416"])
+        self.assertEqual(fake_page.route_pattern, "**/*")
         self.assertTrue(any(change.get("status") == "running" for _session_id, change in updates))
 
     def test_write_screenshot_crops_verification_box_and_exposes_offset_viewport(self):

@@ -1,27 +1,5 @@
 <template>
   <main class="browser-verification-shell">
-    <section class="browser-verification-topbar">
-      <div class="browser-verification-topbar__copy">
-        <span class="eyebrow">3MF 验证</span>
-        <h1>{{ titleText }}</h1>
-        <span class="browser-verification-target">{{ targetSubtitle }}</span>
-      </div>
-      <div class="browser-verification-stats">
-        <div class="intro-stat">
-          <span>平台</span>
-          <strong>{{ platformLabel }}</strong>
-        </div>
-        <div class="intro-stat">
-          <span>状态</span>
-          <strong>{{ statusText }}</strong>
-        </div>
-        <div class="intro-stat">
-          <span>截图</span>
-          <strong>{{ session?.screenshot_version || 0 }}</strong>
-        </div>
-      </div>
-    </section>
-
     <section class="browser-verification-panel">
       <div class="section-card__header section-card__header--compact">
         <div>
@@ -73,24 +51,6 @@
             <span>{{ emptyMessage }}</span>
           </div>
         </div>
-        <aside class="browser-verification-side">
-          <div class="browser-verification-side__item">
-            <span>模型 ID</span>
-            <strong>{{ session?.target?.model_id || "-" }}</strong>
-          </div>
-          <div class="browser-verification-side__item">
-            <span>配置</span>
-            <strong>{{ session?.target?.instance_id || "-" }}</strong>
-          </div>
-          <div class="browser-verification-side__item">
-            <span>Captcha</span>
-            <strong>{{ session?.captcha_id || "-" }}</strong>
-          </div>
-          <div class="browser-verification-side__item">
-            <span>重试结果</span>
-            <strong>{{ retryResultText }}</strong>
-          </div>
-        </aside>
       </div>
     </section>
   </main>
@@ -118,53 +78,18 @@ let unsubscribeStateRefresh = null;
 let mouseMoveSentAt = 0;
 
 const sessionId = computed(() => String(route.params.sessionId || ""));
-const statusText = computed(() => statusLabel(session.value?.status));
-const platformLabel = computed(() => session.value?.platform === "global" ? "国际" : "国区");
 const isFinished = computed(() => ["completed", "failed", "cancelled", "expired"].includes(String(session.value?.status || "")));
 const isError = computed(() => ["failed", "expired"].includes(String(session.value?.status || "")));
 const isCompleted = computed(() => String(session.value?.status || "") === "completed");
-const titleText = computed(() => {
-  const target = session.value?.target || {};
-  return target.title || target.model_id || "浏览器验证";
-});
 const panelHeading = computed(() => {
   if (!session.value) {
     return "正在读取会话";
   }
   return isFinished.value ? "验证会话结果" : "远程验证画面";
 });
-const targetSubtitle = computed(() => {
-  const target = session.value?.target || {};
-  return target.model_url || "MakerWorld";
-});
 const messageText = computed(() => session.value?.error || session.value?.message || "");
 const emptyTitle = computed(() => loading.value ? "正在连接 worker" : "等待浏览器画面");
 const emptyMessage = computed(() => isFinished.value ? "会话已结束，返回任务页查看重试进度。" : "worker 启动浏览器后会在这里显示验证页面。");
-const retryResultText = computed(() => {
-  const result = session.value?.retry_result || {};
-  if (!Object.keys(result).length) {
-    return "-";
-  }
-  if (result.accepted_count !== undefined) {
-    return `${result.accepted_count || 0} 项已提交`;
-  }
-  return result.message || "已提交";
-});
-
-function statusLabel(status) {
-  const mapping = {
-    queued: "排队",
-    starting: "启动中",
-    running: "验证中",
-    verified: "已验证",
-    retrying: "重试中",
-    completed: "已完成",
-    failed: "失败",
-    cancelled: "已取消",
-    expired: "已超时",
-  };
-  return mapping[String(status || "")] || "未知";
-}
 
 function scheduleRefresh(delay = 1200) {
   window.clearTimeout(refreshTimer);
