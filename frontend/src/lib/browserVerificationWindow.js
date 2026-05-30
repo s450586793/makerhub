@@ -1,5 +1,5 @@
 const WINDOW_NAME = "makerhub-3mf-verification";
-const WINDOW_FEATURES = "popup=yes,width=640,height=720,left=120,top=60";
+const WINDOW_FEATURES = "popup=yes,width=560,height=620,left=120,top=60";
 
 export function browserVerificationPath(sessionId) {
   return `/browser-verification/${encodeURIComponent(String(sessionId || ""))}`;

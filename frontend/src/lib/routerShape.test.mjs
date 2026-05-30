@@ -16,10 +16,20 @@ test("browser verification page only renders the validation surface", () => {
 
   assert.doesNotMatch(source, /browser-verification-topbar/);
   assert.doesNotMatch(source, /browser-verification-stats/);
+  assert.doesNotMatch(source, /section-card__header/);
+  assert.doesNotMatch(source, /browser-verification-actions/);
+  assert.doesNotMatch(source, /RouterLink/);
+  assert.doesNotMatch(source, /panelHeading/);
+  assert.doesNotMatch(source, /cancelSession/);
+  assert.doesNotMatch(source, /cancelling/);
+  assert.doesNotMatch(source, />返回任务</);
+  assert.doesNotMatch(source, />刷新</);
+  assert.doesNotMatch(source, />取消</);
   assert.doesNotMatch(source, />平台</);
   assert.doesNotMatch(source, />状态</);
   assert.doesNotMatch(source, />截图</);
   assert.doesNotMatch(source, />模型 ID</);
   assert.doesNotMatch(source, />配置</);
   assert.doesNotMatch(source, />Captcha</);
+  assert.match(source, /visibleMessageText/);
 });

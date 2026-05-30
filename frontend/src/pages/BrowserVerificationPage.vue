@@ -1,28 +1,6 @@
 <template>
   <main class="browser-verification-shell">
     <section class="browser-verification-panel">
-      <div class="section-card__header section-card__header--compact">
-        <div>
-          <h2>{{ panelHeading }}</h2>
-        </div>
-        <div class="browser-verification-actions">
-          <RouterLink class="button button-secondary button-small" to="/tasks">返回任务</RouterLink>
-          <button class="button button-secondary button-small" type="button" :disabled="loading" @click="refreshNow">
-            刷新
-          </button>
-          <button
-            class="button button-danger button-small"
-            type="button"
-            :disabled="cancelling || isFinished"
-            @click="cancelSession"
-          >
-            {{ cancelling ? "取消中..." : "取消" }}
-          </button>
-        </div>
-      </div>
-
-      <span v-if="messageText" :class="['form-status', isError && 'is-error', isCompleted && 'is-success']">{{ messageText }}</span>
-
       <div class="browser-verification-viewer">
         <div
           ref="viewerRef"
@@ -48,17 +26,21 @@
           >
           <div v-if="!screenshotUrl || !screenshotLoaded" class="browser-verification-empty">
             <strong>{{ emptyTitle }}</strong>
-            <span>{{ emptyMessage }}</span>
+            <span v-if="emptyMessage">{{ emptyMessage }}</span>
           </div>
         </div>
       </div>
+      <span
+        v-if="visibleMessageText"
+        :class="['form-status', isError && 'is-error', isCompleted && 'is-success']"
+      >{{ visibleMessageText }}</span>
     </section>
   </main>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { RouterLink, useRoute } from "vue-router";
+import { useRoute } from "vue-router";
 
 import { apiRequest } from "../lib/api";
 import { subscribeStateRefresh } from "../lib/stateEvents";
@@ -67,7 +49,6 @@ import { subscribeStateRefresh } from "../lib/stateEvents";
 const route = useRoute();
 const session = ref(null);
 const loading = ref(false);
-const cancelling = ref(false);
 const screenshotUrl = ref("");
 const screenshotLoaded = ref(false);
 const viewerRef = ref(null);
@@ -81,15 +62,27 @@ const sessionId = computed(() => String(route.params.sessionId || ""));
 const isFinished = computed(() => ["completed", "failed", "cancelled", "expired"].includes(String(session.value?.status || "")));
 const isError = computed(() => ["failed", "expired"].includes(String(session.value?.status || "")));
 const isCompleted = computed(() => String(session.value?.status || "") === "completed");
-const panelHeading = computed(() => {
-  if (!session.value) {
-    return "正在读取会话";
+const visibleMessageText = computed(() => {
+  if (!isFinished.value) {
+    return "";
   }
-  return isFinished.value ? "验证会话结果" : "远程验证画面";
+  return session.value?.error || session.value?.message || "";
 });
-const messageText = computed(() => session.value?.error || session.value?.message || "");
-const emptyTitle = computed(() => loading.value ? "正在连接 worker" : "等待浏览器画面");
-const emptyMessage = computed(() => isFinished.value ? "会话已结束，返回任务页查看重试进度。" : "worker 启动浏览器后会在这里显示验证页面。");
+const emptyTitle = computed(() => {
+  if (isError.value) {
+    return "验证页面加载失败";
+  }
+  if (isCompleted.value) {
+    return "验证已完成";
+  }
+  return "正在加载验证页面";
+});
+const emptyMessage = computed(() => {
+  if (!isFinished.value) {
+    return "";
+  }
+  return session.value?.error || session.value?.message || "";
+});
 
 function scheduleRefresh(delay = 1200) {
   window.clearTimeout(refreshTimer);
@@ -228,17 +221,6 @@ function sendPasteCommand(event) {
   const text = event.clipboardData?.getData("text") || "";
   if (text) {
     void sendInput({ type: "text", text });
-  }
-}
-
-async function cancelSession() {
-  cancelling.value = true;
-  try {
-    session.value = await apiRequest(`/api/browser-verification/sessions/${encodeURIComponent(sessionId.value)}/cancel`, {
-      method: "POST",
-    });
-  } finally {
-    cancelling.value = false;
   }
 }
 

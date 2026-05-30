@@ -214,54 +214,47 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 }
 
 .browser-verification-shell {
-  width: min(680px, calc(100vw - 24px));
+  width: min(560px, 100vw);
   min-height: 100vh;
   min-height: 100dvh;
   margin: 0 auto;
-  padding: 8px 0;
+  padding: 0;
   display: grid;
   align-content: start;
 }
 
 .browser-verification-panel {
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
   display: grid;
-  gap: 14px;
-  background: var(--surface);
-  box-shadow: var(--shadow);
-}
-
-.browser-verification-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .browser-verification-viewer {
+  min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 14px;
+  gap: 0;
   align-items: start;
 }
 
 .browser-verification-frame {
   position: relative;
-  min-height: 460px;
+  min-height: 420px;
   aspect-ratio: 520 / 640;
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border: 0;
+  border-radius: 0;
   background: var(--surface-strong);
   outline: none;
 }
 
 .browser-verification-frame:focus {
-  border-color: color-mix(in srgb, var(--brand) 70%, var(--border));
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 18%, transparent);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--brand) 25%, transparent);
 }
 
 .browser-verification-screenshot {
@@ -5404,21 +5397,12 @@ select:focus {
 
 @media (max-width: 720px) {
   .browser-verification-shell {
-    width: min(100vw - 16px, 680px);
-    padding: 8px 0;
+    width: min(560px, 100vw);
+    padding: 0;
   }
 
   .browser-verification-viewer {
     grid-template-columns: 1fr;
-  }
-
-  .browser-verification-actions {
-    width: 100%;
-    justify-content: stretch;
-  }
-
-  .browser-verification-actions .button {
-    flex: 1 1 auto;
   }
 
   .browser-verification-frame {
