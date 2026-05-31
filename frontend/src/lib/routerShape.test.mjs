@@ -66,6 +66,13 @@ test("browser verification drag release uses the last tracked pointer position",
   assert.match(source, /type: "mouseup", \.\.\.releaseCoordinates/);
 });
 
+test("browser verification clears drag state before releasing pointer capture", () => {
+  const source = readFileSync(new URL("../pages/BrowserVerificationPage.vue", import.meta.url), "utf8");
+  const finishPointerDrag = source.match(/function finishPointerDrag[\s\S]*?\n}/)?.[0] || "";
+
+  assert.match(finishPointerDrag, /activePointerState = null;[\s\S]*releasePointerCapture/);
+});
+
 test("browser verification frame uses dynamic aspect ratio and disables touch panning", () => {
   const source = readFileSync(new URL("../style.css", import.meta.url), "utf8");
 

@@ -271,13 +271,13 @@ function finishPointerDrag(event, cancelled = false) {
     void sendInput({ type: "mousemove", ...releaseCoordinates });
   }
   void sendInput({ type: "mouseup", ...releaseCoordinates });
+  suppressNextClick = isDragClickSuppressed(state);
+  activePointerState = null;
   try {
     event.currentTarget?.releasePointerCapture?.(event.pointerId);
   } catch {
     // Pointer capture release is best effort.
   }
-  suppressNextClick = isDragClickSuppressed(state);
-  activePointerState = null;
   scheduleScreenshotRefresh(80);
 }
 
