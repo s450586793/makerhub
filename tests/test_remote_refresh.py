@@ -591,6 +591,82 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         self.assertNotIn("model_succeeded", structured_events)
         self.assertNotIn("model_succeeded", business_events)
 
+    def test_run_batch_buffers_model_results_and_publishes_only_batch_boundaries(self):
+        original_workers = remote_refresh._remote_refresh_model_workers
+        original_batch_dir = remote_refresh.REMOTE_REFRESH_BATCH_DIR
+        remote_refresh._remote_refresh_model_workers = lambda _config=None: 2
+        remote_refresh.REMOTE_REFRESH_BATCH_DIR = self.temp_path / "remote_refresh_batches"
+        config = self.store.load()
+        items = [
+            {"model_dir": "m1", "title": "模型 1", "origin_url": "https://makerworld.com.cn/model/1", "meta_path": str(self.temp_path / "m1" / "meta.json")},
+            {"model_dir": "m2", "title": "模型 2", "origin_url": "https://makerworld.com.cn/model/2", "meta_path": str(self.temp_path / "m2" / "meta.json")},
+            {"model_dir": "m3", "title": "模型 3", "origin_url": "https://makerworld.com.cn/model/3", "meta_path": str(self.temp_path / "m3" / "meta.json")},
+        ]
+        self.manager._pick_candidates = lambda: (
+            items,
+            {
+                "eligible_total": 3,
+                "selected_total": 3,
+                "remaining_total": 0,
+                "missing_cookie": 0,
+                "local_or_invalid": 0,
+            },
+        )
+        events = []
+        structured_events = []
+        business_events = []
+
+        def fake_refresh_one(item, *, index, total, config):
+            time.sleep(index * 0.01)
+            model_dir = str(item.get("model_dir") or "")
+            return {
+                "ok": model_dir != "m2",
+                "error": "失败" if model_dir == "m2" else "",
+                "metrics": {
+                    "model_dir": model_dir,
+                    "title": str(item.get("title") or ""),
+                    "comments": 1,
+                    "total_duration_ms": 10 + index,
+                },
+                "record": remote_refresh._remote_refresh_result_record(
+                    model_dir=model_dir,
+                    title=str(item.get("title") or ""),
+                    url=str(item.get("origin_url") or ""),
+                    status="failed" if model_dir == "m2" else "success",
+                    message="失败" if model_dir == "m2" else "完成",
+                    metrics={"comments": 1, "total_duration_ms": 10 + index},
+                    change_labels=["刷新失败"] if model_dir == "m2" else ["已检查，无远端变化"],
+                ),
+            }
+
+        self.manager._refresh_one = fake_refresh_one
+        original_structured = remote_refresh._append_remote_refresh_log
+        original_business = remote_refresh.append_business_log
+        remote_refresh._append_remote_refresh_log = lambda event, **payload: structured_events.append((event, payload))
+        remote_refresh.append_business_log = lambda category, event, message="", **fields: business_events.append((event, fields))
+        try:
+            with patch("app.services.task_state.publish_state_event", side_effect=lambda scope, event_type, payload: events.append((scope, event_type, payload))):
+                self.manager._run_batch(config)
+        finally:
+            remote_refresh._remote_refresh_model_workers = original_workers
+            remote_refresh.REMOTE_REFRESH_BATCH_DIR = original_batch_dir
+            remote_refresh._append_remote_refresh_log = original_structured
+            remote_refresh.append_business_log = original_business
+
+        state = self.task_store.load_remote_refresh_state()
+        remote_events = [item for item in events if item[0] == "remote_refresh_state"]
+        self.assertEqual(len(remote_events), 2)
+        self.assertEqual(state["last_batch_succeeded"], 2)
+        self.assertEqual(state["last_batch_failed"], 1)
+        self.assertEqual(state["last_batch_metrics"]["comments"], 3)
+        self.assertEqual(state["recent_items"][0]["id"], "m3")
+        self.assertTrue(any(event == "batch_started" for event, _payload in structured_events))
+        self.assertTrue(any(event == "batch_finished" for event, _payload in structured_events))
+        self.assertFalse(any(event == "model_succeeded" for event, _payload in structured_events))
+        finish_payloads = [payload for event, payload in structured_events if event == "batch_finished"]
+        self.assertEqual(finish_payloads[-1]["failure_samples"][0]["model_dir"], "m2")
+        self.assertFalse(list((self.temp_path / "remote_refresh_batches").glob("*.ndjson")))
+
     def test_run_batch_refreshes_models_concurrently(self):
         original_workers = remote_refresh._remote_refresh_model_workers
         remote_refresh._remote_refresh_model_workers = lambda _config=None: 2
@@ -616,8 +692,9 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         started_lock = threading.Lock()
 
         def fake_refresh_one(item, *, index, total, config):
+            model_dir = str(item.get("model_dir") or "")
             with started_lock:
-                started.append(str(item.get("model_dir") or ""))
+                started.append(model_dir)
                 if len(started) == 2:
                     first_two_started.set()
             first_two_started.wait(timeout=2)
@@ -626,11 +703,20 @@ class RemoteRefreshManagerTest(unittest.TestCase):
             return {
                 "ok": True,
                 "metrics": {
-                    "model_dir": str(item.get("model_dir") or ""),
+                    "model_dir": model_dir,
                     "title": str(item.get("title") or ""),
                     "comments": 1,
                     "total_duration_ms": 10,
                 },
+                "record": remote_refresh._remote_refresh_result_record(
+                    model_dir=model_dir,
+                    title=str(item.get("title") or ""),
+                    url=str(item.get("origin_url") or ""),
+                    status="success",
+                    message="完成",
+                    metrics={"comments": 1, "total_duration_ms": 10},
+                    change_labels=["已检查，无远端变化"],
+                ),
             }
 
         self.manager._refresh_one = fake_refresh_one
@@ -652,6 +738,7 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         self.assertEqual(state["last_batch_failed"], 0)
         self.assertEqual(state["last_batch_metrics"]["comments"], 3)
         self.assertEqual(len(state["last_slow_models"]), 3)
+        self.assertEqual(len(state["recent_items"]), 3)
 
 
 if __name__ == "__main__":

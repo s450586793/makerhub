@@ -1234,10 +1234,10 @@ class RemoteRefreshManager:
         with self._batch_state_lock:
             return bool(self._batch_running)
 
-    def _reset_current_items(self) -> None:
+    def _reset_current_items(self, *, publish_event: bool = True) -> None:
         with self._current_items_lock:
             self._current_items = {}
-        self.task_store.patch_remote_refresh_state(current_item={}, current_items=[])
+        self.task_store.patch_remote_refresh_state(current_item={}, current_items=[], publish_event=publish_event)
 
     def _set_current_item(self, model_dir: str, item: dict[str, Any]) -> None:
         key = str(model_dir or item.get("id") or "").strip()
@@ -1580,9 +1580,10 @@ class RemoteRefreshManager:
         resource_wait_baseline = resource_snapshot()
         candidates, stats = self._pick_candidates()
         workers = min(_remote_refresh_model_workers(config), max(len(candidates), 1))
+        batch_buffer: Optional[_RemoteRefreshBatchBuffer] = None
 
         try:
-            self._reset_current_items()
+            self._reset_current_items(publish_event=False)
             self.task_store.patch_remote_refresh_state(
                 status="running",
                 running=True,
@@ -1603,7 +1604,9 @@ class RemoteRefreshManager:
                 last_resource_waits=_resource_wait_delta(resource_wait_baseline),
                 last_slow_models=[],
                 last_message=(
-                    f"源端刷新开始，本轮计划处理 {len(candidates)} 个模型，并发 {workers}。{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=int(stats.get('remaining_total') or 0))}"
+                    f"源端刷新开始，本轮计划处理 {len(candidates)} 个模型，并发 {workers}。"
+                    f"运行中不逐个刷新模型结果，批次完成后统一刷新。"
+                    f"{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=int(stats.get('remaining_total') or 0))}"
                     if candidates
                     else "当前没有可执行源端刷新的模型。"
                 ),
@@ -1650,6 +1653,7 @@ class RemoteRefreshManager:
                 )
                 return
 
+            batch_buffer = _RemoteRefreshBatchBuffer()
             succeeded = 0
             failed = 0
             skipped = 0
@@ -1666,14 +1670,30 @@ class RemoteRefreshManager:
                     try:
                         result = future.result()
                     except Exception as exc:
+                        error_message = _sanitize_remote_refresh_message(exc, exc.__class__.__name__)
                         result = {
                             "ok": False,
-                            "error": _sanitize_remote_refresh_message(exc, exc.__class__.__name__),
+                            "error": error_message,
                             "metrics": {
                                 "title": str(item.get("title") or item.get("model_dir") or ""),
                                 "model_dir": str(item.get("model_dir") or ""),
                             },
+                            "record": _remote_refresh_result_record(
+                                model_dir=str(item.get("model_dir") or ""),
+                                title=str(item.get("title") or item.get("model_dir") or ""),
+                                url=normalize_source_url(str(item.get("origin_url") or "")),
+                                status="failed",
+                                message=error_message,
+                                metrics={
+                                    "title": str(item.get("title") or item.get("model_dir") or ""),
+                                    "model_dir": str(item.get("model_dir") or ""),
+                                },
+                                change_labels=["刷新失败"],
+                            ),
                         }
+                    record = result.get("record") if isinstance(result.get("record"), dict) else None
+                    if record is not None and batch_buffer is not None:
+                        batch_buffer.append(record)
                     if result.get("ok"):
                         succeeded += 1
                         if result.get("skipped"):
@@ -1684,26 +1704,15 @@ class RemoteRefreshManager:
                     _merge_batch_metrics(batch_metrics, item_metrics)
                     if item_metrics:
                         slow_models.append(item_metrics)
-                    processed_total = succeeded + failed
-                    remaining_total = max(int(stats.get("eligible_total") or 0) - processed_total, 0)
-                    self.task_store.patch_remote_refresh_state(
-                        last_batch_succeeded=succeeded,
-                        last_batch_failed=failed,
-                        last_batch_skipped=skipped,
-                        last_remaining_total=remaining_total,
-                        last_batch_metrics=batch_metrics,
-                        last_resource_waits=_resource_wait_delta(resource_wait_baseline),
-                        last_slow_models=_top_slow_models(slow_models),
-                        last_message=(
-                            f"源端刷新进行中，并发 {workers}：已完成 {processed_total}/{len(candidates)}，"
-                            f"成功 {succeeded}，失败 {failed}。"
-                        ),
-                    )
 
             finished_at = _now_iso()
             previous_state = self.task_store.load_remote_refresh_state()
             processed_total = succeeded + failed
             remaining_total = max(int(stats.get("eligible_total") or 0) - processed_total, 0)
+            batch_records = batch_buffer.read_records() if batch_buffer is not None else []
+            batch_summary = _remote_refresh_batch_summary(batch_records)
+            failure_samples = batch_summary["failure_samples"]
+            recent_items = batch_summary["recent_items"]
             message = (
                 f"源端刷新完成，成功 {succeeded} 个，失败 {failed} 个。"
                 f"{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=remaining_total)}"
@@ -1727,6 +1736,7 @@ class RemoteRefreshManager:
                 last_batch_metrics={**batch_metrics, "batch_duration_ms": round((time.perf_counter() - batch_started_perf) * 1000, 1)},
                 last_resource_waits=_resource_wait_delta(resource_wait_baseline),
                 last_slow_models=_top_slow_models(slow_models),
+                recent_items=recent_items,
             )
             invalidate_archive_snapshot("remote_refresh_batch_finished")
             _append_remote_refresh_log(
@@ -1740,6 +1750,8 @@ class RemoteRefreshManager:
                 slow_models=_top_slow_models(slow_models),
                 resource_waits=_resource_wait_delta(resource_wait_baseline),
                 remaining_total=remaining_total,
+                source_deleted=batch_summary["source_deleted"],
+                failure_samples=failure_samples,
             )
             append_business_log(
                 "remote_refresh",
@@ -1754,9 +1766,17 @@ class RemoteRefreshManager:
                 slow_models=_top_slow_models(slow_models),
                 resource_waits=_resource_wait_delta(resource_wait_baseline),
                 remaining_total=remaining_total,
+                source_deleted=batch_summary["source_deleted"],
+                failure_samples=failure_samples,
             )
+            if batch_buffer is not None:
+                batch_buffer.delete()
+                batch_buffer = None
         finally:
-            self._reset_current_items()
+            if batch_buffer is not None:
+                batch_buffer.close()
+            with self._current_items_lock:
+                self._current_items = {}
             self._set_batch_running(False)
 
     def _refresh_one(self, item: dict[str, Any], *, index: int, total: int, config) -> dict[str, Any]:
