@@ -63,7 +63,8 @@ test("browser verification drag release uses the last tracked pointer position",
   assert.match(source, /clientX:\s*state\.lastX/);
   assert.match(source, /clientY:\s*state\.lastY/);
   assert.match(source, /const releaseCoordinates = cancelled \? pointerStateCoordinates\(state\) : commandCoordinates\(event\)/);
-  assert.match(source, /type: "mouseup", \.\.\.releaseCoordinates/);
+  assert.match(source, /const releaseCommand = sendInput\(\{ type: "mouseup", \.\.\.releaseCoordinates \}\)/);
+  assert.match(source, /releaseCommand\.finally\(\(\) => \{\s*scheduleScreenshotRefresh\(80\)/);
 });
 
 test("browser verification clears drag state before releasing pointer capture", () => {
