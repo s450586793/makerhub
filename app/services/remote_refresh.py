@@ -1765,20 +1765,10 @@ class RemoteRefreshManager:
         origin_url = normalize_source_url(str(item.get("origin_url") or ""))
         meta_path = Path(str(item.get("meta_path") or "")).resolve()
         cookie = _select_cookie(origin_url, config)
-        current_item = {
-            "id": model_dir,
-            "title": title,
-            "url": origin_url,
-            "status": "running",
+        progress_state: dict[str, Any] = {
             "progress": 0,
             "message": f"源端刷新中 {index}/{total}，等待资源",
-            "updated_at": _now_iso(),
-            "meta": {
-                "model_dir": model_dir,
-            },
         }
-        self._set_current_item(model_dir, current_item)
-        _append_remote_refresh_log("model_started", model_dir=model_dir, title=title, url=origin_url, index=index, total=total)
 
         model_started_perf = time.perf_counter()
         archive_duration_ms = 0.0
@@ -1787,53 +1777,35 @@ class RemoteRefreshManager:
         existing_meta = _load_json(meta_path)
         if not cookie:
             message = "缺少对应站点 Cookie，已跳过源端刷新。"
-            self.task_store.append_remote_refresh_history(
-                {
-                    "id": _history_id(model_dir, "skipped"),
-                    "title": title,
-                    "url": origin_url,
-                    "status": "skipped",
-                    "progress": 0,
-                    "message": message,
-                    "updated_at": _now_iso(),
-                    "meta": {
-                        "model_dir": model_dir,
-                        "checked_at": _now_iso(),
-                        "change_labels": ["缺少 Cookie"],
-                        "change_summary": "缺少 Cookie",
-                    },
-                }
+            model_metrics = {
+                "model_dir": model_dir,
+                "title": title,
+                "total_duration_ms": round((time.perf_counter() - model_started_perf) * 1000, 1),
+            }
+            record = _remote_refresh_result_record(
+                model_dir=model_dir,
+                title=title,
+                url=origin_url,
+                status="skipped",
+                message=message,
+                metrics=model_metrics,
+                change_labels=["缺少 Cookie"],
+                meta={
+                    "checked_at": _now_iso(),
+                },
             )
-            _append_remote_refresh_log("model_skipped", model_dir=model_dir, reason="missing_cookie")
-            self._remove_current_item(model_dir)
             return {
                 "ok": True,
                 "skipped": True,
-                "metrics": {
-                    "model_dir": model_dir,
-                    "title": title,
-                    "total_duration_ms": round((time.perf_counter() - model_started_perf) * 1000, 1),
-                },
+                "metrics": model_metrics,
+                "record": record,
             }
 
         def progress_callback(payload: dict[str, Any]) -> None:
-            self._set_current_item(
-                model_dir,
-                {
-                    "id": model_dir,
-                    "title": title,
-                    "url": origin_url,
-                    "status": "running",
-                    "progress": int(payload.get("percent") or 0),
-                    "message": _sanitize_remote_refresh_message(
-                        payload.get("message") or f"源端刷新中 {index}/{total}",
-                        f"源端刷新中 {index}/{total}",
-                    ),
-                    "updated_at": _now_iso(),
-                    "meta": {
-                        "model_dir": model_dir,
-                    },
-                },
+            progress_state["progress"] = int(payload.get("percent") or 0)
+            progress_state["message"] = _sanitize_remote_refresh_message(
+                payload.get("message") or f"源端刷新中 {index}/{total}",
+                f"源端刷新中 {index}/{total}",
             )
 
         try:
@@ -1894,19 +1866,8 @@ class RemoteRefreshManager:
 
             asset_sync_performed = bool(finalized.get("asset_sync_needed"))
             if asset_sync_performed:
-                self._set_current_item(
-                    model_dir,
-                    {
-                        "id": model_dir,
-                        "title": title,
-                        "url": origin_url,
-                        "status": "running",
-                        "progress": 78,
-                        "message": "检测到远端资源变化，正在同步图片、头像和附件资源",
-                        "updated_at": _now_iso(),
-                        "meta": {"model_dir": model_dir},
-                    },
-                )
+                progress_state["progress"] = 78
+                progress_state["message"] = "检测到远端资源变化，正在同步图片、头像和附件资源"
                 asset_archive_started_perf = time.perf_counter()
                 archive_result = run_archive_model_job(
                     url=origin_url,
@@ -2010,16 +1971,15 @@ class RemoteRefreshManager:
                 "new_3mf_download_queued": len(new_3mf_download_items),
                 **comment_metrics,
             }
-            history_item = {
-                "id": _history_id(model_dir, "success"),
-                "title": title,
-                "url": origin_url,
-                "status": "success",
-                "progress": 100,
-                "message": message,
-                "updated_at": _now_iso(),
-                "meta": {
-                    "model_dir": model_dir,
+            record = _remote_refresh_result_record(
+                model_dir=model_dir,
+                title=title,
+                url=origin_url,
+                status="success",
+                message=message,
+                metrics=model_metrics,
+                change_labels=change_labels,
+                meta={
                     "checked_at": finalized.get("checked_at"),
                     "added_comments": finalized.get("added_comments"),
                     "preserved_comments": finalized.get("preserved_comments"),
@@ -2027,45 +1987,11 @@ class RemoteRefreshManager:
                     "deleted_instances": finalized.get("deleted_instances"),
                     "attachments_added": finalized.get("attachments_added"),
                     "summary_changed": finalized.get("summary_changed"),
-                    "change_labels": change_labels,
-                    "change_summary": "，".join(change_labels),
                     "new_3mf_download_queued": len(new_3mf_download_items),
                     "new_3mf_download_task_id": str(new_3mf_download_result.get("task_id") or ""),
-                    "metrics": model_metrics,
                 },
-            }
-            self.task_store.append_remote_refresh_history(history_item)
-            _append_remote_refresh_log(
-                "model_succeeded",
-                model_dir=model_dir,
-                added_comments=finalized.get("added_comments"),
-                added_instances=finalized.get("added_instances"),
-                deleted_instances=finalized.get("deleted_instances"),
-                attachments_added=finalized.get("attachments_added"),
-                summary_changed=finalized.get("summary_changed"),
-                change_labels=change_labels,
-                new_3mf_download_queued=len(new_3mf_download_items),
-                new_3mf_download_task_id=str(new_3mf_download_result.get("task_id") or ""),
-                metrics=model_metrics,
             )
-            append_business_log(
-                "remote_refresh",
-                "model_succeeded",
-                message,
-                model_dir=model_dir,
-                url=origin_url,
-                added_comments=finalized.get("added_comments"),
-                preserved_comments=finalized.get("preserved_comments"),
-                added_instances=finalized.get("added_instances"),
-                deleted_instances=finalized.get("deleted_instances"),
-                attachments_added=finalized.get("attachments_added"),
-                summary_changed=finalized.get("summary_changed"),
-                change_labels=change_labels,
-                new_3mf_download_queued=len(new_3mf_download_items),
-                new_3mf_download_task_id=str(new_3mf_download_result.get("task_id") or ""),
-                metrics=model_metrics,
-            )
-            return {"ok": True, "metrics": model_metrics}
+            return {"ok": True, "metrics": model_metrics, "record": record}
         except Exception as exc:
             deleted_on_source = run_source_deleted_check_job(origin_url, cookie, proxy_config=config.proxy)
             if deleted_on_source and meta_path.exists():
@@ -2086,33 +2012,19 @@ class RemoteRefreshManager:
                     "finalize_duration_ms": finalize_duration_ms,
                     "disk_wait_ms": disk_wait_ms,
                 }
-                history_item = {
-                    "id": _history_id(model_dir, "source_deleted"),
-                    "title": title,
-                    "url": origin_url,
-                    "status": "source_deleted",
-                    "progress": 100,
-                    "message": message,
-                    "updated_at": _now_iso(),
-                    "meta": {
-                        "model_dir": model_dir,
-                        "checked_at": _now_iso(),
-                        "change_labels": ["模型源端已删除"],
-                        "change_summary": "模型源端已删除",
-                        "metrics": model_metrics,
-                    },
-                }
-                self.task_store.append_remote_refresh_history(history_item)
-                _append_remote_refresh_log("model_deleted_on_source", model_dir=model_dir, url=origin_url)
-                append_business_log(
-                    "remote_refresh",
-                    "model_deleted_on_source",
-                    message,
+                record = _remote_refresh_result_record(
                     model_dir=model_dir,
+                    title=title,
                     url=origin_url,
+                    status="source_deleted",
+                    message=message,
                     metrics=model_metrics,
+                    change_labels=["模型源端已删除"],
+                    meta={
+                        "checked_at": _now_iso(),
+                    },
                 )
-                return {"ok": True, "source_deleted": True, "metrics": model_metrics}
+                return {"ok": True, "source_deleted": True, "metrics": model_metrics, "record": record}
 
             message = _sanitize_remote_refresh_message(exc, exc.__class__.__name__)
             if meta_path.exists():
@@ -2132,33 +2044,16 @@ class RemoteRefreshManager:
                 "finalize_duration_ms": finalize_duration_ms,
                 "disk_wait_ms": disk_wait_ms,
             }
-            history_item = {
-                "id": _history_id(model_dir, "failed"),
-                "title": title,
-                "url": origin_url,
-                "status": "failed",
-                "progress": 0,
-                "message": message,
-                "updated_at": _now_iso(),
-                "meta": {
-                    "model_dir": model_dir,
-                    "checked_at": _now_iso(),
-                    "change_labels": ["刷新失败"],
-                    "change_summary": "刷新失败",
-                    "metrics": model_metrics,
-                },
-            }
-            self.task_store.append_remote_refresh_history(history_item)
-            _append_remote_refresh_log("model_failed", model_dir=model_dir, url=origin_url, error=message)
-            append_business_log(
-                "remote_refresh",
-                "model_failed",
-                message,
-                level="error",
+            record = _remote_refresh_result_record(
                 model_dir=model_dir,
+                title=title,
                 url=origin_url,
+                status="failed",
+                message=message,
                 metrics=model_metrics,
+                change_labels=["刷新失败"],
+                meta={
+                    "checked_at": _now_iso(),
+                },
             )
-            return {"ok": False, "error": message, "metrics": model_metrics}
-        finally:
-            self._remove_current_item(model_dir)
+            return {"ok": False, "error": message, "metrics": model_metrics, "record": record}

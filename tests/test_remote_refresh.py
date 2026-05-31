@@ -522,6 +522,74 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         self.assertIs(calls[1]["download_assets"], True)
         self.assertIs(calls[1]["download_comment_assets"], True)
         self.assertEqual(result["metrics"]["download_tasks"], 2)
+        self.assertEqual(result["record"]["status"], "success")
+        self.assertEqual(result["record"]["id"], "m1")
+
+    def test_refresh_one_returns_record_without_model_level_logs_or_history(self):
+        config = self.store.load()
+        config.cookies[0].cookie = "session=ok"
+        self.store.save(config)
+
+        model_root = self.temp_path / "m1"
+        model_root.mkdir()
+        meta_path = model_root / "meta.json"
+        existing_meta = {
+            "id": "1",
+            "title": "模型 1",
+            "url": "https://makerworld.com.cn/zh/models/1",
+            "comments": [],
+            "instances": [],
+            "attachments": [],
+        }
+        meta_path.write_text(json.dumps(existing_meta, ensure_ascii=False), encoding="utf-8")
+
+        structured_events = []
+        business_events = []
+        original_structured = remote_refresh._append_remote_refresh_log
+        original_business = remote_refresh.append_business_log
+        original_job = remote_refresh.run_archive_model_job
+        original_upsert = remote_refresh.upsert_archive_snapshot_model
+        original_invalidate_detail = remote_refresh.invalidate_model_detail_cache
+
+        def fake_run_archive_model_job(**kwargs):
+            fresh_meta = {
+                **existing_meta,
+                "remoteSync": {"lastMessage": "源端刷新完成。"},
+            }
+            meta_path.write_text(json.dumps(fresh_meta, ensure_ascii=False), encoding="utf-8")
+            return {"stats": {"comments": {"comment_total": 0}}, "missing_3mf": []}
+
+        remote_refresh._append_remote_refresh_log = lambda event, **payload: structured_events.append(event)
+        remote_refresh.append_business_log = lambda category, event, message="", **fields: business_events.append(event)
+        remote_refresh.run_archive_model_job = fake_run_archive_model_job
+        remote_refresh.upsert_archive_snapshot_model = lambda *_args, **_kwargs: True
+        remote_refresh.invalidate_model_detail_cache = lambda *_args, **_kwargs: None
+        try:
+            result = self.manager._refresh_one(
+                {
+                    "model_dir": "m1",
+                    "title": "模型 1",
+                    "origin_url": "https://makerworld.com.cn/zh/models/1",
+                    "meta_path": str(meta_path),
+                },
+                index=1,
+                total=1,
+                config=config,
+            )
+        finally:
+            remote_refresh._append_remote_refresh_log = original_structured
+            remote_refresh.append_business_log = original_business
+            remote_refresh.run_archive_model_job = original_job
+            remote_refresh.upsert_archive_snapshot_model = original_upsert
+            remote_refresh.invalidate_model_detail_cache = original_invalidate_detail
+
+        state = self.task_store.load_remote_refresh_state()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["record"]["status"], "success")
+        self.assertEqual(result["record"]["id"], "m1")
+        self.assertEqual(state["recent_items"], [])
+        self.assertNotIn("model_succeeded", structured_events)
+        self.assertNotIn("model_succeeded", business_events)
 
     def test_run_batch_refreshes_models_concurrently(self):
         original_workers = remote_refresh._remote_refresh_model_workers
