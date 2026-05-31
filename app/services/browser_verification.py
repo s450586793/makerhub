@@ -42,6 +42,35 @@ SENSITIVE_REQUEST_HEADER_KEYS = {
     "x-token",
     "x-access-token",
 }
+SENSITIVE_LOG_KEYS = SENSITIVE_REQUEST_HEADER_KEYS | {
+    "cf_clearance",
+    "__cf_bm",
+    "proof",
+    "proof_id",
+    "browser_verification_proof_id",
+}
+
+
+def _redact_browser_verification_value(key: str, value: Any) -> Any:
+    lowered = str(key or "").lower()
+    if any(secret_key in lowered for secret_key in SENSITIVE_LOG_KEYS):
+        return "[redacted]"
+    if isinstance(value, dict):
+        return {
+            str(item_key): _redact_browser_verification_value(str(item_key), item_value)
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_browser_verification_value(lowered, item) for item in value]
+    return value
+
+
+def _browser_verification_log(event: str, message: str, **fields: Any) -> None:
+    safe_fields = {
+        str(key): _redact_browser_verification_value(str(key), value)
+        for key, value in fields.items()
+    }
+    append_business_log("missing_3mf", event, message, **safe_fields)
 
 
 def _empty_state() -> dict[str, Any]:
@@ -654,8 +683,7 @@ class BrowserVerificationRuntime:
                     busy_profile_keys.add(profile_key)
                     thread.start()
                     target = session.get("target") if isinstance(session.get("target"), dict) else {}
-                    append_business_log(
-                        "missing_3mf",
+                    _browser_verification_log(
                         "browser_verification_session_worker_started",
                         "浏览器验证 worker 已接收会话。",
                         session_id=session_id,
@@ -676,8 +704,7 @@ class BrowserVerificationRuntime:
                 message="浏览器验证会话失败。",
                 finished_at=_now(),
             )
-            append_business_log(
-                "missing_3mf",
+            _browser_verification_log(
                 "browser_verification_session_failed",
                 "浏览器验证会话失败。",
                 level="warning",
@@ -720,6 +747,12 @@ class BrowserVerificationRuntime:
         context = None
         try:
             context = self._launch_context(session, config)
+            _browser_verification_log(
+                "browser_verification_context_launched",
+                "浏览器验证 CloakBrowser 上下文已启动。",
+                session_id=session_id,
+                platform=platform,
+            )
             cookies = _cookies_for_context(raw_cookie, platform)
             if cookies:
                 context.add_cookies(cookies)
@@ -741,6 +774,13 @@ class BrowserVerificationRuntime:
                         return
                     proof_id = proof_store.store(proof)
                     captured_proof["id"] = proof_id
+                    _browser_verification_log(
+                        "browser_verification_proof_captured",
+                        "已捕获浏览器验证结果。",
+                        session_id=session_id,
+                        platform=platform,
+                        proof_id=proof_id,
+                    )
                     self.store.update_session(
                         session_id,
                         status="verified",
@@ -759,6 +799,13 @@ class BrowserVerificationRuntime:
             )
             self.store.update_session(session_id, status="running", message=running_message)
             page.goto(start_url, wait_until="domcontentloaded", timeout=45000)
+            _browser_verification_log(
+                "browser_verification_start_url_loaded",
+                "浏览器验证起始页面已加载。",
+                session_id=session_id,
+                platform=platform,
+                start_url=start_url,
+            )
             fell_back_to_web = False
             try:
                 fell_back_to_web = _fallback_from_api_denial_if_needed(page, session)
@@ -766,9 +813,24 @@ class BrowserVerificationRuntime:
                 fell_back_to_web = False
             if fell_back_to_web or not _is_f3mf_url(start_url):
                 try:
-                    _try_trigger_download_flow(page)
-                except Exception:
-                    pass
+                    triggered = _try_trigger_download_flow(page)
+                except Exception as exc:
+                    _browser_verification_log(
+                        "browser_verification_download_trigger_failed",
+                        "浏览器验证自动触发下载失败，等待用户手动操作。",
+                        level="warning",
+                        session_id=session_id,
+                        platform=platform,
+                        error=str(exc),
+                    )
+                else:
+                    _browser_verification_log(
+                        "browser_verification_download_trigger_attempted",
+                        "浏览器验证已尝试自动触发下载。",
+                        session_id=session_id,
+                        platform=platform,
+                        triggered=triggered,
+                    )
             deadline = time.time() + 15 * 60
             while time.time() < deadline:
                 current = self.store.get_session(session_id)
@@ -780,12 +842,25 @@ class BrowserVerificationRuntime:
                 proof_id = captured_proof.get("id") or current.get("proof_id") or ""
                 if proof_id:
                     retry_result = self._retry_after_verification(current, proof_id)
+                    _browser_verification_log(
+                        "browser_verification_retry_submitted",
+                        "验证完成后已提交缺失 3MF 重试。",
+                        session_id=session_id,
+                        platform=platform,
+                        retry_result=retry_result,
+                    )
                     self.store.update_session(
                         session_id,
                         status="completed",
                         message="验证已完成，重试任务已提交。",
                         retry_result=retry_result,
                         finished_at=_now(),
+                    )
+                    _browser_verification_log(
+                        "browser_verification_session_completed",
+                        "浏览器验证会话已完成。",
+                        session_id=session_id,
+                        platform=platform,
                     )
                     return
                 time.sleep(1.5)
@@ -794,6 +869,13 @@ class BrowserVerificationRuntime:
                 status="expired",
                 message="验证会话已超时。",
                 finished_at=_now(),
+            )
+            _browser_verification_log(
+                "browser_verification_session_expired",
+                "浏览器验证会话已超时。",
+                level="warning",
+                session_id=session_id,
+                platform=platform,
             )
         finally:
             try:

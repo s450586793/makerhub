@@ -804,6 +804,33 @@ class BrowserVerificationWorkerTest(unittest.TestCase):
             )
         )
 
+    def test_browser_verification_log_redacts_sensitive_values(self):
+        log_calls = []
+
+        with patch.object(browser_verification_module, "append_business_log", side_effect=lambda *args, **kwargs: log_calls.append((args, kwargs))):
+            browser_verification_module._browser_verification_log(
+                "browser_verification_proof_captured",
+                "已捕获验证结果。",
+                session_id="bv_secret",
+                platform="cn",
+                cookie="cf_clearance=secret-cookie",
+                token="secret-token",
+                proof="proof-secret",
+                headers={
+                    "Cookie": "token=secret-token; cf_clearance=secret-cookie",
+                    "x-bbl-captcha-result": "proof-secret",
+                    "User-Agent": "UnitTest",
+                },
+            )
+
+        self.assertEqual(log_calls[0][0][:3], ("missing_3mf", "browser_verification_proof_captured", "已捕获验证结果。"))
+        serialized = str(log_calls[0])
+        self.assertNotIn("secret-cookie", serialized)
+        self.assertNotIn("secret-token", serialized)
+        self.assertNotIn("proof-secret", serialized)
+        self.assertIn("[redacted]", serialized)
+        self.assertIn("UnitTest", serialized)
+
     def test_runtime_does_not_start_second_session_for_busy_platform_profile(self):
         class FakeThread:
             def __init__(self, target=None, args=(), kwargs=None, name="", daemon=False):
