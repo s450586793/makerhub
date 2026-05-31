@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import threading
 import time
@@ -236,6 +237,26 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         self.assertEqual(len(summary["recent_items"]), 50)
         self.assertEqual(summary["recent_items"][0]["id"], "m59")
         self.assertEqual(len(summary["failure_samples"]), 10)
+
+    def test_cleanup_remote_refresh_batch_buffers_keeps_newest_files(self):
+        original_batch_dir = remote_refresh.REMOTE_REFRESH_BATCH_DIR
+        remote_refresh.REMOTE_REFRESH_BATCH_DIR = self.temp_path / "remote_refresh_batches"
+        try:
+            batch_dir = remote_refresh.REMOTE_REFRESH_BATCH_DIR
+            batch_dir.mkdir(parents=True, exist_ok=True)
+            for index in range(7):
+                path = batch_dir / f"old-{index}.ndjson"
+                path.write_text(json.dumps({"index": index}, ensure_ascii=False), encoding="utf-8")
+                old_time = time.time() - remote_refresh.REMOTE_REFRESH_BATCH_BUFFER_MAX_AGE_SECONDS - 100 + index
+                os.utime(path, (old_time, old_time))
+
+            remote_refresh._cleanup_remote_refresh_batch_buffers()
+
+            remaining = sorted(path.name for path in batch_dir.glob("*.ndjson"))
+            self.assertLessEqual(len(remaining), remote_refresh.REMOTE_REFRESH_BATCH_BUFFER_KEEP)
+            self.assertIn("old-6.ndjson", remaining)
+        finally:
+            remote_refresh.REMOTE_REFRESH_BATCH_DIR = original_batch_dir
 
     def test_state_payload_reschedules_when_cron_changes_from_app_container(self):
         config = self.store.load()

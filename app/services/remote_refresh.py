@@ -263,6 +263,33 @@ class _RemoteRefreshBatchBuffer:
             return
 
 
+def _cleanup_remote_refresh_batch_buffers(
+    *,
+    directory: Optional[Path] = None,
+    keep: int = REMOTE_REFRESH_BATCH_BUFFER_KEEP,
+    max_age_seconds: int = REMOTE_REFRESH_BATCH_BUFFER_MAX_AGE_SECONDS,
+) -> None:
+    batch_dir = Path(directory or REMOTE_REFRESH_BATCH_DIR)
+    if not batch_dir.exists():
+        return
+    now = time.time()
+    files = sorted(
+        [path for path in batch_dir.glob("*.ndjson") if path.is_file()],
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for index, path in enumerate(files):
+        try:
+            age = now - path.stat().st_mtime
+            keep_count = max(int(keep or 0), 0)
+            if index >= keep_count and age > max_age_seconds:
+                path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            continue
+
+
 def _remote_refresh_result_record(
     *,
     model_dir: str,
@@ -1581,6 +1608,7 @@ class RemoteRefreshManager:
         candidates, stats = self._pick_candidates()
         workers = min(_remote_refresh_model_workers(config), max(len(candidates), 1))
         batch_buffer: Optional[_RemoteRefreshBatchBuffer] = None
+        _cleanup_remote_refresh_batch_buffers()
 
         try:
             self._reset_current_items(publish_event=False)
