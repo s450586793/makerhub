@@ -245,12 +245,13 @@ html[data-theme="dark"] .mw-profile-filament-chip {
 .browser-verification-frame {
   position: relative;
   min-height: 420px;
-  aspect-ratio: 520 / 640;
+  aspect-ratio: var(--browser-verification-aspect-ratio, 520 / 640);
   overflow: hidden;
   border: 0;
   border-radius: 0;
   background: var(--surface-strong);
   outline: none;
+  touch-action: none;
 }
 
 .browser-verification-frame:focus {

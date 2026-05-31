@@ -65,3 +65,10 @@ test("browser verification drag release uses the last tracked pointer position",
   assert.match(source, /const releaseCoordinates = cancelled \? pointerStateCoordinates\(state\) : commandCoordinates\(event\)/);
   assert.match(source, /type: "mouseup", \.\.\.releaseCoordinates/);
 });
+
+test("browser verification frame uses dynamic aspect ratio and disables touch panning", () => {
+  const source = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+
+  assert.match(source, /aspect-ratio:\s*var\(--browser-verification-aspect-ratio,\s*520 \/ 640\)/);
+  assert.match(source, /touch-action:\s*none/);
+});
