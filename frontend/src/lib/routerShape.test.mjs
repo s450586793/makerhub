@@ -33,3 +33,35 @@ test("browser verification page only renders the validation surface", () => {
   assert.doesNotMatch(source, />Captcha</);
   assert.match(source, /visibleMessageText/);
 });
+
+test("browser verification page uses pointer events for drag mapping", () => {
+  const source = readFileSync(new URL("../pages/BrowserVerificationPage.vue", import.meta.url), "utf8");
+  assert.match(source, /@pointerdown\.prevent="handlePointerDown"/);
+  assert.match(source, /@pointermove\.prevent="handlePointerMove"/);
+  assert.match(source, /@pointerup\.prevent="handlePointerUp"/);
+  assert.match(source, /@pointercancel\.prevent="handlePointerCancel"/);
+  assert.match(source, /setPointerCapture/);
+  assert.match(source, /releasePointerCapture/);
+  assert.match(source, /suppressNextClick/);
+  assert.doesNotMatch(source, /@mousedown\.prevent="sendPointerCommand\('mousedown'/);
+  assert.doesNotMatch(source, /@mousemove="handleMouseMove"/);
+  assert.doesNotMatch(source, /let mouseMoveSentAt = 0/);
+});
+
+test("browser verification page serializes drag input commands", () => {
+  const source = readFileSync(new URL("../pages/BrowserVerificationPage.vue", import.meta.url), "utf8");
+
+  assert.match(source, /let inputQueue = Promise\.resolve\(\)/);
+  assert.match(source, /function postInput\(payload\)/);
+  assert.match(source, /inputQueue = inputQueue\.then\(\s*\(\) => postInput\(payload\),\s*\(\) => postInput\(payload\),\s*\)/);
+});
+
+test("browser verification drag release uses the last tracked pointer position", () => {
+  const source = readFileSync(new URL("../pages/BrowserVerificationPage.vue", import.meta.url), "utf8");
+
+  assert.match(source, /function pointerStateCoordinates\(state\)/);
+  assert.match(source, /clientX:\s*state\.lastX/);
+  assert.match(source, /clientY:\s*state\.lastY/);
+  assert.match(source, /const releaseCoordinates = cancelled \? pointerStateCoordinates\(state\) : commandCoordinates\(event\)/);
+  assert.match(source, /type: "mouseup", \.\.\.releaseCoordinates/);
+});

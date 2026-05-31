@@ -7,10 +7,13 @@
           class="browser-verification-frame"
           tabindex="0"
           role="application"
-          @click="sendPointerCommand('click', $event)"
-          @mousemove="handleMouseMove"
-          @mousedown.prevent="sendPointerCommand('mousedown', $event)"
-          @mouseup.prevent="sendPointerCommand('mouseup', $event)"
+          :style="viewerFrameStyle"
+          @click="handleClick"
+          @pointerdown.prevent="handlePointerDown"
+          @pointermove.prevent="handlePointerMove"
+          @pointerup.prevent="handlePointerUp"
+          @pointercancel.prevent="handlePointerCancel"
+          @lostpointercapture="handlePointerCancel"
           @wheel.prevent="sendWheelCommand"
           @keydown.prevent="sendKeyCommand"
           @paste.prevent="sendPasteCommand"
@@ -43,6 +46,15 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 
 import { apiRequest } from "../lib/api";
+import {
+  createDragState,
+  frameAspectRatio,
+  isDragClickSuppressed,
+  mapFramePointToViewport,
+  markPointerMoveSent,
+  notePointerMove,
+  shouldSendPointerMove,
+} from "../lib/browserVerificationInput";
 import { subscribeStateRefresh } from "../lib/stateEvents";
 
 
@@ -56,7 +68,9 @@ let refreshTimer = 0;
 let screenshotRefreshTimer = 0;
 let screenshotObjectUrl = "";
 let unsubscribeStateRefresh = null;
-let mouseMoveSentAt = 0;
+let activePointerState = null;
+let suppressNextClick = false;
+let inputQueue = Promise.resolve();
 
 const sessionId = computed(() => String(route.params.sessionId || ""));
 const isFinished = computed(() => ["completed", "failed", "cancelled", "expired"].includes(String(session.value?.status || "")));
@@ -68,6 +82,9 @@ const visibleMessageText = computed(() => {
   }
   return session.value?.error || session.value?.message || "";
 });
+const viewerFrameStyle = computed(() => ({
+  "--browser-verification-aspect-ratio": frameAspectRatio(session.value?.viewport),
+}));
 const emptyTitle = computed(() => {
   if (isError.value) {
     return "验证页面加载失败";
@@ -98,6 +115,9 @@ function scheduleScreenshotRefresh(delay = 1200) {
   window.clearTimeout(screenshotRefreshTimer);
   if (isFinished.value) {
     return;
+  }
+  if (activePointerState && delay < 2400) {
+    delay = 2400;
   }
   screenshotRefreshTimer = window.setTimeout(() => {
     void loadScreenshot();
@@ -160,19 +180,17 @@ async function loadScreenshot() {
 
 function commandCoordinates(event) {
   const rect = viewerRef.value?.getBoundingClientRect();
-  const viewport = session.value?.viewport || {};
-  if (!rect || !rect.width || !rect.height) {
-    return { x: 0, y: 0 };
-  }
-  const scaleX = Number(viewport.width || 1365) / rect.width;
-  const scaleY = Number(viewport.height || 768) / rect.height;
-  return {
-    x: Math.max(0, Math.round((event.clientX - rect.left) * scaleX)),
-    y: Math.max(0, Math.round((event.clientY - rect.top) * scaleY)),
-  };
+  return mapFramePointToViewport(event, rect, session.value?.viewport || {});
 }
 
-async function sendInput(payload) {
+function pointerStateCoordinates(state) {
+  return commandCoordinates({
+    clientX: state.lastX,
+    clientY: state.lastY,
+  });
+}
+
+async function postInput(payload) {
   if (!sessionId.value || isFinished.value) {
     return;
   }
@@ -186,18 +204,89 @@ async function sendInput(payload) {
   }
 }
 
+function sendInput(payload) {
+  inputQueue = inputQueue.then(
+    () => postInput(payload),
+    () => postInput(payload),
+  );
+  return inputQueue;
+}
+
 function sendPointerCommand(type, event) {
   viewerRef.value?.focus();
   void sendInput({ type, ...commandCoordinates(event) });
 }
 
-function handleMouseMove(event) {
-  const now = Date.now();
-  if (now - mouseMoveSentAt < 180) {
+function handleClick(event) {
+  if (suppressNextClick) {
+    suppressNextClick = false;
     return;
   }
-  mouseMoveSentAt = now;
+  sendPointerCommand("click", event);
+}
+
+function handlePointerDown(event) {
+  viewerRef.value?.focus();
+  const coordinates = commandCoordinates(event);
+  activePointerState = createDragState({
+    pointerId: event.pointerId,
+    x: event.clientX,
+    y: event.clientY,
+    now: Date.now(),
+  });
+  suppressNextClick = false;
+  try {
+    event.currentTarget?.setPointerCapture?.(event.pointerId);
+  } catch {
+    // Pointer capture is best effort.
+  }
+  void sendInput({ type: "mousedown", ...coordinates });
+}
+
+function handlePointerMove(event) {
+  if (!activePointerState) {
+    return;
+  }
+  const now = Date.now();
+  notePointerMove(activePointerState, {
+    pointerId: event.pointerId,
+    x: event.clientX,
+    y: event.clientY,
+    now,
+  });
+  if (!shouldSendPointerMove({ state: activePointerState, pointerId: event.pointerId, now, dragging: true })) {
+    return;
+  }
+  markPointerMoveSent(activePointerState, now);
   void sendInput({ type: "mousemove", ...commandCoordinates(event) });
+}
+
+function finishPointerDrag(event, cancelled = false) {
+  if (!activePointerState || activePointerState.pointerId !== event.pointerId) {
+    return;
+  }
+  const state = activePointerState;
+  const releaseCoordinates = cancelled ? pointerStateCoordinates(state) : commandCoordinates(event);
+  if (!cancelled) {
+    void sendInput({ type: "mousemove", ...releaseCoordinates });
+  }
+  void sendInput({ type: "mouseup", ...releaseCoordinates });
+  try {
+    event.currentTarget?.releasePointerCapture?.(event.pointerId);
+  } catch {
+    // Pointer capture release is best effort.
+  }
+  suppressNextClick = isDragClickSuppressed(state);
+  activePointerState = null;
+  scheduleScreenshotRefresh(80);
+}
+
+function handlePointerUp(event) {
+  finishPointerDrag(event, false);
+}
+
+function handlePointerCancel(event) {
+  finishPointerDrag(event, true);
 }
 
 function sendWheelCommand(event) {
