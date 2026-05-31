@@ -5,6 +5,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -13,7 +14,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from croniter import CroniterBadCronError, croniter
 
-from app.core.settings import ARCHIVE_DIR, BACKGROUND_TASKS_ENABLED, LOGS_DIR
+from app.core.settings import ARCHIVE_DIR, BACKGROUND_TASKS_ENABLED, LOGS_DIR, STATE_DIR
 from app.core.store import JsonStore
 from app.core.timezone import ensure_timezone, from_timestamp as china_from_timestamp, now as china_now, now_iso as china_now_iso, parse_datetime
 from app.services.cookie_utils import sanitize_cookie_header
@@ -40,6 +41,9 @@ from app.services.three_mf import describe_three_mf_failure, normalize_makerworl
 
 
 REMOTE_REFRESH_LOG_PATH = LOGS_DIR / "remote_refresh.log"
+REMOTE_REFRESH_BATCH_DIR = STATE_DIR / "remote_refresh_batches"
+REMOTE_REFRESH_BATCH_BUFFER_KEEP = 5
+REMOTE_REFRESH_BATCH_BUFFER_MAX_AGE_SECONDS = 3 * 24 * 60 * 60
 REMOTE_REFRESH_POLL_SECONDS = 20
 DEFAULT_REMOTE_REFRESH_CRON = "0 0 * * *"
 DEFAULT_REMOTE_REFRESH_MODEL_WORKERS = 2
@@ -181,6 +185,82 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _json_safe_remote_refresh_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_safe_remote_refresh_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_remote_refresh_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe_remote_refresh_value(item) for item in value]
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return value.as_posix()
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _remote_refresh_batch_id() -> str:
+    return f"{_now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
+
+
+class _RemoteRefreshBatchBuffer:
+    def __init__(self, *, batch_id: str = "", directory: Optional[Path] = None) -> None:
+        self.batch_id = str(batch_id or _remote_refresh_batch_id()).strip()
+        self.directory = Path(directory or REMOTE_REFRESH_BATCH_DIR)
+        self.path = self.directory / f"{self.batch_id}.ndjson"
+        self._lock = threading.Lock()
+        self._closed = False
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self._handle = self.path.open("a", encoding="utf-8")
+
+    def append(self, record: dict[str, Any]) -> None:
+        if not isinstance(record, dict):
+            return
+        line = json.dumps(
+            _json_safe_remote_refresh_value(record),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("remote refresh batch buffer is closed")
+            self._handle.write(f"{line}\n")
+            self._handle.flush()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._handle.close()
+            self._closed = True
+
+    def read_records(self) -> list[dict[str, Any]]:
+        self.close()
+        records: list[dict[str, Any]] = []
+        if not self.path.exists():
+            return records
+        for raw_line in self.path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                records.append(payload)
+        return records
+
+    def delete(self) -> None:
+        self.close()
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            return
 
 
 def _comment_key(comment: Any) -> str:

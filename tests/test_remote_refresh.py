@@ -138,6 +138,46 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         self.assertEqual(remote_refresh._remote_refresh_model_workers(config), 3)
         self.assertEqual(remote_refresh._remote_refresh_model_workers(high_config), 4)
 
+    def test_remote_refresh_batch_buffer_writes_reads_and_deletes_records(self):
+        buffer = remote_refresh._RemoteRefreshBatchBuffer(
+            batch_id="test-batch",
+            directory=self.temp_path / "remote_refresh_batches",
+        )
+
+        buffer.append(
+            {
+                "model_dir": "m1",
+                "title": "模型 1",
+                "url": "https://makerworld.com.cn/model/1",
+                "status": "success",
+                "message": "完成",
+                "updated_at": "2026-05-31T12:00:00+08:00",
+                "change_labels": ["已检查，无远端变化"],
+                "metrics": {"total_duration_ms": 10},
+            }
+        )
+        buffer.append(
+            {
+                "model_dir": "m2",
+                "title": "模型 2",
+                "url": "https://makerworld.com.cn/model/2",
+                "status": "failed",
+                "message": "失败",
+                "updated_at": "2026-05-31T12:01:00+08:00",
+                "change_labels": ["刷新失败"],
+                "metrics": {"total_duration_ms": 20},
+            }
+        )
+        buffer.close()
+
+        records = buffer.read_records()
+
+        self.assertEqual([item["model_dir"] for item in records], ["m1", "m2"])
+        self.assertEqual(records[1]["status"], "failed")
+        self.assertTrue(buffer.path.exists())
+        buffer.delete()
+        self.assertFalse(buffer.path.exists())
+
     def test_state_payload_reschedules_when_cron_changes_from_app_container(self):
         config = self.store.load()
         config.remote_refresh.enabled = True
