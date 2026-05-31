@@ -539,6 +539,27 @@ class BrowserVerificationSessionTest(unittest.TestCase):
         self.assertTrue(result)
         self.assertTrue(page.locators['button:has-text("Download 3MF")'].clicked)
 
+    def test_verification_clip_detects_cloudflare_turnstile_widget(self):
+        class FakePage:
+            def evaluate(self, _script):
+                return {"x": 37, "y": 681, "width": 376, "height": 148}
+
+        runtime = browser_verification_module.BrowserVerificationRuntime()
+
+        self.assertEqual(
+            runtime._verification_clip(FakePage()),
+            {"x": 37, "y": 681, "width": 376, "height": 148},
+        )
+
+    def test_verification_clip_rejects_invalid_candidate_shape(self):
+        class FakePage:
+            def evaluate(self, _script):
+                return {"x": 10, "y": 20, "width": 0, "height": 0}
+
+        runtime = browser_verification_module.BrowserVerificationRuntime()
+
+        self.assertEqual(runtime._verification_clip(FakePage()), {})
+
     def test_run_session_opens_model_page_without_3mf_api_url(self):
         session = {
             "id": "bv_no_api",

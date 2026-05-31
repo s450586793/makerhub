@@ -873,7 +873,13 @@ class BrowserVerificationRuntime:
             raw_clip = page.evaluate(
                 """
                 () => {
-                  const selectors = [
+                  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1024;
+                  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 720;
+                  const pad = 24;
+                  const directSelectors = [
+                    '.cf-turnstile',
+                    '[data-sitekey]',
+                    'iframe[src*="challenges.cloudflare.com"]',
                     '.geetest_panel',
                     '.geetest_box',
                     '.geetest_popup_box',
@@ -883,33 +889,58 @@ class BrowserVerificationRuntime:
                     '[id*="captcha"]',
                     '[class*="verify"]'
                   ];
-                  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1024;
-                  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 720;
-                  for (const selector of selectors) {
+                  const textNeedles = [
+                    'verify you are human',
+                    'performing security verification',
+                    'security verification',
+                    'not a bot'
+                  ];
+                  function visibleRect(element) {
+                    if (!element || !element.getBoundingClientRect) return null;
+                    const rect = element.getBoundingClientRect();
+                    const style = window.getComputedStyle(element);
+                    if (
+                      rect.width < 80 ||
+                      rect.height < 40 ||
+                      rect.right <= 0 ||
+                      rect.bottom <= 0 ||
+                      rect.left >= viewportWidth ||
+                      rect.top >= viewportHeight ||
+                      style.visibility === 'hidden' ||
+                      style.display === 'none' ||
+                      Number(style.opacity || '1') <= 0.05
+                    ) {
+                      return null;
+                    }
+                    return rect;
+                  }
+                  function paddedClip(rect) {
+                    const x = Math.max(0, Math.floor(rect.left - pad));
+                    const y = Math.max(0, Math.floor(rect.top - pad));
+                    const right = Math.min(viewportWidth, Math.ceil(rect.right + pad));
+                    const bottom = Math.min(viewportHeight, Math.ceil(rect.bottom + pad));
+                    return { x, y, width: right - x, height: bottom - y };
+                  }
+                  const candidates = [];
+                  for (const selector of directSelectors) {
                     for (const element of document.querySelectorAll(selector)) {
-                      const rect = element.getBoundingClientRect();
-                      const style = window.getComputedStyle(element);
-                      if (
-                        rect.width >= 180 &&
-                        rect.height >= 160 &&
-                        rect.right > 0 &&
-                        rect.bottom > 0 &&
-                        rect.left < viewportWidth &&
-                        rect.top < viewportHeight &&
-                        style.visibility !== 'hidden' &&
-                        style.display !== 'none' &&
-                        Number(style.opacity || '1') > 0.05
-                      ) {
-                        const pad = 24;
-                        const x = Math.max(0, Math.floor(rect.left - pad));
-                        const y = Math.max(0, Math.floor(rect.top - pad));
-                        const right = Math.min(viewportWidth, Math.ceil(rect.right + pad));
-                        const bottom = Math.min(viewportHeight, Math.ceil(rect.bottom + pad));
-                        return { x, y, width: right - x, height: bottom - y };
+                      const rect = visibleRect(element);
+                      if (rect) {
+                        candidates.push({ clip: paddedClip(rect), score: rect.width * rect.height });
                       }
                     }
                   }
-                  return null;
+                  const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_ELEMENT);
+                  while (walker.nextNode()) {
+                    const element = walker.currentNode;
+                    const text = String(element.innerText || element.textContent || '').toLowerCase();
+                    if (!text || !textNeedles.some((needle) => text.includes(needle))) continue;
+                    const rect = visibleRect(element);
+                    if (!rect) continue;
+                    candidates.push({ clip: paddedClip(rect), score: rect.width * rect.height + 1000000 });
+                  }
+                  candidates.sort((a, b) => a.score - b.score);
+                  return candidates.length ? candidates[0].clip : null;
                 }
                 """
             )
@@ -920,9 +951,11 @@ class BrowserVerificationRuntime:
         try:
             x = max(0, int(float(raw_clip.get("x") or 0)))
             y = max(0, int(float(raw_clip.get("y") or 0)))
-            width = max(1, int(float(raw_clip.get("width") or 0)))
-            height = max(1, int(float(raw_clip.get("height") or 0)))
+            width = int(float(raw_clip.get("width") or 0))
+            height = int(float(raw_clip.get("height") or 0))
         except (TypeError, ValueError):
+            return {}
+        if width < 80 or height < 40:
             return {}
         return {"x": x, "y": y, "width": width, "height": height}
 
