@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import secrets
 import subprocess
@@ -503,20 +504,106 @@ def _instance_id_from_api_url(api_url: str) -> str:
     return ""
 
 
+def _is_f3mf_url(url: str) -> bool:
+    return "/f3mf" in urlparse(str(url or "")).path
+
+
+def _looks_like_api_denial_text(text: str) -> bool:
+    clean = str(text or "").strip()
+    if not clean:
+        return False
+    lower = clean.lower()
+    parsed: Any = None
+    if clean.startswith("{") or clean.startswith("["):
+        try:
+            parsed = json.loads(clean)
+        except (TypeError, ValueError):
+            parsed = None
+    if isinstance(parsed, dict):
+        code = str(parsed.get("code") or parsed.get("status") or "").strip()
+        error_text = " ".join(str(parsed.get(key) or "") for key in ("error", "message", "msg", "detail")).lower()
+        return code == "403" or (
+            "403" in error_text
+            and any(marker in error_text for marker in ("access", "permission", "right", "forbidden", "denied"))
+        ) or any(marker in error_text for marker in ("access rights", "permission denied", "forbidden"))
+    if "<html" in lower or "<body" in lower or "<button" in lower:
+        return False
+    return "403" in lower and any(
+        marker in lower
+        for marker in ("access rights", "permission", "forbidden", "denied", "does not have access")
+    )
+
+
+def _page_looks_like_api_denial(page: Any) -> bool:
+    try:
+        body_text = page.text_content("body", timeout=800)
+    except Exception:
+        return False
+    return _looks_like_api_denial_text(str(body_text or ""))
+
+
+def _browser_verification_fallback_url(session: dict[str, Any]) -> str:
+    target = session.get("target") if isinstance(session.get("target"), dict) else {}
+    model_url = normalize_source_url(str(target.get("model_url") or ""))
+    if model_url:
+        return model_url
+    platform = str(session.get("platform") or _platform_from_item(target) or "cn")
+    return _origin_for_platform(platform)
+
+
+def _fallback_from_api_denial_if_needed(page: Any, session: dict[str, Any]) -> bool:
+    if not _page_looks_like_api_denial(page):
+        return False
+    fallback_url = _browser_verification_fallback_url(session)
+    if not fallback_url:
+        return False
+    page.goto(fallback_url, wait_until="domcontentloaded", timeout=45000)
+    return True
+
+
+def _try_trigger_download_flow(page: Any) -> bool:
+    selectors = (
+        'button:has-text("Download 3MF")',
+        'a:has-text("Download 3MF")',
+        '[role="button"]:has-text("Download 3MF")',
+        '[role="menuitem"]:has-text("Download 3MF")',
+        'button:has-text("下载 3MF")',
+        'a:has-text("下载 3MF")',
+        '[role="button"]:has-text("下载 3MF")',
+        '[role="menuitem"]:has-text("下载 3MF")',
+        'button:has-text("Download")',
+        'a:has-text("Download")',
+        '[role="button"]:has-text("Download")',
+        '[role="menuitem"]:has-text("Download")',
+        'button:has-text("下载")',
+        'a:has-text("下载")',
+        '[role="button"]:has-text("下载")',
+        '[role="menuitem"]:has-text("下载")',
+    )
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first()
+            if not locator.is_visible(timeout=700):
+                continue
+            locator.click(timeout=1500)
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def _verification_start_url(session: dict[str, Any]) -> str:
     target = session.get("target") if isinstance(session.get("target"), dict) else {}
     api_url = normalize_source_url(str(target.get("api_url") or ""))
     platform = str(session.get("platform") or _platform_from_item(target) or "cn")
     instance_id = _safe_text(target.get("instance_id") or _instance_id_from_api_url(api_url), 120)
-    if api_url and "/f3mf" in urlparse(api_url).path:
-        if instance_id and "api.bambulab" not in urlparse(api_url).netloc.lower():
-            return _instance_f3mf_api_url(instance_id, platform)
+    if api_url and _is_f3mf_url(api_url):
         return api_url
-    if instance_id:
-        return _instance_f3mf_api_url(instance_id, platform)
     model_url = normalize_source_url(str(target.get("model_url") or ""))
     if model_url:
         return model_url
+    if instance_id:
+        return _instance_f3mf_api_url(instance_id, platform)
     return _origin_for_platform(platform)
 
 
@@ -672,6 +759,16 @@ class BrowserVerificationRuntime:
             )
             self.store.update_session(session_id, status="running", message=running_message)
             page.goto(start_url, wait_until="domcontentloaded", timeout=45000)
+            fell_back_to_web = False
+            try:
+                fell_back_to_web = _fallback_from_api_denial_if_needed(page, session)
+            except Exception:
+                fell_back_to_web = False
+            if fell_back_to_web or not _is_f3mf_url(start_url):
+                try:
+                    _try_trigger_download_flow(page)
+                except Exception:
+                    pass
             deadline = time.time() + 15 * 60
             while time.time() < deadline:
                 current = self.store.get_session(session_id)

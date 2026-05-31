@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.8.11`
+> 当前版本：`v0.8.12`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-05-31 · v0.8.12
+
+- 浏览器验证优先使用缺失 3MF 当初触发验证的原始路径，避免过早改写到不一致的接口。
+- 遇到上游返回 JSON 403 权限错误时，验证浏览器会自动回到对应 MakerWorld 模型页。
+- 进入模型页后会尝试自动点击下载 3MF，让验证码更快出现在纯验证弹窗中。
+
 ### 2026-05-31 · v0.8.11
 
 - 浏览器验证弹窗改为纯验证画面，正常状态下只显示远程验证码区域，不再显示返回、刷新、取消等操作控件。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - 验证浏览器会同时注入 MakerWorld 站点域和 Bambu API 域 Cookie，并补齐 token 请求头，减少直连 API 验证时的权限失败。
 - 验证页移除模型标题、平台、状态、截图数、模型 ID 等元信息，只保留远程验证画面和必要操作按钮。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-05-29 · v0.8.9
 
 - 浏览器验证弹窗改为紧凑窗口，验证页只展示主要验证画面，不再铺满整张 MakerWorld 页面。
 - 后端截图会优先裁剪 MakerWorld 验证/验证码浮层，并把点击坐标映射回真实浏览器页面，保证裁剪后仍可操作。
 - 增加验证截图裁剪、坐标偏移和紧凑弹窗尺寸回归测试。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-05-29 · v0.8.8
 

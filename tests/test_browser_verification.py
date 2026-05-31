@@ -365,7 +365,7 @@ class BrowserVerificationSessionTest(unittest.TestCase):
         self.assertEqual(retry_calls[0]["primary"], {})
         self.assertEqual(retry_calls[0]["proof_id"], "proof-1")
 
-    def test_verification_start_url_prefers_3mf_api_url(self):
+    def test_verification_start_url_preserves_original_bambu_3mf_api_url(self):
         session = {
             "platform": "cn",
             "target": {
@@ -379,7 +379,7 @@ class BrowserVerificationSessionTest(unittest.TestCase):
             "https://api.bambulab.cn/v1/design-service/instance/1063416/f3mf?type=download&fileType=3mf",
         )
 
-    def test_verification_start_url_rewrites_makerworld_f3mf_to_preferred_api_when_instance_id_present(self):
+    def test_verification_start_url_preserves_original_makerworld_3mf_api_url(self):
         session = {
             "platform": "global",
             "target": {
@@ -391,10 +391,10 @@ class BrowserVerificationSessionTest(unittest.TestCase):
 
         self.assertEqual(
             browser_verification_module._verification_start_url(session),
-            "https://api.bambulab.com/v1/design-service/instance/742440/f3mf?type=download&fileType=3mf",
+            "https://makerworld.com/api/v1/design-service/instance/742440/f3mf?type=download&fileType=",
         )
 
-    def test_verification_start_url_rewrites_makerworld_f3mf_by_parsing_instance_id_from_url(self):
+    def test_verification_start_url_preserves_original_makerworld_3mf_api_url_without_instance_id(self):
         session = {
             "platform": "cn",
             "target": {
@@ -405,10 +405,10 @@ class BrowserVerificationSessionTest(unittest.TestCase):
 
         self.assertEqual(
             browser_verification_module._verification_start_url(session),
-            "https://api.bambulab.cn/v1/design-service/instance/1063416/f3mf?type=download&fileType=3mf",
+            "https://makerworld.com.cn/api/v1/design-service/instance/1063416/f3mf?type=download&fileType=",
         )
 
-    def test_verification_start_url_synthesizes_3mf_api_url_from_instance_id(self):
+    def test_verification_start_url_prefers_original_model_url_before_synthesizing_from_instance_id(self):
         session = {
             "platform": "global",
             "target": {
@@ -419,14 +419,27 @@ class BrowserVerificationSessionTest(unittest.TestCase):
 
         self.assertEqual(
             browser_verification_module._verification_start_url(session),
-            "https://api.bambulab.com/v1/design-service/instance/742440/f3mf?type=download&fileType=3mf",
+            "https://makerworld.com/zh/models/802319",
         )
 
-    def test_verification_start_url_synthesizes_cn_3mf_api_url_from_instance_id(self):
+    def test_verification_start_url_prefers_original_cn_model_url_before_synthesizing_from_instance_id(self):
         session = {
             "platform": "cn",
             "target": {
                 "model_url": "https://makerworld.com.cn/zh/models/1063416",
+                "instance_id": "1063416",
+            },
+        }
+
+        self.assertEqual(
+            browser_verification_module._verification_start_url(session),
+            "https://makerworld.com.cn/zh/models/1063416",
+        )
+
+    def test_verification_start_url_synthesizes_3mf_api_url_when_only_instance_id_exists(self):
+        session = {
+            "platform": "cn",
+            "target": {
                 "instance_id": "1063416",
             },
         }
@@ -448,6 +461,83 @@ class BrowserVerificationSessionTest(unittest.TestCase):
             browser_verification_module._verification_start_url(session),
             "https://makerworld.com.cn/zh/models/1063416",
         )
+
+    def test_browser_verification_detects_json_api_denial_text(self):
+        self.assertTrue(
+            browser_verification_module._looks_like_api_denial_text(
+                '{"code":403,"error":"The client does not have access rights to the content."}'
+            )
+        )
+        self.assertTrue(
+            browser_verification_module._looks_like_api_denial_text(
+                "403 Forbidden: permission denied"
+            )
+        )
+        self.assertFalse(
+            browser_verification_module._looks_like_api_denial_text(
+                '<html><body><button>Download 3MF</button></body></html>'
+            )
+        )
+
+    def test_browser_verification_falls_back_to_model_url_after_api_denial(self):
+        class FakePage:
+            def __init__(self):
+                self.goto_calls = []
+
+            def text_content(self, selector, **_kwargs):
+                if selector == "body":
+                    return '{"code":403,"error":"The client does not have access rights to the content."}'
+                return ""
+
+            def goto(self, url, **kwargs):
+                self.goto_calls.append((url, kwargs))
+
+        session = {
+            "platform": "cn",
+            "target": {
+                "model_url": "https://makerworld.com.cn/zh/models/12345-demo",
+                "api_url": "https://makerworld.com.cn/api/v1/design-service/instance/1063416/f3mf?type=download&fileType=",
+                "instance_id": "1063416",
+            },
+        }
+        page = FakePage()
+
+        result = browser_verification_module._fallback_from_api_denial_if_needed(page, session)
+
+        self.assertTrue(result)
+        self.assertEqual(page.goto_calls[-1][0], "https://makerworld.com.cn/zh/models/12345-demo")
+        self.assertEqual(page.goto_calls[-1][1]["wait_until"], "domcontentloaded")
+
+    def test_try_trigger_download_flow_clicks_visible_download_control(self):
+        class FakeLocator:
+            def __init__(self, visible=False):
+                self.visible = visible
+                self.clicked = False
+
+            def first(self):
+                return self
+
+            def is_visible(self, **_kwargs):
+                return self.visible
+
+            def click(self, **_kwargs):
+                self.clicked = True
+
+        class FakePage:
+            def __init__(self):
+                self.locators = {
+                    'button:has-text("Download 3MF")': FakeLocator(visible=True),
+                }
+
+            def locator(self, selector):
+                return self.locators.setdefault(selector, FakeLocator())
+
+        page = FakePage()
+
+        result = browser_verification_module._try_trigger_download_flow(page)
+
+        self.assertTrue(result)
+        self.assertTrue(page.locators['button:has-text("Download 3MF")'].clicked)
 
     def test_run_session_opens_model_page_without_3mf_api_url(self):
         session = {
@@ -521,6 +611,73 @@ class BrowserVerificationSessionTest(unittest.TestCase):
         self.assertEqual(fake_page.urls, ["https://makerworld.com.cn/zh/models/1063416"])
         self.assertEqual(fake_page.route_pattern, "**/*")
         self.assertTrue(any(change.get("status") == "running" for _session_id, change in updates))
+
+    def test_run_session_attempts_download_trigger_after_opening_model_page(self):
+        session = {
+            "id": "bv_trigger",
+            "status": "queued",
+            "platform": "cn",
+            "target": {"model_url": "https://makerworld.com.cn/zh/models/1063416"},
+        }
+        current_session = dict(session)
+
+        def get_session(_session_id):
+            return dict(current_session)
+
+        def update_session(_session_id, **changes):
+            current_session.update(changes)
+            return dict(current_session)
+
+        class FakePage:
+            def __init__(self):
+                self.urls = []
+                self.mouse = SimpleNamespace(click=lambda *_args, **_kwargs: None, move=lambda *_args, **_kwargs: None, down=lambda: None, up=lambda: None, wheel=lambda *_args, **_kwargs: None)
+                self.keyboard = SimpleNamespace(press=lambda *_args, **_kwargs: None, type=lambda *_args, **_kwargs: None)
+
+            def set_viewport_size(self, _viewport):
+                pass
+
+            def on(self, _event, _callback):
+                pass
+
+            def route(self, _pattern, _callback):
+                pass
+
+            def goto(self, url, **_kwargs):
+                self.urls.append(url)
+                current_session["status"] = "cancelled"
+
+            def screenshot(self, **_kwargs):
+                pass
+
+        fake_page = FakePage()
+        context = SimpleNamespace(
+            pages=[fake_page],
+            add_cookies=lambda _cookies: None,
+            close=lambda: None,
+        )
+        store = SimpleNamespace(
+            get_session=get_session,
+            update_session=update_session,
+            consume_input_commands=lambda _session_id: [],
+            screenshot_path=lambda _session_id: browser_verification_module.BROWSER_VERIFICATION_SCREENSHOT_DIR / "unit-test.jpg",
+        )
+        runtime = browser_verification_module.BrowserVerificationRuntime(
+            store=store,
+            json_store=SimpleNamespace(
+                load=lambda: SimpleNamespace(cookies=[SimpleNamespace(platform="cn", cookie="token=ok")], proxy=SimpleNamespace())
+            ),
+        )
+
+        with patch.object(runtime, "_launch_context", return_value=context), \
+                patch.object(runtime, "_ensure_virtual_display"), \
+                patch.object(runtime, "_ensure_browser_dirs"), \
+                patch.object(browser_verification_module, "_try_trigger_download_flow", return_value=True) as trigger_flow, \
+                patch.object(browser_verification_module.time, "sleep", return_value=None):
+            runtime._run_session("bv_trigger")
+
+        self.assertEqual(fake_page.urls, ["https://makerworld.com.cn/zh/models/1063416"])
+        trigger_flow.assert_called_once_with(fake_page)
 
     def test_write_screenshot_crops_verification_box_and_exposes_offset_viewport(self):
         updates = []

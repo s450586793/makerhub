@@ -9,7 +9,8 @@ MakerHub should make the browser verification popup reach the MakerWorld captcha
 In scope:
 
 - Detect direct API denial pages such as JSON `403` permission errors and stop showing them as the verification surface.
-- Navigate the verification browser to the MakerWorld model page when the direct API path is not interactive.
+- Prefer the original URL that triggered the missing 3MF verification session before synthesizing a replacement URL.
+- Navigate the verification browser to the MakerWorld model page when the original path or direct API path is not interactive.
 - Try to select the target print profile when the instance ID or profile information is available.
 - Try to click the MakerWorld `Download 3MF` control automatically after the model page loads.
 - Keep the popup UI chrome-free: no MakerHub header, task metadata, model metadata, or extra action buttons.
@@ -32,7 +33,7 @@ The popup remains a compact, pure remote-browser viewport. During normal operati
 2. A MakerWorld download-related modal or page section, if it appears before the captcha.
 3. The model page only as a fallback while MakerHub is trying to trigger the download control.
 
-Raw JSON API errors must not remain visible as the verification surface. If the browser lands on a JSON permission error, the worker should immediately route to the model page and begin the automatic trigger flow.
+Raw JSON API errors must not remain visible as the verification surface. If the browser lands on a JSON permission error, the worker should derive the target model/profile context from the original URL or session target, route to the model page, and begin the automatic trigger flow.
 
 When the automatic click succeeds, the user only needs to complete the captcha. If MakerWorld changes the button text or layout and the automatic click fails, the user can still click the visible download control inside the same MakerHub popup.
 
@@ -42,9 +43,9 @@ When the automatic click succeeds, the user only needs to complete the captcha. 
 
 Navigation flow:
 
-1. Compute the same direct API candidate URL when an instance ID exists.
-2. Open that URL only as a quick interactive check.
-3. If the page body looks like JSON/API denial, navigate to `target.model_url`.
+1. Prefer the original trigger URL from `target.api_url` or `target.model_url` without rewriting it when it is already a usable web URL.
+2. Use the direct API candidate URL as the first navigation only when the original trigger is an API `/f3mf` URL or when only an instance ID is available.
+3. If the loaded page body looks like JSON/API denial, navigate to the best available MakerWorld web page from `target.model_url`, then use the instance/profile context from the original URL to guide the download trigger.
 4. Wait for the model page to reach a usable DOM state.
 5. Try a bounded automatic trigger sequence:
    - Prefer controls whose accessible name or text contains `Download 3MF`, `下载 3MF`, `下载`, or `Download`.
@@ -81,7 +82,7 @@ No visible frontend chrome is added.
 ## Error Handling
 
 - Missing cookie: fail with the existing concise account-cookie message.
-- Direct API JSON `403`: do not fail immediately; reroute to the model page and try the automatic trigger.
+- Direct API JSON `403`: do not fail immediately; reroute to the model page using the original trigger context and try the automatic trigger.
 - Model page load failure: keep the session failed with a concise browser navigation message.
 - Automatic trigger failure: keep the session running and allow manual click in the popup.
 - Captcha never appears: keep polling until the existing timeout.
@@ -93,7 +94,8 @@ Backend tests:
 
 - JSON `403` page detection recognizes the observed MakerWorld/Bambu response.
 - JSON `403` detection does not classify normal HTML/captcha content as API denial.
-- Runtime navigation falls back from direct API URL to `model_url` after API denial.
+- Runtime navigation falls back from the original API trigger URL to `model_url` after API denial.
+- Web trigger URLs are opened directly instead of being replaced by synthesized API URLs.
 - Automatic trigger tries expected download selectors/text without requiring an exact single language.
 - Trigger failure does not fail the session.
 - Existing Bambu API auth header routing and proof capture behavior remain unchanged.
@@ -112,7 +114,8 @@ Verification commands:
 ## Acceptance Criteria
 
 - The MakerHub popup no longer stays on the raw JSON `403` page shown in the screenshot.
-- When the direct API route is non-interactive, the worker opens the MakerWorld model page.
+- Original web trigger URLs are used directly.
+- When the original API route is non-interactive, the worker opens the MakerWorld model page.
 - The worker attempts to click the `Download 3MF` flow automatically.
 - If MakerWorld shows a captcha, the popup crops to the captcha or verification panel.
 - If automatic clicking fails, the user can still click the download control manually inside the same popup.
