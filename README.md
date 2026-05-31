@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.8.13`
+> 当前版本：`v0.8.14`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-05-31 · v0.8.14
+
+- 浏览器验证继续基于 CloakBrowser，但增强 Cloudflare Turnstile、MakerWorld 验证框和验证文本区域的截图裁剪，减少弹窗里的多余页面内容。
+- 增加浏览器验证关键节点诊断日志，区分浏览器启动、API 权限页回退、下载触发、验证区域检测、proof 捕获、重试提交和完成/超时。
+- 浏览器验证日志会统一脱敏 Cookie、Token、`cf_clearance` 和验证 proof，避免敏感信息进入业务日志。
+
 ### 2026-05-31 · v0.8.13
 
 - 源端刷新批次运行中改为把单模型结果写入临时 NDJSON 文件，避免每个模型完成都写数据库日志和状态事件。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - 遇到上游返回 JSON 403 权限错误时，验证浏览器会自动回到对应 MakerWorld 模型页。
 - 进入模型页后会尝试自动点击下载 3MF，让验证码更快出现在纯验证弹窗中。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-05-31 · v0.8.11
 
 - 浏览器验证弹窗改为纯验证画面，正常状态下只显示远程验证码区域，不再显示返回、刷新、取消等操作控件。
 - 验证页只在加载失败、超时或完成时显示必要提示，避免模型、任务和状态信息干扰手动验证。
 - 缩小验证弹窗尺寸，并增加纯验证页面形态的前端回归测试。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-05-30 · v0.8.10
 
