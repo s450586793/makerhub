@@ -255,7 +255,7 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0][0], "remote_refresh_state")
         self.assertEqual(events[0][1], "state.changed")
-        self.assertEqual(events[0][2]["scope"], "remote_refresh_state")
+        self.assertNotIn("scope", events[0][2])
 
 
 if __name__ == "__main__":

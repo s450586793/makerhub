@@ -848,7 +848,6 @@ class TaskStateStore:
 
     def _publish_state_event(self, scope: str, state: dict, event_type: str = "state.changed", payload: Optional[dict] = None) -> None:
         event_payload = task_counts_payload(state)
-        event_payload.setdefault("scope", str(scope or ""))
         if isinstance(payload, dict):
             event_payload.update(payload)
         publish_state_event(scope, event_type, event_payload)
@@ -1710,7 +1709,7 @@ class TaskStateStore:
 
         return self._update_subscriptions_state(_mutate)
 
-    def patch_remote_refresh_state(self, publish_event: bool = True, **changes: Any) -> dict:
+    def patch_remote_refresh_state(self, *, publish_event: bool = True, **changes: Any) -> dict:
         def _mutate(payload: dict) -> dict:
             merged = dict(_normalize_remote_refresh_state(payload))
             for key, value in changes.items():
