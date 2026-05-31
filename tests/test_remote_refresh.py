@@ -178,6 +178,65 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         buffer.delete()
         self.assertFalse(buffer.path.exists())
 
+    def test_remote_refresh_batch_summary_uses_recent_newest_first_and_failure_samples(self):
+        records = [
+            remote_refresh._remote_refresh_result_record(
+                model_dir="m1",
+                title="模型 1",
+                url="https://makerworld.com.cn/model/1",
+                status="success",
+                message="完成",
+                metrics={"total_duration_ms": 10},
+                change_labels=["已检查，无远端变化"],
+            ),
+            remote_refresh._remote_refresh_result_record(
+                model_dir="m2",
+                title="模型 2",
+                url="https://makerworld.com.cn/model/2",
+                status="failed",
+                message="失败",
+                metrics={"total_duration_ms": 20},
+                change_labels=["刷新失败"],
+            ),
+            remote_refresh._remote_refresh_result_record(
+                model_dir="m3",
+                title="模型 3",
+                url="https://makerworld.com.cn/model/3",
+                status="source_deleted",
+                message="源端模型已删除",
+                metrics={"total_duration_ms": 30},
+                change_labels=["模型源端已删除"],
+            ),
+        ]
+
+        summary = remote_refresh._remote_refresh_batch_summary(records)
+
+        self.assertEqual(summary["recent_items"][0]["id"], "m3")
+        self.assertEqual(summary["recent_items"][1]["id"], "m2")
+        self.assertEqual(summary["failed"], 1)
+        self.assertEqual(summary["source_deleted"], 1)
+        self.assertEqual(summary["failure_samples"][0]["model_dir"], "m2")
+
+    def test_remote_refresh_batch_summary_limits_recent_and_failures(self):
+        records = [
+            remote_refresh._remote_refresh_result_record(
+                model_dir=f"m{index}",
+                title=f"模型 {index}",
+                url=f"https://makerworld.com.cn/model/{index}",
+                status="failed",
+                message=f"失败 {index}",
+                metrics={"total_duration_ms": index},
+                change_labels=["刷新失败"],
+            )
+            for index in range(60)
+        ]
+
+        summary = remote_refresh._remote_refresh_batch_summary(records)
+
+        self.assertEqual(len(summary["recent_items"]), 50)
+        self.assertEqual(summary["recent_items"][0]["id"], "m59")
+        self.assertEqual(len(summary["failure_samples"]), 10)
+
     def test_state_payload_reschedules_when_cron_changes_from_app_container(self):
         config = self.store.load()
         config.remote_refresh.enabled = True

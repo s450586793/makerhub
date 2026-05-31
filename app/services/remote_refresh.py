@@ -263,6 +263,66 @@ class _RemoteRefreshBatchBuffer:
             return
 
 
+def _remote_refresh_result_record(
+    *,
+    model_dir: str,
+    title: str,
+    url: str,
+    status: str,
+    message: str,
+    metrics: Optional[dict[str, Any]] = None,
+    change_labels: Optional[list[Any]] = None,
+    meta: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    clean_model_dir = str(model_dir or "").strip()
+    clean_status = str(status or "success").strip() or "success"
+    clean_metrics = dict(metrics or {}) if isinstance(metrics, dict) else {}
+    clean_meta = dict(meta or {}) if isinstance(meta, dict) else {}
+    clean_meta.setdefault("model_dir", clean_model_dir)
+    if clean_metrics:
+        clean_meta["metrics"] = clean_metrics
+    labels = [str(item).strip() for item in (change_labels or []) if str(item).strip()]
+    if labels:
+        clean_meta["change_labels"] = labels
+        clean_meta["change_summary"] = "，".join(labels)
+    return {
+        "id": clean_model_dir,
+        "title": str(title or clean_model_dir or "未命名模型"),
+        "url": str(url or ""),
+        "status": clean_status,
+        "progress": 100 if clean_status in {"success", "source_deleted"} else 0,
+        "message": _sanitize_remote_refresh_message(message, clean_status),
+        "updated_at": _now_iso(),
+        "meta": clean_meta,
+    }
+
+
+def _remote_refresh_batch_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+    normalized = [item for item in records if isinstance(item, dict)]
+    failed_records = [item for item in normalized if str(item.get("status") or "") == "failed"]
+    source_deleted_records = [item for item in normalized if str(item.get("status") or "") == "source_deleted"]
+    skipped_records = [item for item in normalized if str(item.get("status") or "") == "skipped"]
+    failure_samples: list[dict[str, Any]] = []
+    for item in failed_records[:10]:
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        failure_samples.append(
+            {
+                "model_dir": str(meta.get("model_dir") or item.get("id") or ""),
+                "title": str(item.get("title") or ""),
+                "url": str(item.get("url") or ""),
+                "message": str(item.get("message") or ""),
+            }
+        )
+    return {
+        "records": normalized,
+        "recent_items": list(reversed(normalized))[:50],
+        "failed": len(failed_records),
+        "skipped": len(skipped_records),
+        "source_deleted": len(source_deleted_records),
+        "failure_samples": failure_samples,
+    }
+
+
 def _comment_key(comment: Any) -> str:
     if not isinstance(comment, dict):
         return ""
