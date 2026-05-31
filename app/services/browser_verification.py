@@ -580,13 +580,21 @@ def _browser_verification_fallback_url(session: dict[str, Any]) -> str:
     return _origin_for_platform(platform)
 
 
-def _fallback_from_api_denial_if_needed(page: Any, session: dict[str, Any]) -> bool:
+def _fallback_from_api_denial_if_needed(page: Any, session: dict[str, Any], session_id: str = "") -> bool:
     if not _page_looks_like_api_denial(page):
         return False
     fallback_url = _browser_verification_fallback_url(session)
     if not fallback_url:
         return False
     page.goto(fallback_url, wait_until="domcontentloaded", timeout=45000)
+    if session_id:
+        _browser_verification_log(
+            "browser_verification_api_denial_fallback_applied",
+            "浏览器验证检测到 API 权限页，已切换到模型页面。",
+            session_id=session_id,
+            platform=str(session.get("platform") or ""),
+            fallback_url=fallback_url,
+        )
     return True
 
 
@@ -808,7 +816,7 @@ class BrowserVerificationRuntime:
             )
             fell_back_to_web = False
             try:
-                fell_back_to_web = _fallback_from_api_denial_if_needed(page, session)
+                fell_back_to_web = _fallback_from_api_denial_if_needed(page, session, session_id=session_id)
             except Exception:
                 fell_back_to_web = False
             if fell_back_to_web or not _is_f3mf_url(start_url):
@@ -1059,6 +1067,7 @@ class BrowserVerificationRuntime:
             return
         current = self.store.get_session(session_id)
         version = int(current.get("screenshot_version") or 0) + 1 if current else 1
+        previously_cropped = bool((current or {}).get("viewport", {}).get("cropped")) if isinstance((current or {}).get("viewport"), dict) else False
         viewport = (
             {
                 "width": int(clip["width"]),
@@ -1070,6 +1079,16 @@ class BrowserVerificationRuntime:
             if clip
             else dict(BROWSER_VERIFICATION_DEFAULT_VIEWPORT)
         )
+        if clip and not previously_cropped:
+            _browser_verification_log(
+                "browser_verification_surface_detected",
+                "浏览器验证已检测到可裁剪的验证区域。",
+                session_id=session_id,
+                platform=str((current or {}).get("platform") or ""),
+                cropped=True,
+                width=int(clip["width"]),
+                height=int(clip["height"]),
+            )
         self.store.update_session(session_id, screenshot_version=version, viewport=viewport)
 
     def _apply_input(self, page: Any, command: dict[str, Any], session: Optional[dict[str, Any]] = None) -> None:

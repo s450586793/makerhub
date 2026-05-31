@@ -508,6 +508,43 @@ class BrowserVerificationSessionTest(unittest.TestCase):
         self.assertEqual(page.goto_calls[-1][0], "https://makerworld.com.cn/zh/models/12345-demo")
         self.assertEqual(page.goto_calls[-1][1]["wait_until"], "domcontentloaded")
 
+    def test_browser_verification_logs_api_denial_fallback_when_session_id_is_available(self):
+        class FakePage:
+            def __init__(self):
+                self.goto_calls = []
+
+            def text_content(self, selector, **_kwargs):
+                if selector == "body":
+                    return '{"code":403,"error":"The client does not have access rights to the content."}'
+                return ""
+
+            def goto(self, url, **kwargs):
+                self.goto_calls.append((url, kwargs))
+
+        session = {
+            "platform": "global",
+            "target": {
+                "model_url": "https://makerworld.com/zh/models/12345-demo",
+                "api_url": "https://makerworld.com/api/v1/design-service/instance/1063416/f3mf?type=download&fileType=",
+            },
+        }
+        page = FakePage()
+        log_calls = []
+
+        with patch.object(browser_verification_module, "_browser_verification_log", side_effect=lambda *args, **kwargs: log_calls.append((args, kwargs))):
+            result = browser_verification_module._fallback_from_api_denial_if_needed(page, session, session_id="bv_denial")
+
+        self.assertTrue(result)
+        self.assertEqual(page.goto_calls[-1][0], "https://makerworld.com/zh/models/12345-demo")
+        self.assertTrue(
+            any(
+                call[0][:2] == ("browser_verification_api_denial_fallback_applied", "浏览器验证检测到 API 权限页，已切换到模型页面。")
+                and call[1].get("session_id") == "bv_denial"
+                and call[1].get("platform") == "global"
+                for call in log_calls
+            )
+        )
+
     def test_try_trigger_download_flow_clicks_visible_download_control(self):
         class FakeLocator:
             def __init__(self, visible=False):
@@ -735,6 +772,41 @@ class BrowserVerificationSessionTest(unittest.TestCase):
                 "cropped": True,
             },
         )
+
+    def test_write_screenshot_logs_verification_surface_once(self):
+        updates = []
+        screenshot_calls = []
+        log_calls = []
+        current = {"screenshot_version": 4, "platform": "cn"}
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SimpleNamespace(
+                screenshot_path=lambda _session_id: Path(tmp) / "bv_surface.jpg",
+                get_session=lambda _session_id: dict(current),
+                update_session=lambda _session_id, **changes: updates.append(changes) or current.update(changes) or changes,
+            )
+            runtime = browser_verification_module.BrowserVerificationRuntime(store=store)
+            page = SimpleNamespace(screenshot=lambda **kwargs: screenshot_calls.append(kwargs))
+
+            with patch.object(
+                runtime,
+                "_verification_clip",
+                return_value={"x": 120, "y": 90, "width": 360, "height": 430},
+            ), patch.object(browser_verification_module, "_browser_verification_log", side_effect=lambda *args, **kwargs: log_calls.append((args, kwargs))):
+                runtime._write_screenshot(page, "bv_surface")
+                runtime._write_screenshot(page, "bv_surface")
+
+        self.assertEqual(len(screenshot_calls), 2)
+        self.assertEqual(
+            [
+                call[0][0]
+                for call in log_calls
+                if call[0] and call[0][0] == "browser_verification_surface_detected"
+            ],
+            ["browser_verification_surface_detected"],
+        )
+        self.assertEqual(log_calls[0][1]["session_id"], "bv_surface")
+        self.assertEqual(log_calls[0][1]["platform"], "cn")
+        self.assertTrue(log_calls[0][1]["cropped"])
 
     def test_apply_input_offsets_coordinates_for_cropped_viewport(self):
         clicks = []
