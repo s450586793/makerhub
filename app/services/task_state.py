@@ -848,6 +848,7 @@ class TaskStateStore:
 
     def _publish_state_event(self, scope: str, state: dict, event_type: str = "state.changed", payload: Optional[dict] = None) -> None:
         event_payload = task_counts_payload(state)
+        event_payload.setdefault("scope", str(scope or ""))
         if isinstance(payload, dict):
             event_payload.update(payload)
         publish_state_event(scope, event_type, event_payload)
@@ -1029,14 +1030,15 @@ class TaskStateStore:
         self._publish_state_event("subscriptions_state", result)
         return result
 
-    def _update_remote_refresh_state(self, updater) -> dict:
+    def _update_remote_refresh_state(self, updater, *, publish_event: bool = True) -> dict:
         with _STATE_LOCK, self._state_file_lock(REMOTE_REFRESH_STATE_PATH):
             payload = self._load_remote_refresh_state_unlocked()
             updated = updater(payload)
             if updated is None:
                 updated = payload
             result = self._save_remote_refresh_state_unlocked(updated)
-        self._publish_state_event("remote_refresh_state", result)
+        if publish_event:
+            self._publish_state_event("remote_refresh_state", result)
         return result
 
     def save_archive_queue(self, payload: dict) -> dict:
@@ -1079,10 +1081,11 @@ class TaskStateStore:
         with _STATE_LOCK:
             return self._load_subscriptions_state_unlocked()
 
-    def save_remote_refresh_state(self, payload: dict) -> dict:
+    def save_remote_refresh_state(self, payload: dict, *, publish_event: bool = True) -> dict:
         with _STATE_LOCK, self._state_file_lock(REMOTE_REFRESH_STATE_PATH):
             result = self._save_remote_refresh_state_unlocked(payload)
-        self._publish_state_event("remote_refresh_state", result)
+        if publish_event:
+            self._publish_state_event("remote_refresh_state", result)
         return result
 
     def load_remote_refresh_state(self) -> dict:
@@ -1707,7 +1710,7 @@ class TaskStateStore:
 
         return self._update_subscriptions_state(_mutate)
 
-    def patch_remote_refresh_state(self, **changes: Any) -> dict:
+    def patch_remote_refresh_state(self, publish_event: bool = True, **changes: Any) -> dict:
         def _mutate(payload: dict) -> dict:
             merged = dict(_normalize_remote_refresh_state(payload))
             for key, value in changes.items():
@@ -1734,9 +1737,9 @@ class TaskStateStore:
                 merged[key] = value
             return merged
 
-        return self._update_remote_refresh_state(_mutate)
+        return self._update_remote_refresh_state(_mutate, publish_event=publish_event)
 
-    def append_remote_refresh_history(self, item: dict, limit: int = 50) -> dict:
+    def append_remote_refresh_history(self, item: dict, limit: int = 50, *, publish_event: bool = True) -> dict:
         normalized_list = _normalize_remote_refresh_state({"recent_items": [item]}).get("recent_items", [])
         if not normalized_list:
             return self.load_remote_refresh_state()
@@ -1753,4 +1756,4 @@ class TaskStateStore:
             normalized_payload["recent_items"] = recent_items[: max(int(limit or 0), 1)]
             return normalized_payload
 
-        return self._update_remote_refresh_state(_mutate)
+        return self._update_remote_refresh_state(_mutate, publish_event=publish_event)

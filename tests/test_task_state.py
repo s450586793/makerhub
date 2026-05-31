@@ -219,6 +219,44 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(events[-1][2]["id"], "task-1")
         self.assertEqual(events[-1][2]["url"], "https://example.com/models/1")
 
+    def test_remote_refresh_patch_can_skip_state_event_publish(self):
+        state = {}
+        events = []
+        store = TaskStateStore()
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.publish_state_event", side_effect=lambda scope, event_type, payload: events.append((scope, event_type, payload))):
+            result = store.patch_remote_refresh_state(
+                status="running",
+                running=True,
+                last_message="批次运行中。",
+                publish_event=False,
+            )
+
+        self.assertEqual(result["status"], "running")
+        self.assertTrue(result["running"])
+        self.assertEqual(state["remote_refresh_state"]["status"], "running")
+        self.assertEqual(events, [])
+
+    def test_remote_refresh_patch_publishes_state_event_by_default(self):
+        state = {}
+        events = []
+        store = TaskStateStore()
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.publish_state_event", side_effect=lambda scope, event_type, payload: events.append((scope, event_type, payload))):
+            result = store.patch_remote_refresh_state(
+                status="running",
+                running=True,
+                last_message="批次开始。",
+            )
+
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0][0], "remote_refresh_state")
+        self.assertEqual(events[0][1], "state.changed")
+        self.assertEqual(events[0][2]["scope"], "remote_refresh_state")
+
 
 if __name__ == "__main__":
     unittest.main()
