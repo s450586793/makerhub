@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.8.14`
+> 当前版本：`v0.8.15`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-05-31 · v0.8.15
+
+- 浏览器验证弹窗改用 Pointer Events 和指针捕获，提升 MakerWorld 滑块验证码的按下、拖动、松开稳定性。
+- 验证截图坐标映射抽成独立输入层，并按后端裁剪 viewport 动态调整窗口比例，减少点击偏移。
+- 拖拽输入会按顺序发送，松手后等待释放命令完成再刷新截图，避免滑块释放结果被过早刷新遮住。
+
 ### 2026-05-31 · v0.8.14
 
 - 浏览器验证继续基于 CloakBrowser，但增强 Cloudflare Turnstile、MakerWorld 验证框和验证文本区域的截图裁剪，减少弹窗里的多余页面内容。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - 源端刷新前端状态改为批次开始和批次结束两个边界刷新，完成后统一写入成功、失败、跳过、慢模型和最近结果。
 - 批次中断时会短期保留临时结果文件用于排查，并自动清理旧的源端刷新临时缓冲文件。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-05-31 · v0.8.12
 
 - 浏览器验证优先使用缺失 3MF 当初触发验证的原始路径，避免过早改写到不一致的接口。
 - 遇到上游返回 JSON 403 权限错误时，验证浏览器会自动回到对应 MakerWorld 模型页。
 - 进入模型页后会尝试自动点击下载 3MF，让验证码更快出现在纯验证弹窗中。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-05-31 · v0.8.11
 
