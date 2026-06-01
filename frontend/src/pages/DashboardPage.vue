@@ -88,17 +88,8 @@
                 <strong>{{ check.status }}</strong>
               </span>
             </div>
-            <button
-              v-if="dashboardStatusAction(item)?.kind === 'browser-verification'"
-              class="dashboard-hero__status-action dashboard-hero__status-action--button"
-              type="button"
-              :disabled="verifyingPlatform === item.key"
-              @click="startBrowserVerificationFromCard(item)"
-            >
-              {{ verifyingPlatform === item.key ? "创建中..." : dashboardStatusAction(item).label }}
-            </button>
             <RouterLink
-              v-else-if="dashboardStatusAction(item)?.kind === 'route'"
+              v-if="dashboardStatusAction(item)?.kind === 'route'"
               class="dashboard-hero__status-action dashboard-hero__status-action--link"
               :to="dashboardStatusAction(item).to"
             >
@@ -302,21 +293,14 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { RouterLink, useRouter } from "vue-router";
+import { RouterLink } from "vue-router";
 
 import { apiRequest } from "../lib/api";
-import {
-  browserVerificationPath,
-  closeBrowserVerificationWindow,
-  navigateBrowserVerificationWindow,
-  reserveBrowserVerificationWindow,
-} from "../lib/browserVerificationWindow";
 import { dashboardStatusAction, dashboardStatusElementKind } from "../lib/dashboardStatus";
 import { formatServerDateTime } from "../lib/helpers";
 import { subscribeStateRefresh } from "../lib/stateEvents";
 
 
-const router = useRouter();
 const defaultAutomationOverview = {
   subscriptions: {
     count: 0,
@@ -354,7 +338,6 @@ const defaultAutomationOverview = {
 };
 
 const loading = ref(true);
-const verifyingPlatform = ref("");
 const dashboardLoadingStatusCards = [1, 2, 3];
 const dashboardLoadingStatCards = [1, 2, 3, 4];
 const dashboardLoadingMiniCards = [1, 2, 3, 4];
@@ -461,64 +444,6 @@ function handleVisibilityChange() {
 
 function formatDateTime(value, fallback = "未安排") {
   return formatServerDateTime(value, { fallback });
-}
-
-function verificationItemForPlatform(platform) {
-  const items = payload.value?.task_summary?.missing_3mf || [];
-  return items.find((item) => String(item?.source || "").toLowerCase() === platform && needsMissingVerification(item))
-    || items.find((item) => platformFromModelUrl(item?.model_url) === platform && needsMissingVerification(item))
-    || null;
-}
-
-function needsMissingVerification(item) {
-  return ["verification_required", "cloudflare", "auth_required"].includes(String(item?.status || "").toLowerCase());
-}
-
-function platformFromModelUrl(value) {
-  const url = String(value || "");
-  if (url.includes("makerworld.com.cn")) {
-    return "cn";
-  }
-  if (url.includes("makerworld.com/") || url === "https://makerworld.com") {
-    return "global";
-  }
-  return "";
-}
-
-function platformOrigin(platform) {
-  return platform === "global" ? "https://makerworld.com" : "https://makerworld.com.cn";
-}
-
-async function startBrowserVerificationFromCard(item) {
-  const platform = String(item?.key || "cn").toLowerCase() === "global" ? "global" : "cn";
-  verifyingPlatform.value = platform;
-  const missingItem = verificationItemForPlatform(platform);
-  const reservedWindow = reserveBrowserVerificationWindow();
-  try {
-    const session = await apiRequest("/api/browser-verification/sessions", {
-      method: "POST",
-      body: {
-        model_id: missingItem?.model_id || "",
-        model_url: missingItem?.model_url || platformOrigin(platform),
-        title: missingItem?.title || item.title || "",
-        instance_id: missingItem?.instance_id || "",
-        api_url: missingItem?.api_url || "",
-        captcha_id: missingItem?.captcha_id || missingItem?.verification?.captcha_id || "",
-        source: platform,
-      },
-    });
-    if (!session?.id) {
-      throw new Error("验证会话创建失败。");
-    }
-    if (!navigateBrowserVerificationWindow(reservedWindow, session.id)) {
-      await router.push(browserVerificationPath(session.id));
-    }
-  } catch (error) {
-    closeBrowserVerificationWindow(reservedWindow);
-    console.error("创建浏览器验证会话失败", error);
-  } finally {
-    verifyingPlatform.value = "";
-  }
 }
 
 function subscriptionStatusLabel(item) {
