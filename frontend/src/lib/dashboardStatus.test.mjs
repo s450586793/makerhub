@@ -4,7 +4,6 @@ import { test } from "node:test";
 import {
   dashboardStatusAction,
   dashboardStatusElementKind,
-  needsBrowserVerification,
 } from "./dashboardStatus.js";
 
 test("dashboard source health card body is not an external link", () => {
@@ -41,18 +40,18 @@ test("historical 3MF source health issue routes to tasks page", () => {
   });
 });
 
-test("verification status card exposes a browser verification action", () => {
+test("verification status card opens the platform homepage", () => {
   const card = {
     key: "global",
-    action_label: "去验证",
+    action_label: "访问主页",
     url: "https://makerworld.com",
     checks: [{ state: "verification_required" }],
   };
 
-  assert.equal(needsBrowserVerification(card), true);
   assert.equal(dashboardStatusElementKind(card), "div");
   assert.deepEqual(dashboardStatusAction(card), {
-    kind: "browser-verification",
-    label: "去验证",
+    kind: "external",
+    label: "访问主页",
+    href: "https://makerworld.com",
   });
 });

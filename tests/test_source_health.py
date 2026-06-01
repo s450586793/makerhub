@@ -54,6 +54,30 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(checks["download"]["status"], "历史失败待重试")
         self.assertEqual(checks["download"]["tone"], "warning")
 
+    def test_source_health_verification_card_opens_platform_homepage(self):
+        original_probe = source_health._probe_platform_status
+        source_health._probe_platform_status = lambda platform, *_args, **_kwargs: {
+            "platform": platform,
+            "state": "verification_required" if platform == "cn" else "ok",
+            "status": "需要验证" if platform == "cn" else "连接正常",
+            "detail": "需要完成 MakerWorld 验证。" if platform == "cn" else "",
+        }
+
+        class Config:
+            cookies = []
+            proxy = None
+
+        try:
+            cards = source_health.build_source_health_cards(Config(), [])
+        finally:
+            source_health._probe_platform_status = original_probe
+
+        card_map = {item["key"]: item for item in cards}
+        self.assertEqual(card_map["cn"]["state"], "verification_required")
+        self.assertEqual(card_map["cn"].get("url"), "https://makerworld.com.cn")
+        self.assertEqual(card_map["cn"].get("action_label"), "访问主页")
+        self.assertNotIn("route", card_map["cn"])
+
     def test_html_probe_without_verification_markers_is_interface_limited(self):
         result = source_health._auth_probe_result_from_response(
             name="profile",
