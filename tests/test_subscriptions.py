@@ -497,17 +497,18 @@ class SubscriptionManagerTest(unittest.TestCase):
 
         config = self.store.load()
         urls = {item.url: item for item in config.subscriptions}
-        self.assertEqual(result["created_count"], 3)
+        self.assertEqual(result["created_count"], 4)
         self.assertEqual(second["created_count"], 0)
         self.assertIn("https://makerworld.com.cn/zh/@s450586793/collections/models", urls)
         self.assertEqual(urls["https://makerworld.com.cn/zh/@s450586793/collections/models"].name, "艾斯的收藏夹")
         self.assertIn("https://makerworld.com.cn/zh/@GLB_Whittlabs/upload", urls)
-        self.assertNotIn("https://makerworld.com.cn/zh/@user_123/upload", urls)
+        self.assertIn("https://makerworld.com.cn/zh/@user_123/upload", urls)
         self.assertIn("https://makerworld.com.cn/zh/collections/518732-test", urls)
         self.assertEqual(urls["https://makerworld.com.cn/zh/@GLB_Whittlabs/upload"].mode, "author_upload")
+        self.assertEqual(urls["https://makerworld.com.cn/zh/@user_123/upload"].mode, "author_upload")
         self.assertEqual(urls["https://makerworld.com.cn/zh/collections/518732-test"].mode, "collection_models")
         states = self.task_store.load_subscriptions_state().get("items") or []
-        self.assertEqual(len(states), 3)
+        self.assertEqual(len(states), 4)
         self.assertTrue(all(item["manual_requested_at"] for item in states))
         inventory = subscriptions._read_cookie_source_inventory_state()
         cn_inventory = inventory["platforms"]["cn"]
@@ -516,10 +517,10 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertEqual(cn_inventory["account"]["avatar_url"], "https://example.test/avatar.jpg")
         self.assertEqual(cn_inventory["followed_author_count"], 27)
         self.assertEqual(cn_inventory["followed_collection_count"], 1)
-        self.assertEqual(len(cn_inventory["followed_authors"]), 1)
+        self.assertEqual(len(cn_inventory["followed_authors"]), 2)
         self.assertEqual(cn_inventory["followed_collections"][0]["url"], "https://makerworld.com.cn/zh/collections/518732-test")
         self.assertIn("https://makerworld.com.cn/zh/@s450586793/collections/models", cn_inventory["source_urls"])
-        self.assertNotIn("https://makerworld.com.cn/zh/@user_123/upload", cn_inventory["source_urls"])
+        self.assertIn("https://makerworld.com.cn/zh/@user_123/upload", cn_inventory["source_urls"])
         saved_cookie = next(item for item in config.cookies if item.platform == "cn")
         self.assertEqual(saved_cookie.display_name, "艾斯")
         self.assertEqual(saved_cookie.account_id, "2024907479")
@@ -593,6 +594,63 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertEqual([item.url for item in config.subscriptions], ["https://makerworld.com/zh/@Oierre/upload"])
         self.assertEqual(inventory["followed_authors"][0]["url"], "https://makerworld.com/zh/@Oierre/upload")
         self.assertEqual(inventory["source_urls"], ["https://makerworld.com/zh/@Oierre/upload"])
+
+    def test_sync_cookie_sources_imports_uid_verified_user_number_author_urls(self):
+        config = self.store.load()
+        config.cookies = [CookiePair(platform="cn", cookie="token=ok")]
+        config.subscriptions = []
+        self.store.save(config)
+
+        with patch.object(
+            subscriptions,
+            "discover_cookie_account_profile",
+            return_value={
+                "uid": "2024907479",
+                "handle": "s450586793",
+                "name": "艾斯",
+            },
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_account_home_summary",
+            return_value={},
+        ), patch.object(
+            subscriptions,
+            "default_favorites_subscription_source",
+            return_value={},
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_followed_authors_from_page",
+            return_value={"count": 0, "total": 0, "items": []},
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_followed_authors",
+            return_value={
+                "count": 1,
+                "total": 1,
+                "items": [
+                    {
+                        "title": "樱桃的好奇心",
+                        "handle": "user_1751098586",
+                        "uid": "1751098586",
+                        "url": "https://makerworld.com.cn/zh/@user_1751098586/upload",
+                    }
+                ],
+            },
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_followed_collections",
+            return_value={"count": 0, "items": []},
+        ), patch.object(subscriptions, "_patch_cookie_source_sync_state"):
+            result = self.manager.sync_cookie_sources({"cn"}, reason="manual")
+
+        config = self.store.load()
+        inventory = subscriptions._read_cookie_source_inventory_state()["platforms"]["cn"]
+
+        self.assertEqual(result["created_count"], 1)
+        self.assertEqual(config.subscriptions[0].url, "https://makerworld.com.cn/zh/@user_1751098586/upload")
+        self.assertEqual(config.subscriptions[0].name, "樱桃的好奇心 作者订阅")
+        self.assertEqual(inventory["followed_authors"][0]["url"], "https://makerworld.com.cn/zh/@user_1751098586/upload")
+        self.assertEqual(inventory["source_urls"], ["https://makerworld.com.cn/zh/@user_1751098586/upload"])
 
     def test_sync_cookie_sources_seeds_default_favorite_account_avatar_metadata(self):
         config = self.store.load()
@@ -747,7 +805,7 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertEqual(sync_state["cn"]["followed_author_count"], 1)
         self.assertNotIn("other", sync_state)
 
-    def test_sync_cookie_sources_removes_prior_synthetic_user_author_imports(self):
+    def test_sync_cookie_sources_keeps_prior_non_error_user_number_author_imports(self):
         config = self.store.load()
         config.cookies = [CookiePair(platform="cn", cookie="token=ok")]
         config.subscriptions = [
@@ -823,13 +881,13 @@ class SubscriptionManagerTest(unittest.TestCase):
         state_ids = [item["id"] for item in self.task_store.load_subscriptions_state().get("items") or []]
         platform_result = result["platforms"][0]
 
-        self.assertEqual(platform_result["removed_invalid_count"], 1)
-        self.assertEqual(platform_result["removed_invalid_subscription_ids"], ["sub-bad-account-author"])
+        self.assertEqual(platform_result["removed_invalid_count"], 0)
+        self.assertEqual(platform_result["removed_invalid_subscription_ids"], [])
         self.assertEqual(
             [item.id for item in config.subscriptions],
-            ["sub-good-account-author", "sub-manual-bad"],
+            ["sub-bad-account-author", "sub-good-account-author", "sub-manual-bad"],
         )
-        self.assertEqual(state_ids, ["sub-good-account-author", "sub-manual-bad"])
+        self.assertEqual(state_ids, ["sub-bad-account-author", "sub-good-account-author", "sub-manual-bad"])
 
     def test_sync_cookie_sources_removes_legacy_error_synthetic_user_author_subscriptions(self):
         config = self.store.load()

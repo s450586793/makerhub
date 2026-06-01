@@ -1338,7 +1338,7 @@ def _extract_followed_authors(payload: Any, platform: str) -> list[dict[str, str
         if not _looks_like_author_follow_node(node):
             continue
         handle = _extract_node_handle(node)
-        if not handle or _is_synthetic_user_handle(handle):
+        if not handle:
             continue
         key = handle.lower()
         if key in seen:
@@ -1356,6 +1356,84 @@ def _extract_followed_authors(payload: Any, platform: str) -> list[dict[str, str
             }
         )
     return authors
+
+
+def _extract_followed_author_nodes(payload: Any) -> list[dict[str, Any]]:
+    nodes: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for node in _iter_dicts(payload):
+        hits = node.get("hits")
+        if isinstance(hits, list):
+            nodes.extend(item for item in hits if isinstance(item, dict))
+        for key in ("items", "list", "records", "users", "followers", "followings", "data"):
+            values = node.get(key)
+            if isinstance(values, list):
+                nodes.extend(item for item in values if isinstance(item, dict))
+    if not nodes:
+        nodes = [node for node in _iter_dicts(payload) if isinstance(node, dict)]
+
+    result: list[dict[str, Any]] = []
+    for node in nodes:
+        if not _looks_like_author_follow_node(node):
+            continue
+        key = (
+            _extract_node_uid(node),
+            _extract_node_handle(node).lower(),
+            str(node.get("name") or node.get("nickname") or node.get("nickName") or "").strip().lower(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(node)
+    return result
+
+
+def _extract_followed_author_handle_by_uid(payload: Any, uid: str) -> str:
+    clean_uid = _coerce_numeric_string(uid)
+    if not clean_uid:
+        return ""
+    for node in _extract_followed_author_nodes(payload):
+        if _extract_node_uid(node) == clean_uid:
+            handle = _extract_node_handle(node)
+            if handle:
+                return handle
+    return ""
+
+
+def _resolve_followed_author_handle_by_search(
+    session: requests.Session,
+    source_url: str,
+    raw_cookie: str,
+    *,
+    uid: str,
+    name: str,
+) -> str:
+    clean_uid = _coerce_numeric_string(uid)
+    keyword = str(name or "").strip()
+    if not clean_uid or not keyword:
+        return ""
+    payload = _api_get_json(
+        session,
+        source_url=source_url,
+        raw_cookie=raw_cookie,
+        service_name="search-service",
+        path="/search/user",
+        params={
+            "keyword": keyword,
+            "offset": 0,
+            "limit": 20,
+        },
+    )
+    handle = _extract_followed_author_handle_by_uid(payload, clean_uid)
+    if handle:
+        _append_discovery_debug(
+            "followed_author_handle_resolved",
+            uid=clean_uid,
+            name=keyword,
+            handle=handle,
+            mode="search_user_uid_match",
+        )
+    return handle
 
 
 def _followed_author_path_candidates(uid: str) -> list[str]:
@@ -1572,6 +1650,40 @@ def discover_cookie_followed_authors(
                 if payload is None:
                     continue
                 authors = _extract_followed_authors(payload, clean_platform)
+                if re.search(r"/user/[^/]+/follows$", path):
+                    author_keys = {
+                        (str(author.get("uid") or "").strip(), str(author.get("handle") or "").strip().lower())
+                        for author in authors
+                    }
+                    for node in _extract_followed_author_nodes(payload):
+                        author_uid = _extract_node_uid(node)
+                        title = str(node.get("name") or node.get("nickname") or node.get("nickName") or "").strip()
+                        if not author_uid or not title:
+                            continue
+                        handle = _extract_node_handle(node)
+                        if not handle:
+                            handle = _resolve_followed_author_handle_by_search(
+                                session,
+                                source_url,
+                                raw_cookie,
+                                uid=author_uid,
+                                name=title,
+                            )
+                        if not handle:
+                            continue
+                        author_key = (author_uid, handle.lower())
+                        if author_key in author_keys:
+                            continue
+                        author_keys.add(author_key)
+                        authors.append(
+                            {
+                                "title": title or handle,
+                                "handle": handle,
+                                "uid": author_uid,
+                                "avatar_url": _extract_avatar_url(node),
+                                "url": f"{_platform_origin(clean_platform)}/{_makerworld_model_path_lang(clean_platform)}/@{quote(handle, safe='@._-')}/upload",
+                            }
+                        )
                 hits_payload = _extract_hits_payload(payload) or payload
                 total = _extract_total_count(hits_payload, len(authors)) if isinstance(hits_payload, dict) else len(authors)
                 if total is not None:

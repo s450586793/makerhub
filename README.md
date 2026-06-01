@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.8.15`
+> 当前版本：`v0.8.16`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-01 · v0.8.16
+
+- 账号关注作者同步会在关注接口缺少 handle 时，用作者名称搜索并按 uid 精确匹配结果，再生成标准 `@作者/upload` 订阅地址。
+- 经 uid 校验得到的 `@user_数字/upload` 作者页不再被误判为无效订阅，国区这类真实作者页也会正常导入。
+- 历史 `@user_数字` 清理收窄为只移除已报错的旧订阅，避免下次同步把有效作者订阅再次删除。
+
 ### 2026-05-31 · v0.8.15
 
 - 浏览器验证弹窗改用 Pointer Events 和指针捕获，提升 MakerWorld 滑块验证码的按下、拖动、松开稳定性。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - 增加浏览器验证关键节点诊断日志，区分浏览器启动、API 权限页回退、下载触发、验证区域检测、proof 捕获、重试提交和完成/超时。
 - 浏览器验证日志会统一脱敏 Cookie、Token、`cf_clearance` 和验证 proof，避免敏感信息进入业务日志。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-05-31 · v0.8.13
 
 - 源端刷新批次运行中改为把单模型结果写入临时 NDJSON 文件，避免每个模型完成都写数据库日志和状态事件。
 - 源端刷新前端状态改为批次开始和批次结束两个边界刷新，完成后统一写入成功、失败、跳过、慢模型和最近结果。
 - 批次中断时会短期保留临时结果文件用于排查，并自动清理旧的源端刷新临时缓冲文件。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-05-31 · v0.8.12
 

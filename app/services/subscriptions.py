@@ -1057,24 +1057,6 @@ class SubscriptionManager:
         return {"queued_count": len(queued_ids), "subscription_ids": queued_ids}
 
     def _remove_imported_synthetic_user_subscriptions(self, platform: str, inventory_item: dict[str, Any]) -> tuple[int, list[str]]:
-        imported_sources = [
-            item
-            for item in inventory_item.get("imported_sources") or []
-            if isinstance(item, dict)
-        ]
-        stale_urls = {
-            _subscription_identity_url(str(item.get("url") or ""), str(item.get("mode") or ""))
-            for item in imported_sources
-            if str(item.get("source_kind") or "") == "followed_author"
-            and _source_url_has_synthetic_user_handle(str(item.get("url") or ""))
-        }
-        stale_urls.update(
-            _subscription_identity_url(str(item.get("url") or ""), "author_upload")
-            for item in inventory_item.get("followed_authors") or []
-            if isinstance(item, dict) and _source_url_has_synthetic_user_handle(str(item.get("url") or ""))
-        )
-        stale_urls = {url for url in stale_urls if url}
-
         config = self.store.load()
         state_payload = self.task_store.load_subscriptions_state()
         state_map = {
@@ -1085,15 +1067,7 @@ class SubscriptionManager:
         removed_ids: list[str] = []
         kept_records: list[SubscriptionRecord] = []
         for record in config.subscriptions:
-            identity_url = _subscription_identity_url(record.url, record.mode)
-            if (
-                (
-                    record.mode == "author_upload"
-                    and _platform_for_url(record.url) == platform
-                    and identity_url in stale_urls
-                )
-                or _is_legacy_error_synthetic_user_subscription(record, state_map.get(record.id) or {}, platform)
-            ):
+            if _is_legacy_error_synthetic_user_subscription(record, state_map.get(record.id) or {}, platform):
                 removed_ids.append(record.id)
                 continue
             kept_records.append(record)
@@ -1234,7 +1208,7 @@ class SubscriptionManager:
                     for author_result in (followed_authors_page, followed_authors):
                         for author in author_result.get("items") or []:
                             url = normalize_source_url(str(author.get("url") or ""))
-                            if not url or _source_url_has_synthetic_user_handle(url):
+                            if not url:
                                 continue
                             author_uid = str(author.get("uid") or "").strip()
                             author_handle = str(author.get("handle") or "").strip().lower()

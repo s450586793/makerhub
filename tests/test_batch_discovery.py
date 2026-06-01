@@ -419,6 +419,56 @@ class BatchDiscoveryTest(unittest.TestCase):
         self.assertEqual(result["total"], 27)
         self.assertEqual([call["params"]["offset"] for call in calls], [0, 20])
 
+    def test_discover_cookie_followed_authors_resolves_blank_handle_by_search_uid_match(self):
+        calls = []
+
+        def fake_api_get_json(_session, **kwargs):
+            calls.append(kwargs)
+            if kwargs["service_name"] == "user-service" and kwargs["path"] == "/user/2024907479/follows":
+                return {
+                    "hits": [
+                        {
+                            "uid": 1751098586,
+                            "handle": "",
+                            "name": "樱桃的好奇心",
+                            "avatar": "https://example.test/avatar.jpg",
+                            "publicInstanceUploadCount": 10,
+                        }
+                    ],
+                    "total": 1,
+                }
+            if kwargs["service_name"] == "search-service" and kwargs["path"] == "/search/user":
+                self.assertEqual(kwargs["params"]["keyword"], "樱桃的好奇心")
+                return {
+                    "hits": [
+                        {
+                            "uid": 1751098586,
+                            "name": "樱桃的好奇心",
+                            "handle": "user_1751098586",
+                            "avatar": "https://example.test/avatar.jpg",
+                        }
+                    ],
+                    "total": 1,
+                }
+            return None
+
+        with patch.object(batch_discovery, "_api_get_json", side_effect=fake_api_get_json), \
+                patch.object(batch_discovery, "_append_discovery_debug"):
+            result = batch_discovery.discover_cookie_followed_authors(
+                "cn",
+                "token=ok",
+                uid="2024907479",
+                max_pages=2,
+                limit=20,
+            )
+
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["items"][0]["uid"], "1751098586")
+        self.assertEqual(result["items"][0]["handle"], "user_1751098586")
+        self.assertEqual(result["items"][0]["url"], "https://makerworld.com.cn/zh/@user_1751098586/upload")
+        self.assertTrue(any(call["service_name"] == "search-service" for call in calls))
+
     def test_resolve_author_uid_accepts_user_uid_handle(self):
         with patch.object(batch_discovery, "_api_get_json") as api_get_json, \
                 patch.object(batch_discovery, "_append_discovery_debug") as debug_log:
