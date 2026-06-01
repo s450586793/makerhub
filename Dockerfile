@@ -68,7 +68,6 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 RUN scrapling install
-RUN python -c "from cloakbrowser import ensure_binary; ensure_binary()"
 RUN mkdir -p /app/config/config /app/config/logs /app/config/state /app/data /app/data/local
 
 COPY app ./app

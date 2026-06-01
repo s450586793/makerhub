@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.8.16`
+> 当前版本：`v0.8.17`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,11 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-01 · v0.8.17
+
+- 回退 MakerWorld 内置浏览器验证流程：首页和任务页改为外跳官网/模型页，由用户在 MakerWorld 手动完成验证后回到 MakerHub 重试。
+- 删除未使用的 CloakBrowser 验证运行时、接口、弹窗页面和镜像预安装步骤，保留本地预览与 Scrapling 抓取仍需使用的 Chromium/Scrapling 组件。
+
 ### 2026-06-01 · v0.8.16
 
 - 账号关注作者同步会在关注接口缺少 handle 时，用作者名称搜索并按 uid 精确匹配结果，再生成标准 `@作者/upload` 订阅地址。
@@ -218,14 +223,14 @@ uvicorn app.main:app --reload
 - 验证截图坐标映射抽成独立输入层，并按后端裁剪 viewport 动态调整窗口比例，减少点击偏移。
 - 拖拽输入会按顺序发送，松手后等待释放命令完成再刷新截图，避免滑块释放结果被过早刷新遮住。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-05-31 · v0.8.14
 
 - 浏览器验证继续基于 CloakBrowser，但增强 Cloudflare Turnstile、MakerWorld 验证框和验证文本区域的截图裁剪，减少弹窗里的多余页面内容。
 - 增加浏览器验证关键节点诊断日志，区分浏览器启动、API 权限页回退、下载触发、验证区域检测、proof 捕获、重试提交和完成/超时。
 - 浏览器验证日志会统一脱敏 Cookie、Token、`cf_clearance` 和验证 proof，避免敏感信息进入业务日志。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-05-31 · v0.8.13
 
