@@ -808,12 +808,10 @@ def build_source_health_cards(
             "state": state,
             "checks": checks,
         }
-        if any(item.get("state") in {"verification_required", "cloudflare", "auth_required"} for item in checks):
+        manual_homepage_states = {"verification_required", "cloudflare", "auth_required", "historical_3mf_issue"}
+        if any(item.get("state") in manual_homepage_states for item in checks):
             card["url"] = PLATFORM_ORIGINS.get(platform, "")
             card["action_label"] = "访问主页"
-        elif any(item.get("state") == "historical_3mf_issue" for item in checks):
-            card["route"] = "/tasks"
-            card["action_label"] = "进入任务页"
         else:
             card["url"] = PLATFORM_ORIGINS.get(platform, "")
             card["action_label"] = "打开官网"

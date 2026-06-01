@@ -23,20 +23,20 @@ test("dashboard source health card body is not an external link", () => {
   });
 });
 
-test("historical 3MF source health issue routes to tasks page", () => {
+test("historical 3MF source health issue opens the platform homepage", () => {
   const card = {
-    key: "cn",
-    title: "国内站",
-    route: "/tasks",
-    action_label: "进入任务页",
+    key: "global",
+    title: "国际站",
+    url: "https://makerworld.com",
+    action_label: "访问主页",
     checks: [{ state: "historical_3mf_issue" }],
   };
 
   assert.equal(dashboardStatusElementKind(card), "div");
   assert.deepEqual(dashboardStatusAction(card), {
-    kind: "route",
-    label: "进入任务页",
-    to: "/tasks",
+    kind: "external",
+    label: "访问主页",
+    href: "https://makerworld.com",
   });
 });
 
