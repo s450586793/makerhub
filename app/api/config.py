@@ -35,8 +35,6 @@ from app.schemas.models import (
     AdvancedRuntimeConfig,
     ArchiveRequest,
     BambuStudioDownloadLinkRequest,
-    BrowserVerificationInputRequest,
-    BrowserVerificationSessionRequest,
     Missing3mfCancelRequest,
     CookiePair,
     CookieTestRequest,
@@ -111,7 +109,6 @@ from app.services.archive_repair import (
 from app.services.archive_model_index import archive_model_index_status, resolve_model_dir_from_short_key
 from app.services.archive_profile_backfill import read_profile_backfill_status, write_profile_backfill_status
 from app.services.batch_discovery import extract_model_id, normalize_source_url
-from app.services.browser_verification import browser_verification_store
 from app.services.subscriptions import (
     SubscriptionManager,
     cookie_source_inventory_payload,
@@ -4708,64 +4705,6 @@ async def get_tasks_data():
         return build_tasks_payload(missing_fallback=fallback_items)
 
     return await run_ui_io(_tasks_payload)
-
-
-@router.get("/browser-verification/sessions")
-async def list_browser_verification_sessions(request: Request):
-    _require_session_auth(request)
-    sessions = await run_ui_io(browser_verification_store.list_sessions)
-    return {"items": sessions}
-
-
-@router.post("/browser-verification/sessions")
-async def create_browser_verification_session(payload: BrowserVerificationSessionRequest, request: Request):
-    _require_session_auth(request)
-    item = payload.model_dump()
-    return await run_task_api(browser_verification_store.create_session, item)
-
-
-@router.get("/browser-verification/sessions/{session_id}")
-async def get_browser_verification_session(session_id: str, request: Request):
-    _require_session_auth(request)
-    session = await run_ui_io(browser_verification_store.get_session, session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="验证会话不存在。")
-    return session
-
-
-@router.post("/browser-verification/sessions/{session_id}/input")
-async def enqueue_browser_verification_input(
-    session_id: str,
-    payload: BrowserVerificationInputRequest,
-    request: Request,
-):
-    _require_session_auth(request)
-    command = await run_task_api(
-        browser_verification_store.enqueue_input,
-        session_id,
-        payload.model_dump(),
-    )
-    if not command:
-        raise HTTPException(status_code=404, detail="验证会话不存在或不可接收输入。")
-    return {"success": True, "command": command}
-
-
-@router.get("/browser-verification/sessions/{session_id}/screenshot")
-async def get_browser_verification_screenshot(session_id: str, request: Request):
-    _require_session_auth(request)
-    content, media_type = await run_ui_io(browser_verification_store.read_screenshot, session_id)
-    if not content:
-        return Response(status_code=204)
-    return Response(content=content, media_type=media_type)
-
-
-@router.post("/browser-verification/sessions/{session_id}/cancel")
-async def cancel_browser_verification_session(session_id: str, request: Request):
-    _require_session_auth(request)
-    session = await run_task_api(browser_verification_store.cancel_session, session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="验证会话不存在。")
-    return session
 
 
 @router.post("/tasks/recent-failures/clear")

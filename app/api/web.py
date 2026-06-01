@@ -77,11 +77,6 @@ async def detail_preview(_: Request):
     return _serve_spa()
 
 
-@router.get("/browser-verification/{session_id}", response_class=HTMLResponse)
-async def browser_verification(_: Request, session_id: str):
-    return _serve_spa()
-
-
 @router.get("/logout")
 async def logout(request: Request):
     identity = getattr(request.state, "auth_identity", None) or {}

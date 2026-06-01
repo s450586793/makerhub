@@ -6,7 +6,6 @@ from app.core.settings import APP_VERSION, LOCAL_PREVIEW_POLL_SECONDS, PROCESS_R
 from app.core.store import JsonStore
 from app.core.timezone import now_iso as china_now_iso
 from app.services.archive_worker import ArchiveTaskManager
-from app.services.browser_verification import BrowserVerificationRuntime
 from app.services.archive_profile_backfill import (
     queue_profile_backfill,
     read_profile_backfill_status,
@@ -90,11 +89,6 @@ def main() -> int:
         archive_manager=archive_manager,
         background_enabled=True,
     )
-    browser_verification_runtime = BrowserVerificationRuntime(
-        archive_manager=archive_manager,
-        json_store=store,
-    )
-
     queue = archive_manager.resume_pending_tasks()
     subscription_manager.start()
     local_organizer.start()
@@ -152,16 +146,6 @@ def main() -> int:
     try:
         while not stop_event.wait(WORKER_POLL_SECONDS):
             archive_manager.ensure_worker_for_pending()
-            try:
-                browser_verification_runtime.poll_once()
-            except Exception as exc:
-                append_business_log(
-                    "missing_3mf",
-                    "browser_verification_worker_poll_failed",
-                    "浏览器验证 worker 轮询失败。",
-                    level="warning",
-                    error=str(exc),
-                )
             profile_backfill_status = read_profile_backfill_status()
             if profile_backfill_thread is not None and not profile_backfill_thread.is_alive():
                 profile_backfill_thread = None

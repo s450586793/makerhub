@@ -13,7 +13,6 @@ from app.core.settings import ARCHIVE_DIR, BACKGROUND_TASKS_ENABLED, LOGS_DIR, S
 from app.core.store import JsonStore
 from app.core.timezone import now as china_now, parse_datetime
 from app.services.cookie_utils import sanitize_cookie_header
-from app.services.browser_verification import consume_browser_verification_proof
 from app.services.batch_discovery import (
     extract_model_id,
     normalize_model_url,
@@ -1237,7 +1236,6 @@ class ArchiveTaskManager:
         model_id: str = "",
         title: str = "",
         instance_id: str = "",
-        browser_verification_proof_id: str = "",
     ) -> dict:
         clean_url = normalize_source_url(model_url)
         clean_model_id = str(model_id or "").strip()
@@ -1295,7 +1293,6 @@ class ArchiveTaskManager:
                 "model_url": clean_url,
                 "title": title,
                 "instance_id": instance_id,
-                "browser_verification_proof_id": str(browser_verification_proof_id or "").strip(),
             },
         )
         if result.get("accepted"):
@@ -1330,10 +1327,9 @@ class ArchiveTaskManager:
             )
         return result
 
-    def retry_verification_missing_3mf(self, *, platform: str, primary: Optional[dict] = None, proof_id: str = "") -> dict:
+    def retry_verification_missing_3mf(self, *, platform: str, primary: Optional[dict] = None) -> dict:
         normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
         primary_item = primary if isinstance(primary, dict) else {}
-        proof_key = str(proof_id or "").strip()
         verification_states = {"verification_required", "cloudflare", "auth_required"}
         missing_payload = self.task_store.load_missing_3mf()
         candidates: list[dict[str, Any]] = []
@@ -1390,7 +1386,6 @@ class ArchiveTaskManager:
                 model_id=item["model_id"],
                 title=item["title"],
                 instance_id=item["instance_id"],
-                browser_verification_proof_id=proof_key,
             )
             last_message = str(result.get("message") or "")
             if result.get("accepted"):
@@ -2103,17 +2098,7 @@ class ArchiveTaskManager:
             )
 
         cn_daily_limit, global_daily_limit = _three_mf_daily_limits(config)
-        browser_verification_proof_id = str(meta.get("browser_verification_proof_id") or "").strip()
-        if browser_verification_proof_id:
-            scrubbed_meta = dict(meta)
-            scrubbed_meta["browser_verification_proof_id"] = ""
-            meta = scrubbed_meta
-            self.task_store.update_active_task(task_id, meta=meta)
-        three_mf_captcha_result_header = (
-            consume_browser_verification_proof(browser_verification_proof_id)
-            if browser_verification_proof_id
-            else ""
-        )
+        three_mf_captcha_result_header = ""
         with _temporary_proxy_env(config, url):
             result = run_archive_model_job(
                 url=url,
