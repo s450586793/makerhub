@@ -241,15 +241,16 @@
           </span>
           <span>
             <span class="missing-actions">
-            <button
-              v-if="needsBrowserVerification(item)"
+            <a
+              v-if="needsManualVerification(item)"
               class="button button-primary button-small"
-              type="button"
-              :disabled="isMissingActionBusy(item)"
-              @click="startBrowserVerification(item)"
+              :href="missingVerificationHref(item)"
+              target="_blank"
+              rel="noreferrer noopener"
+              @click="missingStatus = '请在 MakerWorld 完成验证后回到 MakerHub 重试。'"
             >
-              去验证
-            </button>
+              访问源页面
+            </a>
             <button
               class="button button-secondary button-small"
               type="button"
@@ -283,20 +284,13 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { RouterLink, useRouter } from "vue-router";
+import { RouterLink } from "vue-router";
 
 import { apiRequest } from "../lib/api";
-import {
-  browserVerificationPath,
-  closeBrowserVerificationWindow,
-  navigateBrowserVerificationWindow,
-  reserveBrowserVerificationWindow,
-} from "../lib/browserVerificationWindow";
 import { subscribeStateRefresh } from "../lib/stateEvents";
 import { encodeModelPath } from "../lib/helpers";
 
 
-const router = useRouter();
 const payload = ref({
   archive_queue: {
     active: [],
@@ -382,9 +376,26 @@ function retryLabel(item) {
   return "重新下载";
 }
 
-function needsBrowserVerification(item) {
+function needsManualVerification(item) {
   const status = String(item?.status || "").toLowerCase();
   return ["verification_required", "cloudflare", "auth_required"].includes(status);
+}
+
+function sourceHomepageForMissingItem(item) {
+  const source = String(item?.source || "").toLowerCase();
+  const url = String(item?.model_url || "");
+  if (source === "global" || url.includes("makerworld.com/")) {
+    return "https://makerworld.com";
+  }
+  return "https://makerworld.com.cn";
+}
+
+function missingVerificationHref(item) {
+  const url = String(item?.model_url || "").trim();
+  if (url.startsWith("http://") || url.startsWith("https://")) {
+    return url;
+  }
+  return sourceHomepageForMissingItem(item);
 }
 
 function missingDetailPath(item) {
@@ -556,37 +567,6 @@ async function submitArchiveFromDialog(createSubscription) {
     closeArchiveSubmitDialog();
   } finally {
     confirmingArchiveMode.value = "";
-  }
-}
-
-async function startBrowserVerification(item) {
-  pendingMissingActionKey.value = getMissingKey(item);
-  const reservedWindow = reserveBrowserVerificationWindow();
-  try {
-    const session = await apiRequest("/api/browser-verification/sessions", {
-      method: "POST",
-      body: {
-        model_id: item.model_id || "",
-        model_url: item.model_url || "",
-        title: item.title || "",
-        instance_id: item.instance_id || "",
-        api_url: item.api_url || "",
-        captcha_id: item.captcha_id || item.verification?.captcha_id || "",
-        source: item.source || "",
-      },
-    });
-    if (!session?.id) {
-      throw new Error("验证会话创建失败。");
-    }
-    missingStatus.value = "验证会话已创建。";
-    if (!navigateBrowserVerificationWindow(reservedWindow, session.id)) {
-      await router.push(browserVerificationPath(session.id));
-    }
-  } catch (error) {
-    closeBrowserVerificationWindow(reservedWindow);
-    missingStatus.value = error instanceof Error ? error.message : "创建验证会话失败。";
-  } finally {
-    pendingMissingActionKey.value = "";
   }
 }
 
