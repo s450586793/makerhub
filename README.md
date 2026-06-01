@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.8.17`
+> 当前版本：`v0.8.18`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,11 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-02 · v0.8.18
+
+- 修复首页国际站处于历史缺失 `3MF` 待重试状态时，动作仍显示“进入任务页”的问题。
+- 国内站和国际站的历史 `3MF` 验证/Cookie 异常现在都会从首页源站状态卡外跳对应 MakerWorld 主页，保持与手动验证回退流程一致。
+
 ### 2026-06-01 · v0.8.17
 
 - 回退 MakerWorld 内置浏览器验证流程：首页和任务页改为外跳官网/模型页，由用户在 MakerWorld 手动完成验证后回到 MakerHub 重试。
@@ -217,14 +222,14 @@ uvicorn app.main:app --reload
 - 经 uid 校验得到的 `@user_数字/upload` 作者页不再被误判为无效订阅，国区这类真实作者页也会正常导入。
 - 历史 `@user_数字` 清理收窄为只移除已报错的旧订阅，避免下次同步把有效作者订阅再次删除。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-05-31 · v0.8.15
 
 - 浏览器验证弹窗改用 Pointer Events 和指针捕获，提升 MakerWorld 滑块验证码的按下、拖动、松开稳定性。
 - 验证截图坐标映射抽成独立输入层，并按后端裁剪 viewport 动态调整窗口比例，减少点击偏移。
 - 拖拽输入会按顺序发送，松手后等待释放命令完成再刷新截图，避免滑块释放结果被过早刷新遮住。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-05-31 · v0.8.14
 
