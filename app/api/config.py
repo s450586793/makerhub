@@ -3201,7 +3201,6 @@ async def get_dashboard_data():
     return await run_web_io(lambda: build_dashboard_payload(store.load()))
 
 
-@router.get("/models")
 async def get_models_data(
     q: str = Query("", description="搜索标题、作者、标签"),
     source: str = Query("all", description="全部 / 国内 / 国际 / 本地"),
@@ -3221,7 +3220,6 @@ async def get_models_data(
     )
 
 
-@router.get("/models/{model_dir:path}/comments")
 async def get_model_detail_comments(
     model_dir: str,
     offset: int = Query(0, ge=0),
@@ -3234,7 +3232,6 @@ async def get_model_detail_comments(
     return payload
 
 
-@router.get("/models/{model_dir:path}/download-all")
 async def download_model_all_files(model_dir: str, background_tasks: BackgroundTasks):
     try:
         zip_path, download_name = await run_ui_io(_create_model_download_all_archive, model_dir)
@@ -3250,7 +3247,6 @@ async def download_model_all_files(model_dir: str, background_tasks: BackgroundT
     )
 
 
-@router.post("/models/{model_dir:path}/bambu-studio-link")
 async def create_bambu_studio_download_link(model_dir: str, payload: BambuStudioDownloadLinkRequest, request: Request):
     _require_session_auth(request)
     clean_model_dir = _resolve_model_route_key(model_dir)
@@ -3278,7 +3274,6 @@ async def create_bambu_studio_download_link(model_dir: str, payload: BambuStudio
     }
 
 
-@router.get("/public/bambu-studio/models/{model_dir:path}/files/{file_name}")
 async def public_bambu_studio_download_file(model_dir: str, file_name: str, expires: int = Query(0), sig: str = Query("")):
     clean_model_dir = str(model_dir or "").strip().strip("/")
     clean_file_name = str(file_name or "").strip()
@@ -3302,7 +3297,6 @@ async def public_bambu_studio_download_file(model_dir: str, file_name: str, expi
     )
 
 
-@router.post("/models/{model_dir:path}/source-backfill")
 async def backfill_model_source_metadata(model_dir: str, request: Request):
     _require_session_auth(request)
 
@@ -3346,7 +3340,6 @@ async def backfill_model_source_metadata(model_dir: str, request: Request):
         raise HTTPException(status_code=status_code, detail=message) from exc
 
 
-@router.get("/models/{model_dir:path}")
 async def get_model_detail_data(model_dir: str):
     resolved_model_dir = _resolve_model_route_key(model_dir)
     detail = await run_web_io(get_model_detail, resolved_model_dir)
@@ -3355,7 +3348,6 @@ async def get_model_detail_data(model_dir: str):
     return detail
 
 
-@router.post("/models/{model_dir:path}/attachments")
 async def upload_model_attachment(
     model_dir: str,
     request: Request,
@@ -3397,7 +3389,6 @@ async def upload_model_attachment(
     }
 
 
-@router.delete("/models/{model_dir:path}/attachments/{attachment_id}")
 async def remove_model_attachment(model_dir: str, attachment_id: str, request: Request):
     _require_session_auth(request)
     resolved_model_dir = _resolve_model_route_key(model_dir)
@@ -3430,7 +3421,6 @@ async def remove_model_attachment(model_dir: str, attachment_id: str, request: R
     }
 
 
-@router.patch("/models/{model_dir:path}/local/description")
 async def update_local_model_description_data(
     model_dir: str,
     payload: LocalModelDescriptionUpdateRequest,
@@ -3464,7 +3454,6 @@ async def update_local_model_description_data(
     }
 
 
-@router.patch("/models/{model_dir:path}/local/metadata")
 async def update_local_model_metadata_data(
     model_dir: str,
     payload: LocalModelMetadataUpdateRequest,
@@ -3503,7 +3492,6 @@ async def update_local_model_metadata_data(
     }
 
 
-@router.post("/models/{model_dir:path}/local/files")
 async def upload_local_model_files(
     model_dir: str,
     request: Request,
@@ -3542,7 +3530,6 @@ async def upload_local_model_files(
     }
 
 
-@router.delete("/models/{model_dir:path}/local/files")
 async def remove_local_model_file(
     model_dir: str,
     payload: LocalModelFileDeleteRequest,
@@ -3577,7 +3564,6 @@ async def remove_local_model_file(
     }
 
 
-@router.post("/models/{model_dir:path}/local/images")
 async def upload_local_model_images(
     model_dir: str,
     request: Request,
@@ -3616,7 +3602,6 @@ async def upload_local_model_images(
     }
 
 
-@router.delete("/models/{model_dir:path}/local/images")
 async def remove_local_model_image(
     model_dir: str,
     payload: LocalModelImageDeleteRequest,
@@ -3651,7 +3636,6 @@ async def remove_local_model_image(
     }
 
 
-@router.patch("/models/{model_dir:path}/local/images/cover")
 async def update_local_model_cover_image(
     model_dir: str,
     payload: LocalModelImageCoverRequest,
@@ -3686,7 +3670,6 @@ async def update_local_model_cover_image(
     }
 
 
-@router.post("/models/{model_dir:path}/local/preview-image")
 async def save_local_model_preview_image(
     model_dir: str,
     payload: LocalModelPreviewImageRequest,
@@ -3727,7 +3710,6 @@ async def save_local_model_preview_image(
     }
 
 
-@router.post("/models/{model_dir:path}/local/preview-image/failure")
 async def save_local_model_preview_image_failure(
     model_dir: str,
     payload: LocalModelPreviewFailureRequest,
@@ -3770,7 +3752,6 @@ async def save_local_model_preview_image_failure(
     }
 
 
-@router.post("/models/delete")
 async def delete_models(payload: ModelDeleteRequest, request: Request):
     _require_session_auth(request)
 
@@ -3836,12 +3817,10 @@ async def delete_models(payload: ModelDeleteRequest, request: Request):
     return await run_task_api(_delete_models_payload)
 
 
-@router.get("/models/flags")
 async def get_model_flags():
     return task_state_store.load_model_flags()
 
 
-@router.post("/models/flags/favorite")
 async def update_model_favorite(payload: ModelFlagUpdateRequest, request: Request):
     _require_session_auth(request)
     flags = task_state_store.update_model_flag(payload.model_dir, "favorites", payload.value)
@@ -3860,7 +3839,6 @@ async def update_model_favorite(payload: ModelFlagUpdateRequest, request: Reques
     }
 
 
-@router.post("/models/flags/printed")
 async def update_model_printed(payload: ModelFlagUpdateRequest, request: Request):
     _require_session_auth(request)
     flags = task_state_store.update_model_flag(payload.model_dir, "printed", payload.value)
@@ -3879,7 +3857,6 @@ async def update_model_printed(payload: ModelFlagUpdateRequest, request: Request
     }
 
 
-@router.post("/models/flags/deleted")
 async def update_model_deleted(payload: ModelFlagUpdateRequest, request: Request):
     _require_session_auth(request)
     clean_model_dir = str(payload.model_dir or "").strip().strip("/")
@@ -3914,7 +3891,6 @@ async def update_model_deleted(payload: ModelFlagUpdateRequest, request: Request
     }
 
 
-@router.post("/local-library/merge")
 async def merge_local_library_models(payload: LocalModelMergeRequest, request: Request):
     _require_session_auth(request)
     return await run_task_api(
@@ -3927,7 +3903,6 @@ async def merge_local_library_models(payload: LocalModelMergeRequest, request: R
     )
 
 
-@router.post("/local-library/import")
 async def import_local_library_files(
     request: Request,
     files: list[UploadFile] = File(...),

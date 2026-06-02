@@ -22,6 +22,26 @@ class RemovedEmbeddedVerificationWebRouteTest(unittest.TestCase):
         self.assertIn("/api/subscriptions", paths)
         self.assertIn("/api/logs", paths)
 
+    def test_static_model_api_routes_are_registered_before_detail_route(self):
+        routes = [
+            route
+            for route in main_app.app.routes
+            if getattr(route, "path", "").startswith("/api/models/")
+        ]
+        route_order = [route.path for route in routes]
+
+        detail_index = route_order.index("/api/models/{model_dir:path}")
+
+        for static_path in (
+            "/api/models/delete",
+            "/api/models/flags",
+            "/api/models/flags/favorite",
+            "/api/models/flags/printed",
+            "/api/models/flags/deleted",
+        ):
+            with self.subTest(static_path=static_path):
+                self.assertLess(route_order.index(static_path), detail_index)
+
 
 if __name__ == "__main__":
     unittest.main()
