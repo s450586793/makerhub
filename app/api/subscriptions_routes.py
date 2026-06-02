@@ -1,0 +1,131 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, HTTPException, Request
+
+from app.api.config import _get_github_version_status, _public_config_payload, _require_session_auth, _with_version_status
+from app.api.dependencies import store, subscription_manager
+from app.schemas.models import SubscriptionCreateRequest, SubscriptionSettingsUpdate, SubscriptionUpdateRequest
+from app.services.business_logs import append_business_log
+from app.services.request_threads import run_task_api, run_web_io
+
+
+router = APIRouter(prefix="/api")
+
+
+@router.post("/config/subscriptions")
+async def save_subscription_settings(payload: SubscriptionSettingsUpdate, request: Request):
+    _require_session_auth(request)
+    config = store.load()
+    config.subscription_settings = payload
+    store.save(config)
+    append_business_log(
+        "settings",
+        "subscription_settings_saved",
+        "订阅设置已保存。",
+        default_cron=payload.default_cron,
+        default_enabled=payload.default_enabled,
+        default_initialize_from_source=payload.default_initialize_from_source,
+        card_sort=payload.card_sort,
+        hide_disabled_from_cards=payload.hide_disabled_from_cards,
+    )
+    return _with_version_status(_public_config_payload(config), await _get_github_version_status(proxy_config=config.proxy))
+
+
+@router.get("/subscriptions")
+async def get_subscriptions_data():
+    return await run_web_io(subscription_manager.list_payload)
+
+
+@router.post("/subscriptions")
+async def create_subscription(payload: SubscriptionCreateRequest, request: Request):
+    _require_session_auth(request)
+    try:
+        result = await run_task_api(
+            subscription_manager.create_subscription,
+            url=payload.url,
+            cron=payload.cron,
+            name=payload.name,
+            enabled=payload.enabled,
+            initialize_from_source=payload.initialize_from_source,
+        )
+        append_business_log(
+            "subscription",
+            "created",
+            result.get("message") or "订阅已创建。",
+            url=payload.url,
+            name=payload.name,
+            enabled=payload.enabled,
+            initialize_from_source=payload.initialize_from_source,
+        )
+        return result
+    except (ValueError, RuntimeError) as exc:
+        append_business_log("subscription", "create_failed", str(exc), level="error", url=payload.url, name=payload.name)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.put("/subscriptions/{subscription_id}")
+async def update_subscription(subscription_id: str, payload: SubscriptionUpdateRequest, request: Request):
+    _require_session_auth(request)
+    try:
+        result = await run_task_api(
+            subscription_manager.update_subscription,
+            subscription_id,
+            url=payload.url,
+            name=payload.name,
+            cron=payload.cron,
+            enabled=payload.enabled,
+        )
+        append_business_log(
+            "subscription",
+            "updated",
+            result.get("message") or "订阅已更新。",
+            subscription_id=subscription_id,
+            url=payload.url,
+            name=payload.name,
+            enabled=payload.enabled,
+        )
+        return result
+    except (ValueError, RuntimeError) as exc:
+        append_business_log(
+            "subscription",
+            "update_failed",
+            str(exc),
+            level="error",
+            subscription_id=subscription_id,
+            url=payload.url,
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/subscriptions/{subscription_id}")
+async def delete_subscription(subscription_id: str, request: Request):
+    _require_session_auth(request)
+    try:
+        result = await run_task_api(subscription_manager.delete_subscription, subscription_id)
+        append_business_log(
+            "subscription",
+            "deleted",
+            result.get("message") or "订阅已删除。",
+            subscription_id=subscription_id,
+        )
+        return result
+    except (ValueError, RuntimeError) as exc:
+        append_business_log("subscription", "delete_failed", str(exc), level="error", subscription_id=subscription_id)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/subscriptions/{subscription_id}/sync")
+async def sync_subscription(subscription_id: str, request: Request):
+    _require_session_auth(request)
+    try:
+        result = await run_task_api(subscription_manager.request_sync, subscription_id)
+        append_business_log(
+            "subscription",
+            "sync_requested",
+            result.get("message") or "订阅同步已触发。",
+            subscription_id=subscription_id,
+        )
+        return result
+    except (ValueError, RuntimeError) as exc:
+        append_business_log("subscription", "sync_request_failed", str(exc), level="error", subscription_id=subscription_id)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

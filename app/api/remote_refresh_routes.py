@@ -1,0 +1,52 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, Request
+
+from app.api.config import _get_github_version_status, _public_config_payload, _require_session_auth, _with_version_status
+from app.api.dependencies import remote_refresh_manager, store
+from app.schemas.models import RemoteRefreshConfig
+from app.services.business_logs import append_business_log
+from app.services.request_threads import run_task_api, run_ui_io
+
+
+router = APIRouter(prefix="/api")
+
+
+@router.post("/config/remote-refresh")
+async def save_remote_refresh(payload: RemoteRefreshConfig, request: Request):
+    _require_session_auth(request)
+    config = store.load()
+    config.remote_refresh = payload
+    store.save(config)
+    state = remote_refresh_manager.notify_config_updated()
+    append_business_log(
+        "settings",
+        "remote_refresh_saved",
+        "源端刷新设置已保存。",
+        enabled=payload.enabled,
+        cron=payload.cron,
+        next_run_at=state.get("next_run_at"),
+    )
+    return _with_version_status(_public_config_payload(config), await _get_github_version_status(proxy_config=config.proxy))
+
+
+@router.get("/remote-refresh")
+async def get_remote_refresh_data():
+    def _remote_refresh_payload() -> dict:
+        config = store.load()
+        return {
+            "config": config.remote_refresh.model_dump(),
+            "state": remote_refresh_manager.state_payload(),
+        }
+
+    return await run_ui_io(_remote_refresh_payload)
+
+
+@router.post("/remote-refresh/run")
+async def run_remote_refresh(request: Request):
+    _require_session_auth(request)
+
+    def _manual_trigger_payload() -> dict:
+        return remote_refresh_manager.trigger_manual_refresh()
+
+    return await run_task_api(_manual_trigger_payload)

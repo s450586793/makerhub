@@ -64,16 +64,12 @@ from app.schemas.models import (
     ModelFlagUpdateRequest,
     NotificationConfig,
     ProxyConfig,
-    RemoteRefreshConfig,
     RuntimeResourceConfig,
     ShareCreateRequest,
     ShareDeleteExpiredRequest,
     ShareOptions,
     ShareReceiveRequest,
     SharingConfig,
-    SubscriptionCreateRequest,
-    SubscriptionSettingsUpdate,
-    SubscriptionUpdateRequest,
     ThemeSettingsUpdate,
     ThreeMfDownloadLimitsConfig,
     UserSettingsUpdate,
@@ -89,7 +85,7 @@ from app.services.catalog import (
     invalidate_model_detail_cache,
     upsert_archive_snapshot_model,
 )
-from app.services.business_logs import append_business_log, read_log_entries
+from app.services.business_logs import append_business_log
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.local_import_upload import upload_local_import_files
 from app.services.local_model_edit import (
@@ -3577,24 +3573,6 @@ async def disable_mobile_import(request: Request):
     return _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
 
 
-@router.post("/config/remote-refresh")
-async def save_remote_refresh(payload: RemoteRefreshConfig, request: Request):
-    _require_session_auth(request)
-    config = store.load()
-    config.remote_refresh = payload
-    store.save(config)
-    state = remote_refresh_manager.notify_config_updated()
-    append_business_log(
-        "settings",
-        "remote_refresh_saved",
-        "源端刷新设置已保存。",
-        enabled=payload.enabled,
-        cron=payload.cron,
-        next_run_at=state.get("next_run_at"),
-    )
-    return _with_version_status(_public_config_payload(config), await _get_github_version_status(proxy_config=config.proxy))
-
-
 @router.post("/config/three-mf-limits")
 async def save_three_mf_limits(payload: ThreeMfDownloadLimitsConfig, request: Request):
     _require_session_auth(request)
@@ -3654,25 +3632,6 @@ async def save_runtime_resources(payload: RuntimeResourceConfig, request: Reques
         "容器进程设置已保存。",
         web_workers=config.runtime.web_workers,
         worker_concurrency=config.runtime.worker_concurrency,
-    )
-    return _with_version_status(_public_config_payload(config), await _get_github_version_status(proxy_config=config.proxy))
-
-
-@router.post("/config/subscriptions")
-async def save_subscription_settings(payload: SubscriptionSettingsUpdate, request: Request):
-    _require_session_auth(request)
-    config = store.load()
-    config.subscription_settings = payload
-    store.save(config)
-    append_business_log(
-        "settings",
-        "subscription_settings_saved",
-        "订阅设置已保存。",
-        default_cron=payload.default_cron,
-        default_enabled=payload.default_enabled,
-        default_initialize_from_source=payload.default_initialize_from_source,
-        card_sort=payload.card_sort,
-        hide_disabled_from_cards=payload.hide_disabled_from_cards,
     )
     return _with_version_status(_public_config_payload(config), await _get_github_version_status(proxy_config=config.proxy))
 
@@ -4709,28 +4668,6 @@ async def clear_recent_archive_failures(request: Request):
     return result
 
 
-@router.get("/remote-refresh")
-async def get_remote_refresh_data():
-    def _remote_refresh_payload() -> dict:
-        config = store.load()
-        return {
-            "config": config.remote_refresh.model_dump(),
-            "state": remote_refresh_manager.state_payload(),
-        }
-
-    return await run_ui_io(_remote_refresh_payload)
-
-
-@router.post("/remote-refresh/run")
-async def run_remote_refresh(request: Request):
-    _require_session_auth(request)
-
-    def _manual_trigger_payload() -> dict:
-        return remote_refresh_manager.trigger_manual_refresh()
-
-    return await run_task_api(_manual_trigger_payload)
-
-
 @router.post("/tasks/organize/clear")
 async def clear_organize_tasks(request: Request):
     _require_session_auth(request)
@@ -4741,115 +4678,6 @@ async def clear_organize_tasks(request: Request):
         "message": "已清空本地整理任务记录。",
         "organize_tasks": cleared,
     }
-
-
-@router.get("/subscriptions")
-async def get_subscriptions_data():
-    return await run_web_io(subscription_manager.list_payload)
-
-
-@router.get("/logs")
-async def get_logs_data(
-    file: str = Query("business.log", description="日志文件名"),
-    limit: int = Query(300, ge=1, le=2000, description="最多返回行数"),
-    q: str = Query("", description="日志内容搜索"),
-):
-    return await run_web_io(read_log_entries, file_name=file, limit=limit, query=q)
-
-
-@router.post("/subscriptions")
-async def create_subscription(payload: SubscriptionCreateRequest, request: Request):
-    _require_session_auth(request)
-    try:
-        result = await run_task_api(
-            subscription_manager.create_subscription,
-            url=payload.url,
-            cron=payload.cron,
-            name=payload.name,
-            enabled=payload.enabled,
-            initialize_from_source=payload.initialize_from_source,
-        )
-        append_business_log(
-            "subscription",
-            "created",
-            result.get("message") or "订阅已创建。",
-            url=payload.url,
-            name=payload.name,
-            enabled=payload.enabled,
-            initialize_from_source=payload.initialize_from_source,
-        )
-        return result
-    except (ValueError, RuntimeError) as exc:
-        append_business_log("subscription", "create_failed", str(exc), level="error", url=payload.url, name=payload.name)
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@router.put("/subscriptions/{subscription_id}")
-async def update_subscription(subscription_id: str, payload: SubscriptionUpdateRequest, request: Request):
-    _require_session_auth(request)
-    try:
-        result = await run_task_api(
-            subscription_manager.update_subscription,
-            subscription_id,
-            url=payload.url,
-            name=payload.name,
-            cron=payload.cron,
-            enabled=payload.enabled,
-        )
-        append_business_log(
-            "subscription",
-            "updated",
-            result.get("message") or "订阅已更新。",
-            subscription_id=subscription_id,
-            url=payload.url,
-            name=payload.name,
-            enabled=payload.enabled,
-        )
-        return result
-    except (ValueError, RuntimeError) as exc:
-        append_business_log(
-            "subscription",
-            "update_failed",
-            str(exc),
-            level="error",
-            subscription_id=subscription_id,
-            url=payload.url,
-        )
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@router.delete("/subscriptions/{subscription_id}")
-async def delete_subscription(subscription_id: str, request: Request):
-    _require_session_auth(request)
-    try:
-        result = await run_task_api(subscription_manager.delete_subscription, subscription_id)
-        append_business_log(
-            "subscription",
-            "deleted",
-            result.get("message") or "订阅已删除。",
-            subscription_id=subscription_id,
-        )
-        return result
-    except (ValueError, RuntimeError) as exc:
-        append_business_log("subscription", "delete_failed", str(exc), level="error", subscription_id=subscription_id)
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@router.post("/subscriptions/{subscription_id}/sync")
-async def sync_subscription(subscription_id: str, request: Request):
-    _require_session_auth(request)
-    try:
-        result = await run_task_api(subscription_manager.request_sync, subscription_id)
-        append_business_log(
-            "subscription",
-            "sync_requested",
-            result.get("message") or "订阅同步已触发。",
-            subscription_id=subscription_id,
-        )
-        return result
-    except (ValueError, RuntimeError) as exc:
-        append_business_log("subscription", "sync_request_failed", str(exc), level="error", subscription_id=subscription_id)
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/events/archive")
