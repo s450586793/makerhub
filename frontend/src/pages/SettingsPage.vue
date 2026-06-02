@@ -871,6 +871,15 @@ import { RouterLink, useRoute, useRouter } from "vue-router";
 import ThemeSegment from "../components/ThemeSegment.vue";
 import { appState, applyConfigPayload, refreshConfig, saveThemePreference } from "../lib/appState";
 import { apiRequest } from "../lib/api";
+import {
+  buildAdvancedPayload,
+  buildProxyPayload,
+  buildRuntimePayload,
+  buildSharingPayload,
+  buildThreeMfLimitsPayload,
+  normalizeBoundedInt,
+  normalizeDailyThreeMfLimit,
+} from "../lib/settingsPayloads";
 import { subscribeStateRefresh } from "../lib/stateEvents";
 
 
@@ -1297,33 +1306,8 @@ function applyProfileBackfillStatus(payload) {
   };
 }
 
-function normalizeDailyThreeMfLimit(value, fallback = 100) {
-  if (value === "" || value === null || value === undefined) {
-    return fallback;
-  }
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) {
-    return fallback;
-  }
-  return Math.max(0, Math.trunc(numeric));
-}
-
-function normalizeBoundedInt(value, fallback, min, max) {
-  if (value === "" || value === null || value === undefined) {
-    return fallback;
-  }
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) {
-    return fallback;
-  }
-  return Math.min(Math.max(Math.trunc(numeric), min), max);
-}
-
 function runtimePayload() {
-  return {
-    web_workers: normalizeBoundedInt(runtimeForm.web_workers, 1, 1, 8),
-    worker_concurrency: normalizeBoundedInt(runtimeForm.worker_concurrency, 2, 1, 4),
-  };
+  return buildRuntimePayload(runtimeForm);
 }
 
 function hasTokenPermission(item, permission) {
@@ -2001,7 +1985,7 @@ async function saveProxySettings() {
   try {
     const payload = await apiRequest("/api/config/proxy", {
       method: "POST",
-      body: buildProxyPayload(),
+      body: buildProxyPayload(proxyForm),
     });
     applyConfigPayload(payload);
     applyConfigToForms(payload);
@@ -2017,24 +2001,11 @@ async function saveAdvanced() {
   try {
     await apiRequest("/api/config/three-mf-limits", {
       method: "POST",
-      body: {
-        cn_daily_limit: normalizeDailyThreeMfLimit(threeMfLimitsForm.cn_daily_limit),
-        global_daily_limit: normalizeDailyThreeMfLimit(threeMfLimitsForm.global_daily_limit),
-      },
+      body: buildThreeMfLimitsPayload(threeMfLimitsForm),
     });
     const payload = await apiRequest("/api/config/advanced", {
       method: "POST",
-      body: {
-        scraping_engine: ["legacy", "scrapling_first", "scrapling_only"].includes(advancedForm.scraping_engine)
-          ? advancedForm.scraping_engine
-          : "scrapling_first",
-        scrapling_browser_fallback: Boolean(advancedForm.scrapling_browser_fallback),
-        remote_refresh_model_workers: normalizeBoundedInt(advancedForm.remote_refresh_model_workers, 2, 1, 4),
-        makerworld_request_limit: normalizeBoundedInt(advancedForm.makerworld_request_limit, 2, 1, 8),
-        comment_asset_download_limit: normalizeBoundedInt(advancedForm.comment_asset_download_limit, 4, 1, 16),
-        three_mf_download_limit: normalizeBoundedInt(advancedForm.three_mf_download_limit, 1, 1, 4),
-        disk_io_limit: normalizeBoundedInt(advancedForm.disk_io_limit, 1, 1, 4),
-      },
+      body: buildAdvancedPayload(advancedForm),
     });
     applyConfigPayload(payload);
     statuses.advanced = "高级设置已保存。";
@@ -2106,7 +2077,7 @@ async function saveSharing() {
   try {
     const payload = await apiRequest("/api/config/sharing", {
       method: "POST",
-      body: { ...sharingForm },
+      body: buildSharingPayload(sharingForm),
     });
     applyConfigPayload(payload);
     statuses.sharing = "分享设置已保存。";
@@ -2115,21 +2086,13 @@ async function saveSharing() {
   }
 }
 
-function buildProxyPayload() {
-  return {
-    enabled: proxyForm.enabled,
-    http_proxy: proxyForm.http_proxy,
-    https_proxy: proxyForm.https_proxy,
-  };
-}
-
 async function testProxy() {
   testing.proxy = true;
   statuses.proxy = "";
   try {
     const response = await apiRequest("/api/config/proxy/test", {
       method: "POST",
-      body: buildProxyPayload(),
+      body: buildProxyPayload(proxyForm),
     });
     statuses.proxy = response.message || "测试完成。";
   } catch (error) {
@@ -2145,7 +2108,7 @@ async function testSharing() {
   try {
     const response = await apiRequest("/api/config/sharing/test", {
       method: "POST",
-      body: { ...sharingForm },
+      body: buildSharingPayload(sharingForm),
     });
     statuses.sharing_test = response.message || "公开访问地址可用。";
   } catch (error) {
