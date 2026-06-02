@@ -13,8 +13,11 @@ from app.api.config import subscription_manager
 from app.api.config import router as config_router
 from app.api.logs_routes import router as logs_router
 from app.api.remote_refresh_routes import router as remote_refresh_router
+from app.api.sharing_routes import router as sharing_router
+from app.api.source_library_routes import router as source_library_router
 from app.api.subscriptions_routes import router as subscriptions_router
 from app.api.system import router as system_router
+from app.api.tasks_routes import router as tasks_router
 from app.api.web import router as web_router
 from app.core.settings import (
     APP_VERSION,
@@ -198,4 +201,7 @@ app.include_router(system_router)
 app.include_router(config_router)
 app.include_router(logs_router)
 app.include_router(remote_refresh_router)
+app.include_router(sharing_router)
+app.include_router(source_library_router)
 app.include_router(subscriptions_router)
+app.include_router(tasks_router)
