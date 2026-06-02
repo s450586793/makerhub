@@ -999,9 +999,83 @@ def get_update_capability() -> dict[str, Any]:
     return payload
 
 
+def _runtime_role_diagnostics(capability: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    deployment_mode = str(capability.get("deployment_mode") or state.get("deployment_mode") or _deployment_mode() or "")
+    app_container_name = str(capability.get("container_name") or state.get("container_name") or "").strip()
+    app_image_ref = str(capability.get("image_ref") or state.get("image_ref") or "").strip()
+    web_target = _web_update_target(app_image_ref)
+    worker_target = _worker_update_target(app_image_ref)
+    web_container_name = str(
+        capability.get("web_container_name")
+        or state.get("web_container_name")
+        or web_target.get("container_name")
+        or ""
+    ).strip()
+    web_image_ref = str(
+        capability.get("web_image_ref")
+        or state.get("web_image_ref")
+        or web_target.get("image_ref")
+        or ""
+    ).strip()
+    worker_container_name = str(
+        capability.get("worker_container_name")
+        or state.get("worker_container_name")
+        or worker_target.get("container_name")
+        or ""
+    ).strip()
+    worker_image_ref = str(
+        capability.get("worker_image_ref")
+        or state.get("worker_image_ref")
+        or worker_target.get("image_ref")
+        or ""
+    ).strip()
+    resources = capability.get("resources") if isinstance(capability.get("resources"), dict) else {}
+    supported = bool(capability.get("supported"))
+    support_reason = str(capability.get("support_reason") or "")
+
+    roles = [
+        {
+            "role": "app",
+            "container_name": app_container_name,
+            "image_ref": app_image_ref,
+            "reachable": bool(app_container_name) and (supported or not support_reason.startswith("当前容器")),
+            "resources": resources.get("app") if isinstance(resources.get("app"), dict) else {},
+        }
+    ]
+    if web_container_name:
+        roles.append(
+            {
+                "role": "web",
+                "container_name": web_container_name,
+                "image_ref": web_image_ref,
+                "reachable": supported or not support_reason.startswith("Web 容器无法访问"),
+                "resources": resources.get("web") if isinstance(resources.get("web"), dict) else {},
+            }
+        )
+    if worker_container_name:
+        roles.append(
+            {
+                "role": "worker",
+                "container_name": worker_container_name,
+                "image_ref": worker_image_ref,
+                "reachable": supported or not support_reason.startswith("Worker 容器无法访问"),
+                "resources": resources.get("worker") if isinstance(resources.get("worker"), dict) else {},
+            }
+        )
+
+    return {
+        "deployment_mode": deployment_mode,
+        "docker_socket_mounted": bool(capability.get("docker_socket_mounted")),
+        "supported": supported,
+        "support_reason": support_reason,
+        "roles": roles,
+    }
+
+
 def get_update_status() -> dict[str, Any]:
     state = _read_update_state()
     capability = get_update_capability()
+    runtime_diagnostics = _runtime_role_diagnostics(capability, state)
     return {
         **state,
         "supported": bool(capability.get("supported")),
@@ -1018,6 +1092,7 @@ def get_update_status() -> dict[str, Any]:
         "worker_container_name": str(capability.get("worker_container_name") or state.get("worker_container_name") or ""),
         "worker_image_ref": str(capability.get("worker_image_ref") or state.get("worker_image_ref") or ""),
         "resources": capability.get("resources") if isinstance(capability.get("resources"), dict) else {},
+        "runtime_diagnostics": runtime_diagnostics,
     }
 
 

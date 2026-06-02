@@ -1261,6 +1261,13 @@ function defaultSystemUpdateState() {
     worker_image_ref: "",
     worker_replacement_container_id: "",
     resources: {},
+    runtime_diagnostics: {
+      deployment_mode: "",
+      docker_socket_mounted: false,
+      supported: false,
+      support_reason: "",
+      roles: [],
+    },
     target_version: "",
     current_version: "",
     supported: false,

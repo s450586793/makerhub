@@ -88,6 +88,101 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             else:
                 self_update.os.environ[self_update.WORKER_IMAGE_REF_ENV] = original_image
 
+    def test_update_status_includes_runtime_role_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "state"
+            socket_path = Path(temp_dir) / "docker.sock"
+            socket_path.write_text("", encoding="utf-8")
+
+            original_socket = self_update.DOCKER_SOCKET_PATH
+            original_state_dir = self_update.STATE_DIR
+            original_update_state = self_update.UPDATE_STATE_PATH
+            original_client = self_update.DockerSocketClient
+            original_candidates = self_update._extract_container_id_candidates
+            original_env = {
+                self_update.DEPLOYMENT_MODE_ENV: self_update.os.environ.get(self_update.DEPLOYMENT_MODE_ENV),
+                self_update.WEB_CONTAINER_NAME_ENV: self_update.os.environ.get(self_update.WEB_CONTAINER_NAME_ENV),
+                self_update.WEB_IMAGE_REF_ENV: self_update.os.environ.get(self_update.WEB_IMAGE_REF_ENV),
+                self_update.WORKER_CONTAINER_NAME_ENV: self_update.os.environ.get(self_update.WORKER_CONTAINER_NAME_ENV),
+                self_update.WORKER_IMAGE_REF_ENV: self_update.os.environ.get(self_update.WORKER_IMAGE_REF_ENV),
+            }
+
+            containers = {
+                "app-container-id": {
+                    "Id": "app-container-id",
+                    "Name": "/makerhub-app",
+                    "Image": "sha256:app-image",
+                    "Config": {
+                        "Image": "ghcr.io/example/makerhub:latest",
+                        "Env": [
+                            "MAKERHUB_ENTRYPOINT=app",
+                            "MAKERHUB_DATABASE_URL=postgresql://makerhub:secret@postgres/makerhub",
+                        ],
+                    },
+                    "HostConfig": {"Binds": [f"{state_dir}:{state_dir}", f"{socket_path}:{socket_path}"]},
+                    "Mounts": [],
+                    "NetworkSettings": {"Networks": {"makerhub_default": {"Aliases": ["makerhub-app"]}}},
+                },
+                "makerhub-web": {
+                    "Id": "web-container-id",
+                    "Name": "/makerhub-web",
+                    "Image": "sha256:web-image",
+                    "Config": {"Image": "ghcr.io/example/makerhub-web:latest", "Env": []},
+                    "HostConfig": {},
+                    "Mounts": [],
+                },
+                "makerhub-worker": {
+                    "Id": "worker-container-id",
+                    "Name": "/makerhub-worker",
+                    "Image": "sha256:worker-image",
+                    "Config": {"Image": "ghcr.io/example/makerhub-worker:latest", "Env": []},
+                    "HostConfig": {},
+                    "Mounts": [],
+                },
+            }
+
+            class FakeDockerSocketClient:
+                def __init__(self, *args, **kwargs):
+                    pass
+
+                def inspect_container(self, container_id):
+                    if container_id in containers:
+                        return containers[container_id]
+                    raise RuntimeError(f"missing container {container_id}")
+
+            try:
+                self_update.DOCKER_SOCKET_PATH = socket_path
+                self_update.STATE_DIR = state_dir
+                self_update.UPDATE_STATE_PATH = state_dir / "system_update.json"
+                self_update.DockerSocketClient = FakeDockerSocketClient
+                self_update._extract_container_id_candidates = lambda: ["app-container-id"]
+                self_update.os.environ[self_update.DEPLOYMENT_MODE_ENV] = "app-worker"
+                self_update.os.environ[self_update.WEB_CONTAINER_NAME_ENV] = "makerhub-web"
+                self_update.os.environ[self_update.WEB_IMAGE_REF_ENV] = "ghcr.io/example/makerhub-web:latest"
+                self_update.os.environ[self_update.WORKER_CONTAINER_NAME_ENV] = "makerhub-worker"
+                self_update.os.environ[self_update.WORKER_IMAGE_REF_ENV] = "ghcr.io/example/makerhub-worker:latest"
+
+                status = self_update.get_update_status()
+            finally:
+                self_update.DOCKER_SOCKET_PATH = original_socket
+                self_update.STATE_DIR = original_state_dir
+                self_update.UPDATE_STATE_PATH = original_update_state
+                self_update.DockerSocketClient = original_client
+                self_update._extract_container_id_candidates = original_candidates
+                for key, value in original_env.items():
+                    if value is None:
+                        self_update.os.environ.pop(key, None)
+                    else:
+                        self_update.os.environ[key] = value
+
+            diagnostics = status["runtime_diagnostics"]
+            self.assertEqual(diagnostics["deployment_mode"], "app-worker")
+            self.assertTrue(diagnostics["docker_socket_mounted"])
+            self.assertEqual([item["role"] for item in diagnostics["roles"]], ["app", "web", "worker"])
+            self.assertEqual(diagnostics["roles"][0]["container_name"], "makerhub-app")
+            self.assertEqual(diagnostics["roles"][1]["image_ref"], "ghcr.io/example/makerhub-web:latest")
+            self.assertTrue(all(item["reachable"] for item in diagnostics["roles"]))
+
     def test_update_capability_requires_postgres_compose_migration(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_dir = Path(temp_dir) / "state"
