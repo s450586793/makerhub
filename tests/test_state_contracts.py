@@ -25,3 +25,9 @@ def test_status_sets_include_existing_values():
     assert {"missing", "queued", "failed", "download_limited"}.issubset(state_contracts.MISSING_3MF_STATUSES)
     assert {"idle", "running", "success", "error", "disabled"}.issubset(state_contracts.REMOTE_REFRESH_STATUSES)
     assert {"idle", "running", "success", "error", "pending"}.issubset(state_contracts.SUBSCRIPTION_STATUSES)
+
+
+def test_dashboard_scopes_are_plain_strings_for_frontend_payloads():
+    scopes = state_contracts.dashboard_event_scopes()
+    assert all(isinstance(scope, str) for scope in scopes)
+    assert "archive_queue" in scopes

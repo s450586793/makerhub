@@ -15,6 +15,13 @@ from app.core.database import (
     list_state_events_after,
 )
 from app.core.timezone import now_iso as china_now_iso
+from app.services.state_contracts import (
+    ARCHIVE_QUEUE_STATE_KEY,
+    MISSING_3MF_STATE_KEY,
+    ORGANIZE_TASKS_STATE_KEY,
+    REMOTE_REFRESH_STATE_KEY,
+    SUBSCRIPTIONS_STATE_KEY,
+)
 
 
 STATE_EVENT_FALLBACK_WAIT_SECONDS = 15.0
@@ -25,11 +32,11 @@ _LISTENER_THREAD: threading.Thread | None = None
 
 
 STATE_EVENT_SCOPES = {
-    "archive_queue",
-    "missing_3mf",
-    "organize_tasks",
-    "subscriptions_state",
-    "remote_refresh_state",
+    ARCHIVE_QUEUE_STATE_KEY,
+    MISSING_3MF_STATE_KEY,
+    ORGANIZE_TASKS_STATE_KEY,
+    SUBSCRIPTIONS_STATE_KEY,
+    REMOTE_REFRESH_STATE_KEY,
     "archive_profile_backfill_status",
     "system_update",
     "source_library",
