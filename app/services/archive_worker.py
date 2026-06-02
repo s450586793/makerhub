@@ -1905,33 +1905,14 @@ class ArchiveTaskManager:
             )
 
         child_queue_message_prefix = str(meta.get("child_queue_message_prefix") or "").strip() or f"来自批量归档：{url}"
+        progress_step = max(total_items // 10, 1) if total_items else 1
 
         for index, model_url in enumerate(discovered_items, start=1):
             key = _task_key(model_url)
             if key in pending_keys:
                 skipped_pending += 1
-                _append_batch_queue_log(
-                    "child_skipped_pending",
-                    batch_task_id=task_id,
-                    batch_url=url,
-                    model_url=model_url,
-                    model_id=extract_model_id(model_url),
-                    task_key=key,
-                    index=index,
-                    total=total_items,
-                )
             elif key in archived_keys:
                 skipped_archived += 1
-                _append_batch_queue_log(
-                    "child_skipped_archived",
-                    batch_task_id=task_id,
-                    batch_url=url,
-                    model_url=model_url,
-                    model_id=extract_model_id(model_url),
-                    task_key=key,
-                    index=index,
-                    total=total_items,
-                )
             else:
                 child_task_id = self._enqueue_single_task(
                     model_url,
@@ -1954,19 +1935,8 @@ class ArchiveTaskManager:
                 )
                 pending_keys.add(key)
                 queued_count += 1
-                _append_batch_queue_log(
-                    "child_enqueued",
-                    batch_task_id=task_id,
-                    batch_url=url,
-                    child_task_id=child_task_id,
-                    model_url=model_url,
-                    model_id=extract_model_id(model_url),
-                    task_key=key,
-                    index=index,
-                    total=total_items,
-                )
 
-            if total_items:
+            if total_items and (index == total_items or index % progress_step == 0):
                 progress = 55 + int((index / total_items) * 40)
                 self.task_store.update_active_task(
                     task_id,

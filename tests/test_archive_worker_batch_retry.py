@@ -4,6 +4,16 @@ from unittest.mock import patch
 from app.services.archive_worker import ArchiveTaskManager
 
 
+class _ArchiveBatchRefreshConfig:
+    cookies = []
+    proxy = None
+
+
+class _ArchiveBatchRefreshStore:
+    def load(self):
+        return _ArchiveBatchRefreshConfig()
+
+
 class ArchiveWorkerBatchRetryTest(unittest.TestCase):
     def test_refresh_batch_restores_orphaned_parent_from_child_tasks(self):
         state = {}
@@ -295,6 +305,64 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
         self.assertEqual(child["status"], "failed")
         self.assertEqual(child["attempts"], 3)
         self.assertIn("Cloudflare", child["last_failure_message"])
+
+    def test_run_batch_task_throttles_parent_progress_and_success_logs(self):
+        state = {}
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager.store = _ArchiveBatchRefreshStore()
+        discovered_items = [
+            {"url": f"https://makerworld.com.cn/zh/models/{index}"}
+            for index in range(1, 121)
+        ]
+        progress_updates = []
+        structured_events = []
+
+        def save_state(key, value):
+            state[key] = value
+            return value
+
+        def enqueue_single(url, **_kwargs):
+            return f"child-{url.rsplit('/', 1)[-1]}"
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=save_state), \
+                patch("app.services.archive_worker._select_cookie", return_value="cookie"), \
+                patch("app.services.archive_worker.run_discover_batch_urls_job", return_value={"items": discovered_items}), \
+                patch.object(manager, "_queued_task_keys", return_value=set()), \
+                patch.object(manager, "_archived_task_keys", return_value=set()), \
+                patch.object(manager, "_enqueue_single_task", side_effect=enqueue_single), \
+                patch.object(manager.task_store, "update_active_task", wraps=manager.task_store.update_active_task) as update_task, \
+                patch("app.services.archive_worker._append_batch_queue_log", side_effect=lambda event, **payload: structured_events.append(event)):
+            manager.task_store.save_archive_queue(
+                {
+                    "active": [
+                        {
+                            "id": "batch-large",
+                            "url": "https://makerworld.com.cn/zh/@ace/upload",
+                            "mode": "author_upload",
+                            "status": "running",
+                        }
+                    ],
+                    "queued": [],
+                    "recent_failures": [],
+                }
+            )
+
+            manager._run_batch_task(
+                "batch-large",
+                "https://makerworld.com.cn/zh/@ace/upload",
+                "author_upload",
+            )
+
+        for call in update_task.call_args_list:
+            kwargs = call.kwargs
+            message = str(kwargs.get("message") or "")
+            if message.startswith("正在加入归档队列："):
+                progress_updates.append(message)
+
+        self.assertLessEqual(len(progress_updates), 12)
+        self.assertNotIn("child_enqueued", structured_events)
+        self.assertEqual(structured_events.count("batch_enqueued"), 1)
 
 
 if __name__ == "__main__":

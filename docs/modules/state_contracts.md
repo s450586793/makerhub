@@ -70,6 +70,19 @@ State events should trigger relevant payload refreshes, not broad full-page refr
 - Messages must be sanitized before entering JSON state or business logs.
 - Raw upstream HTML, cookies, tokens, share codes, proxy credentials, public base URLs, and signed download URLs must not be written to logs or user-visible state.
 
+## Write Frequency Audit
+
+Audited services:
+
+| Area | Finding | Rule |
+| --- | --- | --- |
+| Source refresh | `remote_refresh.py` writes per-model results to a temporary NDJSON batch buffer while running, then stores summary counts, recent items, metrics, and failure samples at batch finish. | Keep this pattern; do not publish durable per-model success events during a running batch. |
+| Subscription sync | `subscriptions.py` records subscription-level start/end/error state. It does not write one durable log row for every discovered model. | Keep sync logs at subscription source granularity. |
+| Archive batch enqueue | `archive_worker.py` previously updated parent progress and wrote structured success logs for every discovered child during batch enqueue. | Parent progress is now throttled to coarse stages; successful, already-queued, and already-archived child outcomes are represented by the final `batch_enqueued` summary. |
+| Archive batch recovery | `archive_worker.py` still logs child requeue/lost diagnostics and parent restore/completion events. | Keep these because they explain failures, retries, and crash recovery. |
+| Local organizer | `local_organizer.py` writes item-level diagnostics around filesystem import/move/failure paths. | Defer changes unless a future audit identifies pure success spam in a large batch path. |
+| State events | `TaskStateStore` publishes events on state mutations, while frontend `subscribeStateRefresh` coalesces matching scopes. | Prefer caller-side event suppression only when a batch has an explicit final state mutation. |
+
 ## Change Checklist
 
 Before changing any runtime state shape:
