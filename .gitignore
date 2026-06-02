@@ -12,3 +12,4 @@ runtime-local/
 .workflow/
 frontend/node_modules/
 frontend/dist/
+.worktrees/
