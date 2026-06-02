@@ -27,10 +27,19 @@ from starlette.requests import ClientDisconnect
 
 from app.core.database import DATABASE_STATE_EVENT_CHANNEL, database_status
 from app.core.database_json_state import load_database_json_state, save_database_json_state
-from app.core.store import JsonStore
 from app.core.security import default_admin_password_hash, hash_api_token, verify_password
 from app.core.settings import APP_VERSION, ARCHIVE_DIR, BACKGROUND_TASKS_ENABLED, MAX_LOCAL_IMPORT_UPLOAD_BYTES, STATE_DIR
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
+from app.api.dependencies import (
+    auth_manager,
+    crawler,
+    local_organizer,
+    remote_refresh_manager,
+    source_library_manager,
+    store,
+    subscription_manager,
+    task_state_store,
+)
 from app.schemas.models import (
     AdvancedRuntimeConfig,
     ArchiveRequest,
@@ -80,10 +89,8 @@ from app.services.catalog import (
     invalidate_model_detail_cache,
     upsert_archive_snapshot_model,
 )
-from app.services.crawler import LegacyCrawlerBridge
 from app.services.business_logs import append_business_log, read_log_entries
 from app.services.cookie_utils import sanitize_cookie_header
-from app.services.local_organizer import LocalOrganizerService
 from app.services.local_import_upload import upload_local_import_files
 from app.services.local_model_edit import (
     add_local_model_file,
@@ -98,9 +105,7 @@ from app.services.local_model_edit import (
 )
 from app.services.local_model_merge import merge_local_models
 from app.services.model_attachments import create_manual_attachment, delete_manual_attachment
-from app.services.remote_refresh import RemoteRefreshManager
 from app.services.request_threads import run_task_api, run_ui_io, run_web_io
-from app.services.auth import AuthManager
 from app.services.archive_repair import (
     read_archive_repair_status,
     run_archive_repair_job,
@@ -109,14 +114,9 @@ from app.services.archive_repair import (
 from app.services.archive_model_index import archive_model_index_status, resolve_model_dir_from_short_key
 from app.services.archive_profile_backfill import read_profile_backfill_status, write_profile_backfill_status
 from app.services.batch_discovery import extract_model_id, normalize_source_url
-from app.services.subscriptions import (
-    SubscriptionManager,
-    cookie_source_inventory_payload,
-    cookie_source_sync_state_payload,
-)
+from app.services.subscriptions import cookie_source_inventory_payload, cookie_source_sync_state_payload
 from app.services.source_library import (
     SOURCE_LIBRARY_SNAPSHOT_DIR,
-    SourceLibraryManager,
     build_source_group_models_payload,
     build_source_library_payload,
     build_state_group_models_payload,
@@ -135,35 +135,13 @@ from app.services.online_accounts import (
     online_account_metadata_from_cookie,
     send_online_account_sms_code,
 )
-from app.services.task_state import TaskStateStore, compact_remote_refresh_state
+from app.services.task_state import compact_remote_refresh_state
 from app.services.archive_worker import BATCH_TASK_MODES, detect_archive_mode
 from app.services.self_update import normalize_runtime_resource_config
 from app.services.legacy_archiver import sanitize_filename
 
 
 router = APIRouter(prefix="/api")
-store = JsonStore()
-crawler = LegacyCrawlerBridge()
-auth_manager = AuthManager(store=store)
-task_state_store = TaskStateStore()
-subscription_manager = SubscriptionManager(
-    archive_manager=crawler.manager,
-    store=store,
-    task_store=task_state_store,
-)
-local_organizer = LocalOrganizerService(
-    store=store,
-    task_store=task_state_store,
-)
-source_library_manager = SourceLibraryManager(
-    store=store,
-    task_store=task_state_store,
-)
-remote_refresh_manager = RemoteRefreshManager(
-    store=store,
-    task_store=task_state_store,
-    archive_manager=crawler.manager,
-)
 archive_repair_process: Process | None = None
 archive_repair_start_lock = asyncio.Lock()
 profile_backfill_start_lock = asyncio.Lock()
