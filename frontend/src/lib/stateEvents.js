@@ -1,6 +1,10 @@
+import {
+  createScopedRefreshScheduler,
+  DEFAULT_STATE_REFRESH_DEBOUNCE_MS,
+} from "./stateRefresh.js";
+
 const EVENT_SOURCE_URL = "/api/events/state";
 const RECONNECT_DELAY_MS = 5000;
-const DEFAULT_DEBOUNCE_MS = 450;
 
 let eventSource = null;
 let reconnectTimer = 0;
@@ -87,64 +91,30 @@ export function subscribeStateEvents(handler) {
 }
 
 export function subscribeStateRefresh(scopes, callback, options = {}) {
-  const scopeSet = new Set((Array.isArray(scopes) ? scopes : [scopes]).filter(Boolean));
-  const eventTypes = new Set(Array.isArray(options.types) ? options.types.filter(Boolean) : []);
-  const debounceMs = Number.isFinite(Number(options.debounceMs)) ? Number(options.debounceMs) : DEFAULT_DEBOUNCE_MS;
-  let timer = 0;
-  let pendingWhenVisible = false;
-
-  const invoke = (event) => {
-    if (typeof callback !== "function") {
-      return;
-    }
-    if (typeof document !== "undefined" && document.hidden) {
-      pendingWhenVisible = true;
-      return;
-    }
-    if (timer) {
-      window.clearTimeout(timer);
-    }
-    timer = window.setTimeout(() => {
-      timer = 0;
-      callback(event);
-    }, debounceMs);
-  };
-
-  const onVisibilityChange = () => {
-    if (typeof document !== "undefined" && document.hidden) {
-      return;
-    }
-    if (!pendingWhenVisible) {
-      return;
-    }
-    pendingWhenVisible = false;
-    invoke({ type: "visibility.resumed", scope: "visibility" });
-  };
+  const scheduler = createScopedRefreshScheduler({
+    scopes,
+    types: options.types,
+    callback,
+    debounceMs: Number.isFinite(Number(options.debounceMs))
+      ? Number(options.debounceMs)
+      : DEFAULT_STATE_REFRESH_DEBOUNCE_MS,
+    isHidden: () => typeof document !== "undefined" && document.hidden,
+    setTimeoutFn: (callbackFn, delay) => window.setTimeout(callbackFn, delay),
+    clearTimeoutFn: (timerId) => window.clearTimeout(timerId),
+  });
+  const onVisibilityChange = () => scheduler.handleVisibilityChange();
 
   if (typeof document !== "undefined") {
     document.addEventListener("visibilitychange", onVisibilityChange);
   }
 
-  const unsubscribe = subscribeStateEvents((event) => {
-    const scope = event?.scope || event?.payload?.scope || "";
-    const type = event?.type || "";
-    if (scopeSet.size && !scopeSet.has(scope) && !scopeSet.has("*")) {
-      return;
-    }
-    if (eventTypes.size && !eventTypes.has(type)) {
-      return;
-    }
-    invoke(event);
-  });
+  const unsubscribe = subscribeStateEvents((event) => scheduler.handleEvent(event));
 
   return () => {
     unsubscribe();
     if (typeof document !== "undefined") {
       document.removeEventListener("visibilitychange", onVisibilityChange);
     }
-    if (timer) {
-      window.clearTimeout(timer);
-      timer = 0;
-    }
+    scheduler.dispose();
   };
 }
