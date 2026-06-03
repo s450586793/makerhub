@@ -161,10 +161,18 @@ def normalize_state_event(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _state_changed_signature(payload: dict[str, Any]) -> str:
-    signature_payload = {
-        key: payload.get(key)
-        for key in (
+def _state_changed_signature(scope: str, payload: dict[str, Any]) -> str:
+    if scope == ARCHIVE_QUEUE_STATE_KEY:
+        fields = (
+            "running_count",
+            "queued_count",
+            "failed_count",
+            "count",
+            "status",
+            "running",
+        )
+    else:
+        fields = (
             "running_count",
             "queued_count",
             "failed_count",
@@ -175,8 +183,7 @@ def _state_changed_signature(payload: dict[str, Any]) -> str:
             "last_error_at",
             "last_success_at",
         )
-        if key in payload
-    }
+    signature_payload = {key: payload.get(key) for key in fields if key in payload}
     return json.dumps(signature_payload, ensure_ascii=False, sort_keys=True, default=str)
 
 
@@ -185,7 +192,7 @@ def _should_persist_state_event(scope: str, event_type: str, payload: dict[str, 
         return True
 
     now = time.monotonic()
-    signature = _state_changed_signature(payload)
+    signature = _state_changed_signature(scope, payload)
     with _STATE_EVENT_COALESCE_LOCK:
         last_at = _LAST_STATE_CHANGED_EVENT_AT.get(scope)
         last_signature = _LAST_STATE_CHANGED_EVENT_SIGNATURE.get(scope)

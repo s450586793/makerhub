@@ -1,11 +1,14 @@
 import json
 import os
+import threading
 from contextlib import contextmanager
 from typing import Any, Iterator, Optional
 
 DATABASE_SCHEMA_VERSION = 2
 DATABASE_SCHEMA_METADATA_KEY = "database_schema_version"
 DATABASE_STATE_EVENT_CHANNEL = "makerhub_state_events"
+_DATABASE_INITIALIZED = False
+_DATABASE_INITIALIZE_LOCK = threading.Lock()
 
 
 try:  # pragma: no cover - exercised in deployed images with the dependency installed.
@@ -72,9 +75,7 @@ def database_connection() -> Iterator[Any]:
         connection.close()
 
 
-def initialize_database() -> bool:
-    if not database_configured():
-        return False
+def _initialize_database_schema() -> None:
     with database_connection() as connection:
         connection.execute(
             """
@@ -158,7 +159,26 @@ def initialize_database() -> bool:
                 ),
             ),
         )
+
+
+def initialize_database() -> bool:
+    global _DATABASE_INITIALIZED
+    if not database_configured():
+        return False
+    if _DATABASE_INITIALIZED:
+        return True
+    with _DATABASE_INITIALIZE_LOCK:
+        if _DATABASE_INITIALIZED:
+            return True
+        _initialize_database_schema()
+        _DATABASE_INITIALIZED = True
     return True
+
+
+def _reset_database_initialization_for_tests() -> None:
+    global _DATABASE_INITIALIZED
+    with _DATABASE_INITIALIZE_LOCK:
+        _DATABASE_INITIALIZED = False
 
 
 def database_status() -> dict[str, Any]:

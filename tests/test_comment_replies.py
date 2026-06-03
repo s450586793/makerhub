@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from asyncio import events as asyncio_events
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +19,14 @@ from app.services.legacy_archiver import (
 
 
 class CommentRepliesTest(unittest.TestCase):
+    def tearDown(self):
+        # Some imported HTML/comment parsing paths can leave Python 3.12's
+        # per-thread running-loop marker set in this synchronous test class.
+        # Clear it so later IsolatedAsyncioTestCase/asyncio.run tests can own
+        # their event loop normally.
+        if asyncio_events._get_running_loop() is not None:
+            asyncio_events._set_running_loop(None)
+
     class _DummyResponse:
         def __init__(self, payload, status_code: int = 200):
             self._payload = payload

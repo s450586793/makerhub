@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.8.20`
+> 当前版本：`v0.8.21`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-03 · v0.8.21
+
+- 降低运行期 Postgres 压力：数据库 schema 初始化改为进程内只执行一次，避免日志和状态写入反复触发建表/建索引检查。
+- 归档队列状态写入增加等价内容跳过，减少批量归档和单模型进度更新带来的数据库写入与前端事件风暴。
+- 批量归档恢复后优先推进可执行的单模型子任务，避免批量父任务长期占据运行视图导致误判卡死。
+
 ### 2026-06-03 · v0.8.20
 
 - 后端状态事件增加按 scope 合并，减少归档、源端刷新和本地整理运行中写入 `makerhub_state_events` 的频率。
@@ -218,13 +224,13 @@ uvicorn app.main:app --reload
 - 减少批量归档和源端刷新运行中的状态写入与前端刷新抖动，批次结果改为更集中地汇总写入和刷新。
 - 设置页新增运行角色诊断数据，便于区分 App / Web / Worker 容器状态；前端设置 payload 和后端消息摘要 helper 也拆分并补充测试。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-02 · v0.8.18
 
 - 修复首页国际站处于历史缺失 `3MF` 待重试状态时，动作仍显示“进入任务页”的问题。
 - 国内站和国际站的历史 `3MF` 验证/Cookie 异常现在都会从首页源站状态卡外跳对应 MakerWorld 主页，保持与手动验证回退流程一致。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-01 · v0.8.17
 

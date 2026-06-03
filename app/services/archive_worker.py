@@ -136,6 +136,13 @@ def _queue_item_key(item: dict) -> str:
     return _task_key(item.get("url") or item.get("title") or "")
 
 
+def _is_batch_parent_waiting_for_children(item: dict[str, Any]) -> bool:
+    if str(item.get("mode") or "") not in BATCH_TASK_MODES:
+        return False
+    meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+    return bool(meta.get("batch_expected_items"))
+
+
 def _is_transient_batch_child_failure(message: str) -> bool:
     lowered = str(message or "").strip().lower()
     if not lowered:
@@ -1772,6 +1779,13 @@ class ArchiveTaskManager:
             self._ensure_worker()
         return queue
 
+    def _next_executable_task(self, queue: dict) -> Optional[dict]:
+        queued = list(queue.get("queued") or [])
+        for item in queued:
+            if not _is_batch_parent_waiting_for_children(item):
+                return item
+        return queued[0] if queued else None
+
     def _run_loop(self) -> None:
         while True:
             has_active_batch = self._refresh_batch_tasks()
@@ -1789,7 +1803,12 @@ class ArchiveTaskManager:
                     continue
                 return
 
-            task = queued[0]
+            task = self._next_executable_task(queue)
+            if task is None:
+                if has_active_batch:
+                    time.sleep(ACTIVE_BATCH_IDLE_POLL_SECONDS)
+                    continue
+                return
             task_id = task["id"]
             task_url = str(task.get("url") or "")
             task_meta = task.get("meta") if isinstance(task.get("meta"), dict) else {}

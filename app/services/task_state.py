@@ -114,6 +114,16 @@ def _normalize_archive_queue(payload: Any) -> dict:
     }
 
 
+def _state_payload_signature(payload: dict) -> str:
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -862,13 +872,27 @@ class TaskStateStore:
         return self._load_archive_queue_unlocked()
 
     def _update_archive_queue(self, updater) -> dict:
+        publish_event = True
         with _STATE_LOCK, self._state_file_lock(ARCHIVE_QUEUE_PATH):
             payload = self._load_archive_queue_unlocked()
+            before_payload = {
+                "active": payload.get("active") or [],
+                "queued": payload.get("queued") or [],
+                "recent_failures": payload.get("recent_failures") or [],
+            }
+            before_signature = _state_payload_signature(_normalize_archive_queue(before_payload))
             updated = updater(payload)
             if updated is None:
                 updated = payload
-            result = self._save_archive_queue_unlocked(updated)
-        self._publish_state_event(ARCHIVE_QUEUE_STATE_KEY, result)
+            normalized_updated = _normalize_archive_queue(updated)
+            after_signature = _state_payload_signature(normalized_updated)
+            if before_signature == after_signature:
+                result = self._load_archive_queue_unlocked()
+                publish_event = False
+            else:
+                result = self._save_archive_queue_unlocked(normalized_updated)
+        if publish_event:
+            self._publish_state_event(ARCHIVE_QUEUE_STATE_KEY, result)
         return result
 
     def _load_missing_3mf_unlocked(self, fallback_items: Optional[list[dict]] = None) -> dict:

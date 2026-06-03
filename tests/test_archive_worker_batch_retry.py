@@ -15,6 +15,67 @@ class _ArchiveBatchRefreshStore:
 
 
 class ArchiveWorkerBatchRetryTest(unittest.TestCase):
+    def test_resume_keeps_batch_parents_tracking_but_prioritizes_single_model_child(self):
+        state = {}
+        manager = ArchiveTaskManager(background_enabled=False)
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch.object(manager, "_archived_task_keys", return_value=set()):
+            manager.task_store.save_archive_queue(
+                {
+                    "active": [
+                        {
+                            "id": f"batch-{index}",
+                            "url": f"https://makerworld.com.cn/zh/@author{index}/upload",
+                            "mode": "author_upload",
+                            "status": "running",
+                            "message": "批量归档执行中：成功 0/1，运行中 0，排队中 1，失败 0。",
+                            "meta": {
+                                "batch_expected_items": [
+                                    {
+                                        "url": f"https://makerworld.com.cn/zh/models/{900000 + index}",
+                                        "task_key": f"model:{900000 + index}",
+                                        "model_id": str(900000 + index),
+                                        "attempts": 1,
+                                        "status": "queued",
+                                        "last_task_id": f"child-{index}",
+                                    }
+                                ],
+                                "batch_progress": {
+                                    "total": 1,
+                                    "completed": 0,
+                                    "failed": 0,
+                                    "running": 0,
+                                    "queued": 1,
+                                    "remaining": 1,
+                                },
+                            },
+                        }
+                        for index in range(10)
+                    ],
+                    "queued": [
+                        {
+                            "id": "child-0",
+                            "url": "https://makerworld.com.cn/zh/models/900000",
+                            "title": "https://makerworld.com.cn/zh/models/900000",
+                            "mode": "single_model",
+                            "status": "queued",
+                            "meta": {
+                                "batch_parent_id": "batch-0",
+                                "batch_source_url": "https://makerworld.com.cn/zh/@author0/upload",
+                            },
+                        }
+                    ],
+                    "recent_failures": [],
+                }
+            )
+
+            queue = manager.resume_pending_tasks()
+            next_task = manager._next_executable_task(queue)
+
+        self.assertEqual(next_task["id"], "child-0")
+
     def test_refresh_batch_restores_orphaned_parent_from_child_tasks(self):
         state = {}
         manager = ArchiveTaskManager(background_enabled=False)

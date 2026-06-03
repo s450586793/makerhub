@@ -408,6 +408,96 @@ class DatabaseStatusTest(unittest.TestCase):
         self.assertEqual(status["expected_schema_version"], database.DATABASE_SCHEMA_VERSION)
 
 
+class DatabaseInitializationGuardTest(unittest.TestCase):
+    def test_repeated_json_state_operations_initialize_database_once(self):
+        calls = []
+
+        class FakeResult:
+            def __init__(self, row=None):
+                self.row = row or {}
+
+            def fetchone(self):
+                return self.row
+
+        class FakeConnection:
+            def execute(self, sql, params=None):
+                calls.append((sql, params))
+                if "SELECT value FROM makerhub_json_state" in sql:
+                    return FakeResult({"value": {"ok": True}})
+                if "RETURNING id" in sql:
+                    return FakeResult(
+                        {
+                            "id": 1,
+                            "type": "state.changed",
+                            "scope": "archive_queue",
+                            "payload": {"queued_count": 1},
+                            "created_at": "now",
+                        }
+                    )
+                return FakeResult()
+
+        class FakeContext:
+            def __enter__(self):
+                return FakeConnection()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        database._reset_database_initialization_for_tests()
+        with patch.object(database, "database_configured", return_value=True), \
+                patch.object(database, "database_connection", return_value=FakeContext()):
+            database.load_json_state("archive_queue")
+            database.save_json_state("archive_queue", {"ok": True})
+            database.append_state_event("state.changed", "archive_queue", {"queued_count": 1})
+
+        schema_calls = [
+            sql for sql, _params in calls
+            if "CREATE TABLE IF NOT EXISTS makerhub_json_state" in sql
+            or "CREATE INDEX IF NOT EXISTS makerhub_state_events_created_idx" in sql
+            or "INSERT INTO makerhub_metadata" in sql
+        ]
+        self.assertEqual(
+            len([sql for sql in schema_calls if "CREATE TABLE IF NOT EXISTS makerhub_json_state" in sql]),
+            1,
+        )
+        self.assertEqual(
+            len([sql for sql in schema_calls if "CREATE INDEX IF NOT EXISTS makerhub_state_events_created_idx" in sql]),
+            1,
+        )
+        self.assertEqual(
+            len([sql for sql in schema_calls if "INSERT INTO makerhub_metadata" in sql]),
+            1,
+        )
+
+    def test_initialization_guard_retries_after_failure(self):
+        attempts = []
+
+        class FakeContext:
+            def __enter__(self):
+                attempts.append(True)
+                if len(attempts) == 1:
+                    raise RuntimeError("schema lock timeout")
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def execute(self, sql, params=None):
+                return self
+
+            def fetchone(self):
+                return {"value": {}}
+
+        database._reset_database_initialization_for_tests()
+        with patch.object(database, "database_configured", return_value=True), \
+                patch.object(database, "database_connection", return_value=FakeContext()):
+            with self.assertRaises(RuntimeError):
+                database.initialize_database()
+            self.assertTrue(database.initialize_database())
+
+        self.assertEqual(len(attempts), 2)
+
+
 class StateEventsTest(unittest.TestCase):
     def test_normalize_state_event_converts_created_at_and_payload(self):
         row = {

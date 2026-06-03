@@ -160,6 +160,65 @@ class OrganizeTaskStateTest(unittest.TestCase):
 
 
 class ArchiveQueueStateTest(unittest.TestCase):
+    def test_update_archive_queue_skips_save_and_event_when_payload_unchanged(self):
+        state = {
+            "archive_queue": {
+                "active": [],
+                "queued": [
+                    {
+                        "id": "task-1",
+                        "url": "https://makerworld.com.cn/zh/models/1",
+                        "title": "https://makerworld.com.cn/zh/models/1",
+                        "mode": "single_model",
+                        "status": "queued",
+                        "progress": 0,
+                        "message": "等待归档",
+                        "updated_at": "2026-06-03T20:00:00+08:00",
+                    }
+                ],
+                "recent_failures": [],
+            }
+        }
+        saves = []
+        events = []
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: saves.append((key, value)) or state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.publish_state_event", side_effect=lambda scope, event_type, payload: events.append((scope, event_type, payload))):
+            result = store._update_archive_queue(lambda payload: payload)
+
+        self.assertEqual(result["queued_count"], 1)
+        self.assertEqual(saves, [])
+        self.assertEqual(events, [])
+
+    def test_update_archive_queue_saves_and_publishes_when_payload_changes(self):
+        state = {"archive_queue": {"active": [], "queued": [], "recent_failures": []}}
+        saves = []
+        events = []
+        store = TaskStateStore()
+
+        def mutate(payload):
+            payload["queued"] = [
+                {
+                    "id": "task-1",
+                    "url": "https://makerworld.com.cn/zh/models/1",
+                    "mode": "single_model",
+                    "status": "queued",
+                }
+            ]
+            return payload
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: saves.append((key, value)) or state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.publish_state_event", side_effect=lambda scope, event_type, payload: events.append((scope, event_type, payload))):
+            result = store._update_archive_queue(mutate)
+
+        self.assertEqual(result["queued_count"], 1)
+        self.assertEqual(len(saves), 1)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0][0], "archive_queue")
+
     def test_clear_recent_failures_preserves_active_and_queued_tasks(self):
         state = {}
         store = TaskStateStore()
@@ -312,6 +371,43 @@ class ArchiveQueueStateTest(unittest.TestCase):
 
         self.assertEqual([row["payload"].get("queued_count") for row in rows[:2]], [1, 2])
         self.assertEqual(rows[2]["payload"]["status"], "running")
+
+    def test_archive_queue_progress_message_only_changes_are_coalesced(self):
+        rows = []
+
+        def append_event(event_type, scope, payload):
+            row = {
+                "id": len(rows) + 1,
+                "type": event_type,
+                "scope": scope,
+                "payload": payload,
+                "created_at": "",
+            }
+            rows.append(row)
+            return row
+
+        with patch.object(state_events, "_LAST_STATE_CHANGED_EVENT_AT", {}), \
+                patch.object(state_events, "_LAST_STATE_CHANGED_EVENT_SIGNATURE", {}), \
+                patch.object(state_events, "append_state_event", side_effect=append_event), \
+                patch.object(state_events, "wake_state_event_subscribers"), \
+                patch.object(state_events.time, "monotonic", side_effect=[100.0, 100.1, 100.2]):
+            state_events.publish_state_event(
+                "archive_queue",
+                "state.changed",
+                {"running_count": 10, "queued_count": 777, "failed_count": 0, "last_message": "正在下载设计图片（1/6）"},
+            )
+            state_events.publish_state_event(
+                "archive_queue",
+                "state.changed",
+                {"running_count": 10, "queued_count": 777, "failed_count": 0, "last_message": "正在下载设计图片（2/6）"},
+            )
+            state_events.publish_state_event(
+                "archive_queue",
+                "state.changed",
+                {"running_count": 10, "queued_count": 776, "failed_count": 0, "last_message": "下一个任务"},
+            )
+
+        self.assertEqual([row["payload"]["queued_count"] for row in rows], [777, 776])
 
     def test_semantic_state_events_bypass_coalescing(self):
         rows = []
