@@ -19,6 +19,7 @@ from app.services.state_contracts import (
     THREE_MF_LIMIT_GUARD_STATE_KEY,
 )
 from app.services.state_events import publish_state_event, task_counts_payload
+from app.services.task_runtime import lease_expiry_from_now, normalize_runtime_status, task_attempt_count
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, normalize_three_mf_failure_state
 
 try:
@@ -95,9 +96,36 @@ def _normalize_task_item(item: Any, default_status: str) -> dict:
     return task_messages.normalize_task_item(item, default_status)
 
 
+def _normalize_archive_runtime_item(item: Any, default_status: str) -> dict:
+    normalized = _normalize_task_item(item, default_status)
+    source = item if isinstance(item, dict) else {}
+    meta = normalized.get("meta") if isinstance(normalized.get("meta"), dict) else {}
+    status_default = "waiting_children" if meta.get("batch_expected_items") else default_status
+    normalized["status"] = normalize_runtime_status(normalized.get("status"), status_default)
+    if meta.get("batch_expected_items") and normalized["status"] == "running":
+        normalized["status"] = "waiting_children"
+
+    for field in (
+        "lease_owner",
+        "lease_expires_at",
+        "heartbeat_at",
+        "started_at",
+        "last_progress_at",
+        "parent_task_id",
+        "blocked_reason",
+    ):
+        value = source.get(field)
+        if value is not None:
+            normalized[field] = str(value)
+
+    if "attempt_count" in source or "attempts" in source or normalized["status"] == "running":
+        normalized["attempt_count"] = max(task_attempt_count(source), 1 if normalized["status"] == "running" else 0)
+    return normalized
+
+
 def _normalize_archive_queue(payload: Any) -> dict:
     if isinstance(payload, list):
-        queued = [_normalize_task_item(item, "queued") for item in payload]
+        queued = [_normalize_archive_runtime_item(item, "queued") for item in payload]
         return {"active": [], "queued": queued, "recent_failures": []}
 
     if not isinstance(payload, dict):
@@ -108,9 +136,9 @@ def _normalize_archive_queue(payload: Any) -> dict:
     failed_items = payload.get("recent_failures") or payload.get("failed") or payload.get("failures") or []
 
     return {
-        "active": [_normalize_task_item(item, "running") for item in active_items],
-        "queued": [_normalize_task_item(item, "queued") for item in queued_items],
-        "recent_failures": [_normalize_task_item(item, "failed") for item in failed_items],
+        "active": [_normalize_archive_runtime_item(item, "running") for item in active_items],
+        "queued": [_normalize_archive_runtime_item(item, "queued") for item in queued_items],
+        "recent_failures": [_normalize_archive_runtime_item(item, "failed") for item in failed_items],
     }
 
 
@@ -1132,11 +1160,17 @@ class TaskStateStore:
             active = list(payload.get("active") or [])
             task = None
             remaining = []
+            now = china_now_iso()
             for item in queued:
-                normalized = _normalize_task_item(item, "queued")
+                normalized = _normalize_archive_runtime_item(item, "queued")
                 if normalized["id"] == task_id and task is None:
                     normalized["status"] = "running"
-                    normalized["updated_at"] = china_now_iso()
+                    normalized["started_at"] = normalized.get("started_at") or now
+                    normalized["heartbeat_at"] = now
+                    normalized["last_progress_at"] = now
+                    normalized["lease_expires_at"] = lease_expiry_from_now()
+                    normalized["attempt_count"] = max(task_attempt_count(normalized) + 1, 1)
+                    normalized["updated_at"] = now
                     task = normalized
                     continue
                 remaining.append(normalized)
@@ -1144,14 +1178,19 @@ class TaskStateStore:
             if task is None:
                 current_active = []
                 for item in active:
-                    normalized = _normalize_task_item(item, "running")
+                    normalized = _normalize_archive_runtime_item(item, "running")
                     if normalized["id"] == task_id:
+                        normalized["status"] = "running"
+                        normalized["heartbeat_at"] = now
+                        normalized["last_progress_at"] = now
+                        normalized["lease_expires_at"] = lease_expiry_from_now()
+                        normalized["updated_at"] = now
                         task = normalized
                     else:
                         current_active.append(normalized)
                 active = current_active
             else:
-                active = [_normalize_task_item(item, "running") for item in active]
+                active = [_normalize_archive_runtime_item(item, "running") for item in active]
 
             if task is not None:
                 active.append(task)
@@ -1166,7 +1205,7 @@ class TaskStateStore:
         def _mutate(payload: dict) -> dict:
             active = []
             for item in payload.get("active") or []:
-                normalized = _normalize_task_item(item, "running")
+                normalized = _normalize_archive_runtime_item(item, "running")
                 if normalized["id"] == task_id:
                     normalized.update({key: value for key, value in changes.items() if value is not None})
                     normalized["updated_at"] = china_now_iso()

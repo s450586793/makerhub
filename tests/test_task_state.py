@@ -258,6 +258,85 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(events[-1][1], "state.changed")
         self.assertEqual(events[-1][2]["queued_count"], 1)
 
+    def test_start_archive_task_assigns_runtime_lease_fields(self):
+        state = {"archive_queue": {"active": [], "queued": [{"id": "task-1", "title": "Demo"}], "recent_failures": []}}
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.china_now_iso", return_value="2026-06-04T10:00:00+08:00"), \
+                patch("app.services.task_state.lease_expiry_from_now", return_value="2026-06-04T10:30:00+08:00"):
+            queue = store.start_archive_task("task-1")
+
+        task = queue["active"][0]
+        self.assertEqual(task["status"], "running")
+        self.assertEqual(task["started_at"], "2026-06-04T10:00:00+08:00")
+        self.assertEqual(task["heartbeat_at"], "2026-06-04T10:00:00+08:00")
+        self.assertEqual(task["last_progress_at"], "2026-06-04T10:00:00+08:00")
+        self.assertEqual(task["lease_expires_at"], "2026-06-04T10:30:00+08:00")
+        self.assertGreaterEqual(task["attempt_count"], 1)
+
+    def test_batch_parent_normalizes_to_waiting_children(self):
+        store = TaskStateStore()
+        state = {
+            "archive_queue": {
+                "active": [
+                    {
+                        "id": "batch-1",
+                        "title": "Batch",
+                        "mode": "author_upload",
+                        "status": "running",
+                        "meta": {
+                            "batch_expected_items": [
+                                {"url": "https://makerworld.com.cn/zh/models/1", "status": "queued"}
+                            ]
+                        },
+                    }
+                ],
+                "queued": [],
+                "recent_failures": [],
+            }
+        }
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)):
+            queue = store.load_archive_queue()
+
+        self.assertEqual(queue["active"][0]["status"], "waiting_children")
+
+    def test_update_active_task_preserves_runtime_lease_fields(self):
+        state = {
+            "archive_queue": {
+                "active": [
+                    {
+                        "id": "task-1",
+                        "title": "Demo",
+                        "status": "running",
+                        "lease_expires_at": "2026-06-04T10:30:00+08:00",
+                        "heartbeat_at": "2026-06-04T10:00:00+08:00",
+                        "started_at": "2026-06-04T10:00:00+08:00",
+                        "last_progress_at": "2026-06-04T10:00:00+08:00",
+                        "attempt_count": 2,
+                    }
+                ],
+                "queued": [],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.china_now_iso", return_value="2026-06-04T10:05:00+08:00"):
+            queue = store.update_active_task("task-1", progress=50, message="处理中")
+
+        task = queue["active"][0]
+        self.assertEqual(task["progress"], 50)
+        self.assertEqual(task["lease_expires_at"], "2026-06-04T10:30:00+08:00")
+        self.assertEqual(task["heartbeat_at"], "2026-06-04T10:00:00+08:00")
+        self.assertEqual(task["started_at"], "2026-06-04T10:00:00+08:00")
+        self.assertEqual(task["last_progress_at"], "2026-06-04T10:00:00+08:00")
+        self.assertEqual(task["attempt_count"], 2)
+
     def test_completed_archive_task_publishes_semantic_event(self):
         state = {}
         events = []
