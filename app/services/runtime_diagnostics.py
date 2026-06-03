@@ -3,8 +3,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from app.api.dependencies import task_state_store
 from app.core.database import database_connection, database_status
 from app.core.timezone import now_iso as china_now_iso
+from app.services.task_runtime import is_lease_expired, normalize_runtime_status
 
 
 def _iso(value: Any) -> str:
@@ -116,6 +118,54 @@ def _fetch_json_state_stats(connection) -> list[dict[str, Any]]:
     ]
 
 
+def _safe_task_preview(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(item.get("id") or ""),
+        "title": str(item.get("title") or "")[:160],
+        "status": normalize_runtime_status(item.get("status"), "queued"),
+        "updated_at": _iso(item.get("updated_at")),
+        "lease_expires_at": _iso(item.get("lease_expires_at")),
+    }
+
+
+def _archive_queue_diagnostics() -> dict[str, Any]:
+    try:
+        queue = task_state_store.load_archive_queue()
+    except Exception as exc:
+        return {
+            "available": False,
+            "error": str(exc),
+            "running_count": 0,
+            "queued_count": 0,
+            "failed_count": 0,
+            "waiting_children_count": 0,
+            "stale_candidates": [],
+        }
+
+    active = [item for item in queue.get("active") or [] if isinstance(item, dict)]
+    queued = [item for item in queue.get("queued") or [] if isinstance(item, dict)]
+    recent_failures = [item for item in queue.get("recent_failures") or [] if isinstance(item, dict)]
+    stale = [
+        _safe_task_preview(item)
+        for item in active
+        if normalize_runtime_status(item.get("status"), "running") == "running"
+        and is_lease_expired(item.get("lease_expires_at"))
+    ][:20]
+
+    return {
+        "available": True,
+        "running_count": _int(queue.get("running_count") or len(active)),
+        "queued_count": _int(queue.get("queued_count") or len(queued)),
+        "failed_count": _int(queue.get("failed_count") or len(recent_failures)),
+        "waiting_children_count": sum(
+            1
+            for item in active
+            if normalize_runtime_status(item.get("status"), "running") == "waiting_children"
+        ),
+        "stale_candidates": stale,
+    }
+
+
 def build_runtime_diagnostics() -> dict[str, Any]:
     status = database_status()
     payload: dict[str, Any] = {
@@ -125,6 +175,7 @@ def build_runtime_diagnostics() -> dict[str, Any]:
         "state_events_by_scope": [],
         "recent_logs": [],
         "json_states": [],
+        "archive_queue": _archive_queue_diagnostics(),
     }
     if not bool(status.get("available")):
         return payload

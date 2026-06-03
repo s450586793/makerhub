@@ -87,6 +87,34 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         self.assertEqual(payload["tables"], [])
         self.assertEqual(payload["state_events_by_scope"], [])
 
+    def test_build_runtime_diagnostics_includes_archive_queue_summary(self):
+        queue = {
+            "active": [
+                {
+                    "id": "task-1",
+                    "status": "running",
+                    "title": "Running",
+                    "lease_expires_at": "2026-06-04T09:00:00+08:00",
+                },
+                {"id": "batch-1", "status": "waiting_children", "title": "Batch"},
+            ],
+            "queued": [{"id": "task-2", "status": "queued", "title": "Queued"}],
+            "recent_failures": [{"id": "task-3", "status": "failed", "title": "Failed"}],
+            "running_count": 2,
+            "queued_count": 1,
+            "failed_count": 1,
+        }
+
+        with patch.object(runtime_diagnostics, "database_status", return_value={"available": False}), \
+                patch.object(runtime_diagnostics.task_state_store, "load_archive_queue", return_value=queue), \
+                patch.object(runtime_diagnostics, "is_lease_expired", return_value=True):
+            payload = runtime_diagnostics.build_runtime_diagnostics()
+
+        self.assertEqual(payload["archive_queue"]["running_count"], 2)
+        self.assertEqual(payload["archive_queue"]["queued_count"], 1)
+        self.assertEqual(payload["archive_queue"]["failed_count"], 1)
+        self.assertEqual(payload["archive_queue"]["stale_candidates"][0]["id"], "task-1")
+
     def test_system_diagnostics_route_requires_session_and_returns_payload(self):
         request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session"}))
         with patch.object(system_api.config_api, "_require_session_auth") as require_auth, \
