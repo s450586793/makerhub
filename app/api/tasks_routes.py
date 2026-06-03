@@ -61,6 +61,29 @@ async def clear_recent_archive_failures(request: Request):
     return result
 
 
+@router.post("/tasks/archive-queue/repair")
+async def repair_archive_queue(request: Request):
+    _require_session_auth(request)
+
+    def _repair_payload() -> dict:
+        result = task_state_store.repair_archive_queue()
+        return {
+            "success": True,
+            "message": "队列状态修复完成。",
+            "summary": result.get("summary") or {},
+            "archive_queue": result.get("queue") or {},
+        }
+
+    result = await run_task_api(_repair_payload)
+    append_business_log(
+        "archive",
+        "queue_repair_requested",
+        result.get("message") or "队列状态修复完成。",
+        **(result.get("summary") or {}),
+    )
+    return result
+
+
 @router.post("/tasks/organize/clear")
 async def clear_organize_tasks(request: Request):
     _require_session_auth(request)

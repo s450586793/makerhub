@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.api import system as system_api
+from app.api import tasks_routes
 from app.services import runtime_diagnostics
 
 
@@ -123,6 +124,36 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
 
         require_auth.assert_called_once_with(request)
         self.assertTrue(payload["database"]["available"])
+
+    def test_repair_archive_queue_route_requires_session_and_returns_summary(self):
+        request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
+        repair_payload = {
+            "summary": {
+                "examined": 1,
+                "requeued": 1,
+                "failed": 0,
+                "finalized": 0,
+                "skipped": 0,
+                "errors": [],
+            },
+            "queue": {
+                "running_count": 0,
+                "queued_count": 1,
+                "failed_count": 0,
+                "active": [],
+                "queued": [],
+                "recent_failures": [],
+            },
+        }
+
+        with patch.object(tasks_routes, "_require_session_auth") as require_auth, \
+                patch.object(tasks_routes.task_state_store, "repair_archive_queue", return_value=repair_payload), \
+                patch.object(tasks_routes, "append_business_log"):
+            payload = asyncio.run(tasks_routes.repair_archive_queue(request))
+
+        require_auth.assert_called_once_with(request)
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["summary"]["requeued"], 1)
 
 
 if __name__ == "__main__":
