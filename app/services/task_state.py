@@ -19,7 +19,14 @@ from app.services.state_contracts import (
     THREE_MF_LIMIT_GUARD_STATE_KEY,
 )
 from app.services.state_events import publish_state_event, task_counts_payload
-from app.services.task_runtime import lease_expiry_from_now, normalize_runtime_status, task_attempt_count
+from app.services.task_runtime import (
+    DEFAULT_MAX_ATTEMPTS,
+    is_lease_expired,
+    lease_expiry_from_now,
+    normalize_runtime_status,
+    task_attempt_count,
+    task_attempts_remaining,
+)
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, normalize_three_mf_failure_state
 
 try:
@@ -1331,6 +1338,60 @@ class TaskStateStore:
         queue = self._update_archive_queue(_mutate)
         queue["recovered_count"] = recovered_count
         return queue
+
+    def repair_archive_queue(self, *, max_attempts: int = DEFAULT_MAX_ATTEMPTS) -> dict:
+        summary = {
+            "examined": 0,
+            "requeued": 0,
+            "failed": 0,
+            "finalized": 0,
+            "skipped": 0,
+            "errors": [],
+        }
+
+        def _mutate(payload: dict) -> dict:
+            now = china_now_iso()
+            active = []
+            queued = [_normalize_archive_runtime_item(item, "queued") for item in (payload.get("queued") or [])]
+            recent_failures = [_normalize_archive_runtime_item(item, "failed") for item in (payload.get("recent_failures") or [])]
+
+            for item in payload.get("active") or []:
+                normalized = _normalize_archive_runtime_item(item, "running")
+                status = normalize_runtime_status(normalized.get("status"), "running")
+                summary["examined"] += 1
+
+                if status in {"paused", "waiting_children", "blocked"}:
+                    summary["skipped"] += 1
+                    active.append(normalized)
+                    continue
+
+                if status != "running" or not is_lease_expired(normalized.get("lease_expires_at")):
+                    summary["skipped"] += 1
+                    active.append(normalized)
+                    continue
+
+                normalized["updated_at"] = now
+                normalized["heartbeat_at"] = ""
+                normalized["lease_expires_at"] = ""
+
+                if task_attempts_remaining(normalized, max_attempts=max_attempts):
+                    normalized["status"] = "queued"
+                    normalized["message"] = "检测到任务心跳过期，已重新排队。"
+                    queued.insert(0, normalized)
+                    summary["requeued"] += 1
+                else:
+                    normalized["status"] = "failed"
+                    normalized["message"] = "任务心跳过期且已达到最大重试次数。"
+                    recent_failures.insert(0, normalized)
+                    summary["failed"] += 1
+
+            payload["active"] = active
+            payload["queued"] = queued
+            payload["recent_failures"] = recent_failures[:20]
+            return payload
+
+        queue = self._update_archive_queue(_mutate)
+        return {"summary": summary, "queue": queue}
 
     def remove_recent_failures_for_model(self, model_id: str, url: str = "") -> dict:
         model_key = str(model_id or "").strip()

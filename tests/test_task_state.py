@@ -337,6 +337,87 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(task["last_progress_at"], "2026-06-04T10:00:00+08:00")
         self.assertEqual(task["attempt_count"], 2)
 
+    def test_repair_archive_queue_requeues_expired_running_task(self):
+        state = {
+            "archive_queue": {
+                "active": [
+                    {
+                        "id": "task-expired",
+                        "title": "Expired",
+                        "status": "running",
+                        "lease_expires_at": "2026-06-04T09:00:00+08:00",
+                        "attempt_count": 1,
+                    }
+                ],
+                "queued": [],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.is_lease_expired", return_value=True), \
+                patch("app.services.task_state.china_now_iso", return_value="2026-06-04T10:00:00+08:00"):
+            result = store.repair_archive_queue()
+
+        self.assertEqual(result["summary"]["examined"], 1)
+        self.assertEqual(result["summary"]["requeued"], 1)
+        self.assertEqual(result["queue"]["queued"][0]["id"], "task-expired")
+        self.assertEqual(result["queue"]["queued"][0]["status"], "queued")
+
+    def test_repair_archive_queue_fails_expired_task_without_attempts(self):
+        state = {
+            "archive_queue": {
+                "active": [
+                    {
+                        "id": "task-dead",
+                        "title": "Dead",
+                        "status": "running",
+                        "lease_expires_at": "2026-06-04T09:00:00+08:00",
+                        "attempt_count": 3,
+                    }
+                ],
+                "queued": [],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.is_lease_expired", return_value=True), \
+                patch("app.services.task_state.china_now_iso", return_value="2026-06-04T10:00:00+08:00"):
+            result = store.repair_archive_queue()
+
+        self.assertEqual(result["summary"]["failed"], 1)
+        self.assertEqual(result["queue"]["recent_failures"][0]["id"], "task-dead")
+
+    def test_repair_archive_queue_skips_paused_task(self):
+        state = {
+            "archive_queue": {
+                "active": [
+                    {
+                        "id": "paused-1",
+                        "title": "Paused",
+                        "status": "paused",
+                        "lease_expires_at": "2026-06-04T09:00:00+08:00",
+                    }
+                ],
+                "queued": [],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.is_lease_expired", return_value=True):
+            result = store.repair_archive_queue()
+
+        self.assertEqual(result["summary"]["skipped"], 1)
+        self.assertEqual(result["queue"]["active"][0]["status"], "paused")
+
     def test_completed_archive_task_publishes_semantic_event(self):
         state = {}
         events = []
