@@ -27,6 +27,18 @@ def test_status_sets_include_existing_values():
     assert {"idle", "running", "success", "error", "pending"}.issubset(state_contracts.SUBSCRIPTION_STATUSES)
 
 
+def test_runtime_statuses_cover_task_governance_values():
+    assert {
+        "queued",
+        "running",
+        "waiting_children",
+        "paused",
+        "blocked",
+        "failed",
+        "completed",
+    }.issubset(state_contracts.RUNTIME_TASK_STATUSES)
+
+
 def test_dashboard_scopes_are_plain_strings_for_frontend_payloads():
     scopes = state_contracts.dashboard_event_scopes()
     assert all(isinstance(scope, str) for scope in scopes)
