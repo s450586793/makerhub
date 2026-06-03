@@ -1,4 +1,5 @@
 from app.services import state_contracts
+from app.services.task_runtime import task_attempt_count
 
 
 def test_core_state_keys_are_stable():
@@ -37,6 +38,10 @@ def test_runtime_statuses_cover_task_governance_values():
         "failed",
         "completed",
     }.issubset(state_contracts.RUNTIME_TASK_STATUSES)
+
+
+def test_task_attempt_count_honors_zero_attempt_count():
+    assert task_attempt_count({"attempt_count": 0, "attempts": 3}) == 0
 
 
 def test_dashboard_scopes_are_plain_strings_for_frontend_payloads():

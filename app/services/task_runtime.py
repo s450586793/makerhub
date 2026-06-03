@@ -59,7 +59,8 @@ def is_lease_expired(value: Any) -> bool:
 
 def task_attempt_count(item: dict[str, Any]) -> int:
     try:
-        return int(item.get("attempt_count") or item.get("attempts") or 0)
+        value = item.get("attempt_count") if "attempt_count" in item else item.get("attempts")
+        return int(value or 0)
     except (TypeError, ValueError):
         return 0
 
