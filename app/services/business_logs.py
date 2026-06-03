@@ -33,6 +33,12 @@ SENSITIVE_KEY_PARTS = (
 _DB_LOGS_READY = False
 _DB_LOGS_LOCK = threading.Lock()
 DATABASE_LOG_MAX_ATTEMPTS = 3
+NOISY_INFO_EVENTS = {
+    ("scrapling", "fetch_trace"),
+    ("subscription", "metadata_refreshed"),
+    ("subscription", "preview_snapshots_refreshed"),
+    ("source_library", "preview_snapshots_refreshed"),
+}
 
 
 def _now_iso() -> str:
@@ -115,6 +121,15 @@ def _entry_for_db(entry: dict[str, Any], *, file_name: str, raw: str = "") -> di
     }
 
 
+def _should_persist_log_entry(entry: dict[str, Any]) -> bool:
+    level = str(entry.get("level") or "info").lower()
+    if level not in {"info", "debug"}:
+        return True
+    category = str(entry.get("category") or "").strip()
+    event = str(entry.get("event") or "").strip()
+    return (category, event) not in NOISY_INFO_EVENTS
+
+
 def append_database_log_entry(file_name: str, entry: dict[str, Any], *, raw: str = "") -> bool:
     if not isinstance(entry, dict) or not _database_logs_enabled():
         return False
@@ -185,7 +200,8 @@ def append_structured_log(
         **{str(key): _safe_value(value, key=str(key)) for key, value in payload.items()},
     }
     line = json.dumps(entry, ensure_ascii=False)
-    append_database_log_entry(safe_file_name, entry, raw=line)
+    if _should_persist_log_entry(entry):
+        append_database_log_entry(safe_file_name, entry, raw=line)
 
 
 def append_business_log(
@@ -206,6 +222,8 @@ def append_business_log(
     }
     try:
         line = json.dumps(entry, ensure_ascii=False)
+        if not _should_persist_log_entry(entry):
+            return
         append_database_log_entry(BUSINESS_LOG_NAME, entry, raw=line)
         print(
             f"[makerhub][{entry['level']}][{entry['category']}] {entry['event']} {entry['message']}".strip(),

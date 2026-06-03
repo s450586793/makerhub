@@ -1,0 +1,101 @@
+import unittest
+import asyncio
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from app.api import system as system_api
+from app.services import runtime_diagnostics
+
+
+class _FakeConnection:
+    def __init__(self, rows_by_marker):
+        self.rows_by_marker = rows_by_marker
+        self.last_marker = ""
+
+    def execute(self, query, params=None):
+        text = " ".join(str(query).split())
+        if "pg_stat_user_tables" in text:
+            self.last_marker = "tables"
+        elif "FROM makerhub_state_events" in text and "GROUP BY scope" in text:
+            self.last_marker = "events"
+        elif "FROM makerhub_logs" in text and "GROUP BY file_name" in text:
+            self.last_marker = "logs"
+        elif "FROM makerhub_json_state" in text:
+            self.last_marker = "states"
+        else:
+            self.last_marker = "unknown"
+        return self
+
+    def fetchall(self):
+        return self.rows_by_marker.get(self.last_marker, [])
+
+
+class _ConnectionContext:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def __enter__(self):
+        return self.connection
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class RuntimeDiagnosticsTest(unittest.TestCase):
+    def test_build_runtime_diagnostics_returns_database_aggregates(self):
+        now = datetime(2026, 6, 3, 6, 0, tzinfo=timezone.utc)
+        connection = _FakeConnection(
+            {
+                "tables": [
+                    {"relname": "makerhub_logs", "total_size": "575 MB", "rows": 536482, "dead_rows": 2},
+                ],
+                "events": [
+                    {"scope": "archive_queue", "rows": 71707, "newest": now},
+                ],
+                "logs": [
+                    {
+                        "file_name": "business.log",
+                        "category": "archive",
+                        "event": "single_completed",
+                        "level": "info",
+                        "rows": 9942,
+                        "newest": now,
+                    }
+                ],
+                "states": [
+                    {"key": "archive_queue", "type": "object", "updated_at": now},
+                ],
+            }
+        )
+
+        with patch.object(runtime_diagnostics, "database_status", return_value={"available": True, "schema_version": 2}), \
+                patch.object(runtime_diagnostics, "database_connection", return_value=_ConnectionContext(connection)):
+            payload = runtime_diagnostics.build_runtime_diagnostics()
+
+        self.assertTrue(payload["database"]["available"])
+        self.assertEqual(payload["tables"][0]["name"], "makerhub_logs")
+        self.assertEqual(payload["state_events_by_scope"][0]["scope"], "archive_queue")
+        self.assertEqual(payload["recent_logs"][0]["event"], "single_completed")
+        self.assertEqual(payload["json_states"][0]["key"], "archive_queue")
+
+    def test_build_runtime_diagnostics_degrades_when_database_unavailable(self):
+        with patch.object(runtime_diagnostics, "database_status", return_value={"available": False, "error": "missing"}):
+            payload = runtime_diagnostics.build_runtime_diagnostics()
+
+        self.assertFalse(payload["database"]["available"])
+        self.assertEqual(payload["tables"], [])
+        self.assertEqual(payload["state_events_by_scope"], [])
+
+    def test_system_diagnostics_route_requires_session_and_returns_payload(self):
+        request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session"}))
+        with patch.object(system_api.config_api, "_require_session_auth") as require_auth, \
+                patch.object(system_api, "build_runtime_diagnostics", return_value={"database": {"available": True}}):
+            payload = asyncio.run(system_api.get_system_diagnostics(request))
+
+        require_auth.assert_called_once_with(request)
+        self.assertTrue(payload["database"]["available"])
+
+
+if __name__ == "__main__":
+    unittest.main()

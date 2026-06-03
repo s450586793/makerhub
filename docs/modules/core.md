@@ -41,6 +41,7 @@
 - `POST /api/config/notifications`
 - `POST /api/config/advanced`
 - `POST /api/config/runtime`
+- `GET /api/system/diagnostics`
 - `GET /api/logs`
 
 ### Service 函数/类
@@ -55,6 +56,7 @@
 - `initialize_database()`
 - `load_json_state()` / `save_json_state()` / `delete_json_state()`
 - `migrate_json_files_to_database()` / `migrate_log_files_to_database()`
+- `build_runtime_diagnostics()`
 
 ## 数据和目录
 
@@ -99,6 +101,7 @@
 
 - 数据库版本的结构化状态必须落在 Postgres；未配置 `MAKERHUB_DATABASE_URL` 时应提示升级 compose，而不是继续新增文件状态分支。
 - 业务日志运行期必须读写 `makerhub_logs`；旧 `/app/config/logs/*.log` 只作为迁移输入。
+- 高频状态事件和纯成功追踪日志应在后端合并或降噪；失败、告警和用户动作日志必须保留。
 - 保存 Cookie/Token/分享码/公网地址不能把明文写进业务日志。
 - Token 权限必须由后端校验，前端隐藏按钮不能替代后端权限。
 - 保存设置后要更新资源限制和相关后台任务触发逻辑。

@@ -43,6 +43,50 @@ class BusinessLogsTest(unittest.TestCase):
         self.assertEqual(captured[0][1]["safe"], 1)
         self.assertIn("share_created", captured[0][2])
 
+    def test_noisy_info_business_log_can_be_skipped(self):
+        captured = []
+
+        with patch.object(
+            business_logs,
+            "append_database_log_entry",
+            side_effect=lambda file_name, entry, raw="": captured.append((file_name, entry, raw)) or True,
+        ), patch("builtins.print") as printed:
+            business_logs.append_business_log("scrapling", "fetch_trace", "trace detail", status_code=200)
+
+        self.assertEqual(captured, [])
+        printed.assert_not_called()
+
+    def test_noisy_warning_business_log_is_preserved(self):
+        captured = []
+
+        with patch.object(
+            business_logs,
+            "append_database_log_entry",
+            side_effect=lambda file_name, entry, raw="": captured.append((file_name, entry, raw)) or True,
+        ), patch("builtins.print"):
+            business_logs.append_business_log("scrapling", "fetch_trace", "failed trace", level="warning", status_code=403)
+
+        self.assertEqual(captured[0][0], "business.log")
+        self.assertEqual(captured[0][1]["level"], "warning")
+        self.assertEqual(captured[0][1]["event"], "fetch_trace")
+
+    def test_noisy_structured_success_log_can_be_skipped(self):
+        captured = []
+
+        with patch.object(
+            business_logs,
+            "append_database_log_entry",
+            side_effect=lambda file_name, entry, raw="": captured.append((file_name, entry, raw)) or True,
+        ):
+            business_logs.append_structured_log(
+                "subscriptions.log",
+                "metadata_refreshed",
+                category="subscription",
+                total=35,
+            )
+
+        self.assertEqual(captured, [])
+
     def test_read_log_entries_prefers_database(self):
         with patch.object(
             business_logs,

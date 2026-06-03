@@ -172,6 +172,35 @@ def _scrapling_trace(
         return
 
 
+def _record_missing_3mf_summary(logs_dir: Path, base_name: str, missing_3mf: list[dict], logger=None) -> None:
+    if not missing_3mf:
+        return
+    sample = []
+    for item in missing_3mf[:5]:
+        if not isinstance(item, dict):
+            continue
+        sample.append(
+            {
+                "instance_id": str(item.get("id") or item.get("instance_id") or ""),
+                "title": str(item.get("title") or item.get("name") or "")[:120],
+                "state": str(item.get("downloadState") or item.get("status") or "missing"),
+                "message": str(item.get("downloadMessage") or item.get("message") or "未获取到 3MF 下载地址")[:180],
+            }
+        )
+    try:
+        append_business_log(
+            "archive",
+            "missing_3mf_detected",
+            "归档发现缺失 3MF 实例。",
+            base_name=base_name,
+            count=len(missing_3mf),
+            sample=sample,
+        )
+    except Exception:
+        return
+    log(logger, "缺失 3MF 已记录到数据库日志。")
+
+
 def emit_progress(progress_callback, percent: int, message: str, extra: Optional[dict] = None):
     if not callable(progress_callback):
         return
@@ -7132,15 +7161,7 @@ def archive_model(
     # 缺失 3MF 记录（仅记录，没有下载 3mf）
     missing_3mf = [inst for inst in inst_list if not inst.get("downloadUrl")]
     if missing_3mf and not profile_metadata_only and record_missing_3mf_log:
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        missing_log = logs_dir / "missing_3mf.log"
-        with missing_log.open("a", encoding="utf-8") as f:
-            for m in missing_3mf:
-                f.write(
-                    f"{china_now_iso()}\t{base_name}\t{m['id']}\t{m.get('title','')}\t"
-                    f"{m.get('downloadMessage') or m.get('downloadState') or '未获取到 3MF 下载地址'}\n"
-                )
-        log(logger, "缺失 3MF 已记录:", missing_log)
+        _record_missing_3mf_summary(logs_dir, base_name, missing_3mf, logger=logger)
 
     work_dir = meta_path.parent
     emit_progress(progress_callback, 100, "归档完成")

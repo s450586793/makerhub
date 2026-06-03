@@ -1,4 +1,6 @@
 import unittest
+from tempfile import TemporaryDirectory
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -318,6 +320,34 @@ class LegacyArchiverValidationTest(unittest.TestCase):
 
         self.assertEqual(base_name, "MW_2475775_旧标题")
         self.assertEqual(action, "updated")
+
+    def test_missing_3mf_summary_does_not_write_legacy_log_file(self):
+        captured = []
+        with TemporaryDirectory() as temp_dir, patch(
+            "app.services.legacy_archiver.append_business_log",
+            side_effect=lambda category, event, message="", **payload: captured.append((category, event, message, payload)),
+        ):
+            logs_dir = Path(temp_dir)
+            legacy_archiver._record_missing_3mf_summary(
+                logs_dir,
+                "MW_1_Demo",
+                [
+                    {
+                        "id": "inst-1",
+                        "title": "Plate A",
+                        "downloadState": "missing",
+                        "downloadMessage": "未获取到 3MF 下载地址",
+                    }
+                ],
+                logger=None,
+            )
+            legacy_log_exists = (logs_dir / "missing_3mf.log").exists()
+
+        self.assertFalse(legacy_log_exists)
+        self.assertEqual(captured[0][0], "archive")
+        self.assertEqual(captured[0][1], "missing_3mf_detected")
+        self.assertEqual(captured[0][3]["count"], 1)
+        self.assertEqual(captured[0][3]["sample"][0]["instance_id"], "inst-1")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from datetime import datetime
@@ -25,10 +26,14 @@ from app.services.state_contracts import (
 
 
 STATE_EVENT_FALLBACK_WAIT_SECONDS = 15.0
+STATE_CHANGED_COALESCE_SECONDS = 1.5
 _SUBSCRIBER_LOCK = threading.Lock()
 _SUBSCRIBER_CALLBACKS: set[Callable[[], None]] = set()
 _LISTENER_LOCK = threading.Lock()
 _LISTENER_THREAD: threading.Thread | None = None
+_STATE_EVENT_COALESCE_LOCK = threading.Lock()
+_LAST_STATE_CHANGED_EVENT_AT: dict[str, float] = {}
+_LAST_STATE_CHANGED_EVENT_SIGNATURE: dict[str, str] = {}
 
 
 STATE_EVENT_SCOPES = {
@@ -156,6 +161,45 @@ def normalize_state_event(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _state_changed_signature(payload: dict[str, Any]) -> str:
+    signature_payload = {
+        key: payload.get(key)
+        for key in (
+            "running_count",
+            "queued_count",
+            "failed_count",
+            "count",
+            "status",
+            "running",
+            "last_message",
+            "last_error_at",
+            "last_success_at",
+        )
+        if key in payload
+    }
+    return json.dumps(signature_payload, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _should_persist_state_event(scope: str, event_type: str, payload: dict[str, Any]) -> bool:
+    if event_type != "state.changed" or scope not in STATE_EVENT_SCOPES:
+        return True
+
+    now = time.monotonic()
+    signature = _state_changed_signature(payload)
+    with _STATE_EVENT_COALESCE_LOCK:
+        last_at = _LAST_STATE_CHANGED_EVENT_AT.get(scope)
+        last_signature = _LAST_STATE_CHANGED_EVENT_SIGNATURE.get(scope)
+        if (
+            last_at is not None
+            and now - last_at < STATE_CHANGED_COALESCE_SECONDS
+            and last_signature == signature
+        ):
+            return False
+        _LAST_STATE_CHANGED_EVENT_AT[scope] = now
+        _LAST_STATE_CHANGED_EVENT_SIGNATURE[scope] = signature
+    return True
+
+
 def publish_state_event(scope: str, event_type: str = "state.changed", payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
     clean_scope = str(scope or "").strip()
     if not clean_scope:
@@ -163,6 +207,9 @@ def publish_state_event(scope: str, event_type: str = "state.changed", payload: 
     event_payload = _json_safe(payload if isinstance(payload, dict) else {})
     event_payload.setdefault("scope", clean_scope)
     event_payload.setdefault("published_at", china_now_iso())
+    if not _should_persist_state_event(clean_scope, event_type, event_payload):
+        wake_state_event_subscribers()
+        return None
     try:
         event = normalize_state_event(append_state_event(event_type, clean_scope, event_payload))
         wake_state_event_subscribers()

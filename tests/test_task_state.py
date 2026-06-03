@@ -3,6 +3,7 @@ from tempfile import TemporaryDirectory
 from pathlib import Path
 from unittest.mock import patch
 
+from app.services import state_events
 from app.services.task_state import TaskStateStore, _ORGANIZER_TERMINAL_LOG_CACHE, _normalize_organize_tasks
 
 
@@ -256,6 +257,86 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(events[0][0], "remote_refresh_state")
         self.assertEqual(events[0][1], "state.changed")
         self.assertNotIn("scope", events[0][2])
+        self.assertEqual(events[0][2]["status"], "running")
+        self.assertTrue(events[0][2]["running"])
+
+    def test_repeated_equivalent_state_changed_events_are_coalesced_by_scope(self):
+        rows = []
+        wakes = []
+
+        def append_event(event_type, scope, payload):
+            row = {
+                "id": len(rows) + 1,
+                "type": event_type,
+                "scope": scope,
+                "payload": payload,
+                "created_at": "",
+            }
+            rows.append(row)
+            return row
+
+        with patch.object(state_events, "_LAST_STATE_CHANGED_EVENT_AT", {}), \
+                patch.object(state_events, "_LAST_STATE_CHANGED_EVENT_SIGNATURE", {}), \
+                patch.object(state_events, "append_state_event", side_effect=append_event), \
+                patch.object(state_events, "wake_state_event_subscribers", side_effect=lambda: wakes.append(True)), \
+                patch.object(state_events.time, "monotonic", side_effect=[100.0, 100.2, 101.9]):
+            state_events.publish_state_event("archive_queue", "state.changed", {"queued_count": 1})
+            state_events.publish_state_event("archive_queue", "state.changed", {"queued_count": 1})
+            state_events.publish_state_event("archive_queue", "state.changed", {"queued_count": 1})
+
+        self.assertEqual([row["payload"]["queued_count"] for row in rows], [1, 1])
+        self.assertEqual(len(wakes), 3)
+
+    def test_state_changed_events_with_changed_summary_bypass_coalescing(self):
+        rows = []
+
+        def append_event(event_type, scope, payload):
+            row = {
+                "id": len(rows) + 1,
+                "type": event_type,
+                "scope": scope,
+                "payload": payload,
+                "created_at": "",
+            }
+            rows.append(row)
+            return row
+
+        with patch.object(state_events, "_LAST_STATE_CHANGED_EVENT_AT", {}), \
+                patch.object(state_events, "_LAST_STATE_CHANGED_EVENT_SIGNATURE", {}), \
+                patch.object(state_events, "append_state_event", side_effect=append_event), \
+                patch.object(state_events, "wake_state_event_subscribers"), \
+                patch.object(state_events.time, "monotonic", side_effect=[100.0, 100.1, 100.2]):
+            state_events.publish_state_event("archive_queue", "state.changed", {"queued_count": 1})
+            state_events.publish_state_event("archive_queue", "state.changed", {"queued_count": 2})
+            state_events.publish_state_event("remote_refresh_state", "state.changed", {"status": "running", "running": True})
+
+        self.assertEqual([row["payload"].get("queued_count") for row in rows[:2]], [1, 2])
+        self.assertEqual(rows[2]["payload"]["status"], "running")
+
+    def test_semantic_state_events_bypass_coalescing(self):
+        rows = []
+
+        def append_event(event_type, scope, payload):
+            row = {
+                "id": len(rows) + 1,
+                "type": event_type,
+                "scope": scope,
+                "payload": payload,
+                "created_at": "",
+            }
+            rows.append(row)
+            return row
+
+        with patch.object(state_events, "_LAST_STATE_CHANGED_EVENT_AT", {}), \
+                patch.object(state_events, "_LAST_STATE_CHANGED_EVENT_SIGNATURE", {}), \
+                patch.object(state_events, "append_state_event", side_effect=append_event), \
+                patch.object(state_events, "wake_state_event_subscribers"), \
+                patch.object(state_events.time, "monotonic", side_effect=[100.0, 100.1, 100.2]):
+            state_events.publish_state_event("archive_queue", "archive.completed", {"id": "a"})
+            state_events.publish_state_event("archive_queue", "archive.completed", {"id": "b"})
+            state_events.publish_state_event("archive_queue", "archive.failed", {"id": "c"})
+
+        self.assertEqual([row["type"] for row in rows], ["archive.completed", "archive.completed", "archive.failed"])
 
 
 if __name__ == "__main__":

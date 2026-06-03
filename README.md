@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.8.19`
+> 当前版本：`v0.8.20`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-03 · v0.8.20
+
+- 后端状态事件增加按 scope 合并，减少归档、源端刷新和本地整理运行中写入 `makerhub_state_events` 的频率。
+- 低价值高频 info 日志降噪，保留 warning/error 和关键业务摘要，降低 Postgres 与容器 stdout 压力。
+- 停止写入遗留 `missing_3mf.log` 文件，缺失 `3MF` 摘要改走数据库业务日志；新增系统诊断接口汇总 DB 表大小、事件量、日志量和 JSON state 更新时间。
+
 ### 2026-06-03 · v0.8.19
 
 - 梳理 API、任务状态和运行状态模块边界，把日志、订阅、源端刷新、任务、分享、来源库、模型库等路由拆分到独立模块，并补充状态契约文档。
@@ -217,13 +223,13 @@ uvicorn app.main:app --reload
 - 修复首页国际站处于历史缺失 `3MF` 待重试状态时，动作仍显示“进入任务页”的问题。
 - 国内站和国际站的历史 `3MF` 验证/Cookie 异常现在都会从首页源站状态卡外跳对应 MakerWorld 主页，保持与手动验证回退流程一致。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-01 · v0.8.17
 
 - 回退 MakerWorld 内置浏览器验证流程：首页和任务页改为外跳官网/模型页，由用户在 MakerWorld 手动完成验证后回到 MakerHub 重试。
 - 删除未使用的 CloakBrowser 验证运行时、接口、弹窗页面和镜像预安装步骤，保留本地预览与 Scrapling 抓取仍需使用的 Chromium/Scrapling 组件。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-01 · v0.8.16
 

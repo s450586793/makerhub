@@ -792,6 +792,9 @@ class TaskStateStore:
 
     def _publish_state_event(self, scope: str, state: dict, event_type: str = "state.changed", payload: Optional[dict] = None) -> None:
         event_payload = task_counts_payload(state)
+        for field in ("status", "running", "last_message", "last_error_at", "last_success_at"):
+            if field in state:
+                event_payload[field] = state.get(field)
         if isinstance(payload, dict):
             event_payload.update(payload)
         publish_state_event(scope, event_type, event_payload)

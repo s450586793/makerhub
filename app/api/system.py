@@ -10,6 +10,7 @@ from app.core.database import database_status
 from app.core.settings import APP_VERSION
 from app.schemas.models import SystemUpdateRequest
 from app.services.request_threads import run_ui_io
+from app.services.runtime_diagnostics import build_runtime_diagnostics
 from app.services.self_update import get_update_status, request_system_update
 
 
@@ -72,6 +73,12 @@ async def get_system_version(force: bool = Query(False)):
         payload,
         await config_api._get_github_version_status(force=force, proxy_config=config.proxy),
     )
+
+
+@router.get("/system/diagnostics")
+async def get_system_diagnostics(request: Request):
+    config_api._require_session_auth(request)
+    return await run_ui_io(build_runtime_diagnostics)
 
 
 @router.post("/system/update")
