@@ -20,6 +20,7 @@
 
 - `GET /api/tasks`
 - `POST /api/tasks/recent-failures/clear`
+- `POST /api/tasks/archive-queue/repair`
 - `POST /api/tasks/organize/clear`
 - `GET /api/events/archive`
 - 其他业务模块通过任务状态影响首页/模型库/订阅库。
@@ -30,6 +31,7 @@
 - `TaskStateStore.enqueue_archive_task()`
 - `TaskStateStore.update_active_task()`
 - `TaskStateStore.complete_archive_task()`
+- `TaskStateStore.repair_archive_queue()`
 - `TaskStateStore.clear_archive_recent_failures()`
 - `TaskStateStore.load_missing_3mf()` / `update_missing_3mf_status()`
 - `TaskStateStore.load_organize_tasks()` / `save_organize_tasks()`
@@ -39,6 +41,12 @@
 - `configure_resource_limits()`
 - `shutdown_request_threads()`
 - `app.worker.main()`
+
+## Runtime task governance
+
+Archive queue tasks use shared runtime status values: `queued`, `running`, `waiting_children`, `paused`, `blocked`, `failed`, and `completed`.
+
+Batch parent tasks track child progress and should use `waiting_children` while children are still queued or running. Executable child tasks use leases and heartbeats so stale `running` work can be repaired. The repair action requeues expired tasks while retry budget remains, fails exhausted tasks, and skips paused or intentionally blocked tasks.
 
 ## 数据和目录
 

@@ -58,6 +58,10 @@
 - `migrate_json_files_to_database()` / `migrate_log_files_to_database()`
 - `build_runtime_diagnostics()`
 
+### Runtime diagnostics
+
+Runtime diagnostics include database table summaries, state-event counts, recent log counts, archive queue counts, waiting-child counts, and stale lease candidates. Diagnostics must not expose cookies, tokens, signed URLs, or raw verification page bodies.
+
 ## 数据和目录
 
 - Postgres:

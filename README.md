@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.8.21`
+> 当前版本：`v0.9.0`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -18,7 +18,7 @@ MakerHub 是一个面向个人 NAS、DSM、Unraid、Portainer 和自托管服务
 - 模型索引入库：归档模型卡片索引写入 `archive_model_index`，模型库、订阅库和来源库读取更稳定。
 - 三容器部署：默认 Compose 调整为 `makerhub-app`、`makerhub-worker`、`makerhub-postgres`。
 - 历史数据迁移：首次连接数据库后自动迁移旧 JSON 状态、历史日志和模型索引；设置页保留手动重建数据库索引与历史信息补全入口。
-- 内置浏览器验证：`3MF` 下载遇到 MakerWorld 验证时，可从首页或任务页进入验证页面，完成后由 Worker 自动继续下载。
+- 手动验证回退：`3MF` 下载遇到 MakerWorld 验证时，首页和任务页会外跳官网或模型页，用户在 MakerWorld 完成验证后回到 MakerHub 重试。
 - 系统更新更安全：旧 compose 缺少 Postgres 配置时会阻止网页一键更新，并提示先升级 compose。
 - 文档重整：补齐架构说明、模块边界、Compose 安装、升级说明和 V0.7.0 更新记录。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-04 · v0.9.0
+
+- 新增归档队列运行态语义，区分 `running`、`waiting_children`、`blocked`、`paused` 等状态，避免批量父任务被误看成真正执行中的子任务。
+- 归档任务启动时记录 lease、heartbeat、开始时间和尝试次数；新增队列修复接口和任务页“修复队列”操作，可重排心跳过期任务并汇总修复结果。
+- 系统诊断增加归档队列计数、等待子任务数量和 stale lease 候选项；任务页状态文案改为中文业务语义，并保留需要验证时的外跳官网动作。
+
 ### 2026-06-03 · v0.8.21
 
 - 降低运行期 Postgres 压力：数据库 schema 初始化改为进程内只执行一次，避免日志和状态写入反复触发建表/建索引检查。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - 低价值高频 info 日志降噪，保留 warning/error 和关键业务摘要，降低 Postgres 与容器 stdout 压力。
 - 停止写入遗留 `missing_3mf.log` 文件，缺失 `3MF` 摘要改走数据库业务日志；新增系统诊断接口汇总 DB 表大小、事件量、日志量和 JSON state 更新时间。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-03 · v0.8.19
 
 - 梳理 API、任务状态和运行状态模块边界，把日志、订阅、源端刷新、任务、分享、来源库、模型库等路由拆分到独立模块，并补充状态契约文档。
 - 减少批量归档和源端刷新运行中的状态写入与前端刷新抖动，批次结果改为更集中地汇总写入和刷新。
 - 设置页新增运行角色诊断数据，便于区分 App / Web / Worker 容器状态；前端设置 payload 和后端消息摘要 helper 也拆分并补充测试。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-02 · v0.8.18
 
