@@ -4,6 +4,8 @@ import { test } from "node:test";
 import {
   dashboardStatusAction,
   dashboardStatusElementKind,
+  normalizeRuntimeStatusLabel,
+  runtimeTaskAction,
 } from "./dashboardStatus.js";
 
 test("dashboard source health card body is not an external link", () => {
@@ -50,6 +52,32 @@ test("verification status card opens the platform homepage", () => {
 
   assert.equal(dashboardStatusElementKind(card), "div");
   assert.deepEqual(dashboardStatusAction(card), {
+    kind: "external",
+    label: "访问主页",
+    href: "https://makerworld.com",
+  });
+});
+
+test("runtime status labels distinguish waiting children and blocked verification", () => {
+  assert.equal(normalizeRuntimeStatusLabel("waiting_children"), "等待子任务");
+  assert.equal(normalizeRuntimeStatusLabel("blocked", "needs_verification"), "需要验证");
+});
+
+test("queue repair action points to archive queue repair endpoint", () => {
+  assert.deepEqual(runtimeTaskAction({ status: "running", stale: true }), {
+    kind: "api",
+    label: "修复队列",
+    endpoint: "/api/tasks/archive-queue/repair",
+    method: "POST",
+  });
+});
+
+test("blocked verification action opens official homepage", () => {
+  assert.deepEqual(runtimeTaskAction({
+    status: "blocked",
+    blocked_reason: "needs_verification",
+    url: "https://makerworld.com",
+  }), {
     kind: "external",
     label: "访问主页",
     href: "https://makerworld.com",

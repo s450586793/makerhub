@@ -111,8 +111,19 @@
           <span class="eyebrow">归档队列</span>
           <h2>当前归档任务</h2>
         </div>
-        <span class="count-pill">{{ payload.archive_queue.running_count }} 运行中 / {{ payload.archive_queue.queued_count }} 排队中</span>
+        <div class="filter-actions">
+          <button
+            class="button button-secondary button-small"
+            type="button"
+            :disabled="repairingArchiveQueue"
+            @click="repairArchiveQueue"
+          >
+            {{ repairingArchiveQueue ? "修复中..." : "修复队列" }}
+          </button>
+          <span class="count-pill">{{ payload.archive_queue.running_count }} 运行中 / {{ payload.archive_queue.queued_count }} 排队中</span>
+        </div>
       </div>
+      <span v-if="archiveRepairStatus" class="form-status">{{ archiveRepairStatus }}</span>
       <div class="task-columns">
         <div class="task-column">
           <h3>运行中</h3>
@@ -123,9 +134,18 @@
               class="task-item"
             >
               <strong>{{ item.title || item.url || "未命名任务" }}</strong>
-              <span>{{ item.status }}</span>
+              <span>{{ runtimeStatusLabel(item) }}</span>
               <div v-if="item.progress" class="progress-bar"><span :style="{ width: `${item.progress}%` }"></span></div>
               <p>{{ item.message || "正在执行中" }}</p>
+              <a
+                v-if="runtimeExternalAction(item)"
+                class="button button-secondary button-small"
+                :href="runtimeExternalAction(item).href"
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                {{ runtimeExternalAction(item).label }}
+              </a>
             </div>
             <div v-if="payload.archive_queue.active.length > activeVisibleLimit" class="task-list-footer">
               <button class="button button-secondary button-small" type="button" @click="activeVisibleLimit += TASKS_PAGE_SIZE">
@@ -144,7 +164,7 @@
               class="task-item"
             >
               <strong>{{ item.title || item.url || "未命名任务" }}</strong>
-              <span>{{ item.status }}</span>
+              <span>{{ runtimeStatusLabel(item) }}</span>
               <p>{{ item.message || "等待归档" }}</p>
             </div>
             <div v-if="payload.archive_queue.queued.length > queuedVisibleLimit" class="task-list-footer">
@@ -176,7 +196,7 @@
               class="task-item task-item--error"
             >
               <strong>{{ item.title || item.url || "未命名任务" }}</strong>
-              <span>{{ item.status }}</span>
+              <span>{{ runtimeStatusLabel(item) }}</span>
               <p>{{ item.message || "失败原因未记录" }}</p>
             </div>
             <div v-if="payload.archive_queue.recent_failures.length > failureVisibleLimit" class="task-list-footer">
@@ -287,6 +307,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
 
 import { apiRequest } from "../lib/api";
+import { normalizeRuntimeStatusLabel, runtimeTaskAction } from "../lib/dashboardStatus";
 import { subscribeStateRefresh } from "../lib/stateEvents";
 import { encodeModelPath } from "../lib/helpers";
 
@@ -337,7 +358,9 @@ const confirmingArchiveMode = ref("");
 const pendingMissingActionKey = ref("");
 const retryingAllMissing = ref(false);
 const clearingRecentFailures = ref(false);
+const repairingArchiveQueue = ref(false);
 const recentFailureStatus = ref("");
+const archiveRepairStatus = ref("");
 let refreshTimer = null;
 let loadingTasks = false;
 let disposed = false;
@@ -412,6 +435,19 @@ function formatMissingStatus(status) {
   if (normalized === "download_limited") return "到达自动下载上限";
   if (normalized === "not_found") return "源端无文件";
   return status || "missing";
+}
+
+function runtimeStatusLabel(item) {
+  return normalizeRuntimeStatusLabel(item?.status, item?.blocked_reason || item?.blockedReason || "");
+}
+
+function runtimeAction(item) {
+  return runtimeTaskAction(item || {});
+}
+
+function runtimeExternalAction(item) {
+  const action = runtimeAction(item);
+  return action?.kind === "external" ? action : null;
 }
 
 function closeArchiveSubmitDialog() {
@@ -612,6 +648,33 @@ async function clearRecentFailures() {
     recentFailureStatus.value = error instanceof Error ? error.message : "清除失败。";
   } finally {
     clearingRecentFailures.value = false;
+  }
+}
+
+async function repairArchiveQueue() {
+  repairingArchiveQueue.value = true;
+  archiveRepairStatus.value = "";
+  try {
+    const response = await apiRequest("/api/tasks/archive-queue/repair", {
+      method: "POST",
+    });
+    const summary = response.summary || {};
+    if (response.archive_queue) {
+      payload.value.archive_queue = response.archive_queue;
+    } else {
+      await load();
+    }
+    archiveRepairStatus.value = [
+      response.message || "队列状态修复完成。",
+      `检查 ${Number(summary.examined || 0)} 个`,
+      `重排 ${Number(summary.requeued || 0)} 个`,
+      `失败 ${Number(summary.failed || 0)} 个`,
+      `跳过 ${Number(summary.skipped || 0)} 个`,
+    ].join(" · ");
+  } catch (error) {
+    archiveRepairStatus.value = error instanceof Error ? error.message : "队列修复失败。";
+  } finally {
+    repairingArchiveQueue.value = false;
   }
 }
 
