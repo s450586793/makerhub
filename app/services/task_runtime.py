@@ -57,12 +57,22 @@ def is_lease_expired(value: Any) -> bool:
     return parsed <= china_now()
 
 
-def task_attempt_count(item: dict[str, Any]) -> int:
+def _parse_attempt_count(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip() == "":
+        return None
     try:
-        value = item.get("attempt_count") if "attempt_count" in item else item.get("attempts")
-        return int(value or 0)
+        return int(value)
     except (TypeError, ValueError):
-        return 0
+        return None
+
+
+def task_attempt_count(item: dict[str, Any]) -> int:
+    attempt_count = _parse_attempt_count(item.get("attempt_count"))
+    if attempt_count is not None:
+        return attempt_count
+    return _parse_attempt_count(item.get("attempts")) or 0
 
 
 def task_attempts_remaining(item: dict[str, Any], max_attempts: int = DEFAULT_MAX_ATTEMPTS) -> bool:

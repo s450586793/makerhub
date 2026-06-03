@@ -1,5 +1,14 @@
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
 from app.services import state_contracts
-from app.services.task_runtime import task_attempt_count
+from app.services import task_runtime
+from app.services.task_runtime import (
+    normalize_blocked_reason,
+    normalize_runtime_status,
+    task_attempt_count,
+    task_attempts_remaining,
+)
 
 
 def test_core_state_keys_are_stable():
@@ -42,6 +51,39 @@ def test_runtime_statuses_cover_task_governance_values():
 
 def test_task_attempt_count_honors_zero_attempt_count():
     assert task_attempt_count({"attempt_count": 0, "attempts": 3}) == 0
+
+
+def test_task_attempt_count_falls_back_for_empty_attempt_count():
+    assert task_attempt_count({"attempt_count": None, "attempts": 3}) == 3
+    assert task_attempt_count({"attempt_count": "", "attempts": 2}) == 2
+
+
+def test_runtime_status_normalization_trims_and_defaults():
+    assert normalize_runtime_status(" RUNNING ") == "running"
+    assert normalize_runtime_status("unknown") == "queued"
+    assert normalize_runtime_status(None, default="paused") == "paused"
+
+
+def test_blocked_reason_normalization_trims_and_rejects_unknowns():
+    assert normalize_blocked_reason(" NEEDS_COOKIE ") == "needs_cookie"
+    assert normalize_blocked_reason("manual_review") == ""
+    assert normalize_blocked_reason(None) == ""
+
+
+def test_lease_expiry_handles_expired_future_and_invalid_values(monkeypatch):
+    now = datetime(2026, 1, 2, 9, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+    monkeypatch.setattr(task_runtime, "china_now", lambda: now)
+
+    assert task_runtime.is_lease_expired((now - timedelta(seconds=1)).isoformat())
+    assert not task_runtime.is_lease_expired((now + timedelta(seconds=1)).isoformat())
+    assert task_runtime.is_lease_expired("not-a-date")
+    assert task_runtime.is_lease_expired(None)
+
+
+def test_task_attempts_remaining_respects_max_attempt_boundary():
+    assert task_attempts_remaining({"attempt_count": 2}, max_attempts=3)
+    assert not task_attempts_remaining({"attempt_count": 3}, max_attempts=3)
+    assert not task_attempts_remaining({"attempt_count": 1}, max_attempts=0)
 
 
 def test_dashboard_scopes_are_plain_strings_for_frontend_payloads():
