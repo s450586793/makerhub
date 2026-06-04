@@ -308,8 +308,8 @@ import { RouterLink } from "vue-router";
 
 import { apiRequest } from "../lib/api";
 import { normalizeRuntimeStatusLabel, runtimeTaskAction } from "../lib/dashboardStatus";
-import { subscribeStateRefresh } from "../lib/stateEvents";
 import { encodeModelPath } from "../lib/helpers";
+import { createPageRefreshController } from "../lib/usePageRefresh";
 
 
 const payload = ref({
@@ -361,10 +361,8 @@ const clearingRecentFailures = ref(false);
 const repairingArchiveQueue = ref(false);
 const recentFailureStatus = ref("");
 const archiveRepairStatus = ref("");
-let refreshTimer = null;
+let tasksRefreshController = null;
 let loadingTasks = false;
-let disposed = false;
-let unsubscribeStateRefresh = null;
 const TASKS_PAGE_SIZE = 5;
 const activeVisibleLimit = ref(TASKS_PAGE_SIZE);
 const queuedVisibleLimit = ref(TASKS_PAGE_SIZE);
@@ -484,23 +482,6 @@ function openArchiveConfirmDialog(preview) {
   };
 }
 
-function clearRefreshTimer() {
-  if (refreshTimer) {
-    window.clearTimeout(refreshTimer);
-    refreshTimer = null;
-  }
-}
-
-function refreshFromStateEvent() {
-  clearRefreshTimer();
-  if (disposed || typeof window === "undefined" || document.hidden) {
-    return;
-  }
-  refreshTimer = window.setTimeout(() => {
-    void load();
-  }, 250);
-}
-
 async function load() {
   if (loadingTasks) {
     return;
@@ -516,12 +497,11 @@ async function load() {
   }
 }
 
-function handleVisibilityChange() {
-  if (document.hidden) {
-    clearRefreshTimer();
-    return;
+function stopTasksRefreshController() {
+  if (tasksRefreshController) {
+    tasksRefreshController.dispose();
+    tasksRefreshController = null;
   }
-  void load();
 }
 
 async function submitArchive() {
@@ -715,22 +695,15 @@ async function cancelMissing(item) {
 }
 
 onMounted(() => {
-  disposed = false;
-  unsubscribeStateRefresh = subscribeStateRefresh(
-    ["archive_queue", "missing_3mf", "organize_tasks"],
-    refreshFromStateEvent,
-  );
-  document.addEventListener("visibilitychange", handleVisibilityChange);
+  tasksRefreshController = createPageRefreshController({
+    scopes: ["archive_queue", "missing_3mf", "organize_tasks"],
+    refresh: () => load(),
+    delayMs: 250,
+  });
   void load();
 });
 
 onBeforeUnmount(() => {
-  disposed = true;
-  clearRefreshTimer();
-  if (typeof unsubscribeStateRefresh === "function") {
-    unsubscribeStateRefresh();
-    unsubscribeStateRefresh = null;
-  }
-  document.removeEventListener("visibilitychange", handleVisibilityChange);
+  stopTasksRefreshController();
 });
 </script>
