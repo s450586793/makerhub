@@ -127,3 +127,15 @@ test("createPageRefreshScheduler clears timer on dispose", () => {
 
   assert.deepEqual(timers.cleared, [1]);
 });
+
+test("createPageRefreshScheduler exposes cleanup methods used by Vue wrapper", () => {
+  const scheduler = createPageRefreshScheduler({
+    refresh: () => {},
+    isHidden: () => false,
+  });
+
+  assert.equal(typeof scheduler.schedule, "function");
+  assert.equal(typeof scheduler.handleVisible, "function");
+  assert.equal(typeof scheduler.dispose, "function");
+  assert.equal(typeof scheduler.clear, "function");
+});
