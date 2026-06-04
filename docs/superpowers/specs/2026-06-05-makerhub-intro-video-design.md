@@ -1,118 +1,118 @@
-# MakerHub Intro Video Design
+# MakerHub 介绍视频设计
 
-Date: 2026-06-05
+日期：2026-06-05
 
-## Purpose
+## 目的
 
-Create a 45-second Chinese promotional video for MakerHub using real visuals from the user's online MakerHub instance. The video should introduce MakerHub as a private MakerWorld archive workstation and quickly walk through the main product areas: model library, dashboard status, online account sync, subscription library, source refresh, source-deleted status, local upload, model sharing, and manual MakerWorld verification recovery.
+制作一个 45 秒中文宣传介绍视频，素材来自用户真实的线上 MakerHub 实例。视频需要把 MakerHub 定位为个人 MakerWorld 私有归档工作台，并快速介绍主要功能区：模型库、首页状态、线上账号同步、订阅库、源端刷新、源端删除状态、本地上传、模型分享，以及 MakerWorld 手动验证后的重试流程。
 
-HyperFrames will be used for video composition, motion, subtitles, highlight overlays, layout variants, and final rendering. Online instance material collection is a separate automation step using browser capture.
+HyperFrames 用于视频编排、动效、字幕、高亮遮罩、横竖屏布局和最终渲染。线上实例素材采集是单独的浏览器自动化步骤。
 
-## Goals
+## 目标
 
-- Produce a fast promotional video, not a step-by-step tutorial.
-- Use real MakerHub interface material from the online instance.
-- Start with the model library grid to make the first seconds visually attractive.
-- Generate a 16:9 primary version and a 9:16 derived vertical version.
-- Include Chinese voiceover and synchronized subtitles, using replaceable TTS audio for the first version.
-- Avoid exposing the online instance address, login credentials, tokens, share codes, public base URLs, proxy values, server paths, and raw sensitive logs.
-- Keep the workflow repeatable so captured material can be refreshed and the video can be rendered again.
+- 做一个节奏快的宣传片，不做逐步教程。
+- 使用真实 MakerHub 页面素材。
+- 开场使用模型库封面网格，让前几秒更有吸引力。
+- 生成 16:9 横屏主版，并派生 9:16 竖屏版。
+- 包含中文旁白和同步字幕，第一版使用可替换的 TTS 占位音频。
+- 避免暴露线上实例地址、登录凭据、Token、分享码、公网地址、代理值、服务器路径和原始敏感日志。
+- 保持流程可重复，后续可以重新采集素材并重新渲染视频。
 
-## Non-Goals
+## 非目标
 
-- Do not build a full tutorial video in this pass.
-- Do not expose the browser address bar or browser chrome in captured video.
-- Do not store real account credentials, the online URL, tokens, cookies, or share codes in the repository.
-- Do not require fake product UI when real online material is available.
-- Do not change MakerHub product behavior or frontend UI as part of the video workflow.
+- 本轮不制作完整教学视频。
+- 不在采集画面中显示浏览器地址栏或浏览器外框。
+- 不把真实账号凭据、线上地址、Token、Cookie 或分享码写入仓库。
+- 有真实线上素材可用时，不使用虚假的产品 UI 替代。
+- 不在视频工作流中修改 MakerHub 产品行为或前端界面。
 
-## Selected Approach
+## 选定方案
 
-Use real page captures from the online MakerHub instance, then package them with HyperFrames as a polished promotional video.
+使用真实线上 MakerHub 页面采集素材，再用 HyperFrames 包装成宣传介绍视频。
 
-The capture step should use Playwright to log in and navigate the app. It must capture only the MakerHub app content area, not the browser address bar. Credentials and the base URL must be supplied through local runtime configuration such as environment variables. The rendered video should use real screenshots or short captures, plus title cards, zooms, green highlights, subtitles, and TTS voiceover.
+采集步骤使用 Playwright 登录并导航应用。采集时只截取 MakerHub 应用内容区域，不截浏览器地址栏。凭据和线上基础地址必须通过本地运行时配置传入，例如环境变量。最终视频使用真实截图或短录屏，叠加标题卡、缩放推进、绿色高亮、字幕和 TTS 旁白。
 
-This approach is preferred over mock-only visuals because the video should show the real MakerHub product and its actual workflows. It is preferred over a pure animation because the requested feature-by-feature introduction depends on recognizable UI.
+这个方案优于纯 Mock 方案，因为视频需要展示真实 MakerHub 产品和实际工作流。它也优于纯动画宣传片，因为本需求要求按功能区介绍，真实 UI 更直观。
 
-## Storyboard
+## 分镜
 
-| Time | Visual | Screen Title | Voiceover |
+| 时间 | 画面 | 屏幕标题 | 旁白 |
 | --- | --- | --- | --- |
-| 0-4s | Model library cover grid with fast movement and card detail emphasis. | 私有模型库 | 把 MakerWorld 模型，整理成你自己的私有模型库。 |
-| 4-8s | Dashboard status cards sweep across archive, subscriptions, local import, tasks, and source status. | 一个工作台看全局 | 归档、订阅、导入、任务和源站状态，都集中在一个工作台。 |
-| 8-14s | Online account area followed by synced subscription source cards. | 登录后自动同步 | 登录线上账号，关注作者、收藏夹和合集会自动进入订阅库。 |
-| 14-19s | Subscription/source library cards and source detail model aggregation. | 持续发现新模型 | MakerHub 会按订阅来源持续检查，把新模型加入归档流程。 |
-| 19-25s | Source refresh page showing progress and result summary. | 保持源端信息新鲜 | 源端刷新会更新评论、附件、打印配置和模型状态。 |
-| 25-30s | Model card or detail page with source-deleted/remote status marker. | 识别源端删除 | 如果源站模型已经消失，本地资料库也能清楚标记。 |
-| 30-35s | Local upload entry and organizer progress. | 本地模型也能整理 | 3MF、STL、STEP、OBJ 和压缩包，可以从网页、手机或本地文件夹导入。 |
-| 35-40s | Share dialog and receive-share entry, with sensitive codes hidden or avoided. | 模型安全分享 | 生成分享码，把模型发送给另一台 MakerHub，并自动检查重复。 |
-| 40-45s | Dashboard verification warning and retry action. | 验证后继续归档 | 遇到 MakerWorld 验证，去源站完成验证，回到 MakerHub 重试即可。 |
+| 0-4s | 模型库封面网格快速推进，突出模型卡片细节。 | 私有模型库 | 把 MakerWorld 模型，整理成你自己的私有模型库。 |
+| 4-8s | 首页状态卡片扫过归档、订阅、本地导入、任务和源站状态。 | 一个工作台看全局 | 归档、订阅、导入、任务和源站状态，都集中在一个工作台。 |
+| 8-14s | 线上账号区域，随后切到同步后的订阅来源卡片。 | 登录后自动同步 | 登录线上账号，关注作者、收藏夹和合集会自动进入订阅库。 |
+| 14-19s | 订阅库/来源库卡片，以及来源详情中的模型聚合。 | 持续发现新模型 | MakerHub 会按订阅来源持续检查，把新模型加入归档流程。 |
+| 19-25s | 源端刷新页面，展示运行进度和结果摘要。 | 保持源端信息新鲜 | 源端刷新会更新评论、附件、打印配置和模型状态。 |
+| 25-30s | 模型卡片或详情页上的源端删除/远端状态标记。 | 识别源端删除 | 如果源站模型已经消失，本地资料库也能清楚标记。 |
+| 30-35s | 本地上传入口和本地整理进度。 | 本地模型也能整理 | 3MF、STL、STEP、OBJ 和压缩包，可以从网页、手机或本地文件夹导入。 |
+| 35-40s | 分享弹窗和接收分享入口，敏感码隐藏或避开。 | 模型安全分享 | 生成分享码，把模型发送给另一台 MakerHub，并自动检查重复。 |
+| 40-45s | 首页验证异常提示和重试入口。 | 验证后继续归档 | 遇到 MakerWorld 验证，去源站完成验证，回到 MakerHub 重试即可。 |
 
-## Capture Requirements
+## 素材采集要求
 
-Capture material should cover these app areas:
+采集素材应覆盖这些应用区域：
 
-- Model library: cover grid, search or filter area, model count, and a card detail emphasis.
-- Dashboard: archive count, missing 3MF, subscriptions, source refresh, local organizer, worker/task status, and MakerWorld status cards.
-- Settings or online accounts: account list, login entry, and sync status, while avoiding cookies, tokens, and raw credentials.
-- Subscription/source library: author, favorite, and collection source cards plus source-level model aggregation.
-- Source refresh: run state, progress, recent result summary, and error summary if useful.
-- Source-deleted status: model card or detail marker showing remote deletion/source status.
-- Local upload/local organizer: upload entry, accepted file type context, and organizer progress.
-- Model sharing: share dialog, share records, or receive-share entry, while hiding or avoiding share codes and public URLs.
-- MakerWorld verification recovery: MakerHub-side warning and retry entry only.
+- 模型库：封面网格、搜索或筛选区域、模型数量、模型卡片细节。
+- 首页：归档数量、缺失 3MF、订阅、源端刷新、本地整理、Worker/任务状态、MakerWorld 状态卡片。
+- 设置或线上账号：账号列表、登录入口、同步状态；避开 Cookie、Token 和原始凭据。
+- 订阅库/来源库：作者、收藏夹、合集来源卡，以及来源下的模型聚合。
+- 源端刷新：运行状态、进度、最近结果摘要，必要时展示异常摘要。
+- 源端删除状态：模型卡片或详情页上的远端删除/源端状态标记。
+- 本地上传/本地整理：上传入口、支持文件类型语境、本地整理进度。
+- 模型分享：分享弹窗、分享记录或接收分享入口；隐藏或避开分享码和公网地址。
+- MakerWorld 验证恢复：只拍 MakerHub 侧的验证提示和重试入口。
 
-The capture implementation should wait for data to load before taking each capture and should record material-to-storyboard mapping in a manifest.
+采集实现需要等待页面数据加载完成后再截图，并在素材清单中记录素材与分镜的对应关系。
 
-## Privacy And Redaction Rules
+## 隐私和脱敏规则
 
-Must not appear in final videos, generated subtitles, voiceover text, filenames, manifests, or logs:
+以下内容不能出现在最终视频、生成字幕、旁白文本、文件名、素材清单或日志中：
 
-- Online instance address and full URLs.
-- Browser address bar or browser chrome.
-- Account password and saved login credentials.
-- Cookies, API tokens, mobile-import tokens, share access codes, and share codes.
-- Public sharing base URL.
-- Proxy credentials or proxy host values.
-- Real server paths and mounted storage paths.
-- Raw stack traces, raw upstream HTML, and unredacted business logs.
+- 线上实例地址和完整 URL。
+- 浏览器地址栏或浏览器外框。
+- 账号密码和已保存登录凭据。
+- Cookie、API Token、移动端导入 Token、分享访问码和分享码。
+- 公网分享基础地址。
+- 代理凭据或代理主机值。
+- 真实服务器路径和挂载路径。
+- 原始堆栈、源站返回的原始 HTML、未脱敏业务日志。
 
-May appear by default:
+以下内容默认可以保留：
 
-- Public model names.
-- Public author names.
-- Public collection or favorite names.
-- Public model cover images.
+- 公开模型名。
+- 公开作者名。
+- 公开收藏夹或合集名称。
+- 公开模型封面图。
 
-The first workflow should include a text scan over generated files and metadata to reject obvious leaks such as the online URL, configured credential values, token-like strings, or public share-code patterns.
+第一版流程需要包含文本扫描，检查生成文件和元数据中是否出现明显泄露，例如线上地址、运行时配置的凭据值、疑似 Token 字符串或公开分享码模式。
 
-## Video Composition
+## 视频编排
 
-The 16:9 version is the primary composition. It should use full-width UI captures, short zooms, quick cuts, green highlight boxes, concise section titles, and synchronized Chinese subtitles. It should preserve MakerHub's dark compact workstation feel and avoid marketing-page visual tropes such as blue-purple gradients, decorative blobs, oversized hero layouts, and glassy panels.
+16:9 横屏版是主版。它应使用全宽 UI 素材、短缩放、快切、绿色高亮框、简短章节标题和同步中文字幕。整体要保留 MakerHub 深色、紧凑、工作台式的气质，避免蓝紫渐变、装饰光斑、超大 hero、玻璃拟态面板等营销页视觉套路。
 
-The 9:16 version should be derived from the same material but recomposed rather than hard-cropped. It should place the title near the top, key UI crop in the center, and subtitles near the bottom. Priority crops are model cards, dashboard cards, source cards, dialogs, and status actions.
+9:16 竖屏版应使用同一批素材重新编排，而不是直接硬裁横屏画面。竖屏版标题放上方，关键 UI 裁切放中间，字幕放下方。优先裁切模型卡片、首页状态卡片、来源卡、弹窗和状态操作区域。
 
-## Proposed Artifacts
+## 预期产物
 
-- `videos/makerhub-intro/storyboard.md`: approved storyboard, voiceover, and subtitle text.
-- `videos/makerhub-intro/assets/`: captured images or short clips.
-- `videos/makerhub-intro/assets/manifest.json`: mapping from assets to storyboard segments and redaction notes.
-- `videos/makerhub-intro/scripts/`: capture, redaction check, and render helper scripts.
-- `videos/makerhub-intro/scenes/`: HyperFrames scene code or the structure required by the HyperFrames plugin.
-- `videos/makerhub-intro/output/`: rendered 16:9 and 9:16 exports.
-- `.env.example`: variable names only, with no real URL or credentials.
+- `videos/makerhub-intro/storyboard.md`：确认后的分镜、旁白和字幕文本。
+- `videos/makerhub-intro/assets/`：采集后的图片或短视频素材。
+- `videos/makerhub-intro/assets/manifest.json`：素材到分镜的映射和脱敏备注。
+- `videos/makerhub-intro/scripts/`：采集、脱敏检查和渲染辅助脚本。
+- `videos/makerhub-intro/scenes/`：HyperFrames 分镜代码，或 HyperFrames 插件要求的项目结构。
+- `videos/makerhub-intro/output/`：导出的 16:9 和 9:16 成片。
+- `.env.example`：只写变量名，不写真实地址或凭据。
 
-## Verification
+## 验证
 
-Before calling the video complete:
+在宣布视频完成前，需要确认：
 
-- Confirm no captured frame contains browser chrome or the browser address bar.
-- Confirm text scan does not find the online URL, configured credential values, cookies, tokens, share codes, or public sharing addresses.
-- Manually inspect representative frames for every storyboard segment.
-- Confirm subtitles do not cover the key UI in both 16:9 and 9:16.
-- Confirm the 9:16 export uses focused crops and is not a destructive center crop of the desktop page.
-- Confirm voiceover audio is replaceable without changing storyboard timing.
+- 任一采集帧都不包含浏览器外框或浏览器地址栏。
+- 文本扫描找不到线上地址、运行时配置的凭据值、Cookie、Token、分享码或公网分享地址。
+- 手动抽查每个分镜段的代表帧。
+- 16:9 和 9:16 中字幕都没有遮挡关键 UI。
+- 9:16 导出使用聚焦裁切，不是粗暴居中裁掉桌面页面。
+- 旁白音频可以替换，而不需要修改分镜时间轴。
 
-## Open Implementation Notes
+## 实现备注
 
-The user approved using the real online instance with username and password login. The actual online base URL and credentials must be passed only at runtime and should not be written into this document or committed files. The initial audio may use any available TTS voice as a replaceable placeholder.
+用户已确认使用真实线上实例，并使用账号密码登录。实际线上基础地址和凭据只能在运行时传入，不能写入本文档或提交文件。初版音频可以使用任意可用 TTS 声音作为可替换占位。
