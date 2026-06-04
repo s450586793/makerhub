@@ -115,6 +115,7 @@ import ModelCard from "../components/ModelCard.vue";
 import ShareDialog from "../components/ShareDialog.vue";
 import { subscribeArchiveCompletion } from "../lib/archiveEvents";
 import { apiRequest } from "../lib/api";
+import { createAutoLoadObserver } from "../lib/autoLoadObserver";
 import { getPageCache, setPageCache } from "../lib/pageCache";
 
 
@@ -148,17 +149,22 @@ const selectMode = ref(false);
 const selectedModelDirSet = ref(new Set());
 const shareDialogVisible = ref(false);
 
-let intersectionObserver = null;
 let requestToken = 0;
 let loadMoreToken = 0;
 let deleteSettleToken = 0;
-let observerToken = 0;
 let unsubscribeArchiveEvents = null;
 let refreshWhenVisible = false;
 let locallyHiddenDeletedModelDirs = new Set();
 
 const selectedModelDirs = computed(() => Array.from(selectedModelDirSet.value));
 const selectedCount = computed(() => selectedModelDirs.value.length);
+const loadMoreObserver = createAutoLoadObserver({
+  triggerRef: loadMoreTrigger,
+  canLoad: () => Boolean(payload.value.has_more),
+  isLoading: () => Boolean(loadingMore.value),
+  load: loadMore,
+  nextTick,
+});
 
 function syncFiltersFromRoute() {
   filters.q = typeof route.query.q === "string" ? route.query.q : "";
@@ -559,21 +565,13 @@ async function waitForNextFrame() {
   });
 }
 
-function isLoadMoreTriggerNearViewport(margin = 420) {
-  if (typeof window === "undefined" || !loadMoreTrigger.value) {
-    return false;
-  }
-  const rect = loadMoreTrigger.value.getBoundingClientRect();
-  return rect.top <= window.innerHeight + margin && rect.bottom >= -margin;
-}
-
 async function settleLoadMoreAfterDelete(routeAtDelete, currentDeleteSettleToken) {
   await nextTick();
   await waitForNextFrame();
   if (route.fullPath !== routeAtDelete || currentDeleteSettleToken !== deleteSettleToken) {
     return;
   }
-  if (payload.value.has_more && isLoadMoreTriggerNearViewport()) {
+  if (payload.value.has_more && loadMoreObserver.isTriggerNearViewport()) {
     await loadMore();
     return;
   }
@@ -627,43 +625,11 @@ async function loadMore() {
 }
 
 function disconnectObserver() {
-  observerToken += 1;
-  if (intersectionObserver) {
-    intersectionObserver.disconnect();
-    intersectionObserver = null;
-  }
-}
-
-async function loadMoreIfTriggerIsVisible(currentObserverToken) {
-  await nextTick();
-  await waitForNextFrame();
-  if (
-    currentObserverToken !== observerToken
-    || loadingMore.value
-    || !payload.value.has_more
-    || !isLoadMoreTriggerNearViewport()
-  ) {
-    return;
-  }
-  void loadMore();
+  loadMoreObserver.disconnect();
 }
 
 function ensureObserver() {
-  disconnectObserver();
-  if (!loadMoreTrigger.value || loadingMore.value) {
-    return;
-  }
-  const currentObserverToken = ++observerToken;
-  intersectionObserver = new IntersectionObserver((entries) => {
-    const [entry] = entries;
-    if (entry?.isIntersecting) {
-      void loadMore();
-    }
-  }, {
-    rootMargin: "0px 0px 420px 0px",
-  });
-  intersectionObserver.observe(loadMoreTrigger.value);
-  void loadMoreIfTriggerIsVisible(currentObserverToken);
+  loadMoreObserver.ensure();
 }
 
 function applyFilters() {

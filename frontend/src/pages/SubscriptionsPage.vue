@@ -155,6 +155,7 @@ import CronField from "../components/CronField.vue";
 import ShareDialog from "../components/ShareDialog.vue";
 import SourceLibraryCard from "../components/SourceLibraryCard.vue";
 import { apiRequest } from "../lib/api";
+import { createAutoLoadObserver } from "../lib/autoLoadObserver";
 import { getPageCache, setPageCache } from "../lib/pageCache";
 import { subscribeStateRefresh } from "../lib/stateEvents";
 import {
@@ -185,24 +186,19 @@ const createDialog = reactive({
 });
 let unsubscribeStateRefresh = null;
 let requestToken = 0;
-let intersectionObserver = null;
-let observerToken = 0;
-
-function waitForNextFrame() {
-  return new Promise((resolve) => {
-    if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
-      resolve();
-      return;
-    }
-    window.requestAnimationFrame(() => resolve());
-  });
-}
 
 const sourceSections = computed(() => (
   payload.value.sections.filter((section) => section?.key === "subscription_sources")
 ));
 const subscriptionSources = computed(() => subscriptionSourcesSection());
 const hasMoreSubscriptionSources = computed(() => Boolean(subscriptionSources.value?.has_more));
+const loadMoreObserver = createAutoLoadObserver({
+  triggerRef: loadMoreTrigger,
+  canLoad: () => Boolean(hasMoreSubscriptionSources.value),
+  isLoading: () => Boolean(loadingMore.value),
+  load: loadMoreSubscriptionSources,
+  nextTick,
+});
 const shareableCards = computed(() => (
   sourceSections.value
     .flatMap((section) => section.items || [])
@@ -422,56 +418,11 @@ async function loadMoreSubscriptionSources() {
 }
 
 function disconnectObserver() {
-  observerToken += 1;
-  if (intersectionObserver) {
-    intersectionObserver.disconnect();
-    intersectionObserver = null;
-  }
-}
-
-function isLoadMoreTriggerNearViewport(margin = 420) {
-  if (typeof window === "undefined" || !loadMoreTrigger.value) {
-    return false;
-  }
-  const rect = loadMoreTrigger.value.getBoundingClientRect();
-  return rect.top <= window.innerHeight + margin && rect.bottom >= -margin;
-}
-
-async function loadMoreIfTriggerIsVisible(currentObserverToken) {
-  await nextTick();
-  await waitForNextFrame();
-  if (
-    currentObserverToken !== observerToken
-    || loadingMore.value
-    || !hasMoreSubscriptionSources.value
-    || !isLoadMoreTriggerNearViewport()
-  ) {
-    return;
-  }
-  void loadMoreSubscriptionSources();
+  loadMoreObserver.disconnect();
 }
 
 function ensureObserver() {
-  disconnectObserver();
-  if (
-    !subscriptionsAutoLoadSupported.value
-    || !loadMoreTrigger.value
-    || loadingMore.value
-    || !hasMoreSubscriptionSources.value
-  ) {
-    return;
-  }
-  const currentObserverToken = ++observerToken;
-  intersectionObserver = new IntersectionObserver((entries) => {
-    const [entry] = entries;
-    if (entry?.isIntersecting) {
-      void loadMoreSubscriptionSources();
-    }
-  }, {
-    rootMargin: "0px 0px 420px 0px",
-  });
-  intersectionObserver.observe(loadMoreTrigger.value);
-  void loadMoreIfTriggerIsVisible(currentObserverToken);
+  loadMoreObserver.ensure();
 }
 
 function openCard(card) {

@@ -57,7 +57,9 @@ test("subscriptions page requests eight-card pages and auto-loads more", () => {
   assert.match(pageSource, /IntersectionObserver/);
   assert.match(pageSource, /下拉到底自动加载下一页/);
   assert.match(pageSource, /正在加载更多订阅来源/);
-  assert.match(pageSource, /subscriptionsAutoLoadSupported/);
+  assert.match(pageSource, /createAutoLoadObserver/);
+  assert.match(pageSource, /triggerRef:\s*loadMoreTrigger/);
+  assert.match(pageSource, /load:\s*loadMoreSubscriptionSources/);
   assert.match(pageSource, />\s*加载更多\s*</);
   assert.match(pageSource, /全选(?:当前)?已加载/);
 });

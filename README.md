@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.3`
+> 当前版本：`v0.9.4`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-04 · v0.9.4
+
+- 修复订阅库来源卡片触底后没有自动加载下一页的问题，兼容 Vue 在 `v-for` 中产生的数组 ref。
+- 抽出模型库和订阅库共用的自动加载观察器，统一触底检测、IntersectionObserver 和可见锚点补触发逻辑。
+- 增加自动加载观察器回归测试，覆盖单锚点、数组锚点和已进入视口时立即加载。
+
 ### 2026-06-04 · v0.9.3
 
 - 首页国内站/国际站状态只按当前 Cookie、当前 MakerWorld 验证和当前每日上限判断异常，历史缺失 `3MF` 失败不再影响首页账号状态。
@@ -218,6 +224,9 @@ uvicorn app.main:app --reload
 - 订阅库新增“加载更多”，刷新和状态事件会保留当前已加载页数；新增订阅后回到第一页重新读取。
 - “全选当前”改为“全选当前已加载”，并在刷新/加载更多后清理不在已加载卡片里的旧选择。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-04 · v0.9.1
 
 - 首页国内站/国际站状态卡在检测到验证、Cookie 或历史 `3MF` 下载异常时，同时提供“访问主页”和“重试 3MF”操作。
@@ -229,9 +238,6 @@ uvicorn app.main:app --reload
 - 新增归档队列运行态语义，区分 `running`、`waiting_children`、`blocked`、`paused` 等状态，避免批量父任务被误看成真正执行中的子任务。
 - 归档任务启动时记录 lease、heartbeat、开始时间和尝试次数；新增队列修复接口和任务页“修复队列”操作，可重排心跳过期任务并汇总修复结果。
 - 系统诊断增加归档队列计数、等待子任务数量和 stale lease 候选项；任务页状态文案改为中文业务语义，并保留需要验证时的外跳官网动作。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-03 · v0.8.21
 
