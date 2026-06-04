@@ -33,7 +33,7 @@
           :disabled="!shareableCards.length"
           @click="selectAllShareableCards"
         >
-          全选当前
+          全选当前已加载
         </button>
         <button
           v-if="selectMode"
@@ -58,17 +58,32 @@
 
   <template v-else>
     <section v-for="section in sourceSections" :key="section.key" class="library-section">
-      <div v-if="section.items?.length" class="source-library-grid">
-        <SourceLibraryCard
-          v-for="card in section.items"
-          :key="card.key"
-          :card="card"
-          :select-mode="selectMode"
-          :selected="isCardSelected(card)"
-          @open="openCard"
-          @select="toggleCardSelected"
-        />
-      </div>
+      <template v-if="section.items?.length">
+        <div class="source-library-grid">
+          <SourceLibraryCard
+            v-for="card in section.items"
+            :key="card.key"
+            :card="card"
+            :select-mode="selectMode"
+            :selected="isCardSelected(card)"
+            @open="openCard"
+            @select="toggleCardSelected"
+          />
+        </div>
+        <div v-if="section.key === 'subscription_sources' && section.items?.length" class="list-loader-anchor">
+          <button
+            v-if="section.has_more"
+            class="button button-secondary"
+            type="button"
+            :disabled="loadingMore"
+            @click="loadMoreSubscriptionSources"
+          >
+            <span v-if="loadingMore">加载中...</span>
+            <span v-else>加载更多</span>
+          </button>
+          <span v-else>已经到底了</span>
+        </div>
+      </template>
       <section v-else class="surface empty-state subscription-inline-empty">
         <h2>{{ section.label }}为空</h2>
         <p>当前没有可展示的订阅来源卡片。你可以先添加作者、合集或收藏夹订阅。</p>
@@ -128,7 +143,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
-import { RouterLink, useRouter } from "vue-router";
+import { RouterLink, useRoute, useRouter } from "vue-router";
 
 import CronField from "../components/CronField.vue";
 import ShareDialog from "../components/ShareDialog.vue";
@@ -143,11 +158,14 @@ import {
 } from "../lib/subscriptions";
 
 
+const route = useRoute();
 const router = useRouter();
+const PAGE_SIZE = 24;
 const payload = ref(createEmptySubscriptionsPayload());
 const status = ref("");
 const creating = ref(false);
 const initialLoaded = ref(false);
+const loadingMore = ref(false);
 const selectMode = ref(false);
 const selectedCardKeySet = ref(new Set());
 const shareDialogVisible = ref(false);
@@ -158,10 +176,13 @@ const createDialog = reactive({
   cron: DEFAULT_SUBSCRIPTION_SETTINGS.default_cron,
 });
 let unsubscribeStateRefresh = null;
+let requestToken = 0;
 
 const sourceSections = computed(() => (
   payload.value.sections.filter((section) => section?.key === "subscription_sources")
 ));
+const subscriptionSources = computed(() => subscriptionSourcesSection());
+const hasMoreSubscriptionSources = computed(() => Boolean(subscriptionSources.value?.has_more));
 const shareableCards = computed(() => (
   sourceSections.value
     .flatMap((section) => section.items || [])
@@ -190,6 +211,7 @@ const selectedModelDirs = computed(() => {
 function rememberSubscriptionsPage() {
   setPageCache("subscriptions", {
     payload: payload.value,
+    page: Number(subscriptionSourcesSection()?.page || 1),
   });
 }
 
@@ -203,21 +225,161 @@ function hydrateSubscriptionsPageFromCache() {
   return true;
 }
 
+function routePage() {
+  const rawPage = Array.isArray(route.query.page) ? route.query.page[0] : route.query.page;
+  const page = Number.parseInt(String(rawPage || ""), 10);
+  if (!Number.isFinite(page) || page <= 1) {
+    return 1;
+  }
+  return Math.min(page, 200);
+}
+
+function buildRouteQuery(page = 1) {
+  const query = {};
+  const safePage = Math.max(Number(page) || 1, 1);
+  if (safePage > 1) {
+    query.page = String(Math.floor(safePage));
+  }
+  return query;
+}
+
+function subscriptionSourcesSection(sourcePayload = payload.value) {
+  return (sourcePayload.sections || []).find((section) => section?.key === "subscription_sources") || null;
+}
+
+function mergeSubscriptionSourceItems(existing = [], incoming = []) {
+  const merged = [];
+  const seen = new Set();
+  for (const item of [...existing, ...incoming]) {
+    const key = String(item?.key || "").trim();
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    merged.push(item);
+  }
+  return merged;
+}
+
+function replaceSubscriptionSourcesSection(basePayload, items, sectionMeta = {}) {
+  const sections = (basePayload.sections || []).map((section) => (
+    section?.key === "subscription_sources"
+      ? {
+          ...section,
+          ...sectionMeta,
+          items,
+          count: items.length,
+        }
+      : section
+  ));
+  return {
+    ...basePayload,
+    sections,
+  };
+}
+
+function buildSubscriptionsQuery(page = 1) {
+  const query = new URLSearchParams();
+  query.set("page", String(Math.max(Number(page) || 1, 1)));
+  query.set("page_size", String(PAGE_SIZE));
+  return query;
+}
+
+async function fetchSubscriptionsPage(page = 1) {
+  return normalizeSubscriptionsPayload(
+    await apiRequest(`/api/subscriptions?${buildSubscriptionsQuery(page).toString()}`),
+  );
+}
+
 function resetCreateForm() {
   createDialog.url = "";
   createDialog.name = "";
   createDialog.cron = String(payload.value.settings?.default_cron || DEFAULT_SUBSCRIPTION_SETTINGS.default_cron);
 }
 
-async function load({ silent = false } = {}) {
+async function load({ silent = false, pages = routePage() } = {}) {
+  const currentToken = ++requestToken;
+  loadingMore.value = false;
+  const pagesToLoad = Math.max(Number(pages) || 1, 1);
   try {
-    const response = await apiRequest("/api/subscriptions");
-    payload.value = normalizeSubscriptionsPayload(response);
+    let mergedPayload = null;
+    let mergedItems = [];
+    let latestSection = null;
+    for (let page = 1; page <= pagesToLoad; page += 1) {
+      const response = await fetchSubscriptionsPage(page);
+      if (currentToken !== requestToken) {
+        return;
+      }
+      const section = subscriptionSourcesSection(response);
+      mergedItems = mergeSubscriptionSourceItems(mergedItems, section?.items || []);
+      latestSection = section || latestSection;
+      mergedPayload = response;
+    }
+    if (!mergedPayload) {
+      return;
+    }
+    payload.value = replaceSubscriptionSourcesSection(
+      mergedPayload,
+      mergedItems,
+      {
+        ...(latestSection || {}),
+        page: pagesToLoad,
+        page_size: PAGE_SIZE,
+        has_more: Boolean(latestSection?.has_more),
+        total: Number(latestSection?.total || mergedItems.length),
+      },
+    );
     initialLoaded.value = true;
+    pruneSelectionsToLoadedCards();
     rememberSubscriptionsPage();
   } catch (error) {
     if (!silent) {
       status.value = error instanceof Error ? error.message : "订阅数据加载失败。";
+    }
+  }
+}
+
+async function updateRoutePage(page) {
+  await router.replace({
+    path: route.path,
+    query: buildRouteQuery(page),
+  });
+}
+
+async function loadMoreSubscriptionSources() {
+  if (loadingMore.value || !hasMoreSubscriptionSources.value) {
+    return;
+  }
+  const currentToken = ++requestToken;
+  const nextPage = Math.max(Number(subscriptionSources.value?.page || 1), 1) + 1;
+  loadingMore.value = true;
+  try {
+    const response = await fetchSubscriptionsPage(nextPage);
+    if (currentToken !== requestToken) {
+      return;
+    }
+    const incomingSection = subscriptionSourcesSection(response);
+    const mergedItems = mergeSubscriptionSourceItems(subscriptionSources.value?.items || [], incomingSection?.items || []);
+    payload.value = replaceSubscriptionSourcesSection(
+      response,
+      mergedItems,
+      {
+        ...(incomingSection || {}),
+        page: nextPage,
+        page_size: PAGE_SIZE,
+        has_more: Boolean(incomingSection?.has_more),
+        total: Number(incomingSection?.total || mergedItems.length),
+      },
+    );
+    initialLoaded.value = true;
+    pruneSelectionsToLoadedCards();
+    rememberSubscriptionsPage();
+    await updateRoutePage(nextPage);
+  } catch (error) {
+    status.value = error instanceof Error ? error.message : "加载更多订阅来源失败。";
+  } finally {
+    if (currentToken === requestToken) {
+      loadingMore.value = false;
     }
   }
 }
@@ -283,6 +445,17 @@ function selectAllShareableCards() {
   selectedCardKeySet.value = new Set(shareableCards.value.map((card) => String(card.key || "")).filter(Boolean));
 }
 
+function pruneSelectionsToLoadedCards() {
+  const loadedKeys = new Set(shareableCards.value.map((card) => String(card.key || "")).filter(Boolean));
+  const nextSet = new Set();
+  for (const key of selectedCardKeySet.value) {
+    if (loadedKeys.has(key)) {
+      nextSet.add(key);
+    }
+  }
+  selectedCardKeySet.value = nextSet;
+}
+
 function openShareDialog() {
   if (!selectedModelDirs.value.length) {
     status.value = "请先选择要分享的订阅来源。";
@@ -326,12 +499,11 @@ async function createSubscription() {
         initialize_from_source: true,
       },
     });
-    payload.value = normalizeSubscriptionsPayload(response.subscriptions || {});
-    rememberSubscriptionsPage();
     status.value = response.message || "订阅已创建。";
     closeCreateDialog(true);
     resetCreateForm();
-    await load({ silent: true });
+    await updateRoutePage(1);
+    await load({ silent: true, pages: 1 });
   } catch (error) {
     status.value = error instanceof Error ? error.message : "创建订阅失败。";
   } finally {
@@ -343,7 +515,7 @@ onMounted(async () => {
   unsubscribeStateRefresh = subscribeStateRefresh(
     ["subscriptions_state", "source_library", "archive_queue"],
     () => {
-      void load({ silent: true });
+      void load({ silent: true, pages: Number(subscriptionSources.value?.page || routePage()) });
     },
   );
   hydrateSubscriptionsPageFromCache();

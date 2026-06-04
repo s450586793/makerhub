@@ -27,6 +27,19 @@ export function createEmptySubscriptionsPayload() {
   };
 }
 
+function normalizeSubscriptionSection(section = {}) {
+  const items = Array.isArray(section.items) ? section.items : [];
+  return {
+    ...section,
+    items,
+    count: Number(section.count ?? items.length),
+    total: Number(section.total ?? items.length),
+    page: Number(section.page || 1),
+    page_size: Number(section.page_size || items.length || 0),
+    has_more: Boolean(section.has_more),
+  };
+}
+
 export function normalizeSubscriptionsPayload(response = {}) {
   return {
     items: Array.isArray(response.items) ? response.items : [],
@@ -36,7 +49,7 @@ export function normalizeSubscriptionsPayload(response = {}) {
       running: Number(response.summary?.running || 0),
       deleted_marked: Number(response.summary?.deleted_marked || 0),
     },
-    sections: Array.isArray(response.sections) ? response.sections : [],
+    sections: Array.isArray(response.sections) ? response.sections.map(normalizeSubscriptionSection) : [],
     settings: mergeSubscriptionSettings(response.settings || {}),
   };
 }
