@@ -5,6 +5,7 @@ import { test } from "node:test";
 const logsPageSource = readFileSync(new URL("../pages/LogsPage.vue", import.meta.url), "utf8");
 const tasksPageSource = readFileSync(new URL("../pages/TasksPage.vue", import.meta.url), "utf8");
 const remoteRefreshPageSource = readFileSync(new URL("../pages/RemoteRefreshPage.vue", import.meta.url), "utf8");
+const organizerPageSource = readFileSync(new URL("../pages/OrganizerPage.vue", import.meta.url), "utf8");
 
 test("LogsPage uses shared page refresh controller for auto tracking", () => {
   assert.match(logsPageSource, /createPageRefreshController/);
@@ -22,4 +23,10 @@ test("RemoteRefreshPage uses shared page refresh controller for throttled refres
   assert.match(remoteRefreshPageSource, /createPageRefreshController/);
   assert.doesNotMatch(remoteRefreshPageSource, /function scheduleRefresh/);
   assert.match(remoteRefreshPageSource, /remoteRefreshController/);
+});
+
+test("OrganizerPage uses shared page refresh controller for organize task refresh", () => {
+  assert.match(organizerPageSource, /createPageRefreshController/);
+  assert.doesNotMatch(organizerPageSource, /function syncTaskTimer/);
+  assert.match(organizerPageSource, /organizerRefreshController/);
 });

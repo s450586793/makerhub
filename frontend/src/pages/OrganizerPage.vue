@@ -201,7 +201,7 @@ import SourceLibraryCard from "../components/SourceLibraryCard.vue";
 import { apiRequest, apiUploadRequest } from "../lib/api";
 import { refreshConfig } from "../lib/appState";
 import { deletePageCache, deletePageCacheByPrefix, getPageCache, setPageCache } from "../lib/pageCache";
-import { subscribeStateRefresh } from "../lib/stateEvents";
+import { createPageRefreshController } from "../lib/usePageRefresh";
 
 
 const RECENT_IMPORT_PENDING_GRACE_MS = 10 * 60 * 1000;
@@ -293,9 +293,7 @@ const importUploadProgress = reactive({
   updatedAt: 0,
 });
 const organizerProgressOpen = ref(false);
-let refreshTimer = null;
-let disposed = false;
-let unsubscribeStateRefresh = null;
+let organizerRefreshController = null;
 let sourceLibraryRefreshDeferred = false;
 
 function rememberOrganizerPage() {
@@ -1118,25 +1116,27 @@ function buildLocalImportSummary(tasks) {
   return `最近整理：${parts.join(" / ")}`;
 }
 
-function clearTaskTimer() {
-  if (refreshTimer) {
-    window.clearTimeout(refreshTimer);
-    refreshTimer = null;
-  }
-}
-
 function hasActiveOrganizeTasks() {
   return importUploadProgressIsActive() || activeOrganizeCount.value > 0 || hasRecentImportWork();
 }
 
-function syncTaskTimer() {
-  clearTaskTimer();
-  if (disposed || typeof window === "undefined" || document.hidden) {
-    return;
+function stopOrganizerRefreshController() {
+  if (organizerRefreshController) {
+    organizerRefreshController.dispose();
+    organizerRefreshController = null;
   }
-  refreshTimer = window.setTimeout(() => {
-    void load({ silent: true, refreshLibrary: !hasActiveOrganizeTasks() || !hasSourceLibraryPayload() });
-  }, 300);
+}
+
+function scheduleOrganizerRefresh(reason = "organizer-state") {
+  organizerRefreshController?.schedule(reason);
+}
+
+function clearOrganizerRefresh() {
+  organizerRefreshController?.clear();
+}
+
+function refreshOrganizerTasks() {
+  return load({ silent: true, refreshLibrary: !hasActiveOrganizeTasks() || !hasSourceLibraryPayload() });
 }
 
 async function load({ silent = false, refreshLibrary = true } = {}) {
@@ -1180,7 +1180,7 @@ async function load({ silent = false, refreshLibrary = true } = {}) {
     }
   } finally {
     loading.value = false;
-    if (shouldRefreshDeferredLibrary && !disposed && typeof window !== "undefined" && !document.hidden) {
+    if (shouldRefreshDeferredLibrary && typeof window !== "undefined" && !document.hidden) {
       void load({ silent: true, refreshLibrary: true });
     }
   }
@@ -1520,7 +1520,7 @@ async function submitImportFiles() {
   importDialog.visible = false;
   organizerProgressOpen.value = true;
   applyImportUploadProgress(importUploadPayloadFromItems(importFiles.value));
-  syncTaskTimer();
+  scheduleOrganizerRefresh("local-import-started");
   const formData = new FormData();
   for (const item of importFiles.value) {
     formData.append("files", item.file);
@@ -1580,7 +1580,7 @@ async function submitImportFiles() {
     }
     resetImportDialogState();
     clearLibraryCachesAfterImport();
-    clearTaskTimer();
+    clearOrganizerRefresh();
     await load({ silent: true, refreshLibrary: true });
     if (resultSkipped || snapshotReady) {
       resetImportUploadProgress();
@@ -1598,7 +1598,7 @@ async function submitImportFiles() {
     clearImportUploadProgressStorage();
   } finally {
     importDialog.uploading = false;
-    syncTaskTimer();
+    scheduleOrganizerRefresh("local-import-finished");
   }
 }
 
@@ -1638,35 +1638,21 @@ function closeOrganizerProgressPopover() {
   organizerProgressOpen.value = false;
 }
 
-function handleVisibilityChange() {
-  if (document.hidden) {
-    clearTaskTimer();
-    return;
-  }
-  void load({ silent: true, refreshLibrary: !hasActiveOrganizeTasks() || !hasSourceLibraryPayload() });
-}
-
 onMounted(() => {
-  disposed = false;
-  unsubscribeStateRefresh = subscribeStateRefresh(
-    ["organize_tasks", "archive_queue", "source_library"],
-    syncTaskTimer,
-  );
+  organizerRefreshController = createPageRefreshController({
+    scopes: ["organize_tasks", "archive_queue", "source_library"],
+    refresh: refreshOrganizerTasks,
+    delayMs: 300,
+    refreshOnVisible: true,
+  });
   document.addEventListener("click", closeOrganizerProgressPopover);
-  document.addEventListener("visibilitychange", handleVisibilityChange);
   hydrateOrganizerPageFromCache();
   restoreImportUploadProgress();
   void load({ refreshLibrary: !hasActiveOrganizeTasks() || !hasSourceLibraryPayload() });
 });
 
 onBeforeUnmount(() => {
-  disposed = true;
-  clearTaskTimer();
-  if (typeof unsubscribeStateRefresh === "function") {
-    unsubscribeStateRefresh();
-    unsubscribeStateRefresh = null;
-  }
+  stopOrganizerRefreshController();
   document.removeEventListener("click", closeOrganizerProgressPopover);
-  document.removeEventListener("visibilitychange", handleVisibilityChange);
 });
 </script>
