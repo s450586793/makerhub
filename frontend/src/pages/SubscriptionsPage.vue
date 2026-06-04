@@ -70,17 +70,23 @@
             @select="toggleCardSelected"
           />
         </div>
-        <div v-if="section.key === 'subscription_sources' && section.items?.length" class="list-loader-anchor">
+        <div
+          v-if="section.key === 'subscription_sources' && section.items?.length"
+          ref="loadMoreTrigger"
+          class="list-loader-anchor"
+        >
           <button
-            v-if="section.has_more"
+            v-if="section.has_more && !subscriptionsAutoLoadSupported"
             class="button button-secondary"
             type="button"
             :disabled="loadingMore"
             @click="loadMoreSubscriptionSources"
           >
-            <span v-if="loadingMore">加载中...</span>
+            <span v-if="loadingMore">正在加载更多订阅来源...</span>
             <span v-else>加载更多</span>
           </button>
+          <span v-else-if="loadingMore">正在加载更多订阅来源...</span>
+          <span v-else-if="section.has_more">下拉到底自动加载下一页</span>
           <span v-else>已经到底了</span>
         </div>
       </template>
@@ -142,7 +148,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 
 import CronField from "../components/CronField.vue";
@@ -160,12 +166,14 @@ import {
 
 const route = useRoute();
 const router = useRouter();
-const PAGE_SIZE = 24;
+const PAGE_SIZE = 8;
 const payload = ref(createEmptySubscriptionsPayload());
 const status = ref("");
 const creating = ref(false);
 const initialLoaded = ref(false);
 const loadingMore = ref(false);
+const loadMoreTrigger = ref(null);
+const subscriptionsAutoLoadSupported = ref(false);
 const selectMode = ref(false);
 const selectedCardKeySet = ref(new Set());
 const shareDialogVisible = ref(false);
@@ -177,6 +185,18 @@ const createDialog = reactive({
 });
 let unsubscribeStateRefresh = null;
 let requestToken = 0;
+let intersectionObserver = null;
+let observerToken = 0;
+
+function waitForNextFrame() {
+  return new Promise((resolve) => {
+    if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+      resolve();
+      return;
+    }
+    window.requestAnimationFrame(() => resolve());
+  });
+}
 
 const sourceSections = computed(() => (
   payload.value.sections.filter((section) => section?.key === "subscription_sources")
@@ -299,8 +319,10 @@ function resetCreateForm() {
 
 async function load({ silent = false, pages = routePage() } = {}) {
   const currentToken = ++requestToken;
+  disconnectObserver();
   loadingMore.value = false;
   const pagesToLoad = Math.max(Number(pages) || 1, 1);
+  let failed = false;
   try {
     let mergedPayload = null;
     let mergedItems = [];
@@ -333,8 +355,14 @@ async function load({ silent = false, pages = routePage() } = {}) {
     pruneSelectionsToLoadedCards();
     rememberSubscriptionsPage();
   } catch (error) {
+    failed = true;
     if (!silent) {
       status.value = error instanceof Error ? error.message : "订阅数据加载失败。";
+    }
+  } finally {
+    if (currentToken === requestToken && !failed) {
+      await nextTick();
+      ensureObserver();
     }
   }
 }
@@ -348,15 +376,17 @@ async function updateRoutePage(page) {
 
 async function loadMoreSubscriptionSources() {
   if (loadingMore.value || !hasMoreSubscriptionSources.value) {
-    return;
+    return false;
   }
   const currentToken = ++requestToken;
   const nextPage = Math.max(Number(subscriptionSources.value?.page || 1), 1) + 1;
+  let failed = false;
+  disconnectObserver();
   loadingMore.value = true;
   try {
     const response = await fetchSubscriptionsPage(nextPage);
     if (currentToken !== requestToken) {
-      return;
+      return false;
     }
     const incomingSection = subscriptionSourcesSection(response);
     const mergedItems = mergeSubscriptionSourceItems(subscriptionSources.value?.items || [], incomingSection?.items || []);
@@ -375,13 +405,73 @@ async function loadMoreSubscriptionSources() {
     pruneSelectionsToLoadedCards();
     rememberSubscriptionsPage();
     await updateRoutePage(nextPage);
+    return true;
   } catch (error) {
+    failed = true;
     status.value = error instanceof Error ? error.message : "加载更多订阅来源失败。";
+    return false;
   } finally {
     if (currentToken === requestToken) {
       loadingMore.value = false;
+      await nextTick();
+      if (!failed) {
+        ensureObserver();
+      }
     }
   }
+}
+
+function disconnectObserver() {
+  observerToken += 1;
+  if (intersectionObserver) {
+    intersectionObserver.disconnect();
+    intersectionObserver = null;
+  }
+}
+
+function isLoadMoreTriggerNearViewport(margin = 420) {
+  if (typeof window === "undefined" || !loadMoreTrigger.value) {
+    return false;
+  }
+  const rect = loadMoreTrigger.value.getBoundingClientRect();
+  return rect.top <= window.innerHeight + margin && rect.bottom >= -margin;
+}
+
+async function loadMoreIfTriggerIsVisible(currentObserverToken) {
+  await nextTick();
+  await waitForNextFrame();
+  if (
+    currentObserverToken !== observerToken
+    || loadingMore.value
+    || !hasMoreSubscriptionSources.value
+    || !isLoadMoreTriggerNearViewport()
+  ) {
+    return;
+  }
+  void loadMoreSubscriptionSources();
+}
+
+function ensureObserver() {
+  disconnectObserver();
+  if (
+    !subscriptionsAutoLoadSupported.value
+    || !loadMoreTrigger.value
+    || loadingMore.value
+    || !hasMoreSubscriptionSources.value
+  ) {
+    return;
+  }
+  const currentObserverToken = ++observerToken;
+  intersectionObserver = new IntersectionObserver((entries) => {
+    const [entry] = entries;
+    if (entry?.isIntersecting) {
+      void loadMoreSubscriptionSources();
+    }
+  }, {
+    rootMargin: "0px 0px 420px 0px",
+  });
+  intersectionObserver.observe(loadMoreTrigger.value);
+  void loadMoreIfTriggerIsVisible(currentObserverToken);
 }
 
 function openCard(card) {
@@ -512,6 +602,7 @@ async function createSubscription() {
 }
 
 onMounted(async () => {
+  subscriptionsAutoLoadSupported.value = typeof window !== "undefined" && "IntersectionObserver" in window;
   unsubscribeStateRefresh = subscribeStateRefresh(
     ["subscriptions_state", "source_library", "archive_queue"],
     () => {
@@ -523,6 +614,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  disconnectObserver();
   if (typeof unsubscribeStateRefresh === "function") {
     unsubscribeStateRefresh();
     unsubscribeStateRefresh = null;

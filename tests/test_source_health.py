@@ -14,7 +14,7 @@ class SourceHealthCardsTest(unittest.TestCase):
         source_health.ThreadPoolExecutor = self.original_executor
         source_health._limit_guard_for_platform = self.original_limit_guard_for_platform
 
-    def test_missing_3mf_verification_is_softened_when_probe_ok(self):
+    def test_missing_3mf_verification_does_not_override_probe_ok(self):
         original_probe = source_health._probe_platform_status
         source_health._probe_platform_status = lambda platform, *_args, **_kwargs: {
             "platform": platform,
@@ -42,19 +42,18 @@ class SourceHealthCardsTest(unittest.TestCase):
             source_health._probe_platform_status = original_probe
 
         card_map = {item["key"]: item for item in cards}
-        self.assertEqual(card_map["cn"]["state"], "historical_3mf_issue")
-        self.assertEqual(card_map["cn"]["status"], "3MF 下载历史失败待重试")
-        self.assertIn("账号连接正常", card_map["cn"]["detail"])
-        self.assertEqual(card_map["cn"].get("action_label"), "访问主页")
+        self.assertEqual(card_map["cn"]["state"], "ok")
+        self.assertEqual(card_map["cn"]["status"], "连接正常")
+        self.assertEqual(card_map["cn"]["detail"], "")
+        self.assertEqual(card_map["cn"].get("action_label"), "打开官网")
         self.assertEqual(card_map["cn"].get("url"), "https://makerworld.com.cn")
         self.assertNotIn("route", card_map["cn"])
         self.assertEqual(card_map["global"]["state"], "ok")
         checks = {item["source"]: item for item in card_map["cn"]["checks"]}
         self.assertEqual(checks["account"]["status"], "连接正常")
-        self.assertEqual(checks["download"]["status"], "历史失败待重试")
-        self.assertEqual(checks["download"]["tone"], "warning")
+        self.assertNotIn("download", checks)
 
-    def test_global_missing_3mf_history_opens_platform_homepage(self):
+    def test_global_missing_3mf_history_does_not_override_probe_ok(self):
         original_probe = source_health._probe_platform_status
         source_health._probe_platform_status = lambda platform, *_args, **_kwargs: {
             "platform": platform,
@@ -82,9 +81,9 @@ class SourceHealthCardsTest(unittest.TestCase):
             source_health._probe_platform_status = original_probe
 
         card_map = {item["key"]: item for item in cards}
-        self.assertEqual(card_map["global"]["state"], "historical_3mf_issue")
-        self.assertEqual(card_map["global"]["status"], "3MF 下载历史失败待重试")
-        self.assertEqual(card_map["global"].get("action_label"), "访问主页")
+        self.assertEqual(card_map["global"]["state"], "ok")
+        self.assertEqual(card_map["global"]["status"], "连接正常")
+        self.assertEqual(card_map["global"].get("action_label"), "打开官网")
         self.assertEqual(card_map["global"].get("url"), "https://makerworld.com")
         self.assertNotIn("route", card_map["global"])
 
@@ -363,7 +362,7 @@ class SourceHealthCardsTest(unittest.TestCase):
         finally:
             session.close()
 
-    def test_missing_3mf_message_only_verification_is_softened_when_probe_ok(self):
+    def test_missing_3mf_message_only_verification_does_not_override_probe_ok(self):
         original_probe = source_health._probe_platform_status
         source_health._probe_platform_status = lambda platform, *_args, **_kwargs: {
             "platform": platform,
@@ -391,11 +390,11 @@ class SourceHealthCardsTest(unittest.TestCase):
             source_health._probe_platform_status = original_probe
 
         card_map = {item["key"]: item for item in cards}
-        self.assertEqual(card_map["cn"]["state"], "historical_3mf_issue")
-        self.assertEqual(card_map["cn"]["status"], "3MF 下载历史失败待重试")
+        self.assertEqual(card_map["cn"]["state"], "ok")
+        self.assertEqual(card_map["cn"]["status"], "连接正常")
         checks = {item["source"]: item for item in card_map["cn"]["checks"]}
         self.assertEqual(checks["account"]["status"], "连接正常")
-        self.assertEqual(checks["download"]["status"], "历史失败待重试")
+        self.assertNotIn("download", checks)
 
     def test_retrying_missing_3mf_does_not_override_probe_ok(self):
         original_probe = source_health._probe_platform_status
@@ -513,7 +512,7 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(card_map["cn"]["tone"], "warning")
         checks = {item["source"]: item for item in card_map["cn"]["checks"]}
         self.assertEqual(checks["account"]["status"], "部分受限")
-        self.assertEqual(checks["download"]["status"], "历史失败待重试")
+        self.assertNotIn("download", checks)
 
 class InlineExecutor:
     def __init__(self, *args, **kwargs):

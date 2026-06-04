@@ -20,13 +20,6 @@ const BLOCKED_REASON_LABELS = {
   worker_stopped: "Worker 未运行",
 };
 
-const MISSING_3MF_RETRY_STATES = new Set([
-  "historical_3mf_issue",
-  "verification_required",
-  "cloudflare",
-  "auth_required",
-]);
-
 export function dashboardStatusActions(item = {}) {
   const actions = [];
   if (item?.route && item?.action_label) {
@@ -41,16 +34,6 @@ export function dashboardStatusActions(item = {}) {
       kind: "external",
       label: item.action_label,
       href: item.url,
-    });
-  }
-  const checks = Array.isArray(item?.checks) ? item.checks : [];
-  const hasMissing3mfIssue = checks.some((check) => MISSING_3MF_RETRY_STATES.has(String(check?.state || "").trim().toLowerCase()));
-  if (hasMissing3mfIssue) {
-    actions.push({
-      kind: "api",
-      label: "重试 3MF",
-      endpoint: "/api/tasks/missing-3mf/retry-all",
-      method: "POST",
     });
   }
   return actions;

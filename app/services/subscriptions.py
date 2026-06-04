@@ -42,7 +42,7 @@ from app.services.task_state import TaskStateStore
 
 
 DEFAULT_SUBSCRIPTION_CRON = "0 */6 * * *"
-DEFAULT_SUBSCRIPTION_SOURCE_PAGE_SIZE = 24
+DEFAULT_SUBSCRIPTION_SOURCE_PAGE_SIZE = 8
 MAX_SUBSCRIPTION_SOURCE_PAGE_SIZE = 120
 SUBSCRIPTION_MODES = {"author_upload", "collection_models"}
 SUBSCRIPTION_LOG_PATH = LOGS_DIR / "subscriptions.log"

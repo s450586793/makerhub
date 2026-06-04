@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.2`
+> 当前版本：`v0.9.3`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -205,6 +205,12 @@ uvicorn app.main:app --reload
 - 详细配置见 [MakerHub iOS 快捷指令文档](docs/ios-makerhub-shortcut.md)。
 
 ## 更新记录
+
+### 2026-06-04 · v0.9.3
+
+- 首页国内站/国际站状态只按当前 Cookie、当前 MakerWorld 验证和当前每日上限判断异常，历史缺失 `3MF` 失败不再影响首页账号状态。
+- 首页状态卡移除历史 `3MF` 失败触发的“重试 3MF”动作，历史缺失项继续在任务页处理。
+- 订阅库来源卡片改为每批 8 个并下拉到底自动加载下一页，保留无自动加载环境下的“加载更多”兜底按钮。
 
 ### 2026-06-04 · v0.9.2
 
