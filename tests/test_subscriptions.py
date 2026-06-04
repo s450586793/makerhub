@@ -779,6 +779,73 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertEqual(payload["items"][0]["url"], "https://makerworld.com/zh/@Oierre/upload")
         self.assertEqual(self.store.load().subscriptions[0].url, "https://makerworld.com/zh/@Oierre/upload")
 
+    def test_list_payload_paginates_subscription_source_cards_only(self):
+        config = self.store.load()
+        config.subscriptions = [
+            SubscriptionRecord(
+                id=f"sub-{index}",
+                name=f"作者 {index}",
+                url=f"https://makerworld.com.cn/zh/@author{index}/upload",
+                mode="author_upload",
+                cron="0 * * * *",
+                enabled=True,
+            )
+            for index in range(1, 6)
+        ]
+        self.store.save(config)
+        overview = {
+            "sections": [
+                {
+                    "key": "subscription_sources",
+                    "label": "订阅来源",
+                    "items": [{"key": f"source-{index}"} for index in range(1, 6)],
+                },
+                {
+                    "key": "states",
+                    "label": "状态",
+                    "items": [{"key": "state-1"}],
+                    "count": 1,
+                },
+            ],
+            "settings": config.subscription_settings.model_dump(),
+        }
+
+        with patch.object(subscriptions, "build_subscription_overview_payload", return_value=overview):
+            payload = self.manager.list_payload(page=2, page_size=2)
+
+        source_section = next(section for section in payload["sections"] if section["key"] == "subscription_sources")
+        state_section = next(section for section in payload["sections"] if section["key"] == "states")
+        self.assertEqual([item["key"] for item in source_section["items"]], ["source-3", "source-4"])
+        self.assertEqual(source_section["count"], 2)
+        self.assertEqual(source_section["total"], 5)
+        self.assertEqual(source_section["page"], 2)
+        self.assertEqual(source_section["page_size"], 2)
+        self.assertTrue(source_section["has_more"])
+        self.assertEqual(payload["count"], 5)
+        self.assertEqual(payload["summary"]["enabled"], 5)
+        self.assertEqual(state_section, overview["sections"][1])
+
+    def test_list_payload_subscription_source_last_page_has_no_more(self):
+        overview = {
+            "sections": [
+                {
+                    "key": "subscription_sources",
+                    "label": "订阅来源",
+                    "items": [{"key": f"source-{index}"} for index in range(1, 4)],
+                },
+            ],
+            "settings": self.store.load().subscription_settings.model_dump(),
+        }
+
+        with patch.object(subscriptions, "build_subscription_overview_payload", return_value=overview):
+            payload = self.manager.list_payload(page=2, page_size=2)
+
+        source_section = next(section for section in payload["sections"] if section["key"] == "subscription_sources")
+        self.assertEqual([item["key"] for item in source_section["items"]], ["source-3"])
+        self.assertEqual(source_section["count"], 1)
+        self.assertEqual(source_section["total"], 3)
+        self.assertFalse(source_section["has_more"])
+
     def test_cookie_source_public_payloads_expose_source_state(self):
         subscriptions._write_cookie_source_inventory_state(
             {

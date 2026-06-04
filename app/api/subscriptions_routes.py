@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.api.config import _get_github_version_status, _public_config_payload, _require_session_auth, _with_version_status
 from app.api.dependencies import store, subscription_manager
@@ -32,8 +32,11 @@ async def save_subscription_settings(payload: SubscriptionSettingsUpdate, reques
 
 
 @router.get("/subscriptions")
-async def get_subscriptions_data():
-    return await run_web_io(subscription_manager.list_payload)
+async def get_subscriptions_data(
+    page: int = Query(1, ge=1, description="订阅来源分页页码"),
+    page_size: int = Query(24, ge=1, le=120, description="每页订阅来源数量"),
+):
+    return await run_web_io(subscription_manager.list_payload, page=page, page_size=page_size)
 
 
 @router.post("/subscriptions")

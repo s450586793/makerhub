@@ -42,6 +42,8 @@ from app.services.task_state import TaskStateStore
 
 
 DEFAULT_SUBSCRIPTION_CRON = "0 */6 * * *"
+DEFAULT_SUBSCRIPTION_SOURCE_PAGE_SIZE = 24
+MAX_SUBSCRIPTION_SOURCE_PAGE_SIZE = 120
 SUBSCRIPTION_MODES = {"author_upload", "collection_models"}
 SUBSCRIPTION_LOG_PATH = LOGS_DIR / "subscriptions.log"
 COOKIE_SOURCE_SYNC_STATE_PATH = STATE_DIR / "cookie_source_sync_state.json"
@@ -74,6 +76,48 @@ def _parse_iso(value: str) -> Optional[datetime]:
     if not raw:
         return None
     return parse_datetime(raw)
+
+
+def _normalize_subscription_source_page(
+    page: int = 1,
+    page_size: int = DEFAULT_SUBSCRIPTION_SOURCE_PAGE_SIZE,
+) -> tuple[int, int]:
+    try:
+        safe_page = int(page or 1)
+    except (TypeError, ValueError):
+        safe_page = 1
+    try:
+        safe_page_size = int(page_size or DEFAULT_SUBSCRIPTION_SOURCE_PAGE_SIZE)
+    except (TypeError, ValueError):
+        safe_page_size = DEFAULT_SUBSCRIPTION_SOURCE_PAGE_SIZE
+    return max(safe_page, 1), max(1, min(safe_page_size, MAX_SUBSCRIPTION_SOURCE_PAGE_SIZE))
+
+
+def _paginate_subscription_source_sections(
+    sections: list[dict],
+    *,
+    page: int = 1,
+    page_size: int = DEFAULT_SUBSCRIPTION_SOURCE_PAGE_SIZE,
+) -> list[dict]:
+    safe_page, safe_page_size = _normalize_subscription_source_page(page, page_size)
+    start = (safe_page - 1) * safe_page_size
+    end = start + safe_page_size
+    paged_sections = []
+    for section in sections or []:
+        if not isinstance(section, dict) or section.get("key") != "subscription_sources":
+            paged_sections.append(section)
+            continue
+        items = list(section.get("items") or [])
+        visible_items = items[start:end]
+        paged = dict(section)
+        paged["items"] = visible_items
+        paged["count"] = len(visible_items)
+        paged["total"] = len(items)
+        paged["page"] = safe_page
+        paged["page_size"] = safe_page_size
+        paged["has_more"] = end < len(items)
+        paged_sections.append(paged)
+    return paged_sections
 
 
 def _append_subscription_log(event: str, **payload: Any) -> None:
@@ -629,7 +673,12 @@ class SubscriptionManager:
             self._thread = threading.Thread(target=self._run_loop, name="makerhub-subscriptions", daemon=True)
             self._thread.start()
 
-    def list_payload(self) -> dict:
+    def list_payload(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = DEFAULT_SUBSCRIPTION_SOURCE_PAGE_SIZE,
+    ) -> dict:
         self._ensure_state_records()
         config = self.store.load()
         state_payload = self.task_store.load_subscriptions_state()
@@ -644,7 +693,11 @@ class SubscriptionManager:
                 "running": len([item for item in items if item["running"]]),
                 "deleted_marked": sum(int(item.get("deleted_count") or 0) for item in items),
             },
-            "sections": overview.get("sections") or [],
+            "sections": _paginate_subscription_source_sections(
+                list(overview.get("sections") or []),
+                page=page,
+                page_size=page_size,
+            ),
             "settings": overview.get("settings") or config.subscription_settings.model_dump(),
         }
 
