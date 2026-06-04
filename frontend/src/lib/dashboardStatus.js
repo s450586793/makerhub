@@ -20,22 +20,51 @@ const BLOCKED_REASON_LABELS = {
   worker_stopped: "Worker 未运行",
 };
 
-export function dashboardStatusAction(item) {
+const MISSING_3MF_RETRY_STATES = new Set([
+  "historical_3mf_issue",
+  "verification_required",
+  "cloudflare",
+  "auth_required",
+]);
+
+export function dashboardStatusActions(item = {}) {
+  const actions = [];
   if (item?.route && item?.action_label) {
-    return {
+    actions.push({
       kind: "route",
       label: item.action_label,
       to: item.route,
-    };
+    });
   }
   if (item?.url && item?.action_label) {
-    return {
+    actions.push({
       kind: "external",
       label: item.action_label,
       href: item.url,
-    };
+    });
   }
-  return null;
+  const checks = Array.isArray(item?.checks) ? item.checks : [];
+  const hasMissing3mfIssue = checks.some((check) => MISSING_3MF_RETRY_STATES.has(String(check?.state || "").trim().toLowerCase()));
+  if (hasMissing3mfIssue) {
+    actions.push({
+      kind: "api",
+      label: "重试 3MF",
+      endpoint: "/api/tasks/missing-3mf/retry-all",
+      method: "POST",
+    });
+  }
+  return actions;
+}
+
+export function dashboardStatusAction(item) {
+  return dashboardStatusActions(item)[0] || null;
+}
+
+export function shouldShowDashboardStatusDetail(item = {}) {
+  if (!item?.detail) {
+    return false;
+  }
+  return !(Array.isArray(item?.checks) && item.checks.length > 0);
 }
 
 export function normalizeRuntimeStatusLabel(status, blockedReason = "") {

@@ -76,7 +76,7 @@
               <span :class="['dashboard-hero__status-dot', item.tone && `is-${item.tone}`]" />
               <span class="dashboard-hero__status-text">{{ item.status }}</span>
             </div>
-            <span v-if="item.detail" class="dashboard-hero__status-detail">{{ item.detail }}</span>
+            <span v-if="shouldShowDashboardStatusDetail(item)" class="dashboard-hero__status-detail">{{ item.detail }}</span>
             <div v-if="item.checks?.length" class="dashboard-hero__check-list">
               <span
                 v-for="check in item.checks"
@@ -88,22 +88,42 @@
                 <strong>{{ check.status }}</strong>
               </span>
             </div>
-            <RouterLink
-              v-if="dashboardStatusAction(item)?.kind === 'route'"
-              class="dashboard-hero__status-action dashboard-hero__status-action--link"
-              :to="dashboardStatusAction(item).to"
-            >
-              {{ dashboardStatusAction(item).label }}
-            </RouterLink>
-            <a
-              v-else-if="dashboardStatusAction(item)?.kind === 'external'"
-              class="dashboard-hero__status-action dashboard-hero__status-action--link"
-              :href="dashboardStatusAction(item).href"
-              target="_blank"
-              rel="noreferrer noopener"
-            >
-              {{ dashboardStatusAction(item).label }}
-            </a>
+            <div v-if="dashboardStatusActions(item).length" class="dashboard-hero__status-actions">
+              <template
+                v-for="action in dashboardStatusActions(item)"
+                :key="`${item.key || item.title}-${action.kind}-${action.label}`"
+              >
+                <RouterLink
+                  v-if="action.kind === 'route'"
+                  class="dashboard-hero__status-action dashboard-hero__status-action--link"
+                  :to="action.to"
+                >
+                  {{ action.label }}
+                </RouterLink>
+                <a
+                  v-else-if="action.kind === 'external'"
+                  class="dashboard-hero__status-action dashboard-hero__status-action--link"
+                  :href="action.href"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                >
+                  {{ action.label }}
+                </a>
+                <button
+                  v-else-if="action.kind === 'api'"
+                  class="dashboard-hero__status-action dashboard-hero__status-action--button"
+                  type="button"
+                  :disabled="isStatusActionBusy(item, action)"
+                  :title="statusActionMessage(item, action) || undefined"
+                  @click="runStatusAction(item, action)"
+                >
+                  {{ isStatusActionBusy(item, action) ? "提交中" : action.label }}
+                </button>
+              </template>
+            </div>
+            <span v-if="statusActionMessage(item)" class="dashboard-hero__status-feedback">
+              {{ statusActionMessage(item) }}
+            </span>
           </component>
         </div>
       </section>
@@ -296,7 +316,11 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
 
 import { apiRequest } from "../lib/api";
-import { dashboardStatusAction, dashboardStatusElementKind } from "../lib/dashboardStatus";
+import {
+  dashboardStatusActions,
+  dashboardStatusElementKind,
+  shouldShowDashboardStatusDetail,
+} from "../lib/dashboardStatus";
 import { formatServerDateTime } from "../lib/helpers";
 import { subscribeStateRefresh } from "../lib/stateEvents";
 
@@ -354,6 +378,7 @@ const payload = ref({
     missing_3mf: [],
   },
 });
+const statusActionState = ref({});
 
 const automation = computed(() => payload.value?.automation_overview || defaultAutomationOverview);
 const latestFailureItem = computed(() => payload.value?.task_summary?.recent_failures?.[0] || null);
@@ -420,6 +445,63 @@ async function load({ initial = false } = {}) {
   } finally {
     loading.value = false;
     requestInFlight = false;
+  }
+}
+
+function statusActionKey(item, action = {}) {
+  return [
+    item?.key || item?.title || "status",
+    action.kind || "",
+    action.endpoint || action.href || action.to || action.label || "",
+  ].join(":");
+}
+
+function statusActionMessage(item, action = {}) {
+  const key = statusActionKey(item, action);
+  if (statusActionState.value[key]?.message) {
+    return statusActionState.value[key].message;
+  }
+  if (action && (action.kind || action.endpoint || action.href || action.to || action.label)) {
+    return "";
+  }
+  const prefix = `${item?.key || item?.title || "status"}:`;
+  const entry = Object.entries(statusActionState.value).find(([entryKey, value]) => (
+    entryKey.startsWith(prefix) && value?.message
+  ));
+  return entry?.[1]?.message || "";
+}
+
+function isStatusActionBusy(item, action) {
+  return Boolean(statusActionState.value[statusActionKey(item, action)]?.busy);
+}
+
+async function runStatusAction(item, action) {
+  if (!action?.endpoint || isStatusActionBusy(item, action)) {
+    return;
+  }
+  const key = statusActionKey(item, action);
+  statusActionState.value = {
+    ...statusActionState.value,
+    [key]: { busy: true, message: "" },
+  };
+  try {
+    const result = await apiRequest(action.endpoint, {
+      method: action.method || "POST",
+      body: action.body || {},
+    });
+    statusActionState.value = {
+      ...statusActionState.value,
+      [key]: { busy: false, message: result?.message || "重试已提交。" },
+    };
+    void load();
+  } catch (error) {
+    statusActionState.value = {
+      ...statusActionState.value,
+      [key]: {
+        busy: false,
+        message: error instanceof Error ? error.message : "操作提交失败。",
+      },
+    };
   }
 }
 

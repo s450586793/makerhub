@@ -3,7 +3,9 @@ import { test } from "node:test";
 
 import {
   dashboardStatusAction,
+  dashboardStatusActions,
   dashboardStatusElementKind,
+  shouldShowDashboardStatusDetail,
   normalizeRuntimeStatusLabel,
   runtimeTaskAction,
 } from "./dashboardStatus.js";
@@ -40,6 +42,19 @@ test("historical 3MF source health issue opens the platform homepage", () => {
     label: "访问主页",
     href: "https://makerworld.com",
   });
+  assert.deepEqual(dashboardStatusActions(card), [
+    {
+      kind: "external",
+      label: "访问主页",
+      href: "https://makerworld.com",
+    },
+    {
+      kind: "api",
+      label: "重试 3MF",
+      endpoint: "/api/tasks/missing-3mf/retry-all",
+      method: "POST",
+    },
+  ]);
 });
 
 test("verification status card opens the platform homepage", () => {
@@ -56,6 +71,30 @@ test("verification status card opens the platform homepage", () => {
     label: "访问主页",
     href: "https://makerworld.com",
   });
+  assert.deepEqual(dashboardStatusActions(card), [
+    {
+      kind: "external",
+      label: "访问主页",
+      href: "https://makerworld.com",
+    },
+    {
+      kind: "api",
+      label: "重试 3MF",
+      endpoint: "/api/tasks/missing-3mf/retry-all",
+      method: "POST",
+    },
+  ]);
+});
+
+test("source health cards with checks hide duplicated detail", () => {
+  assert.equal(shouldShowDashboardStatusDetail({
+    detail: "账号连接正常；3MF 下载历史失败待重试。",
+    checks: [{ source: "account" }, { source: "download" }],
+  }), false);
+  assert.equal(shouldShowDashboardStatusDetail({
+    detail: "当前已配置代理地址。",
+    checks: [],
+  }), true);
 });
 
 test("runtime status labels distinguish waiting children and blocked verification", () => {
