@@ -880,7 +880,7 @@ import {
   normalizeBoundedInt,
   normalizeDailyThreeMfLimit,
 } from "../lib/settingsPayloads";
-import { subscribeStateRefresh } from "../lib/stateEvents";
+import { createPageRefreshController } from "../lib/usePageRefresh";
 
 
 const route = useRoute();
@@ -917,7 +917,7 @@ const profileBackfillSubmitting = ref(false);
 const proxySaving = ref(false);
 const accountDialogOpen = ref(false);
 let accountCodeTimer = null;
-let unsubscribeStateRefresh = null;
+let settingsRefreshController = null;
 
 const proxyForm = reactive({
   enabled: false,
@@ -1673,9 +1673,9 @@ async function loadSharedShares(options = {}) {
 
 function clearTimers() {
   clearAccountCodeTimer();
-  if (typeof unsubscribeStateRefresh === "function") {
-    unsubscribeStateRefresh();
-    unsubscribeStateRefresh = null;
+  if (settingsRefreshController) {
+    settingsRefreshController.dispose();
+    settingsRefreshController = null;
   }
 }
 
@@ -2386,10 +2386,11 @@ watch(() => route.query.tab, (value) => {
 });
 
 onMounted(() => {
-  unsubscribeStateRefresh = subscribeStateRefresh(
-    ["system_update", "archive_profile_backfill_status"],
-    refreshSystemPanelFromEvent,
-  );
+  settingsRefreshController = createPageRefreshController({
+    scopes: ["system_update", "archive_profile_backfill_status"],
+    refresh: refreshSystemPanelFromEvent,
+    delayMs: 450,
+  });
   void load();
 });
 onBeforeUnmount(clearTimers);
