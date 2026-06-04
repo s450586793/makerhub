@@ -263,7 +263,7 @@ import CronField from "../components/CronField.vue";
 import { applyConfigPayload } from "../lib/appState";
 import { apiRequest } from "../lib/api";
 import { encodeModelPath, formatServerDateTime } from "../lib/helpers";
-import { subscribeStateRefresh } from "../lib/stateEvents";
+import { createPageRefreshController } from "../lib/usePageRefresh";
 
 
 const HISTORY_PAGE_SIZE = 12;
@@ -285,12 +285,8 @@ const historyFilterOptions = [
   { value: "all", label: "全部" },
   { value: "issues", label: "异常与跳过" },
 ];
-let refreshTimer = null;
-let refreshInFlight = false;
-let refreshPending = false;
+let remoteRefreshController = null;
 let lastRefreshAt = 0;
-let disposed = false;
-let unsubscribeStateRefresh = null;
 
 const recentHistory = computed(() => {
   const items = remoteRefreshState.value?.recent_items;
@@ -446,58 +442,19 @@ function applyHistoryFilter(value) {
   historyVisibleLimit.value = HISTORY_PAGE_SIZE;
 }
 
-function clearRefreshTimer() {
-  if (refreshTimer) {
-    window.clearTimeout(refreshTimer);
-    refreshTimer = null;
+function stopRemoteRefreshController() {
+  if (remoteRefreshController) {
+    remoteRefreshController.dispose();
+    remoteRefreshController = null;
   }
-  refreshPending = false;
 }
 
-function canRefreshVisibleState() {
-  return !disposed && typeof window !== "undefined" && (typeof document === "undefined" || !document.hidden);
-}
-
-function scheduleRefresh() {
-  if (!canRefreshVisibleState()) {
-    return;
-  }
-  if (refreshInFlight) {
-    refreshPending = true;
-    return;
-  }
-  if (refreshTimer) {
-    return;
-  }
+function activeRefreshDelayMs() {
   const intervalMs = remoteRefreshState.value?.running
     ? REMOTE_REFRESH_ACTIVE_REFRESH_MS
     : REMOTE_REFRESH_IDLE_REFRESH_MS;
   const elapsedMs = lastRefreshAt ? Date.now() - lastRefreshAt : intervalMs;
-  const waitMs = Math.max(intervalMs - elapsedMs, 0);
-  refreshTimer = window.setTimeout(() => {
-    refreshTimer = null;
-    void runScheduledRefresh();
-  }, waitMs);
-}
-
-async function runScheduledRefresh() {
-  if (!canRefreshVisibleState()) {
-    return;
-  }
-  if (refreshInFlight) {
-    refreshPending = true;
-    return;
-  }
-  refreshInFlight = true;
-  try {
-    await load({ silent: true });
-  } finally {
-    refreshInFlight = false;
-    if (refreshPending) {
-      refreshPending = false;
-      scheduleRefresh();
-    }
-  }
+  return Math.max(intervalMs - elapsedMs, 0);
 }
 
 async function load({ silent = false } = {}) {
@@ -561,31 +518,18 @@ async function runRemoteRefreshManually() {
   }
 }
 
-function handleVisibilityChange() {
-  if (document.hidden) {
-    clearRefreshTimer();
-    return;
-  }
-  void load({ silent: true });
-}
-
 onMounted(async () => {
-  disposed = false;
-  unsubscribeStateRefresh = subscribeStateRefresh(
-    ["remote_refresh_state"],
-    scheduleRefresh,
-  );
-  document.addEventListener("visibilitychange", handleVisibilityChange);
+  remoteRefreshController = createPageRefreshController({
+    scopes: ["remote_refresh_state"],
+    refresh: () => load({ silent: true }),
+    delayMs: activeRefreshDelayMs,
+    resetExistingTimer: false,
+    refreshOnVisible: true,
+  });
   await load();
 });
 
 onBeforeUnmount(() => {
-  disposed = true;
-  clearRefreshTimer();
-  if (typeof unsubscribeStateRefresh === "function") {
-    unsubscribeStateRefresh();
-    unsubscribeStateRefresh = null;
-  }
-  document.removeEventListener("visibilitychange", handleVisibilityChange);
+  stopRemoteRefreshController();
 });
 </script>

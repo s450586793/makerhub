@@ -7,6 +7,8 @@ export function createPageRefreshController({
   refresh,
   delayMs = 250,
   debounceMs,
+  resetExistingTimer = true,
+  refreshOnVisible = false,
   subscribe = subscribeStateRefresh,
   isHidden = () => typeof document !== "undefined" && document.hidden,
   addVisibilityListener = (handler) => {
@@ -23,6 +25,7 @@ export function createPageRefreshController({
   const scheduler = createPageRefreshScheduler({
     refresh,
     delayMs,
+    resetExistingTimer,
     isHidden,
   });
   const unsubscribe = typeof subscribe === "function" && scopes.length
@@ -31,7 +34,13 @@ export function createPageRefreshController({
         debounceMs: Number.isFinite(Number(debounceMs)) ? Number(debounceMs) : delayMs,
       })
     : null;
-  const handleVisibilityChange = () => scheduler.handleVisible();
+  const handleVisibilityChange = () => {
+    if (refreshOnVisible && !isHidden()) {
+      void scheduler.refreshNow("visibility-resumed");
+      return;
+    }
+    scheduler.handleVisible();
+  };
 
   addVisibilityListener(handleVisibilityChange);
 
@@ -44,6 +53,7 @@ export function createPageRefreshController({
       }
       removeVisibilityListener(handleVisibilityChange);
     },
+    refreshNow: (reason) => scheduler.refreshNow(reason),
     schedule: (reason) => scheduler.schedule(reason),
   };
 }

@@ -61,6 +61,64 @@ test("createPageRefreshScheduler coalesces repeated schedules", () => {
   assert.deepEqual(calls, ["second"]);
 });
 
+test("createPageRefreshScheduler can keep an existing timer while coalescing schedules", () => {
+  const timers = createTimerHarness();
+  const calls = [];
+  const scheduler = createPageRefreshScheduler({
+    refresh: (reason) => calls.push(reason),
+    delayMs: 300,
+    resetExistingTimer: false,
+    isHidden: () => false,
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn,
+  });
+
+  scheduler.schedule("first");
+  scheduler.schedule("second");
+
+  assert.deepEqual(timers.cleared, []);
+  assert.equal(timers.scheduled.length, 1);
+  timers.scheduled[0].fn();
+  assert.deepEqual(calls, ["second"]);
+});
+
+test("createPageRefreshScheduler supports dynamic delay functions", () => {
+  const timers = createTimerHarness();
+  let active = true;
+  const scheduler = createPageRefreshScheduler({
+    refresh: () => {},
+    delayMs: () => (active ? 1200 : 300),
+    isHidden: () => false,
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn,
+  });
+
+  scheduler.schedule("active");
+  active = false;
+  scheduler.schedule("idle");
+
+  assert.equal(timers.scheduled[0].ms, 1200);
+  assert.equal(timers.scheduled[1].ms, 300);
+});
+
+test("createPageRefreshScheduler can refresh immediately and clear pending timers", async () => {
+  const timers = createTimerHarness();
+  const calls = [];
+  const scheduler = createPageRefreshScheduler({
+    refresh: (reason) => calls.push(reason),
+    delayMs: 300,
+    isHidden: () => false,
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn,
+  });
+
+  scheduler.schedule("state-event");
+  await scheduler.refreshNow("visibility-resumed");
+
+  assert.deepEqual(timers.cleared, [1]);
+  assert.deepEqual(calls, ["visibility-resumed"]);
+});
+
 test("createPageRefreshScheduler defers while hidden and refreshes when visible", () => {
   const timers = createTimerHarness();
   const calls = [];

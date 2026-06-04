@@ -2,6 +2,7 @@ export function createPageRefreshScheduler({
   refresh,
   delayMs = 250,
   hiddenResumeReason = "visibility-resumed",
+  resetExistingTimer = true,
   isHidden = () => false,
   setTimeoutFn = globalThis.setTimeout,
   clearTimeoutFn = globalThis.clearTimeout,
@@ -17,6 +18,11 @@ export function createPageRefreshScheduler({
       clearTimeoutFn(timer);
       timer = 0;
     }
+  }
+
+  function currentDelayMs() {
+    const rawDelay = typeof delayMs === "function" ? delayMs() : delayMs;
+    return Math.max(Number(rawDelay) || 0, 0);
   }
 
   async function run(reason) {
@@ -61,13 +67,16 @@ export function createPageRefreshScheduler({
       return;
     }
     pendingReason = reason;
+    if (timer && !resetExistingTimer) {
+      return;
+    }
     clearTimer();
     timer = setTimeoutFn(() => {
       timer = 0;
       const nextReason = pendingReason || reason;
       pendingReason = "";
       void run(nextReason);
-    }, Math.max(Number(delayMs) || 0, 0));
+    }, currentDelayMs());
   }
 
   function handleVisible() {
@@ -76,6 +85,13 @@ export function createPageRefreshScheduler({
     }
     pendingWhenVisible = false;
     schedule(hiddenResumeReason);
+  }
+
+  function refreshNow(reason = "manual-refresh") {
+    clearTimer();
+    pendingReason = "";
+    pendingWhenVisible = false;
+    return run(reason);
   }
 
   function dispose() {
@@ -89,6 +105,7 @@ export function createPageRefreshScheduler({
     clear: clearTimer,
     dispose,
     handleVisible,
+    refreshNow,
     schedule,
   };
 }

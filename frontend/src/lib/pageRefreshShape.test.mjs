@@ -4,6 +4,7 @@ import { test } from "node:test";
 
 const logsPageSource = readFileSync(new URL("../pages/LogsPage.vue", import.meta.url), "utf8");
 const tasksPageSource = readFileSync(new URL("../pages/TasksPage.vue", import.meta.url), "utf8");
+const remoteRefreshPageSource = readFileSync(new URL("../pages/RemoteRefreshPage.vue", import.meta.url), "utf8");
 
 test("LogsPage uses shared page refresh controller for auto tracking", () => {
   assert.match(logsPageSource, /createPageRefreshController/);
@@ -15,4 +16,10 @@ test("TasksPage uses shared page refresh controller for state events", () => {
   assert.match(tasksPageSource, /createPageRefreshController/);
   assert.doesNotMatch(tasksPageSource, /function refreshFromStateEvent/);
   assert.match(tasksPageSource, /tasksRefreshController/);
+});
+
+test("RemoteRefreshPage uses shared page refresh controller for throttled refresh", () => {
+  assert.match(remoteRefreshPageSource, /createPageRefreshController/);
+  assert.doesNotMatch(remoteRefreshPageSource, /function scheduleRefresh/);
+  assert.match(remoteRefreshPageSource, /remoteRefreshController/);
 });
