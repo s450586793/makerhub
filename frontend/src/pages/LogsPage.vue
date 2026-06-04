@@ -176,6 +176,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { apiRequest } from "../lib/api";
+import { createPageRefreshController } from "../lib/usePageRefresh";
 
 
 const LEVEL_DEFINITIONS = [
@@ -204,7 +205,7 @@ const status = ref("");
 const loading = ref(false);
 const autoRefresh = ref(false);
 
-let refreshTimer = null;
+let logRefreshController = null;
 let searchTimer = null;
 let applyingRouteQuery = false;
 
@@ -343,14 +344,31 @@ function toggleAutoRefresh() {
   syncAutoRefresh();
 }
 
+async function loadAndScheduleNextAutoRefresh() {
+  await load();
+  if (autoRefresh.value && logRefreshController) {
+    logRefreshController.schedule("auto-refresh-next");
+  }
+}
+
+function stopLogRefreshController() {
+  if (logRefreshController) {
+    logRefreshController.dispose();
+    logRefreshController = null;
+  }
+}
+
 function syncAutoRefresh() {
-  if (refreshTimer) {
-    window.clearInterval(refreshTimer);
-    refreshTimer = null;
+  stopLogRefreshController();
+  if (!autoRefresh.value) {
+    return;
   }
-  if (autoRefresh.value) {
-    refreshTimer = window.setInterval(load, 5000);
-  }
+  logRefreshController = createPageRefreshController({
+    refresh: loadAndScheduleNextAutoRefresh,
+    delayMs: 5000,
+    scopes: ["business_logs"],
+  });
+  logRefreshController.schedule("auto-refresh-started");
 }
 
 watch([selectedFile, limit], () => {
@@ -395,9 +413,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  if (refreshTimer) {
-    window.clearInterval(refreshTimer);
-  }
+  stopLogRefreshController();
   if (searchTimer) {
     window.clearTimeout(searchTimer);
   }
