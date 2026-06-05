@@ -469,7 +469,7 @@ class BatchDiscoveryTest(unittest.TestCase):
         self.assertEqual(result["items"][0]["url"], "https://makerworld.com.cn/zh/@user_1751098586/upload")
         self.assertTrue(any(call["service_name"] == "search-service" for call in calls))
 
-    def test_resolve_author_uid_accepts_user_uid_handle(self):
+    def test_resolve_author_uid_uses_synthetic_user_handle_number(self):
         with patch.object(batch_discovery, "_api_get_json") as api_get_json, \
                 patch.object(batch_discovery, "_append_discovery_debug") as debug_log:
             uid = batch_discovery._resolve_author_uid(
@@ -479,9 +479,49 @@ class BatchDiscoveryTest(unittest.TestCase):
                 "user_2024907479",
             )
 
-        self.assertEqual(uid, "")
+        self.assertEqual(uid, "2024907479")
         api_get_json.assert_not_called()
-        debug_log.assert_called_with("author_uid_missing", handle="user_2024907479", reason="synthetic_uid_handle")
+        debug_log.assert_called_with(
+            "author_uid_resolved",
+            handle="user_2024907479",
+            uid="2024907479",
+            mode="synthetic_uid_handle",
+        )
+
+    def test_discover_author_upload_api_supports_synthetic_user_handle_urls(self):
+        calls = []
+
+        def fake_fetch_author_hits_payload(_session, **kwargs):
+            calls.append(kwargs)
+            return (
+                {"ok": True},
+                {
+                    "hits": [
+                        {
+                            "designId": "MW_1",
+                            "title": "Model One",
+                            "url": "https://makerworld.com/zh/models/1",
+                        }
+                    ],
+                    "total": 1,
+                    "hasNext": False,
+                },
+                ["https://makerworld.com/zh/models/1"],
+            )
+
+        with patch.object(batch_discovery, "_fetch_author_hits_payload", side_effect=fake_fetch_author_hits_payload), \
+                patch.object(batch_discovery, "_append_discovery_debug"):
+            result = batch_discovery._discover_author_upload_api(
+                requests.Session(),
+                "https://makerworld.com/zh/@user_2407765850/upload",
+                "token=ok",
+                max_pages=2,
+            )
+
+        self.assertEqual(result["mode"], "author_upload_api")
+        self.assertEqual(result["expected_total"], 1)
+        self.assertEqual(result["items"], ["https://makerworld.com/zh/models/1"])
+        self.assertEqual(calls[0]["uid"], "2407765850")
 
     def test_default_favorites_subscription_source_uses_account_handle(self):
         source = batch_discovery.default_favorites_subscription_source(

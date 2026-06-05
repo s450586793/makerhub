@@ -70,7 +70,7 @@
         </label>
         <label class="filter-field">
           <select v-model="filters.since" aria-label="时间范围" @change="applyFilters">
-            <option value="">不限时间</option>
+            <option :value="ALL_TIME_VALUE">不限时间</option>
             <option v-for="option in sinceOptions" :key="option.value" :value="option.value">
               {{ option.label }}
             </option>
@@ -214,6 +214,8 @@ import { createPageRefreshController } from "../lib/usePageRefresh";
 
 const DEFAULT_FILE = "business.log";
 const DEFAULT_LIMIT = 160;
+const DEFAULT_SINCE = "6h";
+const ALL_TIME_VALUE = "all";
 const LEVEL_LABELS = {
   debug: "DEBUG",
   info: "INFO",
@@ -222,12 +224,13 @@ const LEVEL_LABELS = {
   success: "SUCCESS",
 };
 const LOG_PRESETS = [
-  { key: "errors", label: "最近错误", level: "error" },
-  { key: "archive", label: "归档", category: "archive" },
-  { key: "subscription", label: "订阅", category: "subscription" },
-  { key: "account", label: "账号/Cookie", q: "cookie" },
-  { key: "organizer", label: "本地导入", category: "organizer" },
-  { key: "update", label: "系统更新", category: "self_update" },
+  { key: "errors", label: "近 6 小时错误", level: "error", since: DEFAULT_SINCE },
+  { key: "archive", label: "近 6 小时归档", category: "archive", since: DEFAULT_SINCE },
+  { key: "subscription", label: "近 6 小时订阅", category: "subscription", since: DEFAULT_SINCE },
+  { key: "account", label: "近 6 小时账号/Cookie", q: "cookie", since: DEFAULT_SINCE },
+  { key: "organizer", label: "近 6 小时本地导入", category: "organizer", since: DEFAULT_SINCE },
+  { key: "update", label: "近 6 小时系统更新", category: "self_update", since: DEFAULT_SINCE },
+  { key: "history_errors", label: "历史错误", level: "error", since: ALL_TIME_VALUE },
 ];
 const SINCE_PRESETS = [
   { value: "15m", label: "最近 15 分钟", ms: 15 * 60 * 1000 },
@@ -253,7 +256,7 @@ const filters = reactive({
   level: "",
   category: "",
   event: "",
-  since: "",
+  since: DEFAULT_SINCE,
   limit: DEFAULT_LIMIT,
 });
 const selectedEntry = ref(null);
@@ -294,7 +297,7 @@ const activePresetKey = computed(() => {
   const normalized = normalizeFiltersForCompare(filters);
   const preset = LOG_PRESETS.find((item) => {
     const candidate = normalizeFiltersForCompare({ ...emptyPresetFilters(), ...item });
-    return ["q", "level", "category", "event"].every((key) => normalized[key] === candidate[key]);
+    return ["q", "level", "category", "event", "since"].every((key) => normalized[key] === candidate[key]);
   });
   return preset?.key || "";
 });
@@ -322,7 +325,7 @@ const loadMoreObserver = createAutoLoadObserver({
 });
 
 function emptyPresetFilters() {
-  return { q: "", level: "", category: "", event: "" };
+  return { q: "", level: "", category: "", event: "", since: DEFAULT_SINCE };
 }
 
 function normalizeFiltersForCompare(source) {
@@ -331,6 +334,7 @@ function normalizeFiltersForCompare(source) {
     level: String(source.level || "").trim(),
     category: String(source.category || "").trim(),
     event: String(source.event || "").trim(),
+    since: String(source.since || DEFAULT_SINCE).trim(),
   };
 }
 
@@ -366,6 +370,9 @@ function compactTime(value) {
 }
 
 function resolveSinceValue(value) {
+  if (value === ALL_TIME_VALUE) {
+    return "";
+  }
   const preset = SINCE_PRESETS.find((item) => item.value === value);
   if (!preset) {
     return String(value || "").trim();
@@ -380,7 +387,8 @@ function syncFiltersFromRoute() {
   filters.level = typeof route.query.level === "string" ? route.query.level : "";
   filters.category = typeof route.query.category === "string" ? route.query.category : "";
   filters.event = typeof route.query.event === "string" ? route.query.event : "";
-  filters.since = typeof route.query.since === "string" ? route.query.since : "";
+  const routeSince = typeof route.query.since === "string" ? route.query.since : DEFAULT_SINCE;
+  filters.since = routeSince || DEFAULT_SINCE;
   const routeLimit = Number(route.query.limit || DEFAULT_LIMIT);
   filters.limit = Number.isFinite(routeLimit) ? Math.min(Math.max(Math.trunc(routeLimit), 1), 2000) : DEFAULT_LIMIT;
   applyingRouteQuery = false;
@@ -394,7 +402,7 @@ function buildQuery(cursor = "") {
   if (filters.level) query.set("level", filters.level);
   if (filters.category) query.set("category", filters.category);
   if (filters.event) query.set("event", filters.event);
-  if (filters.since) query.set("since", resolveSinceValue(filters.since));
+  if (filters.since && filters.since !== ALL_TIME_VALUE) query.set("since", resolveSinceValue(filters.since));
   if (cursor) query.set("cursor", cursor);
   return query;
 }
@@ -406,7 +414,7 @@ function buildRouteQuery() {
   if (filters.level) query.level = filters.level;
   if (filters.category) query.category = filters.category;
   if (filters.event) query.event = filters.event;
-  if (filters.since) query.since = filters.since;
+  if (filters.since && filters.since !== DEFAULT_SINCE) query.since = filters.since;
   if (Number(filters.limit || DEFAULT_LIMIT) !== DEFAULT_LIMIT) query.limit = String(filters.limit);
   return query;
 }
@@ -474,7 +482,7 @@ function resetFilters() {
   filters.level = "";
   filters.category = "";
   filters.event = "";
-  filters.since = "";
+  filters.since = DEFAULT_SINCE;
   filters.limit = DEFAULT_LIMIT;
   selectedEntry.value = null;
   if (route.fullPath === "/logs") {
@@ -489,6 +497,7 @@ function applyPreset(preset) {
   filters.level = preset.level || "";
   filters.category = preset.category || "";
   filters.event = preset.event || "";
+  filters.since = preset.since || DEFAULT_SINCE;
   applyFilters();
 }
 

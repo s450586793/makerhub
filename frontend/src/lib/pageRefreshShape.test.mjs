@@ -14,6 +14,14 @@ test("LogsPage uses shared page refresh controller for auto tracking", () => {
   assert.match(logsPageSource, /logRefreshController/);
 });
 
+test("LogsPage defaults troubleshooting filters to a recent time window", () => {
+  assert.match(logsPageSource, /const DEFAULT_SINCE = "6h"/);
+  assert.match(logsPageSource, /label: "近 6 小时错误", level: "error", since: DEFAULT_SINCE/);
+  assert.match(logsPageSource, /label: "历史错误", level: "error", since: ALL_TIME_VALUE/);
+  assert.match(logsPageSource, /since: DEFAULT_SINCE/);
+  assert.match(logsPageSource, /filters\.since !== DEFAULT_SINCE/);
+});
+
 test("TasksPage uses shared page refresh controller for state events", () => {
   assert.match(tasksPageSource, /createPageRefreshController/);
   assert.doesNotMatch(tasksPageSource, /function refreshFromStateEvent/);

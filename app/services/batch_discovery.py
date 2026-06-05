@@ -2130,6 +2130,10 @@ def _resolve_author_uid_from_sample_models(
 
 def _resolve_author_uid(session: requests.Session, source_url: str, raw_cookie: str, handle: str) -> str:
     if _is_synthetic_user_handle(handle):
+        uid = _coerce_numeric_string(str(handle or "").strip().lstrip("@").removeprefix("user_"))
+        if uid:
+            _append_discovery_debug("author_uid_resolved", handle=handle, uid=uid, mode="synthetic_uid_handle")
+            return uid
         _append_discovery_debug("author_uid_missing", handle=handle, reason="synthetic_uid_handle")
         return ""
 
