@@ -311,8 +311,11 @@ def _parse_log_line(line: str, source: str) -> dict[str, Any]:
 
 def _log_entry_from_database_row(row: dict[str, Any]) -> dict[str, Any]:
     payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    created_at = row.get("created_at")
     return {
+        "id": str(row.get("id") or ""),
         "time": str(row.get("time_text") or ""),
+        "created_at": created_at.isoformat(timespec="seconds") if hasattr(created_at, "isoformat") else str(created_at or ""),
         "level": str(row.get("level") or "info"),
         "category": str(row.get("category") or str(row.get("file_name") or "").replace(".log", "")),
         "event": str(row.get("event") or "event"),
@@ -322,59 +325,201 @@ def _log_entry_from_database_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _read_database_log_entries(file_name: str, *, limit: int, query: str = "") -> list[dict[str, Any]]:
-    if not _database_logs_enabled():
+def _split_filter_values(value: str | list[str] | tuple[str, ...] | None) -> list[str]:
+    if value is None:
         return []
-    safe_file_name = _safe_log_name(file_name)
+    raw_items = value if isinstance(value, (list, tuple)) else str(value or "").split(",")
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        text = str(item or "").strip()
+        if not text or text.lower() == "all" or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _safe_cursor_value(value: str | int | None) -> int:
+    try:
+        return max(int(str(value or "0").strip() or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _build_log_where_clause(
+    file_name: str,
+    *,
+    query: str = "",
+    level: str | list[str] | tuple[str, ...] | None = "",
+    category: str | list[str] | tuple[str, ...] | None = "",
+    event: str | list[str] | tuple[str, ...] | None = "",
+    since: str = "",
+    cursor: str | int | None = "",
+) -> tuple[str, list[Any]]:
+    conditions = ["file_name = %s"]
+    params: list[Any] = [_safe_log_name(file_name)]
+
     search = str(query or "").strip()
+    if search:
+        search_like = f"%{search}%"
+        conditions.append("(raw ILIKE %s OR message ILIKE %s OR event ILIKE %s OR category ILIKE %s)")
+        params.extend([search_like, search_like, search_like, search_like])
+
+    for column, raw_values in (
+        ("level", level),
+        ("category", category),
+        ("event", event),
+    ):
+        values = _split_filter_values(raw_values)
+        if values:
+            placeholders = ", ".join(["%s"] * len(values))
+            conditions.append(f"{column} IN ({placeholders})")
+            params.extend(values)
+
+    since_text = str(since or "").strip()
+    if since_text:
+        conditions.append("created_at >= %s::timestamptz")
+        params.append(since_text)
+
+    cursor_value = _safe_cursor_value(cursor)
+    if cursor_value:
+        conditions.append("id < %s")
+        params.append(cursor_value)
+
+    return " AND ".join(conditions), params
+
+
+def _read_database_log_entries(
+    file_name: str,
+    *,
+    limit: int,
+    query: str = "",
+    level: str | list[str] | tuple[str, ...] | None = "",
+    category: str | list[str] | tuple[str, ...] | None = "",
+    event: str | list[str] | tuple[str, ...] | None = "",
+    since: str = "",
+    cursor: str | int | None = "",
+) -> tuple[list[dict[str, Any]], bool, str]:
+    if not _database_logs_enabled():
+        return [], False, ""
+    safe_file_name = _safe_log_name(file_name)
+    safe_limit = min(max(int(limit or 300), 1), 2000)
+    where_clause, params = _build_log_where_clause(
+        safe_file_name,
+        query=query,
+        level=level,
+        category=category,
+        event=event,
+        since=since,
+        cursor=cursor,
+    )
+    params.append(safe_limit + 1)
     try:
         if not _ensure_database_logs_ready():
-            return []
+            return [], False, ""
         with database_connection() as connection:
-            if search:
-                rows = connection.execute(
-                    """
-                    SELECT file_name, time_text, level, category, event, message, payload, raw
-                    FROM makerhub_logs
-                    WHERE file_name = %s
-                      AND (
-                        raw ILIKE %s
-                        OR message ILIKE %s
-                        OR event ILIKE %s
-                        OR category ILIKE %s
-                      )
-                    ORDER BY created_at DESC, id DESC
-                    LIMIT %s
-                    """,
-                    (safe_file_name, f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%", int(limit)),
-                ).fetchall()
-            else:
-                rows = connection.execute(
-                    """
-                    SELECT file_name, time_text, level, category, event, message, payload, raw
-                    FROM makerhub_logs
-                    WHERE file_name = %s
-                    ORDER BY created_at DESC, id DESC
-                    LIMIT %s
-                    """,
-                    (safe_file_name, int(limit)),
-                ).fetchall()
+            rows = connection.execute(
+                f"""
+                SELECT id, file_name, time_text, level, category, event, message, payload, raw, created_at
+                FROM makerhub_logs
+                WHERE {where_clause}
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            ).fetchall()
     except Exception:
-        return []
-    return [_log_entry_from_database_row(row) for row in rows or [] if isinstance(row, dict)]
+        return [], False, ""
+    entries = [_log_entry_from_database_row(row) for row in rows or [] if isinstance(row, dict)]
+    has_more = len(entries) > safe_limit
+    visible_entries = entries[:safe_limit]
+    next_cursor = visible_entries[-1].get("id", "") if has_more and visible_entries else ""
+    return visible_entries, has_more, str(next_cursor or "")
 
 
-def read_log_entries(file_name: str = BUSINESS_LOG_NAME, *, limit: int = 300, query: str = "") -> dict[str, Any]:
+def _read_database_log_facets(file_name: str, *, query: str = "", since: str = "") -> dict[str, list[dict[str, Any]]]:
+    if not _database_logs_enabled():
+        return {"levels": [], "categories": [], "events": []}
+    safe_file_name = _safe_log_name(file_name)
+    base_where, base_params = _build_log_where_clause(safe_file_name, query=query, since=since)
+    facets = {
+        "levels": ("level", 20),
+        "categories": ("category", 60),
+        "events": ("event", 80),
+    }
+    result: dict[str, list[dict[str, Any]]] = {}
+    try:
+        if not _ensure_database_logs_ready():
+            return {"levels": [], "categories": [], "events": []}
+        with database_connection() as connection:
+            for key, (column, limit) in facets.items():
+                rows = connection.execute(
+                    f"""
+                    SELECT {column} AS value, count(*) AS count
+                    FROM makerhub_logs
+                    WHERE {base_where}
+                    GROUP BY {column}
+                    ORDER BY count DESC, {column} ASC
+                    LIMIT %s
+                    """,
+                    tuple([*base_params, limit]),
+                ).fetchall()
+                result[key] = [
+                    {"value": str(row.get("value") or ""), "count": int(row.get("count") or 0)}
+                    for row in rows or []
+                    if isinstance(row, dict) and str(row.get("value") or "").strip()
+                ]
+    except Exception:
+        return {"levels": [], "categories": [], "events": []}
+    return {
+        "levels": result.get("levels", []),
+        "categories": result.get("categories", []),
+        "events": result.get("events", []),
+    }
+
+
+def read_log_entries(
+    file_name: str = BUSINESS_LOG_NAME,
+    *,
+    limit: int = 300,
+    query: str = "",
+    level: str | list[str] | tuple[str, ...] | None = "",
+    category: str | list[str] | tuple[str, ...] | None = "",
+    event: str | list[str] | tuple[str, ...] | None = "",
+    since: str = "",
+    cursor: str | int | None = "",
+) -> dict[str, Any]:
     safe_limit = min(max(int(limit or 300), 1), 2000)
     safe_file_name = _safe_log_name(file_name)
     database_files = _database_log_file_items()
-    database_entries = _read_database_log_entries(safe_file_name, limit=safe_limit, query=query)
+    database_entries, has_more, next_cursor = _read_database_log_entries(
+        safe_file_name,
+        limit=safe_limit,
+        query=query,
+        level=level,
+        category=category,
+        event=event,
+        since=since,
+        cursor=cursor,
+    )
+    facets = _read_database_log_facets(safe_file_name, query=query, since=since)
     return {
         "file": safe_file_name,
         "entries": database_entries,
         "count": len(database_entries),
         "limit": safe_limit,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
         "query": query,
+        "filters": {
+            "level": ",".join(_split_filter_values(level)),
+            "category": ",".join(_split_filter_values(category)),
+            "event": ",".join(_split_filter_values(event)),
+            "since": str(since or "").strip(),
+            "cursor": str(cursor or "").strip(),
+        },
+        "facets": facets,
         "files": list(database_files.values()),
         "source": "database" if _database_logs_enabled() else "database_unavailable",
     }

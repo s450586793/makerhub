@@ -105,23 +105,126 @@ class BusinessLogsTest(unittest.TestCase):
         ), patch.object(
             business_logs,
             "_read_database_log_entries",
-            return_value=[
-                {
-                    "time": "2026-05-22T10:00:00+08:00",
-                    "level": "info",
-                    "category": "settings",
-                    "event": "saved",
-                    "message": "ok",
-                    "payload": {},
-                    "raw": "{}",
-                }
-            ],
+            return_value=(
+                [
+                    {
+                        "time": "2026-05-22T10:00:00+08:00",
+                        "level": "info",
+                        "category": "settings",
+                        "event": "saved",
+                        "message": "ok",
+                        "payload": {},
+                        "raw": "{}",
+                    }
+                ],
+                False,
+                "",
+            ),
+        ), patch.object(
+            business_logs,
+            "_read_database_log_facets",
+            return_value={"levels": [], "categories": [], "events": []},
         ), patch.object(business_logs, "_database_logs_enabled", return_value=True):
             payload = business_logs.read_log_entries("business.log")
 
         self.assertEqual(payload["source"], "database")
         self.assertEqual(payload["entries"][0]["event"], "saved")
         self.assertEqual(payload["files"][0]["database"], True)
+
+    def test_read_log_entries_applies_database_filters_and_cursor(self):
+        calls = []
+
+        class FakeResult:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+        class FakeConnection:
+            def execute(self, sql, params=None):
+                calls.append((sql, params))
+                if "FROM makerhub_logs" in sql and "GROUP BY" not in sql:
+                    return FakeResult(
+                        [
+                            {
+                                "id": 91,
+                                "file_name": "business.log",
+                                "time_text": "2026-06-05T10:00:00+08:00",
+                                "level": "error",
+                                "category": "archive",
+                                "event": "download_failed",
+                                "message": "first",
+                                "payload": {"model_id": "1"},
+                                "raw": "{}",
+                                "created_at": "2026-06-05T10:00:00+08:00",
+                            },
+                            {
+                                "id": 77,
+                                "file_name": "business.log",
+                                "time_text": "2026-06-05T09:00:00+08:00",
+                                "level": "error",
+                                "category": "archive",
+                                "event": "download_failed",
+                                "message": "second",
+                                "payload": {"model_id": "2"},
+                                "raw": "{}",
+                                "created_at": "2026-06-05T09:00:00+08:00",
+                            },
+                            {
+                                "id": 66,
+                                "file_name": "business.log",
+                                "time_text": "2026-06-05T08:00:00+08:00",
+                                "level": "error",
+                                "category": "archive",
+                                "event": "download_failed",
+                                "message": "third",
+                                "payload": {"model_id": "3"},
+                                "raw": "{}",
+                                "created_at": "2026-06-05T08:00:00+08:00",
+                            },
+                        ]
+                    )
+                return FakeResult([])
+
+        class FakeContext:
+            def __enter__(self):
+                return FakeConnection()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        with patch.object(business_logs, "_database_logs_enabled", return_value=True), \
+                patch.object(business_logs, "_ensure_database_logs_ready", return_value=True), \
+                patch.object(business_logs, "_database_log_file_items", return_value={}), \
+                patch.object(business_logs, "_read_database_log_facets", return_value={"levels": [], "categories": [], "events": []}), \
+                patch.object(business_logs, "database_connection", return_value=FakeContext()):
+            payload = business_logs.read_log_entries(
+                "business.log",
+                limit=2,
+                query="failed",
+                level="error",
+                category="archive",
+                event="download_failed",
+                since="2026-06-05T00:00:00+08:00",
+                cursor=120,
+            )
+
+        query_sql, query_params = calls[0]
+        self.assertIn("level IN", query_sql)
+        self.assertIn("category IN", query_sql)
+        self.assertIn("event IN", query_sql)
+        self.assertIn("created_at >= %s::timestamptz", query_sql)
+        self.assertIn("id < %s", query_sql)
+        self.assertIn("failed", query_params[1])
+        self.assertIn("error", query_params)
+        self.assertIn("archive", query_params)
+        self.assertIn("download_failed", query_params)
+        self.assertIn(120, query_params)
+        self.assertEqual(len(payload["entries"]), 2)
+        self.assertTrue(payload["has_more"])
+        self.assertEqual(payload["next_cursor"], "77")
+        self.assertEqual(payload["filters"]["level"], "error")
 
 
 if __name__ == "__main__":

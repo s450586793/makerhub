@@ -1,268 +1,338 @@
 <template>
   <section class="logs-workbench">
-    <section class="surface surface--filters logs-hero app-page-toolbar">
-      <div class="logs-hero__top">
-        <div class="logs-hero__title">
-          <span class="logs-hero__icon">LOG</span>
-          <div>
-            <span class="eyebrow">日志中心</span>
-            <h1>服务日志</h1>
-            <p>统一查看归档、订阅、本地整理、缺失 3MF 和代理测试等业务输出。</p>
-          </div>
+    <section class="surface surface--filters logs-toolbar app-page-toolbar">
+      <div class="app-page-toolbar__copy">
+        <span class="eyebrow">日志中心</span>
+        <div class="app-page-toolbar__title-row">
+          <h1>排障日志</h1>
+          <span :class="['count-pill', autoRefresh ? 'count-pill--ok' : 'count-pill--warn']">
+            {{ autoRefresh ? "自动追踪" : "手动刷新" }}
+          </span>
         </div>
-
-        <div class="logs-hero__actions">
-          <button class="button button-secondary" type="button" :disabled="loading" @click="load">
-            {{ loading ? "刷新中..." : "立即刷新" }}
-          </button>
-          <button
-            :class="['button', autoRefresh ? 'button-primary' : 'button-secondary']"
-            type="button"
-            @click="toggleAutoRefresh"
-          >
-            {{ autoRefresh ? "关闭自动追踪" : "开启自动追踪" }}
-          </button>
-        </div>
+        <p class="logs-toolbar__status">{{ status || "按模块、级别、事件和关键词快速定位问题。" }}</p>
       </div>
 
-      <div class="logs-hero__chips">
-        <span class="count-pill logs-hero__chip">总计 {{ entries.length }} 行</span>
-        <span class="count-pill logs-hero__chip">当前已加载 {{ filteredEntries.length }} 行</span>
-        <span :class="['count-pill', 'logs-hero__chip', autoRefresh ? 'count-pill--ok' : 'count-pill--warn']">
-          {{ autoRefresh ? "自动追踪已开启" : "自动追踪已关闭" }}
-        </span>
-        <span class="count-pill logs-hero__chip">最近时间 {{ latestTimeText }}</span>
+      <div class="logs-toolbar__actions">
+        <button class="button button-secondary" type="button" :disabled="loading" @click="reload">
+          {{ loading ? "刷新中..." : "刷新" }}
+        </button>
+        <button
+          :class="['button', autoRefresh ? 'button-primary' : 'button-secondary']"
+          type="button"
+          @click="toggleAutoRefresh"
+        >
+          {{ autoRefresh ? "停止追踪" : "实时追踪" }}
+        </button>
       </div>
-
-      <p class="logs-hero__status">{{ status || "选择日志文件后即可查看最新业务输出。" }}</p>
     </section>
 
-    <section class="logs-layout">
-      <aside class="surface logs-sidebar">
-        <section class="logs-sidebar__section">
-          <div class="logs-sidebar__head">
-            <span class="eyebrow">来源</span>
-            <strong>日志文件</strong>
+    <section class="surface logs-console">
+      <div class="logs-console__filters">
+        <label class="filter-field filter-field--wide">
+          <input
+            v-model.trim="filters.q"
+            type="text"
+            placeholder="搜索消息、事件、payload"
+            aria-label="搜索日志"
+            @keydown.enter.prevent="applyFilters"
+          >
+        </label>
+        <label class="filter-field">
+          <select v-model="filters.file" aria-label="日志文件" @change="applyFilters">
+            <option v-for="file in fileOptions" :key="file.name" :value="file.name">
+              {{ file.name }}{{ file.primary ? "（业务）" : "" }}
+            </option>
+          </select>
+        </label>
+        <label class="filter-field">
+          <select v-model="filters.level" aria-label="日志级别" @change="applyFilters">
+            <option value="">全部级别</option>
+            <option v-for="level in levelOptions" :key="level.value" :value="level.value">
+              {{ level.label }}{{ level.count ? ` (${level.count})` : "" }}
+            </option>
+          </select>
+        </label>
+        <label class="filter-field">
+          <select v-model="filters.category" aria-label="日志模块" @change="applyFilters">
+            <option value="">全部模块</option>
+            <option v-for="category in categoryOptions" :key="category.value" :value="category.value">
+              {{ category.value }}{{ category.count ? ` (${category.count})` : "" }}
+            </option>
+          </select>
+        </label>
+        <label class="filter-field">
+          <select v-model="filters.event" aria-label="日志事件" @change="applyFilters">
+            <option value="">全部事件</option>
+            <option v-for="event in eventOptions" :key="event.value" :value="event.value">
+              {{ event.value }}{{ event.count ? ` (${event.count})` : "" }}
+            </option>
+          </select>
+        </label>
+        <label class="filter-field">
+          <select v-model="filters.since" aria-label="时间范围" @change="applyFilters">
+            <option value="">不限时间</option>
+            <option v-for="option in sinceOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+        </label>
+        <label class="filter-field">
+          <select v-model.number="filters.limit" aria-label="每页条数" @change="applyFilters">
+            <option :value="80">每页 80 条</option>
+            <option :value="160">每页 160 条</option>
+            <option :value="300">每页 300 条</option>
+          </select>
+        </label>
+        <div class="filter-actions logs-console__filter-actions">
+          <button class="button button-primary" type="button" :disabled="loading" @click="applyFilters">查询</button>
+          <button class="button button-secondary" type="button" @click="resetFilters">重置</button>
+        </div>
+      </div>
+
+      <div class="logs-quickbar" aria-label="日志快捷筛选">
+        <button
+          v-for="preset in logPresets"
+          :key="preset.key"
+          :class="['button button-small', activePresetKey === preset.key ? 'button-primary' : 'button-secondary']"
+          type="button"
+          @click="applyPreset(preset)"
+        >
+          {{ preset.label }}
+        </button>
+      </div>
+
+      <div class="logs-console__summary">
+        <span class="count-pill">{{ entries.length }} 条</span>
+        <span v-if="payload.has_more" class="count-pill count-pill--warn">还有更多</span>
+        <span v-if="latestTimeText" class="count-pill">最新 {{ latestTimeText }}</span>
+        <span v-if="selectedFileMeta?.count" class="count-pill">库内 {{ selectedFileMeta.count }} 条</span>
+        <span v-if="payload.source === 'database_unavailable'" class="count-pill count-pill--danger">数据库不可用</span>
+      </div>
+
+      <div class="logs-table-wrap">
+        <table class="logs-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>级别</th>
+              <th>模块</th>
+              <th>事件</th>
+              <th>消息</th>
+              <th>详情</th>
+            </tr>
+          </thead>
+          <tbody v-if="entries.length">
+            <tr
+              v-for="entry in normalizedEntries"
+              :key="entry._key"
+              :class="['logs-table__row', `logs-table__row--${entry._level}`]"
+              @click="selectEntry(entry)"
+            >
+              <td class="logs-table__time">{{ compactTime(entry.time || entry.created_at) }}</td>
+              <td>
+                <span :class="['logs-level-badge', `is-${entry._level}`]">{{ entry._badge }}</span>
+              </td>
+              <td class="logs-table__category">{{ entry.category || "-" }}</td>
+              <td class="logs-table__event">{{ entry.event || "event" }}</td>
+              <td class="logs-table__message">
+                <strong v-if="entry.message">{{ entry.message }}</strong>
+                <span v-else>{{ entry.raw || "-" }}</span>
+              </td>
+              <td>
+                <button class="button button-secondary button-small" type="button" @click.stop="selectEntry(entry)">
+                  查看
+                </button>
+              </td>
+            </tr>
+          </tbody>
+          <tbody v-else>
+            <tr>
+              <td colspan="6" class="logs-table__empty">
+                {{ loaded ? "当前条件下没有日志。" : "正在读取日志。" }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div v-if="entries.length" ref="loadMoreTrigger" class="list-loader-anchor">
+        <span v-if="loadingMore">正在加载更多日志...</span>
+        <span v-else-if="payload.has_more">下拉到底自动加载下一页</span>
+        <span v-else>已经到底了</span>
+      </div>
+    </section>
+
+    <div
+      v-if="selectedEntry"
+      class="logs-detail-backdrop"
+      role="presentation"
+      @click="closeDetail"
+    >
+      <aside
+        class="logs-detail-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="logs-detail-title"
+        @click.stop
+      >
+        <header class="logs-detail-drawer__head">
+          <div>
+            <span :class="['logs-level-badge', `is-${selectedEntry._level}`]">{{ selectedEntry._badge }}</span>
+            <h2 id="logs-detail-title">{{ selectedEntry.event || "event" }}</h2>
+            <p>{{ selectedEntry.category || "-" }} · {{ selectedEntry.time || selectedEntry.created_at || "-" }}</p>
           </div>
-          <label class="filter-field">
-            <select v-model="selectedFile" aria-label="日志文件">
-              <option v-for="file in fileOptions" :key="file.name" :value="file.name">
-                {{ file.name }}{{ file.primary ? "（业务）" : "" }}
-              </option>
-            </select>
-          </label>
-          <div v-if="selectedFileMeta" class="logs-sidebar__meta">
-            <span>
-              <strong>大小</strong>
-              <em>{{ formatBytes(selectedFileMeta.size) }}</em>
-            </span>
-            <span>
-              <strong>更新</strong>
-              <em>{{ selectedFileMeta.modified_at || "暂无" }}</em>
-            </span>
-          </div>
+          <button class="button button-secondary button-small" type="button" @click="closeDetail">关闭</button>
+        </header>
+
+        <section class="logs-detail-drawer__section">
+          <span class="eyebrow">消息</span>
+          <p>{{ selectedEntry.message || selectedEntry.raw || "无消息内容。" }}</p>
         </section>
 
-        <section class="logs-sidebar__section">
-          <div class="logs-sidebar__head">
-            <span class="eyebrow">过滤</span>
-            <strong>搜索与范围</strong>
-          </div>
-          <label class="filter-field">
-            <input
-              v-model.trim="query"
-              type="text"
-              placeholder="搜索事件、消息、JSON 字段"
-            >
-          </label>
-          <label class="filter-field">
-            <select v-model.number="limit" aria-label="日志行数">
-              <option :value="120">最近 120 条</option>
-              <option :value="300">最近 300 条</option>
-              <option :value="800">最近 800 条</option>
-              <option :value="1500">最近 1500 条</option>
-            </select>
-          </label>
-          <div class="logs-sidebar__controls">
-            <button
-              :class="['button', activeLevel === 'all' ? 'button-primary' : 'button-secondary']"
-              type="button"
-              @click="activeLevel = 'all'"
-            >
-              全部显示
-            </button>
-            <button class="button button-secondary" type="button" @click="clearFilters">
-              重置筛选
-            </button>
-          </div>
-          <div class="logs-preset-list">
-            <button
-              v-for="preset in logPresets"
-              :key="preset.key"
-              class="button button-secondary button-small"
-              type="button"
-              @click="applyLogPreset(preset)"
-            >
-              {{ preset.label }}
-            </button>
-          </div>
+        <section v-if="selectedEntry._payloadText" class="logs-detail-drawer__section">
+          <span class="eyebrow">Payload</span>
+          <pre>{{ selectedEntry._payloadText }}</pre>
         </section>
 
-        <section class="logs-sidebar__section">
-          <div class="logs-sidebar__head">
-            <span class="eyebrow">等级</span>
-            <strong>日志级别</strong>
-          </div>
-
-          <div class="logs-levels">
-            <button
-              v-for="level in levelCards"
-              :key="level.key"
-              :class="['logs-level-card', `logs-level-card--${level.key}`, activeLevel === level.key && 'is-active']"
-              type="button"
-              @click="activeLevel = level.key"
-            >
-              <div class="logs-level-card__head">
-                <span class="logs-level-card__label">{{ level.label }}</span>
-                <strong>{{ level.count }}</strong>
-              </div>
-              <p>{{ level.description }}</p>
-            </button>
-          </div>
+        <section v-if="selectedEntry.raw" class="logs-detail-drawer__section">
+          <span class="eyebrow">Raw</span>
+          <pre>{{ selectedEntry.raw }}</pre>
         </section>
       </aside>
-
-      <section class="surface logs-stream">
-        <div class="logs-stream__head">
-          <div>
-            <span class="eyebrow">日志流</span>
-            <h2>{{ streamTitle }}</h2>
-          </div>
-          <span class="count-pill">{{ filteredEntries.length }} 条</span>
-        </div>
-
-        <div class="logs-stream__summary">
-          <span>{{ selectedLevelText }}</span>
-          <span>{{ query ? `关键词：${query}` : "未设置关键词" }}</span>
-          <span>{{ selectedFileMeta?.exists === false ? "文件不存在" : "文件正常" }}</span>
-        </div>
-
-        <div v-if="filteredEntries.length" class="logs-stream__list">
-          <article
-            v-for="entry in filteredEntries"
-            :key="entry._id"
-            :class="['logs-stream-entry', `logs-stream-entry--${entry._level}`]"
-          >
-            <div class="logs-stream-entry__head">
-              <span :class="['logs-stream-entry__badge', `is-${entry._level}`]">{{ entry._badge }}</span>
-              <span class="logs-stream-entry__time">{{ entry.time || "-" }}</span>
-              <span class="logs-stream-entry__category">{{ entry.category || "-" }}</span>
-              <strong class="logs-stream-entry__event">{{ entry.event || "event" }}</strong>
-            </div>
-            <p v-if="entry.message" class="logs-stream-entry__message">{{ entry.message }}</p>
-            <pre v-if="entry._payloadText" class="logs-stream-entry__payload">{{ entry._payloadText }}</pre>
-            <pre v-else-if="entry.raw && entry.event === 'line'" class="logs-stream-entry__payload">{{ entry.raw }}</pre>
-          </article>
-        </div>
-
-        <p v-else class="empty-copy logs-stream__empty">当前筛选下没有日志内容。</p>
-      </section>
-    </section>
+    </div>
   </section>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { apiRequest } from "../lib/api";
+import { createAutoLoadObserver } from "../lib/autoLoadObserver";
 import { createPageRefreshController } from "../lib/usePageRefresh";
 
 
-const LEVEL_DEFINITIONS = [
-  { key: "debug", label: "DEBUG", description: "调试信息与上下文" },
-  { key: "info", label: "INFO", description: "常规业务状态与结果" },
-  { key: "warning", label: "WARN", description: "预警、重试与回退" },
-  { key: "error", label: "ERROR", description: "失败、异常与中断" },
-  { key: "success", label: "SUCCESS", description: "明确成功完成的步骤" },
-];
+const DEFAULT_FILE = "business.log";
+const DEFAULT_LIMIT = 160;
+const LEVEL_LABELS = {
+  debug: "DEBUG",
+  info: "INFO",
+  warning: "WARN",
+  error: "ERROR",
+  success: "SUCCESS",
+};
 const LOG_PRESETS = [
-  { key: "organizer", label: "本地整理历史", file: "business.log", q: "organizer" },
-  { key: "subscription", label: "订阅同步", file: "business.log", q: "subscription" },
-  { key: "archive", label: "归档任务", file: "business.log", q: "archive" },
-  { key: "missing_3mf", label: "缺失 3MF", file: "business.log", q: "missing_3mf" },
+  { key: "errors", label: "最近错误", level: "error" },
+  { key: "archive", label: "归档", category: "archive" },
+  { key: "subscription", label: "订阅", category: "subscription" },
+  { key: "account", label: "账号/Cookie", q: "cookie" },
+  { key: "organizer", label: "本地导入", category: "organizer" },
+  { key: "update", label: "系统更新", category: "self_update" },
+];
+const SINCE_PRESETS = [
+  { value: "15m", label: "最近 15 分钟", ms: 15 * 60 * 1000 },
+  { value: "1h", label: "最近 1 小时", ms: 60 * 60 * 1000 },
+  { value: "6h", label: "最近 6 小时", ms: 6 * 60 * 60 * 1000 },
+  { value: "24h", label: "最近 24 小时", ms: 24 * 60 * 60 * 1000 },
+  { value: "7d", label: "最近 7 天", ms: 7 * 24 * 60 * 60 * 1000 },
 ];
 
 const route = useRoute();
 const router = useRouter();
-const files = ref([]);
-const entries = ref([]);
-const selectedFile = ref("business.log");
-const query = ref("");
-const limit = ref(300);
-const activeLevel = ref("all");
+const payload = ref({
+  entries: [],
+  files: [],
+  facets: { levels: [], categories: [], events: [] },
+  has_more: false,
+  next_cursor: "",
+  source: "database",
+});
+const filters = reactive({
+  file: DEFAULT_FILE,
+  q: "",
+  level: "",
+  category: "",
+  event: "",
+  since: "",
+  limit: DEFAULT_LIMIT,
+});
+const selectedEntry = ref(null);
 const status = ref("");
+const loaded = ref(false);
 const loading = ref(false);
+const loadingMore = ref(false);
 const autoRefresh = ref(false);
+const loadMoreTrigger = ref(null);
 
 let logRefreshController = null;
 let searchTimer = null;
 let applyingRouteQuery = false;
+let requestToken = 0;
+let loadMoreToken = 0;
 
 const logPresets = LOG_PRESETS;
-
+const sinceOptions = SINCE_PRESETS;
+const entries = computed(() => payload.value.entries || []);
 const fileOptions = computed(() => (
-  files.value.length
-    ? files.value
-    : [{ name: selectedFile.value || "business.log", size: 0, modified_at: "", exists: false, primary: true }]
+  payload.value.files?.length
+    ? payload.value.files
+    : [{ name: filters.file || DEFAULT_FILE, count: 0, modified_at: "", exists: false, primary: true }]
 ));
-
-const selectedFileMeta = computed(() => fileOptions.value.find((item) => item.name === selectedFile.value) || null);
-
+const selectedFileMeta = computed(() => fileOptions.value.find((item) => item.name === filters.file) || null);
+const facets = computed(() => payload.value.facets || { levels: [], categories: [], events: [] });
+const levelOptions = computed(() => {
+  const known = new Map((facets.value.levels || []).map((item) => [String(item.value || ""), item]));
+  return Object.keys(LEVEL_LABELS).map((level) => ({
+    value: level,
+    label: LEVEL_LABELS[level] || level.toUpperCase(),
+    count: Number(known.get(level)?.count || 0),
+  }));
+});
+const categoryOptions = computed(() => facets.value.categories || []);
+const eventOptions = computed(() => facets.value.events || []);
+const activePresetKey = computed(() => {
+  const normalized = normalizeFiltersForCompare(filters);
+  const preset = LOG_PRESETS.find((item) => {
+    const candidate = normalizeFiltersForCompare({ ...emptyPresetFilters(), ...item });
+    return ["q", "level", "category", "event"].every((key) => normalized[key] === candidate[key]);
+  });
+  return preset?.key || "";
+});
 const normalizedEntries = computed(() => entries.value.map((entry, index) => {
   const level = normalizeLevel(entry.level);
   return {
     ...entry,
-    _id: `${entry.time || "line"}-${entry.category || "system"}-${entry.event || "event"}-${index}`,
+    _key: `${entry.id || index}-${entry.time || entry.created_at || ""}-${entry.event || ""}`,
     _level: level,
-    _badge: badgeText(level),
+    _badge: LEVEL_LABELS[level] || level.toUpperCase(),
     _payloadText: payloadText(entry),
   };
 }));
-
-const levelCounts = computed(() => normalizedEntries.value.reduce((result, entry) => {
-  result[entry._level] = (result[entry._level] || 0) + 1;
-  return result;
-}, { debug: 0, info: 0, warning: 0, error: 0, success: 0 }));
-
-const levelCards = computed(() => LEVEL_DEFINITIONS.map((level) => ({
-  ...level,
-  count: levelCounts.value[level.key] || 0,
-})));
-
-const filteredEntries = computed(() => (
-  activeLevel.value === "all"
-    ? normalizedEntries.value
-    : normalizedEntries.value.filter((entry) => entry._level === activeLevel.value)
-));
-
-const selectedLevelText = computed(() => {
-  if (activeLevel.value === "all") {
-    return "当前显示：全部等级";
-  }
-  return `当前显示：${badgeText(activeLevel.value)}`;
-});
-
-const streamTitle = computed(() => (
-  activeLevel.value === "all"
-    ? (selectedFile.value || "business.log")
-    : `${selectedFile.value || "business.log"} · ${badgeText(activeLevel.value)}`
-));
-
 const latestTimeText = computed(() => {
-  const firstEntry = normalizedEntries.value.find((entry) => entry.time);
-  return firstEntry?.time || selectedFileMeta.value?.modified_at || "暂无";
+  const entry = normalizedEntries.value.find((item) => item.time || item.created_at);
+  return entry ? compactTime(entry.time || entry.created_at) : "";
 });
+
+const loadMoreObserver = createAutoLoadObserver({
+  triggerRef: loadMoreTrigger,
+  canLoad: () => Boolean(payload.value.has_more),
+  isLoading: () => Boolean(loadingMore.value || loading.value),
+  load: loadMore,
+  nextTick,
+});
+
+function emptyPresetFilters() {
+  return { q: "", level: "", category: "", event: "" };
+}
+
+function normalizeFiltersForCompare(source) {
+  return {
+    q: String(source.q || "").trim(),
+    level: String(source.level || "").trim(),
+    category: String(source.category || "").trim(),
+    event: String(source.event || "").trim(),
+  };
+}
 
 function normalizeLevel(level) {
   const value = String(level || "info").toLowerCase();
@@ -273,70 +343,182 @@ function normalizeLevel(level) {
   return "info";
 }
 
-function badgeText(level) {
-  if (level === "warning") return "WARN";
-  return String(level || "info").toUpperCase();
-}
-
 function payloadText(entry) {
-  const payload = entry?.payload || {};
-  const keys = Object.keys(payload).filter((key) => payload[key] !== "" && payload[key] !== null && payload[key] !== undefined);
+  const payloadValue = entry?.payload || {};
+  const keys = Object.keys(payloadValue).filter((key) => payloadValue[key] !== "" && payloadValue[key] !== null && payloadValue[key] !== undefined);
   if (!keys.length) {
     return "";
   }
-  const sanitized = keys.reduce((result, key) => {
-    result[key] = payload[key];
+  return JSON.stringify(keys.reduce((result, key) => {
+    result[key] = payloadValue[key];
     return result;
-  }, {});
-  return JSON.stringify(sanitized, null, 2);
+  }, {}), null, 2);
 }
 
-function formatBytes(value) {
-  const size = Number(value || 0);
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+function compactTime(value) {
+  const text = String(value || "").trim();
+  if (!text) return "-";
+  return text
+    .replace("T", " ")
+    .replace(/\.\d+/, "")
+    .replace(/\+08:00$/, "")
+    .replace(/Z$/, "");
 }
 
-async function load() {
-  loading.value = true;
-  status.value = "";
-  const params = new URLSearchParams();
-  params.set("file", selectedFile.value || "business.log");
-  params.set("limit", String(limit.value || 300));
-  if (query.value) {
-    params.set("q", query.value);
+function resolveSinceValue(value) {
+  const preset = SINCE_PRESETS.find((item) => item.value === value);
+  if (!preset) {
+    return String(value || "").trim();
+  }
+  return new Date(Date.now() - preset.ms).toISOString();
+}
+
+function syncFiltersFromRoute() {
+  applyingRouteQuery = true;
+  filters.file = typeof route.query.file === "string" ? route.query.file : DEFAULT_FILE;
+  filters.q = typeof route.query.q === "string" ? route.query.q : "";
+  filters.level = typeof route.query.level === "string" ? route.query.level : "";
+  filters.category = typeof route.query.category === "string" ? route.query.category : "";
+  filters.event = typeof route.query.event === "string" ? route.query.event : "";
+  filters.since = typeof route.query.since === "string" ? route.query.since : "";
+  const routeLimit = Number(route.query.limit || DEFAULT_LIMIT);
+  filters.limit = Number.isFinite(routeLimit) ? Math.min(Math.max(Math.trunc(routeLimit), 1), 2000) : DEFAULT_LIMIT;
+  applyingRouteQuery = false;
+}
+
+function buildQuery(cursor = "") {
+  const query = new URLSearchParams();
+  query.set("file", filters.file || DEFAULT_FILE);
+  query.set("limit", String(filters.limit || DEFAULT_LIMIT));
+  if (filters.q) query.set("q", filters.q);
+  if (filters.level) query.set("level", filters.level);
+  if (filters.category) query.set("category", filters.category);
+  if (filters.event) query.set("event", filters.event);
+  if (filters.since) query.set("since", resolveSinceValue(filters.since));
+  if (cursor) query.set("cursor", cursor);
+  return query;
+}
+
+function buildRouteQuery() {
+  const query = {};
+  if (filters.file && filters.file !== DEFAULT_FILE) query.file = filters.file;
+  if (filters.q) query.q = filters.q;
+  if (filters.level) query.level = filters.level;
+  if (filters.category) query.category = filters.category;
+  if (filters.event) query.event = filters.event;
+  if (filters.since) query.since = filters.since;
+  if (Number(filters.limit || DEFAULT_LIMIT) !== DEFAULT_LIMIT) query.limit = String(filters.limit);
+  return query;
+}
+
+async function load({ append = false, cursor = "" } = {}) {
+  const token = append ? ++loadMoreToken : ++requestToken;
+  const routeAtLoad = route.fullPath;
+  if (!append) {
+    disconnectObserver();
+  }
+  if (append) {
+    loadingMore.value = true;
+  } else {
+    loading.value = true;
+    status.value = "";
   }
 
   try {
-    const payload = await apiRequest(`/api/logs?${params.toString()}`);
-    files.value = payload.files || [];
-    entries.value = payload.entries || [];
-    selectedFile.value = payload.file || selectedFile.value || "business.log";
-    status.value = `已加载 ${payload.count || 0} 条日志。`;
+    const nextPayload = await apiRequest(`/api/logs?${buildQuery(cursor).toString()}`);
+    if (
+      route.fullPath !== routeAtLoad
+      || (append && token !== loadMoreToken)
+      || (!append && token !== requestToken)
+    ) {
+      return;
+    }
+    payload.value = {
+      ...nextPayload,
+      entries: append
+        ? [...entries.value, ...(nextPayload.entries || [])]
+        : (nextPayload.entries || []),
+      files: nextPayload.files || payload.value.files || [],
+      facets: nextPayload.facets || payload.value.facets || { levels: [], categories: [], events: [] },
+    };
+    filters.file = nextPayload.file || filters.file || DEFAULT_FILE;
+    loaded.value = true;
+    status.value = append
+      ? `已追加 ${nextPayload.count || 0} 条日志。`
+      : `已加载 ${nextPayload.count || 0} 条日志。`;
+    await nextTick();
+    ensureObserver();
   } catch (error) {
     status.value = error instanceof Error ? error.message : "日志读取失败。";
   } finally {
-    loading.value = false;
+    if (append) {
+      loadingMore.value = false;
+    } else {
+      loading.value = false;
+    }
   }
 }
 
-function clearFilters() {
-  activeLevel.value = "all";
-  query.value = "";
-  limit.value = 300;
+function applyFilters() {
+  const nextQuery = buildRouteQuery();
+  if (JSON.stringify(route.query || {}) === JSON.stringify(nextQuery)) {
+    load();
+    return;
+  }
+  router.replace({ path: "/logs", query: nextQuery });
+}
+
+function resetFilters() {
+  filters.file = DEFAULT_FILE;
+  filters.q = "";
+  filters.level = "";
+  filters.category = "";
+  filters.event = "";
+  filters.since = "";
+  filters.limit = DEFAULT_LIMIT;
+  selectedEntry.value = null;
+  if (route.fullPath === "/logs") {
+    load();
+    return;
+  }
   router.replace({ path: "/logs" });
+}
+
+function applyPreset(preset) {
+  filters.q = preset.q || "";
+  filters.level = preset.level || "";
+  filters.category = preset.category || "";
+  filters.event = preset.event || "";
+  applyFilters();
+}
+
+function reload() {
+  selectedEntry.value = null;
   load();
 }
 
-function applyLogPreset(preset) {
-  router.replace({
-    path: "/logs",
-    query: {
-      file: preset.file,
-      q: preset.q,
-    },
-  });
+async function loadMore() {
+  if (!payload.value.has_more || loadingMore.value || loading.value) {
+    return;
+  }
+  disconnectObserver();
+  await load({ append: true, cursor: payload.value.next_cursor || "" });
+}
+
+function disconnectObserver() {
+  loadMoreObserver.disconnect();
+}
+
+function ensureObserver() {
+  loadMoreObserver.ensure();
+}
+
+function selectEntry(entry) {
+  selectedEntry.value = entry;
+}
+
+function closeDetail() {
+  selectedEntry.value = null;
 }
 
 function toggleAutoRefresh() {
@@ -371,49 +553,30 @@ function syncAutoRefresh() {
   logRefreshController.schedule("auto-refresh-started");
 }
 
-watch([selectedFile, limit], () => {
-  if (applyingRouteQuery) {
-    return;
-  }
+watch(() => route.fullPath, () => {
+  syncFiltersFromRoute();
   load();
 });
 
-watch(query, () => {
+watch(() => filters.q, () => {
   if (applyingRouteQuery) {
     return;
   }
   if (searchTimer) {
     window.clearTimeout(searchTimer);
   }
-  searchTimer = window.setTimeout(load, 320);
+  searchTimer = window.setTimeout(applyFilters, 360);
 });
-
-watch(() => route.fullPath, () => {
-  applyRouteQuery();
-});
-
-function applyRouteQuery() {
-  applyingRouteQuery = true;
-  const routeFile = typeof route.query.file === "string" ? route.query.file : "";
-  const routeQuery = typeof route.query.q === "string" ? route.query.q : "";
-  const routeLevel = typeof route.query.level === "string" ? route.query.level : "";
-  const routeLimit = Number(route.query.limit || 0);
-  selectedFile.value = routeFile || "business.log";
-  query.value = routeQuery;
-  activeLevel.value = routeLevel || "all";
-  if (Number.isFinite(routeLimit) && routeLimit > 0) {
-    limit.value = Math.min(Math.max(Math.trunc(routeLimit), 1), 2000);
-  }
-  applyingRouteQuery = false;
-  load();
-}
 
 onMounted(() => {
-  applyRouteQuery();
+  syncFiltersFromRoute();
+  load();
+  ensureObserver();
 });
 
 onBeforeUnmount(() => {
   stopLogRefreshController();
+  disconnectObserver();
   if (searchTimer) {
     window.clearTimeout(searchTimer);
   }

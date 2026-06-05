@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -21,6 +22,40 @@ class RemovedEmbeddedVerificationWebRouteTest(unittest.TestCase):
         self.assertIn("/api/remote-refresh", paths)
         self.assertIn("/api/subscriptions", paths)
         self.assertIn("/api/logs", paths)
+
+    def test_logs_api_forwards_filter_parameters(self):
+        captured = {}
+
+        def fake_read_log_entries(**kwargs):
+            captured.update(kwargs)
+            return {"entries": [], "files": [], "facets": {}, "count": 0}
+
+        with patch("app.api.logs_routes.run_web_io", side_effect=lambda func, **kwargs: func(**kwargs)), \
+                patch("app.api.logs_routes.read_log_entries", side_effect=fake_read_log_entries):
+            import asyncio
+            from app.api.logs_routes import get_logs_data
+
+            response = asyncio.run(
+                get_logs_data(
+                    file="business.log",
+                    limit=80,
+                    q="failed",
+                    level="error",
+                    category="archive",
+                    event="download_failed",
+                    since="2026-06-05T00:00:00+08:00",
+                    cursor="99",
+                )
+            )
+
+        self.assertEqual(response["count"], 0)
+        self.assertEqual(captured["level"], "error")
+        self.assertEqual(captured["category"], "archive")
+        self.assertEqual(captured["event"], "download_failed")
+        self.assertEqual(captured["since"], "2026-06-05T00:00:00+08:00")
+        self.assertEqual(captured["cursor"], "99")
+        self.assertEqual(captured["query"], "failed")
+        self.assertEqual(captured["limit"], 80)
 
     def test_static_model_api_routes_are_registered_before_detail_route(self):
         routes = [
