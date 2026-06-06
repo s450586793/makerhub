@@ -208,8 +208,19 @@ def _remote_refresh_path_from_state(value: Any) -> Path:
     return STATE_DIR / path
 
 
+def _remote_refresh_result_path_for_active_run(active_run: dict[str, Any], manifest_path: Path) -> Path:
+    stored_path = _remote_refresh_path_from_state(active_run.get("result_path"))
+    if stored_path and stored_path.exists():
+        return stored_path
+    batch_id = str(active_run.get("batch_id") or "").strip()
+    if batch_id and manifest_path:
+        return manifest_path.parent / f"{batch_id}.ndjson"
+    return stored_path
+
+
 def _remote_refresh_candidate_key(item: dict[str, Any]) -> str:
-    model_dir = str(item.get("model_dir") or "").strip().strip("/")
+    meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+    model_dir = str(item.get("model_dir") or item.get("id") or meta.get("model_dir") or "").strip().strip("/")
     url = normalize_source_url(str(item.get("url") or item.get("origin_url") or ""))
     if not model_dir or not url:
         return ""
@@ -1372,6 +1383,181 @@ class RemoteRefreshManager:
             "interrupted_reason": _sanitize_remote_refresh_message(interrupted_reason, ""),
         }
 
+    def _resumable_active_run(self) -> dict[str, Any]:
+        state = self.task_store.load_remote_refresh_state()
+        active_run = state.get("active_run") if isinstance(state.get("active_run"), dict) else {}
+        if str(active_run.get("status") or "") not in {"running", "resuming", "interrupted"}:
+            return {}
+        if not str(active_run.get("batch_id") or "").strip():
+            return {}
+        return dict(active_run)
+
+    def _mark_active_run_interrupted(self, active_run: dict[str, Any], *, reason: str) -> None:
+        now = _now_iso()
+        manifest_path = _remote_refresh_path_from_state(active_run.get("manifest_path"))
+        result_path = _remote_refresh_result_path_for_active_run(active_run, manifest_path)
+        interrupted_run = self._active_run_payload(
+            batch_id=str(active_run.get("batch_id") or ""),
+            status="interrupted",
+            started_at=str(active_run.get("started_at") or ""),
+            resumed_at=str(active_run.get("resumed_at") or ""),
+            scheduled_cron=str(active_run.get("scheduled_cron") or ""),
+            manual=bool(active_run.get("manual")),
+            candidate_total=int(active_run.get("candidate_total") or 0),
+            completed_total=int(active_run.get("completed_total") or 0),
+            manifest_path=manifest_path,
+            result_path=result_path,
+            interrupted_reason=reason,
+        )
+        self.task_store.patch_remote_refresh_state(
+            status="interrupted",
+            running=False,
+            last_interrupted_at=now,
+            last_interrupted_reason=reason,
+            last_message=f"源端刷新批次中断：{reason}",
+            active_run=interrupted_run,
+            current_item={},
+            current_items=[],
+        )
+
+    def _finalize_batch_from_records(
+        self,
+        *,
+        active_run: dict[str, Any],
+        records: list[dict[str, Any]],
+        normalized_cron: str,
+        started_at: str,
+        resumed: bool,
+        stats: Optional[dict[str, Any]] = None,
+        batch_started_perf: Optional[float] = None,
+        resource_wait_baseline: Optional[dict[str, Any]] = None,
+    ) -> None:
+        finished_at = _now_iso()
+        previous_state = self.task_store.load_remote_refresh_state()
+        batch_summary = _remote_refresh_batch_summary(records)
+        succeeded = len([item for item in records if str(item.get("status") or "") in {"success", "source_deleted"}])
+        failed = int(batch_summary["failed"])
+        skipped = int(batch_summary["skipped"])
+        processed_total = succeeded + failed
+        stats_payload = dict(stats or {})
+        candidate_total = int(active_run.get("candidate_total") or stats_payload.get("selected_total") or len(records))
+        eligible_total = int(stats_payload.get("eligible_total") or candidate_total)
+        remaining_total = max(eligible_total - processed_total, 0)
+        batch_metrics = _empty_batch_metrics()
+        slow_models: list[dict[str, Any]] = []
+        for record in records:
+            meta = record.get("meta") if isinstance(record.get("meta"), dict) else {}
+            item_metrics = meta.get("metrics") if isinstance(meta.get("metrics"), dict) else {}
+            _merge_batch_metrics(batch_metrics, item_metrics)
+            if item_metrics:
+                slow_models.append(item_metrics)
+        if batch_started_perf is not None:
+            batch_metrics["batch_duration_ms"] = round((time.perf_counter() - batch_started_perf) * 1000, 1)
+        message_prefix = "源端刷新恢复完成" if resumed else "源端刷新完成"
+        message = (
+            f"{message_prefix}，成功 {succeeded} 个，失败 {failed} 个。"
+            f"{_batch_scope_message(eligible_total=eligible_total, remaining_total=remaining_total)}"
+        )
+        manifest_path = _remote_refresh_path_from_state(active_run.get("manifest_path"))
+        result_path = _remote_refresh_result_path_for_active_run(active_run, manifest_path)
+        resource_waits = _resource_wait_delta(resource_wait_baseline or resource_snapshot())
+        self.task_store.patch_remote_refresh_state(
+            status="idle" if failed == 0 else "error",
+            running=False,
+            current_item={},
+            current_items=[],
+            next_run_at=_next_run_at(normalized_cron),
+            scheduled_cron=normalized_cron,
+            last_success_at=finished_at if succeeded else str(previous_state.get("last_success_at") or ""),
+            last_error_at=finished_at if failed else str(previous_state.get("last_error_at") or ""),
+            last_completed_at=finished_at,
+            last_message=message,
+            last_batch_total=candidate_total,
+            last_batch_succeeded=succeeded,
+            last_batch_failed=failed,
+            last_batch_skipped=skipped,
+            last_eligible_total=eligible_total,
+            last_remaining_total=remaining_total,
+            last_skipped_missing_cookie=int(stats_payload.get("missing_cookie") or 0),
+            last_skipped_local_or_invalid=int(stats_payload.get("local_or_invalid") or 0),
+            last_batch_metrics=batch_metrics,
+            last_resource_waits=resource_waits,
+            last_slow_models=_top_slow_models(slow_models),
+            recent_items=batch_summary["recent_items"],
+            active_run=self._active_run_payload(
+                batch_id=str(active_run.get("batch_id") or ""),
+                status="completed",
+                started_at=started_at,
+                resumed_at=str(active_run.get("resumed_at") or ""),
+                scheduled_cron=normalized_cron,
+                manual=bool(active_run.get("manual")),
+                candidate_total=candidate_total,
+                completed_total=processed_total,
+                manifest_path=manifest_path,
+                result_path=result_path,
+                finished_at=finished_at,
+            ),
+        )
+        invalidate_archive_snapshot("remote_refresh_batch_finished")
+
+    def _resume_active_run_if_possible(self, config) -> bool:
+        active_run = self._resumable_active_run()
+        if not active_run:
+            return False
+        normalized_cron = _validate_cron(
+            getattr(config.remote_refresh, "cron", "")
+            or active_run.get("scheduled_cron")
+            or DEFAULT_REMOTE_REFRESH_CRON
+        )
+        manifest_path = _remote_refresh_path_from_state(active_run.get("manifest_path"))
+        result_path = _remote_refresh_result_path_for_active_run(active_run, manifest_path)
+        manifest = _RemoteRefreshBatchManifest.load(manifest_path) if manifest_path else _RemoteRefreshBatchManifest(batch_id="", path=Path(), payload={})
+        if not manifest.compatible() or not result_path:
+            self._mark_active_run_interrupted(active_run, reason="manifest_missing" if not manifest.compatible() else "result_path_missing")
+            return False
+        buffer = _RemoteRefreshBatchBuffer(batch_id=str(active_run.get("batch_id") or manifest.batch_id), directory=result_path.parent)
+        records = buffer.read_records()
+        completed_keys = _completed_remote_refresh_keys(records)
+        candidates = manifest.candidates()
+        remaining = [item for item in candidates if _remote_refresh_candidate_key(item) not in completed_keys]
+        resumed_at = _now_iso()
+        resumed_active_run = {
+            **active_run,
+            "status": "resuming",
+            "resumed_at": resumed_at,
+            "completed_total": len(completed_keys),
+            "remaining_total": len(remaining),
+        }
+        self.task_store.patch_remote_refresh_state(
+            status="resuming",
+            running=True,
+            last_attempt_at=resumed_at,
+            active_run=resumed_active_run,
+        )
+        if not remaining:
+            self._finalize_batch_from_records(
+                active_run=resumed_active_run,
+                records=records,
+                normalized_cron=normalized_cron,
+                started_at=str(active_run.get("started_at") or resumed_at),
+                resumed=True,
+                stats=manifest.payload.get("stats") if isinstance(manifest.payload.get("stats"), dict) else {},
+            )
+            return True
+        stats = dict(manifest.payload.get("stats") if isinstance(manifest.payload.get("stats"), dict) else {})
+        stats["eligible_total"] = int(stats.get("eligible_total") or len(candidates))
+        stats["selected_total"] = len(remaining)
+        stats["remaining_total"] = max(stats["eligible_total"] - len(records) - len(remaining), 0)
+        self._run_batch(
+            config,
+            prelocked=True,
+            resume_active_run=resumed_active_run,
+            resume_candidates=remaining,
+            resume_stats=stats,
+            resume_existing_records=records,
+        )
+        return True
+
     def start(self) -> None:
         self._ensure_state()
         if not self.background_enabled:
@@ -1680,7 +1866,16 @@ class RemoteRefreshManager:
         stats["remaining_total"] = max(len(eligible) - len(selected), 0)
         return selected, stats
 
-    def _run_batch(self, config, *, prelocked: bool = False) -> None:
+    def _run_batch(
+        self,
+        config,
+        *,
+        prelocked: bool = False,
+        resume_active_run: Optional[dict[str, Any]] = None,
+        resume_candidates: Optional[list[dict[str, Any]]] = None,
+        resume_stats: Optional[dict[str, int]] = None,
+        resume_existing_records: Optional[list[dict[str, Any]]] = None,
+    ) -> None:
         if not prelocked:
             self._set_batch_running(True)
         refresh_config = config.remote_refresh
@@ -1690,29 +1885,49 @@ class RemoteRefreshManager:
         resource_wait_baseline = resource_snapshot()
         current_state = self.task_store.load_remote_refresh_state()
         manual_run = bool(str(current_state.get("manual_requested_at") or "").strip())
-        candidates, stats = self._pick_candidates()
+        if resume_candidates is not None:
+            candidates = list(resume_candidates)
+            stats = dict(resume_stats or {})
+        else:
+            candidates, stats = self._pick_candidates()
         workers = min(_remote_refresh_model_workers(config), max(len(candidates), 1))
         batch_buffer: Optional[_RemoteRefreshBatchBuffer] = None
         _cleanup_remote_refresh_batch_buffers()
 
         try:
-            batch_id = _remote_refresh_batch_id()
-            manifest = _RemoteRefreshBatchManifest.create(
-                batch_id=batch_id,
-                candidates=candidates,
-                stats=stats,
-                cron=normalized_cron,
-                manual=manual_run,
-            )
-            _, result_path = self._batch_paths(batch_id)
+            if resume_active_run:
+                batch_id = str(resume_active_run.get("batch_id") or _remote_refresh_batch_id())
+                manifest_path, result_path = self._batch_paths(batch_id)
+                stored_manifest_path = _remote_refresh_path_from_state(resume_active_run.get("manifest_path"))
+                stored_result_path = _remote_refresh_result_path_for_active_run(resume_active_run, manifest_path)
+                if stored_manifest_path:
+                    manifest_path = stored_manifest_path
+                if stored_result_path:
+                    result_path = stored_result_path
+                manifest = _RemoteRefreshBatchManifest.load(manifest_path)
+                started_at = str(resume_active_run.get("started_at") or started_at)
+                manual_run = bool(resume_active_run.get("manual"))
+                completed_before = len(_completed_remote_refresh_keys(list(resume_existing_records or [])))
+            else:
+                batch_id = _remote_refresh_batch_id()
+                manifest = _RemoteRefreshBatchManifest.create(
+                    batch_id=batch_id,
+                    candidates=candidates,
+                    stats=stats,
+                    cron=normalized_cron,
+                    manual=manual_run,
+                )
+                _, result_path = self._batch_paths(batch_id)
+                completed_before = 0
             active_run = self._active_run_payload(
                 batch_id=batch_id,
                 status="running",
                 started_at=started_at,
+                resumed_at=str((resume_active_run or {}).get("resumed_at") or ""),
                 scheduled_cron=normalized_cron,
                 manual=manual_run,
-                candidate_total=len(candidates),
-                completed_total=0,
+                candidate_total=int((resume_active_run or {}).get("candidate_total") or len(candidates)),
+                completed_total=completed_before,
                 manifest_path=manifest.path,
                 result_path=result_path,
             )
@@ -1804,7 +2019,7 @@ class RemoteRefreshManager:
                 )
                 return
 
-            batch_buffer = _RemoteRefreshBatchBuffer(batch_id=batch_id)
+            batch_buffer = _RemoteRefreshBatchBuffer(batch_id=batch_id, directory=result_path.parent)
             succeeded = 0
             failed = 0
             skipped = 0
@@ -1858,15 +2073,27 @@ class RemoteRefreshManager:
 
             finished_at = _now_iso()
             previous_state = self.task_store.load_remote_refresh_state()
-            processed_total = succeeded + failed
-            remaining_total = max(int(stats.get("eligible_total") or 0) - processed_total, 0)
-            batch_records = batch_buffer.read_records() if batch_buffer is not None else []
+            existing_records = list(resume_existing_records or [])
+            new_records = batch_buffer.read_records() if batch_buffer is not None else []
+            existing_keys = _completed_remote_refresh_keys(existing_records)
+            batch_records = existing_records + [
+                record
+                for record in new_records
+                if _remote_refresh_candidate_key(record) not in existing_keys
+            ]
             batch_summary = _remote_refresh_batch_summary(batch_records)
+            succeeded = len([item for item in batch_records if str(item.get("status") or "") in {"success", "source_deleted"}])
+            failed = int(batch_summary["failed"])
+            skipped = int(batch_summary["skipped"])
+            processed_total = succeeded + failed
+            candidate_total = int((resume_active_run or {}).get("candidate_total") or len(candidates))
+            eligible_total = int(stats.get("eligible_total") or candidate_total)
+            remaining_total = max(eligible_total - processed_total, 0)
             failure_samples = batch_summary["failure_samples"]
             recent_items = batch_summary["recent_items"]
             message = (
-                f"源端刷新完成，成功 {succeeded} 个，失败 {failed} 个。"
-                f"{_batch_scope_message(eligible_total=int(stats.get('eligible_total') or 0), remaining_total=remaining_total)}"
+                f"{'源端刷新恢复完成' if resume_active_run else '源端刷新完成'}，成功 {succeeded} 个，失败 {failed} 个。"
+                f"{_batch_scope_message(eligible_total=eligible_total, remaining_total=remaining_total)}"
             )
             self.task_store.patch_remote_refresh_state(
                 status="idle" if failed == 0 else "error",
@@ -1880,7 +2107,8 @@ class RemoteRefreshManager:
                 last_batch_succeeded=succeeded,
                 last_batch_failed=failed,
                 last_batch_skipped=skipped,
-                last_eligible_total=int(stats.get("eligible_total") or 0),
+                last_batch_total=candidate_total,
+                last_eligible_total=eligible_total,
                 last_remaining_total=remaining_total,
                 last_skipped_missing_cookie=int(stats.get("missing_cookie") or 0),
                 last_skipped_local_or_invalid=int(stats.get("local_or_invalid") or 0),
@@ -1895,7 +2123,7 @@ class RemoteRefreshManager:
                     started_at=started_at,
                     scheduled_cron=normalized_cron,
                     manual=manual_run,
-                    candidate_total=len(candidates),
+                    candidate_total=candidate_total,
                     completed_total=processed_total,
                     manifest_path=manifest.path,
                     result_path=result_path,
