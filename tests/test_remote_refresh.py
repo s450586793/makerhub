@@ -117,7 +117,7 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         self.assertIn("恢复", state["last_message"])
 
     def test_manual_trigger_rejects_when_service_busy(self):
-        self.manager._service_busy = lambda: True
+        self.manager._service_busy_reason = lambda: "archive_queue_busy"
 
         result = self.manager.trigger_manual_refresh()
 
@@ -407,19 +407,85 @@ class RemoteRefreshManagerTest(unittest.TestCase):
             scheduled_cron="0 2 * * *",
             last_message="等待下一轮源端刷新。",
         )
-        self.manager._service_busy = lambda: True
+        self.manager._service_busy_reason = lambda: "archive_queue_busy"
         original_now = remote_refresh._now
         remote_refresh._now = lambda: datetime.fromisoformat("2026-05-19T12:00:00+08:00")
+        original_now_iso = remote_refresh._now_iso
+        remote_refresh._now_iso = lambda: "2026-05-19T12:00:00+08:00"
 
         try:
             self.manager._tick()
         finally:
             remote_refresh._now = original_now
+            remote_refresh._now_iso = original_now_iso
 
         state = self.task_store.load_remote_refresh_state()
-        self.assertEqual(state["status"], "idle")
+        self.assertEqual(state["status"], "deferred")
         self.assertEqual(state["scheduled_cron"], "0 2 * * *")
-        self.assertIn("延后 60 秒", state["last_message"])
+        self.assertEqual(state["last_message"], "等待下一轮源端刷新。")
+        self.assertEqual(state["last_attempt_at"], "2026-05-19T12:00:00+08:00")
+        self.assertEqual(state["last_deferred_at"], "2026-05-19T12:00:00+08:00")
+        self.assertEqual(state["last_defer_reason"], "archive_queue_busy")
+
+    def test_service_busy_reason_ignores_waiting_children_and_stale_active_queue(self):
+        self.task_store.save_archive_queue(
+            {
+                "active": [
+                    {
+                        "id": "batch-parent",
+                        "title": "批次父任务",
+                        "status": "waiting_children",
+                        "meta": {"batch_expected_items": [{"id": "child-1"}]},
+                    },
+                    {
+                        "id": "stale-child",
+                        "title": "过期子任务",
+                        "status": "running",
+                        "lease_expires_at": "2026-06-04T09:00:00+08:00",
+                    },
+                ],
+                "queued": [],
+                "recent_failures": [],
+            }
+        )
+
+        with patch("app.services.remote_refresh.is_lease_expired", return_value=True):
+            reason = self.manager._service_busy_reason()
+
+        state = self.task_store.load_remote_refresh_state()
+        self.assertEqual(reason, "")
+        self.assertTrue(state["stale_archive_queue_detected"])
+
+    def test_service_busy_reason_blocks_fresh_active_and_queued_work(self):
+        self.task_store.save_archive_queue(
+            {
+                "active": [
+                    {
+                        "id": "fresh-child",
+                        "title": "新鲜子任务",
+                        "status": "running",
+                        "lease_expires_at": "2099-06-04T09:00:00+08:00",
+                    }
+                ],
+                "queued": [],
+                "recent_failures": [],
+            }
+        )
+
+        with patch("app.services.remote_refresh.is_lease_expired", return_value=False):
+            reason = self.manager._service_busy_reason()
+
+        self.assertEqual(reason, "archive_queue_busy")
+
+        self.task_store.save_archive_queue(
+            {
+                "active": [],
+                "queued": [{"id": "queued-1", "title": "等待归档", "status": "queued"}],
+                "recent_failures": [],
+            }
+        )
+
+        self.assertEqual(self.manager._service_busy_reason(), "archive_queue_busy")
 
     def test_tick_resumes_active_run_before_future_schedule(self):
         self.task_store.patch_remote_refresh_state(

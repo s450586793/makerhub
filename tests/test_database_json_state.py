@@ -397,6 +397,57 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
         self.assertEqual(result["skipped"], 1)
         self.assertEqual(result["items"][0]["status"], "exists")
 
+    def test_force_database_migration_protects_existing_runtime_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            remote_refresh_path = Path(tmp) / "remote_refresh_state.json"
+            remote_refresh_path.write_text('{"status": "idle", "last_run_at": "2026-05-25T03:42:02+08:00"}', encoding="utf-8")
+            self.state["remote_refresh_state"] = {
+                "status": "running",
+                "running": True,
+                "last_run_at": "2026-06-05T17:10:51+08:00",
+                "active_run": {"batch_id": "live-batch", "status": "running"},
+            }
+
+            with patch.object(
+                database_migration,
+                "JSON_STATE_FILE_MIGRATIONS",
+                (("remote_refresh_state", remote_refresh_path, {}),),
+            ):
+                result = database_migration.migrate_json_files_to_database(force=True)
+
+        self.assertEqual(self.state["remote_refresh_state"]["active_run"]["batch_id"], "live-batch")
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["items"][0]["status"], "protected_runtime_state")
+
+    def test_force_database_migration_allows_runtime_bootstrap_and_explicit_restore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            remote_refresh_path = Path(tmp) / "remote_refresh_state.json"
+            remote_refresh_path.write_text('{"status": "idle", "last_run_at": "2026-05-25T03:42:02+08:00"}', encoding="utf-8")
+            with patch.object(
+                database_migration,
+                "JSON_STATE_FILE_MIGRATIONS",
+                (("remote_refresh_state", remote_refresh_path, {}),),
+            ):
+                bootstrap = database_migration.migrate_json_files_to_database(force=True)
+
+            self.assertEqual(self.state["remote_refresh_state"]["last_run_at"], "2026-05-25T03:42:02+08:00")
+            self.assertEqual(bootstrap["items"][0]["status"], "updated")
+
+            remote_refresh_path.write_text(
+                '{"_makerhub_restore": true, "status": "idle", "last_run_at": "2026-06-06T10:00:00+08:00"}',
+                encoding="utf-8",
+            )
+            with patch.object(
+                database_migration,
+                "JSON_STATE_FILE_MIGRATIONS",
+                (("remote_refresh_state", remote_refresh_path, {}),),
+            ):
+                restored = database_migration.migrate_json_files_to_database(force=True)
+
+        self.assertEqual(self.state["remote_refresh_state"]["last_run_at"], "2026-06-06T10:00:00+08:00")
+        self.assertEqual(restored["items"][0]["status"], "restored_runtime_state")
+
 
 class DatabaseStatusTest(unittest.TestCase):
     def test_database_status_reports_unconfigured_without_file_fallback(self):

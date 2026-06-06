@@ -55,6 +55,21 @@ LEGACY_LOGS_DIR = Path(os.getenv("MAKERHUB_LEGACY_LOGS_DIR", "/app/logs"))
 BAMBU_STUDIO_SECRET_STATE_KEY = "bambu_studio_download_secret"
 BAMBU_STUDIO_SECRET_PATH = STATE_DIR / "bambu_studio_download_secret"
 LOG_FILE_IMPORT_LIMIT = 200_000
+RUNTIME_JSON_STATE_KEYS = frozenset(
+    {
+        "archive_queue",
+        "missing_3mf",
+        "organize_tasks",
+        "subscriptions_state",
+        "remote_refresh_state",
+        "three_mf_limit_guard",
+        "three_mf_daily_quota",
+        "archive_repair_status",
+        "archive_profile_backfill_status",
+        "system_update",
+    }
+)
+RUNTIME_RESTORE_MARKERS = frozenset({"_makerhub_restore", "makerhub_restore"})
 
 
 def _read_json_file(path: Path, default: dict[str, Any]) -> dict[str, Any]:
@@ -154,6 +169,21 @@ def _payload_has_user_data(payload: dict[str, Any], default: dict[str, Any]) -> 
     return False
 
 
+def _payload_requests_runtime_restore(payload: dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return any(bool(payload.get(marker)) for marker in RUNTIME_RESTORE_MARKERS)
+
+
+def _strip_runtime_restore_markers(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    clean = dict(payload)
+    for marker in RUNTIME_RESTORE_MARKERS:
+        clean.pop(marker, None)
+    return clean
+
+
 def _read_json_migration_payload(key: str, path: Path, default: dict[str, Any]) -> tuple[dict[str, Any], Path]:
     read_paths = _migration_paths_for_key(key, path)
     candidates: list[tuple[dict[str, Any], Path, bool]] = []
@@ -210,6 +240,18 @@ def migrate_json_files_to_database(*, force: bool = False) -> dict[str, Any]:
         try:
             result["processed"] += 1
             payload, source_path = _read_json_migration_payload(key, path, default)
+            item["path"] = source_path.as_posix()
+            if force and key in RUNTIME_JSON_STATE_KEYS:
+                existing = _load_existing_json_state(key)
+                existing_payload = existing if isinstance(existing, dict) else {}
+                existing_has_data = _payload_has_user_data(existing_payload, default)
+                if existing_has_data and not _payload_requests_runtime_restore(payload):
+                    result["skipped"] += 1
+                    item["status"] = "protected_runtime_state"
+                    continue
+                if _payload_requests_runtime_restore(payload):
+                    payload = _strip_runtime_restore_markers(payload)
+                    item["status"] = "restored_runtime_state"
             if not force:
                 existing = _load_existing_json_state(key)
                 if existing is not None:
@@ -226,7 +268,6 @@ def migrate_json_files_to_database(*, force: bool = False) -> dict[str, Any]:
             result["updated"] += 1
             if item["status"] == "skipped":
                 item["status"] = "updated"
-            item["path"] = source_path.as_posix()
             item["count"] = len(payload.get("items") or []) if isinstance(payload.get("items"), list) else len(payload)
         except Exception as exc:
             result["failed"] += 1
@@ -268,6 +309,7 @@ def migrate_json_files_to_database(*, force: bool = False) -> dict[str, Any]:
         skipped=result["skipped"],
         failed=result["failed"],
         duration_seconds=result["duration_seconds"],
+        items=result["items"],
     )
     return result
 

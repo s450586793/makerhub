@@ -45,6 +45,7 @@ from app.services.remote_refresh_summary import (
     sanitize_remote_refresh_message,
 )
 from app.services.task_state import TaskStateStore, is_metadata_only_missing_3mf_placeholder
+from app.services.task_runtime import is_lease_expired, normalize_runtime_status
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, resolve_model_instance_files
 
 
@@ -1615,15 +1616,19 @@ class RemoteRefreshManager:
                 "state": state,
             }
 
-        if self._service_busy():
+        busy_reason = self._service_busy_reason()
+        if busy_reason:
             message = "当前有归档队列或本地整理任务在运行，请稍后再试手动同步。"
             state = self.task_store.patch_remote_refresh_state(
                 status="disabled" if not config.remote_refresh.enabled else "idle",
                 running=False,
                 last_message=message,
                 current_item={},
+                last_attempt_at=_now_iso(),
+                last_deferred_at=_now_iso(),
+                last_defer_reason=busy_reason,
             )
-            _append_remote_refresh_log("manual_trigger_rejected", reason="service_busy")
+            _append_remote_refresh_log("manual_trigger_rejected", reason=busy_reason)
             append_business_log(
                 "remote_refresh",
                 "manual_trigger_rejected",
@@ -1817,14 +1822,18 @@ class RemoteRefreshManager:
         if not manual_requested and next_run_at and next_run_at > _now():
             return
 
-        if self._service_busy():
+        busy_reason = self._service_busy_reason()
+        if busy_reason:
+            now_iso = _now_iso()
             retry_at = (_now()).timestamp() + 60
             self.task_store.patch_remote_refresh_state(
-                status="idle",
+                status="deferred",
                 running=False,
                 next_run_at=china_from_timestamp(retry_at).isoformat(),
                 scheduled_cron=normalized_cron,
-                last_message="当前有归档队列或本地整理任务在运行，源端刷新延后 60 秒。",
+                last_attempt_at=now_iso,
+                last_deferred_at=now_iso,
+                last_defer_reason=busy_reason,
                 current_item={},
             )
             return
@@ -1832,14 +1841,33 @@ class RemoteRefreshManager:
         self._run_batch(config)
 
     def _service_busy(self) -> bool:
+        return bool(self._service_busy_reason())
+
+    def _service_busy_reason(self) -> str:
         queue = self.task_store.load_archive_queue()
-        if queue.get("active") or queue.get("queued"):
-            return True
+        stale_archive_queue_detected = False
+        if queue.get("queued"):
+            return "archive_queue_busy"
+        for item in queue.get("active") or []:
+            if not isinstance(item, dict):
+                continue
+            status = normalize_runtime_status(item.get("status"), "running")
+            if status == "waiting_children":
+                continue
+            if status == "running":
+                if is_lease_expired(item.get("lease_expires_at")):
+                    stale_archive_queue_detected = True
+                    continue
+                return "archive_queue_busy"
+            if status in {"queued"}:
+                return "archive_queue_busy"
+        if stale_archive_queue_detected:
+            self.task_store.patch_remote_refresh_state(stale_archive_queue_detected=True)
         organize_tasks = self.task_store.load_organize_tasks()
         for item in organize_tasks.get("items") or []:
             if str(item.get("status") or "").strip().lower() in {"pending", "queued", "running"}:
-                return True
-        return False
+                return "local_organizer_busy"
+        return ""
 
     def _pick_candidates(self) -> tuple[list[dict[str, Any]], dict[str, int]]:
         snapshot = get_archive_snapshot()
