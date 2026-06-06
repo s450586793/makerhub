@@ -5,6 +5,7 @@ import { test } from "node:test";
 const logsPageSource = readFileSync(new URL("../pages/LogsPage.vue", import.meta.url), "utf8");
 const tasksPageSource = readFileSync(new URL("../pages/TasksPage.vue", import.meta.url), "utf8");
 const remoteRefreshPageSource = readFileSync(new URL("../pages/RemoteRefreshPage.vue", import.meta.url), "utf8");
+const dashboardPageSource = readFileSync(new URL("../pages/DashboardPage.vue", import.meta.url), "utf8");
 const organizerPageSource = readFileSync(new URL("../pages/OrganizerPage.vue", import.meta.url), "utf8");
 const settingsPageSource = readFileSync(new URL("../pages/SettingsPage.vue", import.meta.url), "utf8");
 
@@ -32,6 +33,24 @@ test("RemoteRefreshPage uses shared page refresh controller for throttled refres
   assert.match(remoteRefreshPageSource, /createPageRefreshController/);
   assert.doesNotMatch(remoteRefreshPageSource, /function scheduleRefresh/);
   assert.match(remoteRefreshPageSource, /remoteRefreshController/);
+});
+
+test("RemoteRefreshPage exposes resumable batch state and recovery actions", () => {
+  assert.match(remoteRefreshPageSource, /上次尝试/);
+  assert.match(remoteRefreshPageSource, /上次完成/);
+  assert.match(remoteRefreshPageSource, /最近阻塞/);
+  assert.match(remoteRefreshPageSource, /最近中断/);
+  assert.match(remoteRefreshPageSource, /继续源端刷新/);
+  assert.match(remoteRefreshPageSource, /修复队列状态/);
+  assert.match(remoteRefreshPageSource, /stale_archive_queue_detected/);
+  assert.match(remoteRefreshPageSource, /\/api\/tasks\/archive-queue\/repair/);
+});
+
+test("DashboardPage shows separate source refresh completion fields", () => {
+  assert.match(dashboardPageSource, /最近完成/);
+  assert.match(dashboardPageSource, /last_completed_at/);
+  assert.match(dashboardPageSource, /最近阻塞/);
+  assert.match(dashboardPageSource, /last_defer_reason/);
 });
 
 test("OrganizerPage uses shared page refresh controller for organize task refresh", () => {

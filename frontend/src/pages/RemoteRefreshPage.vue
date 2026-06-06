@@ -13,7 +13,7 @@
       </div>
       <div class="intro-stat">
         <span>本轮计划</span>
-        <strong>{{ remoteRefreshState.last_batch_total || 0 }}</strong>
+        <strong>{{ displayBatchTotal }}</strong>
       </div>
       <div class="intro-stat">
         <span>可刷新总数</span>
@@ -21,7 +21,7 @@
       </div>
       <div class="intro-stat">
         <span>剩余待刷</span>
-        <strong>{{ remoteRefreshState.last_remaining_total || 0 }}</strong>
+        <strong>{{ displayRemainingTotal }}</strong>
       </div>
     </div>
   </section>
@@ -63,12 +63,26 @@
           <strong>{{ formatDateTime(remoteRefreshState.next_run_at) }}</strong>
         </label>
         <label class="field-card">
-          <span>上次运行</span>
-          <strong>{{ formatDateTime(remoteRefreshState.last_run_at) }}</strong>
+          <span>上次尝试</span>
+          <strong>{{ formatDateTime(remoteRefreshState.last_attempt_at) }}</strong>
         </label>
         <label class="field-card">
-          <span>上次结果</span>
-          <strong>{{ remoteRefreshState.last_message || "-" }}</strong>
+          <span>上次批次开始</span>
+          <strong>{{ formatDateTime(remoteRefreshState.last_run_at) }}</strong>
+        </label>
+      </div>
+      <div class="settings-grid settings-grid--three">
+        <label class="field-card">
+          <span>上次完成</span>
+          <strong>{{ formatDateTime(remoteRefreshState.last_completed_at) }}</strong>
+        </label>
+        <label class="field-card">
+          <span>最近阻塞</span>
+          <strong>{{ deferSummary }}</strong>
+        </label>
+        <label class="field-card">
+          <span>最近中断</span>
+          <strong>{{ interruptedSummary }}</strong>
         </label>
       </div>
       <div class="form-footer">
@@ -82,7 +96,16 @@
             :disabled="loading || manualSyncing || remoteRefreshState.running"
             @click="runRemoteRefreshManually"
           >
-            {{ (manualSyncing || remoteRefreshState.running) ? "同步中..." : "手动同步" }}
+            {{ manualActionLabel }}
+          </button>
+          <button
+            v-if="remoteRefreshState.stale_archive_queue_detected"
+            class="button button-secondary"
+            type="button"
+            :disabled="loading || repairingQueue"
+            @click="repairArchiveQueue"
+          >
+            {{ repairingQueue ? "修复中..." : "修复队列状态" }}
           </button>
         </div>
         <span class="form-status">{{ status }}</span>
@@ -95,7 +118,7 @@
       <div class="section-card__header">
         <div>
           <span class="eyebrow">批次摘要</span>
-          <h2>最近一轮源端刷新</h2>
+          <h2>{{ hasActiveRun ? "当前可恢复批次" : "最近一轮源端刷新" }}</h2>
         </div>
         <span :class="['count-pill', remoteRefreshState.running ? 'count-pill--warn' : 'count-pill--ok']">
           {{ remoteRefreshState.last_batch_succeeded || 0 }} 成功 / {{ remoteRefreshState.last_batch_failed || 0 }} 失败
@@ -105,11 +128,11 @@
       <div class="remote-refresh-stats">
         <div class="remote-refresh-stat">
           <span>本轮计划</span>
-          <strong>{{ remoteRefreshState.last_batch_total || 0 }}</strong>
+          <strong>{{ displayBatchTotal }}</strong>
         </div>
         <div class="remote-refresh-stat">
-          <span>可刷新总数</span>
-          <strong>{{ remoteRefreshState.last_eligible_total || 0 }}</strong>
+          <span>已完成/剩余</span>
+          <strong>{{ activeCompletedTotal }} / {{ displayRemainingTotal }}</strong>
         </div>
         <div class="remote-refresh-stat">
           <span>缺 Cookie 跳过</span>
@@ -140,14 +163,20 @@
         </div>
       </div>
 
+      <div v-if="hasActiveRun" class="remote-refresh-active">
+        <span>{{ formatActiveRunStatus(activeRun.status) }}</span>
+        <strong>{{ activeRun.batch_id || "-" }}</strong>
+        <em>{{ activeCompletedTotal }} / {{ displayBatchTotal }} 完成</em>
+      </div>
+
       <div class="remote-refresh-times">
         <div class="remote-refresh-time">
-          <span>上次成功</span>
-          <strong>{{ formatDateTime(remoteRefreshState.last_success_at) }}</strong>
+          <span>上次批次开始</span>
+          <strong>{{ formatDateTime(remoteRefreshState.last_run_at) }}</strong>
         </div>
         <div class="remote-refresh-time">
-          <span>上次异常</span>
-          <strong>{{ formatDateTime(remoteRefreshState.last_error_at) }}</strong>
+          <span>上次完成</span>
+          <strong>{{ formatDateTime(remoteRefreshState.last_completed_at) }}</strong>
         </div>
         <div class="remote-refresh-time">
           <span>当前任务</span>
@@ -273,6 +302,7 @@ const status = ref("");
 const loading = ref(true);
 const saving = ref(false);
 const manualSyncing = ref(false);
+const repairingQueue = ref(false);
 const historyFilter = ref("changed");
 const historyVisibleLimit = ref(HISTORY_PAGE_SIZE);
 const remoteRefreshState = ref({});
@@ -315,6 +345,46 @@ const currentItems = computed(() => {
 });
 const hasCurrentItem = computed(() => currentItems.value.length > 0);
 const batchMetrics = computed(() => remoteRefreshState.value?.last_batch_metrics || {});
+const activeRun = computed(() => {
+  const value = remoteRefreshState.value?.active_run;
+  return value && typeof value === "object" ? value : {};
+});
+const activeRunStatus = computed(() => String(activeRun.value.status || "").trim());
+const hasActiveRun = computed(() => Boolean(activeRun.value.batch_id) && ["running", "resuming", "interrupted"].includes(activeRunStatus.value));
+const canResumeActiveRun = computed(() => {
+  const statusValue = String(activeRun.value.status || "").trim();
+  return ["running", "resuming", "interrupted"].includes(statusValue) && !remoteRefreshState.value?.running;
+});
+const displayBatchTotal = computed(() => Number(hasActiveRun.value ? activeRun.value.candidate_total || 0 : remoteRefreshState.value?.last_batch_total || 0));
+const activeCompletedTotal = computed(() => {
+  if (hasActiveRun.value) {
+    return Number(activeRun.value.completed_total || 0);
+  }
+  return Number(remoteRefreshState.value?.last_batch_succeeded || 0) + Number(remoteRefreshState.value?.last_batch_failed || 0);
+});
+const displayRemainingTotal = computed(() => Number(hasActiveRun.value ? activeRun.value.remaining_total || 0 : remoteRefreshState.value?.last_remaining_total || 0));
+const manualActionLabel = computed(() => {
+  if (manualSyncing.value || remoteRefreshState.value?.running) {
+    return "同步中...";
+  }
+  return canResumeActiveRun.value ? "继续源端刷新" : "手动同步";
+});
+const deferSummary = computed(() => {
+  const reason = String(remoteRefreshState.value?.last_defer_reason || "").trim();
+  if (!reason) {
+    return "-";
+  }
+  const timeText = formatDateTime(remoteRefreshState.value?.last_deferred_at);
+  return `${formatDeferReason(reason)} · ${timeText}`;
+});
+const interruptedSummary = computed(() => {
+  const reason = String(remoteRefreshState.value?.last_interrupted_reason || activeRun.value.interrupted_reason || "").trim();
+  if (!reason) {
+    return "-";
+  }
+  const timeText = formatDateTime(remoteRefreshState.value?.last_interrupted_at);
+  return `${formatInterruptedReason(reason)} · ${timeText}`;
+});
 const emptyHistoryText = computed(() => {
   if (!recentHistory.value.length) {
     return "还没有源端刷新记录。";
@@ -372,10 +442,42 @@ function formatRemoteRefreshStatus(value) {
   const mapping = {
     idle: "空闲",
     running: "运行中",
+    resuming: "恢复中",
+    deferred: "已延后",
+    interrupted: "可恢复",
     error: "异常",
     disabled: "已停用",
   };
   return mapping[String(value || "").trim()] || "空闲";
+}
+
+function formatActiveRunStatus(value) {
+  const mapping = {
+    running: "运行中",
+    resuming: "恢复中",
+    interrupted: "已中断",
+    completed: "已完成",
+    abandoned: "已放弃",
+  };
+  return mapping[String(value || "").trim()] || "批次";
+}
+
+function formatDeferReason(value) {
+  const mapping = {
+    archive_queue_busy: "归档队列占用",
+    local_organizer_busy: "本地整理占用",
+    stale_runtime_state: "队列状态待修复",
+  };
+  return mapping[String(value || "").trim()] || String(value || "-");
+}
+
+function formatInterruptedReason(value) {
+  const mapping = {
+    manifest_missing: "批次清单缺失",
+    result_path_missing: "结果日志缺失",
+    worker_stopped: "Worker 已停止",
+  };
+  return mapping[String(value || "").trim()] || String(value || "-");
 }
 
 function formatDateTime(value) {
@@ -515,6 +617,29 @@ async function runRemoteRefreshManually() {
     status.value = error instanceof Error ? error.message : "手动同步触发失败。";
   } finally {
     manualSyncing.value = false;
+  }
+}
+
+async function repairArchiveQueue() {
+  repairingQueue.value = true;
+  status.value = "";
+  try {
+    const response = await apiRequest("/api/tasks/archive-queue/repair", {
+      method: "POST",
+    });
+    const summary = response?.summary || {};
+    await load({ silent: true });
+    status.value = [
+      response?.message || "队列状态修复完成。",
+      `检查 ${Number(summary.examined || 0)} 个`,
+      `重排 ${Number(summary.requeued || 0)} 个`,
+      `失败 ${Number(summary.failed || 0)} 个`,
+      `跳过 ${Number(summary.skipped || 0)} 个`,
+    ].join(" · ");
+  } catch (error) {
+    status.value = error instanceof Error ? error.message : "队列修复失败。";
+  } finally {
+    repairingQueue.value = false;
   }
 }
 

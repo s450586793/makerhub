@@ -250,7 +250,15 @@
 
             <div class="dashboard-mini-card__meta">
               <span>
-                <strong>上次运行</strong>
+                <strong>最近完成</strong>
+                {{ formatDateTime(automation.remote_refresh.last_completed_at) }}
+              </span>
+              <span>
+                <strong>最近阻塞</strong>
+                {{ remoteRefreshDeferText(automation.remote_refresh) }}
+              </span>
+              <span>
+                <strong>上次批次开始</strong>
                 {{ formatDateTime(automation.remote_refresh.last_run_at) }}
               </span>
               <span>
@@ -347,6 +355,9 @@ const defaultAutomationOverview = {
     next_run_at: "",
     last_run_at: "",
     last_success_at: "",
+    last_completed_at: "",
+    last_deferred_at: "",
+    last_defer_reason: "",
     last_message: "",
   },
   organizer: {
@@ -548,6 +559,9 @@ function remoteRefreshStatusLabel(status, running) {
   const normalized = String(status || "").trim();
   const mapping = {
     idle: "空闲",
+    resuming: "恢复中",
+    deferred: "已延后",
+    interrupted: "可恢复",
     disabled: "已停用",
     error: "异常",
   };
@@ -555,16 +569,34 @@ function remoteRefreshStatusLabel(status, running) {
 }
 
 function remoteRefreshPillClass(item) {
-  if (item?.running || item?.status === "running") {
+  if (item?.running || item?.status === "running" || item?.status === "resuming") {
     return "count-pill--warn";
   }
   if (item?.status === "error") {
     return "count-pill--danger";
   }
+  if (item?.status === "interrupted" || item?.status === "deferred") {
+    return "count-pill--warn";
+  }
   if (item?.enabled) {
     return "count-pill--ok";
   }
   return "";
+}
+
+function remoteRefreshDeferText(item) {
+  const reason = String(item?.last_defer_reason || "").trim();
+  if (!reason) {
+    return "无";
+  }
+  const mapping = {
+    archive_queue_busy: "归档队列占用",
+    local_organizer_busy: "本地整理占用",
+    stale_runtime_state: "队列状态待修复",
+  };
+  const reasonText = mapping[reason] || reason;
+  const timeText = formatDateTime(item?.last_deferred_at);
+  return `${reasonText} · ${timeText}`;
 }
 
 onMounted(async () => {

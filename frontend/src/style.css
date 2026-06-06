@@ -3470,7 +3470,7 @@ html[data-theme="dark"] .organizer-progress-popover {
 .remote-refresh-current,
 .remote-refresh-history__item {
   padding: 14px 16px;
-  border-radius: 16px;
+  border-radius: 8px;
   background: var(--surface-soft);
 }
 
@@ -3502,6 +3502,34 @@ html[data-theme="dark"] .organizer-progress-popover {
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.remote-refresh-active {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--surface-soft);
+}
+
+.remote-refresh-active span,
+.remote-refresh-active em {
+  color: var(--muted);
+  font-size: 13px;
+  font-style: normal;
+}
+
+.remote-refresh-active strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .remote-refresh-note {
