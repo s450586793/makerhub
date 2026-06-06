@@ -179,6 +179,56 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         buffer.delete()
         self.assertFalse(buffer.path.exists())
 
+    def test_remote_refresh_manifest_writes_safe_candidate_fields(self):
+        original_batch_dir = remote_refresh.REMOTE_REFRESH_BATCH_DIR
+        remote_refresh.REMOTE_REFRESH_BATCH_DIR = self.temp_path / "remote_refresh_batches"
+        try:
+            manifest = remote_refresh._RemoteRefreshBatchManifest.create(
+                batch_id="batch-safe",
+                candidates=[
+                    {
+                        "model_dir": "MW_1",
+                        "title": "模型 1",
+                        "origin_url": "https://makerworld.com.cn/zh/models/1?from=share",
+                        "meta_path": str(self.temp_path / "MW_1" / "meta.json"),
+                        "cookie": "secret=must-not-persist",
+                        "raw_html": "<html>secret</html>",
+                    }
+                ],
+                stats={"eligible_total": 1, "selected_total": 1, "remaining_total": 0},
+                cron="0 2 * * *",
+                manual=True,
+                directory=remote_refresh.REMOTE_REFRESH_BATCH_DIR,
+            )
+            payload = json.loads(manifest.path.read_text(encoding="utf-8"))
+        finally:
+            remote_refresh.REMOTE_REFRESH_BATCH_DIR = original_batch_dir
+
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["batch_id"], "batch-safe")
+        self.assertTrue(payload["manual"])
+        self.assertEqual(payload["candidates"][0]["model_dir"], "MW_1")
+        self.assertEqual(payload["candidates"][0]["url"], "https://makerworld.com.cn/zh/models/1?from=share")
+        self.assertNotIn("cookie", json.dumps(payload, ensure_ascii=False))
+        self.assertNotIn("raw_html", json.dumps(payload, ensure_ascii=False))
+
+    def test_completed_keys_from_batch_records_uses_model_dir_and_url(self):
+        records = [
+            {"model_dir": "MW_1", "url": "https://makerworld.com.cn/zh/models/1", "status": "success"},
+            {"model_dir": "MW_2", "url": "https://makerworld.com/zh/models/2", "status": "failed"},
+            {"model_dir": "", "url": "", "status": "success"},
+        ]
+
+        keys = remote_refresh._completed_remote_refresh_keys(records)
+
+        self.assertEqual(
+            keys,
+            {
+                "MW_1|https://makerworld.com.cn/zh/models/1",
+                "MW_2|https://makerworld.com/zh/models/2",
+            },
+        )
+
     def test_remote_refresh_batch_summary_uses_recent_newest_first_and_failure_samples(self):
         records = [
             remote_refresh._remote_refresh_result_record(

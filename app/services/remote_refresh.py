@@ -50,6 +50,8 @@ from app.services.three_mf import describe_three_mf_failure, normalize_makerworl
 
 REMOTE_REFRESH_LOG_PATH = LOGS_DIR / "remote_refresh.log"
 REMOTE_REFRESH_BATCH_DIR = STATE_DIR / "remote_refresh_batches"
+REMOTE_REFRESH_BATCH_MANIFEST_VERSION = 1
+REMOTE_REFRESH_BATCH_RETRY_SECONDS = 60
 REMOTE_REFRESH_BATCH_BUFFER_KEEP = 5
 REMOTE_REFRESH_BATCH_BUFFER_MAX_AGE_SECONDS = 3 * 24 * 60 * 60
 REMOTE_REFRESH_POLL_SECONDS = 20
@@ -189,6 +191,42 @@ def _remote_refresh_batch_id() -> str:
     return f"{_now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
 
 
+def _remote_refresh_relative_state_path(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(STATE_DIR.resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _remote_refresh_path_from_state(value: Any) -> Path:
+    raw = str(value or "").strip()
+    if not raw:
+        return Path()
+    path = Path(raw)
+    if path.is_absolute():
+        return path
+    return STATE_DIR / path
+
+
+def _remote_refresh_candidate_key(item: dict[str, Any]) -> str:
+    model_dir = str(item.get("model_dir") or "").strip().strip("/")
+    url = normalize_source_url(str(item.get("url") or item.get("origin_url") or ""))
+    if not model_dir or not url:
+        return ""
+    return f"{model_dir}|{url}"
+
+
+def _completed_remote_refresh_keys(records: list[dict[str, Any]]) -> set[str]:
+    keys: set[str] = set()
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        key = _remote_refresh_candidate_key(record)
+        if key:
+            keys.add(key)
+    return keys
+
+
 class _RemoteRefreshBatchBuffer:
     def __init__(self, *, batch_id: str = "", directory: Optional[Path] = None) -> None:
         self.batch_id = str(batch_id or _remote_refresh_batch_id()).strip()
@@ -243,6 +281,73 @@ class _RemoteRefreshBatchBuffer:
             self.path.unlink()
         except FileNotFoundError:
             return
+
+
+def _remote_refresh_manifest_entry(item: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        item = {}
+    url = normalize_source_url(str(item.get("origin_url") or item.get("url") or ""))
+    return {
+        "model_dir": str(item.get("model_dir") or "").strip().strip("/"),
+        "title": str(item.get("title") or item.get("model_dir") or "").strip(),
+        "origin_url": url,
+        "url": url,
+        "source": str(item.get("source") or "").strip(),
+        "meta_path": str(item.get("meta_path") or "").strip(),
+        "collect_ts": _parse_ts(item.get("collect_ts")),
+        "remote_sync": item.get("remote_sync") if isinstance(item.get("remote_sync"), dict) else {},
+    }
+
+
+class _RemoteRefreshBatchManifest:
+    def __init__(self, *, batch_id: str, path: Path, payload: dict[str, Any]) -> None:
+        self.batch_id = str(batch_id or "").strip()
+        self.path = Path(path)
+        self.payload = payload if isinstance(payload, dict) else {}
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        batch_id: str,
+        candidates: list[dict[str, Any]],
+        stats: dict[str, Any],
+        cron: str,
+        manual: bool,
+        directory: Optional[Path] = None,
+    ) -> "_RemoteRefreshBatchManifest":
+        batch_dir = Path(directory or REMOTE_REFRESH_BATCH_DIR)
+        batch_dir.mkdir(parents=True, exist_ok=True)
+        clean_batch_id = str(batch_id or _remote_refresh_batch_id()).strip()
+        path = batch_dir / f"{clean_batch_id}.manifest.json"
+        entries = [_remote_refresh_manifest_entry(item) for item in candidates or []]
+        payload = {
+            "schema_version": REMOTE_REFRESH_BATCH_MANIFEST_VERSION,
+            "batch_id": clean_batch_id,
+            "created_at": _now_iso(),
+            "scheduled_cron": str(cron or ""),
+            "manual": bool(manual),
+            "stats": _json_safe_remote_refresh_value(stats if isinstance(stats, dict) else {}),
+            "candidate_total": len(entries),
+            "candidates": entries,
+        }
+        _write_json(path, payload)
+        return cls(batch_id=clean_batch_id, path=path, payload=payload)
+
+    @classmethod
+    def load(cls, path: Path) -> "_RemoteRefreshBatchManifest":
+        payload = _load_json(path)
+        return cls(batch_id=str(payload.get("batch_id") or ""), path=path, payload=payload)
+
+    def compatible(self) -> bool:
+        return (
+            int(self.payload.get("schema_version") or 0) == REMOTE_REFRESH_BATCH_MANIFEST_VERSION
+            and bool(self.batch_id)
+            and isinstance(self.payload.get("candidates"), list)
+        )
+
+    def candidates(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self.payload.get("candidates") or [] if isinstance(item, dict)]
 
 
 def _cleanup_remote_refresh_batch_buffers(
