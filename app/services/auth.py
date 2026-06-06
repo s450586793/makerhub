@@ -1,4 +1,5 @@
 import threading
+import time
 from datetime import timedelta
 from typing import Iterable, Optional
 
@@ -21,11 +22,14 @@ from app.schemas.models import ApiTokenRecord, ApiTokenView
 
 SESSION_COOKIE_NAME = "makerhub_session"
 SESSION_TTL_DAYS = 14
+SESSION_AUTH_CACHE_TTL_SECONDS = 15
 LOGIN_FAILURE_WINDOW_SECONDS = 15 * 60
 LOGIN_FAILURE_LOCK_SECONDS = 5 * 60
 LOGIN_FAILURE_LIMIT = 5
 SESSIONS_PATH = STATE_DIR / "auth_sessions.json"
 SESSIONS_STATE_KEY = "auth_sessions"
+_SESSION_AUTH_CACHE: dict[str, tuple[float, dict]] = {}
+_SESSION_AUTH_CACHE_LOCK = threading.RLock()
 TOKEN_PERMISSION_LABELS = {
     "archive_write": "提交归档任务",
     "mobile_import": "移动端/本地导入",
@@ -80,6 +84,39 @@ class AuthManager:
 
     def _write_sessions(self, payload: dict) -> None:
         save_database_json_state(SESSIONS_STATE_KEY, payload)
+
+    def _clear_session_cache(self, session_id: str = "") -> None:
+        with _SESSION_AUTH_CACHE_LOCK:
+            clean_session_id = str(session_id or "").strip()
+            if clean_session_id:
+                _SESSION_AUTH_CACHE.pop(clean_session_id, None)
+            else:
+                _SESSION_AUTH_CACHE.clear()
+
+    def _cached_session(self, session_id: str) -> Optional[dict]:
+        clean_session_id = str(session_id or "").strip()
+        if not clean_session_id:
+            return None
+        now_ts = time.monotonic()
+        with _SESSION_AUTH_CACHE_LOCK:
+            item = _SESSION_AUTH_CACHE.get(clean_session_id)
+            if not item:
+                return None
+            expires_at, session = item
+            if expires_at <= now_ts:
+                _SESSION_AUTH_CACHE.pop(clean_session_id, None)
+                return None
+            return dict(session)
+
+    def _cache_session(self, session_id: str, session: dict) -> None:
+        clean_session_id = str(session_id or "").strip()
+        if not clean_session_id or not isinstance(session, dict):
+            return
+        with _SESSION_AUTH_CACHE_LOCK:
+            _SESSION_AUTH_CACHE[clean_session_id] = (
+                time.monotonic() + SESSION_AUTH_CACHE_TTL_SECONDS,
+                dict(session),
+            )
 
     def _prune_sessions(self, payload: dict) -> dict:
         now = china_now()
@@ -174,13 +211,18 @@ class AuthManager:
         payload = self._read_sessions()
         payload["items"] = [item for item in payload.get("items") or [] if str(item.get("id") or "") != session_id]
         self._write_sessions(payload)
+        self._clear_session_cache(session_id)
 
     def clear_all_sessions(self) -> None:
         self._write_sessions({"items": []})
+        self._clear_session_cache()
 
     def get_session(self, session_id: str) -> Optional[dict]:
         if not session_id:
             return None
+        cached = self._cached_session(session_id)
+        if cached:
+            return cached
         payload = self._prune_sessions(self._read_sessions())
         target = None
         changed = False
@@ -202,6 +244,8 @@ class AuthManager:
                 break
         if changed:
             self._write_sessions(payload)
+        if target:
+            self._cache_session(session_id, target)
         return target
 
     def _token_view(self, item: ApiTokenRecord, *, now=None) -> ApiTokenView:

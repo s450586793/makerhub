@@ -16,6 +16,7 @@ from app.core.timezone import now as china_now, parse_datetime
 from app.services.cookie_utils import extract_auth_token, sanitize_cookie_header
 from app.services.proxy_policy import effective_proxy_cache_state, proxy_mapping
 from app.services.scrapling_fetch import fetch_text as scrapling_fetch_text, scrapling_only
+from app.services.state_events import publish_state_event
 from app.services.three_mf import (
     describe_three_mf_failure,
     merge_three_mf_failure,
@@ -28,6 +29,7 @@ from app.services.three_mf import (
 THREE_MF_LIMIT_GUARD_PATH = STATE_DIR / "three_mf_limit_guard.json"
 THREE_MF_LIMIT_GUARD_KEY = "three_mf_limit_guard"
 SOURCE_HEALTH_CACHE_TTL_SECONDS = 60
+SOURCE_HEALTH_STALE_TTL_SECONDS = 10 * 60
 MW_BROWSER_HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
@@ -63,6 +65,7 @@ SOURCE_HEALTH_LABELS = {
 }
 SOURCE_HEALTH_CACHE_LOCK = threading.RLock()
 SOURCE_HEALTH_CACHE: dict[str, dict[str, Any]] = {}
+SOURCE_HEALTH_REFRESHING_KEYS: set[str] = set()
 
 
 def _make_session() -> requests.Session:
@@ -462,6 +465,74 @@ def _cache_key(platform: str, raw_cookie: str, proxy_config: Any) -> str:
     return f"{platform}:{cookie_hash}:{proxy_state}"
 
 
+def _cached_source_health_payload(cache_key: str, *, max_age_seconds: float) -> dict[str, Any] | None:
+    now = time.time()
+    with SOURCE_HEALTH_CACHE_LOCK:
+        cached = SOURCE_HEALTH_CACHE.get(cache_key)
+        if not cached:
+            return None
+        age_seconds = now - float(cached.get("checked_at") or 0)
+        if age_seconds < 0 or age_seconds > max_age_seconds:
+            return None
+        payload = dict(cached.get("payload") or {})
+    payload["cached"] = True
+    payload["cache_age_seconds"] = max(0, int(age_seconds))
+    return payload
+
+
+def _save_source_health_payload(cache_key: str, payload: dict[str, Any]) -> None:
+    with SOURCE_HEALTH_CACHE_LOCK:
+        SOURCE_HEALTH_CACHE[cache_key] = {
+            "checked_at": time.time(),
+            "payload": dict(payload or {}),
+        }
+
+
+def _async_refresh_source_health(
+    cache_key: str,
+    platform: str,
+    raw_cookie: str,
+    proxy_config: Any,
+) -> None:
+    def _refresh() -> None:
+        try:
+            try:
+                payload = _probe_auth_endpoints(platform, raw_cookie, proxy_config)
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "platform": platform,
+                    "state": "http_error",
+                    "status": "连接异常",
+                    "detail": _safe_error_message(exc),
+                }
+            _save_source_health_payload(cache_key, payload)
+            publish_state_event(
+                "dashboard",
+                "state.changed",
+                {"reason": "source_health_refreshed", "platform": platform},
+            )
+        finally:
+            with SOURCE_HEALTH_CACHE_LOCK:
+                SOURCE_HEALTH_REFRESHING_KEYS.discard(cache_key)
+
+    with SOURCE_HEALTH_CACHE_LOCK:
+        if cache_key in SOURCE_HEALTH_REFRESHING_KEYS:
+            return
+        SOURCE_HEALTH_REFRESHING_KEYS.add(cache_key)
+    thread = threading.Thread(target=_refresh, name=f"makerhub-source-health-{platform}", daemon=True)
+    thread.start()
+
+
+def _checking_source_health_payload(platform: str) -> dict[str, Any]:
+    return _empty_cookie_auth_payload(
+        platform,
+        "checking",
+        "检测中",
+        "正在后台刷新源站状态，首页先使用其它快照数据。",
+    )
+
+
 def probe_cookie_auth_status(
     platform: str,
     raw_cookie: str,
@@ -486,21 +557,15 @@ def probe_cookie_auth_status(
             )
 
     cache_key = _cache_key(platform_key, normalized_cookie, proxy_config)
-    now = time.time()
     if use_cache:
-        with SOURCE_HEALTH_CACHE_LOCK:
-            cached = SOURCE_HEALTH_CACHE.get(cache_key)
-            if cached and now - float(cached.get("checked_at") or 0) < SOURCE_HEALTH_CACHE_TTL_SECONDS:
-                return dict(cached.get("payload") or {})
+        cached_payload = _cached_source_health_payload(cache_key, max_age_seconds=SOURCE_HEALTH_CACHE_TTL_SECONDS)
+        if cached_payload:
+            return cached_payload
 
     payload = _probe_auth_endpoints(platform_key, normalized_cookie, proxy_config)
 
     if use_cache:
-        with SOURCE_HEALTH_CACHE_LOCK:
-            SOURCE_HEALTH_CACHE[cache_key] = {
-                "checked_at": now,
-                "payload": payload,
-            }
+        _save_source_health_payload(cache_key, payload)
     return dict(payload)
 
 
@@ -512,6 +577,34 @@ def _probe_platform_status(platform: str, raw_cookie: str, proxy_config: Any) ->
         include_limit_guard=True,
         use_cache=True,
     )
+
+
+def _probe_platform_status_snapshot(platform: str, raw_cookie: str, proxy_config: Any) -> dict[str, Any]:
+    platform_key = "global" if str(platform or "").strip() == "global" else "cn"
+    normalized_cookie = sanitize_cookie_header(raw_cookie)
+    if not normalized_cookie:
+        return _empty_cookie_auth_payload(platform_key, "missing_cookie", "未配置 Cookie", "还没有保存对应站点的 Cookie。")
+
+    limit_guard = _limit_guard_for_platform(platform_key)
+    if limit_guard:
+        return _empty_cookie_auth_payload(
+            platform_key,
+            "download_limited",
+            "到达每日上限",
+            _limit_guard_message(limit_guard),
+        )
+
+    cache_key = _cache_key(platform_key, normalized_cookie, proxy_config)
+    fresh_payload = _cached_source_health_payload(cache_key, max_age_seconds=SOURCE_HEALTH_CACHE_TTL_SECONDS)
+    if fresh_payload:
+        return fresh_payload
+
+    stale_payload = _cached_source_health_payload(cache_key, max_age_seconds=SOURCE_HEALTH_STALE_TTL_SECONDS)
+    _async_refresh_source_health(cache_key, platform_key, normalized_cookie, proxy_config)
+    if stale_payload:
+        stale_payload["stale"] = True
+        return stale_payload
+    return _checking_source_health_payload(platform_key)
 
 
 def _recent_remote_refresh_health(platform: str, remote_refresh_state: dict[str, Any] | None) -> dict[str, Any]:
@@ -617,6 +710,8 @@ def _build_missing_3mf_overrides(items: list[dict[str, Any]] | None) -> dict[str
 
 
 def _status_text_from_failure_state(state: str) -> str:
+    if state == "checking":
+        return "检测中"
     if state == "download_limited":
         return "到达每日上限"
     if state in {"verification_required", "cloudflare"}:
@@ -636,6 +731,8 @@ def _tone_from_state(state: str) -> str:
     if state in {"probe_limited", "html_response"}:
         return "warning"
     if state == "missing_cookie":
+        return "neutral"
+    if state == "checking":
         return "neutral"
     return "danger"
 
@@ -705,13 +802,18 @@ def build_source_health_cards(
     missing_3mf_items: list[dict[str, Any]] | None = None,
     *,
     remote_refresh_state: dict[str, Any] | None = None,
+    prefer_cached: bool = False,
 ) -> list[dict[str, Any]]:
     cookie_map = {item.platform: item.cookie for item in getattr(config, "cookies", [])}
     platforms = ("cn", "global")
     missing_overrides = _build_missing_3mf_overrides(missing_3mf_items)
 
     def build_card(platform: str) -> dict[str, Any]:
-        probe = _probe_platform_status(platform, str(cookie_map.get(platform) or ""), getattr(config, "proxy", None))
+        probe = (
+            _probe_platform_status_snapshot(platform, str(cookie_map.get(platform) or ""), getattr(config, "proxy", None))
+            if prefer_cached
+            else _probe_platform_status(platform, str(cookie_map.get(platform) or ""), getattr(config, "proxy", None))
+        )
         account_state = str(probe.get("state") or "").strip()
         account_detail = str(probe.get("detail") or "").strip()
         account_status = str(probe.get("status") or "连接异常")

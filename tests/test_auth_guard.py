@@ -121,6 +121,56 @@ class AuthGuardTokenPermissionTest(unittest.TestCase):
                 )
             )
 
+    def test_session_auth_uses_short_memory_cache_and_invalidates_on_delete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            manager = AuthManager(store=store, sessions_path=Path(tmp) / "sessions.json")
+            session = manager.create_session("admin")
+            request = SimpleNamespace(
+                cookies={"makerhub_session": session["id"]},
+                headers={},
+                query_params={},
+            )
+            read_calls = 0
+            original_read_sessions = manager._read_sessions
+
+            def counted_read_sessions():
+                nonlocal read_calls
+                read_calls += 1
+                return original_read_sessions()
+
+            with patch.object(manager, "_read_sessions", side_effect=counted_read_sessions):
+                first = manager.resolve_request_auth(request)
+                second = manager.resolve_request_auth(request)
+                reads_before_delete = read_calls
+                manager.delete_session(session["id"])
+                third = manager.resolve_request_auth(request)
+
+            self.assertEqual(first["username"], "admin")
+            self.assertEqual(second["username"], "admin")
+            self.assertIsNone(third)
+            self.assertEqual(reads_before_delete, 1)
+            self.assertEqual(read_calls, 3)
+
+    def test_session_cache_invalidation_is_shared_across_auth_manager_instances(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            resolver = AuthManager(store=store, sessions_path=Path(tmp) / "sessions.json")
+            deleter = AuthManager(store=store, sessions_path=Path(tmp) / "sessions.json")
+            session = deleter.create_session("admin")
+            request = SimpleNamespace(
+                cookies={"makerhub_session": session["id"]},
+                headers={},
+                query_params={},
+            )
+
+            first = resolver.resolve_request_auth(request)
+            deleter.delete_session(session["id"])
+            second = resolver.resolve_request_auth(request)
+
+            self.assertEqual(first["username"], "admin")
+            self.assertIsNone(second)
+
 
 class AuthLoginHardeningTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

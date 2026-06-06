@@ -6,7 +6,6 @@ import os
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.api import config as config_api
-from app.core.database import database_status
 from app.core.settings import APP_VERSION
 from app.schemas.models import SystemUpdateRequest
 from app.services.request_threads import run_ui_io
@@ -20,17 +19,15 @@ router = APIRouter(prefix="/api")
 @router.get("/bootstrap")
 async def get_bootstrap(request: Request):
     identity = getattr(request.state, "auth_identity", None) or {}
-    config = await run_ui_io(config_api.store.load)
-    payload = {
+    return {
         "app_version": APP_VERSION,
-        "session": config_api._session_payload(identity, config=config if identity else None),
-        "theme_preference": config.user.theme_preference if identity else "",
-        "database": await run_ui_io(database_status),
+        "session": {
+            "authenticated": bool(identity),
+            "kind": str(identity.get("kind") or ""),
+            "username": str(identity.get("username") or ""),
+            "display_name": str(identity.get("display_name") or ""),
+        },
     }
-    return config_api._with_version_status(
-        payload,
-        await config_api._get_github_version_status(proxy_config=config.proxy),
-    )
 
 
 @router.get("/public/makerhub/ping")

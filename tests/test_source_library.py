@@ -5,8 +5,9 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from app.schemas.models import SubscriptionRecord
-from app.services.catalog import _apply_subscription_flags, _source_deleted_model_count
+from app.schemas.models import AppConfig, SubscriptionRecord
+from app.services.catalog import _apply_subscription_flags, _source_deleted_model_count, build_dashboard_payload
+from tests.test_helpers import InMemoryDatabaseState
 from app.services.source_library import (
     _SOURCE_LIBRARY_GROUP_CACHE,
     _SOURCE_LIBRARY_PAYLOAD_REFRESH_STATE,
@@ -92,6 +93,22 @@ class SourceLibraryTest(unittest.TestCase):
         ]
 
         self.assertEqual(_source_deleted_model_count(items), 1)
+
+    def test_dashboard_reuses_loaded_archive_snapshot_for_decorated_models(self):
+        snapshot = {
+            "models": (),
+            "total": 0,
+            "archived_model_ids": frozenset(),
+            "archived_urls": frozenset(),
+        }
+
+        with InMemoryDatabaseState(), \
+                patch("app.services.catalog.get_archive_snapshot", return_value=snapshot) as snapshot_mock, \
+                patch("app.services.catalog.build_source_health_cards", return_value=[]):
+            payload = build_dashboard_payload(AppConfig())
+
+        self.assertEqual(payload["stats"][0]["value"], 0)
+        snapshot_mock.assert_called_once_with()
 
     def test_subscription_flags_ignore_collection_missing_items(self):
         item = {

@@ -2215,8 +2215,8 @@ def _session_payload(identity: dict, config=None) -> dict:
     return {
         "authenticated": True,
         "kind": identity.get("kind") or "",
-        "username": config.user.username if config else "",
-        "display_name": config.user.display_name if config else "",
+        "username": config.user.username if config else str(identity.get("username") or ""),
+        "display_name": config.user.display_name if config else str(identity.get("display_name") or ""),
     }
 
 

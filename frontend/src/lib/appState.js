@@ -1,8 +1,8 @@
 import { reactive } from "vue";
 
-import { apiRequest } from "./api";
-import { avatarText } from "./helpers";
-import { applyTheme, getStoredThemePreference, normalizeThemePreference } from "./theme";
+import { apiRequest } from "./api.js";
+import { avatarText } from "./helpers.js";
+import { applyTheme, getStoredThemePreference, normalizeThemePreference } from "./theme.js";
 
 
 export const appState = reactive({
@@ -24,6 +24,7 @@ export const appState = reactive({
 });
 
 let bootstrapPromise = null;
+let versionStatusPromise = null;
 const APP_VERSION_RELOAD_KEY = "makerhub:last-reloaded-version";
 
 
@@ -67,10 +68,6 @@ function applyBootstrap(payload) {
     display_name: String(session?.display_name || ""),
   };
   appState.appVersion = String(payload?.app_version || appState.appVersion);
-  appState.githubLatestVersion = String(payload?.github_latest_version ?? "");
-  appState.githubVersionCheckedAt = String(payload?.github_version_checked_at ?? "");
-  appState.githubVersionError = String(payload?.github_version_error || "");
-  appState.githubUpdateAvailable = Boolean(payload?.github_update_available);
   if (payload?.theme_preference) {
     const nextPreference = normalizeThemePreference(payload.theme_preference);
     appState.themePreference = nextPreference;
@@ -109,6 +106,18 @@ export async function refreshSession() {
   return payload.session;
 }
 
+export function applyLoginSession(payload = {}) {
+  appState.session = {
+    authenticated: true,
+    kind: "session",
+    username: String(payload?.username || appState.session.username || "admin"),
+    display_name: String(payload?.display_name || appState.session.display_name || ""),
+  };
+  appState.ready = true;
+  appState.bootstrapping = false;
+  return appState.session;
+}
+
 export function applyConfigPayload(payload) {
   appState.config = payload;
   applyVersionPayload(payload);
@@ -130,6 +139,20 @@ export async function refreshVersionStatus(options = {}) {
   const { force = false } = options;
   const query = force ? "?force=true" : "";
   return applyVersionPayload(await apiRequest(`/api/system/version${query}`));
+}
+
+
+export function refreshVersionStatusInBackground(options = {}) {
+  if (versionStatusPromise) {
+    return versionStatusPromise;
+  }
+  versionStatusPromise = refreshVersionStatus(options).catch((error) => {
+    appState.githubVersionError = String(error?.message || "版本状态读取失败");
+    return null;
+  }).finally(() => {
+    versionStatusPromise = null;
+  });
+  return versionStatusPromise;
 }
 
 

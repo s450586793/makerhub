@@ -284,8 +284,12 @@ def get_decorated_models_signature() -> tuple[Any, ...]:
     return _decorated_models_signature(get_archive_snapshot())
 
 
-def get_decorated_models(*, task_store: Optional[TaskStateStore] = None) -> tuple[list[dict], list[dict]]:
-    archive_snapshot = get_archive_snapshot()
+def get_decorated_models(
+    *,
+    task_store: Optional[TaskStateStore] = None,
+    archive_snapshot: Optional[dict[str, Any]] = None,
+) -> tuple[list[dict], list[dict]]:
+    archive_snapshot = archive_snapshot or get_archive_snapshot()
     signature = _decorated_models_signature(archive_snapshot)
     with _DECORATED_MODELS_LOCK:
         if _DECORATED_MODELS_CACHE.get("signature") == signature:
@@ -2654,7 +2658,7 @@ def build_dashboard_payload(config) -> dict:
     archive_snapshot = get_archive_snapshot()
     task_store = TaskStateStore()
     subscription_state = task_store.load_subscriptions_state()
-    all_models, _ = get_decorated_models(task_store=task_store)
+    all_models, _ = get_decorated_models(task_store=task_store, archive_snapshot=archive_snapshot)
     all_models = _sort_models(all_models, "collectDate")
     visible_models = _visible_models(all_models)
     tasks_payload = build_tasks_payload(
@@ -2675,6 +2679,7 @@ def build_dashboard_payload(config) -> dict:
             config,
             tasks_payload["missing_3mf"]["items"],
             remote_refresh_state=tasks_payload["remote_refresh"],
+            prefer_cached=True,
         ),
         {
             "key": "proxy",

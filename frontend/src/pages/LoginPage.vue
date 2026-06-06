@@ -45,14 +45,13 @@
 
 <script setup>
 import { ref } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 
-import { bootstrapApp } from "../lib/appState";
-import { apiRequest } from "../lib/api";
-import { safeNextPath } from "../lib/helpers";
+import { submitLogin } from "../lib/loginFlow";
 
 
 const route = useRoute();
+const router = useRouter();
 const logoUrl = "/static/img/makerhub-logo.png";
 
 const username = ref("admin");
@@ -65,16 +64,12 @@ async function submit() {
   status.value = "";
 
   try {
-    await apiRequest("/api/auth/login", {
-      method: "POST",
-      body: {
-        username: username.value,
-        password: password.value,
-      },
-      redirectOn401: false,
+    await submitLogin({
+      username: username.value,
+      password: password.value,
+      next: route.query.next || "/",
+      router,
     });
-    await bootstrapApp({ force: true });
-    window.location.assign(safeNextPath(route.query.next || "/"));
   } catch (error) {
     status.value = error instanceof Error ? error.message : "登录失败。";
   } finally {

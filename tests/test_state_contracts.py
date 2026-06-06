@@ -27,6 +27,7 @@ def test_state_event_scopes_cover_dashboard_consumers():
         "organize_tasks",
         "subscriptions_state",
         "remote_refresh_state",
+        "dashboard",
     ]
 
 
@@ -90,3 +91,4 @@ def test_dashboard_scopes_are_plain_strings_for_frontend_payloads():
     scopes = state_contracts.dashboard_event_scopes()
     assert all(isinstance(scope, str) for scope in scopes)
     assert "archive_queue" in scopes
+    assert "dashboard" in scopes

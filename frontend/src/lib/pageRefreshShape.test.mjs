@@ -8,6 +8,8 @@ const remoteRefreshPageSource = readFileSync(new URL("../pages/RemoteRefreshPage
 const dashboardPageSource = readFileSync(new URL("../pages/DashboardPage.vue", import.meta.url), "utf8");
 const organizerPageSource = readFileSync(new URL("../pages/OrganizerPage.vue", import.meta.url), "utf8");
 const settingsPageSource = readFileSync(new URL("../pages/SettingsPage.vue", import.meta.url), "utf8");
+const appShellSource = readFileSync(new URL("../layouts/AppShell.vue", import.meta.url), "utf8");
+const appStateSource = readFileSync(new URL("./appState.js", import.meta.url), "utf8");
 
 test("LogsPage uses shared page refresh controller for auto tracking", () => {
   assert.match(logsPageSource, /createPageRefreshController/);
@@ -51,6 +53,7 @@ test("DashboardPage shows separate source refresh completion fields", () => {
   assert.match(dashboardPageSource, /last_completed_at/);
   assert.match(dashboardPageSource, /最近阻塞/);
   assert.match(dashboardPageSource, /last_defer_reason/);
+  assert.match(dashboardPageSource, /"dashboard"/);
 });
 
 test("OrganizerPage uses shared page refresh controller for organize task refresh", () => {
@@ -63,4 +66,22 @@ test("SettingsPage uses shared page refresh controller for system update state",
   assert.match(settingsPageSource, /createPageRefreshController/);
   assert.match(settingsPageSource, /settingsRefreshController/);
   assert.match(settingsPageSource, /accountCodeTimer/);
+});
+
+test("AppShell refreshes GitHub version status after navigation is visible", () => {
+  assert.match(appStateSource, /export function refreshVersionStatusInBackground/);
+  assert.match(appStateSource, /\/api\/system\/version/);
+  assert.match(appShellSource, /refreshVersionStatusInBackground/);
+  assert.match(appShellSource, /onMounted\(\(\) => \{/);
+});
+
+test("bootstrap state hydration does not depend on GitHub version payload", () => {
+  const start = appStateSource.indexOf("function applyBootstrap");
+  const end = appStateSource.indexOf("export function applyVersionPayload");
+  const applyBootstrapBlock = appStateSource.slice(start, end);
+
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  assert.match(applyBootstrapBlock, /appVersion/);
+  assert.doesNotMatch(applyBootstrapBlock, /githubLatestVersion|github_version|githubUpdateAvailable/);
 });

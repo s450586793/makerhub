@@ -13,6 +13,8 @@ class SourceHealthCardsTest(unittest.TestCase):
     def tearDown(self):
         source_health.ThreadPoolExecutor = self.original_executor
         source_health._limit_guard_for_platform = self.original_limit_guard_for_platform
+        source_health.SOURCE_HEALTH_CACHE.clear()
+        source_health.SOURCE_HEALTH_REFRESHING_KEYS.clear()
 
     def test_missing_3mf_verification_does_not_override_probe_ok(self):
         original_probe = source_health._probe_platform_status
@@ -110,6 +112,70 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(card_map["cn"].get("url"), "https://makerworld.com.cn")
         self.assertEqual(card_map["cn"].get("action_label"), "访问主页")
         self.assertNotIn("route", card_map["cn"])
+
+    def test_source_health_prefer_cached_returns_checking_without_probe_blocking(self):
+        original_probe = source_health._probe_auth_endpoints
+        original_async_refresh = source_health._async_refresh_source_health
+        calls = []
+
+        def fail_probe(*_args, **_kwargs):
+            raise AssertionError("dashboard snapshot should not block on source probe")
+
+        source_health._probe_auth_endpoints = fail_probe
+        source_health._async_refresh_source_health = lambda *args, **_kwargs: calls.append(args)
+        source_health._limit_guard_for_platform = lambda _platform: {}
+
+        class Config:
+            cookies = [
+                SimpleNamespace(platform="cn", cookie="sid=cn"),
+                SimpleNamespace(platform="global", cookie="sid=global"),
+            ]
+            proxy = None
+
+        try:
+            cards = source_health.build_source_health_cards(Config(), [], prefer_cached=True)
+        finally:
+            source_health._probe_auth_endpoints = original_probe
+            source_health._async_refresh_source_health = original_async_refresh
+
+        card_map = {item["key"]: item for item in cards}
+        self.assertEqual(card_map["cn"]["state"], "checking")
+        self.assertEqual(card_map["cn"]["status"], "账号检测中")
+        self.assertEqual(card_map["cn"]["tone"], "neutral")
+        self.assertEqual(card_map["global"]["state"], "checking")
+        self.assertEqual(len(calls), 2)
+
+    def test_source_health_prefer_cached_uses_stale_snapshot_and_refreshes_background(self):
+        original_async_refresh = source_health._async_refresh_source_health
+        calls = []
+
+        class Config:
+            cookies = [SimpleNamespace(platform="cn", cookie="sid=cn")]
+            proxy = None
+
+        cache_key = source_health._cache_key("cn", "sid=cn", None)
+        source_health.SOURCE_HEALTH_CACHE[cache_key] = {
+            "checked_at": source_health.time.time() - source_health.SOURCE_HEALTH_CACHE_TTL_SECONDS - 1,
+            "payload": {
+                "platform": "cn",
+                "state": "ok",
+                "status": "连接正常",
+                "detail": "",
+            },
+        }
+        source_health._async_refresh_source_health = lambda *args, **_kwargs: calls.append(args)
+        source_health._limit_guard_for_platform = lambda _platform: {}
+
+        try:
+            cards = source_health.build_source_health_cards(Config(), [], prefer_cached=True)
+        finally:
+            source_health._async_refresh_source_health = original_async_refresh
+
+        card_map = {item["key"]: item for item in cards}
+        self.assertEqual(card_map["cn"]["state"], "ok")
+        self.assertEqual(card_map["cn"]["status"], "连接正常")
+        self.assertTrue(card_map["cn"]["checks"][0].get("detail") in {"", "正在后台刷新源站状态，首页先使用其它快照数据。"})
+        self.assertEqual(len(calls), 1)
 
     def test_html_probe_without_verification_markers_is_interface_limited(self):
         result = source_health._auth_probe_result_from_response(

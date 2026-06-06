@@ -86,7 +86,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { RouterLink, RouterView, useRoute } from "vue-router";
 
 import UserMenu from "../components/UserMenu.vue";
-import { appState, currentUser, logoutSession, saveThemePreference } from "../lib/appState";
+import { appState, currentUser, logoutSession, refreshVersionStatusInBackground, saveThemePreference } from "../lib/appState";
 import { getStoredModelReturnState, inferModelReturnContext, normalizeModelReturnContext } from "../lib/modelNavigation";
 
 
@@ -257,6 +257,8 @@ watch(isCompact, (compact) => {
 });
 
 onMounted(() => {
+  void refreshVersionStatusInBackground();
+
   if (typeof window === "undefined") {
     return;
   }

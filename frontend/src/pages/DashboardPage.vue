@@ -602,7 +602,7 @@ function remoteRefreshDeferText(item) {
 onMounted(async () => {
   await load({ initial: true });
   unsubscribeStateRefresh = subscribeStateRefresh(
-    ["archive_queue", "missing_3mf", "organize_tasks", "subscriptions_state", "remote_refresh_state"],
+    ["archive_queue", "missing_3mf", "organize_tasks", "subscriptions_state", "remote_refresh_state", "dashboard"],
     handleArchiveCompleted,
   );
   document.addEventListener("visibilitychange", handleVisibilityChange);
