@@ -754,6 +754,32 @@ def _normalize_subscription_state(payload: Any) -> dict:
     return {"items": normalized}
 
 
+def _normalize_remote_refresh_active_run(payload: Any) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+    batch_id = str(payload.get("batch_id") or "").strip()
+    status = str(payload.get("status") or "").strip().lower()
+    if not batch_id and not status:
+        return {}
+    if status not in {"running", "resuming", "interrupted", "completed", "abandoned"}:
+        status = "running" if batch_id else ""
+    return {
+        "batch_id": batch_id,
+        "status": status,
+        "started_at": str(payload.get("started_at") or ""),
+        "resumed_at": str(payload.get("resumed_at") or ""),
+        "finished_at": str(payload.get("finished_at") or ""),
+        "scheduled_cron": str(payload.get("scheduled_cron") or ""),
+        "manual": bool(payload.get("manual", False)),
+        "candidate_total": _safe_int(payload.get("candidate_total") or 0),
+        "completed_total": _safe_int(payload.get("completed_total") or 0),
+        "remaining_total": _safe_int(payload.get("remaining_total") or 0),
+        "manifest_path": str(payload.get("manifest_path") or ""),
+        "result_path": str(payload.get("result_path") or ""),
+        "interrupted_reason": _normalize_source_refresh_text(_sanitize_message_text(payload.get("interrupted_reason") or "")),
+    }
+
+
 def _normalize_remote_refresh_state(payload: Any) -> dict:
     if not isinstance(payload, dict):
         payload = {}
@@ -776,6 +802,7 @@ def _normalize_remote_refresh_state(payload: Any) -> dict:
     normalized_metrics = payload.get("last_batch_metrics") if isinstance(payload.get("last_batch_metrics"), dict) else {}
     normalized_resource_waits = payload.get("last_resource_waits") if isinstance(payload.get("last_resource_waits"), dict) else {}
     normalized_slow_models = payload.get("last_slow_models") if isinstance(payload.get("last_slow_models"), list) else []
+    active_run = _normalize_remote_refresh_active_run(payload.get("active_run"))
 
     return {
         "status": str(payload.get("status") or "idle"),
@@ -785,6 +812,12 @@ def _normalize_remote_refresh_state(payload: Any) -> dict:
         "last_run_at": str(payload.get("last_run_at") or ""),
         "last_success_at": str(payload.get("last_success_at") or ""),
         "last_error_at": str(payload.get("last_error_at") or ""),
+        "last_attempt_at": str(payload.get("last_attempt_at") or ""),
+        "last_deferred_at": str(payload.get("last_deferred_at") or ""),
+        "last_defer_reason": str(payload.get("last_defer_reason") or ""),
+        "last_interrupted_at": str(payload.get("last_interrupted_at") or ""),
+        "last_interrupted_reason": _normalize_source_refresh_text(_sanitize_message_text(payload.get("last_interrupted_reason") or "")),
+        "last_completed_at": str(payload.get("last_completed_at") or ""),
         "manual_requested_at": str(payload.get("manual_requested_at") or ""),
         "last_message": _normalize_source_refresh_text(_sanitize_message_text(payload.get("last_message") or "")),
         "last_batch_total": _safe_int(payload.get("last_batch_total") or 0),
@@ -801,6 +834,8 @@ def _normalize_remote_refresh_state(payload: Any) -> dict:
         "last_resource_waits": normalized_resource_waits,
         "last_slow_models": normalized_slow_models[:10],
         "recent_items": normalized_recent[:50],
+        "stale_archive_queue_detected": bool(payload.get("stale_archive_queue_detected", False)),
+        "active_run": active_run,
     }
 
 
@@ -814,6 +849,12 @@ def compact_remote_refresh_state(payload: Any, *, include_current: bool = True) 
         "last_run_at": state["last_run_at"],
         "last_success_at": state["last_success_at"],
         "last_error_at": state["last_error_at"],
+        "last_attempt_at": state["last_attempt_at"],
+        "last_deferred_at": state["last_deferred_at"],
+        "last_defer_reason": state["last_defer_reason"],
+        "last_interrupted_at": state["last_interrupted_at"],
+        "last_interrupted_reason": state["last_interrupted_reason"],
+        "last_completed_at": state["last_completed_at"],
         "manual_requested_at": state["manual_requested_at"],
         "last_message": state["last_message"],
         "last_batch_total": state["last_batch_total"],
@@ -824,6 +865,8 @@ def compact_remote_refresh_state(payload: Any, *, include_current: bool = True) 
         "last_remaining_total": state["last_remaining_total"],
         "last_skipped_missing_cookie": state["last_skipped_missing_cookie"],
         "last_skipped_local_or_invalid": state["last_skipped_local_or_invalid"],
+        "active_run": state["active_run"],
+        "stale_archive_queue_detected": state["stale_archive_queue_detected"],
     }
     if include_current:
         compact["current_item"] = state["current_item"]

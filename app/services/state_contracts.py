@@ -64,6 +64,9 @@ REMOTE_REFRESH_STATUSES = frozenset(
     {
         "idle",
         "running",
+        "resuming",
+        "deferred",
+        "interrupted",
         "success",
         "error",
         "disabled",

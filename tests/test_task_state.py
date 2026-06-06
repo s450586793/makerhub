@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.services import state_events
-from app.services.task_state import TaskStateStore, _ORGANIZER_TERMINAL_LOG_CACHE, _normalize_organize_tasks
+from app.services.task_state import TaskStateStore, _ORGANIZER_TERMINAL_LOG_CACHE, _normalize_organize_tasks, compact_remote_refresh_state
 
 
 class OrganizeTaskStateTest(unittest.TestCase):
@@ -478,6 +478,78 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertNotIn("scope", events[0][2])
         self.assertEqual(events[0][2]["status"], "running")
         self.assertTrue(events[0][2]["running"])
+
+    def test_remote_refresh_state_normalizes_active_run_and_scheduler_fields(self):
+        state = {}
+        store = TaskStateStore()
+        active_run = {
+            "batch_id": "batch-1",
+            "status": "running",
+            "started_at": "2026-06-06T10:00:00+08:00",
+            "scheduled_cron": "0 2 * * *",
+            "manual": True,
+            "candidate_total": "3",
+            "completed_total": "1",
+            "remaining_total": "2",
+            "manifest_path": "state/remote_refresh_batches/batch-1.manifest.json",
+            "result_path": "state/remote_refresh_batches/batch-1.ndjson",
+        }
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
+            saved = store.patch_remote_refresh_state(
+                status="resuming",
+                running=True,
+                active_run=active_run,
+                last_attempt_at="2026-06-06T10:01:00+08:00",
+                last_deferred_at="2026-06-06T09:59:00+08:00",
+                last_defer_reason="archive_queue_busy",
+                last_interrupted_at="2026-06-06T09:58:00+08:00",
+                last_interrupted_reason="worker_stopped",
+                last_completed_at="2026-06-05T05:32:26+08:00",
+                stale_archive_queue_detected=True,
+            )
+
+        self.assertEqual(saved["status"], "resuming")
+        self.assertEqual(saved["active_run"]["batch_id"], "batch-1")
+        self.assertEqual(saved["active_run"]["candidate_total"], 3)
+        self.assertEqual(saved["active_run"]["completed_total"], 1)
+        self.assertEqual(saved["active_run"]["remaining_total"], 2)
+        self.assertTrue(saved["active_run"]["manual"])
+        self.assertEqual(saved["last_attempt_at"], "2026-06-06T10:01:00+08:00")
+        self.assertEqual(saved["last_defer_reason"], "archive_queue_busy")
+        self.assertTrue(saved["stale_archive_queue_detected"])
+
+    def test_compact_remote_refresh_state_includes_scheduler_and_active_run(self):
+        compact = compact_remote_refresh_state(
+            {
+                "status": "interrupted",
+                "running": False,
+                "last_run_at": "2026-06-06T10:00:00+08:00",
+                "last_completed_at": "2026-06-05T05:32:26+08:00",
+                "last_attempt_at": "2026-06-06T10:10:00+08:00",
+                "last_deferred_at": "2026-06-06T10:09:00+08:00",
+                "last_defer_reason": "stale_runtime_state",
+                "last_interrupted_at": "2026-06-06T10:08:00+08:00",
+                "last_interrupted_reason": "manifest_missing",
+                "stale_archive_queue_detected": True,
+                "active_run": {
+                    "batch_id": "batch-2",
+                    "status": "interrupted",
+                    "candidate_total": 8,
+                    "completed_total": 5,
+                    "remaining_total": 3,
+                },
+            },
+            include_current=False,
+        )
+
+        self.assertEqual(compact["status"], "interrupted")
+        self.assertEqual(compact["last_completed_at"], "2026-06-05T05:32:26+08:00")
+        self.assertEqual(compact["last_attempt_at"], "2026-06-06T10:10:00+08:00")
+        self.assertEqual(compact["last_defer_reason"], "stale_runtime_state")
+        self.assertEqual(compact["active_run"]["remaining_total"], 3)
+        self.assertTrue(compact["stale_archive_queue_detected"])
 
     def test_repeated_equivalent_state_changed_events_are_coalesced_by_scope(self):
         rows = []
