@@ -1595,6 +1595,7 @@ class RemoteRefreshManager:
             )
             return {
                 "accepted": True,
+                "mode": "queued_for_worker",
                 "message": message,
                 "config": config.remote_refresh.model_dump(),
                 "state": state,
@@ -1608,6 +1609,7 @@ class RemoteRefreshManager:
             )
             return {
                 "accepted": False,
+                "mode": "rejected",
                 "message": message,
                 "config": config.remote_refresh.model_dump(),
                 "state": state,
@@ -1630,12 +1632,14 @@ class RemoteRefreshManager:
             )
             return {
                 "accepted": False,
+                "mode": "rejected",
                 "message": message,
                 "config": config.remote_refresh.model_dump(),
                 "state": state,
             }
 
-        if not self._start_batch_async(config):
+        resume_requested = bool(self._resumable_active_run())
+        if not self._start_batch_async(config, resume=resume_requested):
             message = "源端刷新已在运行中，无需重复手动同步。"
             state = self.task_store.patch_remote_refresh_state(
                 status="running",
@@ -1644,14 +1648,15 @@ class RemoteRefreshManager:
             )
             return {
                 "accepted": False,
+                "mode": "rejected",
                 "message": message,
                 "config": config.remote_refresh.model_dump(),
                 "state": state,
             }
 
-        message = "已手动触发一轮源端同步，正在启动。"
+        message = "已手动恢复未完成的源端刷新批次，正在启动。" if resume_requested else "已手动触发一轮源端同步，正在启动。"
         state = self.task_store.patch_remote_refresh_state(
-            status="running",
+            status="resuming" if resume_requested else "running",
             running=True,
             last_message=message,
             current_item={},
@@ -1665,12 +1670,13 @@ class RemoteRefreshManager:
         )
         return {
             "accepted": True,
+            "mode": "resume" if resume_requested else "new",
             "message": message,
             "config": config.remote_refresh.model_dump(),
             "state": state,
         }
 
-    def _start_batch_async(self, config) -> bool:
+    def _start_batch_async(self, config, *, resume: bool = False) -> bool:
         with self._batch_launch_lock:
             if self._is_batch_running():
                 return False
@@ -1678,6 +1684,8 @@ class RemoteRefreshManager:
 
             def _worker() -> None:
                 try:
+                    if resume and self._resume_active_run_if_possible(config):
+                        return
                     self._run_batch(config, prelocked=True)
                 except Exception as exc:
                     message = f"手动源端刷新异常：{exc}"
@@ -1792,6 +1800,8 @@ class RemoteRefreshManager:
         normalized_cron = _validate_cron(refresh_config.cron)
         state = self._ensure_state()
         manual_requested = bool(str(state.get("manual_requested_at") or "").strip())
+        if self._resume_active_run_if_possible(config):
+            return
         if not refresh_config.enabled and not manual_requested:
             self.task_store.patch_remote_refresh_state(
                 status="disabled",

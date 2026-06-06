@@ -71,15 +71,50 @@ class RemoteRefreshManagerTest(unittest.TestCase):
 
     def test_manual_trigger_marks_state_running_when_accepted(self):
         self.manager._service_busy = lambda: False
-        self.manager._start_batch_async = lambda _config: True
+        self.manager._start_batch_async = lambda _config, *, resume=False: True
 
         result = self.manager.trigger_manual_refresh()
 
         state = self.task_store.load_remote_refresh_state()
         self.assertTrue(result["accepted"])
+        self.assertEqual(result["mode"], "new")
         self.assertEqual(state["status"], "running")
         self.assertTrue(state["running"])
         self.assertIn("已手动触发一轮源端同步", state["last_message"])
+
+    def test_manual_trigger_resumes_existing_active_run(self):
+        self.task_store.patch_remote_refresh_state(
+            status="interrupted",
+            running=False,
+            active_run={
+                "batch_id": "resume-batch",
+                "status": "interrupted",
+                "started_at": "2026-06-06T09:00:00+08:00",
+                "candidate_total": 3,
+                "completed_total": 1,
+                "remaining_total": 2,
+                "manifest_path": "remote_refresh_batches/resume-batch.manifest.json",
+                "result_path": "remote_refresh_batches/resume-batch.ndjson",
+            },
+        )
+        self.manager._service_busy = lambda: False
+        started_modes = []
+
+        def fake_start(_config, *, resume=False):
+            started_modes.append("resume" if resume else "new")
+            return True
+
+        self.manager._start_batch_async = fake_start
+
+        result = self.manager.trigger_manual_refresh()
+
+        state = self.task_store.load_remote_refresh_state()
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["mode"], "resume")
+        self.assertEqual(started_modes, ["resume"])
+        self.assertEqual(state["status"], "resuming")
+        self.assertTrue(state["running"])
+        self.assertIn("恢复", state["last_message"])
 
     def test_manual_trigger_rejects_when_service_busy(self):
         self.manager._service_busy = lambda: True
@@ -88,6 +123,7 @@ class RemoteRefreshManagerTest(unittest.TestCase):
 
         state = self.task_store.load_remote_refresh_state()
         self.assertFalse(result["accepted"])
+        self.assertEqual(result["mode"], "rejected")
         self.assertEqual(state["status"], "idle")
         self.assertFalse(state["running"])
         self.assertIn("请稍后再试手动同步", state["last_message"])
@@ -384,6 +420,32 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         self.assertEqual(state["status"], "idle")
         self.assertEqual(state["scheduled_cron"], "0 2 * * *")
         self.assertIn("延后 60 秒", state["last_message"])
+
+    def test_tick_resumes_active_run_before_future_schedule(self):
+        self.task_store.patch_remote_refresh_state(
+            status="running",
+            running=True,
+            next_run_at="2099-05-19T10:00:00+08:00",
+            scheduled_cron="0 0 * * *",
+            active_run={
+                "batch_id": "resume-batch",
+                "status": "running",
+                "started_at": "2026-06-06T09:00:00+08:00",
+                "candidate_total": 2,
+                "completed_total": 1,
+                "remaining_total": 1,
+                "manifest_path": "remote_refresh_batches/resume-batch.manifest.json",
+                "result_path": "remote_refresh_batches/resume-batch.ndjson",
+            },
+        )
+        resumed = []
+        self.manager._service_busy = lambda: False
+        self.manager._resume_active_run_if_possible = lambda _config: resumed.append(True) or True
+        self.manager._run_batch = lambda _config: self.fail("resumable active run must not start a new batch")
+
+        self.manager._tick()
+
+        self.assertEqual(resumed, [True])
 
     def test_asset_signature_ignores_volatile_cdn_query_params(self):
         existing_meta = {
@@ -911,6 +973,31 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         self.assertTrue(resumed)
         self.assertEqual(state["active_run"]["status"], "completed")
         self.assertEqual(state["last_batch_succeeded"], 2)
+
+    def test_resume_active_run_marks_missing_manifest_interrupted(self):
+        self.task_store.patch_remote_refresh_state(
+            status="running",
+            running=True,
+            active_run={
+                "batch_id": "missing-batch",
+                "status": "running",
+                "started_at": "2026-06-06T09:00:00+08:00",
+                "candidate_total": 2,
+                "completed_total": 1,
+                "remaining_total": 1,
+                "manifest_path": "remote_refresh_batches/missing-batch.manifest.json",
+                "result_path": "remote_refresh_batches/missing-batch.ndjson",
+            },
+        )
+
+        resumed = self.manager._resume_active_run_if_possible(self.store.load())
+
+        state = self.task_store.load_remote_refresh_state()
+        self.assertFalse(resumed)
+        self.assertFalse(state["running"])
+        self.assertEqual(state["status"], "interrupted")
+        self.assertEqual(state["active_run"]["status"], "interrupted")
+        self.assertEqual(state["last_interrupted_reason"], "manifest_missing")
 
     def test_run_batch_refreshes_models_concurrently(self):
         original_workers = remote_refresh._remote_refresh_model_workers
