@@ -1335,6 +1335,43 @@ class RemoteRefreshManager:
             current_items=current_items,
         )
 
+    def _batch_paths(self, batch_id: str) -> tuple[Path, Path]:
+        batch_dir = REMOTE_REFRESH_BATCH_DIR
+        return batch_dir / f"{batch_id}.manifest.json", batch_dir / f"{batch_id}.ndjson"
+
+    def _active_run_payload(
+        self,
+        *,
+        batch_id: str,
+        status: str,
+        started_at: str,
+        scheduled_cron: str,
+        manual: bool,
+        candidate_total: int,
+        completed_total: int,
+        manifest_path: Path,
+        result_path: Path,
+        resumed_at: str = "",
+        finished_at: str = "",
+        interrupted_reason: str = "",
+    ) -> dict[str, Any]:
+        remaining_total = max(int(candidate_total or 0) - int(completed_total or 0), 0)
+        return {
+            "batch_id": batch_id,
+            "status": status,
+            "started_at": started_at,
+            "resumed_at": resumed_at,
+            "finished_at": finished_at,
+            "scheduled_cron": scheduled_cron,
+            "manual": bool(manual),
+            "candidate_total": int(candidate_total or 0),
+            "completed_total": int(completed_total or 0),
+            "remaining_total": remaining_total,
+            "manifest_path": _remote_refresh_relative_state_path(manifest_path),
+            "result_path": _remote_refresh_relative_state_path(result_path),
+            "interrupted_reason": _sanitize_remote_refresh_message(interrupted_reason, ""),
+        }
+
     def start(self) -> None:
         self._ensure_state()
         if not self.background_enabled:
@@ -1651,12 +1688,34 @@ class RemoteRefreshManager:
         started_at = _now_iso()
         batch_started_perf = time.perf_counter()
         resource_wait_baseline = resource_snapshot()
+        current_state = self.task_store.load_remote_refresh_state()
+        manual_run = bool(str(current_state.get("manual_requested_at") or "").strip())
         candidates, stats = self._pick_candidates()
         workers = min(_remote_refresh_model_workers(config), max(len(candidates), 1))
         batch_buffer: Optional[_RemoteRefreshBatchBuffer] = None
         _cleanup_remote_refresh_batch_buffers()
 
         try:
+            batch_id = _remote_refresh_batch_id()
+            manifest = _RemoteRefreshBatchManifest.create(
+                batch_id=batch_id,
+                candidates=candidates,
+                stats=stats,
+                cron=normalized_cron,
+                manual=manual_run,
+            )
+            _, result_path = self._batch_paths(batch_id)
+            active_run = self._active_run_payload(
+                batch_id=batch_id,
+                status="running",
+                started_at=started_at,
+                scheduled_cron=normalized_cron,
+                manual=manual_run,
+                candidate_total=len(candidates),
+                completed_total=0,
+                manifest_path=manifest.path,
+                result_path=result_path,
+            )
             self._reset_current_items(publish_event=False)
             self.task_store.patch_remote_refresh_state(
                 status="running",
@@ -1664,6 +1723,9 @@ class RemoteRefreshManager:
                 manual_requested_at="",
                 scheduled_cron=normalized_cron,
                 last_run_at=started_at,
+                last_attempt_at=started_at,
+                last_interrupted_at="",
+                last_interrupted_reason="",
                 last_batch_total=len(candidates),
                 last_batch_succeeded=0,
                 last_batch_failed=0,
@@ -1677,6 +1739,8 @@ class RemoteRefreshManager:
                 last_batch_metrics=_empty_batch_metrics(),
                 last_resource_waits=_resource_wait_delta(resource_wait_baseline),
                 last_slow_models=[],
+                stale_archive_queue_detected=False,
+                active_run=active_run,
                 last_message=(
                     f"源端刷新开始，本轮计划处理 {len(candidates)} 个模型，并发 {workers}。"
                     f"运行中不逐个刷新模型结果，批次完成后统一刷新。"
@@ -1715,6 +1779,7 @@ class RemoteRefreshManager:
                     next_run_at=_next_run_at(normalized_cron),
                     scheduled_cron=normalized_cron,
                     last_success_at=started_at,
+                    last_completed_at=started_at,
                     last_message=no_candidate_message,
                     last_batch_total=0,
                     last_batch_succeeded=0,
@@ -1724,10 +1789,22 @@ class RemoteRefreshManager:
                     last_skipped_missing_cookie=int(stats.get("missing_cookie") or 0),
                     last_skipped_local_or_invalid=int(stats.get("local_or_invalid") or 0),
                     current_item={},
+                    active_run=self._active_run_payload(
+                        batch_id=batch_id,
+                        status="completed",
+                        started_at=started_at,
+                        scheduled_cron=normalized_cron,
+                        manual=manual_run,
+                        candidate_total=0,
+                        completed_total=0,
+                        manifest_path=manifest.path,
+                        result_path=result_path,
+                        finished_at=started_at,
+                    ),
                 )
                 return
 
-            batch_buffer = _RemoteRefreshBatchBuffer()
+            batch_buffer = _RemoteRefreshBatchBuffer(batch_id=batch_id)
             succeeded = 0
             failed = 0
             skipped = 0
@@ -1811,6 +1888,19 @@ class RemoteRefreshManager:
                 last_resource_waits=_resource_wait_delta(resource_wait_baseline),
                 last_slow_models=_top_slow_models(slow_models),
                 recent_items=recent_items,
+                last_completed_at=finished_at,
+                active_run=self._active_run_payload(
+                    batch_id=batch_id,
+                    status="completed",
+                    started_at=started_at,
+                    scheduled_cron=normalized_cron,
+                    manual=manual_run,
+                    candidate_total=len(candidates),
+                    completed_total=processed_total,
+                    manifest_path=manifest.path,
+                    result_path=result_path,
+                    finished_at=finished_at,
+                ),
             )
             invalidate_archive_snapshot("remote_refresh_batch_finished")
             _append_remote_refresh_log(

@@ -738,6 +738,51 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         self.assertEqual(finish_payloads[-1]["failure_samples"][0]["model_dir"], "m2")
         self.assertFalse(list((self.temp_path / "remote_refresh_batches").glob("*.ndjson")))
 
+    def test_run_batch_writes_active_run_manifest_and_completion_state(self):
+        original_batch_dir = remote_refresh.REMOTE_REFRESH_BATCH_DIR
+        original_workers = remote_refresh._remote_refresh_model_workers
+        remote_refresh.REMOTE_REFRESH_BATCH_DIR = self.temp_path / "remote_refresh_batches"
+        remote_refresh._remote_refresh_model_workers = lambda _config=None: 1
+        config = self.store.load()
+        items = [
+            {"model_dir": "m1", "title": "模型 1", "origin_url": "https://makerworld.com.cn/model/1", "meta_path": str(self.temp_path / "m1" / "meta.json")},
+            {"model_dir": "m2", "title": "模型 2", "origin_url": "https://makerworld.com.cn/model/2", "meta_path": str(self.temp_path / "m2" / "meta.json")},
+        ]
+        self.manager._pick_candidates = lambda: (
+            items,
+            {"eligible_total": 2, "selected_total": 2, "remaining_total": 0, "missing_cookie": 0, "local_or_invalid": 0},
+        )
+        self.manager._refresh_one = lambda item, *, index, total, config: {
+            "ok": True,
+            "metrics": {"model_dir": item["model_dir"], "title": item["title"], "comments": 1, "total_duration_ms": index},
+            "record": remote_refresh._remote_refresh_result_record(
+                model_dir=item["model_dir"],
+                title=item["title"],
+                url=item["origin_url"],
+                status="success",
+                message="完成",
+                metrics={"comments": 1, "total_duration_ms": index},
+                change_labels=["已检查，无远端变化"],
+            ),
+        }
+
+        try:
+            self.manager._run_batch(config)
+        finally:
+            remote_refresh.REMOTE_REFRESH_BATCH_DIR = original_batch_dir
+            remote_refresh._remote_refresh_model_workers = original_workers
+
+        state = self.task_store.load_remote_refresh_state()
+        active_run = state["active_run"]
+        self.assertEqual(active_run["status"], "completed")
+        self.assertEqual(active_run["candidate_total"], 2)
+        self.assertEqual(active_run["completed_total"], 2)
+        self.assertEqual(active_run["remaining_total"], 0)
+        self.assertTrue(active_run["manifest_path"].endswith(".manifest.json"))
+        self.assertEqual(state["last_completed_at"], state["last_success_at"])
+        manifest_path = remote_refresh._remote_refresh_path_from_state(active_run["manifest_path"])
+        self.assertTrue(manifest_path.exists())
+
     def test_run_batch_refreshes_models_concurrently(self):
         original_workers = remote_refresh._remote_refresh_model_workers
         remote_refresh._remote_refresh_model_workers = lambda _config=None: 2
