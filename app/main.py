@@ -1,3 +1,4 @@
+import time
 from urllib.parse import quote
 
 from fastapi import FastAPI, Request
@@ -13,6 +14,7 @@ from app.api.config import subscription_manager
 from app.api.config import router as config_router
 from app.api.logs_routes import router as logs_router
 from app.api.models_routes import router as models_router
+from app.api.performance_routes import router as performance_router
 from app.api.remote_refresh_routes import router as remote_refresh_router
 from app.api.sharing_routes import router as sharing_router
 from app.api.source_library_routes import router as source_library_router
@@ -34,6 +36,7 @@ from app.core.settings import (
 from app.core.api_permissions import api_token_permission_for_request
 from app.services.auth import AuthManager
 from app.services.business_logs import append_business_log
+from app.services.performance import log_api_request_if_needed
 from app.services.request_threads import shutdown_request_threads
 from app.services.self_update import mark_update_started_after_restart
 from app.services.state_events import start_state_event_listener
@@ -128,7 +131,16 @@ async def shutdown_thread_pools() -> None:
 
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
+    started_perf = time.perf_counter()
     path = request.url.path
+
+    def finish(response):
+        response = _apply_cache_headers(path, response)
+        if path.startswith("/api/"):
+            duration_ms = (time.perf_counter() - started_perf) * 1000
+            log_api_request_if_needed(request, response, duration_ms=duration_ms)
+        return response
+
     if (
         request.method == "POST"
         and (
@@ -139,22 +151,22 @@ async def auth_guard(request: Request, call_next):
     ):
         content_length = str(request.headers.get("content-length") or "").strip()
         if not content_length and path != "/api/mobile-import/raw-ipv4":
-            return JSONResponse({"detail": "上传请求缺少 Content-Length。"}, status_code=411)
+            return finish(JSONResponse({"detail": "上传请求缺少 Content-Length。"}, status_code=411))
         if content_length:
             try:
                 body_size = int(content_length)
             except ValueError:
-                return JSONResponse({"detail": "上传请求大小无效。"}, status_code=400)
+                return finish(JSONResponse({"detail": "上传请求大小无效。"}, status_code=400))
             if path in {"/api/mobile-import/raw", "/api/mobile-import/raw-ipv4"}:
                 max_upload_bytes = MAX_LOCAL_IMPORT_UPLOAD_BYTES
             else:
                 max_upload_bytes = MAX_MANUAL_ATTACHMENT_BYTES
             if body_size > max_upload_bytes:
-                return JSONResponse({"detail": "上传文件过大。"}, status_code=413)
+                return finish(JSONResponse({"detail": "上传文件过大。"}, status_code=413))
 
     if path.startswith("/static") or path.startswith("/assets"):
         response = await call_next(request)
-        return _apply_cache_headers(path, response)
+        return finish(response)
 
     api_token_permission = api_token_permission_for_request(request.method, path)
     identity = auth_manager.resolve_request_auth(request, api_token_permission=api_token_permission)
@@ -162,34 +174,33 @@ async def auth_guard(request: Request, call_next):
 
     if path == "/login":
         if identity and identity.get("kind") == "session":
-            return _apply_cache_headers(path, RedirectResponse(url="/", status_code=303))
+            return finish(RedirectResponse(url="/", status_code=303))
         response = await call_next(request)
-        return _apply_cache_headers(path, response)
+        return finish(response)
 
     if path == "/api/auth/login":
         response = await call_next(request)
-        return _apply_cache_headers(path, response)
+        return finish(response)
 
     if path == "/api/bootstrap" or path.startswith("/api/public/") or path == "/api/mobile-import" or path.startswith("/api/mobile-import/"):
         response = await call_next(request)
-        return _apply_cache_headers(path, response)
+        return finish(response)
 
     if identity is None:
         if path.startswith("/api") or path.startswith("/archive"):
-            return _apply_cache_headers(path, JSONResponse({"detail": "Unauthorized"}, status_code=401))
+            return finish(JSONResponse({"detail": "Unauthorized"}, status_code=401))
         next_path = path
         if request.url.query:
             next_path = f"{path}?{request.url.query}"
-        return _apply_cache_headers(
-            path,
+        return finish(
             RedirectResponse(url=f"/login?next={quote(next_path, safe='/=?&')}", status_code=303),
         )
 
     if path == "/login":
-        return _apply_cache_headers(path, RedirectResponse(url="/", status_code=303))
+        return finish(RedirectResponse(url="/", status_code=303))
 
     response = await call_next(request)
-    return _apply_cache_headers(path, response)
+    return finish(response)
 
 
 app.mount("/static", StaticFiles(directory=str(ROOT_DIR / "app" / "static")), name="static")
@@ -202,6 +213,7 @@ app.include_router(system_router)
 app.include_router(config_router)
 app.include_router(logs_router)
 app.include_router(models_router)
+app.include_router(performance_router)
 app.include_router(remote_refresh_router)
 app.include_router(sharing_router)
 app.include_router(source_library_router)
