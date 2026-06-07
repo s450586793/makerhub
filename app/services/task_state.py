@@ -142,8 +142,14 @@ def _normalize_archive_queue(payload: Any) -> dict:
     queued_items = payload.get("queued") or payload.get("items") or payload.get("pending") or []
     failed_items = payload.get("recent_failures") or payload.get("failed") or payload.get("failures") or []
 
+    active = [
+        item
+        for item in (_normalize_archive_runtime_item(item, "running") for item in active_items)
+        if normalize_runtime_status(item.get("status"), "running") != "completed"
+    ]
+
     return {
-        "active": [_normalize_archive_runtime_item(item, "running") for item in active_items],
+        "active": active,
         "queued": [_normalize_archive_runtime_item(item, "queued") for item in queued_items],
         "recent_failures": [_normalize_archive_runtime_item(item, "failed") for item in failed_items],
     }

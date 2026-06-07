@@ -143,7 +143,139 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(card_map["cn"]["status"], "账号检测中")
         self.assertEqual(card_map["cn"]["tone"], "neutral")
         self.assertEqual(card_map["global"]["state"], "checking")
+        self.assertEqual(len(calls), 4)
+
+    def test_source_health_prefers_web_verification_over_account_ok(self):
+        original_probe = source_health._probe_platform_status
+        original_web_probe = source_health._probe_platform_web_status
+        source_health._probe_platform_status = lambda platform, *_args, **_kwargs: {
+            "platform": platform,
+            "state": "ok",
+            "status": "连接正常",
+            "detail": "",
+        }
+        source_health._probe_platform_web_status = lambda platform, *_args, **_kwargs: {
+            "platform": platform,
+            "state": "verification_required" if platform == "cn" else "ok",
+            "status": "需要验证" if platform == "cn" else "访问正常",
+            "detail": "MakerWorld 网页入口返回验证页。",
+        }
+
+        class Config:
+            cookies = [
+                SimpleNamespace(platform="cn", cookie="sid=cn"),
+                SimpleNamespace(platform="global", cookie="sid=global"),
+            ]
+            proxy = None
+
+        try:
+            cards = source_health.build_source_health_cards(Config(), [])
+        finally:
+            source_health._probe_platform_status = original_probe
+            source_health._probe_platform_web_status = original_web_probe
+
+        card_map = {item["key"]: item for item in cards}
+        self.assertEqual(card_map["cn"]["state"], "verification_required")
+        self.assertEqual(card_map["cn"]["status"], "网页需要验证")
+        self.assertEqual(card_map["cn"]["tone"], "danger")
+        self.assertEqual(card_map["cn"].get("action_label"), "访问主页")
+        checks = {item["source"]: item for item in card_map["cn"]["checks"]}
+        self.assertEqual(checks["account"]["status"], "连接正常")
+        self.assertEqual(checks["web"]["status"], "需要验证")
+        self.assertEqual(card_map["global"]["state"], "ok")
+
+    def test_source_health_prefer_cached_web_probe_does_not_block(self):
+        original_async_refresh = source_health._async_refresh_source_health
+        calls = []
+        source_health._async_refresh_source_health = lambda *args, **_kwargs: calls.append(args)
+        source_health._limit_guard_for_platform = lambda _platform: {}
+
+        class Config:
+            cookies = [SimpleNamespace(platform="cn", cookie="sid=cn")]
+            proxy = None
+
+        try:
+            cards = source_health.build_source_health_cards(Config(), [], prefer_cached=True)
+        finally:
+            source_health._async_refresh_source_health = original_async_refresh
+
+        card_map = {item["key"]: item for item in cards}
+        checks = {item["source"]: item for item in card_map["cn"]["checks"]}
+        self.assertEqual(card_map["cn"]["state"], "checking")
+        self.assertEqual(checks["account"]["state"], "checking")
+        self.assertNotIn("web", checks)
         self.assertEqual(len(calls), 2)
+
+    def test_source_health_prefer_cached_uses_stale_web_verification_snapshot(self):
+        original_async_refresh = source_health._async_refresh_source_health
+        calls = []
+
+        class Config:
+            cookies = [SimpleNamespace(platform="cn", cookie="sid=cn")]
+            proxy = None
+
+        account_key = source_health._cache_key("account", "cn", "sid=cn", None)
+        web_key = source_health._cache_key("web", "cn", "sid=cn", None)
+        source_health.SOURCE_HEALTH_CACHE[account_key] = {
+            "checked_at": source_health.time.time(),
+            "payload": {
+                "platform": "cn",
+                "state": "ok",
+                "status": "连接正常",
+                "detail": "",
+            },
+        }
+        source_health.SOURCE_HEALTH_CACHE[web_key] = {
+            "checked_at": source_health.time.time() - source_health.SOURCE_HEALTH_CACHE_TTL_SECONDS - 1,
+            "payload": {
+                "platform": "cn",
+                "state": "verification_required",
+                "status": "需要验证",
+                "detail": "MakerWorld 网页入口返回验证页。",
+            },
+        }
+        source_health._async_refresh_source_health = lambda *args, **_kwargs: calls.append(args)
+        source_health._limit_guard_for_platform = lambda _platform: {}
+
+        try:
+            cards = source_health.build_source_health_cards(Config(), [], prefer_cached=True)
+        finally:
+            source_health._async_refresh_source_health = original_async_refresh
+
+        card_map = {item["key"]: item for item in cards}
+        self.assertEqual(card_map["cn"]["state"], "verification_required")
+        self.assertEqual(card_map["cn"]["status"], "网页需要验证")
+        checks = {item["source"]: item for item in card_map["cn"]["checks"]}
+        self.assertEqual(checks["web"]["status"], "需要验证")
+        self.assertEqual(len(calls), 1)
+
+    def test_web_probe_treats_normal_html_as_ok(self):
+        result = source_health._web_probe_payload_from_response(
+            platform="cn",
+            url="https://makerworld.com.cn/zh",
+            status_code=200,
+            text="<html><body><title>MakerWorld</title></body></html>",
+            headers={"content-type": "text/html"},
+            elapsed_ms=12.0,
+            engine="unit",
+        )
+
+        self.assertEqual(result["state"], "ok")
+        self.assertEqual(result["status"], "访问正常")
+
+    def test_web_probe_detects_verification_html(self):
+        result = source_health._web_probe_payload_from_response(
+            platform="global",
+            url="https://makerworld.com/zh",
+            status_code=200,
+            text="<html><body>cf-browser-verification</body></html>",
+            headers={"content-type": "text/html"},
+            elapsed_ms=12.0,
+            engine="unit",
+        )
+
+        self.assertEqual(result["state"], "verification_required")
+        self.assertEqual(result["status"], "需要验证")
 
     def test_source_health_prefer_cached_uses_stale_snapshot_and_refreshes_background(self):
         original_async_refresh = source_health._async_refresh_source_health
@@ -153,7 +285,7 @@ class SourceHealthCardsTest(unittest.TestCase):
             cookies = [SimpleNamespace(platform="cn", cookie="sid=cn")]
             proxy = None
 
-        cache_key = source_health._cache_key("cn", "sid=cn", None)
+        cache_key = source_health._cache_key("account", "cn", "sid=cn", None)
         source_health.SOURCE_HEALTH_CACHE[cache_key] = {
             "checked_at": source_health.time.time() - source_health.SOURCE_HEALTH_CACHE_TTL_SECONDS - 1,
             "payload": {
@@ -175,7 +307,7 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(card_map["cn"]["state"], "ok")
         self.assertEqual(card_map["cn"]["status"], "连接正常")
         self.assertTrue(card_map["cn"]["checks"][0].get("detail") in {"", "正在后台刷新源站状态，首页先使用其它快照数据。"})
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 2)
 
     def test_html_probe_without_verification_markers_is_interface_limited(self):
         result = source_health._auth_probe_result_from_response(
@@ -413,12 +545,12 @@ class SourceHealthCardsTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            source_health._cache_key("cn", "foo=bar", proxy_a),
-            source_health._cache_key("cn", "foo=bar", proxy_b),
+            source_health._cache_key("account", "cn", "foo=bar", proxy_a),
+            source_health._cache_key("account", "cn", "foo=bar", proxy_b),
         )
         self.assertNotEqual(
-            source_health._cache_key("global", "foo=bar", proxy_a),
-            source_health._cache_key("global", "foo=bar", proxy_b),
+            source_health._cache_key("account", "global", "foo=bar", proxy_a),
+            source_health._cache_key("account", "global", "foo=bar", proxy_b),
         )
 
     def test_cookie_probe_session_ignores_env_proxy(self):

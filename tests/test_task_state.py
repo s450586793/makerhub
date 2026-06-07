@@ -439,6 +439,36 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(events[-1][2]["id"], "task-1")
         self.assertEqual(events[-1][2]["url"], "https://example.com/models/1")
 
+    def test_load_archive_queue_discards_completed_active_snapshot(self):
+        state = {
+            "archive_queue": {
+                "active": [
+                    {
+                        "id": "task-done",
+                        "title": "Done",
+                        "status": "completed",
+                        "progress": 100,
+                        "message": "归档完成：Done",
+                    },
+                    {
+                        "id": "task-running",
+                        "title": "Running",
+                        "status": "running",
+                    },
+                ],
+                "queued": [],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
+            queue = store.load_archive_queue()
+
+        self.assertEqual(queue["running_count"], 1)
+        self.assertEqual([item["id"] for item in queue["active"]], ["task-running"])
+
     def test_remote_refresh_patch_can_skip_state_event_publish(self):
         state = {}
         events = []

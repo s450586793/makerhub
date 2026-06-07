@@ -59,6 +59,10 @@ AUTH_PROBES = {
         ("个人偏好", "https://api.bambulab.com/v1/design-user-service/my/preference"),
     ),
 }
+WEB_PROBES = {
+    "cn": "https://makerworld.com.cn/zh",
+    "global": "https://makerworld.com/zh",
+}
 SOURCE_HEALTH_LABELS = {
     "cn": "国内站",
     "global": "国际站",
@@ -459,10 +463,11 @@ def _probe_auth_endpoints(platform: str, raw_cookie: str, proxy_config: Any) -> 
     return payload
 
 
-def _cache_key(platform: str, raw_cookie: str, proxy_config: Any) -> str:
+def _cache_key(kind: str, platform: str, raw_cookie: str, proxy_config: Any) -> str:
     proxy_state = json.dumps(effective_proxy_cache_state(proxy_config, platform=platform), ensure_ascii=False, sort_keys=True)
     cookie_hash = hashlib.sha1(str(raw_cookie or "").encode("utf-8", errors="ignore")).hexdigest()
-    return f"{platform}:{cookie_hash}:{proxy_state}"
+    clean_kind = str(kind or "account").strip().lower() or "account"
+    return f"{clean_kind}:{platform}:{cookie_hash}:{proxy_state}"
 
 
 def _cached_source_health_payload(cache_key: str, *, max_age_seconds: float) -> dict[str, Any] | None:
@@ -490,6 +495,7 @@ def _save_source_health_payload(cache_key: str, payload: dict[str, Any]) -> None
 
 def _async_refresh_source_health(
     cache_key: str,
+    kind: str,
     platform: str,
     raw_cookie: str,
     proxy_config: Any,
@@ -497,7 +503,11 @@ def _async_refresh_source_health(
     def _refresh() -> None:
         try:
             try:
-                payload = _probe_auth_endpoints(platform, raw_cookie, proxy_config)
+                payload = (
+                    _probe_platform_web_page(platform, raw_cookie, proxy_config)
+                    if str(kind or "").strip().lower() == "web"
+                    else _probe_auth_endpoints(platform, raw_cookie, proxy_config)
+                )
             except Exception as exc:
                 payload = {
                     "ok": False,
@@ -510,7 +520,7 @@ def _async_refresh_source_health(
             publish_state_event(
                 "dashboard",
                 "state.changed",
-                {"reason": "source_health_refreshed", "platform": platform},
+                {"reason": "source_health_refreshed", "kind": kind, "platform": platform},
             )
         finally:
             with SOURCE_HEALTH_CACHE_LOCK:
@@ -531,6 +541,155 @@ def _checking_source_health_payload(platform: str) -> dict[str, Any]:
         "检测中",
         "正在后台刷新源站状态，首页先使用其它快照数据。",
     )
+
+
+def _web_probe_payload_from_response(
+    *,
+    platform: str,
+    url: str,
+    status_code: int,
+    text: str,
+    headers: Any,
+    elapsed_ms: float,
+    engine: str = "",
+) -> dict[str, Any]:
+    platform_key = "global" if str(platform or "").strip() == "global" else "cn"
+    preview = (text or "")[:2000]
+    result = {
+        "target": "网页入口",
+        "url": url,
+        "ok": False,
+        "status_code": int(status_code or 0),
+        "elapsed_ms": elapsed_ms,
+        "content_type": str((headers or {}).get("content-type") or "").lower()[:80],
+    }
+    if engine:
+        result["engine"] = engine
+
+    if _contains_verification_markers(preview):
+        result["failure_kind"] = "verification_required"
+        result["error"] = "网页入口返回验证页面。"
+        return {
+            "ok": False,
+            "platform": platform_key,
+            "state": "verification_required",
+            "status": "需要验证",
+            "detail": "MakerWorld 网页入口返回验证页，请前往官网手动完成验证。",
+            "results": [result],
+        }
+
+    if int(status_code or 0) in {401, 403}:
+        result["failure_kind"] = "auth_required"
+        result["error"] = f"网页入口返回状态码 {int(status_code or 0)}。"
+        return {
+            "ok": False,
+            "platform": platform_key,
+            "state": "auth_required",
+            "status": "Cookie 失效",
+            "detail": "MakerWorld 网页入口拒绝当前 Cookie，请重新获取并保存 Cookie。",
+            "results": [result],
+        }
+
+    if int(status_code or 0) and int(status_code or 0) < 400:
+        result["ok"] = True
+        return {
+            "ok": True,
+            "platform": platform_key,
+            "state": "ok",
+            "status": "访问正常",
+            "detail": "",
+            "results": [result],
+        }
+
+    result["failure_kind"] = "http_error"
+    result["error"] = f"网页入口返回状态码 {int(status_code or 0)}。"
+    return {
+        "ok": False,
+        "platform": platform_key,
+        "state": "http_error",
+        "status": "连接异常",
+        "detail": result["error"],
+        "results": [result],
+    }
+
+
+def _probe_platform_web_page(platform: str, raw_cookie: str, proxy_config: Any) -> dict[str, Any]:
+    platform_key = "global" if str(platform or "").strip() == "global" else "cn"
+    url = WEB_PROBES.get(platform_key) or PLATFORM_ORIGINS.get(platform_key, "")
+    if not url:
+        return _empty_cookie_auth_payload(platform_key, "http_error", "连接异常", "缺少网页探针配置。")
+
+    session = _make_session()
+    headers = _build_request_headers(PLATFORM_ORIGINS.get(platform_key, ""), raw_cookie)
+    proxies = _build_proxy_mapping(proxy_config, url, platform=platform_key)
+    started = time.perf_counter()
+    try:
+        scrapling_result = scrapling_fetch_text(
+            headers=headers,
+            proxy_config=proxy_config,
+            raw_cookie=raw_cookie,
+            timeout=10,
+            url=url,
+            expect_json=False,
+        )
+        should_use_scrapling_result = (
+            scrapling_result.ok
+            or scrapling_only()
+            or (
+                int(scrapling_result.status_code or 0) in {401, 403}
+                and (scrapling_result.text or scrapling_result.error)
+            )
+            or _contains_verification_markers(scrapling_result.text or "")
+        )
+        if should_use_scrapling_result:
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+            payload = _web_probe_payload_from_response(
+                platform=platform_key,
+                url=url,
+                status_code=int(scrapling_result.status_code or 0),
+                text=scrapling_result.text or "",
+                headers=scrapling_result.headers or {},
+                elapsed_ms=elapsed_ms,
+                engine=scrapling_result.engine,
+            )
+            if payload.get("state") == "http_error" and scrapling_result.error:
+                payload["detail"] = scrapling_result.error
+                payload["results"][0]["error"] = scrapling_result.error
+            return payload
+        else:
+            response = session.get(
+                url,
+                headers=headers,
+                proxies=proxies or None,
+                timeout=(5, 10),
+            )
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+            return _web_probe_payload_from_response(
+                platform=platform_key,
+                url=url,
+                status_code=int(response.status_code),
+                text=response.text or "",
+                headers=response.headers,
+                elapsed_ms=elapsed_ms,
+            )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "platform": platform_key,
+            "state": "http_error",
+            "status": "连接异常",
+            "detail": _safe_error_message(exc),
+            "results": [{
+                "target": "网页入口",
+                "url": url,
+                "ok": False,
+                "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+                "failure_kind": "http_error",
+                "error": _safe_error_message(exc),
+            }],
+        }
+    finally:
+        session.close()
 
 
 def probe_cookie_auth_status(
@@ -556,7 +715,7 @@ def probe_cookie_auth_status(
                 _limit_guard_message(limit_guard),
             )
 
-    cache_key = _cache_key(platform_key, normalized_cookie, proxy_config)
+    cache_key = _cache_key("account", platform_key, normalized_cookie, proxy_config)
     if use_cache:
         cached_payload = _cached_source_health_payload(cache_key, max_age_seconds=SOURCE_HEALTH_CACHE_TTL_SECONDS)
         if cached_payload:
@@ -594,17 +753,44 @@ def _probe_platform_status_snapshot(platform: str, raw_cookie: str, proxy_config
             _limit_guard_message(limit_guard),
         )
 
-    cache_key = _cache_key(platform_key, normalized_cookie, proxy_config)
+    cache_key = _cache_key("account", platform_key, normalized_cookie, proxy_config)
     fresh_payload = _cached_source_health_payload(cache_key, max_age_seconds=SOURCE_HEALTH_CACHE_TTL_SECONDS)
     if fresh_payload:
         return fresh_payload
 
     stale_payload = _cached_source_health_payload(cache_key, max_age_seconds=SOURCE_HEALTH_STALE_TTL_SECONDS)
-    _async_refresh_source_health(cache_key, platform_key, normalized_cookie, proxy_config)
+    _async_refresh_source_health(cache_key, "account", platform_key, normalized_cookie, proxy_config)
     if stale_payload:
         stale_payload["stale"] = True
         return stale_payload
     return _checking_source_health_payload(platform_key)
+
+
+def _probe_platform_web_status(platform: str, raw_cookie: str, proxy_config: Any) -> dict[str, Any]:
+    platform_key = "global" if str(platform or "").strip() == "global" else "cn"
+    cache_key = _cache_key("web", platform_key, sanitize_cookie_header(raw_cookie), proxy_config)
+    cached_payload = _cached_source_health_payload(cache_key, max_age_seconds=SOURCE_HEALTH_CACHE_TTL_SECONDS)
+    if cached_payload:
+        return cached_payload
+    payload = _probe_platform_web_page(platform_key, raw_cookie, proxy_config)
+    _save_source_health_payload(cache_key, payload)
+    return dict(payload)
+
+
+def _probe_platform_web_status_snapshot(platform: str, raw_cookie: str, proxy_config: Any) -> dict[str, Any]:
+    platform_key = "global" if str(platform or "").strip() == "global" else "cn"
+    normalized_cookie = sanitize_cookie_header(raw_cookie)
+    cache_key = _cache_key("web", platform_key, normalized_cookie, proxy_config)
+    fresh_payload = _cached_source_health_payload(cache_key, max_age_seconds=SOURCE_HEALTH_CACHE_TTL_SECONDS)
+    if fresh_payload:
+        return fresh_payload
+
+    stale_payload = _cached_source_health_payload(cache_key, max_age_seconds=SOURCE_HEALTH_STALE_TTL_SECONDS)
+    _async_refresh_source_health(cache_key, "web", platform_key, normalized_cookie, proxy_config)
+    if stale_payload:
+        stale_payload["stale"] = True
+        return stale_payload
+    return {}
 
 
 def _recent_remote_refresh_health(platform: str, remote_refresh_state: dict[str, Any] | None) -> dict[str, Any]:
@@ -768,6 +954,7 @@ def _check_priority(check: dict[str, Any]) -> tuple[int, int, int]:
     state_score = three_mf_failure_priority(check.get("state"))
     source_score = {
         "account": 2,
+        "web": 2,
         "download": 1,
     }.get(str(check.get("source") or "").strip(), 0)
     return (tone_score, state_score, source_score)
@@ -809,10 +996,11 @@ def build_source_health_cards(
     missing_overrides = _build_missing_3mf_overrides(missing_3mf_items)
 
     def build_card(platform: str) -> dict[str, Any]:
+        raw_cookie = str(cookie_map.get(platform) or "")
         probe = (
-            _probe_platform_status_snapshot(platform, str(cookie_map.get(platform) or ""), getattr(config, "proxy", None))
+            _probe_platform_status_snapshot(platform, raw_cookie, getattr(config, "proxy", None))
             if prefer_cached
-            else _probe_platform_status(platform, str(cookie_map.get(platform) or ""), getattr(config, "proxy", None))
+            else _probe_platform_status(platform, raw_cookie, getattr(config, "proxy", None))
         )
         account_state = str(probe.get("state") or "").strip()
         account_detail = str(probe.get("detail") or "").strip()
@@ -836,6 +1024,25 @@ def build_source_health_cards(
                 tone=account_tone,
             )
         ]
+        web_probe = {}
+        if sanitize_cookie_header(raw_cookie):
+            web_probe = (
+                _probe_platform_web_status_snapshot(platform, raw_cookie, getattr(config, "proxy", None))
+                if prefer_cached
+                else _probe_platform_web_status(platform, raw_cookie, getattr(config, "proxy", None))
+            )
+        web_state = str(web_probe.get("state") or "").strip()
+        if web_state and web_state != "ok":
+            checks.append(
+                _source_health_check(
+                    source="web",
+                    label="网页",
+                    state=web_state,
+                    status=str(web_probe.get("status") or _status_text_from_failure_state(web_state)),
+                    detail=str(web_probe.get("detail") or "").strip(),
+                    tone=_tone_from_state(web_state),
+                )
+            )
         override = missing_overrides.get(platform) or {}
         override_state = str(override.get("state") or "").strip()
         if override_state:
