@@ -117,3 +117,9 @@ test("SubscriptionsPage restores deep pages with a single include-until-page req
   assert.match(subscriptionsPageSource, /query\.set\("limit"/);
   assert.doesNotMatch(subscriptionsPageSource, /for \(let page = 1; page <= pagesToLoad;/);
 });
+
+test("SettingsPage renders from light config before background diagnostics", () => {
+  assert.match(settingsPageSource, /refreshLightConfig/);
+  assert.match(settingsPageSource, /refreshSettingsDiagnostics/);
+  assert.match(settingsPageSource, /void refreshSettingsDiagnostics\(\)/);
+});

@@ -869,7 +869,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
 import { RouterLink, useRoute, useRouter } from "vue-router";
 
 import ThemeSegment from "../components/ThemeSegment.vue";
-import { appState, applyConfigPayload, refreshConfig, saveThemePreference } from "../lib/appState";
+import { appState, applyConfigPayload, refreshConfig, refreshLightConfig, saveThemePreference } from "../lib/appState";
 import { apiRequest } from "../lib/api";
 import {
   buildAdvancedPayload,
@@ -1647,9 +1647,18 @@ function refreshSystemPanelFromEvent() {
 }
 
 async function load() {
-  const payload = await refreshConfig();
+  const payload = await refreshLightConfig();
   applyConfigToForms(payload);
   setActiveTab(typeof route.query.tab === "string" ? route.query.tab : "system");
+  void refreshSettingsDiagnostics();
+}
+
+async function refreshSettingsDiagnostics() {
+  try {
+    await refreshConfig();
+  } catch (error) {
+    statuses.system_update = error instanceof Error ? error.message : "系统诊断刷新失败。";
+  }
 }
 
 async function loadSharedShares(options = {}) {

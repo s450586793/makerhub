@@ -48,6 +48,16 @@ async def get_config():
     )
 
 
+@router.get("/config/light")
+async def get_config_light():
+    config = await run_ui_io(config_api.store.load)
+    payload = await run_ui_io(config_api._public_config_light_payload, config)
+    return config_api._with_version_status(
+        payload,
+        await config_api._get_github_version_status(proxy_config=config.proxy),
+    )
+
+
 @router.get("/system/update")
 async def get_system_update(force: bool = Query(False)):
     config = await run_ui_io(config_api.store.load)

@@ -135,6 +135,11 @@ export async function refreshConfig() {
 }
 
 
+export async function refreshLightConfig() {
+  return applyConfigPayload(await apiRequest("/api/config/light"));
+}
+
+
 export async function refreshVersionStatus(options = {}) {
   const { force = false } = options;
   const query = force ? "?force=true" : "";

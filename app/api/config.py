@@ -2154,11 +2154,17 @@ def _archive_event_snapshot() -> dict:
     }
 
 
-def _public_config_payload(config) -> dict:
-    default_password = (
+def _default_password_active(config) -> bool:
+    return (
         str(config.user.username or "").strip() == "admin"
         and verify_password("admin", config.user.password_hash)
         and str(config.user.password_hash or "").strip() == default_admin_password_hash()
+    )
+
+
+def _public_config_base_payload(config) -> dict:
+    default_password = (
+        _default_password_active(config)
     )
     return {
         "app_version": APP_VERSION,
@@ -2186,21 +2192,31 @@ def _public_config_payload(config) -> dict:
         ],
         "subscriptions": [item.model_dump() for item in config.subscriptions],
         "subscription_settings": config.subscription_settings.model_dump(),
-        "cookie_source_inventory": cookie_source_inventory_payload(),
-        "cookie_source_sync_state": cookie_source_sync_state_payload(),
         "missing_3mf": [item.model_dump() for item in config.missing_3mf],
         "organizer": config.organizer.model_dump(),
         "remote_refresh": config.remote_refresh.model_dump(),
         "three_mf_limits": config.three_mf_limits.model_dump(),
         "advanced": config.advanced.model_dump(),
         "runtime": config.runtime.model_dump(),
+        "paths": config.paths.model_dump(),
+    }
+
+
+def _public_config_payload(config) -> dict:
+    return {
+        **_public_config_base_payload(config),
+        "cookie_source_inventory": cookie_source_inventory_payload(),
+        "cookie_source_sync_state": cookie_source_sync_state_payload(),
         "database": database_status(),
         "remote_refresh_state": compact_remote_refresh_state(
             task_state_store.load_remote_refresh_state(),
             include_current=False,
         ),
-        "paths": config.paths.model_dump(),
     }
+
+
+def _public_config_light_payload(config) -> dict:
+    return _public_config_base_payload(config)
 
 
 def _session_payload(identity: dict, config=None) -> dict:
