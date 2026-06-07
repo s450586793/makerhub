@@ -1,3 +1,5 @@
+import { recordApiDuration } from "./performance.js";
+
 function buildRedirectTarget() {
   return `${window.location.pathname}${window.location.search}${window.location.hash}`;
 }
@@ -50,13 +52,19 @@ export async function apiRequest(path, options = {}) {
     requestHeaders.set("Accept", "application/json");
   }
 
-  const response = await fetch(path, {
-    method,
-    headers: requestHeaders,
-    body: requestBody,
-    credentials: "include",
-    cache,
-  });
+  const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+  let response;
+  try {
+    response = await fetch(path, {
+      method,
+      headers: requestHeaders,
+      body: requestBody,
+      credentials: "include",
+      cache,
+    });
+  } finally {
+    recordApiDuration(path, (typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt);
+  }
 
   if (response.status === 401 && redirectOn401) {
     const next = encodeURIComponent(buildRedirectTarget());

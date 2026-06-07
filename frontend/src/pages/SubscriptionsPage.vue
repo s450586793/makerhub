@@ -157,6 +157,7 @@ import SourceLibraryCard from "../components/SourceLibraryCard.vue";
 import { apiRequest } from "../lib/api";
 import { createAutoLoadObserver } from "../lib/autoLoadObserver";
 import { getPageCache, setPageCache } from "../lib/pageCache";
+import { createPagePerformanceTracker } from "../lib/performance";
 import { subscribeStateRefresh } from "../lib/stateEvents";
 import {
   DEFAULT_SUBSCRIPTION_SETTINGS,
@@ -553,6 +554,7 @@ async function createSubscription() {
 }
 
 onMounted(async () => {
+  const perf = createPagePerformanceTracker({ page: "subscriptions", route: () => route.fullPath });
   subscriptionsAutoLoadSupported.value = typeof window !== "undefined" && "IntersectionObserver" in window;
   unsubscribeStateRefresh = subscribeStateRefresh(
     ["subscriptions_state", "source_library", "archive_queue"],
@@ -562,6 +564,7 @@ onMounted(async () => {
   );
   hydrateSubscriptionsPageFromCache();
   await load();
+  void perf.finish();
 });
 
 onBeforeUnmount(() => {

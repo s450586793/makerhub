@@ -8,6 +8,9 @@ const remoteRefreshPageSource = readFileSync(new URL("../pages/RemoteRefreshPage
 const dashboardPageSource = readFileSync(new URL("../pages/DashboardPage.vue", import.meta.url), "utf8");
 const organizerPageSource = readFileSync(new URL("../pages/OrganizerPage.vue", import.meta.url), "utf8");
 const settingsPageSource = readFileSync(new URL("../pages/SettingsPage.vue", import.meta.url), "utf8");
+const modelsPageSource = readFileSync(new URL("../pages/ModelsPage.vue", import.meta.url), "utf8");
+const modelGroupPageSource = readFileSync(new URL("../pages/ModelLibraryGroupPage.vue", import.meta.url), "utf8");
+const subscriptionsPageSource = readFileSync(new URL("../pages/SubscriptionsPage.vue", import.meta.url), "utf8");
 const appShellSource = readFileSync(new URL("../layouts/AppShell.vue", import.meta.url), "utf8");
 const appStateSource = readFileSync(new URL("./appState.js", import.meta.url), "utf8");
 
@@ -84,4 +87,21 @@ test("bootstrap state hydration does not depend on GitHub version payload", () =
   assert.notEqual(end, -1);
   assert.match(applyBootstrapBlock, /appVersion/);
   assert.doesNotMatch(applyBootstrapBlock, /githubLatestVersion|github_version|githubUpdateAvailable/);
+});
+
+test("primary pages report slow first-load performance without UI changes", () => {
+  for (const source of [
+    dashboardPageSource,
+    modelsPageSource,
+    modelGroupPageSource,
+    organizerPageSource,
+    settingsPageSource,
+    subscriptionsPageSource,
+    tasksPageSource,
+    logsPageSource,
+    remoteRefreshPageSource,
+  ]) {
+    assert.match(source, /createPagePerformanceTracker/);
+    assert.match(source, /perf\.finish/);
+  }
 });

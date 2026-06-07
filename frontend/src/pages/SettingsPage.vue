@@ -880,6 +880,7 @@ import {
   normalizeBoundedInt,
   normalizeDailyThreeMfLimit,
 } from "../lib/settingsPayloads";
+import { createPagePerformanceTracker } from "../lib/performance";
 import { createPageRefreshController } from "../lib/usePageRefresh";
 
 
@@ -2385,13 +2386,15 @@ watch(() => route.query.tab, (value) => {
   setActiveTab(typeof value === "string" ? value : "system");
 });
 
-onMounted(() => {
+onMounted(async () => {
+  const perf = createPagePerformanceTracker({ page: "settings", route: () => route.fullPath });
   settingsRefreshController = createPageRefreshController({
     scopes: ["system_update", "archive_profile_backfill_status"],
     refresh: refreshSystemPanelFromEvent,
     delayMs: 450,
   });
-  void load();
+  await load();
+  void perf.finish();
 });
 onBeforeUnmount(clearTimers);
 </script>

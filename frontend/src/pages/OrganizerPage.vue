@@ -201,6 +201,7 @@ import SourceLibraryCard from "../components/SourceLibraryCard.vue";
 import { apiRequest, apiUploadRequest } from "../lib/api";
 import { refreshConfig } from "../lib/appState";
 import { deletePageCache, deletePageCacheByPrefix, getPageCache, setPageCache } from "../lib/pageCache";
+import { createPagePerformanceTracker } from "../lib/performance";
 import { createPageRefreshController } from "../lib/usePageRefresh";
 
 
@@ -1638,7 +1639,8 @@ function closeOrganizerProgressPopover() {
   organizerProgressOpen.value = false;
 }
 
-onMounted(() => {
+onMounted(async () => {
+  const perf = createPagePerformanceTracker({ page: "organizer" });
   organizerRefreshController = createPageRefreshController({
     scopes: ["organize_tasks", "archive_queue", "source_library"],
     refresh: refreshOrganizerTasks,
@@ -1648,7 +1650,8 @@ onMounted(() => {
   document.addEventListener("click", closeOrganizerProgressPopover);
   hydrateOrganizerPageFromCache();
   restoreImportUploadProgress();
-  void load({ refreshLibrary: !hasActiveOrganizeTasks() || !hasSourceLibraryPayload() });
+  await load({ refreshLibrary: !hasActiveOrganizeTasks() || !hasSourceLibraryPayload() });
+  void perf.finish();
 });
 
 onBeforeUnmount(() => {

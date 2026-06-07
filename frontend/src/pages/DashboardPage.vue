@@ -330,6 +330,7 @@ import {
   shouldShowDashboardStatusDetail,
 } from "../lib/dashboardStatus";
 import { formatServerDateTime } from "../lib/helpers";
+import { createPagePerformanceTracker } from "../lib/performance";
 import { subscribeStateRefresh } from "../lib/stateEvents";
 
 
@@ -600,7 +601,9 @@ function remoteRefreshDeferText(item) {
 }
 
 onMounted(async () => {
+  const perf = createPagePerformanceTracker({ page: "dashboard" });
   await load({ initial: true });
+  void perf.finish();
   unsubscribeStateRefresh = subscribeStateRefresh(
     ["archive_queue", "missing_3mf", "organize_tasks", "subscriptions_state", "remote_refresh_state", "dashboard"],
     handleArchiveCompleted,

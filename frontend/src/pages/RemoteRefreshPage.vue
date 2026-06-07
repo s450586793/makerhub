@@ -292,6 +292,7 @@ import CronField from "../components/CronField.vue";
 import { applyConfigPayload } from "../lib/appState";
 import { apiRequest } from "../lib/api";
 import { encodeModelPath, formatServerDateTime } from "../lib/helpers";
+import { createPagePerformanceTracker } from "../lib/performance";
 import { createPageRefreshController } from "../lib/usePageRefresh";
 
 
@@ -644,6 +645,7 @@ async function repairArchiveQueue() {
 }
 
 onMounted(async () => {
+  const perf = createPagePerformanceTracker({ page: "remote_refresh" });
   remoteRefreshController = createPageRefreshController({
     scopes: ["remote_refresh_state"],
     refresh: () => load({ silent: true }),
@@ -652,6 +654,7 @@ onMounted(async () => {
     refreshOnVisible: true,
   });
   await load();
+  void perf.finish();
 });
 
 onBeforeUnmount(() => {

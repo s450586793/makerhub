@@ -309,6 +309,7 @@ import { RouterLink } from "vue-router";
 import { apiRequest } from "../lib/api";
 import { normalizeRuntimeStatusLabel, runtimeTaskAction } from "../lib/dashboardStatus";
 import { encodeModelPath } from "../lib/helpers";
+import { createPagePerformanceTracker } from "../lib/performance";
 import { createPageRefreshController } from "../lib/usePageRefresh";
 
 
@@ -694,13 +695,15 @@ async function cancelMissing(item) {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
+  const perf = createPagePerformanceTracker({ page: "tasks" });
   tasksRefreshController = createPageRefreshController({
     scopes: ["archive_queue", "missing_3mf", "organize_tasks"],
     refresh: () => load(),
     delayMs: 250,
   });
-  void load();
+  await load();
+  void perf.finish();
 });
 
 onBeforeUnmount(() => {

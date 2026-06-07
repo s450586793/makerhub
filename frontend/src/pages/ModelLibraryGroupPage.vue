@@ -214,6 +214,7 @@ import ShareDialog from "../components/ShareDialog.vue";
 import { apiRequest } from "../lib/api";
 import { subscribeArchiveCompletion } from "../lib/archiveEvents";
 import { deletePageCache, deletePageCacheByPrefix, getPageCache, setPageCache } from "../lib/pageCache";
+import { createPagePerformanceTracker } from "../lib/performance";
 
 
 const route = useRoute();
@@ -966,6 +967,7 @@ watch(() => route.fullPath, () => {
 });
 
 onMounted(async () => {
+  const perf = createPagePerformanceTracker({ page: "model_group", route: () => route.fullPath });
   await hydrateGroupListFromCache();
   try {
     await load({ append: false });
@@ -973,6 +975,7 @@ onMounted(async () => {
     status.value = error instanceof Error ? error.message : "模型列表加载失败。";
     loaded.value = true;
   }
+  void perf.finish();
   unsubscribeArchiveEvents = subscribeArchiveCompletion(handleArchiveCompleted);
   document.addEventListener("visibilitychange", handleVisibilityChange);
 });

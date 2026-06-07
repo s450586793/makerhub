@@ -117,6 +117,7 @@ import { subscribeArchiveCompletion } from "../lib/archiveEvents";
 import { apiRequest } from "../lib/api";
 import { createAutoLoadObserver } from "../lib/autoLoadObserver";
 import { getPageCache, setPageCache } from "../lib/pageCache";
+import { createPagePerformanceTracker } from "../lib/performance";
 
 
 const route = useRoute();
@@ -878,6 +879,7 @@ watch(() => route.fullPath, () => {
 });
 
 onMounted(async () => {
+  const perf = createPagePerformanceTracker({ page: "models", route: () => route.fullPath });
   await hydrateModelListFromCache();
   try {
     await load({ append: false });
@@ -885,6 +887,7 @@ onMounted(async () => {
     status.value = error instanceof Error ? error.message : "模型列表加载失败。";
     loaded.value = true;
   }
+  void perf.finish();
   unsubscribeArchiveEvents = subscribeArchiveCompletion(handleArchiveCompleted);
   document.addEventListener("visibilitychange", handleVisibilityChange);
 });

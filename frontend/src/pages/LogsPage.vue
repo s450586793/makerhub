@@ -209,6 +209,7 @@ import { useRoute, useRouter } from "vue-router";
 
 import { apiRequest } from "../lib/api";
 import { createAutoLoadObserver } from "../lib/autoLoadObserver";
+import { createPagePerformanceTracker } from "../lib/performance";
 import { createPageRefreshController } from "../lib/usePageRefresh";
 
 
@@ -577,9 +578,11 @@ watch(() => filters.q, () => {
   searchTimer = window.setTimeout(applyFilters, 360);
 });
 
-onMounted(() => {
+onMounted(async () => {
+  const perf = createPagePerformanceTracker({ page: "logs", route: () => route.fullPath });
   syncFiltersFromRoute();
-  load();
+  await load();
+  void perf.finish();
   ensureObserver();
 });
 
