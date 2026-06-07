@@ -176,8 +176,12 @@ function syncFiltersFromRoute() {
 
 function buildQuery(page = 1, options = {}) {
   const query = new URLSearchParams();
-  query.set("page", String(page));
+  const safePage = Math.max(Number(page) || 1, 1);
+  query.set("page", String(safePage));
   query.set("page_size", String(PAGE_SIZE));
+  if (options.includeUntilPage) {
+    query.set("limit", String(Math.max(1, Math.floor(safePage)) * PAGE_SIZE));
+  }
   if (options.cacheKey) query.set("_", String(options.cacheKey));
   if (filters.q) query.set("q", filters.q);
   if (filters.source && filters.source !== "all") query.set("source", filters.source);
@@ -425,16 +429,14 @@ async function load({ append = false, refresh = false } = {}) {
 
   const nextPage = append ? payload.value.page + 1 : routePage();
   const cacheKeyBase = refresh ? Date.now() : "";
-  const responses = [];
-  for (let page = append ? nextPage : 1; page <= nextPage; page += 1) {
-    const cacheKey = cacheKeyBase ? `${cacheKeyBase}-${page}` : "";
-    responses.push(suppressLocallyDeletedItems(await fetchPage(page, { cacheKey })));
-  }
+  const response = suppressLocallyDeletedItems(await fetchPage(nextPage, {
+    cacheKey: cacheKeyBase ? `${cacheKeyBase}-${nextPage}` : "",
+    includeUntilPage: !append && nextPage > 1,
+  }));
   if (currentToken !== requestToken) {
     return;
   }
 
-  const response = responses[responses.length - 1];
   if (append) {
     const mergedItems = mergeUniqueModelItems(payload.value.items, response.items || []);
     payload.value = {
@@ -443,10 +445,7 @@ async function load({ append = false, refresh = false } = {}) {
       count: mergedItems.length,
     };
   } else {
-    const mergedItems = responses.reduce(
-      (items, item) => mergeUniqueModelItems(items, item.items || []),
-      [],
-    );
+    const mergedItems = response.items || [];
     payload.value = {
       ...response,
       items: mergedItems,
@@ -471,22 +470,19 @@ async function reloadVisiblePages({ refresh = false } = {}) {
   syncFiltersFromRoute();
   const cacheKeyBase = refresh ? Date.now() : "";
 
-  const responses = [];
-  for (let page = 1; page <= pagesToLoad; page += 1) {
-    const cacheKey = cacheKeyBase ? `${cacheKeyBase}-${page}` : "";
-    responses.push(suppressLocallyDeletedItems(await fetchPage(page, { cacheKey })));
-  }
+  const response = suppressLocallyDeletedItems(await fetchPage(pagesToLoad, {
+    cacheKey: cacheKeyBase ? `${cacheKeyBase}-${pagesToLoad}` : "",
+    includeUntilPage: pagesToLoad > 1,
+  }));
 
-  if (!responses.length || currentToken !== requestToken) {
+  if (currentToken !== requestToken) {
     return;
   }
 
-  const lastResponse = responses[responses.length - 1];
-  const mergedItems = responses.flatMap((response) => response.items || []);
   payload.value = {
-    ...lastResponse,
-    items: mergedItems,
-    count: mergedItems.length,
+    ...response,
+    items: response.items || [],
+    count: (response.items || []).length,
     page: pagesToLoad,
   };
   rememberModelList();

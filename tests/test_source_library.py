@@ -6,6 +6,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from app.schemas.models import AppConfig, SubscriptionRecord
+from app.services import catalog
 from app.services.catalog import _apply_subscription_flags, _source_deleted_model_count, build_dashboard_payload
 from tests.test_helpers import InMemoryDatabaseState
 from app.services.source_library import (
@@ -191,6 +192,33 @@ class SourceLibraryTest(unittest.TestCase):
 
         self.assertTrue(item["subscription_flags"]["deleted_on_source"])
         self.assertEqual(item["subscription_flags"]["deleted_sources"][0]["id"], "sub-author")
+
+    def test_models_payload_limit_returns_items_through_requested_page(self):
+        items = [
+            {
+                "model_dir": f"m-{index}",
+                "id": str(index),
+                "title": f"Model {index}",
+                "author": {"name": "A"},
+                "tags": [],
+                "source": "cn",
+                "stats": {"downloads": 0, "likes": 0, "prints": 0},
+                "collect_ts": 1000 - index,
+                "publish_ts": 1000 - index,
+                "local_flags": {},
+                "subscription_flags": {},
+            }
+            for index in range(10)
+        ]
+        with patch("app.services.catalog.get_decorated_models", return_value=(items, items)):
+            payload = catalog.build_models_payload(page=3, page_size=2, limit=6)
+
+        self.assertEqual(payload["page"], 3)
+        self.assertEqual(payload["page_size"], 2)
+        self.assertEqual(payload["count"], 6)
+        self.assertEqual([item["model_dir"] for item in payload["items"]], ["m-0", "m-1", "m-2", "m-3", "m-4", "m-5"])
+        self.assertTrue(payload["has_more"])
+        self.assertEqual(payload["filtered_total"], 10)
 
     def test_source_group_can_return_multiple_loaded_pages_in_one_payload(self):
         groups = {

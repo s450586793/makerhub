@@ -2365,6 +2365,7 @@ def build_models_payload(
     sort_key: str = "collectDate",
     page: int = 1,
     page_size: int = 8,
+    limit: int = 0,
 ) -> dict:
     all_models, visible_models = get_decorated_models()
     normalized_query = q.strip().lower()
@@ -2405,8 +2406,14 @@ def build_models_payload(
     safe_page_size = max(1, min(int(page_size or 8), 120))
     safe_page = max(int(page or 1), 1)
     total_filtered = len(items)
-    start = (safe_page - 1) * safe_page_size
-    end = start + safe_page_size
+    safe_limit = max(int(limit or 0), 0)
+    if safe_limit > 0:
+        effective_limit = min(safe_limit, 2000)
+        start = 0
+        end = effective_limit
+    else:
+        start = (safe_page - 1) * safe_page_size
+        end = start + safe_page_size
     paged_items = items[start:end]
 
     all_tags = _tags_from_items(visible_models)

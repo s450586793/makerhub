@@ -3208,6 +3208,7 @@ async def get_models_data(
     sort: str = Query("collectDate", description="collectDate / downloads / likes / prints"),
     page: int = Query(1, ge=1, description="分页页码"),
     page_size: int = Query(8, ge=1, le=120, description="每页数量"),
+    limit: int = Query(0, ge=0, le=2000, description="从第一页起一次返回的数量"),
 ):
     return await run_web_io(
         build_models_payload,
@@ -3217,6 +3218,7 @@ async def get_models_data(
         sort_key=sort,
         page=page,
         page_size=page_size,
+        limit=limit,
     )
 
 

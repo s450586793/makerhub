@@ -105,3 +105,15 @@ test("primary pages report slow first-load performance without UI changes", () =
     assert.match(source, /perf\.finish/);
   }
 });
+
+test("ModelsPage restores deep pages with a single include-until-page request", () => {
+  assert.match(modelsPageSource, /includeUntilPage/);
+  assert.match(modelsPageSource, /query\.set\("limit"/);
+  assert.doesNotMatch(modelsPageSource, /for \(let page = append \? nextPage : 1; page <= nextPage;/);
+});
+
+test("SubscriptionsPage restores deep pages with a single include-until-page request", () => {
+  assert.match(subscriptionsPageSource, /includeUntilPage/);
+  assert.match(subscriptionsPageSource, /query\.set\("limit"/);
+  assert.doesNotMatch(subscriptionsPageSource, /for \(let page = 1; page <= pagesToLoad;/);
+});

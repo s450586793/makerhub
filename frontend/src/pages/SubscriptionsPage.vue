@@ -295,16 +295,20 @@ function replaceSubscriptionSourcesSection(basePayload, items, sectionMeta = {})
   };
 }
 
-function buildSubscriptionsQuery(page = 1) {
+function buildSubscriptionsQuery(page = 1, options = {}) {
   const query = new URLSearchParams();
-  query.set("page", String(Math.max(Number(page) || 1, 1)));
+  const safePage = Math.max(Number(page) || 1, 1);
+  query.set("page", String(safePage));
   query.set("page_size", String(PAGE_SIZE));
+  if (options.includeUntilPage) {
+    query.set("limit", String(Math.max(1, Math.floor(safePage)) * PAGE_SIZE));
+  }
   return query;
 }
 
-async function fetchSubscriptionsPage(page = 1) {
+async function fetchSubscriptionsPage(page = 1, options = {}) {
   return normalizeSubscriptionsPayload(
-    await apiRequest(`/api/subscriptions?${buildSubscriptionsQuery(page).toString()}`),
+    await apiRequest(`/api/subscriptions?${buildSubscriptionsQuery(page, options).toString()}`),
   );
 }
 
@@ -321,31 +325,20 @@ async function load({ silent = false, pages = routePage() } = {}) {
   const pagesToLoad = Math.max(Number(pages) || 1, 1);
   let failed = false;
   try {
-    let mergedPayload = null;
-    let mergedItems = [];
-    let latestSection = null;
-    for (let page = 1; page <= pagesToLoad; page += 1) {
-      const response = await fetchSubscriptionsPage(page);
-      if (currentToken !== requestToken) {
-        return;
-      }
-      const section = subscriptionSourcesSection(response);
-      mergedItems = mergeSubscriptionSourceItems(mergedItems, section?.items || []);
-      latestSection = section || latestSection;
-      mergedPayload = response;
-    }
-    if (!mergedPayload) {
+    const response = await fetchSubscriptionsPage(pagesToLoad, { includeUntilPage: pagesToLoad > 1 });
+    if (currentToken !== requestToken) {
       return;
     }
+    const section = subscriptionSourcesSection(response);
     payload.value = replaceSubscriptionSourcesSection(
-      mergedPayload,
-      mergedItems,
+      response,
+      section?.items || [],
       {
-        ...(latestSection || {}),
+        ...(section || {}),
         page: pagesToLoad,
         page_size: PAGE_SIZE,
-        has_more: Boolean(latestSection?.has_more),
-        total: Number(latestSection?.total || mergedItems.length),
+        has_more: Boolean(section?.has_more),
+        total: Number(section?.total || section?.items?.length || 0),
       },
     );
     initialLoaded.value = true;

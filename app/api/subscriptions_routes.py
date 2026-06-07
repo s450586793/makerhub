@@ -35,8 +35,9 @@ async def save_subscription_settings(payload: SubscriptionSettingsUpdate, reques
 async def get_subscriptions_data(
     page: int = Query(1, ge=1, description="订阅来源分页页码"),
     page_size: int = Query(8, ge=1, le=120, description="每页订阅来源数量"),
+    limit: int = Query(0, ge=0, le=2000, description="从第一页起一次返回的数量"),
 ):
-    return await run_web_io(subscription_manager.list_payload, page=page, page_size=page_size)
+    return await run_web_io(subscription_manager.list_payload, page=page, page_size=page_size, limit=limit)
 
 
 @router.post("/subscriptions")

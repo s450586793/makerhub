@@ -2,10 +2,11 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.core.store import JsonStore
-from app.schemas.models import CookiePair, SubscriptionRecord
+from app.schemas.models import AppConfig, CookiePair, SubscriptionRecord
 from app.services import source_library
 from app.services import subscriptions
 from app.services.subscriptions import SubscriptionManager
@@ -133,6 +134,38 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertEqual(state["last_message"], "上次订阅同步中断，已恢复并重新加入调度。")
         self.assertTrue(state["manual_requested_at"])
         self.assertTrue(state["next_run_at"])
+
+    def test_subscription_payload_limit_returns_source_cards_through_requested_page(self):
+        manager = subscriptions.SubscriptionManager(
+            archive_manager=SimpleNamespace(),
+            store=JsonStore(self.temp_path / "limit_config.json"),
+            task_store=TaskStateStore(),
+            background_enabled=False,
+        )
+        overview = {
+            "sections": [
+                {
+                    "key": "subscription_sources",
+                    "items": [{"key": f"source-{index}"} for index in range(10)],
+                }
+            ],
+            "settings": {},
+        }
+        with patch.object(manager, "_ensure_state_records"), \
+                patch.object(manager.store, "load", return_value=AppConfig()), \
+                patch.object(manager.task_store, "load_subscriptions_state", return_value={"items": []}), \
+                patch("app.services.subscriptions.build_subscription_overview_payload", return_value=overview):
+            payload = manager.list_payload(page=3, page_size=2, limit=6)
+
+        section = next(item for item in payload["sections"] if item["key"] == "subscription_sources")
+        self.assertEqual(section["page"], 3)
+        self.assertEqual(section["page_size"], 2)
+        self.assertEqual(section["count"], 6)
+        self.assertTrue(section["has_more"])
+        self.assertEqual(
+            [item["key"] for item in section["items"]],
+            ["source-0", "source-1", "source-2", "source-3", "source-4", "source-5"],
+        )
 
     def test_keeps_fresh_active_running_state(self):
         self.task_store.patch_subscription_state(

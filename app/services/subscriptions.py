@@ -81,6 +81,8 @@ def _parse_iso(value: str) -> Optional[datetime]:
 def _normalize_subscription_source_page(
     page: int = 1,
     page_size: int = DEFAULT_SUBSCRIPTION_SOURCE_PAGE_SIZE,
+    *,
+    max_page_size: int = MAX_SUBSCRIPTION_SOURCE_PAGE_SIZE,
 ) -> tuple[int, int]:
     try:
         safe_page = int(page or 1)
@@ -90,7 +92,7 @@ def _normalize_subscription_source_page(
         safe_page_size = int(page_size or DEFAULT_SUBSCRIPTION_SOURCE_PAGE_SIZE)
     except (TypeError, ValueError):
         safe_page_size = DEFAULT_SUBSCRIPTION_SOURCE_PAGE_SIZE
-    return max(safe_page, 1), max(1, min(safe_page_size, MAX_SUBSCRIPTION_SOURCE_PAGE_SIZE))
+    return max(safe_page, 1), max(1, min(safe_page_size, max_page_size))
 
 
 def _paginate_subscription_source_sections(
@@ -98,8 +100,9 @@ def _paginate_subscription_source_sections(
     *,
     page: int = 1,
     page_size: int = DEFAULT_SUBSCRIPTION_SOURCE_PAGE_SIZE,
+    max_page_size: int = MAX_SUBSCRIPTION_SOURCE_PAGE_SIZE,
 ) -> list[dict]:
-    safe_page, safe_page_size = _normalize_subscription_source_page(page, page_size)
+    safe_page, safe_page_size = _normalize_subscription_source_page(page, page_size, max_page_size=max_page_size)
     start = (safe_page - 1) * safe_page_size
     end = start + safe_page_size
     paged_sections = []
@@ -678,6 +681,7 @@ class SubscriptionManager:
         *,
         page: int = 1,
         page_size: int = DEFAULT_SUBSCRIPTION_SOURCE_PAGE_SIZE,
+        limit: int = 0,
     ) -> dict:
         self._ensure_state_records()
         config = self.store.load()
@@ -685,6 +689,23 @@ class SubscriptionManager:
         state_map = {str(item.get("id") or ""): item for item in state_payload.get("items") or []}
         items = [self._merge_subscription_record(item, state_map.get(item.id)) for item in config.subscriptions]
         overview = build_subscription_overview_payload(store=self.store, task_store=self.task_store)
+        effective_page, effective_page_size = _normalize_subscription_source_page(page, page_size)
+        effective_limit = max(int(limit or 0), 0)
+        pagination_page = 1 if effective_limit > 0 else effective_page
+        pagination_page_size = min(effective_limit, 2000) if effective_limit > 0 else effective_page_size
+        sections = _paginate_subscription_source_sections(
+            list(overview.get("sections") or []),
+            page=pagination_page,
+            page_size=pagination_page_size,
+            max_page_size=2000 if effective_limit > 0 else MAX_SUBSCRIPTION_SOURCE_PAGE_SIZE,
+        )
+        if effective_limit > 0:
+            for section in sections:
+                if not isinstance(section, dict) or section.get("key") != "subscription_sources":
+                    continue
+                section["page"] = effective_page
+                section["page_size"] = effective_page_size
+                section["has_more"] = min(effective_limit, 2000) < int(section.get("total") or 0)
         return {
             "items": items,
             "count": len(items),
@@ -693,11 +714,7 @@ class SubscriptionManager:
                 "running": len([item for item in items if item["running"]]),
                 "deleted_marked": sum(int(item.get("deleted_count") or 0) for item in items),
             },
-            "sections": _paginate_subscription_source_sections(
-                list(overview.get("sections") or []),
-                page=page,
-                page_size=page_size,
-            ),
+            "sections": sections,
             "settings": overview.get("settings") or config.subscription_settings.model_dump(),
         }
 
