@@ -95,7 +95,7 @@ def _use_browser_fallback(config: Any = None) -> bool:
     return bool(raw.get("scrapling_browser_fallback", True))
 
 
-def _proxy_url(proxy_config: Any = None, target_url: str = "") -> str:
+def _proxy_url(proxy_config: Any = None, target_url: str = "", *, allow_domestic_proxy: bool = False) -> str:
     proxy = proxy_config
     if proxy is None:
         try:
@@ -104,7 +104,7 @@ def _proxy_url(proxy_config: Any = None, target_url: str = "") -> str:
             proxy = JsonStore().load().proxy
         except Exception:
             proxy = None
-    return proxy_url(proxy, target_url)
+    return proxy_url(proxy, target_url, allow_domestic_proxy=allow_domestic_proxy)
 
 
 def _headers_with_cookie(headers: Optional[dict[str, str]], raw_cookie: str) -> dict[str, str]:
@@ -209,6 +209,7 @@ def fetch_text(
     expect_json: bool = False,
     logger: Optional[Callable[..., None]] = None,
     advanced_config: Any = None,
+    allow_domestic_proxy: bool = False,
 ) -> ScraplingFetchResult:
     if not scrapling_enabled(advanced_config):
         return ScraplingFetchResult(ok=False, url=url, engine="disabled", error="Scrapling disabled")
@@ -219,7 +220,7 @@ def fetch_text(
 
     request_headers = _headers_with_cookie(headers, raw_cookie)
     target_url = _with_params(url, params)
-    proxy = _proxy_url(proxy_config, target_url)
+    proxy = _proxy_url(proxy_config, target_url, allow_domestic_proxy=allow_domestic_proxy)
     common_kwargs: dict[str, Any] = {"headers": request_headers}
     static_result = ScraplingFetchResult(ok=False, url=target_url, engine="scrapling-static")
     try:
@@ -284,6 +285,7 @@ def fetch_json(
     timeout: float = 30,
     logger: Optional[Callable[..., None]] = None,
     advanced_config: Any = None,
+    allow_domestic_proxy: bool = False,
 ) -> ScraplingFetchResult:
     result = fetch_text(
         url,
@@ -295,6 +297,7 @@ def fetch_json(
         expect_json=True,
         logger=logger,
         advanced_config=advanced_config,
+        allow_domestic_proxy=allow_domestic_proxy,
     )
     if not result.ok:
         return result

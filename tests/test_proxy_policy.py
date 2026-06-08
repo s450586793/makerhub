@@ -30,6 +30,19 @@ class ProxyPolicyTest(unittest.TestCase):
             {"http": "http://proxy.local:7890", "https": "http://proxy.local:7891"},
         )
 
+    def test_proxy_mapping_can_allow_domestic_proxy_for_account_auth(self):
+        proxy = SimpleNamespace(
+            enabled=True,
+            http_proxy="http://proxy.local:7890",
+            https_proxy="http://proxy.local:7891",
+            no_proxy="localhost",
+        )
+
+        self.assertEqual(
+            proxy_mapping(proxy, "https://makerworld.com.cn/api/v1/user-service/user/sendsmscode", platform="cn", allow_domestic_proxy=True),
+            {"http": "http://proxy.local:7890", "https": "http://proxy.local:7891"},
+        )
+
     def test_temporary_proxy_env_clears_proxy_for_domestic_target(self):
         proxy = {
             "enabled": True,

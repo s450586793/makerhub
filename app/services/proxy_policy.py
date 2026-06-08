@@ -39,14 +39,27 @@ def is_domestic_proxy_bypass_url(url: Any) -> bool:
     return any(host == domain or host.endswith(f".{domain}") for domain in DOMESTIC_PROXY_BYPASS_HOSTS)
 
 
-def should_bypass_proxy_for_target(target_url: Any = "", *, platform: str = "") -> bool:
+def should_bypass_proxy_for_target(
+    target_url: Any = "",
+    *,
+    platform: str = "",
+    allow_domestic_proxy: bool = False,
+) -> bool:
+    if allow_domestic_proxy:
+        return False
     if str(platform or "").strip().lower() == "cn":
         return True
     return is_domestic_proxy_bypass_url(target_url)
 
 
-def proxy_mapping(proxy_config: Any, target_url: Any = "", *, platform: str = "") -> dict[str, str]:
-    if should_bypass_proxy_for_target(target_url, platform=platform):
+def proxy_mapping(
+    proxy_config: Any,
+    target_url: Any = "",
+    *,
+    platform: str = "",
+    allow_domestic_proxy: bool = False,
+) -> dict[str, str]:
+    if should_bypass_proxy_for_target(target_url, platform=platform, allow_domestic_proxy=allow_domestic_proxy):
         return {}
     if not proxy_config or not bool(_proxy_value(proxy_config, "enabled")):
         return {}
@@ -62,13 +75,25 @@ def proxy_mapping(proxy_config: Any, target_url: Any = "", *, platform: str = ""
     return proxies
 
 
-def proxy_url(proxy_config: Any, target_url: Any = "", *, platform: str = "") -> str:
-    proxies = proxy_mapping(proxy_config, target_url, platform=platform)
+def proxy_url(
+    proxy_config: Any,
+    target_url: Any = "",
+    *,
+    platform: str = "",
+    allow_domestic_proxy: bool = False,
+) -> str:
+    proxies = proxy_mapping(proxy_config, target_url, platform=platform, allow_domestic_proxy=allow_domestic_proxy)
     return proxies.get("https") or proxies.get("http") or ""
 
 
-def effective_proxy_cache_state(proxy_config: Any, target_url: Any = "", *, platform: str = "") -> dict[str, Any]:
-    if should_bypass_proxy_for_target(target_url, platform=platform):
+def effective_proxy_cache_state(
+    proxy_config: Any,
+    target_url: Any = "",
+    *,
+    platform: str = "",
+    allow_domestic_proxy: bool = False,
+) -> dict[str, Any]:
+    if should_bypass_proxy_for_target(target_url, platform=platform, allow_domestic_proxy=allow_domestic_proxy):
         return {"enabled": False, "bypass": "domestic"}
     return {
         "enabled": bool(_proxy_value(proxy_config, "enabled")),
@@ -86,10 +111,16 @@ def _with_no_proxy_entry(value: str, entry: str) -> str:
 
 
 @contextmanager
-def temporary_proxy_env(config: Any, target_url: Any = "", *, platform: str = ""):
+def temporary_proxy_env(
+    config: Any,
+    target_url: Any = "",
+    *,
+    platform: str = "",
+    allow_domestic_proxy: bool = False,
+):
     proxy_config = config.get("proxy", config) if isinstance(config, dict) else getattr(config, "proxy", config)
     previous = {key: os.environ.get(key) for key in PROXY_ENV_KEYS}
-    bypass = should_bypass_proxy_for_target(target_url, platform=platform)
+    bypass = should_bypass_proxy_for_target(target_url, platform=platform, allow_domestic_proxy=allow_domestic_proxy)
 
     try:
         if bypass:

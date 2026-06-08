@@ -204,7 +204,7 @@ def _post_json(
     return session.post(
         url,
         json=payload,
-        proxies=proxy_mapping(proxy_config, url, platform=platform) or None,
+        proxies=proxy_mapping(proxy_config, url, platform=platform, allow_domestic_proxy=True) or None,
         timeout=(8, 20),
         allow_redirects=allow_redirects,
     )
@@ -402,7 +402,7 @@ def _exchange_makerworld_ticket(
     try:
         ticket_response = session.get(
             ticket_url,
-            proxies=proxy_mapping(proxy_config, ticket_url, platform=platform) or None,
+            proxies=proxy_mapping(proxy_config, ticket_url, platform=platform, allow_domestic_proxy=True) or None,
             timeout=(8, 20),
         )
     except Exception:
@@ -424,7 +424,7 @@ def _exchange_makerworld_ticket(
         session.get(
             makerworld_ticket_url,
             params={"ticket": ticket},
-            proxies=proxy_mapping(proxy_config, makerworld_ticket_url, platform=platform) or None,
+            proxies=proxy_mapping(proxy_config, makerworld_ticket_url, platform=platform, allow_domestic_proxy=True) or None,
             timeout=(8, 20),
             allow_redirects=True,
         )
@@ -488,6 +488,7 @@ def login_online_account(
                 proxy_config or ProxyConfig(),
                 include_limit_guard=False,
                 use_cache=False,
+                allow_domestic_proxy=True,
             )
             if not auth_payload.get("ok"):
                 errors.append(f"{login_url}: {auth_payload.get('message') or 'Cookie 探针失败'}")
@@ -558,6 +559,7 @@ def online_account_metadata_from_cookie(
         proxy_config or ProxyConfig(),
         include_limit_guard=False,
         use_cache=False,
+        allow_domestic_proxy=True,
     )
     result["status"] = "ok" if auth_payload.get("ok") else str(auth_payload.get("state") or "error")
     result["message"] = str(auth_payload.get("message") or "")

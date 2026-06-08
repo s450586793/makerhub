@@ -74,6 +74,38 @@ class ScraplingFetchClientTest(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertIsNone(calls[0][1]["proxy"])
 
+    def test_domestic_target_can_use_proxy_for_account_auth(self):
+        calls = []
+
+        class FakeFetcher:
+            @classmethod
+            def get(cls, url, **kwargs):
+                calls.append((url, kwargs))
+                return SimpleNamespace(
+                    status=200,
+                    text="<html><body>ok</body></html>",
+                    headers={"content-type": "text/html"},
+                    url=url,
+                )
+
+        proxy_config = SimpleNamespace(
+            enabled=True,
+            http_proxy="http://proxy.local:7890",
+            https_proxy="http://proxy.local:7891",
+            no_proxy="",
+        )
+
+        with patch.object(scrapling_fetch, "_load_fetchers", return_value=(FakeFetcher, None, "")):
+            result = scrapling_fetch.fetch_text(
+                "https://api.bambulab.cn/v1/user-service/my/message/count",
+                proxy_config=proxy_config,
+                advanced_config={"scraping_engine": "scrapling_first", "scrapling_browser_fallback": False},
+                allow_domestic_proxy=True,
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(calls[0][1]["proxy"], "http://proxy.local:7891")
+
     def test_global_target_uses_proxy(self):
         calls = []
 

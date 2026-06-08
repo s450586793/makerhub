@@ -84,8 +84,14 @@ def _make_session() -> requests.Session:
     return session
 
 
-def _build_proxy_mapping(proxy_config: Any, target_url: str = "", *, platform: str = "") -> dict[str, str]:
-    return proxy_mapping(proxy_config, target_url, platform=platform)
+def _build_proxy_mapping(
+    proxy_config: Any,
+    target_url: str = "",
+    *,
+    platform: str = "",
+    allow_domestic_proxy: bool = False,
+) -> dict[str, str]:
+    return proxy_mapping(proxy_config, target_url, platform=platform, allow_domestic_proxy=allow_domestic_proxy)
 
 
 def _looks_like_html(text: str) -> bool:
@@ -327,13 +333,19 @@ def _empty_cookie_auth_payload(platform: str, state: str, status: str, detail: s
     return payload
 
 
-def _probe_auth_endpoints(platform: str, raw_cookie: str, proxy_config: Any) -> dict[str, Any]:
+def _probe_auth_endpoints(
+    platform: str,
+    raw_cookie: str,
+    proxy_config: Any,
+    *,
+    allow_domestic_proxy: bool = False,
+) -> dict[str, Any]:
     probes = AUTH_PROBES.get(platform) or ()
     if not probes:
         return _empty_cookie_auth_payload(platform, "http_error", "连接异常", "缺少认证探针配置。")
 
     session = _make_session()
-    proxies = _build_proxy_mapping(proxy_config, platform=platform)
+    proxies = _build_proxy_mapping(proxy_config, platform=platform, allow_domestic_proxy=allow_domestic_proxy)
     headers = _build_request_headers(PLATFORM_ORIGINS.get(platform, ""), raw_cookie)
     states: list[str] = []
     results: list[dict[str, Any]] = []
@@ -348,6 +360,7 @@ def _probe_auth_endpoints(platform: str, raw_cookie: str, proxy_config: Any) -> 
                     timeout=12,
                     url=url,
                     expect_json=True,
+                    allow_domestic_proxy=allow_domestic_proxy,
                 )
                 if scrapling_result.ok:
                     elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
@@ -463,8 +476,19 @@ def _probe_auth_endpoints(platform: str, raw_cookie: str, proxy_config: Any) -> 
     return payload
 
 
-def _cache_key(kind: str, platform: str, raw_cookie: str, proxy_config: Any) -> str:
-    proxy_state = json.dumps(effective_proxy_cache_state(proxy_config, platform=platform), ensure_ascii=False, sort_keys=True)
+def _cache_key(
+    kind: str,
+    platform: str,
+    raw_cookie: str,
+    proxy_config: Any,
+    *,
+    allow_domestic_proxy: bool = False,
+) -> str:
+    proxy_state = json.dumps(
+        effective_proxy_cache_state(proxy_config, platform=platform, allow_domestic_proxy=allow_domestic_proxy),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
     cookie_hash = hashlib.sha1(str(raw_cookie or "").encode("utf-8", errors="ignore")).hexdigest()
     clean_kind = str(kind or "account").strip().lower() or "account"
     return f"{clean_kind}:{platform}:{cookie_hash}:{proxy_state}"
@@ -699,6 +723,7 @@ def probe_cookie_auth_status(
     *,
     include_limit_guard: bool = False,
     use_cache: bool = False,
+    allow_domestic_proxy: bool = False,
 ) -> dict[str, Any]:
     platform_key = "global" if str(platform or "").strip() == "global" else "cn"
     normalized_cookie = sanitize_cookie_header(raw_cookie)
@@ -715,13 +740,18 @@ def probe_cookie_auth_status(
                 _limit_guard_message(limit_guard),
             )
 
-    cache_key = _cache_key("account", platform_key, normalized_cookie, proxy_config)
+    cache_key = _cache_key("account", platform_key, normalized_cookie, proxy_config, allow_domestic_proxy=allow_domestic_proxy)
     if use_cache:
         cached_payload = _cached_source_health_payload(cache_key, max_age_seconds=SOURCE_HEALTH_CACHE_TTL_SECONDS)
         if cached_payload:
             return cached_payload
 
-    payload = _probe_auth_endpoints(platform_key, normalized_cookie, proxy_config)
+    payload = _probe_auth_endpoints(
+        platform_key,
+        normalized_cookie,
+        proxy_config,
+        allow_domestic_proxy=allow_domestic_proxy,
+    )
 
     if use_cache:
         _save_source_health_payload(cache_key, payload)

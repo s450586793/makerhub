@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.11`
+> 当前版本：`v0.9.12`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-08 · v0.9.12
+
+- 修复在线账号国区验证码发送和验证码登录在启用代理时仍被强制直连的问题，Mac / Docker 环境无法直连 `makerworld.com.cn` 或 `api.bambulab.cn` 时会按设置页代理访问认证接口。
+- 在线账号登录后的 Cookie 探针同步支持这条认证代理策略，避免验证码已通过但保存账号时卡在连接异常。
+- 保留归档、订阅和普通 Cookie 测试的国内站默认直连策略，避免影响已有抓取路径。
+
 ### 2026-06-07 · v0.9.11
 
 - 首页国内站 / 国际站状态新增 MakerWorld 网页入口验证探针，账号 API 正常但官网需要验证时会显示“网页需要验证”并引导访问主页。
@@ -218,6 +224,9 @@ uvicorn app.main:app --reload
 - 模型库和订阅库深页恢复改为单次请求返回已加载范围，避免从第 1 页串行拉到当前页。
 - 设置页先加载轻量配置，系统诊断和运行状态改为后台刷新，减少首屏等待。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-07 · v0.9.9
 
 - 登录成功后改为先写入前端会话态并用 SPA 路由跳转，不再等待完整 bootstrap 和整页重载，减少登录按钮停留在“登录中”的时间。
@@ -225,9 +234,6 @@ uvicorn app.main:app --reload
 - 登录 session 鉴权增加 15 秒进程内短缓存，并在退出登录、清空会话和跨 AuthManager 实例删除时同步失效，减少页面 API 的重复数据库读取。
 - 首页源站状态优先使用缓存快照，缺少新鲜缓存时后台刷新并通过状态事件通知页面更新，避免首页首屏被 MakerWorld 探针阻塞。
 - 首页数据构建复用已加载的归档快照，减少进入首页时重复读取模型索引和状态 marker。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-07 · v0.9.8
 

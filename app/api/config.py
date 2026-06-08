@@ -2007,6 +2007,21 @@ def _run_cookie_test(payload: CookieTestRequest) -> dict:
     )
 
 
+def _run_online_account_cookie_test(payload: CookieTestRequest) -> dict:
+    raw_cookie = sanitize_cookie_header(payload.cookie)
+    if not raw_cookie:
+        raise ValueError("请先填写 Cookie。")
+
+    return probe_cookie_auth_status(
+        payload.platform,
+        raw_cookie,
+        payload.proxy,
+        include_limit_guard=False,
+        use_cache=False,
+        allow_domestic_proxy=True,
+    )
+
+
 def _run_online_account_login(payload: OnlineAccountLoginRequest, proxy_config: ProxyConfig) -> dict:
     result = login_online_account(
         platform=payload.platform,
@@ -2995,7 +3010,7 @@ async def test_config_online_account(platform: str, request: Request):
         raise HTTPException(status_code=400, detail="这个平台还没有保存账号 Cookie。")
     try:
         result = await run_task_api(
-            _run_cookie_test,
+            _run_online_account_cookie_test,
             CookieTestRequest(platform=clean_platform, cookie=target.cookie, proxy=config.proxy),
         )
     except ValueError as exc:

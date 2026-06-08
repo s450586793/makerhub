@@ -318,7 +318,7 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
             }
 
             with patch.object(config_api, "store", store), \
-                    patch.object(config_api, "_run_cookie_test", return_value=test_result), \
+                    patch.object(config_api, "_run_online_account_cookie_test", return_value=test_result), \
                     patch.object(config_api, "online_account_metadata_from_cookie", return_value=metadata), \
                     patch.object(config_api, "cookie_source_inventory_payload", return_value={"platforms": {}}), \
                     patch.object(config_api, "cookie_source_sync_state_payload", return_value={}), \
@@ -348,17 +348,27 @@ class OnlineAccountServiceTest(unittest.TestCase):
         session = Mock()
         session.post.return_value = self._response(payload={"code": 0})
         session.close = Mock()
+        proxy_config = SimpleNamespace(
+            enabled=True,
+            http_proxy="http://proxy.local:7890",
+            https_proxy="http://proxy.local:7891",
+        )
 
         with patch.object(online_accounts, "_session_from_platform", return_value=session):
             payload = online_accounts.send_online_account_sms_code(
                 platform="cn",
                 phone="13800138000",
+                proxy_config=proxy_config,
             )
 
         self.assertTrue(payload["ok"])
         first_call = session.post.call_args
         self.assertIn("/user/sendsmscode", first_call.args[0])
         self.assertEqual(first_call.kwargs["json"], {"phone": "13800138000", "type": "codeLogin"})
+        self.assertEqual(
+            first_call.kwargs["proxies"],
+            {"http": "http://proxy.local:7890", "https": "http://proxy.local:7891"},
+        )
 
     def test_global_code_posts_email_code_login_request(self):
         session = Mock()

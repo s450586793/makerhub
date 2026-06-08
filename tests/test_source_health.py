@@ -532,6 +532,18 @@ class SourceHealthCardsTest(unittest.TestCase):
             {"http": "http://proxy.local:7890", "https": "http://proxy.local:7891"},
         )
 
+    def test_proxy_mapping_can_allow_cn_account_auth_proxy(self):
+        proxy = SimpleNamespace(
+            enabled=True,
+            http_proxy="http://proxy.local:7890",
+            https_proxy="http://proxy.local:7891",
+        )
+
+        self.assertEqual(
+            source_health._build_proxy_mapping(proxy, platform="cn", allow_domestic_proxy=True),
+            {"http": "http://proxy.local:7890", "https": "http://proxy.local:7891"},
+        )
+
     def test_cookie_probe_cache_key_treats_cn_proxy_as_bypassed(self):
         proxy_a = SimpleNamespace(
             enabled=True,
@@ -551,6 +563,23 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertNotEqual(
             source_health._cache_key("account", "global", "foo=bar", proxy_a),
             source_health._cache_key("account", "global", "foo=bar", proxy_b),
+        )
+
+    def test_cookie_probe_cache_key_includes_cn_proxy_when_allowed(self):
+        proxy_a = SimpleNamespace(
+            enabled=True,
+            http_proxy="http://proxy-a.local:7890",
+            https_proxy="http://proxy-a.local:7891",
+        )
+        proxy_b = SimpleNamespace(
+            enabled=True,
+            http_proxy="http://proxy-b.local:7890",
+            https_proxy="http://proxy-b.local:7891",
+        )
+
+        self.assertNotEqual(
+            source_health._cache_key("account", "cn", "foo=bar", proxy_a, allow_domestic_proxy=True),
+            source_health._cache_key("account", "cn", "foo=bar", proxy_b, allow_domestic_proxy=True),
         )
 
     def test_cookie_probe_session_ignores_env_proxy(self):
