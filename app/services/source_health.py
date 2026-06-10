@@ -1067,10 +1067,7 @@ def build_source_health_cards(
                 else _probe_platform_web_status(platform, raw_cookie, getattr(config, "proxy", None))
             )
         web_state = str(web_probe.get("state") or "").strip()
-        if web_state and web_state != "ok":
-            web_tone = _tone_from_state(web_state)
-            if account_state == "ok":
-                web_tone = "warning"
+        if web_state and web_state != "ok" and account_state != "ok":
             checks.append(
                 _source_health_check(
                     source="web",
@@ -1078,7 +1075,7 @@ def build_source_health_cards(
                     state=web_state,
                     status=str(web_probe.get("status") or _status_text_from_failure_state(web_state)),
                     detail=str(web_probe.get("detail") or "").strip(),
-                    tone=web_tone,
+                    tone=_tone_from_state(web_state),
                 )
             )
         override = missing_overrides.get(platform) or {}

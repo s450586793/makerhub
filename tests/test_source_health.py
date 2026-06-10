@@ -178,11 +178,10 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(card_map["cn"]["state"], "ok")
         self.assertEqual(card_map["cn"]["status"], "连接正常")
         self.assertEqual(card_map["cn"]["tone"], "ok")
-        self.assertEqual(card_map["cn"].get("action_label"), "访问主页")
+        self.assertEqual(card_map["cn"].get("action_label"), "打开官网")
         checks = {item["source"]: item for item in card_map["cn"]["checks"]}
         self.assertEqual(checks["account"]["status"], "连接正常")
-        self.assertEqual(checks["web"]["status"], "需要验证")
-        self.assertEqual(checks["web"]["tone"], "warning")
+        self.assertNotIn("web", checks)
         self.assertEqual(card_map["global"]["state"], "ok")
 
     def test_source_health_keeps_account_ok_when_web_probe_reports_auth_required(self):
@@ -220,8 +219,7 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(card_map["global"]["tone"], "ok")
         checks = {item["source"]: item for item in card_map["global"]["checks"]}
         self.assertEqual(checks["account"]["status"], "连接正常")
-        self.assertEqual(checks["web"]["status"], "Cookie 失效")
-        self.assertEqual(checks["web"]["tone"], "warning")
+        self.assertNotIn("web", checks)
 
     def test_source_health_prefer_cached_web_probe_does_not_block(self):
         original_async_refresh = source_health._async_refresh_source_health
@@ -285,8 +283,7 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(card_map["cn"]["state"], "ok")
         self.assertEqual(card_map["cn"]["status"], "连接正常")
         checks = {item["source"]: item for item in card_map["cn"]["checks"]}
-        self.assertEqual(checks["web"]["status"], "需要验证")
-        self.assertEqual(checks["web"]["tone"], "warning")
+        self.assertNotIn("web", checks)
         self.assertEqual(len(calls), 1)
 
     def test_web_probe_treats_normal_html_as_ok(self):
