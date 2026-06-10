@@ -999,13 +999,18 @@ def _primary_source_health_check(checks: list[dict[str, str]]) -> dict[str, str]
             status="连接异常",
             detail="状态检测未返回结果。",
         )
+    account_check = next((item for item in checks if item.get("source") == "account"), None)
+    if account_check and account_check.get("state") == "ok":
+        non_web_checks = [item for item in checks if item.get("source") != "web"]
+        if non_web_checks:
+            return max(non_web_checks, key=_check_priority)
     return max(checks, key=_check_priority)
 
 
 def _prefixed_status(check: dict[str, str], checks: list[dict[str, str]]) -> str:
     status = str(check.get("status") or "").strip() or "连接异常"
     state = str(check.get("state") or "").strip()
-    if len(checks) <= 1 and state == "ok":
+    if state == "ok":
         return status
     label = str(check.get("label") or "").strip()
     if not label:
@@ -1063,6 +1068,9 @@ def build_source_health_cards(
             )
         web_state = str(web_probe.get("state") or "").strip()
         if web_state and web_state != "ok":
+            web_tone = _tone_from_state(web_state)
+            if account_state == "ok":
+                web_tone = "warning"
             checks.append(
                 _source_health_check(
                     source="web",
@@ -1070,7 +1078,7 @@ def build_source_health_cards(
                     state=web_state,
                     status=str(web_probe.get("status") or _status_text_from_failure_state(web_state)),
                     detail=str(web_probe.get("detail") or "").strip(),
-                    tone=_tone_from_state(web_state),
+                    tone=web_tone,
                 )
             )
         override = missing_overrides.get(platform) or {}

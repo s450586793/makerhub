@@ -145,7 +145,7 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(card_map["global"]["state"], "checking")
         self.assertEqual(len(calls), 4)
 
-    def test_source_health_prefers_web_verification_over_account_ok(self):
+    def test_source_health_keeps_account_ok_when_web_probe_fails(self):
         original_probe = source_health._probe_platform_status
         original_web_probe = source_health._probe_platform_web_status
         source_health._probe_platform_status = lambda platform, *_args, **_kwargs: {
@@ -175,14 +175,53 @@ class SourceHealthCardsTest(unittest.TestCase):
             source_health._probe_platform_web_status = original_web_probe
 
         card_map = {item["key"]: item for item in cards}
-        self.assertEqual(card_map["cn"]["state"], "verification_required")
-        self.assertEqual(card_map["cn"]["status"], "网页需要验证")
-        self.assertEqual(card_map["cn"]["tone"], "danger")
+        self.assertEqual(card_map["cn"]["state"], "ok")
+        self.assertEqual(card_map["cn"]["status"], "连接正常")
+        self.assertEqual(card_map["cn"]["tone"], "ok")
         self.assertEqual(card_map["cn"].get("action_label"), "访问主页")
         checks = {item["source"]: item for item in card_map["cn"]["checks"]}
         self.assertEqual(checks["account"]["status"], "连接正常")
         self.assertEqual(checks["web"]["status"], "需要验证")
+        self.assertEqual(checks["web"]["tone"], "warning")
         self.assertEqual(card_map["global"]["state"], "ok")
+
+    def test_source_health_keeps_account_ok_when_web_probe_reports_auth_required(self):
+        original_probe = source_health._probe_platform_status
+        original_web_probe = source_health._probe_platform_web_status
+        source_health._probe_platform_status = lambda platform, *_args, **_kwargs: {
+            "platform": platform,
+            "state": "ok",
+            "status": "连接正常",
+            "detail": "",
+        }
+        source_health._probe_platform_web_status = lambda platform, *_args, **_kwargs: {
+            "platform": platform,
+            "state": "auth_required" if platform == "global" else "ok",
+            "status": "Cookie 失效" if platform == "global" else "访问正常",
+            "detail": "MakerWorld 网页入口拒绝当前 Cookie。",
+        }
+
+        class Config:
+            cookies = [
+                SimpleNamespace(platform="cn", cookie="sid=cn"),
+                SimpleNamespace(platform="global", cookie="sid=global"),
+            ]
+            proxy = None
+
+        try:
+            cards = source_health.build_source_health_cards(Config(), [])
+        finally:
+            source_health._probe_platform_status = original_probe
+            source_health._probe_platform_web_status = original_web_probe
+
+        card_map = {item["key"]: item for item in cards}
+        self.assertEqual(card_map["global"]["state"], "ok")
+        self.assertEqual(card_map["global"]["status"], "连接正常")
+        self.assertEqual(card_map["global"]["tone"], "ok")
+        checks = {item["source"]: item for item in card_map["global"]["checks"]}
+        self.assertEqual(checks["account"]["status"], "连接正常")
+        self.assertEqual(checks["web"]["status"], "Cookie 失效")
+        self.assertEqual(checks["web"]["tone"], "warning")
 
     def test_source_health_prefer_cached_web_probe_does_not_block(self):
         original_async_refresh = source_health._async_refresh_source_health
@@ -243,10 +282,11 @@ class SourceHealthCardsTest(unittest.TestCase):
             source_health._async_refresh_source_health = original_async_refresh
 
         card_map = {item["key"]: item for item in cards}
-        self.assertEqual(card_map["cn"]["state"], "verification_required")
-        self.assertEqual(card_map["cn"]["status"], "网页需要验证")
+        self.assertEqual(card_map["cn"]["state"], "ok")
+        self.assertEqual(card_map["cn"]["status"], "连接正常")
         checks = {item["source"]: item for item in card_map["cn"]["checks"]}
         self.assertEqual(checks["web"]["status"], "需要验证")
+        self.assertEqual(checks["web"]["tone"], "warning")
         self.assertEqual(len(calls), 1)
 
     def test_web_probe_treats_normal_html_as_ok(self):
