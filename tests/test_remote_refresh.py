@@ -649,12 +649,12 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         meta_path.write_text(json.dumps(existing_meta, ensure_ascii=False), encoding="utf-8")
 
         calls: list[dict[str, object]] = []
-        original_job = remote_refresh.run_archive_model_job
+        original_job = remote_refresh.run_source_refresh_model_job
         original_upsert = remote_refresh.upsert_archive_snapshot_model
         original_invalidate_snapshot = remote_refresh.invalidate_archive_snapshot
         original_invalidate_detail = remote_refresh.invalidate_model_detail_cache
 
-        def fake_run_archive_model_job(**kwargs):
+        def fake_run_source_refresh_model_job(**kwargs):
             calls.append(dict(kwargs))
             fresh_meta = {
                 **existing_meta,
@@ -692,7 +692,7 @@ class RemoteRefreshManagerTest(unittest.TestCase):
                 "missing_3mf": [],
             }
 
-        remote_refresh.run_archive_model_job = fake_run_archive_model_job
+        remote_refresh.run_source_refresh_model_job = fake_run_source_refresh_model_job
         remote_refresh.upsert_archive_snapshot_model = lambda *_args, **_kwargs: True
         remote_refresh.invalidate_archive_snapshot = lambda *_args, **_kwargs: None
         remote_refresh.invalidate_model_detail_cache = lambda *_args, **_kwargs: None
@@ -709,7 +709,7 @@ class RemoteRefreshManagerTest(unittest.TestCase):
                 config=config,
             )
         finally:
-            remote_refresh.run_archive_model_job = original_job
+            remote_refresh.run_source_refresh_model_job = original_job
             remote_refresh.upsert_archive_snapshot_model = original_upsert
             remote_refresh.invalidate_archive_snapshot = original_invalidate_snapshot
             remote_refresh.invalidate_model_detail_cache = original_invalidate_detail
@@ -746,11 +746,11 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         business_events = []
         original_structured = remote_refresh._append_remote_refresh_log
         original_business = remote_refresh.append_business_log
-        original_job = remote_refresh.run_archive_model_job
+        original_job = remote_refresh.run_source_refresh_model_job
         original_upsert = remote_refresh.upsert_archive_snapshot_model
         original_invalidate_detail = remote_refresh.invalidate_model_detail_cache
 
-        def fake_run_archive_model_job(**kwargs):
+        def fake_run_source_refresh_model_job(**kwargs):
             fresh_meta = {
                 **existing_meta,
                 "remoteSync": {"lastMessage": "源端刷新完成。"},
@@ -760,7 +760,7 @@ class RemoteRefreshManagerTest(unittest.TestCase):
 
         remote_refresh._append_remote_refresh_log = lambda event, **payload: structured_events.append(event)
         remote_refresh.append_business_log = lambda category, event, message="", **fields: business_events.append(event)
-        remote_refresh.run_archive_model_job = fake_run_archive_model_job
+        remote_refresh.run_source_refresh_model_job = fake_run_source_refresh_model_job
         remote_refresh.upsert_archive_snapshot_model = lambda *_args, **_kwargs: True
         remote_refresh.invalidate_model_detail_cache = lambda *_args, **_kwargs: None
         try:
@@ -778,7 +778,7 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         finally:
             remote_refresh._append_remote_refresh_log = original_structured
             remote_refresh.append_business_log = original_business
-            remote_refresh.run_archive_model_job = original_job
+            remote_refresh.run_source_refresh_model_job = original_job
             remote_refresh.upsert_archive_snapshot_model = original_upsert
             remote_refresh.invalidate_model_detail_cache = original_invalidate_detail
 
@@ -790,7 +790,7 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         self.assertNotIn("model_succeeded", structured_events)
         self.assertNotIn("model_succeeded", business_events)
 
-    def test_run_batch_buffers_model_results_and_publishes_only_batch_boundaries(self):
+    def test_run_batch_buffers_model_results_and_publishes_progress_without_model_history(self):
         original_workers = remote_refresh._remote_refresh_model_workers
         original_batch_dir = remote_refresh.REMOTE_REFRESH_BATCH_DIR
         remote_refresh._remote_refresh_model_workers = lambda _config=None: 2
@@ -854,7 +854,7 @@ class RemoteRefreshManagerTest(unittest.TestCase):
 
         state = self.task_store.load_remote_refresh_state()
         remote_events = [item for item in events if item[0] == "remote_refresh_state"]
-        self.assertEqual(len(remote_events), 2)
+        self.assertGreaterEqual(len(remote_events), 3)
         self.assertEqual(state["last_batch_succeeded"], 2)
         self.assertEqual(state["last_batch_failed"], 1)
         self.assertEqual(state["last_batch_metrics"]["comments"], 3)
@@ -1137,6 +1137,88 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         self.assertEqual(state["last_batch_metrics"]["comments"], 3)
         self.assertEqual(len(state["last_slow_models"]), 3)
         self.assertEqual(len(state["recent_items"]), 3)
+
+    def test_run_batch_publishes_active_run_progress_and_current_items(self):
+        original_workers = remote_refresh._remote_refresh_model_workers
+        remote_refresh._remote_refresh_model_workers = lambda _config=None: 1
+        config = self.store.load()
+        items = [
+            {"model_dir": "m1", "title": "模型 1", "origin_url": "https://makerworld.com.cn/model/1", "meta_path": str(self.temp_path / "m1" / "meta.json")},
+            {"model_dir": "m2", "title": "模型 2", "origin_url": "https://makerworld.com.cn/model/2", "meta_path": str(self.temp_path / "m2" / "meta.json")},
+        ]
+        self.manager._pick_candidates = lambda: (
+            items,
+            {
+                "eligible_total": 2,
+                "selected_total": 2,
+                "remaining_total": 0,
+                "missing_cookie": 0,
+                "local_or_invalid": 0,
+            },
+        )
+        first_started = threading.Event()
+        release = threading.Event()
+        observed_states: list[dict] = []
+
+        def fake_refresh_one(item, *, index, total, config):
+            self.manager._set_current_item(
+                item["model_dir"],
+                {
+                    "id": item["model_dir"],
+                    "title": item["title"],
+                    "progress": 25,
+                    "message": "测试运行中",
+                },
+            )
+            first_started.set()
+            release.wait(timeout=2)
+            return {
+                "ok": True,
+                "metrics": {
+                    "model_dir": item["model_dir"],
+                    "title": item["title"],
+                    "comments": 1,
+                    "total_duration_ms": 10,
+                },
+                "record": remote_refresh._remote_refresh_result_record(
+                    model_dir=item["model_dir"],
+                    title=item["title"],
+                    url=item["origin_url"],
+                    status="success",
+                    message="完成",
+                    metrics={"comments": 1, "total_duration_ms": 10},
+                    change_labels=["已检查，无远端变化"],
+                ),
+            }
+
+        original_patch = self.task_store.patch_remote_refresh_state
+
+        def recording_patch(*args, **kwargs):
+            state = original_patch(*args, **kwargs)
+            if state.get("running"):
+                observed_states.append(state)
+            return state
+
+        self.manager._refresh_one = fake_refresh_one
+        self.task_store.patch_remote_refresh_state = recording_patch
+        try:
+            runner = threading.Thread(target=lambda: self.manager._run_batch(config), daemon=True)
+            runner.start()
+            self.assertTrue(first_started.wait(timeout=2))
+            active_state = self.task_store.load_remote_refresh_state()
+            self.assertEqual(active_state["current_items"][0]["title"], "模型 1")
+            release.set()
+            runner.join(timeout=3)
+            self.assertFalse(runner.is_alive())
+        finally:
+            remote_refresh._remote_refresh_model_workers = original_workers
+            self.task_store.patch_remote_refresh_state = original_patch
+            release.set()
+
+        self.assertTrue(any(item["active_run"]["completed_total"] >= 1 for item in observed_states if item.get("active_run")))
+        state = self.task_store.load_remote_refresh_state()
+        self.assertEqual(state["active_run"]["completed_total"], 2)
+        self.assertEqual(state["last_batch_succeeded"], 2)
 
 
 if __name__ == "__main__":

@@ -15,6 +15,8 @@ from app.services.state_contracts import (
     MODEL_FLAGS_STATE_KEY,
     ORGANIZE_TASKS_STATE_KEY,
     REMOTE_REFRESH_STATE_KEY,
+    SOURCE_REFRESH_QUEUE_STATE_KEY,
+    SOURCE_REFRESH_RUNS_STATE_KEY,
     SUBSCRIPTIONS_STATE_KEY,
     THREE_MF_LIMIT_GUARD_STATE_KEY,
 )
@@ -42,6 +44,8 @@ ORGANIZE_TASKS_PATH = STATE_DIR / "organize_tasks.json"
 MODEL_FLAGS_PATH = STATE_DIR / "model_flags.json"
 SUBSCRIPTIONS_STATE_PATH = STATE_DIR / "subscriptions_state.json"
 REMOTE_REFRESH_STATE_PATH = STATE_DIR / "remote_refresh_state.json"
+SOURCE_REFRESH_QUEUE_PATH = STATE_DIR / "source_refresh_queue.json"
+SOURCE_REFRESH_RUNS_PATH = STATE_DIR / "source_refresh_runs.json"
 ORGANIZER_LOG_PATH = LOGS_DIR / "organizer.log"
 ORGANIZE_TASK_VISIBLE_LIMIT = 50
 ORGANIZER_TERMINAL_EVENTS = {
@@ -72,6 +76,8 @@ _JSON_STATE_KEYS = {
     MODEL_FLAGS_PATH.resolve(): MODEL_FLAGS_STATE_KEY,
     SUBSCRIPTIONS_STATE_PATH.resolve(): SUBSCRIPTIONS_STATE_KEY,
     REMOTE_REFRESH_STATE_PATH.resolve(): REMOTE_REFRESH_STATE_KEY,
+    SOURCE_REFRESH_QUEUE_PATH.resolve(): SOURCE_REFRESH_QUEUE_STATE_KEY,
+    SOURCE_REFRESH_RUNS_PATH.resolve(): SOURCE_REFRESH_RUNS_STATE_KEY,
     THREE_MF_LIMIT_GUARD_PATH.resolve(): THREE_MF_LIMIT_GUARD_STATE_KEY,
 }
 
@@ -845,6 +851,124 @@ def _normalize_remote_refresh_state(payload: Any) -> dict:
     }
 
 
+def _normalize_source_refresh_task(item: Any, default_status: str) -> dict:
+    source = item if isinstance(item, dict) else {}
+    normalized = _normalize_task_item(item, default_status)
+    status = str(normalized.get("status") or default_status).strip().lower()
+    if status == "success":
+        status = "succeeded"
+    if status not in {"queued", "running", "succeeded", "failed", "skipped", "timed_out", "cancelled"}:
+        status = default_status
+    normalized["status"] = status
+    normalized["run_id"] = str(source.get("run_id") or normalized.get("run_id") or "")
+    normalized["model_dir"] = str(source.get("model_dir") or normalized.get("model_dir") or normalized.get("id") or "").strip().strip("/")
+    normalized["title"] = str(source.get("title") or normalized.get("title") or normalized.get("model_dir") or "")
+    normalized["url"] = str(source.get("url") or source.get("origin_url") or normalized.get("url") or "")
+    normalized["site"] = normalize_makerworld_source(source.get("site"), normalized.get("url")) or str(source.get("site") or "")
+    normalized["attempts"] = _safe_int(source.get("attempts", source.get("attempt_count", 0)), 0)
+    normalized["message"] = _normalize_source_refresh_text(_sanitize_message_text(source.get("message") or normalized.get("message") or ""))
+    normalized["created_at"] = str(source.get("created_at") or "")
+    normalized["started_at"] = str(source.get("started_at") or "")
+    normalized["updated_at"] = str(source.get("updated_at") or normalized.get("updated_at") or "")
+    normalized["finished_at"] = str(source.get("finished_at") or "")
+    normalized["lease_expires_at"] = str(source.get("lease_expires_at") or "")
+    normalized["last_heartbeat_at"] = str(source.get("last_heartbeat_at") or source.get("heartbeat_at") or "")
+    normalized["metrics"] = source.get("metrics") if isinstance(source.get("metrics"), dict) else {}
+    return normalized
+
+
+def _normalize_source_refresh_queue(payload: Any) -> dict:
+    if isinstance(payload, list):
+        payload = {"queued": payload}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    active = [
+        item
+        for item in (_normalize_source_refresh_task(item, "running") for item in (payload.get("active") or payload.get("running") or []))
+        if str(item.get("status") or "") not in {"succeeded", "completed"}
+    ]
+    queued = [
+        _normalize_source_refresh_task(item, "queued")
+        for item in (payload.get("queued") or payload.get("items") or payload.get("pending") or [])
+    ]
+    recent_failures = [
+        _normalize_source_refresh_task(item, "failed")
+        for item in (payload.get("recent_failures") or payload.get("failed") or payload.get("failures") or [])
+    ][:20]
+    normalized = {
+        "version": _safe_int(payload.get("version"), 1) or 1,
+        "active": active,
+        "queued": queued,
+        "recent_failures": recent_failures,
+        "updated_at": str(payload.get("updated_at") or ""),
+    }
+    normalized["running_count"] = len(normalized["active"])
+    normalized["queued_count"] = len(normalized["queued"])
+    normalized["failed_count"] = len(normalized["recent_failures"])
+    return normalized
+
+
+def _normalize_source_refresh_run(payload: Any, default_status: str = "") -> dict:
+    if not isinstance(payload, dict):
+        return {}
+    run_id = str(payload.get("run_id") or payload.get("batch_id") or "").strip()
+    raw_status = str(payload.get("status") or "").strip().lower()
+    if not run_id and not raw_status:
+        return {}
+    status = raw_status or str(default_status or "").strip().lower()
+    if status not in {"queued", "running", "paused", "resuming", "completed", "failed", "interrupted", "cancelled"}:
+        status = default_status or ("running" if run_id else "")
+    candidate_total = _safe_int(payload.get("candidate_total"), 0)
+    completed_total = _safe_int(payload.get("completed_total"), 0)
+    remaining_total = _safe_int(payload.get("remaining_total"), max(candidate_total - completed_total, 0))
+    current_items = payload.get("current_items") if isinstance(payload.get("current_items"), list) else []
+    return {
+        "run_id": run_id,
+        "status": status,
+        "manual": bool(payload.get("manual", False)),
+        "created_at": str(payload.get("created_at") or ""),
+        "started_at": str(payload.get("started_at") or ""),
+        "updated_at": str(payload.get("updated_at") or ""),
+        "finished_at": str(payload.get("finished_at") or ""),
+        "candidate_total": candidate_total,
+        "queued_total": _safe_int(payload.get("queued_total"), 0),
+        "completed_total": completed_total,
+        "succeeded_total": _safe_int(payload.get("succeeded_total"), 0),
+        "failed_total": _safe_int(payload.get("failed_total"), 0),
+        "skipped_total": _safe_int(payload.get("skipped_total"), 0),
+        "timed_out_total": _safe_int(payload.get("timed_out_total"), 0),
+        "remaining_total": max(remaining_total, 0),
+        "current_items": [
+            _normalize_source_refresh_item(_normalize_task_item(item, "running"))
+            for item in current_items
+            if isinstance(item, (dict, str))
+        ][:8],
+        "manifest_path": str(payload.get("manifest_path") or ""),
+        "result_path": str(payload.get("result_path") or ""),
+        "message": _normalize_source_refresh_text(_sanitize_message_text(payload.get("message") or "")),
+    }
+
+
+def _normalize_source_refresh_runs(payload: Any) -> dict:
+    if not isinstance(payload, dict):
+        payload = {}
+    active_run = _normalize_source_refresh_run(payload.get("active_run"), "running")
+    last_completed_run = _normalize_source_refresh_run(payload.get("last_completed_run"), "completed")
+    return {
+        "version": _safe_int(payload.get("version"), 1) or 1,
+        "active_run": active_run,
+        "last_completed_run": last_completed_run,
+        "last_attempt_at": str(payload.get("last_attempt_at") or ""),
+        "last_deferred_at": str(payload.get("last_deferred_at") or ""),
+        "last_defer_reason": str(payload.get("last_defer_reason") or ""),
+        "last_interrupted_at": str(payload.get("last_interrupted_at") or ""),
+        "last_interrupted_reason": _normalize_source_refresh_text(_sanitize_message_text(payload.get("last_interrupted_reason") or "")),
+        "next_run_at": str(payload.get("next_run_at") or ""),
+        "updated_at": str(payload.get("updated_at") or ""),
+    }
+
+
 def compact_remote_refresh_state(payload: Any, *, include_current: bool = True) -> dict:
     state = _normalize_remote_refresh_state(payload)
     compact = {
@@ -1036,6 +1160,50 @@ class TaskStateStore:
         )
         return _normalize_remote_refresh_state(payload)
 
+    def _load_source_refresh_queue_unlocked(self) -> dict:
+        payload = self._read_json(
+            SOURCE_REFRESH_QUEUE_PATH,
+            {"version": 1, "active": [], "queued": [], "recent_failures": [], "updated_at": ""},
+        )
+        return _normalize_source_refresh_queue(payload)
+
+    def _save_source_refresh_queue_unlocked(self, payload: dict) -> dict:
+        normalized = _normalize_source_refresh_queue(payload)
+        self._write_json(
+            SOURCE_REFRESH_QUEUE_PATH,
+            {
+                "version": normalized["version"],
+                "active": normalized["active"],
+                "queued": normalized["queued"],
+                "recent_failures": normalized["recent_failures"],
+                "updated_at": normalized["updated_at"],
+            },
+        )
+        return self._load_source_refresh_queue_unlocked()
+
+    def _load_source_refresh_runs_unlocked(self) -> dict:
+        payload = self._read_json(
+            SOURCE_REFRESH_RUNS_PATH,
+            {
+                "version": 1,
+                "active_run": {},
+                "last_completed_run": {},
+                "last_attempt_at": "",
+                "last_deferred_at": "",
+                "last_defer_reason": "",
+                "last_interrupted_at": "",
+                "last_interrupted_reason": "",
+                "next_run_at": "",
+                "updated_at": "",
+            },
+        )
+        return _normalize_source_refresh_runs(payload)
+
+    def _save_source_refresh_runs_unlocked(self, payload: dict) -> dict:
+        normalized = _normalize_source_refresh_runs(payload)
+        self._write_json(SOURCE_REFRESH_RUNS_PATH, normalized)
+        return self._load_source_refresh_runs_unlocked()
+
     def _load_organize_tasks_unlocked(self) -> dict:
         payload = self._read_json(ORGANIZE_TASKS_PATH, {"items": []})
         tasks = _normalize_organize_tasks(payload)
@@ -1095,6 +1263,28 @@ class TaskStateStore:
             self._publish_state_event(REMOTE_REFRESH_STATE_KEY, result)
         return result
 
+    def _update_source_refresh_queue(self, updater, *, publish_event: bool = True) -> dict:
+        with _STATE_LOCK, self._state_file_lock(SOURCE_REFRESH_QUEUE_PATH):
+            payload = self._load_source_refresh_queue_unlocked()
+            updated = updater(payload)
+            if updated is None:
+                updated = payload
+            result = self._save_source_refresh_queue_unlocked(updated)
+        if publish_event:
+            self._publish_state_event(SOURCE_REFRESH_QUEUE_STATE_KEY, result)
+        return result
+
+    def _update_source_refresh_runs(self, updater, *, publish_event: bool = True) -> dict:
+        with _STATE_LOCK, self._state_file_lock(SOURCE_REFRESH_RUNS_PATH):
+            payload = self._load_source_refresh_runs_unlocked()
+            updated = updater(payload)
+            if updated is None:
+                updated = payload
+            result = self._save_source_refresh_runs_unlocked(updated)
+        if publish_event:
+            self._publish_state_event(SOURCE_REFRESH_RUNS_STATE_KEY, result)
+        return result
+
     def save_archive_queue(self, payload: dict) -> dict:
         with _STATE_LOCK, self._state_file_lock(ARCHIVE_QUEUE_PATH):
             result = self._save_archive_queue_unlocked(payload)
@@ -1145,6 +1335,28 @@ class TaskStateStore:
     def load_remote_refresh_state(self) -> dict:
         with _STATE_LOCK:
             return self._load_remote_refresh_state_unlocked()
+
+    def save_source_refresh_queue(self, payload: dict, *, publish_event: bool = True) -> dict:
+        with _STATE_LOCK, self._state_file_lock(SOURCE_REFRESH_QUEUE_PATH):
+            result = self._save_source_refresh_queue_unlocked(payload)
+        if publish_event:
+            self._publish_state_event(SOURCE_REFRESH_QUEUE_STATE_KEY, result)
+        return result
+
+    def load_source_refresh_queue(self) -> dict:
+        with _STATE_LOCK:
+            return self._load_source_refresh_queue_unlocked()
+
+    def save_source_refresh_runs(self, payload: dict, *, publish_event: bool = True) -> dict:
+        with _STATE_LOCK, self._state_file_lock(SOURCE_REFRESH_RUNS_PATH):
+            result = self._save_source_refresh_runs_unlocked(payload)
+        if publish_event:
+            self._publish_state_event(SOURCE_REFRESH_RUNS_STATE_KEY, result)
+        return result
+
+    def load_source_refresh_runs(self) -> dict:
+        with _STATE_LOCK:
+            return self._load_source_refresh_runs_unlocked()
 
     def save_model_flags(self, payload: dict) -> dict:
         with _STATE_LOCK, self._state_file_lock(MODEL_FLAGS_PATH):
@@ -1857,6 +2069,24 @@ class TaskStateStore:
             return merged
 
         return self._update_remote_refresh_state(_mutate, publish_event=publish_event)
+
+    def patch_source_refresh_runs(self, *, publish_event: bool = True, **changes: Any) -> dict:
+        def _mutate(payload: dict) -> dict:
+            merged = dict(_normalize_source_refresh_runs(payload))
+            for key, value in changes.items():
+                if value is None:
+                    continue
+                if key == "active_run":
+                    merged[key] = _normalize_source_refresh_run(value, "running")
+                    continue
+                if key == "last_completed_run":
+                    merged[key] = _normalize_source_refresh_run(value, "completed")
+                    continue
+                merged[key] = value
+            merged["updated_at"] = china_now_iso()
+            return merged
+
+        return self._update_source_refresh_runs(_mutate, publish_event=publish_event)
 
     def append_remote_refresh_history(self, item: dict, limit: int = 50, *, publish_event: bool = True) -> dict:
         normalized_list = _normalize_remote_refresh_state({"recent_items": [item]}).get("recent_items", [])

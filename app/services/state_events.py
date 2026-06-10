@@ -21,6 +21,8 @@ from app.services.state_contracts import (
     MISSING_3MF_STATE_KEY,
     ORGANIZE_TASKS_STATE_KEY,
     REMOTE_REFRESH_STATE_KEY,
+    SOURCE_REFRESH_QUEUE_STATE_KEY,
+    SOURCE_REFRESH_RUNS_STATE_KEY,
     SUBSCRIPTIONS_STATE_KEY,
 )
 
@@ -42,6 +44,8 @@ STATE_EVENT_SCOPES = {
     ORGANIZE_TASKS_STATE_KEY,
     SUBSCRIPTIONS_STATE_KEY,
     REMOTE_REFRESH_STATE_KEY,
+    SOURCE_REFRESH_QUEUE_STATE_KEY,
+    SOURCE_REFRESH_RUNS_STATE_KEY,
     "archive_profile_backfill_status",
     "system_update",
     "source_library",

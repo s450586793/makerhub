@@ -4,7 +4,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.services import state_events
-from app.services.task_state import TaskStateStore, _ORGANIZER_TERMINAL_LOG_CACHE, _normalize_organize_tasks, compact_remote_refresh_state
+from app.services.task_state import (
+    TaskStateStore,
+    _ORGANIZER_TERMINAL_LOG_CACHE,
+    _normalize_organize_tasks,
+    _normalize_source_refresh_queue,
+    _normalize_source_refresh_runs,
+    compact_remote_refresh_state,
+)
 
 
 class OrganizeTaskStateTest(unittest.TestCase):
@@ -160,6 +167,111 @@ class OrganizeTaskStateTest(unittest.TestCase):
 
 
 class ArchiveQueueStateTest(unittest.TestCase):
+    def test_normalize_source_refresh_queue_counts_active_queued_and_failures(self):
+        normalized = _normalize_source_refresh_queue(
+            {
+                "active": [
+                    {
+                        "id": "task-1",
+                        "run_id": "run-1",
+                        "model_dir": "MW_1",
+                        "title": "模型 1",
+                        "url": "https://makerworld.com.cn/model/1",
+                        "status": " RUNNING ",
+                        "attempts": "2",
+                        "message": "<html>bad</html>",
+                    }
+                ],
+                "queued": [
+                    {
+                        "id": "task-2",
+                        "run_id": "run-1",
+                        "model_dir": "MW_2",
+                        "url": "https://makerworld.com/model/2",
+                    }
+                ],
+                "recent_failures": [{"id": "task-3", "status": "timed_out", "message": "timeout"}],
+            }
+        )
+
+        self.assertEqual(normalized["running_count"], 1)
+        self.assertEqual(normalized["queued_count"], 1)
+        self.assertEqual(normalized["failed_count"], 1)
+        self.assertEqual(normalized["active"][0]["status"], "running")
+        self.assertEqual(normalized["active"][0]["attempts"], 2)
+        self.assertNotIn("<html>", normalized["active"][0]["message"])
+        self.assertIn("HTML 页面", normalized["active"][0]["message"])
+        self.assertEqual(normalized["queued"][0]["status"], "queued")
+
+    def test_normalize_source_refresh_runs_preserves_active_and_completed_summary(self):
+        normalized = _normalize_source_refresh_runs(
+            {
+                "active_run": {
+                    "run_id": "run-1",
+                    "status": "running",
+                    "candidate_total": "10",
+                    "completed_total": "4",
+                    "succeeded_total": "3",
+                    "failed_total": "1",
+                    "current_items": [{"id": "MW_1", "title": "模型 1"}],
+                    "message": "运行中",
+                },
+                "last_completed_run": {
+                    "run_id": "run-0",
+                    "status": "completed",
+                    "candidate_total": 8,
+                    "completed_total": 8,
+                },
+                "last_defer_reason": "archive_queue_busy",
+            }
+        )
+
+        self.assertEqual(normalized["active_run"]["run_id"], "run-1")
+        self.assertEqual(normalized["active_run"]["remaining_total"], 6)
+        self.assertEqual(normalized["active_run"]["current_items"][0]["title"], "模型 1")
+        self.assertEqual(normalized["last_completed_run"]["run_id"], "run-0")
+        self.assertEqual(normalized["last_defer_reason"], "archive_queue_busy")
+
+    def test_task_state_store_persists_source_refresh_queue_and_runs(self):
+        rows = []
+        state = {}
+        store = TaskStateStore()
+
+        def capture(scope, event_type, payload):
+            rows.append((scope, event_type, payload))
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.publish_state_event", side_effect=capture):
+            queue = store.save_source_refresh_queue(
+                {
+                    "queued": [
+                        {
+                            "id": "task-1",
+                            "run_id": "run-1",
+                            "model_dir": "MW_1",
+                            "url": "https://makerworld.com.cn/model/1",
+                        }
+                    ]
+                }
+            )
+            runs = store.save_source_refresh_runs(
+                {
+                    "active_run": {
+                        "run_id": "run-1",
+                        "status": "queued",
+                        "candidate_total": 1,
+                    }
+                }
+            )
+
+        self.assertIn("source_refresh_queue", state)
+        self.assertIn("source_refresh_runs", state)
+        self.assertEqual(queue["queued_count"], 1)
+        self.assertEqual(runs["active_run"]["run_id"], "run-1")
+        self.assertIn(("source_refresh_queue", "state.changed"), [(row[0], row[1]) for row in rows])
+        self.assertIn(("source_refresh_runs", "state.changed"), [(row[0], row[1]) for row in rows])
+
     def test_update_archive_queue_skips_save_and_event_when_payload_unchanged(self):
         state = {
             "archive_queue": {
@@ -580,6 +692,21 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(compact["last_defer_reason"], "stale_runtime_state")
         self.assertEqual(compact["active_run"]["remaining_total"], 3)
         self.assertTrue(compact["stale_archive_queue_detected"])
+
+    def test_compact_remote_refresh_state_counts_skipped_batch_results(self):
+        compact = compact_remote_refresh_state(
+            {
+                "status": "idle",
+                "last_batch_succeeded": 2,
+                "last_batch_failed": 1,
+                "last_batch_skipped": 4,
+            },
+            include_current=False,
+        )
+
+        self.assertEqual(compact["last_batch_succeeded"], 2)
+        self.assertEqual(compact["last_batch_failed"], 1)
+        self.assertEqual(compact["last_batch_skipped"], 4)
 
     def test_repeated_equivalent_state_changed_events_are_coalesced_by_scope(self):
         rows = []

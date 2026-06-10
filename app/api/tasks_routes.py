@@ -103,6 +103,7 @@ async def retry_missing_3mf(payload: Missing3mfRetryRequest, request: Request):
         crawler.retry_missing_3mf,
         model_url=payload.model_url,
         model_id=payload.model_id,
+        source=payload.source,
         title=payload.title,
         instance_id=payload.instance_id,
     )

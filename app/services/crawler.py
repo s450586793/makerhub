@@ -45,10 +45,18 @@ class LegacyCrawlerBridge:
     def preview_archive(self, url: str) -> dict:
         return self.manager.preview(url)
 
-    def retry_missing_3mf(self, model_url: str, model_id: str = "", title: str = "", instance_id: str = "") -> dict:
+    def retry_missing_3mf(
+        self,
+        model_url: str,
+        model_id: str = "",
+        source: str = "",
+        title: str = "",
+        instance_id: str = "",
+    ) -> dict:
         return self.manager.retry_missing_3mf(
             model_url=model_url,
             model_id=model_id,
+            source=source,
             title=title,
             instance_id=instance_id,
         )

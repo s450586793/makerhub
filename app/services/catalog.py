@@ -2642,6 +2642,10 @@ def build_tasks_payload(
         )
     organize_tasks = store.load_organize_tasks()
     remote_refresh = compact_remote_refresh_state(store.load_remote_refresh_state(), include_current=True)
+    source_refresh = {
+        "queue": store.load_source_refresh_queue(),
+        "runs": store.load_source_refresh_runs(),
+    }
     active_organize_count = _count_active_organize_tasks(organize_tasks)
     organize_tasks["active_count"] = active_organize_count
     organize_tasks["queued_count"] = int(organize_tasks.get("queued_count") or 0)
@@ -2653,6 +2657,7 @@ def build_tasks_payload(
         "missing_3mf": missing_3mf,
         "organize_tasks": organize_tasks,
         "remote_refresh": remote_refresh,
+        "source_refresh": source_refresh,
         "summary": {
             "running_or_queued": archive_queue["running_count"] + archive_queue["queued_count"],
             "missing_3mf_count": missing_3mf["count"],
@@ -2702,6 +2707,7 @@ def build_dashboard_payload(config) -> dict:
     source_deleted_model_count = _source_deleted_model_count(visible_models)
     organize_tasks = tasks_payload["organize_tasks"]
     remote_refresh = tasks_payload["remote_refresh"]
+    source_refresh = tasks_payload["source_refresh"]
 
     return {
         "stats": [
@@ -2730,16 +2736,25 @@ def build_dashboard_payload(config) -> dict:
                 "enabled": bool(getattr(config.remote_refresh, "enabled", False)),
                 "status": str(remote_refresh.get("status") or "idle"),
                 "running": bool(remote_refresh.get("running", False)),
+                "active_run": remote_refresh.get("active_run") if isinstance(remote_refresh.get("active_run"), dict) else {},
                 "last_batch_total": int(remote_refresh.get("last_batch_total") or 0),
                 "last_batch_succeeded": int(remote_refresh.get("last_batch_succeeded") or 0),
                 "last_batch_failed": int(remote_refresh.get("last_batch_failed") or 0),
+                "last_batch_skipped": int(remote_refresh.get("last_batch_skipped") or 0),
                 "last_eligible_total": int(remote_refresh.get("last_eligible_total") or 0),
                 "last_remaining_total": int(remote_refresh.get("last_remaining_total") or 0),
                 "last_skipped_missing_cookie": int(remote_refresh.get("last_skipped_missing_cookie") or 0),
                 "next_run_at": str(remote_refresh.get("next_run_at") or ""),
                 "last_run_at": str(remote_refresh.get("last_run_at") or ""),
                 "last_success_at": str(remote_refresh.get("last_success_at") or ""),
+                "last_completed_at": str(remote_refresh.get("last_completed_at") or ""),
+                "last_deferred_at": str(remote_refresh.get("last_deferred_at") or ""),
+                "last_defer_reason": str(remote_refresh.get("last_defer_reason") or ""),
                 "last_message": str(remote_refresh.get("last_message") or ""),
+            },
+            "source_refresh": {
+                "queue": source_refresh.get("queue") if isinstance(source_refresh.get("queue"), dict) else {},
+                "runs": source_refresh.get("runs") if isinstance(source_refresh.get("runs"), dict) else {},
             },
             "organizer": {
                 "source_dir": str(getattr(config.organizer, "source_dir", "") or ""),

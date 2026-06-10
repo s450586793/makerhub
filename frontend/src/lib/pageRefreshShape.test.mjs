@@ -56,7 +56,18 @@ test("DashboardPage shows separate source refresh completion fields", () => {
   assert.match(dashboardPageSource, /last_completed_at/);
   assert.match(dashboardPageSource, /最近阻塞/);
   assert.match(dashboardPageSource, /last_defer_reason/);
+  assert.match(dashboardPageSource, /remoteRefreshActiveRun/);
+  assert.match(dashboardPageSource, /source_refresh/);
+  assert.match(dashboardPageSource, /sourceRefreshActiveRun/);
+  assert.match(dashboardPageSource, /remoteRefreshCompletedTotal/);
   assert.match(dashboardPageSource, /"dashboard"/);
+});
+
+test("RemoteRefreshPage explains active run progress from resumable batch state", () => {
+  assert.match(remoteRefreshPageSource, /hasActiveRun\.value/);
+  assert.match(remoteRefreshPageSource, /activeRun\.value\.completed_total/);
+  assert.match(remoteRefreshPageSource, /activeRun\.value\.remaining_total/);
+  assert.match(remoteRefreshPageSource, /当前批次计划处理/);
 });
 
 test("OrganizerPage uses shared page refresh controller for organize task refresh", () => {

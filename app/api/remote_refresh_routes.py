@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from app.api.config import _get_github_version_status, _public_config_payload, _require_session_auth, _with_version_status
-from app.api.dependencies import remote_refresh_manager, store
+from app.api.dependencies import remote_refresh_manager, store, task_state_store
 from app.schemas.models import RemoteRefreshConfig
 from app.services.business_logs import append_business_log
 from app.services.request_threads import run_task_api, run_ui_io
@@ -34,12 +34,33 @@ async def save_remote_refresh(payload: RemoteRefreshConfig, request: Request):
 async def get_remote_refresh_data():
     def _remote_refresh_payload() -> dict:
         config = store.load()
+        source_refresh = {
+            "queue": task_state_store.load_source_refresh_queue(),
+            "runs": task_state_store.load_source_refresh_runs(),
+        }
         return {
             "config": config.remote_refresh.model_dump(),
             "state": remote_refresh_manager.state_payload(),
+            "source_refresh": source_refresh,
         }
 
     return await run_ui_io(_remote_refresh_payload)
+
+
+@router.get("/source-refresh")
+async def get_source_refresh_data():
+    def _source_refresh_payload() -> dict:
+        config = store.load()
+        return {
+            "config": config.remote_refresh.model_dump(),
+            "state": remote_refresh_manager.state_payload(),
+            "source_refresh": {
+                "queue": task_state_store.load_source_refresh_queue(),
+                "runs": task_state_store.load_source_refresh_runs(),
+            },
+        }
+
+    return await run_ui_io(_source_refresh_payload)
 
 
 @router.post("/remote-refresh/run")
@@ -50,3 +71,24 @@ async def run_remote_refresh(request: Request):
         return remote_refresh_manager.trigger_manual_refresh()
 
     return await run_task_api(_manual_trigger_payload)
+
+
+@router.post("/source-refresh/run")
+async def run_source_refresh(request: Request):
+    return await run_remote_refresh(request)
+
+
+@router.post("/source-refresh/repair")
+async def repair_source_refresh(request: Request):
+    _require_session_auth(request)
+
+    def _repair_payload() -> dict:
+        if hasattr(remote_refresh_manager, "repair_source_refresh_state"):
+            return remote_refresh_manager.repair_source_refresh_state()
+        return {
+            "summary": {},
+            "queue": task_state_store.load_source_refresh_queue(),
+            "runs": task_state_store.load_source_refresh_runs(),
+        }
+
+    return await run_task_api(_repair_payload)

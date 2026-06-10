@@ -361,7 +361,9 @@ const activeCompletedTotal = computed(() => {
   if (hasActiveRun.value) {
     return Number(activeRun.value.completed_total || 0);
   }
-  return Number(remoteRefreshState.value?.last_batch_succeeded || 0) + Number(remoteRefreshState.value?.last_batch_failed || 0);
+  return Number(remoteRefreshState.value?.last_batch_succeeded || 0)
+    + Number(remoteRefreshState.value?.last_batch_failed || 0)
+    + Number(remoteRefreshState.value?.last_batch_skipped || 0);
 });
 const displayRemainingTotal = computed(() => Number(hasActiveRun.value ? activeRun.value.remaining_total || 0 : remoteRefreshState.value?.last_remaining_total || 0));
 const manualActionLabel = computed(() => {
@@ -401,13 +403,18 @@ const emptyHistoryText = computed(() => {
 
 const batchExplanation = computed(() => {
   const eligibleTotal = Number(remoteRefreshState.value?.last_eligible_total || 0);
-  const remainingTotal = Number(remoteRefreshState.value?.last_remaining_total || 0);
-  const batchTotal = Number(remoteRefreshState.value?.last_batch_total || 0);
+  const remainingTotal = Number(displayRemainingTotal.value || 0);
+  const batchTotal = Number(displayBatchTotal.value || 0);
   const successTotal = Number(remoteRefreshState.value?.last_batch_succeeded || 0);
   const failedTotal = Number(remoteRefreshState.value?.last_batch_failed || 0);
-  const processedTotal = successTotal + failedTotal;
+  const skippedTotal = Number(remoteRefreshState.value?.last_batch_skipped || 0);
+  const processedTotal = Number(activeCompletedTotal.value || 0);
   const skippedMissingCookie = Number(remoteRefreshState.value?.last_skipped_missing_cookie || 0);
   const skippedLocal = Number(remoteRefreshState.value?.last_skipped_local_or_invalid || 0);
+
+  if (hasActiveRun.value) {
+    return `当前可刷新 ${eligibleTotal} 个模型，当前批次计划处理 ${batchTotal} 个，已完成 ${processedTotal} 个，仍有 ${remainingTotal} 个待继续刷新。`;
+  }
 
   if (!eligibleTotal) {
     if (skippedMissingCookie > 0) {
@@ -417,7 +424,7 @@ const batchExplanation = computed(() => {
   }
 
   if (remainingTotal > 0) {
-    return `当前可刷新 ${eligibleTotal} 个模型，最近一轮计划处理 ${batchTotal} 个，已完成 ${processedTotal} 个、成功 ${successTotal} 个，仍有 ${remainingTotal} 个待继续刷新。`;
+    return `当前可刷新 ${eligibleTotal} 个模型，最近一轮计划处理 ${batchTotal} 个，已完成 ${processedTotal} 个、成功 ${successTotal} 个、失败 ${failedTotal} 个、跳过 ${skippedTotal} 个，仍有 ${remainingTotal} 个待继续刷新。`;
   }
 
   const skipParts = [];

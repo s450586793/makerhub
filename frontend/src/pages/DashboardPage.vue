@@ -236,15 +236,15 @@
             <div class="dashboard-mini-card__stats">
               <div class="dashboard-mini-card__stat">
                 <span>本轮计划</span>
-                <strong>{{ automation.remote_refresh.last_batch_total || 0 }}</strong>
+                <strong>{{ remoteRefreshBatchTotal(automation) }}</strong>
               </div>
               <div class="dashboard-mini-card__stat">
-                <span>可刷</span>
-                <strong>{{ automation.remote_refresh.last_eligible_total || 0 }}</strong>
+                <span>已完成</span>
+                <strong>{{ remoteRefreshCompletedTotal(automation) }}</strong>
               </div>
               <div class="dashboard-mini-card__stat">
                 <span>剩余</span>
-                <strong>{{ automation.remote_refresh.last_remaining_total || 0 }}</strong>
+                <strong>{{ remoteRefreshRemainingTotal(automation) }}</strong>
               </div>
             </div>
 
@@ -347,9 +347,11 @@ const defaultAutomationOverview = {
     enabled: false,
     status: "idle",
     running: false,
+    active_run: {},
     last_batch_total: 0,
     last_batch_succeeded: 0,
     last_batch_failed: 0,
+    last_batch_skipped: 0,
     last_eligible_total: 0,
     last_remaining_total: 0,
     last_skipped_missing_cookie: 0,
@@ -360,6 +362,10 @@ const defaultAutomationOverview = {
     last_deferred_at: "",
     last_defer_reason: "",
     last_message: "",
+  },
+  source_refresh: {
+    queue: {},
+    runs: {},
   },
   organizer: {
     source_dir: "",
@@ -567,6 +573,69 @@ function remoteRefreshStatusLabel(status, running) {
     error: "异常",
   };
   return mapping[normalized] || "空闲";
+}
+
+function remoteRefreshActiveRun(item) {
+  const activeRun = item?.active_run;
+  if (!activeRun || typeof activeRun !== "object") {
+    return {};
+  }
+  const status = String(activeRun.status || "").trim();
+  return activeRun.batch_id && ["running", "resuming", "interrupted"].includes(status) ? activeRun : {};
+}
+
+function sourceRefreshActiveRun(automationItem) {
+  const activeRun = automationItem?.source_refresh?.runs?.active_run;
+  if (!activeRun || typeof activeRun !== "object") {
+    return {};
+  }
+  const status = String(activeRun.status || "").trim();
+  return activeRun.run_id && ["queued", "running", "resuming", "paused", "interrupted"].includes(status) ? activeRun : {};
+}
+
+function remoteRefreshItem(automationOrRemote) {
+  return automationOrRemote?.remote_refresh || automationOrRemote || {};
+}
+
+function remoteRefreshBatchTotal(automationOrRemote) {
+  const activeRun = sourceRefreshActiveRun(automationOrRemote);
+  if (activeRun.run_id) {
+    return Number(activeRun.candidate_total || 0);
+  }
+  const item = remoteRefreshItem(automationOrRemote);
+  const legacyRun = remoteRefreshActiveRun(item);
+  if (legacyRun.batch_id) {
+    return Number(legacyRun.candidate_total || 0);
+  }
+  return Number(item?.last_batch_total || 0);
+}
+
+function remoteRefreshCompletedTotal(automationOrRemote) {
+  const activeRun = sourceRefreshActiveRun(automationOrRemote);
+  if (activeRun.run_id) {
+    return Number(activeRun.completed_total || 0);
+  }
+  const item = remoteRefreshItem(automationOrRemote);
+  const legacyRun = remoteRefreshActiveRun(item);
+  if (legacyRun.batch_id) {
+    return Number(legacyRun.completed_total || 0);
+  }
+  return Number(item?.last_batch_succeeded || 0)
+    + Number(item?.last_batch_failed || 0)
+    + Number(item?.last_batch_skipped || 0);
+}
+
+function remoteRefreshRemainingTotal(automationOrRemote) {
+  const activeRun = sourceRefreshActiveRun(automationOrRemote);
+  if (activeRun.run_id) {
+    return Number(activeRun.remaining_total || 0);
+  }
+  const item = remoteRefreshItem(automationOrRemote);
+  const legacyRun = remoteRefreshActiveRun(item);
+  if (legacyRun.batch_id) {
+    return Number(legacyRun.remaining_total || 0);
+  }
+  return Number(item?.last_remaining_total || 0);
 }
 
 function remoteRefreshPillClass(item) {

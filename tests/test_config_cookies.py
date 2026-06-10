@@ -92,6 +92,45 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(payload["cookie_source_sync"], queued_result)
             self.assertEqual(store.load().cookies[0].cookie, "token=ok")
 
+    async def test_save_cookies_retries_verification_missing_3mf_for_updated_platforms(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            config.cookies = []
+            store.save(config)
+
+            request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
+            verification_retry = {
+                "accepted": True,
+                "accepted_count": 2,
+                "queued_count": 0,
+                "failed_count": 0,
+            }
+
+            with patch.object(config_api, "store", store), \
+                    patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms", return_value={"queued_count": 0, "subscription_ids": []}), \
+                    patch.object(config_api.subscription_manager, "request_cookie_source_sync", return_value={"queued_count": 0, "platforms": []}), \
+                    patch.object(config_api.crawler.manager, "retry_verification_missing_3mf", return_value=verification_retry) as retry_verification_mock, \
+                    patch.object(config_api, "_get_github_version_status", return_value={}), \
+                    patch.object(config_api, "cookie_source_inventory_payload", return_value={"platforms": {}}), \
+                    patch.object(config_api, "cookie_source_sync_state_payload", return_value={}), \
+                    patch.object(config_api, "compact_remote_refresh_state", return_value={}), \
+                    patch.object(config_api.task_state_store, "load_remote_refresh_state", return_value={}), \
+                    patch.object(config_api, "append_business_log"):
+                payload = await config_api.save_cookies(
+                    [
+                        CookiePair(platform="cn", cookie="token=cn"),
+                        CookiePair(platform="global", cookie="token=global"),
+                    ],
+                    request,
+                )
+
+            retry_verification_mock.assert_any_call(platform="cn")
+            retry_verification_mock.assert_any_call(platform="global")
+            self.assertEqual(retry_verification_mock.call_count, 2)
+            self.assertEqual(payload["missing_3mf_verification_retry"]["cn"], verification_retry)
+            self.assertEqual(payload["missing_3mf_verification_retry"]["global"], verification_retry)
+
     async def test_save_cookies_empty_cookie_does_not_delete_account_imported_subscriptions(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")

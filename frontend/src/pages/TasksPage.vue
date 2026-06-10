@@ -595,6 +595,7 @@ async function retryMissing(item) {
       body: {
         model_id: item.model_id,
         model_url: item.model_url,
+        source: item.source,
         title: item.title,
         instance_id: item.instance_id,
       },

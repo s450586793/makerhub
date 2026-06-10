@@ -122,6 +122,10 @@ def _source_item_url(item: Any) -> str:
     return normalize_source_url(str(item or ""))
 
 
+def _missing_3mf_fallback_base(source: str) -> str:
+    return "https://makerworld.com" if normalize_makerworld_source(source=source) == "global" else "https://makerworld.com.cn"
+
+
 def _resolve_archive_result_model_dir(result: dict[str, Any]) -> str:
     work_dir = str(result.get("work_dir") or "").strip()
     if not work_dir:
@@ -1241,13 +1245,19 @@ class ArchiveTaskManager:
         self,
         model_url: str,
         model_id: str = "",
+        source: str = "",
         title: str = "",
         instance_id: str = "",
     ) -> dict:
         clean_url = normalize_source_url(model_url)
         clean_model_id = str(model_id or "").strip()
+        clean_source = normalize_makerworld_source(source, clean_url)
         if not clean_url and clean_model_id:
-            clean_url = normalize_model_url(f"/zh/models/{clean_model_id}")
+            clean_url = normalize_model_url(
+                f"/zh/models/{clean_model_id}",
+                fallback_base=_missing_3mf_fallback_base(clean_source),
+            )
+            clean_source = normalize_makerworld_source(clean_source, clean_url)
         if not clean_url:
             _log_archive("missing_retry_rejected", "缺少可用模型链接，无法重新下载 3MF。", level="warning")
             return {
@@ -1298,6 +1308,7 @@ class ArchiveTaskManager:
                 "missing_3mf_retry": True,
                 "model_id": clean_model_id or extract_model_id(clean_url),
                 "model_url": clean_url,
+                "source": clean_source,
                 "title": title,
                 "instance_id": instance_id,
             },
@@ -1391,6 +1402,7 @@ class ArchiveTaskManager:
             result = self.retry_missing_3mf(
                 model_url=item["model_url"],
                 model_id=item["model_id"],
+                source=normalize_makerworld_source(item.get("source"), item.get("model_url")),
                 title=item["title"],
                 instance_id=item["instance_id"],
             )
@@ -1495,6 +1507,7 @@ class ArchiveTaskManager:
             result = self.retry_missing_3mf(
                 model_url=str(item.get("model_url") or ""),
                 model_id=str(item.get("model_id") or ""),
+                source=str(item.get("source") or ""),
                 title=str(item.get("title") or ""),
                 instance_id=str(item.get("instance_id") or ""),
             )

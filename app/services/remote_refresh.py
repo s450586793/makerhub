@@ -33,8 +33,9 @@ from app.services.catalog import (
     upsert_archive_snapshot_model,
 )
 from app.services.legacy_archiver import COMMENT_SCHEMA_VERSION, normalize_threaded_comments
-from app.services.process_jobs import run_archive_model_job, run_source_deleted_check_job
+from app.services.process_jobs import run_source_deleted_check_job
 from app.services.resource_limiter import resource_snapshot, resource_slot
+from app.services.source_refresh_jobs import run_source_refresh_model_job
 from app.services.remote_refresh_summary import (
     batch_scope_message,
     build_success_message,
@@ -1439,7 +1440,7 @@ class RemoteRefreshManager:
         succeeded = len([item for item in records if str(item.get("status") or "") in {"success", "source_deleted"}])
         failed = int(batch_summary["failed"])
         skipped = int(batch_summary["skipped"])
-        processed_total = succeeded + failed
+        processed_total = len(_completed_remote_refresh_keys(records))
         stats_payload = dict(stats or {})
         candidate_total = int(active_run.get("candidate_total") or stats_payload.get("selected_total") or len(records))
         eligible_total = int(stats_payload.get("eligible_total") or candidate_total)
@@ -2061,8 +2062,36 @@ class RemoteRefreshManager:
             succeeded = 0
             failed = 0
             skipped = 0
+            completed_total = completed_before
+            last_progress_publish_at = time.monotonic()
             batch_metrics = _empty_batch_metrics()
             slow_models: list[dict[str, Any]] = []
+
+            def publish_batch_progress(*, force: bool = False) -> None:
+                nonlocal last_progress_publish_at
+                now_monotonic = time.monotonic()
+                if not force and now_monotonic - last_progress_publish_at < 15:
+                    return
+                last_progress_publish_at = now_monotonic
+                current_state = self.task_store.load_remote_refresh_state()
+                current_run = current_state.get("active_run") if isinstance(current_state.get("active_run"), dict) else {}
+                if str(current_run.get("batch_id") or "") != batch_id:
+                    return
+                self.task_store.patch_remote_refresh_state(
+                    active_run=self._active_run_payload(
+                        batch_id=batch_id,
+                        status=str(current_run.get("status") or "running"),
+                        started_at=started_at,
+                        resumed_at=str(current_run.get("resumed_at") or active_run.get("resumed_at") or ""),
+                        scheduled_cron=normalized_cron,
+                        manual=manual_run,
+                        candidate_total=int((resume_active_run or {}).get("candidate_total") or len(candidates)),
+                        completed_total=completed_total,
+                        manifest_path=manifest.path,
+                        result_path=result_path,
+                    ),
+                    publish_event=True,
+                )
 
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="remote-refresh-model") as executor:
                 future_map = {
@@ -2104,10 +2133,13 @@ class RemoteRefreshManager:
                             skipped += 1
                     else:
                         failed += 1
+                    completed_total += 1
+                    publish_batch_progress()
                     item_metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
                     _merge_batch_metrics(batch_metrics, item_metrics)
                     if item_metrics:
                         slow_models.append(item_metrics)
+                publish_batch_progress(force=True)
 
             finished_at = _now_iso()
             previous_state = self.task_store.load_remote_refresh_state()
@@ -2123,7 +2155,7 @@ class RemoteRefreshManager:
             succeeded = len([item for item in batch_records if str(item.get("status") or "") in {"success", "source_deleted"}])
             failed = int(batch_summary["failed"])
             skipped = int(batch_summary["skipped"])
-            processed_total = succeeded + failed
+            processed_total = len(_completed_remote_refresh_keys(batch_records))
             candidate_total = int((resume_active_run or {}).get("candidate_total") or len(candidates))
             eligible_total = int(stats.get("eligible_total") or candidate_total)
             remaining_total = max(eligible_total - processed_total, 0)
@@ -2219,12 +2251,44 @@ class RemoteRefreshManager:
             "progress": 0,
             "message": f"源端刷新中 {index}/{total}，等待资源",
         }
+        last_current_publish_at = 0.0
+        last_current_progress = -1
+
+        def publish_current_item(*, force: bool = False) -> None:
+            nonlocal last_current_publish_at, last_current_progress
+            progress = max(0, min(int(progress_state.get("progress") or 0), 100))
+            now_monotonic = time.monotonic()
+            if (
+                not force
+                and now_monotonic - last_current_publish_at < 15
+                and abs(progress - last_current_progress) < 10
+            ):
+                return
+            last_current_publish_at = now_monotonic
+            last_current_progress = progress
+            self._set_current_item(
+                model_dir,
+                {
+                    "id": model_dir,
+                    "title": title,
+                    "url": origin_url,
+                    "status": "running",
+                    "progress": progress,
+                    "message": str(progress_state.get("message") or f"源端刷新中 {index}/{total}"),
+                    "updated_at": _now_iso(),
+                },
+            )
+
+        def finish_result(result: dict[str, Any]) -> dict[str, Any]:
+            self._remove_current_item(model_dir)
+            return result
 
         model_started_perf = time.perf_counter()
         archive_duration_ms = 0.0
         finalize_duration_ms = 0.0
         disk_wait_ms = 0.0
         existing_meta = _load_json(meta_path)
+        publish_current_item(force=True)
         if not cookie:
             message = "缺少对应站点 Cookie，已跳过源端刷新。"
             model_metrics = {
@@ -2244,12 +2308,12 @@ class RemoteRefreshManager:
                     "checked_at": _now_iso(),
                 },
             )
-            return {
+            return finish_result({
                 "ok": True,
                 "skipped": True,
                 "metrics": model_metrics,
                 "record": record,
-            }
+            })
 
         def progress_callback(payload: dict[str, Any]) -> None:
             progress_state["progress"] = int(payload.get("percent") or 0)
@@ -2257,11 +2321,11 @@ class RemoteRefreshManager:
                 payload.get("message") or f"源端刷新中 {index}/{total}",
                 f"源端刷新中 {index}/{total}",
             )
+            publish_current_item()
 
         try:
             limit_guard = _read_three_mf_limit_guard()
             daily_limit_active = _is_three_mf_limit_guard_active_for_url(origin_url, limit_guard)
-            skip_three_mf_fetch = True
             skip_three_mf_message = (
                 _three_mf_limit_message(limit_guard)
                 if daily_limit_active
@@ -2289,20 +2353,17 @@ class RemoteRefreshManager:
                 return next_guard
 
             archive_started_perf = time.perf_counter()
-            archive_result = run_archive_model_job(
+            archive_result = run_source_refresh_model_job(
                 url=origin_url,
                 cookie=cookie,
                 download_dir=str(ARCHIVE_DIR),
                 logs_dir=str(LOGS_DIR),
                 existing_root=str(ARCHIVE_DIR),
                 progress_callback=progress_callback,
-                skip_three_mf_fetch=skip_three_mf_fetch,
                 three_mf_skip_message=skip_three_mf_message,
                 three_mf_skip_state="download_limited" if daily_limit_active else "pending_download",
                 download_assets=False,
                 download_comment_assets=False,
-                rebuild_archive=False,
-                record_missing_3mf_log=False,
                 proxy_config=config.proxy,
             )
             archive_duration_ms = round((time.perf_counter() - archive_started_perf) * 1000, 1)
@@ -2319,20 +2380,17 @@ class RemoteRefreshManager:
                 progress_state["progress"] = 78
                 progress_state["message"] = "检测到远端资源变化，正在同步图片、头像和附件资源"
                 asset_archive_started_perf = time.perf_counter()
-                archive_result = run_archive_model_job(
+                archive_result = run_source_refresh_model_job(
                     url=origin_url,
                     cookie=cookie,
                     download_dir=str(ARCHIVE_DIR),
                     logs_dir=str(LOGS_DIR),
                     existing_root=str(ARCHIVE_DIR),
                     progress_callback=progress_callback,
-                    skip_three_mf_fetch=skip_three_mf_fetch,
                     three_mf_skip_message=skip_three_mf_message,
                     three_mf_skip_state="download_limited" if daily_limit_active else "pending_download",
                     download_assets=True,
                     download_comment_assets=True,
-                    rebuild_archive=False,
-                    record_missing_3mf_log=False,
                     proxy_config=config.proxy,
                 )
                 archive_duration_ms += round((time.perf_counter() - asset_archive_started_perf) * 1000, 1)
@@ -2441,7 +2499,7 @@ class RemoteRefreshManager:
                     "new_3mf_download_task_id": str(new_3mf_download_result.get("task_id") or ""),
                 },
             )
-            return {"ok": True, "metrics": model_metrics, "record": record}
+            return finish_result({"ok": True, "metrics": model_metrics, "record": record})
         except Exception as exc:
             deleted_on_source = run_source_deleted_check_job(origin_url, cookie, proxy_config=config.proxy)
             if deleted_on_source and meta_path.exists():
@@ -2474,7 +2532,7 @@ class RemoteRefreshManager:
                         "checked_at": _now_iso(),
                     },
                 )
-                return {"ok": True, "source_deleted": True, "metrics": model_metrics, "record": record}
+                return finish_result({"ok": True, "source_deleted": True, "metrics": model_metrics, "record": record})
 
             message = _sanitize_remote_refresh_message(exc, exc.__class__.__name__)
             if meta_path.exists():
@@ -2506,4 +2564,4 @@ class RemoteRefreshManager:
                     "checked_at": _now_iso(),
                 },
             )
-            return {"ok": False, "error": message, "metrics": model_metrics, "record": record}
+            return finish_result({"ok": False, "error": message, "metrics": model_metrics, "record": record})

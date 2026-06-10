@@ -4,7 +4,7 @@ from app.core.store import JsonStore
 from app.services.auth import AuthManager
 from app.services.crawler import LegacyCrawlerBridge
 from app.services.local_organizer import LocalOrganizerService
-from app.services.remote_refresh import RemoteRefreshManager
+from app.services.source_refresh import SourceRefreshTaskManager
 from app.services.source_library import SourceLibraryManager
 from app.services.subscriptions import SubscriptionManager
 from app.services.task_state import TaskStateStore
@@ -27,7 +27,7 @@ source_library_manager = SourceLibraryManager(
     store=store,
     task_store=task_state_store,
 )
-remote_refresh_manager = RemoteRefreshManager(
+remote_refresh_manager = SourceRefreshTaskManager(
     store=store,
     task_store=task_state_store,
     archive_manager=crawler.manager,

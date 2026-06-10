@@ -17,6 +17,8 @@ def test_core_state_keys_are_stable():
     assert state_contracts.ORGANIZE_TASKS_STATE_KEY == "organize_tasks"
     assert state_contracts.SUBSCRIPTIONS_STATE_KEY == "subscriptions_state"
     assert state_contracts.REMOTE_REFRESH_STATE_KEY == "remote_refresh_state"
+    assert state_contracts.SOURCE_REFRESH_QUEUE_STATE_KEY == "source_refresh_queue"
+    assert state_contracts.SOURCE_REFRESH_RUNS_STATE_KEY == "source_refresh_runs"
 
 
 def test_state_event_scopes_cover_dashboard_consumers():
@@ -27,6 +29,8 @@ def test_state_event_scopes_cover_dashboard_consumers():
         "organize_tasks",
         "subscriptions_state",
         "remote_refresh_state",
+        "source_refresh_queue",
+        "source_refresh_runs",
         "dashboard",
     ]
 
@@ -35,6 +39,8 @@ def test_status_sets_include_existing_values():
     assert {"queued", "running", "completed", "failed"}.issubset(state_contracts.ARCHIVE_TASK_STATUSES)
     assert {"missing", "queued", "failed", "download_limited"}.issubset(state_contracts.MISSING_3MF_STATUSES)
     assert {"idle", "running", "success", "error", "disabled"}.issubset(state_contracts.REMOTE_REFRESH_STATUSES)
+    assert {"queued", "running", "succeeded", "failed", "skipped", "timed_out"}.issubset(state_contracts.SOURCE_REFRESH_TASK_STATUSES)
+    assert {"queued", "running", "paused", "completed", "failed", "interrupted"}.issubset(state_contracts.SOURCE_REFRESH_RUN_STATUSES)
     assert {"idle", "running", "success", "error", "pending"}.issubset(state_contracts.SUBSCRIPTION_STATUSES)
 
 
@@ -91,4 +97,6 @@ def test_dashboard_scopes_are_plain_strings_for_frontend_payloads():
     scopes = state_contracts.dashboard_event_scopes()
     assert all(isinstance(scope, str) for scope in scopes)
     assert "archive_queue" in scopes
+    assert "source_refresh_queue" in scopes
+    assert "source_refresh_runs" in scopes
     assert "dashboard" in scopes

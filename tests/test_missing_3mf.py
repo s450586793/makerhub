@@ -249,6 +249,63 @@ class Missing3mfTest(unittest.TestCase):
         self.assertEqual(len(submitted), 1)
         self.assertTrue(submitted[0]["force"])
 
+    def test_manual_missing_retry_uses_source_when_model_url_is_missing(self):
+        original_select_cookie = archive_worker_module._select_cookie
+        try:
+            with patch.object(archive_worker_module, "load_database_json_state", side_effect=lambda _key, default: dict(default)), \
+                    patch.object(archive_worker_module, "save_database_json_state", side_effect=lambda _key, payload: payload), \
+                    patch.object(archive_worker_module, "reset_three_mf_daily_quota", return_value={"reset": False, "source": "global"}):
+                manager = ArchiveTaskManager()
+                manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[]))
+                manager.task_store = SimpleNamespace(
+                    update_missing_3mf_status=lambda **_payload: None
+                )
+                submitted = []
+                manager.submit = lambda url, force=False, meta=None, **_: submitted.append(
+                    {"url": url, "force": force, "meta": meta}
+                ) or {"accepted": True, "task_id": "task-1", "message": "queued"}
+                archive_worker_module._select_cookie = lambda *_: "cookie"
+
+                result = manager.retry_missing_3mf(
+                    model_url="",
+                    model_id="2193050",
+                    title="Demo",
+                    instance_id="profile-1",
+                    source="global",
+                )
+        finally:
+            archive_worker_module._select_cookie = original_select_cookie
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(submitted[0]["url"], "https://makerworld.com/zh/models/2193050")
+        self.assertEqual(submitted[0]["meta"]["source"], "global")
+
+    def test_retry_all_missing_preserves_source_for_url_rebuild(self):
+        manager = ArchiveTaskManager()
+        manager.task_store = SimpleNamespace(
+            load_missing_3mf=lambda: {
+                "items": [
+                    {
+                        "model_id": "2193050",
+                        "title": "Demo",
+                        "instance_id": "profile-1",
+                        "source": "global",
+                    }
+                ]
+            },
+            mark_missing_3mf_retrying=lambda *_args, **_kwargs: None,
+        )
+        calls = []
+        manager.retry_missing_3mf = lambda **payload: calls.append(payload) or {"accepted": True, "message": "queued"}
+
+        with patch.object(archive_worker_module, "load_database_json_state", side_effect=lambda _key, default: dict(default)), \
+                patch.object(archive_worker_module, "save_database_json_state", side_effect=lambda _key, payload: payload), \
+                patch.object(archive_worker_module, "append_business_log"):
+            result = manager.retry_all_missing_3mf()
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(calls[0]["source"], "global")
+
     def test_cn_instance_api_candidates_prefer_bambulab_api(self):
         candidates = _build_instance_api_candidates(
             2864062,

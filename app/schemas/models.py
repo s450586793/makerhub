@@ -259,6 +259,7 @@ class Missing3mfItem(BaseModel):
     title: str
     status: str = "missing"
     model_url: str = ""
+    source: str = ""
     instance_id: str = ""
     message: str = ""
     updated_at: str = ""
@@ -267,6 +268,7 @@ class Missing3mfItem(BaseModel):
 class Missing3mfRetryRequest(BaseModel):
     model_id: str = ""
     model_url: str = ""
+    source: str = ""
     title: str = ""
     instance_id: str = ""
 

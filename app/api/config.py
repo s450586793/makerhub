@@ -2136,6 +2136,36 @@ def _public_cookie_payload(item: CookiePair) -> dict:
     return payload
 
 
+def _retry_verification_missing_3mf_for_platforms(platforms: set[str]) -> dict[str, dict]:
+    results: dict[str, dict] = {}
+    manager = getattr(crawler, "manager", None)
+    retry_func = getattr(manager, "retry_verification_missing_3mf", None)
+    if not callable(retry_func):
+        return results
+    for platform in sorted(platforms):
+        if platform not in {"cn", "global"}:
+            continue
+        try:
+            result = retry_func(platform=platform)
+        except Exception as exc:
+            result = {
+                "accepted": False,
+                "accepted_count": 0,
+                "queued_count": 0,
+                "failed_count": 1,
+                "message": str(exc),
+            }
+            append_business_log(
+                "missing_3mf",
+                "verification_retry_error",
+                "Cookie 更新后重试验证类 3MF 任务失败。",
+                platform=platform,
+                error=str(exc),
+            )
+        results[platform] = result
+    return results
+
+
 def _archive_event_snapshot() -> dict:
     queue = task_state_store.load_archive_queue()
     organize_tasks = task_state_store.load_organize_tasks()
@@ -2808,6 +2838,7 @@ async def save_cookies(payload: list[CookiePair], request: Request):
         retry_platforms,
         reason="cookie_save",
     )
+    missing_verification_retry = _retry_verification_missing_3mf_for_platforms(retry_platforms)
     if int(retry_result.get("queued_count") or 0) > 0:
         append_business_log(
             "subscription",
@@ -2827,6 +2858,7 @@ async def save_cookies(payload: list[CookiePair], request: Request):
     response = _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
     response["subscription_retry"] = retry_result
     response["cookie_source_sync"] = cookie_sources_result
+    response["missing_3mf_verification_retry"] = missing_verification_retry
     return response
 
 
