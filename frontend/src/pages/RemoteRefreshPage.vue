@@ -573,7 +573,7 @@ async function load({ silent = false } = {}) {
     loading.value = true;
   }
   try {
-    const payload = await apiRequest("/api/remote-refresh");
+    const payload = await apiRequest("/api/source-refresh");
     applyPayload(payload);
   } catch (error) {
     ok = false;
@@ -616,7 +616,7 @@ async function runRemoteRefreshManually() {
   status.value = "";
   manualSyncing.value = true;
   try {
-    const payload = await apiRequest("/api/remote-refresh/run", {
+    const payload = await apiRequest("/api/source-refresh/run", {
       method: "POST",
     });
     applyPayload(payload);
@@ -654,7 +654,7 @@ async function repairArchiveQueue() {
 onMounted(async () => {
   const perf = createPagePerformanceTracker({ page: "remote_refresh" });
   remoteRefreshController = createPageRefreshController({
-    scopes: ["remote_refresh_state"],
+    scopes: ["source_refresh_queue", "source_refresh_runs", "remote_refresh_state"],
     refresh: () => load({ silent: true }),
     delayMs: activeRefreshDelayMs,
     resetExistingTimer: false,

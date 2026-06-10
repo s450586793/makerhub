@@ -2702,7 +2702,6 @@ def build_dashboard_payload(config) -> dict:
         },
     ]
 
-    recent_models = _clone_model_items(visible_models[:8])
     recent_week_count = len([item for item in visible_models if item["collect_ts"] >= seven_days_ago])
     source_deleted_model_count = _source_deleted_model_count(visible_models)
     organize_tasks = tasks_payload["organize_tasks"]
@@ -2720,7 +2719,6 @@ def build_dashboard_payload(config) -> dict:
                 "hint": "归档队列当前状态",
             },
         ],
-        "recent_models": recent_models,
         "system_status": status_cards,
         "automation_overview": {
             "subscriptions": {

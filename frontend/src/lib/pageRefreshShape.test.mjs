@@ -28,6 +28,15 @@ test("LogsPage defaults troubleshooting filters to a recent time window", () => 
   assert.match(logsPageSource, /filters\.since !== DEFAULT_SINCE/);
 });
 
+test("LogsPage keeps advanced troubleshooting filters out of the user toolbar", () => {
+  assert.doesNotMatch(logsPageSource, /aria-label="日志文件"/);
+  assert.doesNotMatch(logsPageSource, /aria-label="日志事件"/);
+  assert.doesNotMatch(logsPageSource, /aria-label="每页条数"/);
+  assert.match(logsPageSource, /query\.set\("file"/);
+  assert.match(logsPageSource, /if \(filters\.event\) query\.set\("event"/);
+  assert.match(logsPageSource, /query\.set\("limit"/);
+});
+
 test("TasksPage uses shared page refresh controller for state events", () => {
   assert.match(tasksPageSource, /createPageRefreshController/);
   assert.doesNotMatch(tasksPageSource, /function refreshFromStateEvent/);
@@ -38,6 +47,10 @@ test("RemoteRefreshPage uses shared page refresh controller for throttled refres
   assert.match(remoteRefreshPageSource, /createPageRefreshController/);
   assert.doesNotMatch(remoteRefreshPageSource, /function scheduleRefresh/);
   assert.match(remoteRefreshPageSource, /remoteRefreshController/);
+  assert.match(remoteRefreshPageSource, /apiRequest\("\/api\/source-refresh"\)/);
+  assert.match(remoteRefreshPageSource, /apiRequest\("\/api\/source-refresh\/run"/);
+  assert.doesNotMatch(remoteRefreshPageSource, /apiRequest\("\/api\/remote-refresh"\)/);
+  assert.doesNotMatch(remoteRefreshPageSource, /apiRequest\("\/api\/remote-refresh\/run"/);
 });
 
 test("RemoteRefreshPage exposes resumable batch state and recovery actions", () => {
@@ -61,6 +74,8 @@ test("DashboardPage shows separate source refresh completion fields", () => {
   assert.match(dashboardPageSource, /sourceRefreshActiveRun/);
   assert.match(dashboardPageSource, /remoteRefreshCompletedTotal/);
   assert.match(dashboardPageSource, /"dashboard"/);
+  assert.match(dashboardPageSource, /"source_refresh_queue"/);
+  assert.match(dashboardPageSource, /"source_refresh_runs"/);
 });
 
 test("RemoteRefreshPage explains active run progress from resumable batch state", () => {

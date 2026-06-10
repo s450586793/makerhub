@@ -441,6 +441,9 @@ const hasActiveWork = computed(() => Boolean(
   || Number(payload.value.task_summary?.queued_count || 0)
   || Number(automation.value?.subscriptions?.running_count || 0)
   || Boolean(automation.value?.remote_refresh?.running)
+  || Boolean(sourceRefreshActiveRun(automation.value).run_id)
+  || Number(automation.value?.source_refresh?.queue?.running_count || 0)
+  || Number(automation.value?.source_refresh?.queue?.queued_count || 0)
   || Number(automation.value?.organizer?.active_count || 0)
 ));
 
@@ -674,7 +677,16 @@ onMounted(async () => {
   await load({ initial: true });
   void perf.finish();
   unsubscribeStateRefresh = subscribeStateRefresh(
-    ["archive_queue", "missing_3mf", "organize_tasks", "subscriptions_state", "remote_refresh_state", "dashboard"],
+    [
+      "archive_queue",
+      "missing_3mf",
+      "organize_tasks",
+      "subscriptions_state",
+      "remote_refresh_state",
+      "source_refresh_queue",
+      "source_refresh_runs",
+      "dashboard",
+    ],
     handleArchiveCompleted,
   );
   document.addEventListener("visibilitychange", handleVisibilityChange);

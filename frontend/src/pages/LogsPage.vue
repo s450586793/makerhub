@@ -38,13 +38,6 @@
           >
         </label>
         <label class="filter-field">
-          <select v-model="filters.file" aria-label="日志文件" @change="applyFilters">
-            <option v-for="file in fileOptions" :key="file.name" :value="file.name">
-              {{ file.name }}{{ file.primary ? "（业务）" : "" }}
-            </option>
-          </select>
-        </label>
-        <label class="filter-field">
           <select v-model="filters.level" aria-label="日志级别" @change="applyFilters">
             <option value="">全部级别</option>
             <option v-for="level in levelOptions" :key="level.value" :value="level.value">
@@ -61,26 +54,11 @@
           </select>
         </label>
         <label class="filter-field">
-          <select v-model="filters.event" aria-label="日志事件" @change="applyFilters">
-            <option value="">全部事件</option>
-            <option v-for="event in eventOptions" :key="event.value" :value="event.value">
-              {{ event.value }}{{ event.count ? ` (${event.count})` : "" }}
-            </option>
-          </select>
-        </label>
-        <label class="filter-field">
           <select v-model="filters.since" aria-label="时间范围" @change="applyFilters">
             <option :value="ALL_TIME_VALUE">不限时间</option>
             <option v-for="option in sinceOptions" :key="option.value" :value="option.value">
               {{ option.label }}
             </option>
-          </select>
-        </label>
-        <label class="filter-field">
-          <select v-model.number="filters.limit" aria-label="每页条数" @change="applyFilters">
-            <option :value="80">每页 80 条</option>
-            <option :value="160">每页 160 条</option>
-            <option :value="300">每页 300 条</option>
           </select>
         </label>
         <div class="filter-actions logs-console__filter-actions">
@@ -293,7 +271,6 @@ const levelOptions = computed(() => {
   }));
 });
 const categoryOptions = computed(() => facets.value.categories || []);
-const eventOptions = computed(() => facets.value.events || []);
 const activePresetKey = computed(() => {
   const normalized = normalizeFiltersForCompare(filters);
   const preset = LOG_PRESETS.find((item) => {

@@ -109,6 +109,7 @@ class SourceLibraryTest(unittest.TestCase):
             payload = build_dashboard_payload(AppConfig())
 
         self.assertEqual(payload["stats"][0]["value"], 0)
+        self.assertNotIn("recent_models", payload)
         snapshot_mock.assert_called_once_with()
 
     def test_subscription_flags_ignore_collection_missing_items(self):
