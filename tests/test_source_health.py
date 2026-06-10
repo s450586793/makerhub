@@ -16,7 +16,7 @@ class SourceHealthCardsTest(unittest.TestCase):
         source_health.SOURCE_HEALTH_CACHE.clear()
         source_health.SOURCE_HEALTH_REFRESHING_KEYS.clear()
 
-    def test_missing_3mf_verification_does_not_override_probe_ok(self):
+    def test_missing_3mf_verification_marks_homepage_needs_verification(self):
         original_probe = source_health._probe_platform_status
         source_health._probe_platform_status = lambda platform, *_args, **_kwargs: {
             "platform": platform,
@@ -44,18 +44,16 @@ class SourceHealthCardsTest(unittest.TestCase):
             source_health._probe_platform_status = original_probe
 
         card_map = {item["key"]: item for item in cards}
-        self.assertEqual(card_map["cn"]["state"], "ok")
-        self.assertEqual(card_map["cn"]["status"], "连接正常")
+        self.assertEqual(card_map["cn"]["state"], "verification_required")
+        self.assertEqual(card_map["cn"]["status"], "需要验证")
         self.assertEqual(card_map["cn"]["detail"], "")
-        self.assertEqual(card_map["cn"].get("action_label"), "打开官网")
+        self.assertEqual(card_map["cn"].get("action_label"), "访问主页")
         self.assertEqual(card_map["cn"].get("url"), "https://makerworld.com.cn")
         self.assertNotIn("route", card_map["cn"])
         self.assertEqual(card_map["global"]["state"], "ok")
-        checks = {item["source"]: item for item in card_map["cn"]["checks"]}
-        self.assertEqual(checks["account"]["status"], "连接正常")
-        self.assertNotIn("download", checks)
+        self.assertEqual(card_map["cn"]["checks"], [])
 
-    def test_global_missing_3mf_history_does_not_override_probe_ok(self):
+    def test_global_missing_3mf_verification_marks_homepage_needs_verification(self):
         original_probe = source_health._probe_platform_status
         source_health._probe_platform_status = lambda platform, *_args, **_kwargs: {
             "platform": platform,
@@ -83,13 +81,36 @@ class SourceHealthCardsTest(unittest.TestCase):
             source_health._probe_platform_status = original_probe
 
         card_map = {item["key"]: item for item in cards}
-        self.assertEqual(card_map["global"]["state"], "ok")
-        self.assertEqual(card_map["global"]["status"], "连接正常")
-        self.assertEqual(card_map["global"].get("action_label"), "打开官网")
+        self.assertEqual(card_map["global"]["state"], "verification_required")
+        self.assertEqual(card_map["global"]["status"], "需要验证")
+        self.assertEqual(card_map["global"].get("action_label"), "访问主页")
         self.assertEqual(card_map["global"].get("url"), "https://makerworld.com")
         self.assertNotIn("route", card_map["global"])
+        self.assertEqual(card_map["global"]["checks"], [])
 
-    def test_source_health_verification_card_opens_platform_homepage(self):
+    def test_missing_3mf_verification_can_use_source_without_model_url(self):
+        class Config:
+            cookies = []
+            proxy = None
+
+        cards = source_health.build_source_health_cards(
+            Config(),
+            [
+                {
+                    "status": "CLOUDFLARE",
+                    "source": "mw_global",
+                    "message": "",
+                }
+            ],
+        )
+
+        card_map = {item["key"]: item for item in cards}
+        self.assertEqual(card_map["global"]["state"], "cloudflare")
+        self.assertEqual(card_map["global"]["status"], "需要验证")
+        self.assertEqual(card_map["global"]["detail"], "")
+        self.assertEqual(card_map["global"]["checks"], [])
+
+    def test_account_probe_verification_does_not_change_homepage_status(self):
         original_probe = source_health._probe_platform_status
         source_health._probe_platform_status = lambda platform, *_args, **_kwargs: {
             "platform": platform,
@@ -108,10 +129,12 @@ class SourceHealthCardsTest(unittest.TestCase):
             source_health._probe_platform_status = original_probe
 
         card_map = {item["key"]: item for item in cards}
-        self.assertEqual(card_map["cn"]["state"], "verification_required")
+        self.assertEqual(card_map["cn"]["state"], "ok")
+        self.assertEqual(card_map["cn"]["status"], "正常")
         self.assertEqual(card_map["cn"].get("url"), "https://makerworld.com.cn")
-        self.assertEqual(card_map["cn"].get("action_label"), "访问主页")
+        self.assertEqual(card_map["cn"].get("action_label"), "打开官网")
         self.assertNotIn("route", card_map["cn"])
+        self.assertEqual(card_map["cn"]["checks"], [])
 
     def test_source_health_prefer_cached_returns_checking_without_probe_blocking(self):
         original_probe = source_health._probe_auth_endpoints
@@ -139,11 +162,11 @@ class SourceHealthCardsTest(unittest.TestCase):
             source_health._async_refresh_source_health = original_async_refresh
 
         card_map = {item["key"]: item for item in cards}
-        self.assertEqual(card_map["cn"]["state"], "checking")
-        self.assertEqual(card_map["cn"]["status"], "账号检测中")
-        self.assertEqual(card_map["cn"]["tone"], "neutral")
-        self.assertEqual(card_map["global"]["state"], "checking")
-        self.assertEqual(len(calls), 4)
+        self.assertEqual(card_map["cn"]["state"], "ok")
+        self.assertEqual(card_map["cn"]["status"], "正常")
+        self.assertEqual(card_map["cn"]["tone"], "ok")
+        self.assertEqual(card_map["global"]["state"], "ok")
+        self.assertEqual(len(calls), 0)
 
     def test_source_health_keeps_account_ok_when_web_probe_fails(self):
         original_probe = source_health._probe_platform_status
@@ -176,12 +199,10 @@ class SourceHealthCardsTest(unittest.TestCase):
 
         card_map = {item["key"]: item for item in cards}
         self.assertEqual(card_map["cn"]["state"], "ok")
-        self.assertEqual(card_map["cn"]["status"], "连接正常")
+        self.assertEqual(card_map["cn"]["status"], "正常")
         self.assertEqual(card_map["cn"]["tone"], "ok")
         self.assertEqual(card_map["cn"].get("action_label"), "打开官网")
-        checks = {item["source"]: item for item in card_map["cn"]["checks"]}
-        self.assertEqual(checks["account"]["status"], "连接正常")
-        self.assertNotIn("web", checks)
+        self.assertEqual(card_map["cn"]["checks"], [])
         self.assertEqual(card_map["global"]["state"], "ok")
 
     def test_source_health_keeps_account_ok_when_web_probe_reports_auth_required(self):
@@ -215,11 +236,9 @@ class SourceHealthCardsTest(unittest.TestCase):
 
         card_map = {item["key"]: item for item in cards}
         self.assertEqual(card_map["global"]["state"], "ok")
-        self.assertEqual(card_map["global"]["status"], "连接正常")
+        self.assertEqual(card_map["global"]["status"], "正常")
         self.assertEqual(card_map["global"]["tone"], "ok")
-        checks = {item["source"]: item for item in card_map["global"]["checks"]}
-        self.assertEqual(checks["account"]["status"], "连接正常")
-        self.assertNotIn("web", checks)
+        self.assertEqual(card_map["global"]["checks"], [])
 
     def test_source_health_prefer_cached_web_probe_does_not_block(self):
         original_async_refresh = source_health._async_refresh_source_health
@@ -237,11 +256,10 @@ class SourceHealthCardsTest(unittest.TestCase):
             source_health._async_refresh_source_health = original_async_refresh
 
         card_map = {item["key"]: item for item in cards}
-        checks = {item["source"]: item for item in card_map["cn"]["checks"]}
-        self.assertEqual(card_map["cn"]["state"], "checking")
-        self.assertEqual(checks["account"]["state"], "checking")
-        self.assertNotIn("web", checks)
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(card_map["cn"]["state"], "ok")
+        self.assertEqual(card_map["cn"]["status"], "正常")
+        self.assertEqual(card_map["cn"]["checks"], [])
+        self.assertEqual(len(calls), 0)
 
     def test_source_health_prefer_cached_uses_stale_web_verification_snapshot(self):
         original_async_refresh = source_health._async_refresh_source_health
@@ -281,10 +299,9 @@ class SourceHealthCardsTest(unittest.TestCase):
 
         card_map = {item["key"]: item for item in cards}
         self.assertEqual(card_map["cn"]["state"], "ok")
-        self.assertEqual(card_map["cn"]["status"], "连接正常")
-        checks = {item["source"]: item for item in card_map["cn"]["checks"]}
-        self.assertNotIn("web", checks)
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(card_map["cn"]["status"], "正常")
+        self.assertEqual(card_map["cn"]["checks"], [])
+        self.assertEqual(len(calls), 0)
 
     def test_web_probe_treats_normal_html_as_ok(self):
         result = source_health._web_probe_payload_from_response(
@@ -342,9 +359,9 @@ class SourceHealthCardsTest(unittest.TestCase):
 
         card_map = {item["key"]: item for item in cards}
         self.assertEqual(card_map["cn"]["state"], "ok")
-        self.assertEqual(card_map["cn"]["status"], "连接正常")
-        self.assertTrue(card_map["cn"]["checks"][0].get("detail") in {"", "正在后台刷新源站状态，首页先使用其它快照数据。"})
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(card_map["cn"]["status"], "正常")
+        self.assertEqual(card_map["cn"]["checks"], [])
+        self.assertEqual(len(calls), 0)
 
     def test_html_probe_without_verification_markers_is_interface_limited(self):
         result = source_health._auth_probe_result_from_response(
@@ -456,12 +473,10 @@ class SourceHealthCardsTest(unittest.TestCase):
             source_health._probe_platform_status = original_probe
 
         card_map = {item["key"]: item for item in cards}
-        self.assertEqual(card_map["cn"]["state"], "download_limited")
-        self.assertEqual(card_map["cn"]["status"], "3MF 下载到达每日上限")
-        self.assertIn("2026-04-27 00:00", card_map["cn"]["detail"])
-        checks = {item["source"]: item for item in card_map["cn"]["checks"]}
-        self.assertEqual(checks["account"]["status"], "需要验证")
-        self.assertEqual(checks["download"]["status"], "到达每日上限")
+        self.assertEqual(card_map["cn"]["state"], "ok")
+        self.assertEqual(card_map["cn"]["status"], "正常")
+        self.assertEqual(card_map["cn"]["detail"], "")
+        self.assertEqual(card_map["cn"]["checks"], [])
 
     def test_stale_missing_3mf_limit_message_uses_current_guard(self):
         original_probe = source_health._probe_platform_status
@@ -497,12 +512,10 @@ class SourceHealthCardsTest(unittest.TestCase):
             source_health._probe_platform_status = original_probe
 
         card_map = {item["key"]: item for item in cards}
-        self.assertEqual(card_map["cn"]["state"], "download_limited")
-        self.assertIn("2026-04-27 00:00", card_map["cn"]["detail"])
-        self.assertNotIn("2026-04-26 00:00", card_map["cn"]["detail"])
-        checks = {item["source"]: item for item in card_map["cn"]["checks"]}
-        self.assertEqual(checks["account"]["status"], "连接正常")
-        self.assertEqual(checks["download"]["status"], "到达每日上限")
+        self.assertEqual(card_map["cn"]["state"], "ok")
+        self.assertEqual(card_map["cn"]["status"], "正常")
+        self.assertEqual(card_map["cn"]["detail"], "")
+        self.assertEqual(card_map["cn"]["checks"], [])
 
     def test_stale_missing_3mf_limit_without_guard_does_not_override_probe_ok(self):
         original_probe = source_health._probe_platform_status
@@ -534,7 +547,7 @@ class SourceHealthCardsTest(unittest.TestCase):
 
         card_map = {item["key"]: item for item in cards}
         self.assertEqual(card_map["cn"]["state"], "ok")
-        self.assertEqual(card_map["cn"]["status"], "连接正常")
+        self.assertEqual(card_map["cn"]["status"], "正常")
 
     def test_probe_limit_guard_includes_guard_message(self):
         source_health._limit_guard_for_platform = lambda platform: {
@@ -655,10 +668,8 @@ class SourceHealthCardsTest(unittest.TestCase):
 
         card_map = {item["key"]: item for item in cards}
         self.assertEqual(card_map["cn"]["state"], "ok")
-        self.assertEqual(card_map["cn"]["status"], "连接正常")
-        checks = {item["source"]: item for item in card_map["cn"]["checks"]}
-        self.assertEqual(checks["account"]["status"], "连接正常")
-        self.assertNotIn("download", checks)
+        self.assertEqual(card_map["cn"]["status"], "正常")
+        self.assertEqual(card_map["cn"]["checks"], [])
 
     def test_retrying_missing_3mf_does_not_override_probe_ok(self):
         original_probe = source_health._probe_platform_status
@@ -689,7 +700,8 @@ class SourceHealthCardsTest(unittest.TestCase):
 
         card_map = {item["key"]: item for item in cards}
         self.assertEqual(card_map["cn"]["state"], "ok")
-        self.assertEqual(card_map["cn"]["status"], "连接正常")
+        self.assertEqual(card_map["cn"]["status"], "正常")
+        self.assertEqual(card_map["cn"]["checks"], [])
 
     def test_probe_verification_becomes_partial_when_recent_refresh_mostly_succeeds(self):
         original_probe = source_health._probe_platform_status
@@ -728,11 +740,11 @@ class SourceHealthCardsTest(unittest.TestCase):
             source_health._probe_platform_status = original_probe
 
         card_map = {item["key"]: item for item in cards}
-        self.assertEqual(card_map["cn"]["state"], "probe_limited")
-        self.assertEqual(card_map["cn"]["status"], "账号部分受限")
-        self.assertEqual(card_map["cn"]["tone"], "warning")
-        self.assertIn("认证探针返回验证页", card_map["cn"]["detail"])
-        self.assertEqual(card_map["cn"]["checks"][0]["status"], "部分受限")
+        self.assertEqual(card_map["cn"]["state"], "ok")
+        self.assertEqual(card_map["cn"]["status"], "正常")
+        self.assertEqual(card_map["cn"]["tone"], "ok")
+        self.assertEqual(card_map["cn"]["detail"], "")
+        self.assertEqual(card_map["cn"]["checks"], [])
 
     def test_missing_3mf_verification_stays_warning_when_probe_is_softened_by_refresh(self):
         original_probe = source_health._probe_platform_status
@@ -771,12 +783,10 @@ class SourceHealthCardsTest(unittest.TestCase):
             source_health._probe_platform_status = original_probe
 
         card_map = {item["key"]: item for item in cards}
-        self.assertEqual(card_map["cn"]["state"], "probe_limited")
-        self.assertEqual(card_map["cn"]["status"], "账号部分受限")
-        self.assertEqual(card_map["cn"]["tone"], "warning")
-        checks = {item["source"]: item for item in card_map["cn"]["checks"]}
-        self.assertEqual(checks["account"]["status"], "部分受限")
-        self.assertNotIn("download", checks)
+        self.assertEqual(card_map["cn"]["state"], "verification_required")
+        self.assertEqual(card_map["cn"]["status"], "需要验证")
+        self.assertEqual(card_map["cn"]["tone"], "danger")
+        self.assertEqual(card_map["cn"]["checks"], [])
 
 class InlineExecutor:
     def __init__(self, *args, **kwargs):

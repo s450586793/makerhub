@@ -886,40 +886,21 @@ def _soften_probe_verification_with_remote_health(
 
 def _build_missing_3mf_overrides(items: list[dict[str, Any]] | None) -> dict[str, dict[str, str]]:
     overrides: dict[str, dict[str, str]] = {}
-    limit_guards: dict[str, dict[str, Any]] = {}
     for raw_item in items or []:
         if not isinstance(raw_item, dict):
             continue
-        state = normalize_three_mf_failure_state(
-            raw_item.get("status") or raw_item.get("downloadState") or "",
-            raw_item.get("message") or raw_item.get("downloadMessage") or "",
-            url=raw_item.get("model_url") or raw_item.get("url") or "",
-        )
-        if state != "download_limited":
+        raw_state = str(raw_item.get("status") or raw_item.get("downloadState") or "").strip().lower()
+        if raw_state not in {"verification_required", "cloudflare"}:
             continue
-        platform = normalize_makerworld_source(url=raw_item.get("model_url"))
+        item_url = raw_item.get("model_url") or raw_item.get("url") or ""
+        platform = normalize_makerworld_source(raw_item.get("source"), item_url)
         if platform not in {"cn", "global"}:
             continue
-        if state == "download_limited":
-            if platform not in limit_guards:
-                limit_guards[platform] = _limit_guard_for_platform(platform)
-            limit_guard = limit_guards.get(platform) or {}
-            if not limit_guard:
-                continue
-            limit_message = _limit_guard_message(limit_guard)
-        else:
-            limit_message = ""
-        message = describe_three_mf_failure(
-            state,
-            raw_item.get("message") or raw_item.get("downloadMessage") or "",
-            url=raw_item.get("model_url") or "",
-            limit_message=limit_message,
-        )
         overrides[platform] = merge_three_mf_failure(
             overrides.get(platform),
             {
-                "state": state,
-                "message": message,
+                "state": raw_state,
+                "message": "",
             },
         )
     return overrides
@@ -1026,102 +1007,26 @@ def build_source_health_cards(
     remote_refresh_state: dict[str, Any] | None = None,
     prefer_cached: bool = False,
 ) -> list[dict[str, Any]]:
-    cookie_map = {item.platform: item.cookie for item in getattr(config, "cookies", [])}
     platforms = ("cn", "global")
     missing_overrides = _build_missing_3mf_overrides(missing_3mf_items)
 
     def build_card(platform: str) -> dict[str, Any]:
-        raw_cookie = str(cookie_map.get(platform) or "")
-        probe = (
-            _probe_platform_status_snapshot(platform, raw_cookie, getattr(config, "proxy", None))
-            if prefer_cached
-            else _probe_platform_status(platform, raw_cookie, getattr(config, "proxy", None))
-        )
-        account_state = str(probe.get("state") or "").strip()
-        account_detail = str(probe.get("detail") or "").strip()
-        account_status = str(probe.get("status") or "连接异常")
-        account_tone = _tone_from_state(account_state)
-        account_state, account_status, account_detail, account_tone = _soften_probe_verification_with_remote_health(
-            platform,
-            account_state,
-            account_status,
-            account_detail,
-            account_tone,
-            remote_refresh_state,
-        )
-        checks = [
-            _source_health_check(
-                source="account",
-                label="账号",
-                state=account_state,
-                status=account_status,
-                detail=account_detail,
-                tone=account_tone,
-            )
-        ]
-        web_probe = {}
-        if sanitize_cookie_header(raw_cookie):
-            web_probe = (
-                _probe_platform_web_status_snapshot(platform, raw_cookie, getattr(config, "proxy", None))
-                if prefer_cached
-                else _probe_platform_web_status(platform, raw_cookie, getattr(config, "proxy", None))
-            )
-        web_state = str(web_probe.get("state") or "").strip()
-        if web_state and web_state != "ok" and account_state != "ok":
-            checks.append(
-                _source_health_check(
-                    source="web",
-                    label="网页",
-                    state=web_state,
-                    status=str(web_probe.get("status") or _status_text_from_failure_state(web_state)),
-                    detail=str(web_probe.get("detail") or "").strip(),
-                    tone=_tone_from_state(web_state),
-                )
-            )
         override = missing_overrides.get(platform) or {}
         override_state = str(override.get("state") or "").strip()
-        if override_state:
-            download_detail = str(override.get("message") or "").strip()
-            if override_state in {"verification_required", "cloudflare"}:
-                download_detail = describe_three_mf_failure(
-                    override_state,
-                    download_detail,
-                    url=PLATFORM_ORIGINS.get(platform, ""),
-                )
-            if not download_detail and override_state == "verification_required":
-                download_detail = "MakerWorld 需要验证，前往官网任意下载一个模型。"
-            checks.append(
-                _source_health_check(
-                    source="download",
-                    label="3MF 下载",
-                    state=override_state,
-                    status=_status_text_from_failure_state(override_state),
-                    detail=download_detail,
-                    tone=_tone_from_state(override_state),
-                )
-            )
-
-        primary = _primary_source_health_check(checks)
-        state = str(primary.get("state") or "").strip()
-        status = _prefixed_status(primary, checks)
-        detail = str(primary.get("detail") or "").strip()
-        tone = str(primary.get("tone") or "").strip() or _tone_from_state(state)
+        needs_verification = override_state in {"verification_required", "cloudflare"}
+        state = override_state if needs_verification else "ok"
+        status = "需要验证" if needs_verification else "正常"
         card = {
             "key": platform,
             "title": SOURCE_HEALTH_LABELS.get(platform, platform),
             "status": status,
-            "detail": detail,
-            "tone": tone,
+            "detail": "",
+            "tone": "danger" if needs_verification else "ok",
             "state": state,
-            "checks": checks,
+            "checks": [],
         }
-        manual_homepage_states = {"verification_required", "cloudflare", "auth_required"}
-        if any(item.get("state") in manual_homepage_states for item in checks):
-            card["url"] = PLATFORM_ORIGINS.get(platform, "")
-            card["action_label"] = "访问主页"
-        else:
-            card["url"] = PLATFORM_ORIGINS.get(platform, "")
-            card["action_label"] = "打开官网"
+        card["url"] = PLATFORM_ORIGINS.get(platform, "")
+        card["action_label"] = "访问主页" if needs_verification else "打开官网"
         return card
 
     with ThreadPoolExecutor(max_workers=len(platforms)) as executor:
