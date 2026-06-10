@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.16`
+> 当前版本：`v0.9.17`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-11 · v0.9.17
+
+- 升级 FastAPI / Starlette 依赖，修复 Starlette Host header URL 重构校验漏洞（`CVE-2026-48710` / `GHSA-86qp-5c8j-p5mr`）。
+- 依赖审计覆盖 `requirements.txt` 与前端 npm 依赖，确认已无已知漏洞。
+- 补跑路由、认证、首页源站状态和手动验证回退相关测试，确认框架升级后核心 API 行为保持兼容。
+
 ### 2026-06-11 · v0.9.16
 
 - 首页国内站 / 国际站状态简化为“正常”或“需要验证”，不再展示 Cookie、账号 API、网页探针或每日上限明细。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - 网页入口探针仍会在账号探针异常时作为排障依据参与状态判断，账号正常时首页只显示正常状态和普通官网入口。
 - 补充回归测试，覆盖账号正常时网页探针验证、认证拒绝和缓存快照异常都不下发到首页检查项。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-10 · v0.9.14
 
 - 修复首页国际站账号 API 正常时，网页入口探针返回拒绝仍把平台卡片误判为“网页 Cookie 失效”的问题。
 - 首页源站状态现在以账号 API 状态作为主判断，网页入口失败保留为检查项提示，不再覆盖账号正常状态。
 - 增加源站健康回归测试，覆盖网页探针需要验证、网页探针返回认证拒绝和缓存快照场景。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-10 · v0.9.13
 
