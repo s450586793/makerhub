@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
 from typing import Any, Optional
 
 from app.core.store import JsonStore
@@ -342,15 +341,13 @@ class SourceRefreshTaskManager(RemoteRefreshManager):
             candidates, stats = self._pick_candidates()
             run_id = self._current_source_run_id or _source_refresh_run_id()
             self._current_source_run_id = run_id
-            manifest_path = Path()
-            result_path = Path()
             active_run = {
                 "batch_id": run_id,
                 "started_at": china_now_iso(),
                 "candidate_total": len(candidates),
                 "completed_total": 0,
-                "manifest_path": str(manifest_path),
-                "result_path": str(result_path),
+                "manifest_path": "",
+                "result_path": "",
                 "manual": bool(self.task_store.load_remote_refresh_state().get("manual_requested_at")),
             }
             self._publish_source_run_started(
@@ -359,16 +356,17 @@ class SourceRefreshTaskManager(RemoteRefreshManager):
                 active_run=active_run,
                 manual=bool(active_run.get("manual")),
             )
-            original_pick_candidates = self._pick_candidates
-            self._pick_candidates = lambda: (candidates, stats)
             try:
-                super()._run_batch(config, **kwargs)
+                super()._run_batch(
+                    config,
+                    **kwargs,
+                    selected_candidates=candidates,
+                    selected_stats=stats,
+                )
             except Exception as exc:
                 self._publish_source_run_interrupted(run_id=run_id, message=str(exc))
                 raise
             else:
                 self._publish_source_run_completed_from_state(run_id=run_id)
-            finally:
-                self._pick_candidates = original_pick_candidates
             return
         super()._run_batch(config, **kwargs)

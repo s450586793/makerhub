@@ -5,6 +5,7 @@ import {
   dashboardStatusAction,
   dashboardStatusActions,
   dashboardStatusElementKind,
+  getSourceRefreshDisplayTotals,
   shouldShowDashboardStatusDetail,
   normalizeRuntimeStatusLabel,
   runtimeTaskAction,
@@ -108,5 +109,72 @@ test("blocked verification action opens official homepage", () => {
     kind: "external",
     label: "访问主页",
     href: "https://makerworld.com",
+  });
+});
+
+test("source refresh display totals prefer active source-refresh run", () => {
+  assert.deepEqual(getSourceRefreshDisplayTotals({
+    remote_refresh: {
+      active_run: {
+        batch_id: "legacy-batch",
+        status: "running",
+        candidate_total: 100,
+        completed_total: 20,
+        remaining_total: 80,
+      },
+    },
+    source_refresh: {
+      runs: {
+        active_run: {
+          run_id: "source-run",
+          status: "running",
+          candidate_total: 8,
+          completed_total: 3,
+          remaining_total: 5,
+        },
+      },
+    },
+  }), {
+    total: 8,
+    completed: 3,
+    remaining: 5,
+    source: "source_refresh",
+  });
+});
+
+test("source refresh display totals fall back to legacy active run and last summary", () => {
+  assert.deepEqual(getSourceRefreshDisplayTotals({
+    active_run: {
+      batch_id: "legacy-batch",
+      status: "resuming",
+      candidate_total: 9,
+      completed_total: 4,
+      remaining_total: 5,
+    },
+    last_batch_total: 12,
+    last_batch_succeeded: 6,
+    last_batch_failed: 1,
+    last_batch_skipped: 2,
+    last_remaining_total: 3,
+  }), {
+    total: 9,
+    completed: 4,
+    remaining: 5,
+    source: "remote_refresh_active",
+  });
+
+  assert.deepEqual(getSourceRefreshDisplayTotals({
+    remote_refresh: {
+      last_batch_total: 12,
+      last_batch_succeeded: 6,
+      last_batch_failed: 1,
+      last_batch_skipped: 2,
+      last_remaining_total: 3,
+    },
+  }), {
+    total: 12,
+    completed: 9,
+    remaining: 3,
+    source: "remote_refresh_summary",
   });
 });

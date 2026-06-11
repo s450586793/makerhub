@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from app.services import state_contracts
@@ -9,6 +10,9 @@ from app.services.task_runtime import (
     task_attempt_count,
     task_attempts_remaining,
 )
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_core_state_keys_are_stable():
@@ -100,3 +104,36 @@ def test_dashboard_scopes_are_plain_strings_for_frontend_payloads():
     assert "source_refresh_queue" in scopes
     assert "source_refresh_runs" in scopes
     assert "dashboard" in scopes
+
+
+def test_remote_refresh_module_doc_names_source_refresh_public_api():
+    text = (PROJECT_ROOT / "docs/modules/remote_refresh.md").read_text(encoding="utf-8")
+    assert "`GET /api/source-refresh`" in text
+    assert "`POST /api/source-refresh/run`" in text
+    assert "`POST /api/source-refresh/repair`" in text
+    assert "`GET /api/remote-refresh`" in text
+    assert "selected_candidates" in text
+    assert "_pick_candidates()" in text
+    assert "兼容" in text
+
+
+def test_state_contract_doc_covers_source_refresh_projection_state():
+    text = (PROJECT_ROOT / "docs/modules/state_contracts.md").read_text(encoding="utf-8")
+    assert "`source_refresh_queue`" in text
+    assert "`source_refresh_runs`" in text
+    assert "Source refresh tasks" in text
+    assert "Source refresh runs" in text
+    assert "`resuming`" in text
+    assert "`interrupted`" in text
+
+
+def test_project_docs_point_to_source_refresh_projection_state():
+    modules_text = (PROJECT_ROOT / "docs/MODULES.md").read_text(encoding="utf-8")
+    architecture_text = (PROJECT_ROOT / "docs/ARCHITECTURE.md").read_text(encoding="utf-8")
+    assert "`source_refresh.py`" in modules_text
+    assert "`app/api/remote_refresh_routes.py`" in modules_text
+    assert "`source_refresh_queue`" in modules_text
+    assert "`source_refresh_runs`" in modules_text
+    assert "`SourceRefreshTaskManager`" in architecture_text
+    assert "`source_refresh_queue`" in architecture_text
+    assert "`source_refresh_runs`" in architecture_text

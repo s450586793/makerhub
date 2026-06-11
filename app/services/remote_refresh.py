@@ -1914,6 +1914,8 @@ class RemoteRefreshManager:
         resume_candidates: Optional[list[dict[str, Any]]] = None,
         resume_stats: Optional[dict[str, int]] = None,
         resume_existing_records: Optional[list[dict[str, Any]]] = None,
+        selected_candidates: Optional[list[dict[str, Any]]] = None,
+        selected_stats: Optional[dict[str, int]] = None,
     ) -> None:
         if not prelocked:
             self._set_batch_running(True)
@@ -1927,6 +1929,9 @@ class RemoteRefreshManager:
         if resume_candidates is not None:
             candidates = list(resume_candidates)
             stats = dict(resume_stats or {})
+        elif selected_candidates is not None:
+            candidates = list(selected_candidates)
+            stats = dict(selected_stats or {})
         else:
             candidates, stats = self._pick_candidates()
         workers = min(_remote_refresh_model_workers(config), max(len(candidates), 1))

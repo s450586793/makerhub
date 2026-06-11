@@ -33,6 +33,8 @@ This document records MakerHub's Postgres-backed JSON state keys, common fields,
 | `organize_tasks` | `TaskStateStore` | local organizer/import | dashboard, organizer page | `organize_tasks` |
 | `subscriptions_state` | `TaskStateStore` | subscription manager | dashboard, subscription pages | `subscriptions_state` |
 | `remote_refresh_state` | `TaskStateStore` | remote refresh manager | dashboard, remote refresh page | `remote_refresh_state` |
+| `source_refresh_queue` | `TaskStateStore` | source refresh manager | dashboard, remote refresh page | `source_refresh_queue` |
+| `source_refresh_runs` | `TaskStateStore` | source refresh manager | dashboard, remote refresh page | `source_refresh_runs` |
 | `model_flags` | `TaskStateStore` | model APIs, source deletion checks | model pages, catalog | `model_flags` |
 | `three_mf_limit_guard` | source health/archive worker | 3MF quota logic | dashboard, tasks, archive worker | `three_mf_limit_guard` |
 | `three_mf_daily_quota` | 3MF quota service | archive worker | archive worker, settings | `three_mf_daily_quota` |
@@ -45,7 +47,9 @@ This document records MakerHub's Postgres-backed JSON state keys, common fields,
 | Missing 3MF | `missing`, `queued`, `running`, `failed`, `cancelled`, `download_limited`, `verification_required`, `cloudflare`, `auth_required`, `pending_download` |
 | Organizer tasks | `queued`, `running`, `success`, `failed`, `skipped` |
 | Subscriptions | `idle`, `pending`, `running`, `success`, `error`, `deleted` |
-| Remote refresh | `idle`, `running`, `success`, `error`, `disabled` |
+| Remote refresh | `idle`, `running`, `resuming`, `deferred`, `interrupted`, `success`, `error`, `disabled` |
+| Source refresh tasks | `queued`, `running`, `succeeded`, `failed`, `skipped`, `timed_out`, `cancelled` |
+| Source refresh runs | `queued`, `running`, `paused`, `resuming`, `completed`, `failed`, `interrupted`, `cancelled` |
 
 These values are centralized in `app/services/state_contracts.py` for tests and low-risk consumers. Do not replace every string in the codebase mechanically; move consumers to constants only when it does not create circular imports or obscure local domain logic.
 
@@ -58,8 +62,13 @@ The dashboard listens to these state scopes:
 - `organize_tasks`
 - `subscriptions_state`
 - `remote_refresh_state`
+- `source_refresh_queue`
+- `source_refresh_runs`
+- `dashboard`
 
-State events should trigger relevant payload refreshes, not broad full-page refreshes. A page that only shows remote refresh status should not refresh source-library snapshots because an archive queue event arrived.
+State events should trigger relevant payload refreshes, not broad full-page refreshes. A page that only shows source refresh status should not refresh source-library snapshots because an archive queue event arrived.
+
+`remote_refresh_state` is the legacy/core batch state for scheduling, resume manifests, batch buffers, and final summaries. `source_refresh_queue` and `source_refresh_runs` are the newer source-refresh projection used by dashboard and source-refresh pages to avoid representing source refresh as archive queue work. Keep both until the refresh engine is fully split.
 
 ## Write Frequency Rules
 

@@ -131,6 +131,54 @@ class SourceRefreshTaskManagerTest(unittest.TestCase):
         self.assertEqual(source_runs["last_completed_run"]["completed_total"], 2)
         self.assertEqual(source_runs["last_completed_run"]["succeeded_total"], 2)
 
+    def test_source_refresh_batch_does_not_monkey_patch_candidate_picker_during_model_refresh(self):
+        original_workers = remote_refresh._remote_refresh_model_workers
+        remote_refresh._remote_refresh_model_workers = lambda _config=None: 1
+        config = self.store.load()
+        items = [
+            {"model_dir": "m1", "title": "模型 1", "origin_url": "https://makerworld.com.cn/model/1", "meta_path": str(self.temp_path / "m1" / "meta.json")},
+        ]
+
+        def original_picker():
+            return (
+                items,
+                {
+                    "eligible_total": 1,
+                    "selected_total": 1,
+                    "remaining_total": 0,
+                    "missing_cookie": 0,
+                    "local_or_invalid": 0,
+                },
+            )
+
+        self.manager._pick_candidates = original_picker
+
+        def fake_refresh_one(item, *, index, total, config):
+            self.assertIs(self.manager._pick_candidates, original_picker)
+            return {
+                "ok": True,
+                "metrics": {"model_dir": item["model_dir"], "title": item["title"], "total_duration_ms": 10},
+                "record": remote_refresh._remote_refresh_result_record(
+                    model_dir=item["model_dir"],
+                    title=item["title"],
+                    url=item["origin_url"],
+                    status="success",
+                    message="完成",
+                    metrics={"total_duration_ms": 10},
+                    change_labels=["已检查，无远端变化"],
+                ),
+            }
+
+        self.manager._refresh_one = fake_refresh_one
+        try:
+            self.manager._run_batch(config)
+        finally:
+            remote_refresh._remote_refresh_model_workers = original_workers
+
+        source_runs = self.task_store.load_source_refresh_runs()
+        self.assertEqual(source_runs["last_completed_run"]["status"], "completed")
+        self.assertEqual(source_runs["last_completed_run"]["failed_total"], 0)
+
     def test_run_batch_records_failed_source_run_when_all_models_fail(self):
         config = self.store.load()
         items = [

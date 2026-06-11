@@ -228,23 +228,23 @@
                 <span class="dashboard-mini-card__eyebrow">源端刷新</span>
                 <h3>增量同步</h3>
               </div>
-              <span :class="['count-pill', remoteRefreshPillClass(automation.remote_refresh)]">
-                {{ remoteRefreshStatusLabel(automation.remote_refresh.status, automation.remote_refresh.running) }}
+              <span :class="['count-pill', sourceRefreshPillClass(automation.remote_refresh)]">
+                {{ sourceRefreshStatusLabel(automation.remote_refresh.status, automation.remote_refresh.running) }}
               </span>
             </div>
 
             <div class="dashboard-mini-card__stats">
               <div class="dashboard-mini-card__stat">
                 <span>本轮计划</span>
-                <strong>{{ remoteRefreshBatchTotal(automation) }}</strong>
+                <strong>{{ sourceRefreshDisplayTotals.total }}</strong>
               </div>
               <div class="dashboard-mini-card__stat">
                 <span>已完成</span>
-                <strong>{{ remoteRefreshCompletedTotal(automation) }}</strong>
+                <strong>{{ sourceRefreshDisplayTotals.completed }}</strong>
               </div>
               <div class="dashboard-mini-card__stat">
                 <span>剩余</span>
-                <strong>{{ remoteRefreshRemainingTotal(automation) }}</strong>
+                <strong>{{ sourceRefreshDisplayTotals.remaining }}</strong>
               </div>
             </div>
 
@@ -255,7 +255,7 @@
               </span>
               <span>
                 <strong>最近阻塞</strong>
-                {{ remoteRefreshDeferText(automation.remote_refresh) }}
+                {{ sourceRefreshDeferText(automation.remote_refresh, formatDateTime) }}
               </span>
               <span>
                 <strong>上次批次开始</strong>
@@ -327,7 +327,12 @@ import { apiRequest } from "../lib/api";
 import {
   dashboardStatusActions,
   dashboardStatusElementKind,
+  getSourceRefreshDisplayTotals,
   shouldShowDashboardStatusDetail,
+  sourceRefreshActiveRun,
+  sourceRefreshDeferText,
+  sourceRefreshPillClass,
+  sourceRefreshStatusLabel,
 } from "../lib/dashboardStatus";
 import { formatServerDateTime } from "../lib/helpers";
 import { createPagePerformanceTracker } from "../lib/performance";
@@ -436,6 +441,7 @@ const organizerRecentText = computed(() => {
   }
   return item.message || item.model_dir || item.source_path || "最近一条记录已完成。";
 });
+const sourceRefreshDisplayTotals = computed(() => getSourceRefreshDisplayTotals(automation.value));
 const hasActiveWork = computed(() => Boolean(
   (payload.value.task_summary?.running?.length || 0)
   || Number(payload.value.task_summary?.queued_count || 0)
@@ -560,116 +566,6 @@ function subscriptionStatusLabel(item) {
     return "已执行";
   }
   return "待执行";
-}
-
-function remoteRefreshStatusLabel(status, running) {
-  if (running || status === "running") {
-    return "刷新中";
-  }
-  const normalized = String(status || "").trim();
-  const mapping = {
-    idle: "空闲",
-    resuming: "恢复中",
-    deferred: "已延后",
-    interrupted: "可恢复",
-    disabled: "已停用",
-    error: "异常",
-  };
-  return mapping[normalized] || "空闲";
-}
-
-function remoteRefreshActiveRun(item) {
-  const activeRun = item?.active_run;
-  if (!activeRun || typeof activeRun !== "object") {
-    return {};
-  }
-  const status = String(activeRun.status || "").trim();
-  return activeRun.batch_id && ["running", "resuming", "interrupted"].includes(status) ? activeRun : {};
-}
-
-function sourceRefreshActiveRun(automationItem) {
-  const activeRun = automationItem?.source_refresh?.runs?.active_run;
-  if (!activeRun || typeof activeRun !== "object") {
-    return {};
-  }
-  const status = String(activeRun.status || "").trim();
-  return activeRun.run_id && ["queued", "running", "resuming", "paused", "interrupted"].includes(status) ? activeRun : {};
-}
-
-function remoteRefreshItem(automationOrRemote) {
-  return automationOrRemote?.remote_refresh || automationOrRemote || {};
-}
-
-function remoteRefreshBatchTotal(automationOrRemote) {
-  const activeRun = sourceRefreshActiveRun(automationOrRemote);
-  if (activeRun.run_id) {
-    return Number(activeRun.candidate_total || 0);
-  }
-  const item = remoteRefreshItem(automationOrRemote);
-  const legacyRun = remoteRefreshActiveRun(item);
-  if (legacyRun.batch_id) {
-    return Number(legacyRun.candidate_total || 0);
-  }
-  return Number(item?.last_batch_total || 0);
-}
-
-function remoteRefreshCompletedTotal(automationOrRemote) {
-  const activeRun = sourceRefreshActiveRun(automationOrRemote);
-  if (activeRun.run_id) {
-    return Number(activeRun.completed_total || 0);
-  }
-  const item = remoteRefreshItem(automationOrRemote);
-  const legacyRun = remoteRefreshActiveRun(item);
-  if (legacyRun.batch_id) {
-    return Number(legacyRun.completed_total || 0);
-  }
-  return Number(item?.last_batch_succeeded || 0)
-    + Number(item?.last_batch_failed || 0)
-    + Number(item?.last_batch_skipped || 0);
-}
-
-function remoteRefreshRemainingTotal(automationOrRemote) {
-  const activeRun = sourceRefreshActiveRun(automationOrRemote);
-  if (activeRun.run_id) {
-    return Number(activeRun.remaining_total || 0);
-  }
-  const item = remoteRefreshItem(automationOrRemote);
-  const legacyRun = remoteRefreshActiveRun(item);
-  if (legacyRun.batch_id) {
-    return Number(legacyRun.remaining_total || 0);
-  }
-  return Number(item?.last_remaining_total || 0);
-}
-
-function remoteRefreshPillClass(item) {
-  if (item?.running || item?.status === "running" || item?.status === "resuming") {
-    return "count-pill--warn";
-  }
-  if (item?.status === "error") {
-    return "count-pill--danger";
-  }
-  if (item?.status === "interrupted" || item?.status === "deferred") {
-    return "count-pill--warn";
-  }
-  if (item?.enabled) {
-    return "count-pill--ok";
-  }
-  return "";
-}
-
-function remoteRefreshDeferText(item) {
-  const reason = String(item?.last_defer_reason || "").trim();
-  if (!reason) {
-    return "无";
-  }
-  const mapping = {
-    archive_queue_busy: "归档队列占用",
-    local_organizer_busy: "本地整理占用",
-    stale_runtime_state: "队列状态待修复",
-  };
-  const reasonText = mapping[reason] || reason;
-  const timeText = formatDateTime(item?.last_deferred_at);
-  return `${reasonText} · ${timeText}`;
 }
 
 onMounted(async () => {

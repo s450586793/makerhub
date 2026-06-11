@@ -19,15 +19,22 @@
 
 ### HTTP API
 
-- `GET /api/remote-refresh`
-- `POST /api/remote-refresh/run`
-- `POST /api/config/remote-refresh`
+- `GET /api/source-refresh`：源端刷新页主读取入口，返回配置、核心批次状态和 `source_refresh` 投影状态。
+- `POST /api/source-refresh/run`：手动触发源端刷新。
+- `POST /api/source-refresh/repair`：修复源端刷新投影队列/运行态。
+- `POST /api/config/remote-refresh`：保存源端刷新计划配置。配置模型名仍沿用 `remote_refresh`。
+- `GET /api/remote-refresh`：旧入口兼容保留，返回 shape 与 `/api/source-refresh` 一致。
+- `POST /api/remote-refresh/run`：旧触发入口兼容保留。
+
+前端业务页应优先调用 `/api/source-refresh`。`/api/remote-refresh` 仅用于旧链接、旧客户端和过渡期兼容，不作为新代码首选。
 
 ### Service 函数/类
 
 - `RemoteRefreshManager.start()` / `stop()`
 - `RemoteRefreshManager.run_once()` / 定时刷新入口
 - `RemoteRefreshManager.submit_manual_run()` / 手动刷新入口
+- `SourceRefreshTaskManager`：当前对外 manager，继承 `RemoteRefreshManager` 并维护独立的 `source_refresh_queue` / `source_refresh_runs` 投影状态。
+- `RemoteRefreshManager._run_batch(..., selected_candidates=..., selected_stats=...)`：核心批次引擎支持由子类预选候选；不要再通过临时替换 `_pick_candidates()` 注入候选。
 - `run_source_deleted_check_job()`
 - `_merge_comments()`
 - `_merge_instances()`
@@ -37,7 +44,9 @@
 ## 数据和目录
 
 - Postgres/JSON state:
-  - `makerhub_json_state:remote_refresh_state`
+  - `makerhub_json_state:remote_refresh_state`：核心批次、调度、resume manifest、batch buffer 摘要状态。
+  - `makerhub_json_state:source_refresh_queue`：源端刷新独立队列投影。
+  - `makerhub_json_state:source_refresh_runs`：源端刷新独立运行态投影。
   - `makerhub_json_state:missing_3mf`
   - `makerhub_json_state:model_flags`
   - `archive_model_index`
@@ -66,7 +75,8 @@
 改源端刷新时，先读：
 
 - `app/services/remote_refresh.py`
+- `app/services/source_refresh.py`
+- `app/api/remote_refresh_routes.py`
 - `app/services/process_jobs.py`
 - `app/services/catalog.py` 中 remote sync/评论标准化相关函数
-- `app/api/config.py` 中 `/remote-refresh` 段落
 - `frontend/src/pages/RemoteRefreshPage.vue`

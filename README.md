@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.18`
+> 当前版本：`v0.9.19`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,13 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-11 · v0.9.19
+
+- 源端刷新公共入口和兼容入口共用同一份 payload 组装，`/api/source-refresh/run` 与旧 `/api/remote-refresh/run` 共用内部触发函数，避免新旧接口 shape 漂移。
+- 首页源端刷新卡片的运行统计、状态标签和阻塞文案抽到共享前端 helper，优先读取 `source_refresh` 运行态，再回退旧 `remote_refresh_state`。
+- 源端刷新核心批次引擎支持预选候选输入，`SourceRefreshTaskManager` 不再通过临时替换 `_pick_candidates()` 注入候选，降低批次运行态和候选选择的耦合。
+- 架构文档、模块索引和运行状态契约同步补齐 `source_refresh_queue` / `source_refresh_runs`，明确 `remote_refresh_state` 仍是核心批次和恢复状态。
+
 ### 2026-06-11 · v0.9.18
 
 - 源端刷新页前端入口改为 `/api/source-refresh`，首页同步监听独立 `source_refresh` 队列和运行状态，减少旧 `remote_refresh` 命名对用户流程的干扰。
@@ -219,14 +226,14 @@ uvicorn app.main:app --reload
 - 依赖审计覆盖 `requirements.txt` 与前端 npm 依赖，确认已无已知漏洞。
 - 补跑路由、认证、首页源站状态和手动验证回退相关测试，确认框架升级后核心 API 行为保持兼容。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-11 · v0.9.16
 
 - 首页国内站 / 国际站状态简化为“正常”或“需要验证”，不再展示 Cookie、账号 API、网页探针或每日上限明细。
 - “需要验证”只由当前归档缺失 `3MF` 的验证类状态触发；用户重试后进入排队 / 运行中或下载成功清除缺失项，首页会恢复正常。
 - 补充源站健康回归测试，覆盖国内 / 国际验证、探针不影响首页、重试中恢复正常和旧数据来源字段兼容。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-10 · v0.9.15
 

@@ -20,6 +20,9 @@ class RemovedEmbeddedVerificationWebRouteTest(unittest.TestCase):
         self.assertIn("/api/models", paths)
         self.assertIn("/api/tasks", paths)
         self.assertIn("/api/remote-refresh", paths)
+        self.assertIn("/api/source-refresh", paths)
+        self.assertIn("/api/source-refresh/run", paths)
+        self.assertIn("/api/source-refresh/repair", paths)
         self.assertIn("/api/subscriptions", paths)
         self.assertIn("/api/logs", paths)
 

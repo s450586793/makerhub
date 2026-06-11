@@ -9,7 +9,7 @@
 | 本地导入 / 本地整理 | [local_import.md](modules/local_import.md) | Web/iOS/local 文件夹导入、zip/rar/文件夹整理、去重、编辑本地模型、Three.js 封面 | `local_import_upload.py`, `local_organizer.py`, `local_model_edit.py`, `local_preview_worker.py`, `OrganizerPage.vue` | `test_local_import_upload.py`, `test_local_organizer.py`, `test_local_model_edit.py`, `test_mobile_import.py` |
 | 归档 / MakerWorld / 下载 / 3MF | [archive.md](modules/archive.md) | 单模型归档、作者/收藏夹/合集批量发现、Scrapling、3MF 下载、缺失 3MF | `archive_worker.py`, `legacy_archiver.py`, `process_jobs.py`, `batch_discovery.py`, `scrapling_fetch.py`, `three_mf.py` | `test_batch_discovery.py`, `test_scrapling_fetch.py`, `test_missing_3mf.py`, `test_three_mf_quota.py` |
 | 订阅 / 来源库 | [subscriptions.md](modules/subscriptions.md) | 订阅 CRUD、定时同步、关注作者/默认收藏夹/关注合集导入、来源卡、来源快照 | `subscriptions.py`, `source_library.py`, `batch_discovery.py`, `source_health.py`, subscription pages | `test_subscriptions.py`, `test_source_library.py`, `test_source_health.py` |
-| 源端刷新 | [remote_refresh.md](modules/remote_refresh.md) | 已归档模型的评论、附件、实例、源端删除状态刷新 | `remote_refresh.py`, `frontend/src/pages/RemoteRefreshPage.vue` | `test_remote_refresh.py`, `test_process_jobs.py` |
+| 源端刷新 | [remote_refresh.md](modules/remote_refresh.md) | 已归档模型的评论、附件、实例、源端删除状态刷新 | `source_refresh.py`, `remote_refresh.py`, `app/api/remote_refresh_routes.py`, `frontend/src/pages/RemoteRefreshPage.vue` | `test_source_refresh.py`, `test_remote_refresh.py`, `test_process_jobs.py` |
 | 分享 / 移动端导入 | [sharing_mobile.md](modules/sharing_mobile.md) | 分享码、接收分享、iOS 快捷指令上传、移动端 Token | share endpoints in `app/api/config.py`, `local_import_upload.py`, `ShareDialog.vue`, shortcut docs | `test_share_receive_security.py`, `test_mobile_import.py`, `test_upload_limits.py` |
 | 任务 / Worker / 资源控制 | [tasks_worker.md](modules/tasks_worker.md) | 归档队列、整理进度、最近失败、worker 主循环、线程/资源限制 | `task_state.py`, `worker.py`, `resource_limiter.py`, `request_threads.py`, `TasksPage.vue` | `test_task_state.py`, `test_resource_limiter.py`, `test_request_threads.py` |
 | Runtime State Contracts | [state_contracts.md](modules/state_contracts.md) | Postgres-backed JSON state keys、状态枚举、事件 scope、字段语义、写入频率约束 | `app/services/state_contracts.py`, `app/services/task_state.py`, `app/services/state_events.py`, state-consuming pages | `test_state_contracts.py`, `test_task_state.py`, `test_database_json_state.py` |
@@ -20,7 +20,7 @@
 
 - 模型列表/详情统一从 `app/services/catalog.py` 读取；不要在页面 API 中重新扫描归档目录。
 - 任务状态统一走 `TaskStateStore`；不要为新长任务单独写一个前端状态源。
-- 改 `archive_queue`、`missing_3mf`、`organize_tasks`、`subscriptions_state`、`remote_refresh_state` 等状态字段前，先看 [Runtime State Contracts](modules/state_contracts.md)。
+- 改 `archive_queue`、`missing_3mf`、`organize_tasks`、`subscriptions_state`、`remote_refresh_state`、`source_refresh_queue`、`source_refresh_runs` 等状态字段前，先看 [Runtime State Contracts](modules/state_contracts.md)。
 - 本地导入、移动端导入、local 文件夹监听都应复用本地整理/导入链路；不要再写一套 zip/STL/3MF 分类逻辑。
 - 归档和订阅批量发现都依赖 `batch_discovery.py`；MakerWorld 接口变化应优先修这里。
 - 来源库页面应通过 `source_library.py` 聚合模型、订阅状态和来源 metadata；不要让前端逐模型拼来源卡。

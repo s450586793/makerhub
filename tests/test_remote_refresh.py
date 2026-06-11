@@ -911,6 +911,41 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         manifest_path = remote_refresh._remote_refresh_path_from_state(active_run["manifest_path"])
         self.assertTrue(manifest_path.exists())
 
+    def test_run_batch_accepts_preselected_candidates_without_reselecting(self):
+        original_workers = remote_refresh._remote_refresh_model_workers
+        remote_refresh._remote_refresh_model_workers = lambda _config=None: 1
+        config = self.store.load()
+        items = [
+            {"model_dir": "m1", "title": "模型 1", "origin_url": "https://makerworld.com.cn/model/1", "meta_path": str(self.temp_path / "m1" / "meta.json")},
+        ]
+        self.manager._pick_candidates = lambda: (_ for _ in ()).throw(AssertionError("candidate picker should not be called"))
+        self.manager._refresh_one = lambda item, *, index, total, config: {
+            "ok": True,
+            "metrics": {"model_dir": item["model_dir"], "title": item["title"], "comments": 1, "total_duration_ms": index},
+            "record": remote_refresh._remote_refresh_result_record(
+                model_dir=item["model_dir"],
+                title=item["title"],
+                url=item["origin_url"],
+                status="success",
+                message="完成",
+                metrics={"comments": 1, "total_duration_ms": index},
+                change_labels=["已检查，无远端变化"],
+            ),
+        }
+
+        try:
+            self.manager._run_batch(
+                config,
+                selected_candidates=items,
+                selected_stats={"eligible_total": 1, "selected_total": 1, "remaining_total": 0, "missing_cookie": 0, "local_or_invalid": 0},
+            )
+        finally:
+            remote_refresh._remote_refresh_model_workers = original_workers
+
+        state = self.task_store.load_remote_refresh_state()
+        self.assertEqual(state["last_batch_succeeded"], 1)
+        self.assertEqual(state["active_run"]["candidate_total"], 1)
+
     def test_resume_active_run_skips_completed_manifest_entries(self):
         original_batch_dir = remote_refresh.REMOTE_REFRESH_BATCH_DIR
         original_workers = remote_refresh._remote_refresh_model_workers

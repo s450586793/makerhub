@@ -69,10 +69,10 @@ test("DashboardPage shows separate source refresh completion fields", () => {
   assert.match(dashboardPageSource, /last_completed_at/);
   assert.match(dashboardPageSource, /最近阻塞/);
   assert.match(dashboardPageSource, /last_defer_reason/);
-  assert.match(dashboardPageSource, /remoteRefreshActiveRun/);
+  assert.match(dashboardPageSource, /getSourceRefreshDisplayTotals/);
   assert.match(dashboardPageSource, /source_refresh/);
   assert.match(dashboardPageSource, /sourceRefreshActiveRun/);
-  assert.match(dashboardPageSource, /remoteRefreshCompletedTotal/);
+  assert.match(dashboardPageSource, /sourceRefreshDisplayTotals/);
   assert.match(dashboardPageSource, /"dashboard"/);
   assert.match(dashboardPageSource, /"source_refresh_queue"/);
   assert.match(dashboardPageSource, /"source_refresh_runs"/);
