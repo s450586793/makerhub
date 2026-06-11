@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.20`
+> 当前版本：`v0.9.21`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-12 · v0.9.21
+
+- 新增当前账号健康快照状态，首页国内站 / 国际站只读取当前快照，不再被历史缺失 `3MF`、源端刷新旧失败、归档旧失败或日志残留污染。
+- 归档下载和缺失 `3MF` 重试成功后会恢复对应源站为正常；遇到验证、Cookie 异常或每日上限等分类失败时，只写当前账号健康状态，且状态同步失败不会阻断归档结果。
+- 运行诊断新增 `account_health`，与归档队列和历史失败分离；补充边界回归测试和复盘治理文档，锁定首页状态、任务状态、失败明细和诊断事件的职责边界。
+
 ### 2026-06-11 · v0.9.20
 
 - 首页国内站 / 国际站状态不再读取历史缺失 `3MF` 的验证残留，避免旧 `missing_3mf` 项把当前账号状态误显示为“需要验证”。
@@ -219,15 +225,15 @@ uvicorn app.main:app --reload
 - 源端刷新核心批次引擎支持预选候选输入，`SourceRefreshTaskManager` 不再通过临时替换 `_pick_candidates()` 注入候选，降低批次运行态和候选选择的耦合。
 - 架构文档、模块索引和运行状态契约同步补齐 `source_refresh_queue` / `source_refresh_runs`，明确 `remote_refresh_state` 仍是核心批次和恢复状态。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-11 · v0.9.18
 
 - 源端刷新页前端入口改为 `/api/source-refresh`，首页同步监听独立 `source_refresh` 队列和运行状态，减少旧 `remote_refresh` 命名对用户流程的干扰。
 - 首页工作台进一步收口为快照摘要，移除未使用的最近模型 payload，实时排障细节继续下沉到任务、源端刷新和日志页面。
 - 日志页降级为用户常用筛选界面，隐藏文件、事件和每页条数等高级控件；完整日志 API 仍保留给排障查询。
 - 文档明确 MakerHub 只外跳 MakerWorld 手动验证，不内嵌验证窗口、不自动点击验证码，也不绕过站点验证。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-11 · v0.9.17
 
