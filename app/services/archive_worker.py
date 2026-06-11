@@ -376,6 +376,47 @@ def _account_health_failure_from_missing_items(
     return None
 
 
+def _sync_account_health_for_archive_result(
+    *,
+    platform: str,
+    model_url: str,
+    model_id: str,
+    instance_id: str,
+    missing_items: list[dict[str, Any]],
+    missing_3mf_retry: bool,
+) -> None:
+    classified_failure = _account_health_failure_from_missing_items(missing_items)
+    try:
+        if classified_failure is not None:
+            update_account_health(
+                platform,
+                status=classified_failure["status"],
+                reason="three_mf_download_failed",
+                source="archive_download",
+                detail=classified_failure["detail"],
+                model_url=model_url,
+                model_id=model_id,
+                instance_id=classified_failure["instance_id"] or instance_id,
+            )
+        elif not missing_items:
+            mark_account_ok(
+                platform,
+                source="missing_3mf_retry" if missing_3mf_retry else "archive_download",
+                model_url=model_url,
+                model_id=model_id,
+                instance_id=instance_id,
+            )
+    except Exception as exc:
+        _log_archive(
+            "account_health_sync_failed",
+            "账号健康状态同步失败，归档结果已保留。",
+            level="warning",
+            model_id=model_id,
+            url=model_url,
+            error=str(exc)[:240],
+        )
+
+
 @contextmanager
 def _temporary_proxy_env(config, target_url: str = ""):
     with temporary_proxy_env(config, target_url):
@@ -2171,26 +2212,14 @@ class ArchiveTaskManager:
             account_platform = normalize_makerworld_source(meta.get("source"), url)
             account_model_url = normalize_source_url(url)
             account_instance_id = str(meta.get("instance_id") or "").strip()
-            classified_failure = _account_health_failure_from_missing_items(missing_items)
-            if classified_failure is not None:
-                update_account_health(
-                    account_platform,
-                    status=classified_failure["status"],
-                    reason="three_mf_download_failed",
-                    source="archive_download",
-                    detail=classified_failure["detail"],
-                    model_url=account_model_url,
-                    model_id=resolved_model_id,
-                    instance_id=classified_failure["instance_id"] or account_instance_id,
-                )
-            elif not missing_items:
-                mark_account_ok(
-                    account_platform,
-                    source="missing_3mf_retry" if missing_3mf_retry else "archive_download",
-                    model_url=account_model_url,
-                    model_id=resolved_model_id,
-                    instance_id=account_instance_id,
-                )
+            _sync_account_health_for_archive_result(
+                platform=account_platform,
+                model_url=account_model_url,
+                model_id=resolved_model_id,
+                instance_id=account_instance_id,
+                missing_items=missing_items,
+                missing_3mf_retry=missing_3mf_retry,
+            )
         if limit_guard_state is not None and not profile_metadata_only:
             self._pause_missing_3mf_retry_tasks_for_limit(limit_guard_state)
         self.task_store.remove_recent_failures_for_model(
