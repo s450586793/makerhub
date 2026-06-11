@@ -733,6 +733,49 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(card_map["cn"]["detail"], "账号状态正常。")
         self.assertEqual(card_map["cn"]["checks"], [])
 
+    def test_account_health_ok_snapshot_ignores_verification_history_from_missing_3mf_and_refresh(self):
+        self._set_account_health(
+            cn={
+                "status": "ok",
+                "source": "archive_download",
+                "detail": "账号状态正常。",
+                "updated_at": "2026-06-12T10:20:00+08:00",
+            }
+        )
+
+        class Config:
+            cookies = []
+            proxy = None
+
+        cards = source_health.build_source_health_cards(
+            Config(),
+            [
+                {
+                    "status": "verification_required",
+                    "message": "",
+                    "model_url": "https://makerworld.com.cn/zh/models/123",
+                }
+            ],
+            remote_refresh_state={
+                "recent_items": [
+                    {
+                        "status": "failed",
+                        "message": "页面被 Cloudflare 验证拦截，请更新 cookie（含 cf_clearance）后重试",
+                        "url": "https://makerworld.com.cn/zh/models/456",
+                    }
+                ]
+            },
+        )
+
+        card_map = {item["key"]: item for item in cards}
+        self.assertEqual(card_map["cn"]["state"], "ok")
+        self.assertEqual(card_map["cn"]["status"], "正常")
+        self.assertEqual(card_map["cn"]["tone"], "ok")
+        self.assertEqual(card_map["cn"]["detail"], "账号状态正常。")
+        self.assertEqual(card_map["cn"]["source"], "archive_download")
+        self.assertEqual(card_map["cn"]["updated_at"], "2026-06-12T10:20:00+08:00")
+        self.assertEqual(card_map["cn"]["checks"], [])
+
 class InlineExecutor:
     def __init__(self, *args, **kwargs):
         pass

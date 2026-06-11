@@ -151,6 +151,52 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         self.assertEqual(payload["archive_queue"]["failed_count"], 1)
         self.assertEqual(payload["archive_queue"]["stale_candidates"][0]["id"], "task-1")
 
+    def test_build_runtime_diagnostics_keeps_archive_failures_separate_from_account_health(self):
+        queue = {
+            "active": [],
+            "queued": [],
+            "recent_failures": [
+                {
+                    "id": "task-old",
+                    "status": "failed",
+                    "title": "Old failure",
+                    "updated_at": "2026-06-01T09:00:00+08:00",
+                }
+            ],
+            "running_count": 0,
+            "queued_count": 0,
+            "failed_count": 1,
+        }
+        account_health = {
+            "cn": {
+                "platform": "cn",
+                "status": "ok",
+                "reason": "current_action_succeeded",
+                "source": "archive_download",
+                "detail": "账号状态正常。",
+                "updated_at": "2026-06-12T10:20:00+08:00",
+            },
+            "global": {
+                "platform": "global",
+                "status": "unknown",
+                "reason": "",
+                "source": "system",
+                "detail": "",
+                "updated_at": "",
+            },
+        }
+
+        with patch.object(runtime_diagnostics, "database_status", return_value={"available": False}), \
+                patch.object(runtime_diagnostics.task_state_store, "load_archive_queue", return_value=queue), \
+                patch.object(runtime_diagnostics, "load_account_health", return_value=account_health):
+            payload = runtime_diagnostics.build_runtime_diagnostics()
+
+        self.assertEqual(payload["archive_queue"]["failed_count"], 1)
+        self.assertEqual(payload["archive_queue"]["running_count"], 0)
+        self.assertEqual(payload["account_health"]["cn"]["status"], "ok")
+        self.assertEqual(payload["account_health"]["cn"]["detail"], "账号状态正常。")
+        self.assertEqual(payload["account_health"]["cn"]["source"], "archive_download")
+
     def test_system_diagnostics_route_requires_session_and_returns_payload(self):
         request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session"}))
         with patch.object(system_api.config_api, "_require_session_auth") as require_auth, \
