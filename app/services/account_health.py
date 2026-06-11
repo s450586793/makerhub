@@ -7,6 +7,7 @@ from app.services.state_contracts import ACCOUNT_HEALTH_STATE_KEY
 from app.services.three_mf import normalize_makerworld_source
 
 
+ACCOUNT_HEALTH_PLATFORMS = ("cn", "global")
 PLATFORM_URLS = {
     "cn": "https://makerworld.com.cn",
     "global": "https://makerworld.com",
@@ -54,10 +55,7 @@ def _empty_snapshot(platform: str) -> dict[str, Any]:
 
 def _default_payload() -> dict[str, Any]:
     return {
-        "platforms": {
-            "cn": _empty_snapshot("cn"),
-            "global": _empty_snapshot("global"),
-        }
+        "platforms": {platform: _empty_snapshot(platform) for platform in ACCOUNT_HEALTH_PLATFORMS}
     }
 
 
@@ -68,7 +66,7 @@ def normalize_account_platform(platform: Any = "", url: Any = "") -> str:
     if platform_text in {"cn", "mw_cn", "makerworld_cn"}:
         return "cn"
     normalized = normalize_makerworld_source(source=platform, url=url)
-    return normalized if normalized in PLATFORM_URLS else "cn"
+    return normalized if normalized in ACCOUNT_HEALTH_PLATFORMS else "cn"
 
 
 def normalize_account_health_status(status: Any) -> str:
@@ -84,7 +82,7 @@ def load_account_health() -> dict[str, Any]:
     stored = load_database_json_state(ACCOUNT_HEALTH_STATE_KEY, payload)
     platforms = stored.get("platforms") if isinstance(stored.get("platforms"), dict) else {}
     normalized = _default_payload()
-    for platform in ("cn", "global"):
+    for platform in ACCOUNT_HEALTH_PLATFORMS:
         snapshot = platforms.get(platform) if isinstance(platforms.get(platform), dict) else {}
         normalized["platforms"][platform] = _normalize_snapshot(platform, snapshot)
     return normalized
@@ -93,7 +91,7 @@ def load_account_health() -> dict[str, Any]:
 def save_account_health(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = _default_payload()
     platforms = payload.get("platforms") if isinstance(payload.get("platforms"), dict) else {}
-    for platform in ("cn", "global"):
+    for platform in ACCOUNT_HEALTH_PLATFORMS:
         snapshot = platforms.get(platform) if isinstance(platforms.get(platform), dict) else {}
         normalized["platforms"][platform] = _normalize_snapshot(platform, snapshot)
     return save_database_json_state(ACCOUNT_HEALTH_STATE_KEY, normalized)

@@ -26,6 +26,9 @@ class AccountHealthServiceTest(unittest.TestCase):
         for item in reversed(self.db_patches):
             item.stop()
 
+    def test_account_health_platforms_constant(self):
+        self.assertEqual(account_health.ACCOUNT_HEALTH_PLATFORMS, ("cn", "global"))
+
     def test_load_account_health_returns_default_platforms(self):
         payload = account_health.load_account_health()
 
