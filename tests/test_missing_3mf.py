@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 import zipfile
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -305,6 +306,121 @@ class Missing3mfTest(unittest.TestCase):
 
         self.assertTrue(result["accepted"])
         self.assertEqual(calls[0]["source"], "global")
+
+    def test_run_single_task_marks_account_ok_after_missing_3mf_retry_success(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager.store = SimpleNamespace(
+            load=lambda: SimpleNamespace(cookies=[], proxy=None, three_mf_limits=None)
+        )
+        active_updates = []
+        completed = []
+        replaced_missing = []
+        removed_failures = []
+        manager.task_store = SimpleNamespace(
+            update_missing_3mf_status=lambda **_payload: None,
+            replace_missing_3mf_for_model=lambda model_id, items: replaced_missing.append((model_id, items)),
+            remove_recent_failures_for_model=lambda model_id, url="": removed_failures.append((model_id, url)),
+            update_active_task=lambda task_id, **payload: active_updates.append((task_id, payload)),
+            complete_archive_task=lambda task_id: completed.append(task_id),
+        )
+
+        with patch.object(archive_worker_module, "_select_cookie", return_value="cookie"), \
+                patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
+                patch.object(archive_worker_module, "_is_three_mf_limit_guard_active_for_url", return_value=False), \
+                patch.object(archive_worker_module, "_temporary_proxy_env", side_effect=lambda *_args, **_kwargs: nullcontext()), \
+                patch.object(
+                    archive_worker_module,
+                    "run_archive_model_job",
+                    return_value={
+                        "model_id": "973599",
+                        "base_name": "Demo Model",
+                        "work_dir": "",
+                        "missing_3mf": [],
+                    },
+                ), \
+                patch.object(archive_worker_module, "mark_account_ok") as mark_account_ok_mock, \
+                patch.object(archive_worker_module, "update_account_health") as update_account_health_mock, \
+                patch.object(archive_worker_module, "invalidate_model_detail_cache"), \
+                patch.object(archive_worker_module, "upsert_archive_snapshot_model", return_value=True), \
+                patch.object(archive_worker_module, "invalidate_archive_snapshot"), \
+                patch.object(archive_worker_module, "_log_archive"):
+            manager._run_single_task(
+                "task-1",
+                "https://makerworld.com/zh/models/973599",
+                {"missing_3mf_retry": True, "instance_id": "profile-1"},
+            )
+
+        mark_account_ok_mock.assert_called_once_with(
+            "global",
+            source="missing_3mf_retry",
+            model_url="https://makerworld.com/zh/models/973599",
+            model_id="973599",
+            instance_id="profile-1",
+        )
+        update_account_health_mock.assert_not_called()
+        self.assertEqual(replaced_missing, [("973599", [])])
+        self.assertEqual(
+            removed_failures,
+            [("973599", "https://makerworld.com/zh/models/973599")],
+        )
+        self.assertEqual(completed, ["task-1"])
+        self.assertEqual(active_updates[-1][1]["progress"], 100)
+
+    def test_run_single_task_updates_account_health_for_verification_required_missing_3mf(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager.store = SimpleNamespace(
+            load=lambda: SimpleNamespace(cookies=[], proxy=None, three_mf_limits=None)
+        )
+        manager.task_store = SimpleNamespace(
+            replace_missing_3mf_for_model=lambda *_args, **_kwargs: None,
+            remove_recent_failures_for_model=lambda *_args, **_kwargs: None,
+            update_active_task=lambda *_args, **_kwargs: None,
+            complete_archive_task=lambda *_args, **_kwargs: None,
+        )
+
+        with patch.object(archive_worker_module, "_select_cookie", return_value="cookie"), \
+                patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
+                patch.object(archive_worker_module, "_is_three_mf_limit_guard_active_for_url", return_value=False), \
+                patch.object(archive_worker_module, "_temporary_proxy_env", side_effect=lambda *_args, **_kwargs: nullcontext()), \
+                patch.object(
+                    archive_worker_module,
+                    "run_archive_model_job",
+                    return_value={
+                        "model_id": "1759345",
+                        "base_name": "CN Model",
+                        "work_dir": "",
+                        "missing_3mf": [
+                            {
+                                "id": "profile-9",
+                                "title": "0.2mm",
+                                "downloadState": "verification_required",
+                                "downloadMessage": "MakerWorld 需要验证，前往官网任意下载一个模型。",
+                            }
+                        ],
+                    },
+                ), \
+                patch.object(archive_worker_module, "mark_account_ok") as mark_account_ok_mock, \
+                patch.object(archive_worker_module, "update_account_health") as update_account_health_mock, \
+                patch.object(archive_worker_module, "invalidate_model_detail_cache"), \
+                patch.object(archive_worker_module, "upsert_archive_snapshot_model", return_value=True), \
+                patch.object(archive_worker_module, "invalidate_archive_snapshot"), \
+                patch.object(archive_worker_module, "_log_archive"):
+            manager._run_single_task(
+                "task-2",
+                "https://makerworld.com.cn/zh/models/1759345",
+            )
+
+        mark_account_ok_mock.assert_not_called()
+        update_account_health_mock.assert_called_once_with(
+            "cn",
+            status="verification_required",
+            reason="three_mf_download_failed",
+            source="archive_download",
+            detail="MakerWorld 需要验证，前往官网任意下载一个模型。",
+            model_url="https://makerworld.com.cn/zh/models/1759345",
+            model_id="1759345",
+            instance_id="profile-9",
+        )
 
     def test_cn_instance_api_candidates_prefer_bambulab_api(self):
         candidates = _build_instance_api_candidates(

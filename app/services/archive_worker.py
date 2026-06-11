@@ -19,6 +19,7 @@ from app.services.batch_discovery import (
     normalize_source_url,
     resolve_batch_source_name,
 )
+from app.services.account_health import mark_account_ok, update_account_health
 from app.services.business_logs import append_business_log, append_structured_log
 from app.services.catalog import (
     get_archive_snapshot,
@@ -359,6 +360,20 @@ def _missing_3mf_message_from_result(
             limit_message=_three_mf_limit_message(limit_guard) if download_state == "download_limited" else "",
         )
     return "等待重新下载"
+
+
+def _account_health_failure_from_missing_items(
+    missing_items: list[dict[str, Any]],
+) -> Optional[dict[str, str]]:
+    for item in missing_items:
+        status = str(item.get("status") or "").strip()
+        if status in {"verification_required", "cloudflare", "auth_required", "download_limited"}:
+            return {
+                "status": status,
+                "detail": str(item.get("message") or "").strip(),
+                "instance_id": str(item.get("instance_id") or "").strip(),
+            }
+    return None
 
 
 @contextmanager
@@ -2153,6 +2168,29 @@ class ArchiveTaskManager:
         resolved_model_id = str(result.get("model_id") or "")
         if not profile_metadata_only:
             self.task_store.replace_missing_3mf_for_model(resolved_model_id, missing_items)
+            account_platform = normalize_makerworld_source(meta.get("source"), url)
+            account_model_url = normalize_source_url(url)
+            account_instance_id = str(meta.get("instance_id") or "").strip()
+            classified_failure = _account_health_failure_from_missing_items(missing_items)
+            if classified_failure is not None:
+                update_account_health(
+                    account_platform,
+                    status=classified_failure["status"],
+                    reason="three_mf_download_failed",
+                    source="archive_download",
+                    detail=classified_failure["detail"],
+                    model_url=account_model_url,
+                    model_id=resolved_model_id,
+                    instance_id=classified_failure["instance_id"] or account_instance_id,
+                )
+            elif not missing_items:
+                mark_account_ok(
+                    account_platform,
+                    source="missing_3mf_retry" if missing_3mf_retry else "archive_download",
+                    model_url=account_model_url,
+                    model_id=resolved_model_id,
+                    instance_id=account_instance_id,
+                )
         if limit_guard_state is not None and not profile_metadata_only:
             self._pause_missing_3mf_retry_tasks_for_limit(limit_guard_state)
         self.task_store.remove_recent_failures_for_model(
