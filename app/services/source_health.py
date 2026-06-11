@@ -1008,25 +1008,19 @@ def build_source_health_cards(
     prefer_cached: bool = False,
 ) -> list[dict[str, Any]]:
     platforms = ("cn", "global")
-    missing_overrides = _build_missing_3mf_overrides(missing_3mf_items)
 
     def build_card(platform: str) -> dict[str, Any]:
-        override = missing_overrides.get(platform) or {}
-        override_state = str(override.get("state") or "").strip()
-        needs_verification = override_state in {"verification_required", "cloudflare"}
-        state = override_state if needs_verification else "ok"
-        status = "需要验证" if needs_verification else "正常"
         card = {
             "key": platform,
             "title": SOURCE_HEALTH_LABELS.get(platform, platform),
-            "status": status,
+            "status": "正常",
             "detail": "",
-            "tone": "danger" if needs_verification else "ok",
-            "state": state,
+            "tone": "ok",
+            "state": "ok",
             "checks": [],
         }
         card["url"] = PLATFORM_ORIGINS.get(platform, "")
-        card["action_label"] = "访问主页" if needs_verification else "打开官网"
+        card["action_label"] = "打开官网"
         return card
 
     with ThreadPoolExecutor(max_workers=len(platforms)) as executor:

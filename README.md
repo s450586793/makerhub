@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.19`
+> 当前版本：`v0.9.20`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-11 · v0.9.20
+
+- 首页国内站 / 国际站状态不再读取历史缺失 `3MF` 的验证残留，避免旧 `missing_3mf` 项把当前账号状态误显示为“需要验证”。
+- 缺失 `3MF` 的验证、Cookie、Cloudflare 等失败明细继续保留在任务页处理，首页只保留当前源站入口状态和官网访问入口。
+- 补充源站状态回归测试，覆盖国区、国际站和缺少模型 URL 的历史验证残留都不会影响首页状态。
+
 ### 2026-06-11 · v0.9.19
 
 - 源端刷新公共入口和兼容入口共用同一份 payload 组装，`/api/source-refresh/run` 与旧 `/api/remote-refresh/run` 共用内部触发函数，避免新旧接口 shape 漂移。
@@ -220,14 +226,14 @@ uvicorn app.main:app --reload
 - 日志页降级为用户常用筛选界面，隐藏文件、事件和每页条数等高级控件；完整日志 API 仍保留给排障查询。
 - 文档明确 MakerHub 只外跳 MakerWorld 手动验证，不内嵌验证窗口、不自动点击验证码，也不绕过站点验证。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-11 · v0.9.17
 
 - 升级 FastAPI / Starlette 依赖，修复 Starlette Host header URL 重构校验漏洞（`CVE-2026-48710` / `GHSA-86qp-5c8j-p5mr`）。
 - 依赖审计覆盖 `requirements.txt` 与前端 npm 依赖，确认已无已知漏洞。
 - 补跑路由、认证、首页源站状态和手动验证回退相关测试，确认框架升级后核心 API 行为保持兼容。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-11 · v0.9.16
 
