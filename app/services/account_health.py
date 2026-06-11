@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.database_json_state import load_database_json_state, save_database_json_state
+from app.core.timezone import now_iso as china_now_iso
 from app.services.state_contracts import ACCOUNT_HEALTH_STATE_KEY
 from app.services.three_mf import normalize_makerworld_source
 
@@ -34,10 +35,10 @@ ACCOUNT_HEALTH_STATUS_ALIASES = {
 ACCOUNT_HEALTH_CARD_META = {
     "ok": {"state": "ok", "status": "正常", "tone": "ok"},
     "verification_required": {"state": "verification_required", "status": "需要验证", "tone": "danger"},
-    "daily_limit": {"state": "daily_limit", "status": "达到限额", "tone": "warning"},
-    "cookie_invalid": {"state": "cookie_invalid", "status": "Cookie 失效", "tone": "danger"},
-    "network_error": {"state": "network_error", "status": "连接异常", "tone": "danger"},
-    "unknown": {"state": "unknown", "status": "未知", "tone": "neutral"},
+    "daily_limit": {"state": "daily_limit", "status": "到达每日上限", "tone": "warning"},
+    "cookie_invalid": {"state": "cookie_invalid", "status": "Cookie 异常", "tone": "danger"},
+    "network_error": {"state": "network_error", "status": "网络异常", "tone": "warning"},
+    "unknown": {"state": "unknown", "status": "未检测", "tone": "neutral"},
 }
 
 
@@ -49,14 +50,14 @@ def _empty_snapshot(platform: str) -> dict[str, Any]:
         "source": "system",
         "detail": "",
         "model_url": "",
+        "model_id": "",
+        "instance_id": "",
         "updated_at": "",
     }
 
 
 def _default_payload() -> dict[str, Any]:
-    return {
-        "platforms": {platform: _empty_snapshot(platform) for platform in ACCOUNT_HEALTH_PLATFORMS}
-    }
+    return {platform: _empty_snapshot(platform) for platform in ACCOUNT_HEALTH_PLATFORMS}
 
 
 def normalize_account_platform(platform: Any = "", url: Any = "") -> str:
@@ -80,27 +81,25 @@ def normalize_account_health_status(status: Any) -> str:
 def load_account_health() -> dict[str, Any]:
     payload = _default_payload()
     stored = load_database_json_state(ACCOUNT_HEALTH_STATE_KEY, payload)
-    platforms = stored.get("platforms") if isinstance(stored.get("platforms"), dict) else {}
     normalized = _default_payload()
     for platform in ACCOUNT_HEALTH_PLATFORMS:
-        snapshot = platforms.get(platform) if isinstance(platforms.get(platform), dict) else {}
-        normalized["platforms"][platform] = _normalize_snapshot(platform, snapshot)
+        snapshot = stored.get(platform) if isinstance(stored.get(platform), dict) else {}
+        normalized[platform] = _normalize_snapshot(platform, snapshot)
     return normalized
 
 
 def save_account_health(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = _default_payload()
-    platforms = payload.get("platforms") if isinstance(payload.get("platforms"), dict) else {}
     for platform in ACCOUNT_HEALTH_PLATFORMS:
-        snapshot = platforms.get(platform) if isinstance(platforms.get(platform), dict) else {}
-        normalized["platforms"][platform] = _normalize_snapshot(platform, snapshot)
+        snapshot = payload.get(platform) if isinstance(payload.get(platform), dict) else {}
+        normalized[platform] = _normalize_snapshot(platform, snapshot)
     return save_database_json_state(ACCOUNT_HEALTH_STATE_KEY, normalized)
 
 
 def get_account_health(platform: Any) -> dict[str, Any]:
     normalized_platform = normalize_account_platform(platform)
     payload = load_account_health()
-    return dict(payload["platforms"].get(normalized_platform) or _empty_snapshot(normalized_platform))
+    return dict(payload.get(normalized_platform) or _empty_snapshot(normalized_platform))
 
 
 def update_account_health(
@@ -111,11 +110,13 @@ def update_account_health(
     source: Any = "system",
     detail: Any = "",
     model_url: Any = "",
+    model_id: Any = "",
+    instance_id: Any = "",
     updated_at: Any = "",
 ) -> dict[str, Any]:
     normalized_platform = normalize_account_platform(platform, url=model_url)
     payload = load_account_health()
-    payload["platforms"][normalized_platform] = _normalize_snapshot(
+    payload[normalized_platform] = _normalize_snapshot(
         normalized_platform,
         {
             "platform": normalized_platform,
@@ -124,10 +125,13 @@ def update_account_health(
             "source": source,
             "detail": detail,
             "model_url": model_url,
+            "model_id": model_id,
+            "instance_id": instance_id,
             "updated_at": updated_at,
         },
     )
-    return save_account_health(payload)
+    save_account_health(payload)
+    return dict(payload[normalized_platform])
 
 
 def mark_account_ok(
@@ -136,6 +140,8 @@ def mark_account_ok(
     source: Any = "system",
     detail: Any = "",
     model_url: Any = "",
+    model_id: Any = "",
+    instance_id: Any = "",
     updated_at: Any = "",
 ) -> dict[str, Any]:
     return update_account_health(
@@ -145,6 +151,8 @@ def mark_account_ok(
         source=source,
         detail=detail,
         model_url=model_url,
+        model_id=model_id,
+        instance_id=instance_id,
         updated_at=updated_at,
     )
 
@@ -178,5 +186,7 @@ def _normalize_snapshot(platform: str, snapshot: dict[str, Any] | None) -> dict[
     current["source"] = str(current.get("source") or "system")
     current["detail"] = str(current.get("detail") or "")
     current["model_url"] = str(current.get("model_url") or "")
-    current["updated_at"] = str(current.get("updated_at") or "")
+    current["model_id"] = str(current.get("model_id") or "")
+    current["instance_id"] = str(current.get("instance_id") or "")
+    current["updated_at"] = str(current.get("updated_at") or china_now_iso())
     return current
