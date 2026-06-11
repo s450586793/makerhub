@@ -13,6 +13,7 @@ import requests
 from app.core.database_json_state import load_database_json_state, save_database_json_state
 from app.core.settings import STATE_DIR, ensure_app_dirs
 from app.core.timezone import now as china_now, parse_datetime
+from app.services.account_health import load_account_health, snapshot_to_source_card
 from app.services.cookie_utils import extract_auth_token, sanitize_cookie_header
 from app.services.proxy_policy import effective_proxy_cache_state, proxy_mapping
 from app.services.scrapling_fetch import fetch_text as scrapling_fetch_text, scrapling_only
@@ -1008,20 +1009,10 @@ def build_source_health_cards(
     prefer_cached: bool = False,
 ) -> list[dict[str, Any]]:
     platforms = ("cn", "global")
+    snapshots = load_account_health()
 
     def build_card(platform: str) -> dict[str, Any]:
-        card = {
-            "key": platform,
-            "title": SOURCE_HEALTH_LABELS.get(platform, platform),
-            "status": "正常",
-            "detail": "",
-            "tone": "ok",
-            "state": "ok",
-            "checks": [],
-        }
-        card["url"] = PLATFORM_ORIGINS.get(platform, "")
-        card["action_label"] = "打开官网"
-        return card
+        return snapshot_to_source_card(platform, snapshots.get(platform))
 
     with ThreadPoolExecutor(max_workers=len(platforms)) as executor:
         results = list(executor.map(build_card, platforms))
