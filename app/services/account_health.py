@@ -129,6 +129,7 @@ def update_account_health(
             "instance_id": instance_id,
             "updated_at": updated_at,
         },
+        fill_updated_at=True,
     )
     save_account_health(payload)
     return dict(payload[normalized_platform])
@@ -177,7 +178,12 @@ def snapshot_to_source_card(platform: Any, snapshot: dict[str, Any] | None = Non
     }
 
 
-def _normalize_snapshot(platform: str, snapshot: dict[str, Any] | None) -> dict[str, Any]:
+def _normalize_snapshot(
+    platform: str,
+    snapshot: dict[str, Any] | None,
+    *,
+    fill_updated_at: bool = False,
+) -> dict[str, Any]:
     current = _empty_snapshot(platform)
     current.update(snapshot or {})
     current["platform"] = platform
@@ -188,5 +194,5 @@ def _normalize_snapshot(platform: str, snapshot: dict[str, Any] | None) -> dict[
     current["model_url"] = str(current.get("model_url") or "")
     current["model_id"] = str(current.get("model_id") or "")
     current["instance_id"] = str(current.get("instance_id") or "")
-    current["updated_at"] = str(current.get("updated_at") or china_now_iso())
+    current["updated_at"] = str(current.get("updated_at") or (china_now_iso() if fill_updated_at else ""))
     return current

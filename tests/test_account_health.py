@@ -37,10 +37,12 @@ class AccountHealthServiceTest(unittest.TestCase):
         self.assertEqual(payload["cn"]["source"], "system")
         self.assertEqual(payload["cn"]["model_id"], "")
         self.assertEqual(payload["cn"]["instance_id"], "")
+        self.assertEqual(payload["cn"]["updated_at"], "")
         self.assertEqual(payload["global"]["status"], "unknown")
         self.assertEqual(payload["global"]["source"], "system")
         self.assertEqual(payload["global"]["model_id"], "")
         self.assertEqual(payload["global"]["instance_id"], "")
+        self.assertEqual(payload["global"]["updated_at"], "")
 
     def test_update_account_health_normalizes_platform_and_status_alias(self):
         snapshot = account_health.update_account_health(
