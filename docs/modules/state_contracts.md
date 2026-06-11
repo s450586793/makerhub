@@ -38,6 +38,7 @@ This document records MakerHub's Postgres-backed JSON state keys, common fields,
 | `model_flags` | `TaskStateStore` | model APIs, source deletion checks | model pages, catalog | `model_flags` |
 | `three_mf_limit_guard` | source health/archive worker | 3MF quota logic | dashboard, tasks, archive worker | `three_mf_limit_guard` |
 | `three_mf_daily_quota` | 3MF quota service | archive worker | archive worker, settings | `three_mf_daily_quota` |
+| `account_health` | `app.services.account_health` | archive download, missing 3MF retry, diagnostic probe | dashboard source cards, runtime diagnostics | current account/source usability only; never derived from historical `missing_3mf` or raw logs |
 
 ## Status Sets
 
@@ -69,6 +70,8 @@ The dashboard listens to these state scopes:
 State events should trigger relevant payload refreshes, not broad full-page refreshes. A page that only shows source refresh status should not refresh source-library snapshots because an archive queue event arrived.
 
 `remote_refresh_state` is the legacy/core batch state for scheduling, resume manifests, batch buffers, and final summaries. `source_refresh_queue` and `source_refresh_runs` are the newer source-refresh projection used by dashboard and source-refresh pages to avoid representing source refresh as archive queue work. Keep both until the refresh engine is fully split.
+
+`account_health` 是首页源站状态唯一来源；历史 `missing_3mf`、任务失败、诊断日志只是排障证据，不是当前首页状态。
 
 ## Write Frequency Rules
 

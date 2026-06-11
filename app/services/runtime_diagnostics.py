@@ -6,7 +6,38 @@ from typing import Any
 from app.api.dependencies import task_state_store
 from app.core.database import database_connection, database_status
 from app.core.timezone import now_iso as china_now_iso
+from app.services.account_health import load_account_health
 from app.services.task_runtime import is_lease_expired, normalize_runtime_status
+
+
+def _safe_account_health() -> dict[str, Any]:
+    try:
+        return load_account_health()
+    except Exception:
+        return {
+            "cn": {
+                "platform": "cn",
+                "status": "unknown",
+                "reason": "",
+                "source": "system",
+                "detail": "",
+                "model_url": "",
+                "model_id": "",
+                "instance_id": "",
+                "updated_at": "",
+            },
+            "global": {
+                "platform": "global",
+                "status": "unknown",
+                "reason": "",
+                "source": "system",
+                "detail": "",
+                "model_url": "",
+                "model_id": "",
+                "instance_id": "",
+                "updated_at": "",
+            },
+        }
 
 
 def _iso(value: Any) -> str:
@@ -171,6 +202,7 @@ def build_runtime_diagnostics() -> dict[str, Any]:
     payload: dict[str, Any] = {
         "generated_at": china_now_iso(),
         "database": status,
+        "account_health": _safe_account_health(),
         "tables": [],
         "state_events_by_scope": [],
         "recent_logs": [],

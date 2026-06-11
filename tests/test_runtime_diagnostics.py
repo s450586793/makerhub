@@ -88,6 +88,41 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         self.assertEqual(payload["tables"], [])
         self.assertEqual(payload["state_events_by_scope"], [])
 
+    def test_build_runtime_diagnostics_always_includes_account_health_snapshot(self):
+        account_health = {
+            "cn": {
+                "platform": "cn",
+                "status": "ok",
+                "reason": "current_action_succeeded",
+                "source": "archive_download",
+                "updated_at": "2026-06-11T10:00:00+08:00",
+            },
+            "global": {
+                "platform": "global",
+                "status": "verification_required",
+                "reason": "download_probe",
+                "source": "diagnostic_probe",
+                "updated_at": "2026-06-11T10:01:00+08:00",
+            },
+        }
+
+        with patch.object(runtime_diagnostics, "database_status", return_value={"available": False, "error": "missing"}), \
+                patch.object(runtime_diagnostics, "load_account_health", return_value=account_health):
+            payload = runtime_diagnostics.build_runtime_diagnostics()
+
+        self.assertEqual(payload["account_health"]["cn"]["status"], "ok")
+        self.assertEqual(payload["account_health"]["cn"]["reason"], "current_action_succeeded")
+        self.assertEqual(payload["account_health"]["cn"]["source"], "archive_download")
+        self.assertEqual(payload["account_health"]["cn"]["updated_at"], "2026-06-11T10:00:00+08:00")
+        self.assertEqual(payload["account_health"]["global"]["status"], "verification_required")
+        self.assertEqual(payload["account_health"]["global"]["reason"], "download_probe")
+        self.assertEqual(payload["account_health"]["global"]["source"], "diagnostic_probe")
+        self.assertEqual(payload["account_health"]["global"]["updated_at"], "2026-06-11T10:01:00+08:00")
+        self.assertNotIn("missing_3mf", payload["account_health"]["cn"])
+        self.assertNotIn("missing_3mf", payload["account_health"]["global"])
+        self.assertNotIn("model_url", payload["account_health"]["cn"])
+        self.assertNotIn("message", payload["account_health"]["global"])
+
     def test_build_runtime_diagnostics_includes_archive_queue_summary(self):
         queue = {
             "active": [
