@@ -13,6 +13,7 @@ SOURCE_REFRESH_RUNS_STATE_KEY = "source_refresh_runs"
 MODEL_FLAGS_STATE_KEY = "model_flags"
 THREE_MF_LIMIT_GUARD_STATE_KEY = "three_mf_limit_guard"
 THREE_MF_DAILY_QUOTA_STATE_KEY = "three_mf_daily_quota"
+ACCOUNT_HEALTH_STATE_KEY = "account_health"
 DASHBOARD_STATE_KEY = "dashboard"
 
 ARCHIVE_TASK_STATUSES = frozenset(
