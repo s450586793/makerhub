@@ -9,7 +9,12 @@ from fastapi import APIRouter, HTTPException, Request
 from app.api.config import _now_iso, _require_session_auth
 from app.api.dependencies import crawler, store, subscription_manager, task_state_store
 from app.core.timezone import now_iso as china_now_iso
-from app.schemas.models import ArchiveRequest, Missing3mfCancelRequest, Missing3mfRetryRequest
+from app.schemas.models import (
+    ArchiveRequest,
+    Missing3mfCancelRequest,
+    Missing3mfRetryRequest,
+    Missing3mfVerificationRetryRequest,
+)
 from app.services.archive_model_index import archive_model_index_status
 from app.services.archive_profile_backfill import read_profile_backfill_status, write_profile_backfill_status
 from app.services.archive_repair import read_archive_repair_status, run_archive_repair_job, write_archive_repair_status
@@ -130,6 +135,23 @@ async def retry_all_missing_3mf(request: Request):
         accepted_count=result.get("accepted_count"),
         queued_count=result.get("queued_count"),
         failed_count=result.get("failed_count"),
+    )
+    return result
+
+
+@router.post("/tasks/missing-3mf/verification-verified")
+async def retry_verified_missing_3mf(payload: Missing3mfVerificationRetryRequest, request: Request):
+    _require_session_auth(request)
+    result = await run_task_api(crawler.manager.retry_verification_missing_3mf, platform=payload.platform)
+    append_business_log(
+        "missing_3mf",
+        "verification_verified_retry_requested",
+        result.get("message") or "验证完成后已请求重试同平台验证类 3MF 任务。",
+        platform=payload.platform,
+        accepted_count=result.get("accepted_count"),
+        queued_count=result.get("queued_count"),
+        failed_count=result.get("failed_count"),
+        total_count=result.get("total_count"),
     )
     return result
 

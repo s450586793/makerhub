@@ -273,6 +273,10 @@ class Missing3mfRetryRequest(BaseModel):
     instance_id: str = ""
 
 
+class Missing3mfVerificationRetryRequest(BaseModel):
+    platform: Literal["cn", "global"] = "cn"
+
+
 class Missing3mfCancelRequest(BaseModel):
     model_id: str = ""
     model_url: str = ""

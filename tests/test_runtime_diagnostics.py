@@ -236,6 +236,33 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertEqual(payload["summary"]["requeued"], 1)
 
+    def test_verified_missing_3mf_route_retries_same_platform_verification_items(self):
+        request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
+        retry_payload = {
+            "accepted": True,
+            "accepted_count": 2,
+            "queued_count": 1,
+            "failed_count": 0,
+            "message": "验证后重试完成。",
+        }
+
+        with patch.object(tasks_routes, "_require_session_auth") as require_auth, \
+                patch.object(tasks_routes, "run_task_api", side_effect=lambda func, **kwargs: func(**kwargs)) as run_task_api, \
+                patch.object(tasks_routes.crawler.manager, "retry_verification_missing_3mf", return_value=retry_payload) as retry_mock, \
+                patch.object(tasks_routes, "append_business_log") as log_mock:
+            payload = asyncio.run(
+                tasks_routes.retry_verified_missing_3mf(
+                    tasks_routes.Missing3mfVerificationRetryRequest(platform="global"),
+                    request,
+                )
+            )
+
+        require_auth.assert_called_once_with(request)
+        retry_mock.assert_called_once_with(platform="global")
+        run_task_api.assert_called_once()
+        self.assertEqual(payload, retry_payload)
+        log_mock.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

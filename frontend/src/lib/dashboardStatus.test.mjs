@@ -72,6 +72,87 @@ test("verification status card opens the platform homepage", () => {
       label: "访问主页",
       href: "https://makerworld.com",
     },
+    {
+      kind: "api",
+      label: "已验证",
+      endpoint: "/api/tasks/missing-3mf/verification-verified",
+      method: "POST",
+      body: { platform: "global" },
+    },
+  ]);
+});
+
+test("cn verification status card submits verified retry for cn platform", () => {
+  const card = {
+    key: "cn",
+    action_label: "打开官网",
+    url: "https://makerworld.com.cn",
+    state: "verification_required",
+  };
+
+  assert.deepEqual(dashboardStatusActions(card), [
+    {
+      kind: "external",
+      label: "打开官网",
+      href: "https://makerworld.com.cn",
+    },
+    {
+      kind: "api",
+      label: "已验证",
+      endpoint: "/api/tasks/missing-3mf/verification-verified",
+      method: "POST",
+      body: { platform: "cn" },
+    },
+  ]);
+});
+
+test("verification retry action tolerates localized source status text", () => {
+  const card = {
+    key: "cn",
+    action_label: "打开官网",
+    url: "https://makerworld.com.cn",
+    status: "需要验证",
+  };
+
+  assert.deepEqual(dashboardStatusActions(card), [
+    {
+      kind: "external",
+      label: "打开官网",
+      href: "https://makerworld.com.cn",
+    },
+    {
+      kind: "api",
+      label: "已验证",
+      endpoint: "/api/tasks/missing-3mf/verification-verified",
+      method: "POST",
+      body: { platform: "cn" },
+    },
+  ]);
+});
+
+test("verification retry action covers cookie cards that mention verification challenge", () => {
+  const card = {
+    key: "global",
+    action_label: "打开官网",
+    url: "https://makerworld.com",
+    state: "cookie_invalid",
+    status: "Cookie 异常",
+    detail: "国际区下载 3MF 需要有效登录态；如果最近出现验证页，请更新 global Cookie / token，必要时补充 cf_clearance。",
+  };
+
+  assert.deepEqual(dashboardStatusActions(card), [
+    {
+      kind: "external",
+      label: "打开官网",
+      href: "https://makerworld.com",
+    },
+    {
+      kind: "api",
+      label: "已验证",
+      endpoint: "/api/tasks/missing-3mf/verification-verified",
+      method: "POST",
+      body: { platform: "global" },
+    },
   ]);
 });
 

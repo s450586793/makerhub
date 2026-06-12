@@ -20,6 +20,31 @@ const BLOCKED_REASON_LABELS = {
   worker_stopped: "Worker 未运行",
 };
 
+const SOURCE_VERIFICATION_STATES = new Set(["verification_required", "cloudflare", "auth_required"]);
+const SOURCE_VERIFICATION_LABELS = new Set(["需要验证", "验证页", "cloudflare"]);
+const SOURCE_VERIFICATION_TEXT_MARKERS = ["需要验证", "验证页", "cf_clearance", "cloudflare"];
+
+function sourceVerificationRetryPlatform(item = {}) {
+  const key = String(item?.key || item?.platform || "").trim().toLowerCase();
+  if (!["cn", "global"].includes(key)) {
+    return "";
+  }
+  const directState = String(item?.state || item?.status || "").trim().toLowerCase();
+  const directLabel = [
+    item?.status,
+    item?.detail,
+    item?.message,
+  ].map((value) => String(value || "").trim().toLowerCase()).join(" ");
+  const checkStates = Array.isArray(item?.checks)
+    ? item.checks.map((check) => String(check?.state || check?.status || "").trim().toLowerCase())
+    : [];
+  const states = [directState, ...checkStates].filter(Boolean);
+  const isVerificationState = states.some((state) => SOURCE_VERIFICATION_STATES.has(state));
+  const isVerificationText = [...SOURCE_VERIFICATION_LABELS].some((label) => directLabel.includes(label.toLowerCase()))
+    || SOURCE_VERIFICATION_TEXT_MARKERS.some((marker) => directLabel.includes(marker.toLowerCase()));
+  return isVerificationState || isVerificationText ? key : "";
+}
+
 export function dashboardStatusActions(item = {}) {
   const actions = [];
   if (item?.route && item?.action_label) {
@@ -34,6 +59,16 @@ export function dashboardStatusActions(item = {}) {
       kind: "external",
       label: item.action_label,
       href: item.url,
+    });
+  }
+  const retryPlatform = sourceVerificationRetryPlatform(item);
+  if (retryPlatform) {
+    actions.push({
+      kind: "api",
+      label: "已验证",
+      endpoint: "/api/tasks/missing-3mf/verification-verified",
+      method: "POST",
+      body: { platform: retryPlatform },
     });
   }
   return actions;
