@@ -339,6 +339,7 @@ class SourceRefreshTaskManager(RemoteRefreshManager):
     def _run_batch(self, config, **kwargs: Any) -> None:
         if not kwargs.get("resume_active_run"):
             candidates, stats = self._pick_candidates()
+            candidates, stats = self._limit_candidates(candidates, stats)
             run_id = self._current_source_run_id or _source_refresh_run_id()
             self._current_source_run_id = run_id
             active_run = {
@@ -369,4 +370,26 @@ class SourceRefreshTaskManager(RemoteRefreshManager):
             else:
                 self._publish_source_run_completed_from_state(run_id=run_id)
             return
+        resume_active_run = kwargs.get("resume_active_run") if isinstance(kwargs.get("resume_active_run"), dict) else {}
+        run_id = str(resume_active_run.get("batch_id") or resume_active_run.get("run_id") or self._current_source_run_id or _source_refresh_run_id())
+        self._current_source_run_id = run_id
+        self.task_store.patch_source_refresh_runs(
+            active_run=self._source_run_payload(
+                run_id=run_id,
+                status="resuming",
+                manual=bool(resume_active_run.get("manual")),
+                started_at=str(resume_active_run.get("started_at") or ""),
+                candidate_total=int(resume_active_run.get("candidate_total") or 0),
+                completed_total=int(resume_active_run.get("completed_total") or 0),
+                manifest_path=resume_active_run.get("manifest_path") or "",
+                result_path=resume_active_run.get("result_path") or "",
+                message="源端刷新恢复中。",
+            ),
+            last_attempt_at=china_now_iso(),
+            last_defer_reason="",
+        )
         super()._run_batch(config, **kwargs)
+        state = self.task_store.load_remote_refresh_state()
+        active_run = state.get("active_run") if isinstance(state.get("active_run"), dict) else {}
+        if str(active_run.get("status") or "") == "completed":
+            self._publish_source_run_completed_from_state(run_id=run_id)

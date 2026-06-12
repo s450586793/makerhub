@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.21`
+> 当前版本：`v0.9.22`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-12 · v0.9.22
+
+- 源端刷新改为小批次执行，默认每轮最多处理 200 个模型，并在仍有剩余模型时 60 秒后续跑，避免一次处理数千模型导致长期卡在运行中且没有完成记录。
+- 旧 `remote_refresh_state` 未完成批次恢复时同步投影到 `source_refresh_runs`，源端刷新页可以看到恢复中和完成后的运行记录。
+- 恢复旧批次时同样套用批次上限，线上已有的大批次不会再一次性恢复全部剩余模型；补充新批次、旧批次恢复和运行记录投影回归测试。
+
 ### 2026-06-12 · v0.9.21
 
 - 新增当前账号健康快照状态，首页国内站 / 国际站只读取当前快照，不再被历史缺失 `3MF`、源端刷新旧失败、归档旧失败或日志残留污染。
@@ -218,15 +224,15 @@ uvicorn app.main:app --reload
 - 缺失 `3MF` 的验证、Cookie、Cloudflare 等失败明细继续保留在任务页处理，首页只保留当前源站入口状态和官网访问入口。
 - 补充源站状态回归测试，覆盖国区、国际站和缺少模型 URL 的历史验证残留都不会影响首页状态。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-11 · v0.9.19
 
 - 源端刷新公共入口和兼容入口共用同一份 payload 组装，`/api/source-refresh/run` 与旧 `/api/remote-refresh/run` 共用内部触发函数，避免新旧接口 shape 漂移。
 - 首页源端刷新卡片的运行统计、状态标签和阻塞文案抽到共享前端 helper，优先读取 `source_refresh` 运行态，再回退旧 `remote_refresh_state`。
 - 源端刷新核心批次引擎支持预选候选输入，`SourceRefreshTaskManager` 不再通过临时替换 `_pick_candidates()` 注入候选，降低批次运行态和候选选择的耦合。
 - 架构文档、模块索引和运行状态契约同步补齐 `source_refresh_queue` / `source_refresh_runs`，明确 `remote_refresh_state` 仍是核心批次和恢复状态。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-11 · v0.9.18
 

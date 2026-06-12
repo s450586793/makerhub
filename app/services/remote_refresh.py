@@ -60,6 +60,8 @@ REMOTE_REFRESH_POLL_SECONDS = 20
 DEFAULT_REMOTE_REFRESH_CRON = "0 0 * * *"
 DEFAULT_REMOTE_REFRESH_MODEL_WORKERS = 2
 MAX_REMOTE_REFRESH_MODEL_WORKERS = 4
+DEFAULT_REMOTE_REFRESH_BATCH_LIMIT = 200
+MAX_REMOTE_REFRESH_BATCH_LIMIT = 5000
 VOLATILE_ASSET_QUERY_KEYS = {
     "auth_key",
     "authkey",
@@ -114,6 +116,14 @@ def _remote_refresh_model_workers(config: Any = None) -> int:
     return max(1, min(value, MAX_REMOTE_REFRESH_MODEL_WORKERS))
 
 
+def _remote_refresh_batch_limit() -> int:
+    try:
+        value = int(os.environ.get("MAKERHUB_REMOTE_REFRESH_BATCH_LIMIT") or DEFAULT_REMOTE_REFRESH_BATCH_LIMIT)
+    except (TypeError, ValueError):
+        value = DEFAULT_REMOTE_REFRESH_BATCH_LIMIT
+    return max(1, min(value, MAX_REMOTE_REFRESH_BATCH_LIMIT))
+
+
 def _now() -> datetime:
     return china_now()
 
@@ -159,6 +169,12 @@ def _validate_cron(value: str) -> str:
 def _next_run_at(cron_expr: str, base: Optional[datetime] = None) -> str:
     normalized = _validate_cron(cron_expr)
     return ensure_timezone(croniter(normalized, base or _now()).get_next(datetime)).isoformat()
+
+
+def _next_run_after_batch(normalized_cron: str, *, remaining_total: int = 0) -> str:
+    if int(remaining_total or 0) > 0:
+        return china_from_timestamp(_now().timestamp() + REMOTE_REFRESH_BATCH_RETRY_SECONDS).isoformat()
+    return _next_run_at(normalized_cron)
 
 
 def _append_remote_refresh_log(event: str, **payload: Any) -> None:
@@ -1468,7 +1484,7 @@ class RemoteRefreshManager:
             running=False,
             current_item={},
             current_items=[],
-            next_run_at=_next_run_at(normalized_cron),
+            next_run_at=_next_run_after_batch(normalized_cron, remaining_total=remaining_total),
             scheduled_cron=normalized_cron,
             last_success_at=finished_at if succeeded else str(previous_state.get("last_success_at") or ""),
             last_error_at=finished_at if failed else str(previous_state.get("last_error_at") or ""),
@@ -1548,7 +1564,7 @@ class RemoteRefreshManager:
             return True
         stats = dict(manifest.payload.get("stats") if isinstance(manifest.payload.get("stats"), dict) else {})
         stats["eligible_total"] = int(stats.get("eligible_total") or len(candidates))
-        stats["selected_total"] = len(remaining)
+        remaining, stats = self._limit_candidates(remaining, stats)
         stats["remaining_total"] = max(stats["eligible_total"] - len(records) - len(remaining), 0)
         self._run_batch(
             config,
@@ -1870,6 +1886,16 @@ class RemoteRefreshManager:
                 return "local_organizer_busy"
         return ""
 
+    def _limit_candidates(self, candidates: list[dict[str, Any]], stats: dict[str, int]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+        batch_limit = _remote_refresh_batch_limit()
+        selected = list(candidates[:batch_limit])
+        limited_stats = dict(stats)
+        eligible_total = int(limited_stats.get("eligible_total") or len(candidates))
+        limited_stats["eligible_total"] = eligible_total
+        limited_stats["selected_total"] = len(selected)
+        limited_stats["remaining_total"] = max(eligible_total - len(selected), 0)
+        return selected, limited_stats
+
     def _pick_candidates(self) -> tuple[list[dict[str, Any]], dict[str, int]]:
         snapshot = get_archive_snapshot()
         models = list(snapshot.get("models") or [])
@@ -1899,11 +1925,8 @@ class RemoteRefreshManager:
             eligible.append(item)
 
         eligible.sort(key=_refresh_priority)
-        selected = list(eligible)
         stats["eligible_total"] = len(eligible)
-        stats["selected_total"] = len(selected)
-        stats["remaining_total"] = max(len(eligible) - len(selected), 0)
-        return selected, stats
+        return self._limit_candidates(eligible, stats)
 
     def _run_batch(
         self,
@@ -2174,7 +2197,7 @@ class RemoteRefreshManager:
                 status="idle" if failed == 0 else "error",
                 running=False,
                 current_item={},
-                next_run_at=_next_run_at(normalized_cron),
+                next_run_at=_next_run_after_batch(normalized_cron, remaining_total=remaining_total),
                 scheduled_cron=normalized_cron,
                 last_success_at=finished_at if succeeded else str(previous_state.get("last_success_at") or ""),
                 last_error_at=finished_at if failed else str(previous_state.get("last_error_at") or ""),

@@ -131,6 +131,236 @@ class SourceRefreshTaskManagerTest(unittest.TestCase):
         self.assertEqual(source_runs["last_completed_run"]["completed_total"], 2)
         self.assertEqual(source_runs["last_completed_run"]["succeeded_total"], 2)
 
+    def test_run_batch_limits_new_source_refresh_candidate_batch(self):
+        original_workers = remote_refresh._remote_refresh_model_workers
+        original_limit_env = remote_refresh.os.environ.get("MAKERHUB_REMOTE_REFRESH_BATCH_LIMIT")
+        original_now = remote_refresh._now
+        remote_refresh._remote_refresh_model_workers = lambda _config=None: 1
+        remote_refresh.os.environ["MAKERHUB_REMOTE_REFRESH_BATCH_LIMIT"] = "2"
+        remote_refresh._now = lambda: remote_refresh.ensure_timezone(remote_refresh.datetime.fromisoformat("2026-06-12T10:00:00+08:00"))
+        config = self.store.load()
+        config.remote_refresh.cron = "0 0 * * *"
+        items = [
+            {
+                "model_dir": f"m{index}",
+                "title": f"模型 {index}",
+                "origin_url": f"https://makerworld.com.cn/model/{index}",
+                "meta_path": str(self.temp_path / f"m{index}" / "meta.json"),
+            }
+            for index in range(1, 6)
+        ]
+        self.manager._pick_candidates = lambda: (
+            items,
+            {
+                "eligible_total": 5,
+                "selected_total": 5,
+                "remaining_total": 0,
+                "missing_cookie": 0,
+                "local_or_invalid": 0,
+            },
+        )
+        refreshed = []
+
+        def fake_refresh_one(item, *, index, total, config):
+            refreshed.append(item["model_dir"])
+            return {
+                "ok": True,
+                "metrics": {"model_dir": item["model_dir"], "title": item["title"], "total_duration_ms": 10},
+                "record": remote_refresh._remote_refresh_result_record(
+                    model_dir=item["model_dir"],
+                    title=item["title"],
+                    url=item["origin_url"],
+                    status="success",
+                    message="完成",
+                    metrics={"total_duration_ms": 10},
+                    change_labels=["已检查，无远端变化"],
+                ),
+            }
+
+        self.manager._refresh_one = fake_refresh_one
+        try:
+            self.manager._run_batch(config)
+        finally:
+            remote_refresh._remote_refresh_model_workers = original_workers
+            remote_refresh._now = original_now
+            if original_limit_env is None:
+                remote_refresh.os.environ.pop("MAKERHUB_REMOTE_REFRESH_BATCH_LIMIT", None)
+            else:
+                remote_refresh.os.environ["MAKERHUB_REMOTE_REFRESH_BATCH_LIMIT"] = original_limit_env
+
+        state = self.task_store.load_remote_refresh_state()
+        source_runs = self.task_store.load_source_refresh_runs()
+        self.assertEqual(refreshed, ["m1", "m2"])
+        self.assertEqual(state["last_batch_total"], 2)
+        self.assertEqual(state["last_eligible_total"], 5)
+        self.assertEqual(state["last_remaining_total"], 3)
+        self.assertEqual(state["next_run_at"], "2026-06-12T10:01:00+08:00")
+        self.assertEqual(source_runs["last_completed_run"]["candidate_total"], 2)
+
+    def test_resume_active_run_updates_source_refresh_run_projection(self):
+        original_batch_dir = remote_refresh.REMOTE_REFRESH_BATCH_DIR
+        original_workers = remote_refresh._remote_refresh_model_workers
+        remote_refresh.REMOTE_REFRESH_BATCH_DIR = self.temp_path / "remote_refresh_batches"
+        remote_refresh._remote_refresh_model_workers = lambda _config=None: 1
+        batch_dir = remote_refresh.REMOTE_REFRESH_BATCH_DIR
+        batch_dir.mkdir(parents=True, exist_ok=True)
+        manifest = remote_refresh._RemoteRefreshBatchManifest.create(
+            batch_id="resume-source-batch",
+            candidates=[
+                {"model_dir": "m1", "title": "模型 1", "origin_url": "https://makerworld.com.cn/model/1", "meta_path": str(self.temp_path / "m1" / "meta.json")},
+                {"model_dir": "m2", "title": "模型 2", "origin_url": "https://makerworld.com.cn/model/2", "meta_path": str(self.temp_path / "m2" / "meta.json")},
+            ],
+            stats={"eligible_total": 2, "selected_total": 2, "remaining_total": 0},
+            cron="0 0 * * *",
+            manual=False,
+            directory=batch_dir,
+        )
+        buffer = remote_refresh._RemoteRefreshBatchBuffer(batch_id="resume-source-batch", directory=batch_dir)
+        buffer.append(remote_refresh._remote_refresh_result_record(
+            model_dir="m1",
+            title="模型 1",
+            url="https://makerworld.com.cn/model/1",
+            status="success",
+            message="已完成",
+            metrics={"comments": 1},
+            change_labels=["已检查，无远端变化"],
+        ))
+        buffer.close()
+        self.task_store.patch_remote_refresh_state(
+            status="running",
+            running=True,
+            active_run={
+                "batch_id": "resume-source-batch",
+                "status": "running",
+                "started_at": "2026-06-08T02:36:35+08:00",
+                "candidate_total": 2,
+                "completed_total": 1,
+                "remaining_total": 1,
+                "manifest_path": remote_refresh._remote_refresh_relative_state_path(manifest.path),
+                "result_path": "remote_refresh_batches/resume-source-batch.ndjson",
+            },
+        )
+
+        def fake_refresh_one(item, *, index, total, config):
+            return {
+                "ok": True,
+                "metrics": {"model_dir": item["model_dir"], "title": item["title"], "comments": 1},
+                "record": remote_refresh._remote_refresh_result_record(
+                    model_dir=item["model_dir"],
+                    title=item["title"],
+                    url=item["origin_url"],
+                    status="success",
+                    message="完成",
+                    metrics={"comments": 1},
+                    change_labels=["已检查，无远端变化"],
+                ),
+            }
+
+        self.manager._refresh_one = fake_refresh_one
+        try:
+            resumed = self.manager._resume_active_run_if_possible(self.store.load())
+        finally:
+            remote_refresh.REMOTE_REFRESH_BATCH_DIR = original_batch_dir
+            remote_refresh._remote_refresh_model_workers = original_workers
+
+        source_runs = self.task_store.load_source_refresh_runs()
+        self.assertTrue(resumed)
+        self.assertEqual(source_runs["active_run"], {})
+        self.assertEqual(source_runs["last_completed_run"]["run_id"], "resume-source-batch")
+        self.assertEqual(source_runs["last_completed_run"]["status"], "completed")
+        self.assertEqual(source_runs["last_completed_run"]["completed_total"], 2)
+        self.assertEqual(source_runs["last_completed_run"]["succeeded_total"], 2)
+
+    def test_resume_active_run_limits_remaining_candidates(self):
+        original_batch_dir = remote_refresh.REMOTE_REFRESH_BATCH_DIR
+        original_workers = remote_refresh._remote_refresh_model_workers
+        original_limit_env = remote_refresh.os.environ.get("MAKERHUB_REMOTE_REFRESH_BATCH_LIMIT")
+        remote_refresh.REMOTE_REFRESH_BATCH_DIR = self.temp_path / "remote_refresh_batches"
+        remote_refresh._remote_refresh_model_workers = lambda _config=None: 1
+        remote_refresh.os.environ["MAKERHUB_REMOTE_REFRESH_BATCH_LIMIT"] = "2"
+        batch_dir = remote_refresh.REMOTE_REFRESH_BATCH_DIR
+        batch_dir.mkdir(parents=True, exist_ok=True)
+        candidates = [
+            {
+                "model_dir": f"m{index}",
+                "title": f"模型 {index}",
+                "origin_url": f"https://makerworld.com.cn/model/{index}",
+                "meta_path": str(self.temp_path / f"m{index}" / "meta.json"),
+            }
+            for index in range(1, 6)
+        ]
+        manifest = remote_refresh._RemoteRefreshBatchManifest.create(
+            batch_id="resume-limited-batch",
+            candidates=candidates,
+            stats={"eligible_total": 5, "selected_total": 5, "remaining_total": 0},
+            cron="0 0 * * *",
+            manual=False,
+            directory=batch_dir,
+        )
+        buffer = remote_refresh._RemoteRefreshBatchBuffer(batch_id="resume-limited-batch", directory=batch_dir)
+        buffer.append(remote_refresh._remote_refresh_result_record(
+            model_dir="m1",
+            title="模型 1",
+            url="https://makerworld.com.cn/model/1",
+            status="success",
+            message="已完成",
+            metrics={"comments": 1},
+            change_labels=["已检查，无远端变化"],
+        ))
+        buffer.close()
+        self.task_store.patch_remote_refresh_state(
+            status="running",
+            running=True,
+            active_run={
+                "batch_id": "resume-limited-batch",
+                "status": "running",
+                "started_at": "2026-06-08T02:36:35+08:00",
+                "candidate_total": 5,
+                "completed_total": 1,
+                "remaining_total": 4,
+                "manifest_path": remote_refresh._remote_refresh_relative_state_path(manifest.path),
+                "result_path": "remote_refresh_batches/resume-limited-batch.ndjson",
+            },
+        )
+        refreshed = []
+
+        def fake_refresh_one(item, *, index, total, config):
+            refreshed.append(item["model_dir"])
+            return {
+                "ok": True,
+                "metrics": {"model_dir": item["model_dir"], "title": item["title"], "comments": 1},
+                "record": remote_refresh._remote_refresh_result_record(
+                    model_dir=item["model_dir"],
+                    title=item["title"],
+                    url=item["origin_url"],
+                    status="success",
+                    message="完成",
+                    metrics={"comments": 1},
+                    change_labels=["已检查，无远端变化"],
+                ),
+            }
+
+        self.manager._refresh_one = fake_refresh_one
+        try:
+            resumed = self.manager._resume_active_run_if_possible(self.store.load())
+        finally:
+            remote_refresh.REMOTE_REFRESH_BATCH_DIR = original_batch_dir
+            remote_refresh._remote_refresh_model_workers = original_workers
+            if original_limit_env is None:
+                remote_refresh.os.environ.pop("MAKERHUB_REMOTE_REFRESH_BATCH_LIMIT", None)
+            else:
+                remote_refresh.os.environ["MAKERHUB_REMOTE_REFRESH_BATCH_LIMIT"] = original_limit_env
+
+        state = self.task_store.load_remote_refresh_state()
+        source_runs = self.task_store.load_source_refresh_runs()
+        self.assertTrue(resumed)
+        self.assertEqual(refreshed, ["m2", "m3"])
+        self.assertEqual(state["last_batch_succeeded"], 3)
+        self.assertEqual(state["last_remaining_total"], 2)
+        self.assertEqual(source_runs["last_completed_run"]["candidate_total"], 5)
+        self.assertEqual(source_runs["last_completed_run"]["completed_total"], 3)
+        self.assertEqual(source_runs["last_completed_run"]["remaining_total"], 2)
+
     def test_source_refresh_batch_does_not_monkey_patch_candidate_picker_during_model_refresh(self):
         original_workers = remote_refresh._remote_refresh_model_workers
         remote_refresh._remote_refresh_model_workers = lambda _config=None: 1
