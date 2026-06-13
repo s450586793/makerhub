@@ -16,6 +16,7 @@ from app.api.logs_routes import router as logs_router
 from app.api.models_routes import router as models_router
 from app.api.performance_routes import router as performance_router
 from app.api.remote_refresh_routes import router as remote_refresh_router
+from app.api.runtime_routes import router as runtime_router
 from app.api.sharing_routes import router as sharing_router
 from app.api.source_library_routes import router as source_library_router
 from app.api.subscriptions_routes import router as subscriptions_router
@@ -215,6 +216,7 @@ app.include_router(logs_router)
 app.include_router(models_router)
 app.include_router(performance_router)
 app.include_router(remote_refresh_router)
+app.include_router(runtime_router)
 app.include_router(sharing_router)
 app.include_router(source_library_router)
 app.include_router(subscriptions_router)

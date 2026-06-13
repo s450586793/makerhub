@@ -1,6 +1,9 @@
 import unittest
+import asyncio
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from app.api import runtime_routes
 from app.services.runtime_engine import engine
 
 
@@ -89,6 +92,74 @@ class RuntimeEngineSkeletonTest(unittest.TestCase):
             result = runtime.retry_failures({"failure_ids": ["failure-1"]})
 
         self.assertEqual(result["type"], "missing_3mf_retry")
+
+
+class RuntimeEngineRouteTest(unittest.TestCase):
+    def _request(self):
+        return SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
+
+    def test_get_runtime_requires_session_and_returns_snapshot(self):
+        with patch.object(runtime_routes.config_api, "_require_session_auth") as require_auth, \
+                patch.object(
+                    runtime_routes.runtime_engine,
+                    "repair",
+                    return_value={"success": True, "snapshots": {"tasks": {"runs": []}}},
+                ):
+            payload = asyncio.run(runtime_routes.get_runtime(self._request()))
+
+        require_auth.assert_called_once()
+        self.assertTrue(payload["success"])
+
+    def test_submit_runtime_run_requires_session(self):
+        with patch.object(runtime_routes.config_api, "_require_session_auth") as require_auth, \
+                patch.object(
+                    runtime_routes.runtime_engine,
+                    "submit_run",
+                    return_value={"run_id": "run-1", "status": "planned"},
+                ) as submit:
+            payload = asyncio.run(runtime_routes.submit_runtime_run(
+                {"type": "archive", "source_url": "https://makerworld.com/zh/models/1"},
+                self._request(),
+            ))
+
+        require_auth.assert_called_once()
+        submit.assert_called_once()
+        self.assertEqual(payload["run_id"], "run-1")
+
+    def test_run_detail_and_failure_pages_are_session_only(self):
+        with patch.object(runtime_routes.config_api, "_require_session_auth") as require_auth, \
+                patch.object(runtime_routes, "store") as store_mock:
+            store_mock.load_runs.return_value = {"items": [{"run_id": "run-1", "status": "running"}]}
+            store_mock.load_batches.return_value = {"items": [{"batch_id": "batch-1", "run_id": "run-1"}]}
+            store_mock.load_failures.return_value = {"items": [{"failure_id": "failure-1", "run_id": "run-1"}]}
+
+            detail = asyncio.run(runtime_routes.get_runtime_run("run-1", self._request()))
+            failures = asyncio.run(runtime_routes.get_runtime_run_failures("run-1", self._request(), page=1, page_size=20))
+
+        self.assertEqual(require_auth.call_count, 2)
+        self.assertEqual(detail["run"]["run_id"], "run-1")
+        self.assertEqual(failures["items"][0]["failure_id"], "failure-1")
+
+    def test_pause_resume_cancel_and_failure_retry_require_session(self):
+        with patch.object(runtime_routes.config_api, "_require_session_auth") as require_auth, \
+                patch.object(
+                    runtime_routes.runtime_engine,
+                    "set_run_status",
+                    return_value={"run_id": "run-1", "status": "paused"},
+                ) as status_mock, \
+                patch.object(
+                    runtime_routes.runtime_engine,
+                    "retry_failures",
+                    return_value={"run_id": "run-retry", "status": "planned"},
+                ) as retry_mock:
+            pause = asyncio.run(runtime_routes.pause_runtime_run("run-1", self._request()))
+            retry = asyncio.run(runtime_routes.retry_runtime_failures({"failure_ids": ["failure-1"]}, self._request()))
+
+        self.assertEqual(require_auth.call_count, 2)
+        status_mock.assert_called_once_with("run-1", "paused")
+        retry_mock.assert_called_once()
+        self.assertEqual(pause["status"], "paused")
+        self.assertEqual(retry["run_id"], "run-retry")
 
 
 if __name__ == "__main__":
