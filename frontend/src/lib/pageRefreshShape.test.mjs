@@ -78,6 +78,12 @@ test("DashboardPage shows separate source refresh completion fields", () => {
   assert.match(dashboardPageSource, /"source_refresh_runs"/);
 });
 
+test("DashboardPage renders a light snapshot before full dashboard hydration", () => {
+  assert.match(dashboardPageSource, /apiRequest\("\/api\/dashboard\/light"\)/);
+  assert.match(dashboardPageSource, /refreshFullDashboard/);
+  assert.match(dashboardPageSource, /void refreshFullDashboard/);
+});
+
 test("RemoteRefreshPage explains active run progress from resumable batch state", () => {
   assert.match(remoteRefreshPageSource, /hasActiveRun\.value/);
   assert.match(remoteRefreshPageSource, /activeRun\.value\.completed_total/);
@@ -94,7 +100,14 @@ test("OrganizerPage uses shared page refresh controller for organize task refres
 test("OrganizerPage does not block first paint on source library payload", () => {
   assert.match(organizerPageSource, /async function refreshSourceLibrary/);
   assert.match(organizerPageSource, /void refreshSourceLibrary/);
+  assert.match(organizerPageSource, /apiRequest\("\/api\/tasks\/light"\)/);
   assert.doesNotMatch(organizerPageSource, /Promise\.all\(requests\)/);
+});
+
+test("TasksPage renders a light task snapshot before full task hydration", () => {
+  assert.match(tasksPageSource, /apiRequest\("\/api\/tasks\/light"\)/);
+  assert.match(tasksPageSource, /refreshFullTasks/);
+  assert.match(tasksPageSource, /void refreshFullTasks/);
 });
 
 test("SettingsPage uses shared page refresh controller for system update state", () => {

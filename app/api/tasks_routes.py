@@ -22,7 +22,7 @@ from app.services.archive_repair import read_archive_repair_status, run_archive_
 from app.services.archive_worker import BATCH_TASK_MODES, detect_archive_mode
 from app.services.account_health import mark_account_ok
 from app.services.business_logs import append_business_log
-from app.services.catalog import build_tasks_payload
+from app.services.catalog import build_tasks_light_payload, build_tasks_payload
 from app.services.request_threads import run_task_api, run_ui_io, run_web_io
 
 
@@ -52,6 +52,16 @@ async def get_tasks_data():
         config = store.load()
         fallback_items = [item.model_dump() for item in config.missing_3mf]
         return build_tasks_payload(missing_fallback=fallback_items)
+
+    return await run_ui_io(_tasks_payload)
+
+
+@router.get("/tasks/light")
+async def get_tasks_light_data():
+    def _tasks_payload() -> dict:
+        config = store.load()
+        fallback_items = [item.model_dump() for item in config.missing_3mf]
+        return build_tasks_light_payload(missing_fallback=fallback_items)
 
     return await run_ui_io(_tasks_payload)
 

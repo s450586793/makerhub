@@ -23,6 +23,7 @@ from app.core.store import JsonStore
 from app.core.timezone import from_timestamp as china_from_timestamp, now_iso as china_now_iso, parse_timestamp as china_parse_timestamp
 from app.services.batch_discovery import extract_model_id, normalize_source_url
 from app.services.archive_model_index import (
+    archive_model_index_row_count,
     delete_archive_model_index,
     load_archive_model_index,
     upsert_archive_model_index,
@@ -580,6 +581,95 @@ def _count_active_organize_tasks(organize_tasks: dict) -> int:
     return count
 
 
+def _count_items(items: Any) -> int:
+    return len(items) if isinstance(items, list) else 0
+
+
+def _small_items(items: Any, limit: int) -> list[dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    clean_limit = max(0, int(limit or 0))
+    return [dict(item) for item in items[:clean_limit] if isinstance(item, dict)]
+
+
+def _compact_archive_queue_payload(archive_queue: dict, *, item_limit: int = 5) -> dict:
+    active = _small_items(archive_queue.get("active"), item_limit)
+    queued = _small_items(archive_queue.get("queued"), item_limit)
+    recent_failures = _small_items(archive_queue.get("recent_failures"), item_limit)
+    running_count = int(archive_queue.get("running_count") or _count_items(archive_queue.get("active")))
+    queued_count = int(archive_queue.get("queued_count") or _count_items(archive_queue.get("queued")))
+    return {
+        "active": active,
+        "queued": queued,
+        "recent_failures": recent_failures,
+        "running_count": running_count,
+        "queued_count": queued_count,
+        "failed_count": int(archive_queue.get("failed_count") or _count_items(archive_queue.get("recent_failures"))),
+        "active_truncated": _count_items(archive_queue.get("active")) > len(active),
+        "queued_truncated": _count_items(archive_queue.get("queued")) > len(queued),
+        "recent_failures_truncated": _count_items(archive_queue.get("recent_failures")) > len(recent_failures),
+    }
+
+
+def _compact_missing_3mf_payload(missing_3mf: dict, *, item_limit: int = 5) -> dict:
+    items = _small_items(missing_3mf.get("items"), item_limit)
+    return {
+        "items": items,
+        "count": int(missing_3mf.get("count") or _count_items(missing_3mf.get("items"))),
+        "items_truncated": _count_items(missing_3mf.get("items")) > len(items),
+    }
+
+
+def _compact_organize_tasks_payload(organize_tasks: dict, *, item_limit: int = 8) -> dict:
+    items = _small_items(organize_tasks.get("items"), item_limit)
+    active_count = _count_active_organize_tasks(organize_tasks)
+    return {
+        "items": items,
+        "count": int(organize_tasks.get("count") or _count_items(organize_tasks.get("items"))),
+        "count_trusted": bool(organize_tasks.get("count_trusted", True)),
+        "queued_count": int(organize_tasks.get("queued_count") or 0),
+        "running_count": int(organize_tasks.get("running_count") or 0),
+        "detected_total": int(organize_tasks.get("detected_total") or 0),
+        "active_count": active_count,
+        "source_dir": str(organize_tasks.get("source_dir") or ""),
+        "updated_at": str(organize_tasks.get("updated_at") or ""),
+        "last_import": organize_tasks.get("last_import") if isinstance(organize_tasks.get("last_import"), dict) else {},
+        "items_truncated": _count_items(organize_tasks.get("items")) > len(items),
+    }
+
+
+def _compact_source_refresh_payload(queue: dict, runs: dict, *, item_limit: int = 5) -> dict:
+    active = _small_items(queue.get("active"), item_limit)
+    queued = _small_items(queue.get("queued"), item_limit)
+    recent_failures = _small_items(queue.get("recent_failures"), item_limit)
+    compact_queue = {
+        "active": active,
+        "queued": queued,
+        "recent_failures": recent_failures,
+        "running_count": int(queue.get("running_count") or _count_items(queue.get("active"))),
+        "queued_count": int(queue.get("queued_count") or _count_items(queue.get("queued"))),
+        "failed_count": int(queue.get("failed_count") or _count_items(queue.get("recent_failures"))),
+        "updated_at": str(queue.get("updated_at") or ""),
+        "active_truncated": _count_items(queue.get("active")) > len(active),
+        "queued_truncated": _count_items(queue.get("queued")) > len(queued),
+        "recent_failures_truncated": _count_items(queue.get("recent_failures")) > len(recent_failures),
+    }
+    active_run = runs.get("active_run") if isinstance(runs.get("active_run"), dict) else {}
+    last_completed_run = runs.get("last_completed_run") if isinstance(runs.get("last_completed_run"), dict) else {}
+    compact_runs = {
+        "active_run": dict(active_run),
+        "last_completed_run": dict(last_completed_run),
+        "last_attempt_at": str(runs.get("last_attempt_at") or ""),
+        "last_deferred_at": str(runs.get("last_deferred_at") or ""),
+        "last_defer_reason": str(runs.get("last_defer_reason") or ""),
+        "last_interrupted_at": str(runs.get("last_interrupted_at") or ""),
+        "last_interrupted_reason": str(runs.get("last_interrupted_reason") or ""),
+        "next_run_at": str(runs.get("next_run_at") or ""),
+        "updated_at": str(runs.get("updated_at") or ""),
+    }
+    return {"queue": compact_queue, "runs": compact_runs}
+
+
 def _subscription_deleted_count(state: dict) -> int:
     current_items = state.get("current_items") if isinstance(state.get("current_items"), list) else []
     tracked_items = state.get("tracked_items") if isinstance(state.get("tracked_items"), list) else []
@@ -672,6 +762,47 @@ def _build_dashboard_subscriptions(
         "deleted_marked_count": sum(int(item.get("deleted_count") or 0) for item in merged_items),
         "recent_items": last_results[:3],
         "next_items": next_runs[:3],
+    }
+
+
+def _build_dashboard_subscriptions_light(config) -> dict[str, Any]:
+    records = list(getattr(config, "subscriptions", []) or [])
+    enabled_items = [item for item in records if bool(getattr(item, "enabled", False))]
+    runtime_subscriptions = _runtime_snapshot("subscriptions")
+    active_runs = runtime_subscriptions.get("active_runs") if isinstance(runtime_subscriptions.get("active_runs"), list) else []
+    recent_runs = runtime_subscriptions.get("recent_runs") if isinstance(runtime_subscriptions.get("recent_runs"), list) else []
+    recent_items = [
+        {
+            "id": str(item.get("run_id") or item.get("source_id") or ""),
+            "name": str(item.get("source_url") or item.get("message") or "订阅同步"),
+            "running": str(item.get("status") or "").strip().lower() in {"queued", "discovering", "planned", "running", "paused", "blocked", "interrupted"},
+            "status": str(item.get("status") or "idle"),
+            "last_message": str(item.get("message") or ""),
+            "last_run_at": str(item.get("updated_at") or item.get("started_at") or item.get("created_at") or ""),
+            "next_run_at": "",
+        }
+        for item in recent_runs[:3]
+        if isinstance(item, dict)
+    ]
+    next_items = [
+        {
+            "id": str(getattr(item, "id", "") or ""),
+            "name": str(getattr(item, "name", "") or "").strip() or str(getattr(item, "url", "") or "").strip(),
+            "url": str(getattr(item, "url", "") or "").strip(),
+            "enabled": bool(getattr(item, "enabled", False)),
+            "running": False,
+            "status": "idle",
+            "next_run_at": "",
+        }
+        for item in enabled_items[:3]
+    ]
+    return {
+        "count": len(records),
+        "enabled_count": len(enabled_items),
+        "running_count": len(active_runs),
+        "deleted_marked_count": 0,
+        "recent_items": recent_items,
+        "next_items": next_items,
     }
 
 
@@ -2688,6 +2819,140 @@ def build_tasks_payload(
     runtime_tasks = _runtime_tasks_snapshot()
     if runtime_tasks:
         payload["runtime"] = runtime_tasks
+    return payload
+
+
+def build_tasks_light_payload(missing_fallback: Optional[list[dict]] = None) -> dict:
+    store = TaskStateStore()
+    archive_queue = _compact_archive_queue_payload(store.load_archive_queue())
+    missing_3mf = _compact_missing_3mf_payload(store.load_missing_3mf(fallback_items=missing_fallback))
+    organize_tasks = _compact_organize_tasks_payload(store.load_organize_tasks())
+    remote_refresh = compact_remote_refresh_state(store.load_remote_refresh_state(), include_current=True)
+    source_refresh = _compact_source_refresh_payload(
+        store.load_source_refresh_queue(),
+        store.load_source_refresh_runs(),
+    )
+
+    payload = {
+        "archive_queue": archive_queue,
+        "missing_3mf": missing_3mf,
+        "organize_tasks": organize_tasks,
+        "remote_refresh": remote_refresh,
+        "source_refresh": source_refresh,
+        "summary": {
+            "running_or_queued": archive_queue["running_count"] + archive_queue["queued_count"],
+            "missing_3mf_count": missing_3mf["count"],
+            "organize_count": organize_tasks["active_count"],
+        },
+        "light": True,
+    }
+    runtime_tasks = _runtime_tasks_snapshot()
+    if runtime_tasks:
+        payload["runtime"] = {
+            "runs": _small_items(runtime_tasks.get("runs"), 8),
+            "batches": _small_items(runtime_tasks.get("batches"), 8),
+            "failures": _small_items(runtime_tasks.get("failures"), 12),
+        }
+    return payload
+
+
+def build_dashboard_light_payload(config) -> dict:
+    tasks_payload = build_tasks_light_payload(
+        missing_fallback=[
+            item.model_dump() if hasattr(item, "model_dump") else item
+            for item in getattr(config, "missing_3mf", [])
+        ]
+    )
+    subscriptions_summary = _build_dashboard_subscriptions_light(config)
+    remote_refresh = tasks_payload["remote_refresh"]
+    source_refresh = tasks_payload["source_refresh"]
+    organize_tasks = tasks_payload["organize_tasks"]
+    model_count = archive_model_index_row_count()
+
+    payload = {
+        "stats": [
+            {"label": "模型总数", "value": model_count, "hint": "来自数据库索引快照"},
+            {"label": "最近 7 天新增", "value": 0, "hint": "完整统计后台补齐"},
+            {"label": "缺失 3MF", "value": tasks_payload["missing_3mf"]["count"], "hint": "等待重新下载"},
+            {
+                "label": "运行中/排队任务",
+                "value": tasks_payload["summary"]["running_or_queued"],
+                "hint": "归档队列当前状态",
+            },
+        ],
+        "system_status": [
+            *build_source_health_cards(
+                config,
+                tasks_payload["missing_3mf"]["items"],
+                remote_refresh_state=remote_refresh,
+                prefer_cached=True,
+            ),
+            {
+                "key": "proxy",
+                "title": "HTTP 代理",
+                "status": "已启用" if config.proxy.enabled else "未启用",
+                "detail": "当前已配置代理地址。" if config.proxy.enabled and (config.proxy.http_proxy or config.proxy.https_proxy) else "当前未启用代理。",
+                "tone": "ok" if config.proxy.enabled and (config.proxy.http_proxy or config.proxy.https_proxy) else "neutral",
+            },
+        ],
+        "automation_overview": {
+            "subscriptions": {
+                "count": subscriptions_summary["count"],
+                "enabled_count": subscriptions_summary["enabled_count"],
+                "running_count": subscriptions_summary["running_count"],
+                "deleted_marked_count": subscriptions_summary["deleted_marked_count"],
+                "deleted_source_item_count": subscriptions_summary["deleted_marked_count"],
+                "recent_items": subscriptions_summary["recent_items"][:3],
+                "next_items": subscriptions_summary["next_items"][:3],
+            },
+            "remote_refresh": {
+                "enabled": bool(getattr(config.remote_refresh, "enabled", False)),
+                "status": str(remote_refresh.get("status") or "idle"),
+                "running": bool(remote_refresh.get("running", False)),
+                "active_run": remote_refresh.get("active_run") if isinstance(remote_refresh.get("active_run"), dict) else {},
+                "last_batch_total": int(remote_refresh.get("last_batch_total") or 0),
+                "last_batch_succeeded": int(remote_refresh.get("last_batch_succeeded") or 0),
+                "last_batch_failed": int(remote_refresh.get("last_batch_failed") or 0),
+                "last_batch_skipped": int(remote_refresh.get("last_batch_skipped") or 0),
+                "last_eligible_total": int(remote_refresh.get("last_eligible_total") or 0),
+                "last_remaining_total": int(remote_refresh.get("last_remaining_total") or 0),
+                "last_skipped_missing_cookie": int(remote_refresh.get("last_skipped_missing_cookie") or 0),
+                "next_run_at": str(remote_refresh.get("next_run_at") or ""),
+                "last_run_at": str(remote_refresh.get("last_run_at") or ""),
+                "last_success_at": str(remote_refresh.get("last_success_at") or ""),
+                "last_completed_at": str(remote_refresh.get("last_completed_at") or ""),
+                "last_deferred_at": str(remote_refresh.get("last_deferred_at") or ""),
+                "last_defer_reason": str(remote_refresh.get("last_defer_reason") or ""),
+                "last_message": str(remote_refresh.get("last_message") or ""),
+            },
+            "source_refresh": {
+                "queue": source_refresh.get("queue") if isinstance(source_refresh.get("queue"), dict) else {},
+                "runs": source_refresh.get("runs") if isinstance(source_refresh.get("runs"), dict) else {},
+            },
+            "organizer": {
+                "source_dir": str(getattr(config.organizer, "source_dir", "") or ""),
+                "target_dir": str(getattr(config.organizer, "target_dir", "") or ""),
+                "move_files": bool(getattr(config.organizer, "move_files", False)),
+                "detected_total": int(organize_tasks.get("detected_total") or 0),
+                "running_count": int(organize_tasks.get("running_count") or 0),
+                "queued_count": int(organize_tasks.get("queued_count") or 0),
+                "active_count": int(organize_tasks.get("active_count") or 0),
+                "recent_items": _clone_model_items([]),
+                "items": list(organize_tasks.get("items") or [])[:3],
+            },
+        },
+        "task_summary": {
+            "running": tasks_payload["archive_queue"]["active"],
+            "queued_count": tasks_payload["archive_queue"]["queued_count"],
+            "recent_failures": tasks_payload["archive_queue"]["recent_failures"][:5],
+            "missing_3mf_count": tasks_payload["missing_3mf"]["count"],
+            "missing_3mf": tasks_payload["missing_3mf"]["items"][:5],
+        },
+        "light": True,
+    }
+    runtime_dashboard = _runtime_dashboard_snapshot()
+    if runtime_dashboard:
+        payload["runtime"] = runtime_dashboard
     return payload
 
 

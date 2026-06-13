@@ -1153,7 +1153,7 @@ async function load({ silent = false, refreshLibrary = true } = {}) {
   }
   loading.value = true;
   try {
-    const tasksPayload = await apiRequest("/api/tasks");
+    const tasksPayload = await apiRequest("/api/tasks/light");
     organizerTasks.value = tasksPayload?.organize_tasks || organizerTasks.value;
     reconcileImportUploadProgress();
     loadError.value = "";

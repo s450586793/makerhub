@@ -1,11 +1,13 @@
 import unittest
 import asyncio
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.api import system as system_api
 from app.api import tasks_routes
+from app.schemas.models import AppConfig, SubscriptionRecord
 from app.services import catalog
 from app.services import runtime_diagnostics
 
@@ -78,6 +80,75 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
             payload = catalog.build_tasks_payload()
 
         self.assertEqual(payload["runtime"]["runs"][0]["run_id"], "run-1")
+
+    def test_tasks_light_payload_keeps_first_load_small(self):
+        archive_queue = {
+            "active": [{"id": f"active-{index}", "status": "running"} for index in range(12)],
+            "queued": [{"id": f"queued-{index}", "status": "queued"} for index in range(30)],
+            "recent_failures": [{"id": f"failed-{index}", "status": "failed"} for index in range(18)],
+            "running_count": 12,
+            "queued_count": 30,
+        }
+        missing_3mf = {
+            "items": [{"model_id": str(index), "title": f"missing-{index}"} for index in range(16)],
+            "count": 16,
+        }
+        organize_tasks = {
+            "items": [{"id": f"organize-{index}", "status": "running"} for index in range(14)],
+            "count": 14,
+            "detected_total": 14,
+            "running_count": 14,
+            "queued_count": 0,
+        }
+
+        with patch("app.services.catalog.load_database_json_state", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_archive_queue", return_value=archive_queue), \
+                patch.object(catalog.TaskStateStore, "load_missing_3mf", return_value=missing_3mf), \
+                patch.object(catalog.TaskStateStore, "load_remote_refresh_state", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_source_refresh_queue", return_value={"active": [], "queued": [], "recent_failures": []}), \
+                patch.object(catalog.TaskStateStore, "load_source_refresh_runs", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_organize_tasks", return_value=organize_tasks):
+            payload = catalog.build_tasks_light_payload()
+
+        self.assertLessEqual(len(payload["archive_queue"]["active"]), 5)
+        self.assertLessEqual(len(payload["archive_queue"]["queued"]), 5)
+        self.assertLessEqual(len(payload["archive_queue"]["recent_failures"]), 5)
+        self.assertLessEqual(len(payload["missing_3mf"]["items"]), 5)
+        self.assertLessEqual(len(payload["organize_tasks"]["items"]), 8)
+        self.assertEqual(payload["summary"]["running_or_queued"], 42)
+        self.assertEqual(payload["summary"]["missing_3mf_count"], 16)
+        self.assertEqual(payload["organize_tasks"]["active_count"], 14)
+        self.assertLess(len(json.dumps(payload, ensure_ascii=False)), 8000)
+
+    def test_dashboard_light_payload_does_not_load_full_subscription_state(self):
+        config = AppConfig(
+            subscriptions=[
+                SubscriptionRecord(
+                    id="sub-1",
+                    name="作者",
+                    url="https://makerworld.com/zh/@demo/upload",
+                    mode="author_upload",
+                    enabled=True,
+                )
+            ]
+        )
+
+        with patch.object(catalog.TaskStateStore, "load_subscriptions_state", side_effect=AssertionError("full state should not load")), \
+                patch.object(catalog, "build_tasks_light_payload", return_value={
+                    "archive_queue": {"active": [], "queued": [], "recent_failures": [], "running_count": 0, "queued_count": 0},
+                    "missing_3mf": {"items": [], "count": 0},
+                    "organize_tasks": {"items": [], "count": 0, "running_count": 0, "queued_count": 0, "detected_total": 0, "active_count": 0},
+                    "remote_refresh": {"status": "idle", "running": False},
+                    "source_refresh": {"queue": {}, "runs": {}},
+                    "summary": {"running_or_queued": 0, "missing_3mf_count": 0, "organize_count": 0},
+                }), \
+                patch.object(catalog, "archive_model_index_row_count", return_value=12), \
+                patch.object(catalog, "build_source_health_cards", return_value=[]):
+            payload = catalog.build_dashboard_light_payload(config)
+
+        self.assertEqual(payload["stats"][0]["value"], 12)
+        self.assertEqual(payload["automation_overview"]["subscriptions"]["count"], 1)
+        self.assertEqual(payload["automation_overview"]["subscriptions"]["enabled_count"], 1)
 
     def test_build_runtime_diagnostics_returns_database_aggregates(self):
         now = datetime(2026, 6, 3, 6, 0, tzinfo=timezone.utc)

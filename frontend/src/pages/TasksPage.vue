@@ -414,6 +414,7 @@ const recentFailureStatus = ref("");
 const archiveRepairStatus = ref("");
 let tasksRefreshController = null;
 let loadingTasks = false;
+let loadingFullTasks = false;
 const TASKS_PAGE_SIZE = 5;
 const activeVisibleLimit = ref(TASKS_PAGE_SIZE);
 const queuedVisibleLimit = ref(TASKS_PAGE_SIZE);
@@ -538,18 +539,37 @@ function openArchiveConfirmDialog(preview) {
   };
 }
 
-async function load() {
+async function load({ hydrateFull = false } = {}) {
   if (loadingTasks) {
     return;
   }
   loadingTasks = true;
   try {
-    payload.value = await apiRequest("/api/tasks");
+    payload.value = await apiRequest("/api/tasks/light");
+    if (payload.value.archive_queue.recent_failures.length) {
+      recentFailureStatus.value = "";
+    }
+    if (hydrateFull) {
+      void refreshFullTasks();
+    }
+  } finally {
+    loadingTasks = false;
+  }
+}
+
+async function refreshFullTasks() {
+  if (loadingFullTasks) {
+    return;
+  }
+  loadingFullTasks = true;
+  try {
+    const fullPayload = await apiRequest("/api/tasks");
+    payload.value = fullPayload;
     if (payload.value.archive_queue.recent_failures.length) {
       recentFailureStatus.value = "";
     }
   } finally {
-    loadingTasks = false;
+    loadingFullTasks = false;
   }
 }
 
@@ -613,7 +633,7 @@ async function submitArchiveConfirmed({ url, previewToken = "", clearInput = fal
   if (clearInput) {
     archiveUrl.value = "";
   }
-  await load();
+  await refreshFullTasks();
 }
 
 async function handleArchiveDialogPrimaryAction() {
@@ -656,7 +676,7 @@ async function retryMissing(item) {
       },
     });
     missingStatus.value = response.message || "已加入重试队列。";
-    await load();
+    await refreshFullTasks();
   } catch (error) {
     missingStatus.value = error instanceof Error ? error.message : "重试失败。";
   } finally {
@@ -699,7 +719,7 @@ async function repairArchiveQueue() {
     if (response.archive_queue) {
       payload.value.archive_queue = response.archive_queue;
     } else {
-      await load();
+      await refreshFullTasks();
     }
     archiveRepairStatus.value = [
       response.message || "队列状态修复完成。",
@@ -722,7 +742,7 @@ async function retryAllMissing() {
       method: "POST",
     });
     missingStatus.value = response.message || "已加入重试队列。";
-    await load();
+    await refreshFullTasks();
   } catch (error) {
     missingStatus.value = error instanceof Error ? error.message : "重试失败。";
   } finally {
@@ -743,7 +763,7 @@ async function cancelMissing(item) {
       },
     });
     missingStatus.value = response.message || "已取消该缺失 3MF 任务。";
-    await load();
+    await refreshFullTasks();
   } catch (error) {
     missingStatus.value = error instanceof Error ? error.message : "取消失败。";
   } finally {
@@ -755,10 +775,10 @@ onMounted(async () => {
   const perf = createPagePerformanceTracker({ page: "tasks" });
   tasksRefreshController = createPageRefreshController({
     scopes: ["archive_queue", "missing_3mf", "organize_tasks"],
-    refresh: () => load(),
+    refresh: () => load({ hydrateFull: false }),
     delayMs: 250,
   });
-  await load();
+  await load({ hydrateFull: true });
   void perf.finish();
 });
 

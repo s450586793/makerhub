@@ -72,6 +72,7 @@ from app.schemas.models import (
 )
 from app.schemas.models import OrganizeTask
 from app.services.catalog import (
+    build_dashboard_light_payload,
     build_dashboard_payload,
     build_models_payload,
     get_model_comments_page,
@@ -3262,6 +3263,11 @@ async def save_runtime_resources(payload: RuntimeResourceConfig, request: Reques
 @router.get("/dashboard")
 async def get_dashboard_data():
     return await run_web_io(lambda: build_dashboard_payload(store.load()))
+
+
+@router.get("/dashboard/light")
+async def get_dashboard_light_data():
+    return await run_web_io(lambda: build_dashboard_light_payload(store.load()))
 
 
 async def get_models_data(

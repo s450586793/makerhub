@@ -459,10 +459,11 @@ const hasActiveWork = computed(() => Boolean(
 ));
 
 let requestInFlight = false;
+let fullDashboardRequestInFlight = false;
 let unsubscribeStateRefresh = null;
 let refreshWhenVisible = false;
 
-async function load({ initial = false } = {}) {
+async function load({ initial = false, hydrateFull = false } = {}) {
   if (requestInFlight) {
     return;
   }
@@ -471,12 +472,32 @@ async function load({ initial = false } = {}) {
     loading.value = true;
   }
   try {
-    payload.value = await apiRequest("/api/dashboard");
+    payload.value = await apiRequest("/api/dashboard/light");
+    if (hydrateFull) {
+      void refreshFullDashboard();
+    }
   } catch (error) {
     console.error("首页数据刷新失败", error);
+    if (initial || hydrateFull) {
+      await refreshFullDashboard();
+    }
   } finally {
     loading.value = false;
     requestInFlight = false;
+  }
+}
+
+async function refreshFullDashboard() {
+  if (fullDashboardRequestInFlight) {
+    return;
+  }
+  fullDashboardRequestInFlight = true;
+  try {
+    payload.value = await apiRequest("/api/dashboard");
+  } catch (error) {
+    console.error("首页完整数据刷新失败", error);
+  } finally {
+    fullDashboardRequestInFlight = false;
   }
 }
 
@@ -525,7 +546,7 @@ async function runStatusAction(item, action) {
       ...statusActionState.value,
       [key]: { busy: false, message: result?.message || "重试已提交。" },
     };
-    void load();
+    void load({ hydrateFull: false });
   } catch (error) {
     statusActionState.value = {
       ...statusActionState.value,
@@ -542,7 +563,7 @@ function handleArchiveCompleted() {
     refreshWhenVisible = true;
     return;
   }
-  void load();
+  void load({ hydrateFull: false });
 }
 
 function handleVisibilityChange() {
@@ -552,7 +573,7 @@ function handleVisibilityChange() {
   const shouldRefresh = refreshWhenVisible;
   refreshWhenVisible = false;
   if (shouldRefresh || hasActiveWork.value) {
-    void load();
+    void load({ hydrateFull: false });
   }
 }
 
@@ -575,7 +596,7 @@ function subscriptionStatusLabel(item) {
 
 onMounted(async () => {
   const perf = createPagePerformanceTracker({ page: "dashboard" });
-  await load({ initial: true });
+  await load({ initial: true, hydrateFull: true });
   void perf.finish();
   unsubscribeStateRefresh = subscribeStateRefresh(
     [

@@ -17,8 +17,10 @@ class RemovedEmbeddedVerificationWebRouteTest(unittest.TestCase):
     def test_core_api_routes_are_registered(self):
         paths = {route.path for route in main_app.app.routes if hasattr(route, "path")}
         self.assertIn("/api/dashboard", paths)
+        self.assertIn("/api/dashboard/light", paths)
         self.assertIn("/api/models", paths)
         self.assertIn("/api/tasks", paths)
+        self.assertIn("/api/tasks/light", paths)
         self.assertIn("/api/tasks/missing-3mf/verification-verified", paths)
         self.assertIn("/api/runtime", paths)
         self.assertIn("/api/runtime/runs", paths)
