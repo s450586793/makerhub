@@ -162,5 +162,68 @@ class RuntimeEngineRouteTest(unittest.TestCase):
         self.assertEqual(retry["run_id"], "run-retry")
 
 
+class RuntimeEngineExecutionTest(unittest.TestCase):
+    def test_execute_next_batch_runs_items_and_records_summary(self):
+        class Adapter:
+            def execute_item(self, item, context):
+                if item["model_id"] == "bad":
+                    raise RuntimeError("failed item")
+                return {"success": True, "model_id": item["model_id"]}
+
+            def commit_success(self, result, context):
+                return None
+
+            def classify_failure(self, error):
+                return {"status": "failed", "message": str(error), "retryable": True}
+
+        batches = [{"batch_id": "batch-1", "run_id": "run-1", "type": "archive", "status": "queued", "total": 2}]
+        saved_batches = []
+        saved_runs = []
+        failures = []
+
+        runtime = engine.RuntimeEngine(adapters={"archive": Adapter()}, batch_size=2)
+
+        with patch.object(engine.store, "load_batches", return_value={"items": batches}), \
+                patch.object(engine.store, "load_batch_items", return_value=[{"model_id": "ok"}, {"model_id": "bad"}]), \
+                patch.object(
+                    engine.store,
+                    "load_runs",
+                    return_value={"items": [{"run_id": "run-1", "type": "archive", "status": "running", "total": 2}]},
+                ), \
+                patch.object(engine.store, "upsert_batch", side_effect=lambda batch, **kwargs: saved_batches.append(batch) or batch), \
+                patch.object(engine.store, "upsert_run", side_effect=lambda run, **kwargs: saved_runs.append(run) or run), \
+                patch.object(engine.store, "append_failure", side_effect=lambda failure, **kwargs: failures.append(failure) or failure), \
+                patch.object(engine.store, "delete_batch_items", return_value=True), \
+                patch.object(runtime, "refresh_snapshots", return_value={}):
+            result = runtime.execute_next_batch()
+
+        self.assertTrue(result["executed"])
+        self.assertEqual(result["completed"], 1)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(failures[0]["status"], "failed")
+        self.assertEqual(saved_batches[-1]["status"], "completed")
+
+    def test_repair_requeues_interrupted_batches_and_updates_run_totals(self):
+        runtime = engine.RuntimeEngine(adapters={}, batch_size=2)
+        saved_batches = []
+        saved_runs = []
+
+        with patch.object(engine.store, "load_runtime_state", return_value={
+            "runs": {"items": [{"run_id": "run-1", "type": "archive", "status": "running", "total": 2}]},
+            "batches": {"items": [{"batch_id": "batch-1", "run_id": "run-1", "type": "archive", "status": "interrupted", "completed": 1, "failed": 1, "total": 2}]},
+            "failures": {"items": [{"failure_id": "failure-1", "run_id": "run-1", "batch_id": "batch-1"}]},
+            "snapshots": {},
+        }), \
+                patch.object(engine.store, "upsert_batch", side_effect=lambda batch, **kwargs: saved_batches.append(batch) or batch), \
+                patch.object(engine.store, "upsert_run", side_effect=lambda run, **kwargs: saved_runs.append(run) or run), \
+                patch.object(engine.store, "save_snapshot", return_value={}):
+            result = runtime.repair()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(saved_batches[0]["status"], "queued")
+        self.assertEqual(saved_runs[-1]["completed"], 1)
+        self.assertEqual(saved_runs[-1]["failed"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -111,7 +111,104 @@ class RuntimeEngine:
         store.save_snapshot("dashboard", dashboard_snapshot)
         return {"tasks": task_snapshot, "dashboard": dashboard_snapshot}
 
+    def execute_next_batch(self) -> dict[str, Any]:
+        batches = store.load_batches()["items"]
+        target = next((batch for batch in batches if batch.get("status") == "queued"), None)
+        if not target:
+            return {"executed": False, "message": "没有等待执行的批次。"}
+        adapter = self.adapters.get(target.get("type"))
+        if adapter is None:
+            store.upsert_batch(
+                {**target, "status": "blocked", "message": "运行适配器未注册。"},
+                event_type="runtime.run.blocked",
+            )
+            self.refresh_snapshots()
+            return {"executed": False, "message": "运行适配器未注册。"}
+
+        batch_id = str(target.get("batch_id") or "")
+        run_id = str(target.get("run_id") or "")
+        store.upsert_batch({**target, "status": "running", "started_at": china_now_iso()}, event_type="runtime.batch.progress")
+        items = store.load_batch_items(batch_id)
+        completed = 0
+        failed = 0
+        for item in items:
+            try:
+                context = {"run_id": run_id, "batch_id": batch_id}
+                result = adapter.execute_item(item, context)
+                adapter.commit_success(result, context)
+                completed += 1
+            except Exception as exc:
+                failure = adapter.classify_failure(exc)
+                store.append_failure({**failure, "run_id": run_id, "batch_id": batch_id, "type": target.get("type")})
+                failed += 1
+
+        status = "completed" if failed == 0 or completed > 0 else "failed"
+        completed_batch = {
+            **target,
+            "status": status,
+            "completed": completed,
+            "failed": failed,
+            "completed_at": china_now_iso(),
+            "message": f"批次完成：成功 {completed}，失败 {failed}。",
+        }
+        store.upsert_batch(
+            completed_batch,
+            event_type="runtime.batch.completed",
+        )
+        store.delete_batch_items(batch_id)
+        updated_batches = [completed_batch if item.get("batch_id") == batch_id else item for item in batches]
+        self._update_run_totals(run_id, batches=updated_batches)
+        self.refresh_snapshots()
+        return {"executed": True, "completed": completed, "failed": failed}
+
+    def _update_run_totals(
+        self,
+        run_id: str,
+        *,
+        runs: list[dict[str, Any]] | None = None,
+        batches: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        all_runs = runs if runs is not None else store.load_runs()["items"]
+        all_batches = batches if batches is not None else store.load_batches()["items"]
+        batches = [item for item in all_batches if item.get("run_id") == run_id]
+        run = next((item for item in all_runs if item.get("run_id") == run_id), None)
+        if not run:
+            return {}
+        completed = sum(int(item.get("completed") or 0) for item in batches)
+        failed = sum(int(item.get("failed") or 0) for item in batches)
+        total = sum(int(item.get("total") or 0) for item in batches) or int(run.get("total") or 0)
+        active = [item for item in batches if item.get("status") in {"queued", "running", "paused", "blocked", "interrupted"}]
+        status = "completed" if not active and failed == 0 else "failed" if not active else run.get("status", "running")
+        event_type = "runtime.run.completed" if status == "completed" else ""
+        return store.upsert_run(
+            {
+                **run,
+                "status": status,
+                "total": total,
+                "completed": completed,
+                "failed": failed,
+                "updated_at": china_now_iso(),
+                "completed_at": china_now_iso() if status in {"completed", "failed"} else run.get("completed_at", ""),
+            },
+            event_type=event_type,
+        )
+
     def repair(self) -> dict[str, Any]:
+        state = store.load_runtime_state()
+        repaired_batches: list[dict[str, Any]] = []
+        for batch in state["batches"]["items"]:
+            if batch.get("status") == "interrupted":
+                batch = {
+                    **batch,
+                    "status": "queued",
+                    "lease_owner": "",
+                    "lease_expires_at": "",
+                    "message": "已恢复为排队。",
+                }
+                store.upsert_batch(batch)
+            repaired_batches.append(batch)
+        for run in state["runs"]["items"]:
+            self._update_run_totals(run["run_id"], runs=state["runs"]["items"], batches=repaired_batches)
         snapshots = self.refresh_snapshots()
         return {"success": True, "message": "运行核心状态已修复。", "snapshots": snapshots}
 

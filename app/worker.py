@@ -1,4 +1,5 @@
 import signal
+import os
 import threading
 import time
 
@@ -23,6 +24,16 @@ from app.services.task_state import TaskStateStore
 
 WORKER_POLL_SECONDS = 2.0
 LOCAL_PREVIEW_IDLE_POLL_SECONDS = 15 * 60
+
+
+def _runtime_engine_enabled() -> bool:
+    return os.getenv("MAKERHUB_RUNTIME_ENGINE", "").strip().lower() in {"1", "true", "v2", "runtime"}
+
+
+def _execute_runtime_engine_once() -> dict:
+    from app.api.runtime_routes import runtime_engine
+
+    return runtime_engine.execute_next_batch()
 
 
 def _start_profile_backfill_worker(
@@ -145,6 +156,17 @@ def main() -> int:
     profile_backfill_thread: threading.Thread | None = None
     try:
         while not stop_event.wait(WORKER_POLL_SECONDS):
+            if _runtime_engine_enabled():
+                try:
+                    _execute_runtime_engine_once()
+                except Exception as exc:
+                    append_business_log(
+                        "runtime",
+                        "worker_tick_failed",
+                        "运行核心 worker 轮询失败。",
+                        level="warning",
+                        error=str(exc),
+                    )
             archive_manager.ensure_worker_for_pending()
             profile_backfill_status = read_profile_backfill_status()
             if profile_backfill_thread is not None and not profile_backfill_thread.is_alive():

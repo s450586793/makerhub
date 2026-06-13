@@ -6,12 +6,23 @@ from fastapi import APIRouter, Request
 
 from app.api import config as config_api
 from app.services.request_threads import run_task_api, run_ui_io
+from app.services.runtime_engine.archive_adapter import ArchiveRuntimeAdapter
 from app.services.runtime_engine import store
 from app.services.runtime_engine.engine import RuntimeEngine
+from app.services.runtime_engine.missing_3mf_adapter import Missing3mfRuntimeAdapter
+from app.services.runtime_engine.source_refresh_adapter import SourceRefreshRuntimeAdapter
+from app.services.runtime_engine.subscription_adapter import SubscriptionRuntimeAdapter
 
 
 router = APIRouter(prefix="/api")
-runtime_engine = RuntimeEngine()
+runtime_engine = RuntimeEngine(
+    adapters={
+        "archive": ArchiveRuntimeAdapter(),
+        "missing_3mf_retry": Missing3mfRuntimeAdapter(),
+        "source_refresh": SourceRefreshRuntimeAdapter(),
+        "subscription_sync": SubscriptionRuntimeAdapter(),
+    }
+)
 
 
 @router.get("/runtime")
