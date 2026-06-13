@@ -1698,6 +1698,32 @@ class RemoteRefreshManager:
             "state": state,
         }
 
+    def pick_runtime_candidates(self, context: dict) -> list[dict]:
+        candidates, _stats = self._pick_candidates()
+        try:
+            limit = int(context.get("limit") or 0)
+        except (TypeError, ValueError):
+            limit = 0
+        if limit > 0:
+            return list(candidates or [])[:limit]
+        return list(candidates or [])
+
+    def refresh_runtime_item(self, item: dict, context: dict) -> dict:
+        config = self.store.load()
+        self._run_batch(
+            config,
+            selected_candidates=[item],
+            selected_stats={
+                "runtime_engine": 1,
+                "eligible_total": 1,
+                "selected_total": 1,
+                "remaining_total": 0,
+                "missing_cookie": 0,
+                "local_or_invalid": 0,
+            },
+        )
+        return {"success": True, "model_id": item.get("model_id") or item.get("model_dir") or ""}
+
     def _start_batch_async(self, config, *, resume: bool = False) -> bool:
         with self._batch_launch_lock:
             if self._is_batch_running():
