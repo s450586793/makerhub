@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from multiprocessing import Process
 
@@ -29,6 +30,10 @@ router = APIRouter(prefix="/api")
 archive_repair_process: Process | None = None
 archive_repair_start_lock = asyncio.Lock()
 profile_backfill_start_lock = asyncio.Lock()
+
+
+def _runtime_engine_enabled() -> bool:
+    return os.getenv("MAKERHUB_RUNTIME_ENGINE", "").strip().lower() in {"1", "true", "v2", "runtime"}
 
 
 @router.get("/tasks")
@@ -193,6 +198,13 @@ async def cancel_missing_3mf(payload: Missing3mfCancelRequest, request: Request)
 
 @router.post("/archive")
 async def archive_model(payload: ArchiveRequest):
+    if _runtime_engine_enabled():
+        from app.api.runtime_routes import runtime_engine
+        from app.services.runtime_engine.archive_adapter import ArchiveRuntimeAdapter
+
+        runtime_engine.adapters.setdefault("archive", ArchiveRuntimeAdapter())
+        return await run_task_api(runtime_engine.submit_run, "archive", {"source_url": payload.url})
+
     def _archive_model_payload() -> dict:
         batch_preview = None
         archive_mode = detect_archive_mode(payload.url)
