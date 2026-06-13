@@ -19,6 +19,7 @@ from app.services.archive_model_index import archive_model_index_status
 from app.services.archive_profile_backfill import read_profile_backfill_status, write_profile_backfill_status
 from app.services.archive_repair import read_archive_repair_status, run_archive_repair_job, write_archive_repair_status
 from app.services.archive_worker import BATCH_TASK_MODES, detect_archive_mode
+from app.services.account_health import mark_account_ok
 from app.services.business_logs import append_business_log
 from app.services.catalog import build_tasks_payload
 from app.services.request_threads import run_task_api, run_ui_io, run_web_io
@@ -142,7 +143,18 @@ async def retry_all_missing_3mf(request: Request):
 @router.post("/tasks/missing-3mf/verification-verified")
 async def retry_verified_missing_3mf(payload: Missing3mfVerificationRetryRequest, request: Request):
     _require_session_auth(request)
-    result = await run_task_api(crawler.manager.retry_verification_missing_3mf, platform=payload.platform)
+
+    def _retry_and_mark_verified() -> dict:
+        result = dict(crawler.manager.retry_verification_missing_3mf(platform=payload.platform) or {})
+        snapshot = mark_account_ok(
+            payload.platform,
+            source="manual_verification",
+            detail="用户已在 MakerWorld 完成验证，已重新启动同平台 3MF 重试。",
+        )
+        result["account_health"] = snapshot
+        return result
+
+    result = await run_task_api(_retry_and_mark_verified)
     append_business_log(
         "missing_3mf",
         "verification_verified_retry_requested",

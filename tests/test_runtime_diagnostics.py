@@ -249,6 +249,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         with patch.object(tasks_routes, "_require_session_auth") as require_auth, \
                 patch.object(tasks_routes, "run_task_api", side_effect=lambda func, **kwargs: func(**kwargs)) as run_task_api, \
                 patch.object(tasks_routes.crawler.manager, "retry_verification_missing_3mf", return_value=retry_payload) as retry_mock, \
+                patch.object(tasks_routes, "mark_account_ok", return_value={"status": "ok"}) as mark_account_ok_mock, \
                 patch.object(tasks_routes, "append_business_log") as log_mock:
             payload = asyncio.run(
                 tasks_routes.retry_verified_missing_3mf(
@@ -259,9 +260,44 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
 
         require_auth.assert_called_once_with(request)
         retry_mock.assert_called_once_with(platform="global")
+        mark_account_ok_mock.assert_called_once_with(
+            "global",
+            source="manual_verification",
+            detail="用户已在 MakerWorld 完成验证，已重新启动同平台 3MF 重试。",
+        )
         run_task_api.assert_called_once()
-        self.assertEqual(payload, retry_payload)
+        self.assertEqual(payload["accepted_count"], retry_payload["accepted_count"])
+        self.assertEqual(payload["account_health"]["status"], "ok")
         log_mock.assert_called_once()
+
+    def test_verified_missing_3mf_route_marks_platform_account_ok_when_user_confirms(self):
+        request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
+        retry_payload = {
+            "accepted": False,
+            "accepted_count": 0,
+            "queued_count": 0,
+            "failed_count": 0,
+            "message": "当前没有同平台验证类 3MF 任务。",
+        }
+
+        with patch.object(tasks_routes, "_require_session_auth"), \
+                patch.object(tasks_routes, "run_task_api", side_effect=lambda func, **kwargs: func(**kwargs)), \
+                patch.object(tasks_routes.crawler.manager, "retry_verification_missing_3mf", return_value=retry_payload), \
+                patch.object(tasks_routes, "mark_account_ok", return_value={"status": "ok"}) as mark_account_ok_mock, \
+                patch.object(tasks_routes, "append_business_log"):
+            payload = asyncio.run(
+                tasks_routes.retry_verified_missing_3mf(
+                    tasks_routes.Missing3mfVerificationRetryRequest(platform="global"),
+                    request,
+                )
+            )
+
+        mark_account_ok_mock.assert_called_once_with(
+            "global",
+            source="manual_verification",
+            detail="用户已在 MakerWorld 完成验证，已重新启动同平台 3MF 重试。",
+        )
+        self.assertEqual(payload["account_health"]["status"], "ok")
 
 
 if __name__ == "__main__":
