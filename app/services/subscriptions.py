@@ -1085,6 +1085,26 @@ class SubscriptionManager:
             "subscription": next((item for item in self.list_payload()["items"] if item["id"] == clean_id), None),
         }
 
+    def pick_runtime_subscriptions(self, context: dict) -> list[dict]:
+        source_id = str(context.get("source_id") or context.get("subscription_id") or "").strip()
+        payload = self.list_payload()
+        items = payload.get("items") if isinstance(payload, dict) else []
+        candidates = [item for item in items or [] if isinstance(item, dict) and item.get("enabled", True)]
+        if source_id:
+            candidates = [
+                item
+                for item in candidates
+                if str(item.get("subscription_id") or item.get("id") or "") == source_id
+            ]
+        return candidates
+
+    def sync_subscription_runtime(self, item: dict, context: dict) -> dict:
+        subscription_id = str(item.get("subscription_id") or item.get("id") or "").strip()
+        if not subscription_id:
+            return {"success": False, "message": "缺少订阅 ID。"}
+        self._sync_subscription(subscription_id)
+        return {"success": True, "subscription_id": subscription_id}
+
     def retry_error_subscriptions_for_platforms(self, platforms: set[str]) -> dict:
         normalized_platforms = {str(item or "").strip().lower() for item in platforms if str(item or "").strip()}
         normalized_platforms = {item for item in normalized_platforms if item in {"cn", "global"}}
