@@ -35,6 +35,11 @@ This document records MakerHub's Postgres-backed JSON state keys, common fields,
 | `remote_refresh_state` | `TaskStateStore` | remote refresh manager | dashboard, remote refresh page | `remote_refresh_state` |
 | `source_refresh_queue` | `TaskStateStore` | source refresh manager | dashboard, remote refresh page | `source_refresh_queue` |
 | `source_refresh_runs` | `TaskStateStore` | source refresh manager | dashboard, remote refresh page | `source_refresh_runs` |
+| `runtime_runs` | Runtime Engine | runtime engine writers | runtime APIs, dashboard, runtime-aware pages | `runtime.run.started`, `runtime.run.completed`, `runtime.run.blocked` |
+| `runtime_batches` | Runtime Engine | runtime engine writers | runtime APIs, dashboard, runtime-aware pages | `runtime.batch.progress`, `runtime.batch.completed` |
+| `runtime_failures` | Runtime Engine | runtime engine writers | runtime APIs, diagnostics, retry surfaces | `runtime.failure.created` |
+| `runtime_snapshots` | Runtime Engine | runtime engine writers | runtime APIs, dashboard snapshot readers | coarse runtime snapshot refresh |
+| `runtime_migration` | Runtime Engine | migration/compatibility helpers | runtime engine startup and diagnostics | migration marker only |
 | `model_flags` | `TaskStateStore` | model APIs, source deletion checks | model pages, catalog | `model_flags` |
 | `three_mf_limit_guard` | source health/archive worker | 3MF quota logic | dashboard, tasks, archive worker | `three_mf_limit_guard` |
 | `three_mf_daily_quota` | 3MF quota service | archive worker | archive worker, settings | `three_mf_daily_quota` |
@@ -51,6 +56,10 @@ This document records MakerHub's Postgres-backed JSON state keys, common fields,
 | Remote refresh | `idle`, `running`, `resuming`, `deferred`, `interrupted`, `success`, `error`, `disabled` |
 | Source refresh tasks | `queued`, `running`, `succeeded`, `failed`, `skipped`, `timed_out`, `cancelled` |
 | Source refresh runs | `queued`, `running`, `paused`, `resuming`, `completed`, `failed`, `interrupted`, `cancelled` |
+| Runtime types | `archive`, `subscription_sync`, `source_refresh`, `missing_3mf_retry` |
+| Runtime runs | `queued`, `discovering`, `planned`, `running`, `paused`, `blocked`, `completed`, `failed`, `cancelled`, `interrupted` |
+| Runtime batches | `queued`, `running`, `paused`, `blocked`, `completed`, `failed`, `cancelled`, `interrupted` |
+| Runtime failures | `failed`, `skipped`, `missing_3mf`, `verification_required`, `cookie_invalid`, `daily_limit`, `network_error`, `not_found` |
 
 These values are centralized in `app/services/state_contracts.py` for tests and low-risk consumers. Do not replace every string in the codebase mechanically; move consumers to constants only when it does not create circular imports or obscure local domain logic.
 
@@ -66,6 +75,16 @@ The dashboard listens to these state scopes:
 - `source_refresh_queue`
 - `source_refresh_runs`
 - `dashboard`
+
+The runtime engine emits coarse runtime scopes:
+
+- `runtime.run.started`
+- `runtime.batch.progress`
+- `runtime.batch.completed`
+- `runtime.run.completed`
+- `runtime.run.blocked`
+- `runtime.failure.created`
+- `account_health.changed`
 
 State events should trigger relevant payload refreshes, not broad full-page refreshes. A page that only shows source refresh status should not refresh source-library snapshots because an archive queue event arrived.
 
