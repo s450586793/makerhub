@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.24`
+> 当前版本：`v0.9.25`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,13 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-13 · v0.9.25
+
+- 新增轻量化运行核心，统一归档、缺失 `3MF` 重试、源端刷新和订阅同步的运行契约、状态存储、迁移预览、调度骨架和执行循环。
+- 归档任务、缺失 `3MF`、源端刷新和订阅同步已接入运行核心适配器，保留旧接口兼容，同时把运行态收口到 run / batch / failure / snapshot。
+- 任务页、首页、源端刷新页和订阅库开始读取运行核心快照，运行中的批次、同步和刷新状态优先使用统一快照展示。
+- 新增 `scripts/check_runtime_engine_flows.sh`，用于登录后快速检查 dashboard、tasks、runtime、source-refresh 和 subscriptions 关键 API 是否返回合法 JSON。
+
 ### 2026-06-13 · v0.9.24
 
 - 首页国内站 / 国际站点击“已验证”后，后端会保留原有同平台缺失 `3MF` 重试逻辑，并立即把对应源站账号健康快照标记为正常，避免旧 `Cookie 异常` / 验证残留继续污染首页。
@@ -218,14 +225,14 @@ uvicorn app.main:app --reload
 - 新增 `/api/tasks/missing-3mf/verification-verified` 登录态接口，复用现有验证类缺失 `3MF` 重试逻辑，并记录本次重试统计。
 - 前端状态卡兼容标准状态、中文“需要验证”和 `cf_clearance` 提示，避免 `Cookie 异常` 但实际为验证页时漏出重试入口。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-12 · v0.9.22
 
 - 源端刷新改为小批次执行，默认每轮最多处理 200 个模型，并在仍有剩余模型时 60 秒后续跑，避免一次处理数千模型导致长期卡在运行中且没有完成记录。
 - 旧 `remote_refresh_state` 未完成批次恢复时同步投影到 `source_refresh_runs`，源端刷新页可以看到恢复中和完成后的运行记录。
 - 恢复旧批次时同样套用批次上限，线上已有的大批次不会再一次性恢复全部剩余模型；补充新批次、旧批次恢复和运行记录投影回归测试。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-12 · v0.9.21
 
