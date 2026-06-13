@@ -150,6 +150,29 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         self.assertEqual(payload["automation_overview"]["subscriptions"]["count"], 1)
         self.assertEqual(payload["automation_overview"]["subscriptions"]["enabled_count"], 1)
 
+    def test_models_light_payload_does_not_build_decorated_models(self):
+        with patch.object(catalog, "get_decorated_models", side_effect=AssertionError("full model decoration should not run")), \
+                patch.object(catalog, "load_archive_model_index", return_value=[
+                    {
+                        "model_dir": "MW_1",
+                        "title": "模型 A",
+                        "source": "cn",
+                        "author": {"name": "作者"},
+                        "tags": ["tag"],
+                        "stats": {"downloads": 1, "likes": 2, "prints": 3},
+                        "cover_url": "/archive/MW_1/cover.webp",
+                        "collect_ts": 10,
+                        "publish_ts": 8,
+                        "local_flags": {},
+                    }
+                ]), \
+                patch.object(catalog.TaskStateStore, "load_model_flags", return_value={"favorites": [], "printed": [], "deleted": []}):
+            payload = catalog.build_models_light_payload(page=1, page_size=12)
+
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["items"][0]["model_dir"], "MW_1")
+        self.assertTrue(payload["light"])
+
     def test_build_runtime_diagnostics_returns_database_aggregates(self):
         now = datetime(2026, 6, 3, 6, 0, tzinfo=timezone.utc)
         connection = _FakeConnection(

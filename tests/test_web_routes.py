@@ -19,6 +19,7 @@ class RemovedEmbeddedVerificationWebRouteTest(unittest.TestCase):
         self.assertIn("/api/dashboard", paths)
         self.assertIn("/api/dashboard/light", paths)
         self.assertIn("/api/models", paths)
+        self.assertIn("/api/models/light", paths)
         self.assertIn("/api/tasks", paths)
         self.assertIn("/api/tasks/light", paths)
         self.assertIn("/api/tasks/missing-3mf/verification-verified", paths)
@@ -29,9 +30,11 @@ class RemovedEmbeddedVerificationWebRouteTest(unittest.TestCase):
         self.assertIn("/api/runtime/failures/retry", paths)
         self.assertIn("/api/remote-refresh", paths)
         self.assertIn("/api/source-refresh", paths)
+        self.assertIn("/api/source-library/light", paths)
         self.assertIn("/api/source-refresh/run", paths)
         self.assertIn("/api/source-refresh/repair", paths)
         self.assertIn("/api/subscriptions", paths)
+        self.assertIn("/api/subscriptions/light", paths)
         self.assertIn("/api/logs", paths)
 
     def test_logs_api_forwards_filter_parameters(self):

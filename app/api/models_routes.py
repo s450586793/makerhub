@@ -8,6 +8,7 @@ from app.api import config as config_api
 router = APIRouter(prefix="/api")
 
 router.add_api_route("/models", config_api.get_models_data, methods=["GET"])
+router.add_api_route("/models/light", config_api.get_models_light_data, methods=["GET"])
 router.add_api_route("/models/{model_dir:path}/comments", config_api.get_model_detail_comments, methods=["GET"])
 router.add_api_route("/models/{model_dir:path}/download-all", config_api.download_model_all_files, methods=["GET"])
 router.add_api_route("/models/{model_dir:path}/bambu-studio-link", config_api.create_bambu_studio_download_link, methods=["POST"])

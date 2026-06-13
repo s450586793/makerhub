@@ -320,8 +320,13 @@ function buildSubscriptionsQuery(page = 1, options = {}) {
 }
 
 async function fetchSubscriptionsPage(page = 1, options = {}) {
+  if (options.light) {
+    return normalizeSubscriptionsPayload(
+      await apiRequest("/api/subscriptions/light?" + buildSubscriptionsQuery(page, options).toString()),
+    );
+  }
   return normalizeSubscriptionsPayload(
-    await apiRequest(`/api/subscriptions?${buildSubscriptionsQuery(page, options).toString()}`),
+    await apiRequest("/api/subscriptions?" + buildSubscriptionsQuery(page, options).toString()),
   );
 }
 
@@ -331,13 +336,66 @@ function resetCreateForm() {
   createDialog.cron = String(payload.value.settings?.default_cron || DEFAULT_SUBSCRIPTION_SETTINGS.default_cron);
 }
 
-async function load({ silent = false, pages = routePage() } = {}) {
+async function load({ silent = false, pages = routePage(), hydrateFull = false } = {}) {
   const currentToken = ++requestToken;
   disconnectObserver();
   loadingMore.value = false;
   if (!initialLoaded.value) {
     initialLoadFailed.value = false;
   }
+  const pagesToLoad = Math.max(Number(pages) || 1, 1);
+  let failed = false;
+  let shouldHydrateFull = false;
+  try {
+    const response = await fetchSubscriptionsPage(pagesToLoad, {
+      includeUntilPage: pagesToLoad > 1,
+      light: true,
+    });
+    if (currentToken !== requestToken) {
+      return;
+    }
+    const section = subscriptionSourcesSection(response);
+    payload.value = replaceSubscriptionSourcesSection(
+      response,
+      section?.items || [],
+      {
+        ...(section || {}),
+        page: pagesToLoad,
+        page_size: PAGE_SIZE,
+        has_more: Boolean(section?.has_more),
+        total: Number(section?.total || section?.items?.length || 0),
+      },
+    );
+    initialLoaded.value = true;
+    initialLoadFailed.value = false;
+    pruneSelectionsToLoadedCards();
+    rememberSubscriptionsPage();
+    if (hydrateFull) {
+      shouldHydrateFull = true;
+    }
+  } catch (error) {
+    failed = true;
+    if (!initialLoaded.value && currentToken === requestToken) {
+      initialLoadFailed.value = true;
+    }
+    if (!silent) {
+      status.value = error instanceof Error ? error.message : "订阅数据加载失败。";
+    }
+  } finally {
+    if (currentToken === requestToken && !failed) {
+      await nextTick();
+      ensureObserver();
+    }
+  }
+  if (shouldHydrateFull && currentToken === requestToken) {
+    void refreshFullSubscriptions({ pages: pagesToLoad });
+  }
+}
+
+async function refreshFullSubscriptions({ pages = Number(subscriptionSources.value?.page || routePage()) } = {}) {
+  const currentToken = ++requestToken;
+  disconnectObserver();
+  loadingMore.value = false;
   const pagesToLoad = Math.max(Number(pages) || 1, 1);
   let failed = false;
   try {
@@ -363,16 +421,13 @@ async function load({ silent = false, pages = routePage() } = {}) {
     rememberSubscriptionsPage();
   } catch (error) {
     failed = true;
-    if (!initialLoaded.value && currentToken === requestToken) {
-      initialLoadFailed.value = true;
-    }
-    if (!silent) {
-      status.value = error instanceof Error ? error.message : "订阅数据加载失败。";
-    }
+    status.value = error instanceof Error ? error.message : "刷新完整订阅库失败。";
   } finally {
-    if (currentToken === requestToken && !failed) {
+    if (currentToken === requestToken) {
       await nextTick();
-      ensureObserver();
+      if (!failed) {
+        ensureObserver();
+      }
     }
   }
 }
@@ -564,7 +619,7 @@ async function createSubscription() {
     closeCreateDialog(true);
     resetCreateForm();
     await updateRoutePage(1);
-    await load({ silent: true, pages: 1 });
+    await load({ silent: true, pages: 1, hydrateFull: true });
   } catch (error) {
     status.value = error instanceof Error ? error.message : "创建订阅失败。";
   } finally {
@@ -578,11 +633,11 @@ onMounted(async () => {
   unsubscribeStateRefresh = subscribeStateRefresh(
     ["subscriptions_state", "source_library", "archive_queue"],
     () => {
-      void load({ silent: true, pages: Number(subscriptionSources.value?.page || routePage()) });
+      void load({ silent: true, pages: Number(subscriptionSources.value?.page || routePage()), hydrateFull: true });
     },
   );
   hydrateSubscriptionsPageFromCache();
-  await load();
+  await load({ hydrateFull: true });
   void perf.finish();
 });
 

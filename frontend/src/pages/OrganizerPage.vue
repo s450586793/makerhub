@@ -1180,9 +1180,28 @@ async function refreshSourceLibrary({ silent = true } = {}) {
   sourceLibraryLoading.value = true;
   try {
     const [sourceLibraryPayloadResponse] = await Promise.all([
-      apiRequest("/api/source-library"),
+      apiRequest("/api/source-library/light"),
       refreshConfig(),
     ]);
+    sourceLibraryPayload.value = {
+      sections: Array.isArray(sourceLibraryPayloadResponse?.sections) ? sourceLibraryPayloadResponse.sections : [],
+    };
+    sourceLibraryRefreshDeferred = false;
+    rememberOrganizerPage();
+    void refreshFullSourceLibrary({ silent: true });
+  } catch (error) {
+    sourceLibraryRefreshDeferred = true;
+    if (!silent) {
+      console.error("本地库卡片刷新失败", error);
+    }
+  } finally {
+    sourceLibraryLoading.value = false;
+  }
+}
+
+async function refreshFullSourceLibrary({ silent = true } = {}) {
+  try {
+    const sourceLibraryPayloadResponse = await apiRequest("/api/source-library");
     sourceLibraryPayload.value = {
       sections: Array.isArray(sourceLibraryPayloadResponse?.sections) ? sourceLibraryPayloadResponse.sections : [],
     };
@@ -1191,10 +1210,8 @@ async function refreshSourceLibrary({ silent = true } = {}) {
   } catch (error) {
     sourceLibraryRefreshDeferred = true;
     if (!silent) {
-      console.error("本地库卡片刷新失败", error);
+      console.error("本地库完整卡片刷新失败", error);
     }
-  } finally {
-    sourceLibraryLoading.value = false;
   }
 }
 

@@ -62,6 +62,22 @@ async def get_subscriptions_data(
     return await run_web_io(_payload)
 
 
+@router.get("/subscriptions/light")
+async def get_subscriptions_light_data(
+    page: int = Query(1, ge=1, description="订阅来源分页页码"),
+    page_size: int = Query(8, ge=1, le=120, description="每页订阅来源数量"),
+    limit: int = Query(0, ge=0, le=2000, description="从第一页起一次返回的数量"),
+):
+    def _payload() -> dict:
+        payload = subscription_manager.list_light_payload(page=page, page_size=page_size, limit=limit)
+        runtime_subscriptions = _runtime_snapshot("subscriptions")
+        if runtime_subscriptions:
+            payload["runtime"] = {"subscriptions": runtime_subscriptions}
+        return payload
+
+    return await run_web_io(_payload)
+
+
 @router.post("/subscriptions")
 async def create_subscription(payload: SubscriptionCreateRequest, request: Request):
     _require_session_auth(request)

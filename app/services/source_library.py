@@ -1007,6 +1007,37 @@ def _finalize_group(group: dict[str, Any], models_by_dir: dict[str, dict], metad
     return group
 
 
+def _finalize_light_group(group: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
+    if metadata.get("title"):
+        group["title"] = metadata["title"]
+    if metadata.get("subtitle"):
+        group["subtitle"] = metadata["subtitle"]
+    if metadata.get("avatar_url"):
+        group["avatar_url"] = metadata["avatar_url"]
+    if metadata.get("cover_url"):
+        group["cover_url"] = metadata["cover_url"]
+    if metadata.get("preview_snapshot_filename"):
+        preview_snapshot_url = _source_preview_snapshot_metadata(group, metadata, [])
+        if preview_snapshot_url:
+            group["preview_snapshot_url"] = preview_snapshot_url
+    group["verified"] = bool(metadata.get("verified") or group.get("verified"))
+    group["followers_count"] = _safe_int(metadata.get("followers_count") or group.get("followers_count"))
+    group["likes_count"] = _safe_int(metadata.get("likes_count") or group.get("likes_count"))
+    group["remote_model_count"] = _safe_int(metadata.get("remote_model_count") or group.get("remote_model_count"))
+    if metadata.get("description"):
+        group["description"] = metadata["description"]
+    group["local_model_count"] = 0
+    group["model_count"] = _safe_int(group.get("remote_model_count"))
+    group["stats"] = _build_group_stats(group, [])
+    group["sort_score"] = max(
+        _safe_int(group.get("followers_count")),
+        _safe_int(group.get("model_count")),
+        _safe_int(group.get("likes_count")),
+    )
+    group.pop("_model_dir_set", None)
+    return group
+
+
 def _build_group_stats(group: dict[str, Any], members: list[dict]) -> list[dict[str, Any]]:
     kind = str(group.get("kind") or "")
     model_count = _safe_int(group.get("model_count")) or len(members)
@@ -1225,6 +1256,53 @@ def _group_subscription_sources(
     return authors, collections, favorites
 
 
+def build_subscription_source_cards_light(config: Any, *, metadata_cache: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
+    metadata_items = metadata_cache if isinstance(metadata_cache, dict) else dict(load_source_metadata_cache().get("items") or {})
+    cards: list[dict[str, Any]] = []
+    for subscription in getattr(config, "subscriptions", []) or []:
+        source_url = normalize_source_url(getattr(subscription, "url", ""))
+        if not source_url:
+            continue
+        site = _site_from_url(source_url)
+        mode = str(getattr(subscription, "mode", "") or "").strip()
+        if mode == "author_upload":
+            author_url = _author_profile_url(source_url) or source_url
+            handle = _extract_handle_from_url(author_url or source_url)
+            title = _normalize_text(getattr(subscription, "name", "")) or (f"@{handle}" if handle else "作者订阅")
+            group = _base_group(
+                key=_source_key("author", site, author_url or source_url),
+                kind="author",
+                card_kind="author",
+                title=title,
+                subtitle=f"@{handle}" if handle else "MakerWorld 作者",
+                site=site,
+                canonical_url=source_url,
+            )
+        elif mode == "collection_models":
+            kind = _subscription_kind(source_url)
+            title = _normalize_text(getattr(subscription, "name", ""))
+            if not title:
+                title = "合集" if kind == "collection" else "收藏夹"
+            group = _base_group(
+                key=_source_group_key(kind, site, source_url),
+                kind=kind,
+                card_kind="collection",
+                title=title,
+                subtitle="MakerWorld 来源",
+                site=site,
+                canonical_url=_source_reference_for_key(kind, source_url),
+            )
+        else:
+            continue
+        group["subscription_id"] = str(getattr(subscription, "id", "") or "")
+        group["subscription_mode"] = mode
+        group["subscription_enabled"] = bool(getattr(subscription, "enabled", False))
+        group["subscription_updated_at"] = str(getattr(subscription, "updated_at", "") or "")
+        group["subscription_created_at"] = str(getattr(subscription, "created_at", "") or "")
+        cards.append(_finalize_light_group(group, metadata_items.get(group["key"]) or {}))
+    return cards
+
+
 def _group_sort_timestamp(group: dict[str, Any]) -> int:
     for key in ("subscription_updated_at", "subscription_created_at"):
         raw = str(group.get(key) or "").strip()
@@ -1322,6 +1400,81 @@ def build_source_library_payload(q: str = "", store: Optional[JsonStore] = None,
     if _normalize_text(q):
         return _build_source_library_payload_uncached(q, store=store, task_store=task_store)
     return _source_library_payload_from_cache_or_build(store=store, task_store=task_store)
+
+
+def build_source_library_light_payload(q: str = "", store: Optional[JsonStore] = None, task_store: Optional[TaskStateStore] = None) -> dict[str, Any]:
+    store = store or JsonStore()
+    config = store.load()
+    metadata_payload = load_source_metadata_cache()
+    metadata_cache = dict(metadata_payload.get("items") or {})
+    source_groups = build_subscription_source_cards_light(config, metadata_cache=metadata_cache)
+    normalized_query = _normalize_text(q).lower()
+    if normalized_query:
+        source_groups = [
+            item
+            for item in source_groups
+            if normalized_query in str(item.get("title") or "").lower()
+            or normalized_query in str(item.get("subtitle") or "").lower()
+            or normalized_query in str(item.get("description") or "").lower()
+        ]
+    authors = [item for item in source_groups if item.get("kind") == "author"]
+    collections = [item for item in source_groups if item.get("kind") == "collection"]
+    favorites = [item for item in source_groups if item.get("kind") == "favorite"]
+    sections = [
+        {"key": "authors", "label": "作者", "count": len(authors), "items": _sort_source_groups(authors, "recent")},
+        {"key": "collections", "label": "合集", "count": len(collections), "items": _sort_source_groups(collections, "recent")},
+        {"key": "favorites", "label": "收藏夹", "count": len(favorites), "items": _sort_source_groups(favorites, "recent")},
+        {"key": "locals", "label": "本地库", "count": 0, "items": []},
+        {"key": "states", "label": "状态", "count": 0, "items": []},
+    ]
+    total_cards = sum(len(section["items"]) for section in sections)
+    return {
+        "sections": sections,
+        "count": total_cards,
+        "filters": {"q": q},
+        "summary": {
+            "card_count": total_cards,
+            "model_count": 0,
+        },
+        "cache": {
+            "stale": True,
+            "refreshing": bool(_SOURCE_LIBRARY_PAYLOAD_REFRESH_STATE.get("running")),
+            "updated_at": str(metadata_payload.get("updated_at") or _now_iso()),
+        },
+        "light": True,
+    }
+
+
+def build_subscription_overview_light_payload(
+    *,
+    store: Optional[JsonStore] = None,
+    task_store: Optional[TaskStateStore] = None,
+) -> dict[str, Any]:
+    store = store or JsonStore()
+    config = store.load()
+    settings = config.subscription_settings.model_dump()
+    source_groups = build_subscription_source_cards_light(config)
+    if settings.get("hide_disabled_from_cards"):
+        source_groups = [item for item in source_groups if item.get("subscription_enabled")]
+    source_groups = _sort_source_groups(source_groups, str(settings.get("card_sort") or "recent"))
+    return {
+        "sections": [
+            {
+                "key": "subscription_sources",
+                "label": "订阅来源",
+                "count": len(source_groups),
+                "items": source_groups,
+            },
+            {
+                "key": "states",
+                "label": "订阅状态",
+                "count": 0,
+                "items": [],
+            },
+        ],
+        "settings": settings,
+        "light": True,
+    }
 
 
 def build_subscription_overview_payload(

@@ -135,6 +135,22 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertTrue(state["manual_requested_at"])
         self.assertTrue(state["next_run_at"])
 
+    def test_list_light_payload_does_not_build_full_source_library(self):
+        with patch.object(subscriptions, "build_subscription_overview_payload", side_effect=AssertionError("full overview should not run")):
+            payload = self.manager.list_light_payload(page=1, page_size=8)
+
+        self.assertTrue(payload["light"])
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["sections"][0]["key"], "subscription_sources")
+        self.assertEqual(payload["sections"][0]["items"][0]["subscription_id"], "sub-1")
+
+        state = self._subscription_state()
+        self.assertFalse(state["running"])
+        self.assertEqual(state["status"], "idle")
+        self.assertEqual(state["last_message"], "订阅已创建，等待首次同步。")
+        self.assertFalse(state["manual_requested_at"])
+        self.assertTrue(state["next_run_at"])
+
     def test_subscription_payload_limit_returns_source_cards_through_requested_page(self):
         manager = subscriptions.SubscriptionManager(
             archive_manager=SimpleNamespace(),

@@ -10,6 +10,7 @@ from app.services.request_threads import run_web_io
 from app.services.source_library import (
     SOURCE_LIBRARY_SNAPSHOT_DIR,
     build_source_group_models_payload,
+    build_source_library_light_payload,
     build_source_library_payload,
     build_state_group_models_payload,
 )
@@ -24,6 +25,18 @@ async def get_source_library_data(
 ):
     return await run_web_io(
         build_source_library_payload,
+        q=q,
+        store=store,
+        task_store=task_state_store,
+    )
+
+
+@router.get("/source-library/light")
+async def get_source_library_light_data(
+    q: str = Query("", description="搜索来源卡标题"),
+):
+    return await run_web_io(
+        build_source_library_light_payload,
         q=q,
         store=store,
         task_store=task_state_store,

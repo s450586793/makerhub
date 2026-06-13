@@ -18,6 +18,7 @@ from app.services.source_library import (
     _source_key,
     _render_source_preview_snapshot,
     _source_preview_snapshot_signature,
+    build_source_library_light_payload,
     build_source_library_payload,
     build_source_group_models_payload,
     build_state_group_models_payload,
@@ -111,6 +112,32 @@ class SourceLibraryTest(unittest.TestCase):
         self.assertEqual(payload["stats"][0]["value"], 0)
         self.assertNotIn("recent_models", payload)
         snapshot_mock.assert_called_once_with()
+
+    def test_source_library_light_payload_does_not_group_all_models(self):
+        subscription = SubscriptionRecord(
+            id="sub-1",
+            name="作者",
+            url="https://makerworld.com/zh/@demo/upload",
+            mode="author_upload",
+            enabled=True,
+        )
+        config = type(
+            "ConfigStub",
+            (),
+            {
+                "subscriptions": [subscription],
+                "subscription_settings": type("SettingsStub", (), {"model_dump": lambda self: {"card_sort": "recent", "hide_disabled_from_cards": False}})(),
+            },
+        )()
+        store = type("StoreStub", (), {"load": lambda self: config})()
+        task_store = type("TaskStoreStub", (), {})()
+
+        with patch("app.services.source_library._group_models", side_effect=AssertionError("full source grouping should not run")), \
+                patch("app.services.source_library.load_source_metadata_cache", return_value={"items": {}}):
+            payload = build_source_library_light_payload(store=store, task_store=task_store)
+
+        self.assertTrue(payload["light"])
+        self.assertEqual(payload["sections"][0]["items"][0]["subscription_id"], "sub-1")
 
     def test_subscription_flags_ignore_collection_missing_items(self):
         item = {

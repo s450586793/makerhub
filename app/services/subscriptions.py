@@ -31,6 +31,7 @@ from app.services.catalog import get_archive_snapshot, invalidate_archive_snapsh
 from app.services.process_jobs import run_discover_batch_urls_job
 from app.services.proxy_policy import temporary_proxy_env
 from app.services.source_library import (
+    build_subscription_overview_light_payload,
     build_subscription_overview_payload,
     refresh_source_preview_snapshots,
     refresh_subscription_source_metadata,
@@ -716,6 +717,49 @@ class SubscriptionManager:
             },
             "sections": sections,
             "settings": overview.get("settings") or config.subscription_settings.model_dump(),
+        }
+
+    def list_light_payload(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = DEFAULT_SUBSCRIPTION_SOURCE_PAGE_SIZE,
+        limit: int = 0,
+    ) -> dict:
+        self._ensure_state_records()
+        config = self.store.load()
+        state_payload = self.task_store.load_subscriptions_state()
+        state_map = {str(item.get("id") or ""): item for item in state_payload.get("items") or []}
+        items = [self._merge_subscription_record_light(item, state_map.get(item.id)) for item in config.subscriptions]
+        overview = build_subscription_overview_light_payload(store=self.store, task_store=self.task_store)
+        effective_page, effective_page_size = _normalize_subscription_source_page(page, page_size)
+        effective_limit = max(int(limit or 0), 0)
+        pagination_page = 1 if effective_limit > 0 else effective_page
+        pagination_page_size = min(effective_limit, 2000) if effective_limit > 0 else effective_page_size
+        sections = _paginate_subscription_source_sections(
+            list(overview.get("sections") or []),
+            page=pagination_page,
+            page_size=pagination_page_size,
+            max_page_size=2000 if effective_limit > 0 else MAX_SUBSCRIPTION_SOURCE_PAGE_SIZE,
+        )
+        if effective_limit > 0:
+            for section in sections:
+                if not isinstance(section, dict) or section.get("key") != "subscription_sources":
+                    continue
+                section["page"] = effective_page
+                section["page_size"] = effective_page_size
+                section["has_more"] = min(effective_limit, 2000) < int(section.get("total") or 0)
+        return {
+            "items": items,
+            "count": len(items),
+            "summary": {
+                "enabled": len([item for item in items if item["enabled"]]),
+                "running": len([item for item in items if item["running"]]),
+                "deleted_marked": sum(int(item.get("deleted_count") or 0) for item in items),
+            },
+            "sections": sections,
+            "settings": overview.get("settings") or config.subscription_settings.model_dump(),
+            "light": True,
         }
 
     def create_subscription(
@@ -2194,4 +2238,32 @@ class SubscriptionManager:
             "tracked_count": len(tracked_items),
             "deleted_count": len(deleted_items),
             "deleted_items": deleted_items,
+        }
+
+    def _merge_subscription_record_light(self, record: SubscriptionRecord, state: Optional[dict]) -> dict:
+        state = state or {}
+        return {
+            "id": record.id,
+            "name": record.name or _default_subscription_name(record.url, record.mode),
+            "url": record.url,
+            "mode": record.mode,
+            "cron": record.cron,
+            "enabled": bool(record.enabled),
+            "created_at": record.created_at,
+            "updated_at": record.updated_at,
+            "status": str(state.get("status") or "idle"),
+            "running": bool(state.get("running", False)),
+            "next_run_at": str(state.get("next_run_at") or ""),
+            "last_run_at": str(state.get("last_run_at") or ""),
+            "last_success_at": str(state.get("last_success_at") or ""),
+            "last_error_at": str(state.get("last_error_at") or ""),
+            "last_message": str(state.get("last_message") or ""),
+            "last_discovered_count": int(state.get("last_discovered_count") or 0),
+            "last_new_count": int(state.get("last_new_count") or 0),
+            "last_enqueued_count": int(state.get("last_enqueued_count") or 0),
+            "last_deleted_count": int(state.get("last_deleted_count") or 0),
+            "current_count": int(state.get("last_discovered_count") or 0),
+            "tracked_count": int(state.get("last_discovered_count") or 0),
+            "deleted_count": int(state.get("last_deleted_count") or 0),
+            "deleted_items": [],
         }

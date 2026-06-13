@@ -74,6 +74,7 @@ from app.schemas.models import OrganizeTask
 from app.services.catalog import (
     build_dashboard_light_payload,
     build_dashboard_payload,
+    build_models_light_payload,
     build_models_payload,
     get_model_comments_page,
     get_model_detail,
@@ -3281,6 +3282,27 @@ async def get_models_data(
 ):
     return await run_web_io(
         build_models_payload,
+        q=q,
+        source=source,
+        tag=tag,
+        sort_key=sort,
+        page=page,
+        page_size=page_size,
+        limit=limit,
+    )
+
+
+async def get_models_light_data(
+    q: str = Query("", description="搜索标题、作者、标签"),
+    source: str = Query("all", description="全部 / 国内 / 国际 / 本地"),
+    tag: str = Query("", description="按标签过滤"),
+    sort: str = Query("collectDate", description="collectDate / downloads / likes / prints"),
+    page: int = Query(1, ge=1, description="分页页码"),
+    page_size: int = Query(8, ge=1, le=120, description="每页数量"),
+    limit: int = Query(0, ge=0, le=2000, description="从第一页起一次返回的数量"),
+):
+    return await run_web_io(
+        build_models_light_payload,
         q=q,
         source=source,
         tag=tag,

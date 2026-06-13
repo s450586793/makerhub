@@ -208,7 +208,10 @@ function buildRouteQuery(options = {}) {
 }
 
 async function fetchPage(page, options = {}) {
-  return apiRequest(`/api/models?${buildQuery(page, options).toString()}`);
+  if (options.light) {
+    return apiRequest("/api/models/light?" + buildQuery(page, options).toString());
+  }
+  return apiRequest("/api/models?" + buildQuery(page, options).toString());
 }
 
 function decrementCount(value, amount) {
@@ -419,7 +422,7 @@ function buildModelReturnTo(modelDir) {
   }).fullPath;
 }
 
-async function load({ append = false, refresh = false } = {}) {
+async function load({ append = false, refresh = false, hydrateFull = false } = {}) {
   const currentToken = ++requestToken;
   if (!append) {
     loadMoreToken += 1;
@@ -432,6 +435,7 @@ async function load({ append = false, refresh = false } = {}) {
   const response = suppressLocallyDeletedItems(await fetchPage(nextPage, {
     cacheKey: cacheKeyBase ? `${cacheKeyBase}-${nextPage}` : "",
     includeUntilPage: !append && nextPage > 1,
+    light: !append,
   }));
   if (currentToken !== requestToken) {
     return;
@@ -459,6 +463,9 @@ async function load({ append = false, refresh = false } = {}) {
   ensureObserver();
   if (!append) {
     await scrollToRouteAnchor();
+    if (hydrateFull) {
+      void refreshFullModelList({ refresh });
+    }
   }
 }
 
@@ -488,6 +495,38 @@ async function reloadVisiblePages({ refresh = false } = {}) {
   rememberModelList();
   await nextTick();
   ensureObserver();
+}
+
+async function refreshFullModelList({ refresh = false } = {}) {
+  const pagesToLoad = Math.max(Number(payload.value.page) || routePage(), 1);
+  const currentToken = ++requestToken;
+  loadMoreToken += 1;
+  loadingMore.value = false;
+  syncFiltersFromRoute();
+  const cacheKeyBase = refresh ? Date.now() : "";
+
+  try {
+    const response = suppressLocallyDeletedItems(await fetchPage(pagesToLoad, {
+      cacheKey: cacheKeyBase ? `${cacheKeyBase}-${pagesToLoad}` : "",
+      includeUntilPage: pagesToLoad > 1,
+    }));
+
+    if (currentToken !== requestToken) {
+      return;
+    }
+
+    payload.value = {
+      ...response,
+      items: response.items || [],
+      count: (response.items || []).length,
+      page: pagesToLoad,
+    };
+    rememberModelList();
+    await nextTick();
+    ensureObserver();
+  } catch (error) {
+    status.value = error instanceof Error ? error.message : "刷新完整模型库失败。";
+  }
 }
 
 function findModelCardElement(modelDir) {
@@ -868,7 +907,7 @@ async function restoreOne(modelDir) {
 watch(() => route.fullPath, () => {
   status.value = "";
   void hydrateModelListFromCache();
-  void load({ append: false }).catch((error) => {
+  void load({ append: false, hydrateFull: true }).catch((error) => {
     status.value = error instanceof Error ? error.message : "模型列表加载失败。";
     loaded.value = true;
   });
@@ -878,7 +917,7 @@ onMounted(async () => {
   const perf = createPagePerformanceTracker({ page: "models", route: () => route.fullPath });
   await hydrateModelListFromCache();
   try {
-    await load({ append: false });
+    await load({ append: false, hydrateFull: true });
   } catch (error) {
     status.value = error instanceof Error ? error.message : "模型列表加载失败。";
     loaded.value = true;

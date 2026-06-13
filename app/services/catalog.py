@@ -2510,16 +2510,75 @@ def _tags_from_items(items: list[dict]) -> list[str]:
     return sorted(tags)
 
 
-def build_models_payload(
+def _safe_int_value(value: Any) -> int:
+    try:
+        if value in ("", None):
+            return 0
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _normalize_light_model_item(raw_item: dict[str, Any]) -> dict[str, Any]:
+    item = dict(raw_item or {})
+    model_dir = str(item.get("model_dir") or "").strip().strip("/")
+    source = str(item.get("source") or "").strip().lower()
+    if source not in SOURCE_LABELS:
+        source = "local"
+    author = item.get("author") if isinstance(item.get("author"), dict) else {}
+    stats = item.get("stats") if isinstance(item.get("stats"), dict) else {}
+    local_flags = item.get("local_flags") if isinstance(item.get("local_flags"), dict) else {}
+    subscription_flags = item.get("subscription_flags") if isinstance(item.get("subscription_flags"), dict) else {}
+    return {
+        **item,
+        "model_dir": model_dir,
+        "detail_path": str(item.get("detail_path") or f"/models/{model_dir}" if model_dir else ""),
+        "title": str(item.get("title") or model_dir or "未命名模型"),
+        "id": str(item.get("id") or ""),
+        "source": source,
+        "source_label": str(item.get("source_label") or SOURCE_LABELS.get(source, "本地模型")),
+        "origin_url": str(item.get("origin_url") or ""),
+        "author": {
+            **author,
+            "name": str(author.get("name") or "未知作者"),
+            "url": str(author.get("url") or ""),
+            "avatar_url": str(author.get("avatar_url") or ""),
+            "avatar_remote_url": str(author.get("avatar_remote_url") or ""),
+        },
+        "cover_url": str(item.get("cover_url") or _sample_cover(str(item.get("title") or model_dir or "MakerHub"))),
+        "cover_remote_url": str(item.get("cover_remote_url") or ""),
+        "tags": [str(tag_value) for tag_value in item.get("tags") or [] if str(tag_value).strip()],
+        "stats": {
+            "downloads": _safe_int_value(stats.get("downloads")),
+            "likes": _safe_int_value(stats.get("likes")),
+            "prints": _safe_int_value(stats.get("prints")),
+        },
+        "profile_summary": item.get("profile_summary") if isinstance(item.get("profile_summary"), dict) else {},
+        "collect_ts": _safe_int_value(item.get("collect_ts")),
+        "collect_date": str(item.get("collect_date") or ""),
+        "publish_ts": _safe_int_value(item.get("publish_ts")),
+        "publish_date": str(item.get("publish_date") or ""),
+        "remote_sync": item.get("remote_sync") if isinstance(item.get("remote_sync"), dict) else {},
+        "local_flags": {
+            "favorite": bool(local_flags.get("favorite")),
+            "printed": bool(local_flags.get("printed")),
+            "deleted": bool(local_flags.get("deleted")),
+        },
+        "subscription_flags": {
+            "deleted_on_source": bool(subscription_flags.get("deleted_on_source")),
+            "deleted_sources": list(subscription_flags.get("deleted_sources") or []),
+        },
+    }
+
+
+def _filter_model_items(
+    *,
+    all_models: list[dict],
+    visible_models: list[dict],
     q: str = "",
     source: str = "all",
     tag: str = "",
-    sort_key: str = "collectDate",
-    page: int = 1,
-    page_size: int = 8,
-    limit: int = 0,
-) -> dict:
-    all_models, visible_models = get_decorated_models()
+) -> tuple[list[dict], str]:
     normalized_query = q.strip().lower()
     normalized_tag = tag.strip().lower()
     normalized_source = source.strip().lower() or "all"
@@ -2534,13 +2593,13 @@ def build_models_payload(
         items = [
             item
             for item in items
-            if normalized_query in item["title"].lower()
-            or normalized_query in item["author"]["name"].lower()
-            or any(normalized_query in tag_value.lower() for tag_value in item["tags"])
+            if normalized_query in str(item.get("title") or "").lower()
+            or normalized_query in str(item.get("author", {}).get("name") or "").lower()
+            or any(normalized_query in str(tag_value).lower() for tag_value in item.get("tags") or [])
         ]
 
     if normalized_source != "all":
-        items = [item for item in items if item["source"] == normalized_source]
+        items = [item for item in items if item.get("source") == normalized_source]
 
     if normalized_tag:
         if normalized_tag == "__favorite__":
@@ -2552,8 +2611,23 @@ def build_models_payload(
         elif normalized_tag == "__local_deleted__":
             items = [item for item in items if item.get("local_flags", {}).get("deleted")]
         else:
-            items = [item for item in items if any(tag_value.lower() == normalized_tag for tag_value in item["tags"])]
+            items = [item for item in items if any(str(tag_value).lower() == normalized_tag for tag_value in item.get("tags") or [])]
+    return items, normalized_source
 
+
+def _paginate_models_payload(
+    *,
+    items: list[dict],
+    visible_models: list[dict],
+    q: str = "",
+    source: str = "all",
+    tag: str = "",
+    sort_key: str = "collectDate",
+    page: int = 1,
+    page_size: int = 8,
+    limit: int = 0,
+    light: bool = False,
+) -> dict:
     items = _sort_models(items, sort_key)
     safe_page_size = max(1, min(int(page_size or 8), 120))
     safe_page = max(int(page or 1), 1)
@@ -2568,10 +2642,7 @@ def build_models_payload(
         end = start + safe_page_size
     paged_items = items[start:end]
 
-    all_tags = _tags_from_items(visible_models)
-    source_counts = _source_counts_from_items(visible_models)
-
-    return {
+    payload = {
         "items": paged_items,
         "count": len(paged_items),
         "filtered_total": total_filtered,
@@ -2579,15 +2650,85 @@ def build_models_payload(
         "page": safe_page,
         "page_size": safe_page_size,
         "has_more": end < total_filtered,
-        "tags": all_tags,
-        "source_counts": source_counts,
+        "tags": _tags_from_items(visible_models),
+        "source_counts": _source_counts_from_items(visible_models),
         "filters": {
             "q": q,
-            "source": normalized_source,
+            "source": source,
             "tag": tag,
             "sort": sort_key,
         },
     }
+    if light:
+        payload["light"] = True
+    return payload
+
+
+def build_models_payload(
+    q: str = "",
+    source: str = "all",
+    tag: str = "",
+    sort_key: str = "collectDate",
+    page: int = 1,
+    page_size: int = 8,
+    limit: int = 0,
+) -> dict:
+    all_models, visible_models = get_decorated_models()
+    items, normalized_source = _filter_model_items(
+        all_models=all_models,
+        visible_models=visible_models,
+        q=q,
+        source=source,
+        tag=tag,
+    )
+    return _paginate_models_payload(
+        items=items,
+        visible_models=visible_models,
+        q=q,
+        source=normalized_source,
+        tag=tag,
+        sort_key=sort_key,
+        page=page,
+        page_size=page_size,
+        limit=limit,
+    )
+
+
+def build_models_light_payload(
+    q: str = "",
+    source: str = "all",
+    tag: str = "",
+    sort_key: str = "collectDate",
+    page: int = 1,
+    page_size: int = 8,
+    limit: int = 0,
+) -> dict:
+    indexed_models = load_archive_model_index()
+    if indexed_models is None:
+        all_models, visible_models = get_decorated_models()
+    else:
+        all_models = [_normalize_light_model_item(item) for item in indexed_models if isinstance(item, dict)]
+        all_models = _apply_model_flags(all_models)
+        visible_models = _visible_models(all_models)
+    items, normalized_source = _filter_model_items(
+        all_models=all_models,
+        visible_models=visible_models,
+        q=q,
+        source=source,
+        tag=tag,
+    )
+    return _paginate_models_payload(
+        items=items,
+        visible_models=visible_models,
+        q=q,
+        source=normalized_source,
+        tag=tag,
+        sort_key=sort_key,
+        page=page,
+        page_size=page_size,
+        limit=limit,
+        light=True,
+    )
 
 
 def get_model_detail(model_dir: str, include_detail: bool = True) -> Optional[dict]:
