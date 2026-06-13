@@ -63,3 +63,10 @@ test("subscriptions page requests eight-card pages and auto-loads more", () => {
   assert.match(pageSource, />\s*加载更多\s*</);
   assert.match(pageSource, /全选(?:当前)?已加载/);
 });
+
+test("subscriptions page leaves initial loading when the first request fails", () => {
+  assert.match(pageSource, /initialLoadFailed\s*=\s*ref\(false\)/);
+  assert.match(pageSource, /initialLoadFailed\.value\s*=\s*true/);
+  assert.match(pageSource, /v-else-if="initialLoadFailed"/);
+  assert.match(pageSource, /重试/);
+});

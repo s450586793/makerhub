@@ -49,11 +49,17 @@
     </div>
   </section>
 
-  <p v-if="status && !createDialog.visible" class="subscription-page-status">{{ status }}</p>
+  <p v-if="status && !createDialog.visible && !initialLoadFailed" class="subscription-page-status">{{ status }}</p>
 
-  <section v-if="!initialLoaded" class="surface empty-state subscription-inline-empty">
+  <section v-if="!initialLoaded && !initialLoadFailed" class="surface empty-state subscription-inline-empty">
     <h2>正在加载订阅库</h2>
     <p>正在读取订阅来源和卡片数据。</p>
+  </section>
+
+  <section v-else-if="initialLoadFailed" class="surface empty-state subscription-inline-empty">
+    <h2>订阅库加载失败</h2>
+    <p>{{ status || "订阅来源暂时读取失败。" }}</p>
+    <button class="button button-secondary" type="button" @click="retryInitialLoad">重试</button>
   </section>
 
   <template v-else>
@@ -173,6 +179,7 @@ const payload = ref(createEmptySubscriptionsPayload());
 const status = ref("");
 const creating = ref(false);
 const initialLoaded = ref(false);
+const initialLoadFailed = ref(false);
 const loadingMore = ref(false);
 const loadMoreTrigger = ref(null);
 const subscriptionsAutoLoadSupported = ref(false);
@@ -244,6 +251,7 @@ function hydrateSubscriptionsPageFromCache() {
   }
   payload.value = normalizeSubscriptionsPayload(cached.payload);
   initialLoaded.value = true;
+  initialLoadFailed.value = false;
   return true;
 }
 
@@ -327,6 +335,9 @@ async function load({ silent = false, pages = routePage() } = {}) {
   const currentToken = ++requestToken;
   disconnectObserver();
   loadingMore.value = false;
+  if (!initialLoaded.value) {
+    initialLoadFailed.value = false;
+  }
   const pagesToLoad = Math.max(Number(pages) || 1, 1);
   let failed = false;
   try {
@@ -347,10 +358,14 @@ async function load({ silent = false, pages = routePage() } = {}) {
       },
     );
     initialLoaded.value = true;
+    initialLoadFailed.value = false;
     pruneSelectionsToLoadedCards();
     rememberSubscriptionsPage();
   } catch (error) {
     failed = true;
+    if (!initialLoaded.value && currentToken === requestToken) {
+      initialLoadFailed.value = true;
+    }
     if (!silent) {
       status.value = error instanceof Error ? error.message : "订阅数据加载失败。";
     }
@@ -360,6 +375,12 @@ async function load({ silent = false, pages = routePage() } = {}) {
       ensureObserver();
     }
   }
+}
+
+async function retryInitialLoad() {
+  status.value = "";
+  initialLoadFailed.value = false;
+  await load({ silent: false, pages: routePage() });
 }
 
 async function updateRoutePage(page) {

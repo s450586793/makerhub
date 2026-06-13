@@ -81,6 +81,10 @@ export async function apiRequest(path, options = {}) {
     ? await response.json()
     : await response.text();
 
+  if (response.ok && String(path || "").startsWith("/api/") && typeof payload === "string" && looksLikeHtmlError(payload)) {
+    throw new Error(sanitizeApiError(payload));
+  }
+
   if (!response.ok) {
     const detail = typeof payload === "object" && payload !== null
       ? payload.detail || payload.message
