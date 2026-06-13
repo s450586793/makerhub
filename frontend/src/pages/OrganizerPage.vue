@@ -263,6 +263,7 @@ const organizerTasks = ref({
   detected_total: 0,
 });
 const loading = ref(false);
+const sourceLibraryLoading = ref(false);
 const initialLoaded = ref(false);
 const loadError = ref("");
 const importFileInput = ref(null);
@@ -1147,33 +1148,17 @@ async function load({ silent = false, refreshLibrary = true } = {}) {
     }
     return;
   }
-  const includeSourceLibrary = Boolean(refreshLibrary || !hasSourceLibraryPayload());
-  if (!includeSourceLibrary) {
+  if (refreshLibrary || !hasSourceLibraryPayload()) {
     sourceLibraryRefreshDeferred = true;
   }
   loading.value = true;
-  let shouldRefreshDeferredLibrary = false;
   try {
-    const requests = includeSourceLibrary
-      ? [
-          apiRequest("/api/tasks"),
-          apiRequest("/api/source-library"),
-          refreshConfig(),
-        ]
-      : [apiRequest("/api/tasks")];
-    const [tasksPayload, sourceLibraryPayloadResponse] = await Promise.all(requests);
+    const tasksPayload = await apiRequest("/api/tasks");
     organizerTasks.value = tasksPayload?.organize_tasks || organizerTasks.value;
     reconcileImportUploadProgress();
-    if (includeSourceLibrary) {
-      sourceLibraryPayload.value = {
-        sections: Array.isArray(sourceLibraryPayloadResponse?.sections) ? sourceLibraryPayloadResponse.sections : [],
-      };
-      sourceLibraryRefreshDeferred = false;
-    }
     loadError.value = "";
     initialLoaded.value = true;
     rememberOrganizerPage();
-    shouldRefreshDeferredLibrary = !includeSourceLibrary && sourceLibraryRefreshDeferred && !hasActiveOrganizeTasks();
   } catch (error) {
     if (!silent) {
       console.error("本地库数据加载失败", error);
@@ -1181,9 +1166,35 @@ async function load({ silent = false, refreshLibrary = true } = {}) {
     }
   } finally {
     loading.value = false;
-    if (shouldRefreshDeferredLibrary && typeof window !== "undefined" && !document.hidden) {
-      void load({ silent: true, refreshLibrary: true });
+    if (sourceLibraryRefreshDeferred && !hasActiveOrganizeTasks() && typeof window !== "undefined" && !document.hidden) {
+      void refreshSourceLibrary({ silent: true });
     }
+  }
+}
+
+async function refreshSourceLibrary({ silent = true } = {}) {
+  if (sourceLibraryLoading.value) {
+    sourceLibraryRefreshDeferred = true;
+    return;
+  }
+  sourceLibraryLoading.value = true;
+  try {
+    const [sourceLibraryPayloadResponse] = await Promise.all([
+      apiRequest("/api/source-library"),
+      refreshConfig(),
+    ]);
+    sourceLibraryPayload.value = {
+      sections: Array.isArray(sourceLibraryPayloadResponse?.sections) ? sourceLibraryPayloadResponse.sections : [],
+    };
+    sourceLibraryRefreshDeferred = false;
+    rememberOrganizerPage();
+  } catch (error) {
+    sourceLibraryRefreshDeferred = true;
+    if (!silent) {
+      console.error("本地库卡片刷新失败", error);
+    }
+  } finally {
+    sourceLibraryLoading.value = false;
   }
 }
 

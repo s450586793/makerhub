@@ -91,6 +91,12 @@ test("OrganizerPage uses shared page refresh controller for organize task refres
   assert.match(organizerPageSource, /organizerRefreshController/);
 });
 
+test("OrganizerPage does not block first paint on source library payload", () => {
+  assert.match(organizerPageSource, /async function refreshSourceLibrary/);
+  assert.match(organizerPageSource, /void refreshSourceLibrary/);
+  assert.doesNotMatch(organizerPageSource, /Promise\.all\(requests\)/);
+});
+
 test("SettingsPage uses shared page refresh controller for system update state", () => {
   assert.match(settingsPageSource, /createPageRefreshController/);
   assert.match(settingsPageSource, /settingsRefreshController/);
