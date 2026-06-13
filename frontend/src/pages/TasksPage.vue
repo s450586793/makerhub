@@ -104,7 +104,56 @@
     </div>
   </div>
 
-  <section class="task-layout">
+  <section v-if="runtimeMode" class="surface section-card">
+    <div class="section-card__header">
+      <div>
+        <span class="eyebrow">运行核心</span>
+        <h2>批次任务</h2>
+      </div>
+      <span class="count-pill">{{ runtimeRuns.length }} 个运行 / {{ runtimeBatches.length }} 个批次</span>
+    </div>
+    <div class="task-columns">
+      <div class="task-column">
+        <h3>运行</h3>
+        <div v-if="runtimeRuns.length">
+          <div v-for="run in runtimeRuns" :key="run.run_id" class="task-item">
+            <strong>{{ run.message || run.source_url || run.run_id }}</strong>
+            <span>{{ runtimeRunLabel(run.status) }}</span>
+            <p>总数 {{ run.total || 0 }} · 完成 {{ run.completed || 0 }} · 失败 {{ run.failed || 0 }}</p>
+          </div>
+        </div>
+        <p v-else class="empty-copy">当前没有运行中的批次。</p>
+      </div>
+      <div class="task-column">
+        <h3>批次</h3>
+        <div v-if="runtimeBatches.length">
+          <div v-for="batch in runtimeBatches" :key="batch.batch_id" class="task-item">
+            <strong>{{ batch.message || batch.batch_id }}</strong>
+            <span>{{ runtimeRunLabel(batch.status) }}</span>
+            <p>总数 {{ batch.total || 0 }} · 完成 {{ batch.completed || 0 }} · 失败 {{ batch.failed || 0 }}</p>
+          </div>
+        </div>
+        <p v-else class="empty-copy">暂无等待执行的批次。</p>
+      </div>
+      <div class="task-column">
+        <h3>失败明细</h3>
+        <div v-if="runtimeFailures.length">
+          <div
+            v-for="failure in runtimeFailures"
+            :key="failure.failure_id"
+            class="task-item task-item--error"
+          >
+            <strong>{{ failure.title || failure.model_id || failure.failure_id }}</strong>
+            <span>{{ runtimeFailureLabel(failure.status) }}</span>
+            <p>{{ failure.message || "等待处理。" }}</p>
+          </div>
+        </div>
+        <p v-else class="empty-copy">暂无失败明细。</p>
+      </div>
+    </div>
+  </section>
+
+  <section v-else class="task-layout">
     <article class="surface section-card">
       <div class="section-card__header">
         <div>
@@ -310,6 +359,7 @@ import { apiRequest } from "../lib/api";
 import { normalizeRuntimeStatusLabel, runtimeTaskAction } from "../lib/dashboardStatus";
 import { encodeModelPath } from "../lib/helpers";
 import { createPagePerformanceTracker } from "../lib/performance";
+import { runtimeFailureLabel, runtimeRunLabel, runtimeTaskShape } from "../lib/runtimeStatus";
 import { createPageRefreshController } from "../lib/usePageRefresh";
 
 
@@ -373,6 +423,11 @@ const visibleActiveTasks = computed(() => payload.value.archive_queue.active.sli
 const visibleQueuedTasks = computed(() => payload.value.archive_queue.queued.slice(0, queuedVisibleLimit.value));
 const visibleFailureTasks = computed(() => payload.value.archive_queue.recent_failures.slice(0, failureVisibleLimit.value));
 const visibleMissingItems = computed(() => payload.value.missing_3mf.items.slice(0, missingVisibleLimit.value));
+const taskShape = computed(() => runtimeTaskShape(payload.value));
+const runtimeMode = computed(() => taskShape.value.mode === "runtime");
+const runtimeRuns = computed(() => (runtimeMode.value ? taskShape.value.runs : []));
+const runtimeBatches = computed(() => (runtimeMode.value ? taskShape.value.batches : []));
+const runtimeFailures = computed(() => (runtimeMode.value ? taskShape.value.failures : []));
 
 function getMissingKey(item) {
   return [
