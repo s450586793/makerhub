@@ -12,6 +12,7 @@ from urllib.parse import quote, urlparse
 
 from bs4 import BeautifulSoup
 
+from app.core.database import DatabaseUnavailable
 from app.core.database_json_state import (
     database_json_state_signature,
     load_database_json_state,
@@ -34,6 +35,7 @@ from app.services.model_attachments import (
 )
 from app.services.profile_rating import normalize_profile_rating
 from app.services.source_health import build_source_health_cards
+from app.services.state_contracts import RUNTIME_SNAPSHOTS_STATE_KEY
 from app.services.task_state import TaskStateStore, compact_remote_refresh_state
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, resolve_model_instance_files
 from app.services.local_model_preview import build_local_preview_state
@@ -109,6 +111,25 @@ SUMMARY_DANGEROUS_TAGS = {
     "textarea",
     "video",
 }
+
+
+def _runtime_snapshot(name: str) -> dict:
+    try:
+        payload = load_database_json_state(RUNTIME_SNAPSHOTS_STATE_KEY, {})
+    except DatabaseUnavailable:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    snapshot = payload.get(name)
+    return snapshot if isinstance(snapshot, dict) else {}
+
+
+def _runtime_dashboard_snapshot() -> dict:
+    return _runtime_snapshot("dashboard")
+
+
+def _runtime_tasks_snapshot() -> dict:
+    return _runtime_snapshot("tasks")
 SUMMARY_GLOBAL_ATTRS = {"title"}
 SUMMARY_TAG_ATTRS = {
     "a": {"href", "target", "rel"},
@@ -2652,7 +2673,7 @@ def build_tasks_payload(
     organize_tasks["running_count"] = int(organize_tasks.get("running_count") or 0)
     organize_tasks["detected_total"] = int(organize_tasks.get("detected_total") or 0)
 
-    return {
+    payload = {
         "archive_queue": archive_queue,
         "missing_3mf": missing_3mf,
         "organize_tasks": organize_tasks,
@@ -2664,6 +2685,10 @@ def build_tasks_payload(
             "organize_count": active_organize_count,
         },
     }
+    runtime_tasks = _runtime_tasks_snapshot()
+    if runtime_tasks:
+        payload["runtime"] = runtime_tasks
+    return payload
 
 
 def build_dashboard_payload(config) -> dict:
@@ -2708,7 +2733,7 @@ def build_dashboard_payload(config) -> dict:
     remote_refresh = tasks_payload["remote_refresh"]
     source_refresh = tasks_payload["source_refresh"]
 
-    return {
+    payload = {
         "stats": [
             {"label": "模型总数", "value": len(visible_models), "hint": "默认不含 MakerHub 本地删除项"},
             {"label": "最近 7 天新增", "value": recent_week_count, "hint": "按 collectDate 统计"},
@@ -2774,3 +2799,7 @@ def build_dashboard_payload(config) -> dict:
             "missing_3mf": tasks_payload["missing_3mf"]["items"][:5],
         },
     }
+    runtime_dashboard = _runtime_dashboard_snapshot()
+    if runtime_dashboard:
+        payload["runtime"] = runtime_dashboard
+    return payload

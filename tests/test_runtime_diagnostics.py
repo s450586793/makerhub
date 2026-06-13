@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from app.api import system as system_api
 from app.api import tasks_routes
+from app.services import catalog
 from app.services import runtime_diagnostics
 
 
@@ -44,6 +45,40 @@ class _ConnectionContext:
 
 
 class RuntimeDiagnosticsTest(unittest.TestCase):
+    def test_dashboard_payload_can_include_runtime_snapshot(self):
+        runtime_snapshot = {
+            "dashboard": {
+                "active_runs": [{"run_id": "run-1", "status": "running"}],
+                "active_batches": [],
+                "summary": {"active_runs": 1, "active_batches": 0, "failures": 0},
+            }
+        }
+
+        with patch("app.services.catalog.load_database_json_state", return_value=runtime_snapshot):
+            payload = catalog._runtime_dashboard_snapshot()
+
+        self.assertEqual(payload["active_runs"][0]["run_id"], "run-1")
+
+    def test_tasks_payload_can_include_runtime_task_snapshot(self):
+        runtime_snapshot = {
+            "tasks": {
+                "runs": [{"run_id": "run-1", "status": "running"}],
+                "batches": [{"batch_id": "batch-1", "status": "queued"}],
+                "failures": [],
+            }
+        }
+
+        with patch("app.services.catalog.load_database_json_state", return_value=runtime_snapshot), \
+                patch.object(catalog.TaskStateStore, "load_archive_queue", return_value={"active": [], "queued": [], "recent_failures": [], "running_count": 0, "queued_count": 0}), \
+                patch.object(catalog.TaskStateStore, "load_missing_3mf", return_value={"items": [], "count": 0}), \
+                patch.object(catalog.TaskStateStore, "load_remote_refresh_state", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_source_refresh_queue", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_source_refresh_runs", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_organize_tasks", return_value={"items": [], "count": 0}):
+            payload = catalog.build_tasks_payload()
+
+        self.assertEqual(payload["runtime"]["runs"][0]["run_id"], "run-1")
+
     def test_build_runtime_diagnostics_returns_database_aggregates(self):
         now = datetime(2026, 6, 3, 6, 0, tzinfo=timezone.utc)
         connection = _FakeConnection(

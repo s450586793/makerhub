@@ -8,6 +8,7 @@ from app.api.config import _get_github_version_status, _public_config_payload, _
 from app.api.dependencies import store, subscription_manager
 from app.schemas.models import SubscriptionCreateRequest, SubscriptionSettingsUpdate, SubscriptionUpdateRequest
 from app.services.business_logs import append_business_log
+from app.services.catalog import _runtime_snapshot
 from app.services.request_threads import run_task_api, run_web_io
 
 
@@ -51,7 +52,14 @@ async def get_subscriptions_data(
     page_size: int = Query(8, ge=1, le=120, description="每页订阅来源数量"),
     limit: int = Query(0, ge=0, le=2000, description="从第一页起一次返回的数量"),
 ):
-    return await run_web_io(subscription_manager.list_payload, page=page, page_size=page_size, limit=limit)
+    def _payload() -> dict:
+        payload = subscription_manager.list_payload(page=page, page_size=page_size, limit=limit)
+        runtime_subscriptions = _runtime_snapshot("subscriptions")
+        if runtime_subscriptions:
+            payload["runtime"] = {"subscriptions": runtime_subscriptions}
+        return payload
+
+    return await run_web_io(_payload)
 
 
 @router.post("/subscriptions")

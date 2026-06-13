@@ -9,7 +9,7 @@
     <div class="intro-stats remote-refresh-intro-stats app-page-toolbar__stats">
       <div class="intro-stat">
         <span>当前状态</span>
-        <strong>{{ formatRemoteRefreshStatus(remoteRefreshState.status) }}</strong>
+        <strong>{{ sourceRefreshActiveRuns.length ? `${sourceRefreshActiveRuns.length} 个运行` : formatRemoteRefreshStatus(remoteRefreshState.status) }}</strong>
       </div>
       <div class="intro-stat">
         <span>本轮计划</span>
@@ -120,8 +120,8 @@
           <span class="eyebrow">批次摘要</span>
           <h2>{{ hasActiveRun ? "当前可恢复批次" : "最近一轮源端刷新" }}</h2>
         </div>
-        <span :class="['count-pill', remoteRefreshState.running ? 'count-pill--warn' : 'count-pill--ok']">
-          {{ remoteRefreshState.last_batch_succeeded || 0 }} 成功 / {{ remoteRefreshState.last_batch_failed || 0 }} 失败
+        <span :class="['count-pill', sourceRefreshActiveRuns.length || remoteRefreshState.running ? 'count-pill--warn' : 'count-pill--ok']">
+          {{ sourceRefreshActiveRuns.length ? `${sourceRefreshActiveRuns.length} 个运行中` : `${remoteRefreshState.last_batch_succeeded || 0} 成功 / ${remoteRefreshState.last_batch_failed || 0} 失败` }}
         </span>
       </div>
 
@@ -307,6 +307,7 @@ const repairingQueue = ref(false);
 const historyFilter = ref("changed");
 const historyVisibleLimit = ref(HISTORY_PAGE_SIZE);
 const remoteRefreshState = ref({});
+const runtimePayload = ref({});
 const remoteRefreshForm = reactive({
   enabled: true,
   cron: "0 0 * * *",
@@ -322,6 +323,11 @@ let lastRefreshAt = 0;
 const recentHistory = computed(() => {
   const items = remoteRefreshState.value?.recent_items;
   return Array.isArray(items) ? items : [];
+});
+const runtimeSourceRefresh = computed(() => runtimePayload.value?.source_refresh || {});
+const sourceRefreshActiveRuns = computed(() => {
+  const runs = runtimeSourceRefresh.value?.active_runs;
+  return Array.isArray(runs) ? runs : [];
 });
 
 const filteredHistory = computed(() => {
@@ -444,6 +450,7 @@ function applyPayload(payload) {
   remoteRefreshForm.enabled = config.enabled !== false;
   remoteRefreshForm.cron = config.cron || "0 0 * * *";
   remoteRefreshState.value = state;
+  runtimePayload.value = payload?.runtime || {};
 }
 
 function formatRemoteRefreshStatus(value) {

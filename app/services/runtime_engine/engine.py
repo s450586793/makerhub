@@ -107,9 +107,24 @@ class RuntimeEngine:
                 "failures": len(failures),
             },
         }
+        source_refresh_snapshot = {
+            "active_runs": [run for run in active_runs if run.get("type") == "source_refresh"],
+            "recent_runs": [run for run in runs if run.get("type") == "source_refresh"][:20],
+        }
+        subscriptions_snapshot = {
+            "active_runs": [run for run in active_runs if run.get("type") == "subscription_sync"],
+            "recent_runs": [run for run in runs if run.get("type") == "subscription_sync"][:20],
+        }
         store.save_snapshot("tasks", task_snapshot)
         store.save_snapshot("dashboard", dashboard_snapshot)
-        return {"tasks": task_snapshot, "dashboard": dashboard_snapshot}
+        store.save_snapshot("source_refresh", source_refresh_snapshot)
+        store.save_snapshot("subscriptions", subscriptions_snapshot)
+        return {
+            "tasks": task_snapshot,
+            "dashboard": dashboard_snapshot,
+            "source_refresh": source_refresh_snapshot,
+            "subscriptions": subscriptions_snapshot,
+        }
 
     def execute_next_batch(self) -> dict[str, Any]:
         batches = store.load_batches()["items"]

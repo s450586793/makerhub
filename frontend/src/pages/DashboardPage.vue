@@ -144,8 +144,8 @@
                 <span class="dashboard-mini-card__eyebrow">归档任务</span>
                 <h3>当前队列</h3>
               </div>
-              <span :class="['count-pill', (payload.task_summary?.running?.length || 0) || (payload.task_summary?.queued_count || 0) ? 'count-pill--warn' : 'count-pill--ok']">
-                {{ (payload.task_summary?.running?.length || 0) + (payload.task_summary?.queued_count || 0) }} 活跃
+              <span :class="['count-pill', activeRuntimeRuns || activeRuntimeBatches || (payload.task_summary?.running?.length || 0) || (payload.task_summary?.queued_count || 0) ? 'count-pill--warn' : 'count-pill--ok']">
+                {{ activeRuntimeRuns || activeRuntimeBatches ? `${activeRuntimeRuns} 运行 / ${activeRuntimeBatches} 批次` : `${(payload.task_summary?.running?.length || 0) + (payload.task_summary?.queued_count || 0)} 活跃` }}
               </span>
             </div>
 
@@ -409,6 +409,9 @@ const latestMissingItem = computed(() => payload.value?.task_summary?.missing_3m
 const latestSubscriptionItem = computed(() => automation.value?.subscriptions?.recent_items?.[0] || null);
 const nextSubscriptionItem = computed(() => automation.value?.subscriptions?.next_items?.[0] || null);
 const latestOrganizerItem = computed(() => automation.value?.organizer?.items?.[0] || null);
+const runtimeSummary = computed(() => payload.value.runtime?.summary || {});
+const activeRuntimeRuns = computed(() => Number(runtimeSummary.value.active_runs || 0));
+const activeRuntimeBatches = computed(() => Number(runtimeSummary.value.active_batches || 0));
 const taskFailureText = computed(() => {
   const item = latestFailureItem.value;
   if (!item) {
@@ -445,6 +448,8 @@ const sourceRefreshDisplayTotals = computed(() => getSourceRefreshDisplayTotals(
 const hasActiveWork = computed(() => Boolean(
   (payload.value.task_summary?.running?.length || 0)
   || Number(payload.value.task_summary?.queued_count || 0)
+  || activeRuntimeRuns.value
+  || activeRuntimeBatches.value
   || Number(automation.value?.subscriptions?.running_count || 0)
   || Boolean(automation.value?.remote_refresh?.running)
   || Boolean(sourceRefreshActiveRun(automation.value).run_id)

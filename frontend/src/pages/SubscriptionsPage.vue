@@ -18,7 +18,7 @@
         </span>
         <span class="toolbar-stat">
           <em>同步</em>
-          <strong>{{ payload.summary.running }}</strong>
+          <strong>{{ subscriptionSyncActiveRuns.length || payload.summary.running }}</strong>
         </span>
       </div>
       <div class="filter-actions">
@@ -192,6 +192,11 @@ const sourceSections = computed(() => (
   payload.value.sections.filter((section) => section?.key === "subscription_sources")
 ));
 const subscriptionSources = computed(() => subscriptionSourcesSection());
+const runtimeSubscriptions = computed(() => payload.value.runtime?.subscriptions || {});
+const subscriptionSyncActiveRuns = computed(() => {
+  const runs = runtimeSubscriptions.value?.active_runs;
+  return Array.isArray(runs) ? runs : [];
+});
 const hasMoreSubscriptionSources = computed(() => Boolean(subscriptionSources.value?.has_more));
 const loadMoreObserver = createAutoLoadObserver({
   triggerRef: loadMoreTrigger,

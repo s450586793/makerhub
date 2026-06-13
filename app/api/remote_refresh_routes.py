@@ -8,6 +8,7 @@ from app.api.config import _get_github_version_status, _public_config_payload, _
 from app.api.dependencies import remote_refresh_manager, store, task_state_store
 from app.schemas.models import RemoteRefreshConfig
 from app.services.business_logs import append_business_log
+from app.services.catalog import _runtime_snapshot
 from app.services.request_threads import run_task_api, run_ui_io
 
 
@@ -56,6 +57,7 @@ async def get_source_refresh_data():
 
 def _source_refresh_payload() -> dict:
     config = store.load()
+    runtime_source_refresh = _runtime_snapshot("source_refresh")
     return {
         "config": config.remote_refresh.model_dump(),
         "state": remote_refresh_manager.state_payload(),
@@ -63,6 +65,7 @@ def _source_refresh_payload() -> dict:
             "queue": task_state_store.load_source_refresh_queue(),
             "runs": task_state_store.load_source_refresh_runs(),
         },
+        "runtime": {"source_refresh": runtime_source_refresh} if runtime_source_refresh else {},
     }
 
 

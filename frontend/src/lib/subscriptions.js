@@ -51,6 +51,7 @@ export function normalizeSubscriptionsPayload(response = {}) {
     },
     sections: Array.isArray(response.sections) ? response.sections.map(normalizeSubscriptionSection) : [],
     settings: mergeSubscriptionSettings(response.settings || {}),
+    runtime: response.runtime && typeof response.runtime === "object" ? response.runtime : {},
   };
 }
 
