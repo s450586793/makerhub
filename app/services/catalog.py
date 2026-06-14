@@ -26,6 +26,7 @@ from app.services.archive_model_index import (
     archive_model_index_row_count,
     delete_archive_model_index,
     load_archive_model_index,
+    load_archive_model_index_unchecked,
     upsert_archive_model_index,
 )
 from app.services.model_attachments import (
@@ -2703,7 +2704,7 @@ def build_models_light_payload(
     page_size: int = 8,
     limit: int = 0,
 ) -> dict:
-    indexed_models = load_archive_model_index()
+    indexed_models = load_archive_model_index_unchecked()
     if indexed_models is None:
         all_models, visible_models = get_decorated_models()
     else:

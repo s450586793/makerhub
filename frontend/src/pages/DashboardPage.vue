@@ -462,6 +462,39 @@ let requestInFlight = false;
 let fullDashboardRequestInFlight = false;
 let unsubscribeStateRefresh = null;
 let refreshWhenVisible = false;
+let fullDashboardHydrationTimer = null;
+
+function scheduleIdleCallback(callback, timeout = 2500) {
+  if (typeof window === "undefined") {
+    callback();
+    return null;
+  }
+  if (typeof window.requestIdleCallback === "function") {
+    return window.requestIdleCallback(callback, { timeout });
+  }
+  return window.setTimeout(callback, timeout);
+}
+
+function cancelIdleCallback(handle) {
+  if (!handle || typeof window === "undefined") {
+    return;
+  }
+  if (typeof window.cancelIdleCallback === "function") {
+    window.cancelIdleCallback(handle);
+    return;
+  }
+  window.clearTimeout(handle);
+}
+
+function scheduleFullDashboardHydration() {
+  if (fullDashboardHydrationTimer) {
+    cancelIdleCallback(fullDashboardHydrationTimer);
+  }
+  fullDashboardHydrationTimer = scheduleIdleCallback(() => {
+    fullDashboardHydrationTimer = null;
+    void refreshFullDashboard();
+  });
+}
 
 async function load({ initial = false, hydrateFull = false } = {}) {
   if (requestInFlight) {
@@ -474,7 +507,7 @@ async function load({ initial = false, hydrateFull = false } = {}) {
   try {
     payload.value = await apiRequest("/api/dashboard/light");
     if (hydrateFull) {
-      void refreshFullDashboard();
+      scheduleFullDashboardHydration();
     }
   } catch (error) {
     console.error("首页数据刷新失败", error);
@@ -615,6 +648,10 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  if (fullDashboardHydrationTimer) {
+    cancelIdleCallback(fullDashboardHydrationTimer);
+    fullDashboardHydrationTimer = null;
+  }
   if (typeof unsubscribeStateRefresh === "function") {
     unsubscribeStateRefresh();
     unsubscribeStateRefresh = null;

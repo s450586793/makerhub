@@ -81,7 +81,8 @@ test("DashboardPage shows separate source refresh completion fields", () => {
 test("DashboardPage renders a light snapshot before full dashboard hydration", () => {
   assert.match(dashboardPageSource, /apiRequest\("\/api\/dashboard\/light"\)/);
   assert.match(dashboardPageSource, /refreshFullDashboard/);
-  assert.match(dashboardPageSource, /void refreshFullDashboard/);
+  assert.match(dashboardPageSource, /scheduleFullDashboardHydration/);
+  assert.match(dashboardPageSource, /requestIdleCallback|setTimeout/);
 });
 
 test("RemoteRefreshPage explains active run progress from resumable batch state", () => {
@@ -154,6 +155,8 @@ test("primary pages report slow first-load performance without UI changes", () =
 test("ModelsPage restores deep pages with a single include-until-page request", () => {
   assert.match(modelsPageSource, /apiRequest\("\/api\/models\/light/);
   assert.match(modelsPageSource, /refreshFullModelList/);
+  assert.match(modelsPageSource, /scheduleFullModelHydration/);
+  assert.match(modelsPageSource, /requestIdleCallback|setTimeout/);
   assert.match(modelsPageSource, /includeUntilPage/);
   assert.match(modelsPageSource, /query\.set\("limit"/);
   assert.doesNotMatch(modelsPageSource, /for \(let page = append \? nextPage : 1; page <= nextPage;/);
@@ -162,6 +165,8 @@ test("ModelsPage restores deep pages with a single include-until-page request", 
 test("SubscriptionsPage restores deep pages with a single include-until-page request", () => {
   assert.match(subscriptionsPageSource, /apiRequest\("\/api\/subscriptions\/light/);
   assert.match(subscriptionsPageSource, /refreshFullSubscriptions/);
+  assert.match(subscriptionsPageSource, /scheduleFullSubscriptionsHydration/);
+  assert.match(subscriptionsPageSource, /requestIdleCallback|setTimeout/);
   assert.match(subscriptionsPageSource, /includeUntilPage/);
   assert.match(subscriptionsPageSource, /query\.set\("limit"/);
   assert.doesNotMatch(subscriptionsPageSource, /for \(let page = 1; page <= pagesToLoad;/);
@@ -170,6 +175,8 @@ test("SubscriptionsPage restores deep pages with a single include-until-page req
 test("OrganizerPage refreshes source cards through a light source-library snapshot", () => {
   assert.match(organizerPageSource, /apiRequest\("\/api\/source-library\/light"\)/);
   assert.match(organizerPageSource, /refreshFullSourceLibrary/);
+  assert.match(organizerPageSource, /scheduleFullSourceLibraryHydration/);
+  assert.match(organizerPageSource, /requestIdleCallback|setTimeout/);
 });
 
 test("SettingsPage renders from light config before background diagnostics", () => {

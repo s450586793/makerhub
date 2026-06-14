@@ -766,6 +766,48 @@ def _normalize_subscription_state(payload: Any) -> dict:
     return {"items": normalized}
 
 
+def _normalize_subscription_state_summary(payload: Any) -> dict:
+    if isinstance(payload, list):
+        items = payload
+    elif isinstance(payload, dict):
+        items = payload.get("items") or payload.get("subscriptions") or []
+    else:
+        items = []
+
+    normalized: list[dict] = []
+    seen_ids: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        subscription_id = str(item.get("id") or "").strip()
+        if not subscription_id or subscription_id in seen_ids:
+            continue
+        seen_ids.add(subscription_id)
+        current_items = item.get("current_items") if isinstance(item.get("current_items"), list) else []
+        tracked_items = item.get("tracked_items") if isinstance(item.get("tracked_items"), list) else []
+        normalized.append(
+            {
+                "id": subscription_id,
+                "status": str(item.get("status") or "idle"),
+                "running": bool(item.get("running", False)),
+                "next_run_at": str(item.get("next_run_at") or ""),
+                "manual_requested_at": str(item.get("manual_requested_at") or ""),
+                "last_run_at": str(item.get("last_run_at") or ""),
+                "last_success_at": str(item.get("last_success_at") or ""),
+                "last_error_at": str(item.get("last_error_at") or ""),
+                "last_message": str(item.get("last_message") or ""),
+                "last_discovered_count": int(item.get("last_discovered_count") or len(current_items) or 0),
+                "last_new_count": int(item.get("last_new_count") or 0),
+                "last_enqueued_count": int(item.get("last_enqueued_count") or 0),
+                "last_deleted_count": int(item.get("last_deleted_count") or 0),
+                "current_count": len(current_items),
+                "tracked_count": len(tracked_items),
+            }
+        )
+
+    return {"items": normalized}
+
+
 def _normalize_remote_refresh_active_run(payload: Any) -> dict:
     if not isinstance(payload, dict):
         return {}
@@ -1324,6 +1366,13 @@ class TaskStateStore:
     def load_subscriptions_state(self) -> dict:
         with _STATE_LOCK:
             return self._load_subscriptions_state_unlocked()
+
+    def load_subscriptions_state_summary(self) -> dict:
+        with _STATE_LOCK:
+            payload = self._read_json(SUBSCRIPTIONS_STATE_PATH, {"items": []})
+            state = _normalize_subscription_state_summary(payload)
+            state["count"] = len(state["items"])
+            return state
 
     def save_remote_refresh_state(self, payload: dict, *, publish_event: bool = True) -> dict:
         with _STATE_LOCK, self._state_file_lock(REMOTE_REFRESH_STATE_PATH):

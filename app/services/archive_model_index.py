@@ -640,6 +640,35 @@ def load_archive_model_index(archive_root: Path = ARCHIVE_DIR) -> Optional[list[
     return models
 
 
+def load_archive_model_index_unchecked(archive_root: Path = ARCHIVE_DIR) -> Optional[list[dict[str, Any]]]:
+    if not archive_model_index_configured():
+        return None
+    try:
+        if not ensure_archive_model_index_schema():
+            return None
+        if not archive_model_index_is_bootstrapped(archive_root=archive_root):
+            return None
+        with database_connection() as connection:
+            rows = connection.execute(
+                "SELECT model_json FROM archive_model_index ORDER BY model_dir"
+            ).fetchall()
+    except Exception as exc:
+        if not isinstance(exc, DatabaseUnavailable):
+            _warn_once(
+                "archive_model_index_unchecked_load_failed",
+                "归档模型数据库索引快照读取失败。",
+                error=str(exc),
+            )
+        return None
+
+    models: list[dict[str, Any]] = []
+    for row in rows or []:
+        payload = row.get("model_json") if isinstance(row, dict) else None
+        if isinstance(payload, dict):
+            models.append(dict(payload))
+    return models
+
+
 def archive_model_index_row_count() -> int:
     try:
         if not ensure_archive_model_index_schema():

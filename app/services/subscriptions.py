@@ -726,9 +726,8 @@ class SubscriptionManager:
         page_size: int = DEFAULT_SUBSCRIPTION_SOURCE_PAGE_SIZE,
         limit: int = 0,
     ) -> dict:
-        self._ensure_state_records()
         config = self.store.load()
-        state_payload = self.task_store.load_subscriptions_state()
+        state_payload = self.task_store.load_subscriptions_state_summary()
         state_map = {str(item.get("id") or ""): item for item in state_payload.get("items") or []}
         items = [self._merge_subscription_record_light(item, state_map.get(item.id)) for item in config.subscriptions]
         overview = build_subscription_overview_light_payload(store=self.store, task_store=self.task_store)

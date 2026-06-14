@@ -297,6 +297,39 @@ const importUploadProgress = reactive({
 const organizerProgressOpen = ref(false);
 let organizerRefreshController = null;
 let sourceLibraryRefreshDeferred = false;
+let fullSourceLibraryHydrationTimer = null;
+
+function scheduleIdleCallback(callback, timeout = 2500) {
+  if (typeof window === "undefined") {
+    callback();
+    return null;
+  }
+  if (typeof window.requestIdleCallback === "function") {
+    return window.requestIdleCallback(callback, { timeout });
+  }
+  return window.setTimeout(callback, timeout);
+}
+
+function cancelIdleCallback(handle) {
+  if (!handle || typeof window === "undefined") {
+    return;
+  }
+  if (typeof window.cancelIdleCallback === "function") {
+    window.cancelIdleCallback(handle);
+    return;
+  }
+  window.clearTimeout(handle);
+}
+
+function scheduleFullSourceLibraryHydration(options = {}) {
+  if (fullSourceLibraryHydrationTimer) {
+    cancelIdleCallback(fullSourceLibraryHydrationTimer);
+  }
+  fullSourceLibraryHydrationTimer = scheduleIdleCallback(() => {
+    fullSourceLibraryHydrationTimer = null;
+    void refreshFullSourceLibrary(options);
+  });
+}
 
 function rememberOrganizerPage() {
   setPageCache("organizer", {
@@ -1188,7 +1221,7 @@ async function refreshSourceLibrary({ silent = true } = {}) {
     };
     sourceLibraryRefreshDeferred = false;
     rememberOrganizerPage();
-    void refreshFullSourceLibrary({ silent: true });
+    scheduleFullSourceLibraryHydration({ silent: true });
   } catch (error) {
     sourceLibraryRefreshDeferred = true;
     if (!silent) {
@@ -1683,6 +1716,10 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  if (fullSourceLibraryHydrationTimer) {
+    cancelIdleCallback(fullSourceLibraryHydrationTimer);
+    fullSourceLibraryHydrationTimer = null;
+  }
   stopOrganizerRefreshController();
   document.removeEventListener("click", closeOrganizerProgressPopover);
 });

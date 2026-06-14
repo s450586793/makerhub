@@ -156,6 +156,7 @@ let deleteSettleToken = 0;
 let unsubscribeArchiveEvents = null;
 let refreshWhenVisible = false;
 let locallyHiddenDeletedModelDirs = new Set();
+let fullModelHydrationTimer = null;
 
 const selectedModelDirs = computed(() => Array.from(selectedModelDirSet.value));
 const selectedCount = computed(() => selectedModelDirs.value.length);
@@ -212,6 +213,38 @@ async function fetchPage(page, options = {}) {
     return apiRequest("/api/models/light?" + buildQuery(page, options).toString());
   }
   return apiRequest("/api/models?" + buildQuery(page, options).toString());
+}
+
+function scheduleIdleCallback(callback, timeout = 2500) {
+  if (typeof window === "undefined") {
+    callback();
+    return null;
+  }
+  if (typeof window.requestIdleCallback === "function") {
+    return window.requestIdleCallback(callback, { timeout });
+  }
+  return window.setTimeout(callback, timeout);
+}
+
+function cancelIdleCallback(handle) {
+  if (!handle || typeof window === "undefined") {
+    return;
+  }
+  if (typeof window.cancelIdleCallback === "function") {
+    window.cancelIdleCallback(handle);
+    return;
+  }
+  window.clearTimeout(handle);
+}
+
+function scheduleFullModelHydration(options = {}) {
+  if (fullModelHydrationTimer) {
+    cancelIdleCallback(fullModelHydrationTimer);
+  }
+  fullModelHydrationTimer = scheduleIdleCallback(() => {
+    fullModelHydrationTimer = null;
+    void refreshFullModelList(options);
+  });
 }
 
 function decrementCount(value, amount) {
@@ -464,7 +497,7 @@ async function load({ append = false, refresh = false, hydrateFull = false } = {
   if (!append) {
     await scrollToRouteAnchor();
     if (hydrateFull) {
-      void refreshFullModelList({ refresh });
+      scheduleFullModelHydration({ refresh });
     }
   }
 }
@@ -928,6 +961,10 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  if (fullModelHydrationTimer) {
+    cancelIdleCallback(fullModelHydrationTimer);
+    fullModelHydrationTimer = null;
+  }
   disconnectObserver();
   if (typeof unsubscribeArchiveEvents === "function") {
     unsubscribeArchiveEvents();

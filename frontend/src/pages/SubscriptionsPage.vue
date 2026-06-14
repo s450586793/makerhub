@@ -194,6 +194,7 @@ const createDialog = reactive({
 });
 let unsubscribeStateRefresh = null;
 let requestToken = 0;
+let fullSubscriptionsHydrationTimer = null;
 
 const sourceSections = computed(() => (
   payload.value.sections.filter((section) => section?.key === "subscription_sources")
@@ -330,6 +331,38 @@ async function fetchSubscriptionsPage(page = 1, options = {}) {
   );
 }
 
+function scheduleIdleCallback(callback, timeout = 2500) {
+  if (typeof window === "undefined") {
+    callback();
+    return null;
+  }
+  if (typeof window.requestIdleCallback === "function") {
+    return window.requestIdleCallback(callback, { timeout });
+  }
+  return window.setTimeout(callback, timeout);
+}
+
+function cancelIdleCallback(handle) {
+  if (!handle || typeof window === "undefined") {
+    return;
+  }
+  if (typeof window.cancelIdleCallback === "function") {
+    window.cancelIdleCallback(handle);
+    return;
+  }
+  window.clearTimeout(handle);
+}
+
+function scheduleFullSubscriptionsHydration(options = {}) {
+  if (fullSubscriptionsHydrationTimer) {
+    cancelIdleCallback(fullSubscriptionsHydrationTimer);
+  }
+  fullSubscriptionsHydrationTimer = scheduleIdleCallback(() => {
+    fullSubscriptionsHydrationTimer = null;
+    void refreshFullSubscriptions(options);
+  });
+}
+
 function resetCreateForm() {
   createDialog.url = "";
   createDialog.name = "";
@@ -388,7 +421,7 @@ async function load({ silent = false, pages = routePage(), hydrateFull = false }
     }
   }
   if (shouldHydrateFull && currentToken === requestToken) {
-    void refreshFullSubscriptions({ pages: pagesToLoad });
+    scheduleFullSubscriptionsHydration({ pages: pagesToLoad });
   }
 }
 
@@ -642,6 +675,10 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  if (fullSubscriptionsHydrationTimer) {
+    cancelIdleCallback(fullSubscriptionsHydrationTimer);
+    fullSubscriptionsHydrationTimer = null;
+  }
   disconnectObserver();
   if (typeof unsubscribeStateRefresh === "function") {
     unsubscribeStateRefresh();
