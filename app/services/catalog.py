@@ -593,6 +593,136 @@ def _small_items(items: Any, limit: int) -> list[dict[str, Any]]:
     return [dict(item) for item in items[:clean_limit] if isinstance(item, dict)]
 
 
+def _archive_display_group_key(item: dict[str, Any]) -> str:
+    meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+    scan_mode = str(meta.get("scan_mode") or "").strip()
+    subscription_name = str(meta.get("subscription_name") or "").strip()
+    if scan_mode.startswith("subscription:"):
+        return scan_mode
+    if subscription_name:
+        return f"subscription-name:{subscription_name}"
+    return ""
+
+
+def _archive_display_group_title(item: dict[str, Any]) -> str:
+    meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+    return (
+        str(meta.get("subscription_name") or "").strip()
+        or str(item.get("title") or "").strip()
+        or str(item.get("url") or "").strip()
+        or "未命名任务"
+    )
+
+
+def _archive_display_child_total(item: dict[str, Any]) -> int:
+    meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+    summary = meta.get("batch_summary") if isinstance(meta.get("batch_summary"), dict) else {}
+    progress = meta.get("batch_progress") if isinstance(meta.get("batch_progress"), dict) else {}
+    expected_items = meta.get("batch_expected_items") if isinstance(meta.get("batch_expected_items"), list) else []
+    for value in (
+        summary.get("discovered"),
+        summary.get("queued"),
+        progress.get("total"),
+        len(expected_items) if expected_items else 0,
+    ):
+        try:
+            number = int(value or 0)
+        except (TypeError, ValueError):
+            number = 0
+        if number > 0:
+            return number
+    return 0
+
+
+def _archive_display_item_from_group(
+    group_key: str,
+    items: list[dict[str, Any]],
+    *,
+    default_status: str,
+) -> dict[str, Any]:
+    first = dict(items[0]) if items else {}
+    child_count = max(len(items), _archive_display_child_total(first))
+    progress_values = [
+        int(item.get("progress") or 0)
+        for item in items
+        if str(item.get("progress") or "").strip()
+    ]
+    progress = round(sum(progress_values) / len(progress_values)) if progress_values else int(first.get("progress") or 0)
+    messages = [
+        str(item.get("message") or "").strip()
+        for item in items
+        if str(item.get("message") or "").strip()
+    ]
+    if group_key:
+        message = f"发现 {child_count} 个模型，按来源聚合展示。"
+    else:
+        message = messages[0] if len(set(messages)) == 1 else f"{child_count} 个子任务正在处理"
+
+    payload = {
+        **first,
+        "id": f"display:{group_key}" if group_key else str(first.get("id") or ""),
+        "title": _archive_display_group_title(first),
+        "status": str(first.get("status") or default_status),
+        "progress": progress,
+        "message": message,
+        "display_kind": "subscription_source" if group_key else "task",
+        "display_group_key": group_key,
+        "child_count": child_count,
+        "source_mode": str(first.get("mode") or ""),
+        "children_preview": _small_items(items, 5),
+        "children_truncated": len(items) > 5,
+    }
+    return payload
+
+
+def _group_archive_queue_for_display(archive_queue: dict, *, item_limit: int | None = None) -> dict:
+    def _group_items(raw_items: Any, default_status: str) -> list[dict[str, Any]]:
+        groups: dict[str, list[dict[str, Any]]] = {}
+        ordered_keys: list[str] = []
+        display_items: list[dict[str, Any]] = []
+        for raw_item in raw_items if isinstance(raw_items, list) else []:
+            if not isinstance(raw_item, dict):
+                continue
+            item = dict(raw_item)
+            group_key = _archive_display_group_key(item)
+            if not group_key:
+                display_items.append(_archive_display_item_from_group("", [item], default_status=default_status))
+                continue
+            if group_key not in groups:
+                groups[group_key] = []
+                ordered_keys.append(group_key)
+            groups[group_key].append(item)
+        grouped_items = [
+            _archive_display_item_from_group(group_key, groups[group_key], default_status=default_status)
+            for group_key in ordered_keys
+        ]
+        merged = grouped_items + display_items
+        if item_limit is None:
+            return merged
+        return merged[:max(0, int(item_limit or 0))]
+
+    active_all = _group_items(archive_queue.get("active"), "running")
+    queued_all = _group_items(archive_queue.get("queued"), "queued")
+    failures_all = _group_items(archive_queue.get("recent_failures"), "failed")
+    active = active_all if item_limit is None else active_all[:max(0, int(item_limit or 0))]
+    queued = queued_all if item_limit is None else queued_all[:max(0, int(item_limit or 0))]
+    recent_failures = failures_all if item_limit is None else failures_all[:max(0, int(item_limit or 0))]
+    return {
+        "active": active,
+        "queued": queued,
+        "recent_failures": recent_failures,
+        "running_count": len(active_all),
+        "queued_count": len(queued_all),
+        "failed_count": len(failures_all),
+        "active_truncated": len(active_all) > len(active),
+        "queued_truncated": len(queued_all) > len(queued),
+        "recent_failures_truncated": len(failures_all) > len(recent_failures),
+        "raw_running_count": int(archive_queue.get("running_count") or _count_items(archive_queue.get("active"))),
+        "raw_queued_count": int(archive_queue.get("queued_count") or _count_items(archive_queue.get("queued"))),
+        "raw_failed_count": int(archive_queue.get("failed_count") or _count_items(archive_queue.get("recent_failures"))),
+    }
+
+
 def _compact_archive_queue_payload(archive_queue: dict, *, item_limit: int = 5) -> dict:
     active = _small_items(archive_queue.get("active"), item_limit)
     queued = _small_items(archive_queue.get("queued"), item_limit)
@@ -2948,6 +3078,7 @@ def build_tasks_payload(
 
     payload = {
         "archive_queue": archive_queue,
+        "archive_queue_display": _group_archive_queue_for_display(archive_queue),
         "missing_3mf": missing_3mf,
         "organize_tasks": organize_tasks,
         "remote_refresh": remote_refresh,
@@ -2966,7 +3097,9 @@ def build_tasks_payload(
 
 def build_tasks_light_payload(missing_fallback: Optional[list[dict]] = None) -> dict:
     store = TaskStateStore()
-    archive_queue = _compact_archive_queue_payload(store.load_archive_queue())
+    raw_archive_queue = store.load_archive_queue()
+    archive_queue = _compact_archive_queue_payload(raw_archive_queue)
+    archive_queue_display = _group_archive_queue_for_display(raw_archive_queue, item_limit=5)
     missing_3mf = _compact_missing_3mf_payload(store.load_missing_3mf(fallback_items=missing_fallback))
     organize_tasks = _compact_organize_tasks_payload(store.load_organize_tasks())
     remote_refresh = compact_remote_refresh_state(store.load_remote_refresh_state(), include_current=True)
@@ -2977,6 +3110,7 @@ def build_tasks_light_payload(missing_fallback: Optional[list[dict]] = None) -> 
 
     payload = {
         "archive_queue": archive_queue,
+        "archive_queue_display": archive_queue_display,
         "missing_3mf": missing_3mf,
         "organize_tasks": organize_tasks,
         "remote_refresh": remote_refresh,

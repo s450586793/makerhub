@@ -120,6 +120,93 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         self.assertEqual(payload["organize_tasks"]["active_count"], 14)
         self.assertLess(len(json.dumps(payload, ensure_ascii=False)), 8000)
 
+    def test_tasks_payload_groups_subscription_children_for_display(self):
+        archive_queue = {
+            "active": [
+                {
+                    "id": "model-running-1",
+                    "status": "running",
+                    "title": "https://makerworld.com.cn/zh/models/1001",
+                    "mode": "single_model",
+                    "url": "https://makerworld.com.cn/zh/models/1001",
+                    "progress": 60,
+                    "message": "正在下载",
+                    "meta": {
+                        "scan_mode": "subscription:sub-author",
+                        "subscription_name": "作者 A | 已发布",
+                        "batch_summary": {"discovered": 2, "queued": 2, "expected_total": 30},
+                    },
+                },
+                {
+                    "id": "model-running-2",
+                    "status": "running",
+                    "title": "https://makerworld.com.cn/zh/models/1002",
+                    "mode": "single_model",
+                    "url": "https://makerworld.com.cn/zh/models/1002",
+                    "progress": 20,
+                    "message": "等待 3MF",
+                    "meta": {
+                        "scan_mode": "subscription:sub-author",
+                        "subscription_name": "作者 A | 已发布",
+                        "batch_summary": {"discovered": 2, "queued": 2, "expected_total": 30},
+                    },
+                },
+            ],
+            "queued": [
+                {
+                    "id": "source-author",
+                    "status": "queued",
+                    "title": "https://makerworld.com.cn/zh/@demo/upload",
+                    "mode": "author_upload",
+                    "url": "https://makerworld.com.cn/zh/@demo/upload",
+                    "meta": {
+                        "scan_mode": "subscription:sub-author",
+                        "subscription_name": "作者 A | 已发布",
+                        "batch_summary": {"discovered": 2, "queued": 2, "expected_total": 30},
+                    },
+                },
+                {
+                    "id": "source-collection",
+                    "status": "queued",
+                    "title": "https://makerworld.com.cn/zh/@demo/collections/models",
+                    "mode": "collection_models",
+                    "url": "https://makerworld.com.cn/zh/@demo/collections/models",
+                    "meta": {
+                        "scan_mode": "subscription:sub-collection",
+                        "subscription_name": "收藏夹 B",
+                        "batch_summary": {"discovered": 3, "queued": 3, "expected_total": 100},
+                    },
+                },
+            ],
+            "recent_failures": [],
+            "running_count": 2,
+            "queued_count": 2,
+        }
+
+        with patch("app.services.catalog.load_database_json_state", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_archive_queue", return_value=archive_queue), \
+                patch.object(catalog.TaskStateStore, "load_missing_3mf", return_value={"items": [], "count": 0}), \
+                patch.object(catalog.TaskStateStore, "load_remote_refresh_state", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_source_refresh_queue", return_value={"active": [], "queued": [], "recent_failures": []}), \
+                patch.object(catalog.TaskStateStore, "load_source_refresh_runs", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_organize_tasks", return_value={"items": [], "count": 0}):
+            payload = catalog.build_tasks_payload()
+
+        self.assertEqual(len(payload["archive_queue"]["active"]), 2)
+        display_queue = payload["archive_queue_display"]
+        self.assertEqual(display_queue["running_count"], 1)
+        self.assertEqual(display_queue["queued_count"], 2)
+        self.assertEqual([item["display_kind"] for item in display_queue["active"]], ["subscription_source"])
+        self.assertEqual(display_queue["active"][0]["title"], "作者 A | 已发布")
+        self.assertEqual(display_queue["active"][0]["child_count"], 2)
+        self.assertEqual(display_queue["active"][0]["progress"], 40)
+        self.assertEqual(display_queue["active"][0]["message"], "发现 2 个模型，按来源聚合展示。")
+        self.assertEqual(display_queue["queued"][0]["title"], "作者 A | 已发布")
+        self.assertEqual(display_queue["queued"][0]["child_count"], 2)
+        self.assertEqual(display_queue["queued"][0]["message"], "发现 2 个模型，按来源聚合展示。")
+        self.assertEqual(display_queue["queued"][1]["title"], "收藏夹 B")
+        self.assertEqual(display_queue["queued"][1]["source_mode"], "collection_models")
+
     def test_dashboard_light_payload_does_not_load_full_subscription_state(self):
         config = AppConfig(
             subscriptions=[

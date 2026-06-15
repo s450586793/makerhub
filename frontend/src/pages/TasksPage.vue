@@ -196,7 +196,7 @@
                 {{ runtimeExternalAction(item).label }}
               </a>
             </div>
-            <div v-if="payload.archive_queue.active.length > activeVisibleLimit" class="task-list-footer">
+            <div v-if="(archiveQueueForDisplay.active || []).length > activeVisibleLimit" class="task-list-footer">
               <button class="button button-secondary button-small" type="button" @click="activeVisibleLimit += TASKS_PAGE_SIZE">
                 加载更多
               </button>
@@ -216,7 +216,7 @@
               <span>{{ runtimeStatusLabel(item) }}</span>
               <p>{{ item.message || "等待归档" }}</p>
             </div>
-            <div v-if="payload.archive_queue.queued.length > queuedVisibleLimit" class="task-list-footer">
+            <div v-if="(archiveQueueForDisplay.queued || []).length > queuedVisibleLimit" class="task-list-footer">
               <button class="button button-secondary button-small" type="button" @click="queuedVisibleLimit += TASKS_PAGE_SIZE">
                 加载更多
               </button>
@@ -228,7 +228,7 @@
           <div class="task-column__heading">
             <h3>最近失败</h3>
             <button
-              v-if="payload.archive_queue.recent_failures.length"
+              v-if="(archiveQueueForDisplay.recent_failures || []).length"
               class="button button-secondary button-small"
               type="button"
               :disabled="clearingRecentFailures"
@@ -248,7 +248,7 @@
               <span>{{ runtimeStatusLabel(item) }}</span>
               <p>{{ item.message || "失败原因未记录" }}</p>
             </div>
-            <div v-if="payload.archive_queue.recent_failures.length > failureVisibleLimit" class="task-list-footer">
+            <div v-if="(archiveQueueForDisplay.recent_failures || []).length > failureVisibleLimit" class="task-list-footer">
               <button class="button button-secondary button-small" type="button" @click="failureVisibleLimit += TASKS_PAGE_SIZE">
                 加载更多
               </button>
@@ -371,6 +371,7 @@ const payload = ref({
     running_count: 0,
     queued_count: 0,
   },
+  archive_queue_display: null,
   missing_3mf: {
     items: [],
     count: 0,
@@ -420,9 +421,10 @@ const activeVisibleLimit = ref(TASKS_PAGE_SIZE);
 const queuedVisibleLimit = ref(TASKS_PAGE_SIZE);
 const failureVisibleLimit = ref(TASKS_PAGE_SIZE);
 const missingVisibleLimit = ref(TASKS_PAGE_SIZE);
-const visibleActiveTasks = computed(() => payload.value.archive_queue.active.slice(0, activeVisibleLimit.value));
-const visibleQueuedTasks = computed(() => payload.value.archive_queue.queued.slice(0, queuedVisibleLimit.value));
-const visibleFailureTasks = computed(() => payload.value.archive_queue.recent_failures.slice(0, failureVisibleLimit.value));
+const archiveQueueForDisplay = computed(() => payload.value.archive_queue_display || payload.value.archive_queue || {});
+const visibleActiveTasks = computed(() => (archiveQueueForDisplay.value.active || []).slice(0, activeVisibleLimit.value));
+const visibleQueuedTasks = computed(() => (archiveQueueForDisplay.value.queued || []).slice(0, queuedVisibleLimit.value));
+const visibleFailureTasks = computed(() => (archiveQueueForDisplay.value.recent_failures || []).slice(0, failureVisibleLimit.value));
 const visibleMissingItems = computed(() => payload.value.missing_3mf.items.slice(0, missingVisibleLimit.value));
 const taskShape = computed(() => runtimeTaskShape(payload.value));
 const runtimeMode = computed(() => taskShape.value.mode === "runtime");

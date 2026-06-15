@@ -111,6 +111,15 @@ test("TasksPage renders a light task snapshot before full task hydration", () =>
   assert.match(tasksPageSource, /void refreshFullTasks/);
 });
 
+test("TasksPage renders grouped archive queue display items", () => {
+  assert.match(tasksPageSource, /archive_queue_display/);
+  assert.match(tasksPageSource, /archiveQueueForDisplay/);
+  assert.match(tasksPageSource, /visibleActiveTasks = computed\(\(\) => \(archiveQueueForDisplay\.value\.active/);
+  assert.match(tasksPageSource, /visibleQueuedTasks = computed\(\(\) => \(archiveQueueForDisplay\.value\.queued/);
+  assert.doesNotMatch(tasksPageSource, /visibleActiveTasks = computed\(\(\) => payload\.value\.archive_queue\.active/);
+  assert.doesNotMatch(tasksPageSource, /visibleQueuedTasks = computed\(\(\) => payload\.value\.archive_queue\.queued/);
+});
+
 test("SettingsPage uses shared page refresh controller for system update state", () => {
   assert.match(settingsPageSource, /createPageRefreshController/);
   assert.match(settingsPageSource, /settingsRefreshController/);
