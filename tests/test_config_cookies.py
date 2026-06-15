@@ -212,6 +212,61 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(saved_cookie.handle, "s450586793")
             self.assertEqual(payload["cookie_source_sync"], queued_result)
 
+    async def test_online_account_login_preserves_existing_profile_when_login_has_no_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            config.cookies = [
+                CookiePair(
+                    platform="cn",
+                    cookie="old=1",
+                    username="13800138000",
+                    display_name="艾斯",
+                    account_id="2024907479",
+                    handle="s450586793",
+                    avatar_url="https://example.com/avatar.jpg",
+                    status="ok",
+                    message="旧状态",
+                )
+            ]
+            store.save(config)
+
+            request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
+            login_result = {
+                "platform": "cn",
+                "username": "13800138000",
+                "cookie": "token=new",
+                "display_name": "13800138000",
+                "account_id": "",
+                "handle": "",
+                "avatar_url": "",
+                "status": "ok",
+                "message": "国区账号已登录，Cookie 已保存。",
+                "auth_payload": {"ok": True},
+            }
+
+            with patch.object(config_api, "store", store), \
+                    patch.object(config_api, "_run_online_account_login", return_value=login_result), \
+                    patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms", return_value={"queued_count": 0, "subscription_ids": []}), \
+                    patch.object(config_api.subscription_manager, "request_cookie_source_sync", return_value={"queued_count": 1, "platforms": ["cn"]}), \
+                    patch.object(config_api, "_get_github_version_status", return_value={}), \
+                    patch.object(config_api, "cookie_source_inventory_payload", return_value={"platforms": {}}), \
+                    patch.object(config_api, "cookie_source_sync_state_payload", return_value={}), \
+                    patch.object(config_api, "compact_remote_refresh_state", return_value={}), \
+                    patch.object(config_api.task_state_store, "load_remote_refresh_state", return_value={}), \
+                    patch.object(config_api, "append_business_log"):
+                await config_api.login_config_online_account(
+                    OnlineAccountLoginRequest(platform="cn", username="13800138000", verification_code="123456"),
+                    request,
+                )
+
+            saved_cookie = store.load().cookies[0]
+            self.assertEqual(saved_cookie.cookie, "token=new")
+            self.assertEqual(saved_cookie.display_name, "艾斯")
+            self.assertEqual(saved_cookie.account_id, "2024907479")
+            self.assertEqual(saved_cookie.handle, "s450586793")
+            self.assertEqual(saved_cookie.avatar_url, "https://example.com/avatar.jpg")
+
     async def test_online_account_delete_removes_account_imported_subscriptions_only_on_explicit_delete(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")

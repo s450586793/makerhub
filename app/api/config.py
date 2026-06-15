@@ -2899,21 +2899,25 @@ async def login_config_online_account(payload: OnlineAccountLoginRequest, reques
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     existing_by_platform = {item.platform: item for item in config.cookies}
+    existing = existing_by_platform.get(platform)
+    metadata = {
+        "username": login_result.get("username") or payload.username,
+        "display_name": login_result.get("display_name") or payload.username,
+        "account_id": login_result.get("account_id") or "",
+        "handle": login_result.get("handle") or "",
+        "avatar_url": login_result.get("avatar_url") or "",
+        "status": login_result.get("status") or "ok",
+        "message": login_result.get("message") or "账号已登录，Cookie 已保存。",
+        "last_login_at": _now_iso(),
+        "last_tested_at": _now_iso(),
+    }
+    if existing is not None:
+        metadata = _preserve_account_profile_metadata(metadata, existing)
     pair = _cookie_pair_from_existing(
-        existing_by_platform.get(platform),
+        existing,
         platform=platform,
         cookie=login_result.get("cookie") or "",
-        metadata={
-            "username": login_result.get("username") or payload.username,
-            "display_name": login_result.get("display_name") or payload.username,
-            "account_id": login_result.get("account_id") or "",
-            "handle": login_result.get("handle") or "",
-            "avatar_url": login_result.get("avatar_url") or "",
-            "status": login_result.get("status") or "ok",
-            "message": login_result.get("message") or "账号已登录，Cookie 已保存。",
-            "last_login_at": _now_iso(),
-            "last_tested_at": _now_iso(),
-        },
+        metadata=metadata,
     )
     config.cookies = _upsert_cookie_pair(config.cookies, pair)
     append_business_log(

@@ -37,6 +37,13 @@ function normalizedSourceUrl(value) {
   return `${parsed.hostname.toLowerCase()}${pathname}`;
 }
 
+function isDefaultFavoritesUrl(value) {
+  const parsed = parseUrl(value);
+  if (!parsed) return false;
+  const pathname = parsed.pathname.replace(/\/+$/, "").toLowerCase();
+  return /\/@[^/]+\/collections\/models$/.test(pathname);
+}
+
 function authorHandleFromUrl(value) {
   const parsed = parseUrl(value);
   if (!parsed) return "";
@@ -143,6 +150,25 @@ function countImportedSources(inventory, sourceKind) {
   return urls.size;
 }
 
+function countPlatformSubscriptions(subscriptions, platform, mode) {
+  const urls = new Set();
+  subscriptionSources(subscriptions, platform, mode).forEach((subscription) => {
+    const url = normalizedSourceUrl(subscription.url);
+    if (url) urls.add(url);
+  });
+  return urls.size;
+}
+
+function countDefaultFavoriteSubscriptions(subscriptions, platform) {
+  const urls = new Set();
+  subscriptionSources(subscriptions, platform, "collection_models").forEach((subscription) => {
+    if (!isDefaultFavoritesUrl(subscription.url)) return;
+    const url = normalizedSourceUrl(subscription.url);
+    if (url) urls.add(url);
+  });
+  return urls.size;
+}
+
 export function accountSyncedSourceCounts(inventory, subscriptions, platform = "") {
   const sourceInventory = inventory && typeof inventory === "object" ? inventory : {};
   const defaultFavorites = sourceInventory.default_favorites && typeof sourceInventory.default_favorites === "object"
@@ -158,10 +184,11 @@ export function accountSyncedSourceCounts(inventory, subscriptions, platform = "
   return {
     defaultFavorites: defaultFavorites.url
       ? countMatchedSources([defaultFavorites], subscriptions, platform, "collection_models", collectionKeysFromSource)
-      : 0,
+      : Math.min(countDefaultFavoriteSubscriptions(subscriptions, platform), 1),
     followedAuthors: followedAuthors.length
       ? countMatchedSources(followedAuthors, subscriptions, platform, "author_upload", authorKeysFromSource)
-      : countImportedSources(sourceInventory, "followed_author"),
+      : countImportedSources(sourceInventory, "followed_author")
+        || countPlatformSubscriptions(subscriptions, platform, "author_upload"),
     followedCollections: followedCollections.length
       ? countMatchedSources(followedCollections, subscriptions, platform, "collection_models", collectionKeysFromSource)
       : countImportedSources(sourceInventory, "followed_collection"),

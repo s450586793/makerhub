@@ -60,3 +60,48 @@ test("account synced default favorite count matches saved default favorite subsc
 
   assert.equal(counts.defaultFavorites, 1);
 });
+
+test("account synced counts fall back to current platform subscriptions when inventory lists are stale", () => {
+  const counts = accountSyncedSourceCounts(
+    { followed_authors: [], followed_collections: [], imported_sources: [] },
+    [
+      {
+        id: "cn-author",
+        url: "https://makerworld.com.cn/zh/@maker/upload",
+        mode: "author_upload",
+      },
+      {
+        id: "global-author",
+        url: "https://makerworld.com/zh/@globalmaker/upload",
+        mode: "author_upload",
+      },
+      {
+        id: "cn-default",
+        url: "https://makerworld.com.cn/zh/@s450586793/collections/models",
+        mode: "collection_models",
+      },
+    ],
+    "cn",
+  );
+
+  assert.equal(counts.followedAuthors, 1);
+  assert.equal(counts.followedCollections, 0);
+  assert.equal(counts.defaultFavorites, 1);
+});
+
+test("account synced default favorites fallback ignores followed collection subscriptions", () => {
+  const counts = accountSyncedSourceCounts(
+    { followed_authors: [], followed_collections: [], imported_sources: [] },
+    [
+      {
+        id: "cn-collection",
+        url: "https://makerworld.com.cn/zh/collections/518732-test",
+        mode: "collection_models",
+      },
+    ],
+    "cn",
+  );
+
+  assert.equal(counts.defaultFavorites, 0);
+  assert.equal(counts.followedCollections, 0);
+});

@@ -1069,12 +1069,13 @@ const onlineAccountItems = computed(() => {
     .filter((item) => ["cn", "global"].includes(item.platform) && hasAccountCookie(item))
     .map((item) => {
       const inventoryAccount = inventoryByPlatform[item.platform]?.account || {};
+      const syncStateAccount = syncStateByPlatform[item.platform] || {};
       const mergedItem = {
         ...item,
-        display_name: item.display_name || inventoryAccount.name || "",
-        account_id: item.account_id || inventoryAccount.uid || "",
-        handle: item.handle || inventoryAccount.handle || "",
-        avatar_url: item.avatar_url || inventoryAccount.avatar_url || "",
+        display_name: item.display_name || inventoryAccount.name || syncStateAccount.account_name || "",
+        account_id: item.account_id || inventoryAccount.uid || syncStateAccount.account_uid || "",
+        handle: item.handle || inventoryAccount.handle || syncStateAccount.account_handle || "",
+        avatar_url: item.avatar_url || inventoryAccount.avatar_url || syncStateAccount.account_avatar_url || "",
       };
       const displayName = accountDisplayName(mergedItem);
       const status = String(item.status || "").trim();
@@ -1397,11 +1398,16 @@ function accountCountText(value) {
 }
 
 function accountCountWithSyncedText(total, synced) {
-  const totalText = accountCountText(total);
-  if (total === null || total === undefined || synced === null || synced === undefined) {
-    return totalText;
+  const hasTotal = total !== null && total !== undefined;
+  const hasSynced = synced !== null && synced !== undefined;
+  if (!hasTotal && !hasSynced) {
+    return "未同步";
   }
-  return `${totalText}（${synced} 已同步）`;
+  const displayTotal = hasTotal && hasSynced ? Math.max(total, synced) : (hasTotal ? total : synced);
+  if (!hasSynced) {
+    return accountCountText(displayTotal);
+  }
+  return `${displayTotal}（${synced} 已同步）`;
 }
 
 function accountMessageText(item, status) {
@@ -1445,6 +1451,7 @@ function accountSourceStats(inventory, syncState, subscriptions = [], platform =
   const followedAuthorCount = coerceAccountCount(
     sourceSync.followed_author_count,
     followedAuthors.length ? followedAuthors.length : "",
+    syncedSourceCounts.followedAuthors,
   );
   const syncedFollowedAuthorCount = coerceAccountCount(
     syncedSourceCounts.followedAuthors,
@@ -1455,6 +1462,7 @@ function accountSourceStats(inventory, syncState, subscriptions = [], platform =
     sourceSync.followed_collection_count,
     sourceInventory.followed_collection_count,
     followedCollections.length ? followedCollections.length : "",
+    syncedSourceCounts.followedCollections,
   );
   const syncedFollowedCollectionCount = coerceAccountCount(
     syncedSourceCounts.followedCollections,
@@ -1467,6 +1475,7 @@ function accountSourceStats(inventory, syncState, subscriptions = [], platform =
     defaultFavorites.model_count,
     defaultFavorites.remote_model_count,
     defaultFavorites.url || sourceSync.default_favorites_found ? 1 : "",
+    syncedSourceCounts.defaultFavorites,
   );
   const lastSyncAt = sourceSync.last_sync_at || sourceInventory.last_sync_at || "";
   const lastStatus = String(sourceSync.last_status || sourceInventory.last_status || "").trim();
