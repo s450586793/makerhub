@@ -61,6 +61,7 @@ BAMBU_STUDIO_SECRET_PATH = STATE_DIR / "bambu_studio_download_secret"
 LOG_FILE_IMPORT_LIMIT = 200_000
 RUNTIME_JSON_STATE_KEYS = frozenset(
     {
+        "app_config",
         "archive_queue",
         "missing_3mf",
         "organize_tasks",
@@ -68,6 +69,8 @@ RUNTIME_JSON_STATE_KEYS = frozenset(
         "remote_refresh_state",
         "source_refresh_queue",
         "source_refresh_runs",
+        "cookie_source_sync_state",
+        "cookie_source_inventory",
         "three_mf_limit_guard",
         "three_mf_daily_quota",
         "archive_repair_status",

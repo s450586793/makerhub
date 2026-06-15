@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.31`
+> 当前版本：`v0.9.32`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-16 · v0.9.32
+
+- 修复数据库索引重建或强制迁移会用旧 `config.json` 覆盖 Postgres 当前配置的问题，避免订阅库数量被旧配置打回。
+- 强制迁移会保护账号来源库存和同步状态，不再把 `cookie_source_inventory` 覆盖为空导致账号来源保护清单丢失。
+- 旧错误 `@user_数字` 作者订阅清理会跳过当前账号库存确认过的来源，避免合法 MakerWorld 作者被误删。
+
 ### 2026-06-15 · v0.9.31
 
 - 设置页线上账号卡片新增来源口径总览，拆分显示订阅库总数、账号来源已同步、其他来源和待解析数量。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - 设置页线上账号卡片增加账号同步状态兜底，Cookie 资料或 inventory 为空时仍可从 `cookie_source_sync_state` 显示头像和账号信息。
 - 线上账号来源统计在 inventory 过期或为空时从当前订阅库兜底，避免关注作者、默认收藏夹显示成全 0；默认收藏夹只识别 `@账号/collections/models`，不会误算普通合集。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-15 · v0.9.29
 
 - 设置页线上账号统计改为每个数字都显示已同步数量，例如 `关注作者 36（25 已同步）`、`关注收藏夹 1（0 已同步）`、`默认收藏夹 1（1 已同步）`。
 - 已同步数量优先从当前订阅库和账号关注清单交叉匹配，不再被旧同步状态里的 `imported_* = 0` 误导。
 - 增加前端回归测试，覆盖关注作者、关注收藏夹和默认收藏夹的已同步计数。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-15 · v0.9.28
 

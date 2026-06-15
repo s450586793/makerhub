@@ -1060,6 +1060,79 @@ class SubscriptionManagerTest(unittest.TestCase):
         )
         self.assertEqual(state_ids, ["sub-bad-account-author", "sub-good-account-author", "sub-manual-bad"])
 
+    def test_sync_cookie_sources_keeps_current_inventory_user_number_author_even_when_error(self):
+        config = self.store.load()
+        config.cookies = [CookiePair(platform="cn", cookie="token=ok")]
+        config.subscriptions = [
+            SubscriptionRecord(
+                id="sub-current-user-author",
+                name="樱桃的好奇心 作者订阅",
+                url="https://makerworld.com.cn/zh/@user_1751098586/upload",
+                mode="author_upload",
+                cron="0 * * * *",
+                enabled=True,
+            ),
+            SubscriptionRecord(
+                id="sub-legacy-bad",
+                name="旧错误作者订阅",
+                url="https://makerworld.com.cn/zh/@user_999/upload",
+                mode="author_upload",
+                cron="0 * * * *",
+                enabled=True,
+            ),
+        ]
+        self.store.save(config)
+        self.task_store.patch_subscription_state(
+            "sub-current-user-author",
+            status="error",
+            last_message="临时同步失败。",
+        )
+        self.task_store.patch_subscription_state(
+            "sub-legacy-bad",
+            status="error",
+            last_message="未能在页面中识别模型链接，请确认链接与 Cookie 是否有效。",
+        )
+        subscriptions._write_cookie_source_inventory_state(
+            {
+                "platforms": {
+                    "cn": {
+                        "imported_sources": [
+                            {
+                                "subscription_id": "sub-current-user-author",
+                                "url": "https://makerworld.com.cn/zh/@user_1751098586/upload",
+                                "mode": "author_upload",
+                                "source_kind": "followed_author",
+                            }
+                        ],
+                        "source_urls": ["https://makerworld.com.cn/zh/@user_1751098586/upload"],
+                        "followed_authors": [
+                            {"url": "https://makerworld.com.cn/zh/@user_1751098586/upload"},
+                        ],
+                    }
+                },
+                "updated_at": "2026-06-16T00:00:00+08:00",
+            }
+        )
+
+        with patch.object(subscriptions, "discover_cookie_account_profile", return_value={"uid": "1", "handle": "owner", "name": "Owner"}), \
+                patch.object(subscriptions, "discover_cookie_account_home_summary", return_value={"uid": "1", "handle": "owner", "name": "Owner"}), \
+                patch.object(subscriptions, "default_favorites_subscription_source", return_value={}), \
+                patch.object(subscriptions, "discover_cookie_followed_authors_from_page", return_value={"items": [], "count": 0, "total": 0}), \
+                patch.object(subscriptions, "discover_cookie_followed_authors", return_value={"items": [], "count": 0, "total": 0}), \
+                patch.object(subscriptions, "discover_cookie_followed_collections", return_value={"items": [], "count": 0}):
+            result = self.manager.sync_cookie_sources({"cn"}, reason="scheduled")
+
+        config = self.store.load()
+        state_ids = [item["id"] for item in self.task_store.load_subscriptions_state().get("items") or []]
+        platform_result = result["platforms"][0]
+
+        self.assertEqual(platform_result["removed_invalid_subscription_ids"], ["sub-legacy-bad"])
+        self.assertEqual(
+            [item.id for item in config.subscriptions],
+            ["sub-current-user-author"],
+        )
+        self.assertEqual(state_ids, ["sub-current-user-author"])
+
     def test_sync_cookie_sources_reports_missing_followed_collection_items(self):
         config = self.store.load()
         config.cookies = [CookiePair(platform="cn", cookie="token=ok")]

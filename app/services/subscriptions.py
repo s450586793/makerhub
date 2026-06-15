@@ -379,6 +379,43 @@ def _is_legacy_error_synthetic_user_subscription(record: SubscriptionRecord, sta
     return str((state or {}).get("status") or "").strip() == "error"
 
 
+def _cookie_inventory_subscription_refs(inventory_item: dict[str, Any]) -> tuple[set[str], set[str]]:
+    source_ids: set[str] = set()
+    source_urls: set[str] = set()
+
+    def add_source_url(raw_url: Any, mode: Any = "") -> None:
+        clean_url = normalize_source_url(str(raw_url or ""))
+        if not clean_url:
+            return
+        clean_mode = str(mode or _detect_subscription_mode(clean_url) or "").strip()
+        identity_url = _subscription_identity_url(clean_url, clean_mode)
+        if identity_url:
+            source_urls.add(identity_url)
+
+    for item in inventory_item.get("imported_sources") or []:
+        if not isinstance(item, dict):
+            continue
+        subscription_id = str(item.get("subscription_id") or "").strip()
+        if subscription_id:
+            source_ids.add(subscription_id)
+        add_source_url(item.get("url"), item.get("mode"))
+
+    for raw_url in inventory_item.get("source_urls") or []:
+        add_source_url(raw_url)
+
+    for item in inventory_item.get("followed_authors") or []:
+        add_source_url(item.get("url") if isinstance(item, dict) else item, "author_upload")
+
+    for item in inventory_item.get("followed_collections") or []:
+        add_source_url(item.get("url") if isinstance(item, dict) else item, "collection_models")
+
+    default_favorites = inventory_item.get("default_favorites")
+    if isinstance(default_favorites, dict):
+        add_source_url(default_favorites.get("url"), default_favorites.get("mode") or "collection_models")
+
+    return source_ids, source_urls
+
+
 def _subscription_identity_key(record: SubscriptionRecord) -> tuple[str, str]:
     return (str(record.mode or "").strip(), _subscription_identity_url(record.url, record.mode))
 
@@ -1197,9 +1234,14 @@ class SubscriptionManager:
             for item in state_payload.get("items") or []
             if isinstance(item, dict)
         }
+        protected_ids, protected_urls = _cookie_inventory_subscription_refs(inventory_item)
         removed_ids: list[str] = []
         kept_records: list[SubscriptionRecord] = []
         for record in config.subscriptions:
+            record_url = _subscription_identity_url(record.url, record.mode)
+            if record.id in protected_ids or record_url in protected_urls:
+                kept_records.append(record)
+                continue
             if _is_legacy_error_synthetic_user_subscription(record, state_map.get(record.id) or {}, platform):
                 removed_ids.append(record.id)
                 continue

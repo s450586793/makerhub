@@ -6,7 +6,7 @@ from unittest.mock import patch
 from app.core.security import hash_api_token
 from app.core import database
 from app.core.store import JsonStore
-from app.schemas.models import ApiTokenRecord, AppConfig, CookiePair
+from app.schemas.models import ApiTokenRecord, AppConfig, CookiePair, SubscriptionRecord
 from app.services import (
     archive_profile_backfill,
     archive_repair,
@@ -343,6 +343,51 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
         self.assertEqual(self.state["app_config"]["cookies"][0]["cookie"], "token=legacy-parent")
         self.assertEqual(result["items"][0]["path"], legacy_config_path.as_posix())
 
+    def test_force_database_migration_protects_existing_app_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            legacy_config = AppConfig(
+                subscriptions=[
+                    SubscriptionRecord(
+                        id="legacy-sub",
+                        name="旧订阅",
+                        url="https://makerworld.com.cn/zh/@legacy/upload",
+                        mode="author_upload",
+                    )
+                ]
+            )
+            config_path.write_text(legacy_config.model_dump_json(), encoding="utf-8")
+            self.state["app_config"] = AppConfig(
+                cookies=[CookiePair(platform="cn", cookie="token=current")],
+                subscriptions=[
+                    SubscriptionRecord(
+                        id="current-sub-1",
+                        name="当前订阅 1",
+                        url="https://makerworld.com.cn/zh/@current1/upload",
+                        mode="author_upload",
+                    ),
+                    SubscriptionRecord(
+                        id="current-sub-2",
+                        name="当前订阅 2",
+                        url="https://makerworld.com.cn/zh/@current2/upload",
+                        mode="author_upload",
+                    ),
+                ],
+            ).model_dump()
+
+            with patch.object(
+                database_migration,
+                "JSON_STATE_FILE_MIGRATIONS",
+                (("app_config", config_path, {}),),
+            ):
+                result = database_migration.migrate_json_files_to_database(force=True)
+
+        self.assertEqual(len(self.state["app_config"]["subscriptions"]), 2)
+        self.assertEqual(self.state["app_config"]["subscriptions"][0]["id"], "current-sub-1")
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["items"][0]["status"], "protected_runtime_state")
+
     def test_database_migration_backfills_empty_model_flags_from_legacy_state_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_root = Path(tmp) / "config" / "state"
@@ -416,6 +461,43 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
                 result = database_migration.migrate_json_files_to_database(force=True)
 
         self.assertEqual(self.state["remote_refresh_state"]["active_run"]["batch_id"], "live-batch")
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["items"][0]["status"], "protected_runtime_state")
+
+    def test_force_database_migration_protects_existing_cookie_source_inventory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            inventory_path = Path(tmp) / "cookie_source_inventory.json"
+            self.state["cookie_source_inventory"] = {
+                "platforms": {
+                    "cn": {
+                        "imported_sources": [
+                            {
+                                "subscription_id": "sub-current-user-author",
+                                "url": "https://makerworld.com.cn/zh/@user_1751098586/upload",
+                                "mode": "author_upload",
+                            }
+                        ],
+                        "source_urls": ["https://makerworld.com.cn/zh/@user_1751098586/upload"],
+                        "followed_authors": [
+                            {"url": "https://makerworld.com.cn/zh/@user_1751098586/upload"},
+                        ],
+                    }
+                },
+                "updated_at": "2026-06-16T00:00:00+08:00",
+            }
+
+            with patch.object(
+                database_migration,
+                "JSON_STATE_FILE_MIGRATIONS",
+                (("cookie_source_inventory", inventory_path, {"platforms": {}, "updated_at": ""}),),
+            ):
+                result = database_migration.migrate_json_files_to_database(force=True)
+
+        self.assertEqual(
+            self.state["cookie_source_inventory"]["platforms"]["cn"]["source_urls"],
+            ["https://makerworld.com.cn/zh/@user_1751098586/upload"],
+        )
         self.assertEqual(result["updated"], 1)
         self.assertEqual(result["skipped"], 1)
         self.assertEqual(result["items"][0]["status"], "protected_runtime_state")
