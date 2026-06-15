@@ -804,6 +804,29 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertTrue(state["cn"]["requested_at"])
         self.assertEqual(state["global"]["last_status"], "pending")
 
+    def test_unrelated_config_save_preserves_concurrent_subscription_imports(self):
+        stale_config = self.store.load()
+
+        fresh_config = self.store.load()
+        fresh_config.subscriptions.append(
+            SubscriptionRecord(
+                id="sub-imported",
+                name="新导入作者",
+                url="https://makerworld.com.cn/zh/@newmaker/upload",
+                mode="author_upload",
+                cron="0 * * * *",
+                enabled=True,
+            )
+        )
+        self.store.save(fresh_config)
+
+        stale_config.user.display_name = "Updated Admin"
+        saved = self.store.save(stale_config)
+
+        self.assertEqual(saved.user.display_name, "Updated Admin")
+        self.assertIn("sub-imported", [item.id for item in saved.subscriptions])
+        self.assertIn("sub-imported", [item.id for item in self.store.load().subscriptions])
+
     def test_list_payload_canonicalizes_existing_author_subscription_urls(self):
         config = self.store.load()
         config.subscriptions = [
@@ -1037,6 +1060,59 @@ class SubscriptionManagerTest(unittest.TestCase):
         )
         self.assertEqual(state_ids, ["sub-bad-account-author", "sub-good-account-author", "sub-manual-bad"])
 
+    def test_sync_cookie_sources_reports_missing_followed_collection_items(self):
+        config = self.store.load()
+        config.cookies = [CookiePair(platform="cn", cookie="token=ok")]
+        config.subscriptions = []
+        self.store.save(config)
+
+        with patch.object(
+            subscriptions,
+            "discover_cookie_account_profile",
+            return_value={
+                "uid": "2024907479",
+                "handle": "s450586793",
+                "name": "艾斯",
+                "follow_count": 0,
+                "liked_collection_count": 1,
+            },
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_account_home_summary",
+            return_value={},
+        ), patch.object(
+            subscriptions,
+            "default_favorites_subscription_source",
+            return_value={},
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_followed_authors_from_page",
+            return_value={"items": [], "count": 0, "total": 0},
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_followed_authors",
+            return_value={"items": [], "count": 0, "total": 0},
+        ), patch.object(
+            subscriptions,
+            "discover_cookie_followed_collections",
+            return_value={"items": [], "count": 0},
+        ):
+            result = self.manager.sync_cookie_sources({"cn"}, reason="scheduled")
+
+        sync_state = subscriptions._read_cookie_source_sync_state()["cn"]
+        inventory = subscriptions._read_cookie_source_inventory_state()["platforms"]["cn"]
+        platform_result = result["platforms"][0]
+
+        self.assertEqual(platform_result["followed_collection_count"], 1)
+        self.assertEqual(platform_result["imported_followed_collection_count"], 0)
+        self.assertEqual(platform_result["skipped_followed_collection_count"], 1)
+        self.assertEqual(sync_state["last_status"], "warning")
+        self.assertEqual(sync_state["followed_collection_count"], 1)
+        self.assertEqual(sync_state["imported_followed_collection_count"], 0)
+        self.assertEqual(sync_state["skipped_followed_collection_count"], 1)
+        self.assertEqual(inventory["followed_collection_count"], 1)
+        self.assertEqual(inventory["followed_collections"], [])
+
     def test_sync_cookie_sources_removes_legacy_error_synthetic_user_author_subscriptions(self):
         config = self.store.load()
         config.cookies = [CookiePair(platform="global", cookie="token=ok")]
@@ -1106,6 +1182,61 @@ class SubscriptionManagerTest(unittest.TestCase):
             ["sub-manual-bad", "sub-good-author"],
         )
         self.assertEqual(state_ids, ["sub-manual-bad", "sub-good-author"])
+
+    def test_sync_cookie_sources_does_not_resurrect_removed_legacy_error_subscription(self):
+        config = self.store.load()
+        config.cookies = [CookiePair(platform="global", cookie="token=ok")]
+        config.subscriptions = [
+            SubscriptionRecord(
+                id="sub-legacy-bad",
+                name="旧错误作者订阅",
+                url="https://makerworld.com/zh/@user_2595475119/upload",
+                mode="author_upload",
+                cron="0 * * * *",
+                enabled=True,
+            )
+        ]
+        self.store.save(config)
+        self.task_store.patch_subscription_state("sub-legacy-bad", status="error")
+        subscriptions._write_cookie_source_inventory_state(
+            {
+                "platforms": {"global": {"imported_sources": [], "source_urls": [], "followed_authors": []}},
+                "updated_at": "2026-05-29T00:00:00+08:00",
+            }
+        )
+
+        with patch.object(subscriptions, "discover_cookie_account_profile", return_value={"uid": "1", "handle": "owner", "name": "Owner"}), \
+                patch.object(subscriptions, "discover_cookie_account_home_summary", return_value={}), \
+                patch.object(subscriptions, "default_favorites_subscription_source", return_value={}), \
+                patch.object(subscriptions, "discover_cookie_followed_authors_from_page", return_value={"items": [], "count": 0, "total": 0}), \
+                patch.object(
+                    subscriptions,
+                    "discover_cookie_followed_authors",
+                    return_value={
+                        "items": [
+                            {
+                                "title": "Oierre",
+                                "handle": "Oierre",
+                                "uid": "167015859",
+                                "url": "https://makerworld.com/zh/@Oierre/upload",
+                            }
+                        ],
+                        "count": 1,
+                        "total": 1,
+                    },
+                ), \
+                patch.object(subscriptions, "discover_cookie_followed_collections", return_value={"items": [], "count": 0}):
+            result = self.manager.sync_cookie_sources({"global"}, reason="scheduled")
+
+        config = self.store.load()
+        state_ids = [item["id"] for item in self.task_store.load_subscriptions_state().get("items") or []]
+
+        self.assertEqual(result["platforms"][0]["removed_invalid_count"], 1)
+        self.assertEqual(result["created_count"], 1)
+        self.assertEqual(len(config.subscriptions), 1)
+        self.assertEqual(config.subscriptions[0].url, "https://makerworld.com/zh/@Oierre/upload")
+        self.assertNotIn("sub-legacy-bad", [item.id for item in config.subscriptions])
+        self.assertNotIn("sub-legacy-bad", state_ids)
 
     def test_maybe_sync_cookie_sources_consumes_requested_platform(self):
         config = self.store.load()

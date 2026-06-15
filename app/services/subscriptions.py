@@ -1356,7 +1356,20 @@ class SubscriptionManager:
                             sources.append({**item, "mode": "author_upload", "source_kind": "followed_author"})
 
                     followed_collections = discover_cookie_followed_collections(platform, raw_cookie, uid=uid)
-                    for item in followed_collections.get("items") or []:
+                    followed_collection_items = [
+                        item
+                        for item in (
+                            followed_collections.get("items")
+                            if isinstance(followed_collections, dict)
+                            else []
+                        )
+                        or []
+                        if isinstance(item, dict)
+                    ]
+                    imported_followed_collection_count = sum(
+                        1 for item in followed_collection_items if str(item.get("url") or "").strip()
+                    )
+                    for item in followed_collection_items:
                         if item.get("url"):
                             sources.append({**item, "mode": "collection_models", "source_kind": "followed_collection"})
                     followed_author_count = _first_non_negative_int(
@@ -1371,10 +1384,20 @@ class SubscriptionManager:
                     followed_collection_count = _first_non_negative_int(
                         profile.get("liked_collection_count") if isinstance(profile, dict) else None,
                         account_summary.get("liked_collection_count") if isinstance(account_summary, dict) else None,
-                        (followed_collections or {}).get("count"),
-                        len((followed_collections or {}).get("items") or []),
+                        (followed_collections or {}).get("count") if isinstance(followed_collections, dict) else None,
+                        len(followed_collection_items),
                     ) or 0
                     skipped_author_count = max(followed_author_count - len(followed_author_items), 0)
+                    skipped_collection_count = max(
+                        followed_collection_count - imported_followed_collection_count,
+                        0,
+                    )
+                    sync_status = "warning" if skipped_collection_count > 0 else "success"
+                    sync_message = (
+                        f"关注来源同步完成，但有 {skipped_collection_count} 个关注收藏夹未解析出具体地址。"
+                        if skipped_collection_count > 0
+                        else "关注来源同步完成。"
+                    )
 
                 platform_created = 0
                 platform_updated = 0
@@ -1513,8 +1536,10 @@ class SubscriptionManager:
                         "api_count": int((followed_authors or {}).get("count") or 0),
                         "api_total": (followed_authors or {}).get("total"),
                     },
-                    followed_collections=followed_collections.get("items") if isinstance(followed_collections, dict) else [],
+                    followed_collections=followed_collection_items,
                     followed_collection_count=followed_collection_count,
+                    imported_followed_collection_count=imported_followed_collection_count,
+                    skipped_followed_collection_count=skipped_collection_count,
                     followed_author_count=followed_author_count,
                     imported_sources=imported_sources,
                     source_urls=[
@@ -1524,15 +1549,16 @@ class SubscriptionManager:
                     ],
                     last_sync_at=now_iso,
                     last_reason=reason,
-                    last_status="success",
+                    last_status=sync_status,
+                    last_message=sync_message,
                 )
                 _patch_cookie_source_sync_state(
                     platform,
                     requested_at="",
                     requested_reason="",
                     last_sync_at=now_iso,
-                    last_status="success",
-                    last_message="关注来源同步完成。",
+                    last_status=sync_status,
+                    last_message=sync_message,
                     last_created_count=platform_created,
                     last_updated_count=platform_updated,
                     last_removed_invalid_count=removed_synthetic_count,
@@ -1542,6 +1568,8 @@ class SubscriptionManager:
                     imported_followed_author_count=len(followed_author_items),
                     skipped_followed_author_count=skipped_author_count,
                     followed_collection_count=followed_collection_count,
+                    imported_followed_collection_count=imported_followed_collection_count,
+                    skipped_followed_collection_count=skipped_collection_count,
                     account_uid=uid,
                     account_handle=str(profile.get("handle") or ""),
                     account_name=str(profile.get("name") or ""),
@@ -1550,7 +1578,8 @@ class SubscriptionManager:
                 platform_results.append(
                     {
                         "platform": platform,
-                        "status": "success",
+                        "status": sync_status,
+                        "message": sync_message,
                         "created_count": platform_created,
                         "updated_count": platform_updated,
                         "removed_invalid_count": removed_synthetic_count,
@@ -1561,6 +1590,8 @@ class SubscriptionManager:
                         "imported_followed_author_count": len(followed_author_items),
                         "skipped_followed_author_count": skipped_author_count,
                         "followed_collection_count": followed_collection_count,
+                        "imported_followed_collection_count": imported_followed_collection_count,
+                        "skipped_followed_collection_count": skipped_collection_count,
                     }
                 )
             except Exception as exc:

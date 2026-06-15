@@ -1392,6 +1392,34 @@ function accountCountText(value) {
   return value === null || value === undefined ? "未同步" : String(value);
 }
 
+function accountCountWithSyncedText(total, synced) {
+  const totalText = accountCountText(total);
+  if (total === null || total === undefined || synced === null || synced === undefined) {
+    return totalText;
+  }
+  if (Number(total) === Number(synced)) {
+    return totalText;
+  }
+  return `${totalText}（${synced} 已同步）`;
+}
+
+function countImportedAccountSources(inventory, sourceKind) {
+  const importedSources = Array.isArray(inventory?.imported_sources)
+    ? inventory.imported_sources
+    : [];
+  const urls = new Set();
+  importedSources.forEach((source) => {
+    if (!source || typeof source !== "object" || source.source_kind !== sourceKind) {
+      return;
+    }
+    const url = String(source.url || "").trim();
+    if (url) {
+      urls.add(url);
+    }
+  });
+  return urls.size;
+}
+
 function accountMessageText(item, status) {
   const platformLabel = accountPlatformShortLabel(item?.platform);
   const raw = String(item?.message || "").trim();
@@ -1433,9 +1461,19 @@ function accountSourceStats(inventory, syncState) {
     sourceSync.followed_author_count,
     followedAuthors.length ? followedAuthors.length : "",
   );
+  const syncedFollowedAuthorCount = coerceAccountCount(
+    sourceSync.imported_followed_author_count,
+    countImportedAccountSources(sourceInventory, "followed_author"),
+    followedAuthors.length ? followedAuthors.length : "",
+  );
   const followedCollectionCount = coerceAccountCount(
     sourceSync.followed_collection_count,
     sourceInventory.followed_collection_count,
+    followedCollections.length ? followedCollections.length : "",
+  );
+  const syncedFollowedCollectionCount = coerceAccountCount(
+    sourceSync.imported_followed_collection_count,
+    countImportedAccountSources(sourceInventory, "followed_collection"),
     followedCollections.length ? followedCollections.length : "",
   );
   const defaultFavoritesCount = coerceAccountCount(
@@ -1450,15 +1488,17 @@ function accountSourceStats(inventory, syncState) {
   let sourceSyncText = "";
   if (lastStatus === "pending") {
     sourceSyncText = "账号信息同步已排队，完成后会更新关注作者和收藏夹数量。";
-  } else if (lastStatus === "error") {
-    sourceSyncText = sourceSync.last_message || sourceInventory.last_message || "来源同步失败。";
+  } else if (lastStatus === "error" || lastStatus === "warning") {
+    sourceSyncText = sourceSync.last_message || sourceInventory.last_message || (
+      lastStatus === "warning" ? "来源同步部分完成。" : "来源同步失败。"
+    );
   } else if (lastSyncAt) {
     sourceSyncText = `来源同步：${formatAccountDate(lastSyncAt)}`;
   }
 
   return {
-    followedAuthorCountText: accountCountText(followedAuthorCount),
-    followedCollectionCountText: accountCountText(followedCollectionCount),
+    followedAuthorCountText: accountCountWithSyncedText(followedAuthorCount, syncedFollowedAuthorCount),
+    followedCollectionCountText: accountCountWithSyncedText(followedCollectionCount, syncedFollowedCollectionCount),
     defaultFavoritesCountText: accountCountText(defaultFavoritesCount),
     sourceSyncText,
   };
