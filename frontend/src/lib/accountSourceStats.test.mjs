@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { accountSyncedSourceCounts } from "./accountSourceStats.js";
+import { accountSourceOverview, accountSyncedSourceCounts } from "./accountSourceStats.js";
 
 test("account synced author count comes from current subscriptions, not stale sync state", () => {
   const followedAuthors = Array.from({ length: 36 }, (_, index) => ({
@@ -104,4 +104,24 @@ test("account synced default favorites fallback ignores followed collection subs
 
   assert.equal(counts.defaultFavorites, 0);
   assert.equal(counts.followedCollections, 0);
+});
+
+test("account source overview separates account synced sources from full subscription library total", () => {
+  const accountItems = [
+    { sourceTotal: 39, sourceSyncedTotal: 38, sourcePendingTotal: 1 },
+    { sourceTotal: 10, sourceSyncedTotal: 10, sourcePendingTotal: 0 },
+  ];
+  const subscriptions = Array.from({ length: 75 }, (_, index) => ({
+    id: `sub-${index}`,
+    url: `https://makerworld.com.cn/zh/@maker${index}/upload`,
+    mode: "author_upload",
+  }));
+
+  const overview = accountSourceOverview(accountItems, subscriptions);
+
+  assert.equal(overview.subscriptionTotal, 75);
+  assert.equal(overview.accountReportedTotal, 49);
+  assert.equal(overview.accountSyncedTotal, 48);
+  assert.equal(overview.otherTotal, 27);
+  assert.equal(overview.pendingTotal, 1);
 });

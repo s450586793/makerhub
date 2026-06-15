@@ -128,6 +128,8 @@ test("SettingsPage uses shared page refresh controller for system update state",
 
 test("SettingsPage derives synced online account source counts from current subscriptions", () => {
   assert.match(settingsPageSource, /accountSyncedSourceCounts/);
+  assert.match(settingsPageSource, /accountSourceOverview/);
+  assert.match(settingsPageSource, /onlineAccountOverview/);
   assert.match(settingsPageSource, /const subscriptionItems = Array\.isArray\(config\.value\?\.subscriptions\)/);
   assert.match(settingsPageSource, /syncStateAccount\.account_avatar_url/);
   assert.match(settingsPageSource, /accountSourceStats\(\s*inventoryByPlatform\[item\.platform\],\s*syncStateByPlatform\[item\.platform\],\s*subscriptionItems,\s*item\.platform,/);

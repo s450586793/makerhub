@@ -342,6 +342,31 @@ html[data-theme="dark"] .mw-attachment-upload__drop-copy em {
   gap: var(--space-3);
 }
 
+.online-account-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.online-account-overview span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+
+.online-account-overview strong {
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+
 .online-account-item {
   display: grid;
   grid-template-columns: 48px minmax(0, 1fr) auto;

@@ -169,6 +169,11 @@ function countDefaultFavoriteSubscriptions(subscriptions, platform) {
   return urls.size;
 }
 
+function cleanCount(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0;
+}
+
 export function accountSyncedSourceCounts(inventory, subscriptions, platform = "") {
   const sourceInventory = inventory && typeof inventory === "object" ? inventory : {};
   const defaultFavorites = sourceInventory.default_favorites && typeof sourceInventory.default_favorites === "object"
@@ -192,5 +197,21 @@ export function accountSyncedSourceCounts(inventory, subscriptions, platform = "
     followedCollections: followedCollections.length
       ? countMatchedSources(followedCollections, subscriptions, platform, "collection_models", collectionKeysFromSource)
       : countImportedSources(sourceInventory, "followed_collection"),
+  };
+}
+
+export function accountSourceOverview(accountItems, subscriptions) {
+  const items = Array.isArray(accountItems) ? accountItems : [];
+  const subscriptionTotal = Array.isArray(subscriptions) ? subscriptions.length : 0;
+  const accountReportedTotal = items.reduce((total, item) => total + cleanCount(item?.sourceTotal), 0);
+  const accountSyncedTotal = items.reduce((total, item) => total + cleanCount(item?.sourceSyncedTotal), 0);
+  const pendingTotal = items.reduce((total, item) => total + cleanCount(item?.sourcePendingTotal), 0)
+    || Math.max(accountReportedTotal - accountSyncedTotal, 0);
+  return {
+    subscriptionTotal,
+    accountReportedTotal,
+    accountSyncedTotal,
+    otherTotal: Math.max(subscriptionTotal - accountSyncedTotal, 0),
+    pendingTotal,
   };
 }

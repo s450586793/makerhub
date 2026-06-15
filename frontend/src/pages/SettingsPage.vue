@@ -33,6 +33,13 @@
           </button>
         </div>
 
+        <div v-if="onlineAccountItems.length" class="online-account-overview">
+          <span>订阅库总数 <strong>{{ onlineAccountOverview.subscriptionTotal }}</strong></span>
+          <span>账号来源已同步 <strong>{{ onlineAccountOverview.accountSyncedTotal }}</strong></span>
+          <span>其他来源 <strong>{{ onlineAccountOverview.otherTotal }}</strong></span>
+          <span>待解析 <strong>{{ onlineAccountOverview.pendingTotal }}</strong></span>
+        </div>
+
         <div v-if="onlineAccountItems.length" class="online-account-list">
           <article v-for="item in onlineAccountItems" :key="item.platform" class="online-account-item">
             <div class="online-account-item__avatar">
@@ -870,7 +877,7 @@ import { RouterLink, useRoute, useRouter } from "vue-router";
 
 import ThemeSegment from "../components/ThemeSegment.vue";
 import { appState, applyConfigPayload, refreshConfig, refreshLightConfig, saveThemePreference } from "../lib/appState";
-import { accountSyncedSourceCounts } from "../lib/accountSourceStats";
+import { accountSourceOverview, accountSyncedSourceCounts } from "../lib/accountSourceStats";
 import { apiRequest } from "../lib/api";
 import {
   buildAdvancedPayload,
@@ -1097,6 +1104,10 @@ const onlineAccountItems = computed(() => {
         ...sourceStats,
       };
     });
+});
+const onlineAccountOverview = computed(() => {
+  const subscriptionItems = Array.isArray(config.value?.subscriptions) ? config.value.subscriptions : [];
+  return accountSourceOverview(onlineAccountItems.value, subscriptionItems);
 });
 const isGlobalAccountDialog = computed(() => accountDialog.platform === "global");
 const accountLoginLabel = computed(() => isGlobalAccountDialog.value ? "邮箱" : "手机号");
@@ -1393,6 +1404,13 @@ function coerceAccountCount(...values) {
   return null;
 }
 
+function sumAccountCounts(...values) {
+  return values.reduce((total, value) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? total + Math.floor(parsed) : total;
+  }, 0);
+}
+
 function accountCountText(value) {
   return value === null || value === undefined ? "未同步" : String(value);
 }
@@ -1494,6 +1512,12 @@ function accountSourceStats(inventory, syncState, subscriptions = [], platform =
     followedAuthorCountText: accountCountWithSyncedText(followedAuthorCount, syncedFollowedAuthorCount),
     followedCollectionCountText: accountCountWithSyncedText(followedCollectionCount, syncedFollowedCollectionCount),
     defaultFavoritesCountText: accountCountWithSyncedText(defaultFavoritesCount, syncedSourceCounts.defaultFavorites),
+    sourceTotal: sumAccountCounts(followedAuthorCount, followedCollectionCount, defaultFavoritesCount),
+    sourceSyncedTotal: sumAccountCounts(syncedFollowedAuthorCount, syncedFollowedCollectionCount, syncedSourceCounts.defaultFavorites),
+    sourcePendingTotal: sumAccountCounts(
+      sourceSync.skipped_followed_author_count,
+      sourceSync.skipped_followed_collection_count,
+    ),
     sourceSyncText,
   };
 }
