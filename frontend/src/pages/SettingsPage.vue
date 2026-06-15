@@ -870,6 +870,7 @@ import { RouterLink, useRoute, useRouter } from "vue-router";
 
 import ThemeSegment from "../components/ThemeSegment.vue";
 import { appState, applyConfigPayload, refreshConfig, refreshLightConfig, saveThemePreference } from "../lib/appState";
+import { accountSyncedSourceCounts } from "../lib/accountSourceStats";
 import { apiRequest } from "../lib/api";
 import {
   buildAdvancedPayload,
@@ -1061,6 +1062,7 @@ const githubVersionText = computed(() => {
 const expiredShareCount = computed(() => sharedShares.value.filter((item) => item.expired).length);
 const onlineAccountItems = computed(() => {
   const cookies = Array.isArray(config.value?.cookies) ? config.value.cookies : [];
+  const subscriptionItems = Array.isArray(config.value?.subscriptions) ? config.value.subscriptions : [];
   const inventoryByPlatform = config.value?.cookie_source_inventory?.platforms || {};
   const syncStateByPlatform = config.value?.cookie_source_sync_state || {};
   return cookies
@@ -1079,6 +1081,8 @@ const onlineAccountItems = computed(() => {
       const sourceStats = accountSourceStats(
         inventoryByPlatform[item.platform],
         syncStateByPlatform[item.platform],
+        subscriptionItems,
+        item.platform,
       );
       return {
         ...mergedItem,
@@ -1397,27 +1401,7 @@ function accountCountWithSyncedText(total, synced) {
   if (total === null || total === undefined || synced === null || synced === undefined) {
     return totalText;
   }
-  if (Number(total) === Number(synced)) {
-    return totalText;
-  }
   return `${totalText}（${synced} 已同步）`;
-}
-
-function countImportedAccountSources(inventory, sourceKind) {
-  const importedSources = Array.isArray(inventory?.imported_sources)
-    ? inventory.imported_sources
-    : [];
-  const urls = new Set();
-  importedSources.forEach((source) => {
-    if (!source || typeof source !== "object" || source.source_kind !== sourceKind) {
-      return;
-    }
-    const url = String(source.url || "").trim();
-    if (url) {
-      urls.add(url);
-    }
-  });
-  return urls.size;
 }
 
 function accountMessageText(item, status) {
@@ -1445,9 +1429,10 @@ function accountPlatformShortLabel(platform) {
   return platform === "global" ? "国际" : "国内";
 }
 
-function accountSourceStats(inventory, syncState) {
+function accountSourceStats(inventory, syncState, subscriptions = [], platform = "") {
   const sourceInventory = inventory && typeof inventory === "object" ? inventory : {};
   const sourceSync = syncState && typeof syncState === "object" ? syncState : {};
+  const syncedSourceCounts = accountSyncedSourceCounts(sourceInventory, subscriptions, platform);
   const defaultFavorites = sourceInventory.default_favorites && typeof sourceInventory.default_favorites === "object"
     ? sourceInventory.default_favorites
     : {};
@@ -1462,8 +1447,8 @@ function accountSourceStats(inventory, syncState) {
     followedAuthors.length ? followedAuthors.length : "",
   );
   const syncedFollowedAuthorCount = coerceAccountCount(
+    syncedSourceCounts.followedAuthors,
     sourceSync.imported_followed_author_count,
-    countImportedAccountSources(sourceInventory, "followed_author"),
     followedAuthors.length ? followedAuthors.length : "",
   );
   const followedCollectionCount = coerceAccountCount(
@@ -1472,8 +1457,8 @@ function accountSourceStats(inventory, syncState) {
     followedCollections.length ? followedCollections.length : "",
   );
   const syncedFollowedCollectionCount = coerceAccountCount(
+    syncedSourceCounts.followedCollections,
     sourceSync.imported_followed_collection_count,
-    countImportedAccountSources(sourceInventory, "followed_collection"),
     followedCollections.length ? followedCollections.length : "",
   );
   const defaultFavoritesCount = coerceAccountCount(
@@ -1499,7 +1484,7 @@ function accountSourceStats(inventory, syncState) {
   return {
     followedAuthorCountText: accountCountWithSyncedText(followedAuthorCount, syncedFollowedAuthorCount),
     followedCollectionCountText: accountCountWithSyncedText(followedCollectionCount, syncedFollowedCollectionCount),
-    defaultFavoritesCountText: accountCountText(defaultFavoritesCount),
+    defaultFavoritesCountText: accountCountWithSyncedText(defaultFavoritesCount, syncedSourceCounts.defaultFavorites),
     sourceSyncText,
   };
 }
