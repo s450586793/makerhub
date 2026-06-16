@@ -565,23 +565,6 @@
           </label>
         </div>
 
-        <div class="settings-grid settings-grid--two">
-          <label class="field-card">
-            <span>抓取模式</span>
-            <select v-model="advancedForm.scraping_engine">
-              <option value="scrapling_first">自动模式</option>
-              <option value="legacy">兼容模式</option>
-              <option value="scrapling_only">增强模式</option>
-            </select>
-            <small class="archive-form__hint">推荐自动模式。源站接口不稳定或返回异常时，会自动换一种方式重试。</small>
-          </label>
-          <label class="field-card field-card--switch">
-            <span>验证页自动处理</span>
-            <label class="switch"><input v-model="advancedForm.scrapling_browser_fallback" type="checkbox"><span>需要时启用隐身浏览器</span></label>
-            <small class="archive-form__hint">遇到验证页、登录页或接口返回异常时再启用，适合归档、源端刷新和评论补全。</small>
-          </label>
-        </div>
-
         <div class="settings-grid settings-grid--three">
           <label class="field-card">
             <span>源端刷新模型并发</span>
@@ -955,8 +938,6 @@ const threeMfLimitsForm = reactive({
   global_daily_limit: 100,
 });
 const advancedForm = reactive({
-  scraping_engine: "scrapling_first",
-  scrapling_browser_fallback: true,
   remote_refresh_model_workers: 2,
   makerworld_request_limit: 2,
   comment_asset_download_limit: 4,
@@ -1637,10 +1618,6 @@ function applyConfigToForms(payload) {
   proxyForm.https_proxy = payload.proxy?.https_proxy || "";
   threeMfLimitsForm.cn_daily_limit = normalizeDailyThreeMfLimit(payload.three_mf_limits?.cn_daily_limit);
   threeMfLimitsForm.global_daily_limit = normalizeDailyThreeMfLimit(payload.three_mf_limits?.global_daily_limit);
-  advancedForm.scraping_engine = ["legacy", "scrapling_first", "scrapling_only"].includes(payload.advanced?.scraping_engine)
-    ? payload.advanced.scraping_engine
-    : "scrapling_first";
-  advancedForm.scrapling_browser_fallback = payload.advanced?.scrapling_browser_fallback !== false;
   advancedForm.remote_refresh_model_workers = normalizeBoundedInt(payload.advanced?.remote_refresh_model_workers, 2, 1, 4);
   advancedForm.makerworld_request_limit = normalizeBoundedInt(payload.advanced?.makerworld_request_limit, 2, 1, 8);
   advancedForm.comment_asset_download_limit = normalizeBoundedInt(payload.advanced?.comment_asset_download_limit, 4, 1, 16);

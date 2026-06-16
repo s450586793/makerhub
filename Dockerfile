@@ -56,18 +56,10 @@ RUN apt-get update \
         libxss1 \
         libxtst6 \
         fonts-liberation \
-        fonts-noto-color-emoji \
-        fonts-unifont \
-        fonts-freefont-ttf \
-        fonts-ipafont-gothic \
-        fonts-wqy-zenhei \
-        fonts-tlwg-loma-otf \
-        xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-RUN scrapling install
 RUN mkdir -p /app/config/config /app/config/logs /app/config/state /app/data /app/data/local
 
 COPY app ./app

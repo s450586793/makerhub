@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.32`
+> 当前版本：`v0.9.33`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-16 · v0.9.33
+
+- 精简运行镜像，移除未使用的 `xvfb`、Scrapling 浏览器预下载和额外字体包，保留本地 3D 预览仍需使用的 Chromium / Node 链路。
+- 删除 `scrapling` Python 依赖及其 Playwright、Camoufox、rebrowser 传递依赖，抓取兼容层改为轻量 `requests` 静态请求。
+- 设置页移除旧的抓取模式和隐身浏览器开关；前端生产依赖裁剪为 `puppeteer-core` 与 `three`，Vue / Vite 仅保留在构建阶段。
+
 ### 2026-06-16 · v0.9.32
 
 - 修复数据库索引重建或强制迁移会用旧 `config.json` 覆盖 Postgres 当前配置的问题，避免订阅库数量被旧配置打回。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - 明确区分“平台账号同步出来的关注来源”和“订阅库全量来源”，避免账号卡合计数与订阅库总数看起来互相矛盾。
 - 补充前端回归测试，覆盖 `75` 个订阅源中 `48` 个账号来源已同步、`27` 个其他来源、`1` 个待解析的口径拆分。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-15 · v0.9.30
 
 - 修复线上账号重新登录时，MakerWorld 返回资料缺少头像会清空已保存头像的问题；现有账号名、ID、handle 和头像会在新返回为空时保留。
 - 设置页线上账号卡片增加账号同步状态兜底，Cookie 资料或 inventory 为空时仍可从 `cookie_source_sync_state` 显示头像和账号信息。
 - 线上账号来源统计在 inventory 过期或为空时从当前订阅库兜底，避免关注作者、默认收藏夹显示成全 0；默认收藏夹只识别 `@账号/collections/models`，不会误算普通合集。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-15 · v0.9.29
 

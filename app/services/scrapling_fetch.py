@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 from urllib.parse import urlencode
 
+import requests
+
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.proxy_policy import proxy_url
 
@@ -40,25 +42,6 @@ def _log(logger: Optional[Callable[..., None]], *args: Any) -> None:
         pass
 
 
-def _load_fetchers():
-    try:
-        from scrapling.fetchers import Fetcher, StealthyFetcher  # type: ignore
-
-        return Fetcher, StealthyFetcher, ""
-    except Exception as exc:
-        try:
-            from scrapling import Fetcher, StealthyFetcher  # type: ignore
-
-            return Fetcher, StealthyFetcher, ""
-        except Exception:
-            return None, None, str(exc)
-
-
-def scrapling_available() -> bool:
-    fetcher, _, _ = _load_fetchers()
-    return fetcher is not None
-
-
 def _coerce_engine(value: Any) -> str:
     engine = str(value or SCRAPING_ENGINE_SCRAPLING_FIRST).strip().lower()
     return engine if engine in SCRAPING_ENGINE_CHOICES else SCRAPING_ENGINE_SCRAPLING_FIRST
@@ -86,13 +69,6 @@ def scrapling_only(config: Any = None) -> bool:
     if not isinstance(raw, dict):
         raw = _load_advanced_config()
     return _coerce_engine(raw.get("scraping_engine")) == SCRAPING_ENGINE_SCRAPLING_ONLY
-
-
-def _use_browser_fallback(config: Any = None) -> bool:
-    raw = config.model_dump() if hasattr(config, "model_dump") else config
-    if not isinstance(raw, dict):
-        raw = _load_advanced_config()
-    return bool(raw.get("scrapling_browser_fallback", True))
 
 
 def _proxy_url(proxy_config: Any = None, target_url: str = "", *, allow_domestic_proxy: bool = False) -> str:
@@ -156,46 +132,8 @@ def _with_params(url: str, params: Optional[dict[str, Any]]) -> str:
     return f"{url}{separator}{urlencode(params, doseq=True)}"
 
 
-def _looks_like_verification_or_html(text: str) -> bool:
-    lowered = str(text or "").lstrip().lower()
-    if not lowered:
-        return False
-    return (
-        lowered.startswith("<!doctype html")
-        or lowered.startswith("<html")
-        or "cf-browser-verification" in lowered
-        or "cf-challenge" in lowered
-        or "challenge-platform" in lowered
-        or "verify you are human" in lowered
-    )
-
-
-def _looks_like_verification(text: str) -> bool:
-    lowered = str(text or "").lower()
-    return any(
-        marker in lowered
-        for marker in (
-            "cf-browser-verification",
-            "cf-challenge",
-            "challenge-platform",
-            "cf_clearance",
-            "verify you are human",
-            "checking your browser",
-            "security check",
-        )
-    )
-
-
-def _should_try_browser(result: ScraplingFetchResult, *, expect_json: bool) -> bool:
-    if not result.status_code:
-        return True
-    if _looks_like_verification(result.text):
-        return True
-    if expect_json and result.ok and _looks_like_verification_or_html(result.text):
-        return True
-    if result.status_code in {403, 429, 503} and _looks_like_verification_or_html(result.text):
-        return True
-    return False
+def _request_get(url: str, **kwargs: Any) -> requests.Response:
+    return requests.get(url, **kwargs)
 
 
 def fetch_text(
@@ -206,73 +144,37 @@ def fetch_text(
     params: Optional[dict[str, Any]] = None,
     proxy_config: Any = None,
     timeout: float = 30,
-    expect_json: bool = False,
     logger: Optional[Callable[..., None]] = None,
     advanced_config: Any = None,
     allow_domestic_proxy: bool = False,
 ) -> ScraplingFetchResult:
     if not scrapling_enabled(advanced_config):
-        return ScraplingFetchResult(ok=False, url=url, engine="disabled", error="Scrapling disabled")
-
-    Fetcher, StealthyFetcher, import_error = _load_fetchers()
-    if Fetcher is None:
-        return ScraplingFetchResult(ok=False, url=url, engine="unavailable", error=import_error or "Scrapling unavailable")
+        return ScraplingFetchResult(ok=False, url=url, engine="disabled", error="Static fetch disabled")
 
     request_headers = _headers_with_cookie(headers, raw_cookie)
     target_url = _with_params(url, params)
     proxy = _proxy_url(proxy_config, target_url, allow_domestic_proxy=allow_domestic_proxy)
-    common_kwargs: dict[str, Any] = {"headers": request_headers}
+    proxies = {"http": proxy, "https": proxy} if proxy else None
     static_result = ScraplingFetchResult(ok=False, url=target_url, engine="scrapling-static")
-    try:
-        response = Fetcher.get(
-            target_url,
-            timeout=timeout,
-            retries=2,
-            proxy=proxy or None,
-            stealthy_headers=True,
-            **common_kwargs,
-        )
-        static_result = _result_from_response(response, "scrapling-static")
-        if static_result.ok and not _should_try_browser(static_result, expect_json=expect_json):
-            return static_result
-    except Exception as exc:
-        static_result.error = str(exc)[:240]
-        _log(logger, "Scrapling 静态抓取失败:", type(exc).__name__, static_result.error)
-
-    if (
-        not _use_browser_fallback(advanced_config)
-        or StealthyFetcher is None
-        or not _should_try_browser(static_result, expect_json=expect_json)
-    ):
-        return static_result
-
-    try:
-        response = StealthyFetcher.fetch(
-            target_url,
-            headless=True,
-            disable_resources=False,
-            block_images=True,
-            network_idle=False,
-            timeout=max(float(timeout), 10.0) * 1000,
-            extra_headers=request_headers,
-            proxy=proxy or None,
-            wait=0,
-        )
-        return _result_from_response(response, "scrapling-browser")
-    except Exception as exc:
-        error = str(exc)[:240]
-        _log(logger, "Scrapling 浏览器抓取失败:", type(exc).__name__, error)
-        if static_result.error:
-            error = f"{static_result.error}; {error}"[:240]
-        return ScraplingFetchResult(
-            ok=False,
-            status_code=static_result.status_code,
-            text=static_result.text,
-            headers=static_result.headers,
-            url=target_url,
-            engine="scrapling-browser",
-            error=error,
-        )
+    last_error = ""
+    for _ in range(3):
+        try:
+            response = _request_get(
+                target_url,
+                timeout=timeout,
+                proxies=proxies,
+                headers=request_headers,
+            )
+            return _result_from_response(response, "scrapling-static")
+        except requests.RequestException as exc:
+            last_error = str(exc)[:240]
+        except Exception as exc:
+            last_error = str(exc)[:240]
+            break
+    static_result.error = last_error
+    if last_error:
+        _log(logger, "静态抓取失败:", last_error)
+    return static_result
 
 
 def fetch_json(
@@ -294,7 +196,6 @@ def fetch_json(
         params=params,
         proxy_config=proxy_config,
         timeout=timeout,
-        expect_json=True,
         logger=logger,
         advanced_config=advanced_config,
         allow_domestic_proxy=allow_domestic_proxy,

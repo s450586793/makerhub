@@ -360,7 +360,6 @@ def _probe_auth_endpoints(
                     raw_cookie=raw_cookie,
                     timeout=12,
                     url=url,
-                    expect_json=True,
                     allow_domestic_proxy=allow_domestic_proxy,
                 )
                 if scrapling_result.ok:
@@ -655,7 +654,6 @@ def _probe_platform_web_page(platform: str, raw_cookie: str, proxy_config: Any) 
             raw_cookie=raw_cookie,
             timeout=10,
             url=url,
-            expect_json=False,
         )
         should_use_scrapling_result = (
             scrapling_result.ok

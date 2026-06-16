@@ -3229,7 +3229,6 @@ async def save_advanced_runtime(payload: AdvancedRuntimeConfig, request: Request
         "advanced_runtime_saved",
         "高级运行参数已保存。",
         scraping_engine=payload.scraping_engine,
-        scrapling_browser_fallback=payload.scrapling_browser_fallback,
         remote_refresh_model_workers=payload.remote_refresh_model_workers,
         makerworld_request_limit=payload.makerworld_request_limit,
         comment_asset_download_limit=payload.comment_asset_download_limit,

@@ -302,7 +302,6 @@ class ThreeMfDownloadLimitsConfig(BaseModel):
 
 class AdvancedRuntimeConfig(BaseModel):
     scraping_engine: Literal["legacy", "scrapling_first", "scrapling_only"] = "scrapling_first"
-    scrapling_browser_fallback: bool = True
     remote_refresh_model_workers: int = Field(
         default_factory=lambda: _env_int("MAKERHUB_REMOTE_REFRESH_MODEL_WORKERS", 2, 1, 4),
         ge=1,

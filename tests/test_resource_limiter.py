@@ -72,7 +72,6 @@ class ResourceLimiterConfigTest(unittest.TestCase):
         config = AdvancedRuntimeConfig()
 
         self.assertEqual(config.scraping_engine, "scrapling_first")
-        self.assertTrue(config.scrapling_browser_fallback)
 
 
 if __name__ == "__main__":

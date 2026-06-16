@@ -1,5 +1,3 @@
-const VALID_SCRAPING_ENGINES = new Set(["legacy", "scrapling_first", "scrapling_only"]);
-
 export function normalizeBoundedInt(value, fallback, min, max) {
   if (value === "" || value === null || value === undefined) {
     return fallback;
@@ -39,10 +37,7 @@ export function buildProxyPayload(form = {}) {
 
 export function buildAdvancedPayload(form = {}) {
   return {
-    scraping_engine: VALID_SCRAPING_ENGINES.has(form.scraping_engine)
-      ? form.scraping_engine
-      : "scrapling_first",
-    scrapling_browser_fallback: Boolean(form.scrapling_browser_fallback),
+    scraping_engine: "scrapling_first",
     remote_refresh_model_workers: normalizeBoundedInt(form.remote_refresh_model_workers, 2, 1, 4),
     makerworld_request_limit: normalizeBoundedInt(form.makerworld_request_limit, 2, 1, 8),
     comment_asset_download_limit: normalizeBoundedInt(form.comment_asset_download_limit, 4, 1, 16),

@@ -33,8 +33,6 @@ test("runtime payload clamps process settings", () => {
 test("advanced payload normalizes engine and worker limits", () => {
   assert.deepEqual(
     buildAdvancedPayload({
-      scraping_engine: "unknown",
-      scrapling_browser_fallback: 0,
       remote_refresh_model_workers: 99,
       makerworld_request_limit: 0,
       comment_asset_download_limit: "bad",
@@ -43,7 +41,6 @@ test("advanced payload normalizes engine and worker limits", () => {
     }),
     {
       scraping_engine: "scrapling_first",
-      scrapling_browser_fallback: false,
       remote_refresh_model_workers: 4,
       makerworld_request_limit: 1,
       comment_asset_download_limit: 4,
