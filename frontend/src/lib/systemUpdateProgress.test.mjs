@@ -34,6 +34,17 @@ test("system update progress maps web update phase", () => {
   assert.equal(state.message, "API 镜像已拉取完成，正在更新 Web 前端容器。");
 });
 
+test("system update progress preserves web pull phase mapping", () => {
+  const state = systemUpdateProgressState({
+    status: "running",
+    phase: "pulling_web",
+    message: "正在更新 Web 容器：正在拉取镜像。",
+  });
+
+  assert.equal(state.progress, 30);
+  assert.equal(state.label, "正在拉取 Web 镜像");
+});
+
 test("system update progress forces completed status to 100 percent", () => {
   const state = systemUpdateProgressState({
     status: "succeeded",

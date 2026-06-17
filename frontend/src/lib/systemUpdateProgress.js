@@ -5,7 +5,7 @@ const PHASE_PROGRESS = {
   launching_helper: { label: "启动更新 helper", progress: 10 },
   pulling: { label: "正在拉取镜像", progress: 25 },
   updating_web: { label: "正在更新 Web", progress: 30 },
-  pulling_web: { label: "正在拉取 Web 镜像", progress: 35 },
+  pulling_web: { label: "正在拉取 Web 镜像", progress: 30 },
   creating_web: { label: "正在创建 Web 容器", progress: 40 },
   switching_web: { label: "正在切换 Web 容器", progress: 48 },
   starting_web: { label: "正在启动 Web 容器", progress: 55 },
