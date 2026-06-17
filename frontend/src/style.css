@@ -1667,6 +1667,90 @@ html[data-theme="dark"] .organizer-progress-popover {
   gap: 12px;
 }
 
+.system-update-progress {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+}
+
+.system-update-progress__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.system-update-progress__head div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.system-update-progress__head span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.system-update-progress__head strong {
+  color: var(--text);
+  font-size: 17px;
+  line-height: 1.25;
+}
+
+.system-update-progress__head em {
+  color: var(--brand);
+  font-size: 18px;
+  font-style: normal;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.system-update-progress__bar {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+}
+
+.system-update-progress__bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--brand) 0%, #69d39d 100%);
+  transition: width 180ms ease;
+}
+
+.system-update-progress p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.system-update-progress.is-success .system-update-progress__head em {
+  color: var(--brand);
+}
+
+.system-update-progress.is-failed {
+  border-color: rgba(223, 86, 86, 0.36);
+}
+
+.system-update-progress.is-failed .system-update-progress__head em,
+.system-update-progress.is-failed .system-update-progress__head strong {
+  color: #b93131;
+}
+
+.system-update-progress.is-failed .system-update-progress__bar span {
+  background: linear-gradient(90deg, #df5656 0%, #f08a8a 100%);
+}
+
+html[data-theme="dark"] .system-update-progress.is-failed .system-update-progress__head em,
+html[data-theme="dark"] .system-update-progress.is-failed .system-update-progress__head strong {
+  color: #ff8a8a;
+}
+
 .system-update-stat,
 .system-update-detail,
 .system-update-manual {
