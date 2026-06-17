@@ -675,6 +675,31 @@
           </article>
         </div>
 
+        <div
+          v-if="systemUpdateProgress.visible"
+          :class="['field-card', 'system-update-progress', `is-${systemUpdateProgress.variant}`]"
+          role="status"
+          aria-live="polite"
+        >
+          <div class="system-update-progress__head">
+            <div>
+              <span>升级进度</span>
+              <strong>{{ systemUpdateProgress.label }}</strong>
+            </div>
+            <em>{{ systemUpdateProgress.percentText }}</em>
+          </div>
+          <div
+            class="system-update-progress__bar"
+            role="progressbar"
+            :aria-valuemin="0"
+            :aria-valuemax="100"
+            :aria-valuenow="systemUpdateProgress.progress"
+          >
+            <span :style="{ width: `${systemUpdateProgress.progress}%` }"></span>
+          </div>
+          <p>{{ systemUpdateProgress.message }}</p>
+        </div>
+
         <div class="settings-grid settings-grid--two system-update-grid">
           <article class="field-card system-update-detail">
             <span>App 容器</span>
@@ -872,6 +897,7 @@ import {
   normalizeDailyThreeMfLimit,
 } from "../lib/settingsPayloads";
 import { createPagePerformanceTracker } from "../lib/performance";
+import { systemUpdateProgressState } from "../lib/systemUpdateProgress";
 import { createPageRefreshController } from "../lib/usePageRefresh";
 
 
@@ -1112,6 +1138,7 @@ const systemUpdateStatusLabel = computed(() => {
   };
   return labelMap[systemUpdate.value.status] || "未知";
 });
+const systemUpdateProgress = computed(() => systemUpdateProgressState(systemUpdate.value));
 const deploymentModeLabel = computed(() => {
   if (systemUpdate.value.deployment_mode === "app-worker") {
     return "App + Worker";
