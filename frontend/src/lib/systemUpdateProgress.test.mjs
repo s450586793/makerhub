@@ -20,6 +20,20 @@ test("system update progress maps active pulling phase", () => {
   assert.equal(state.variant, "running");
 });
 
+test("system update progress maps web update phase", () => {
+  const state = systemUpdateProgressState({
+    status: "running",
+    phase: "updating_web",
+    message: "API 镜像已拉取完成，正在更新 Web 前端容器。",
+  });
+
+  assert.equal(state.visible, true);
+  assert.equal(state.active, true);
+  assert.equal(state.progress, 30);
+  assert.equal(state.label, "正在更新 Web");
+  assert.equal(state.message, "API 镜像已拉取完成，正在更新 Web 前端容器。");
+});
+
 test("system update progress forces completed status to 100 percent", () => {
   const state = systemUpdateProgressState({
     status: "succeeded",
