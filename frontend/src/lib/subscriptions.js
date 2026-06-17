@@ -55,6 +55,55 @@ export function normalizeSubscriptionsPayload(response = {}) {
   };
 }
 
+function cardHasFullVisuals(card = {}) {
+  return Boolean(
+    String(card.preview_snapshot_url || "").trim()
+      || (Array.isArray(card.preview_models) && card.preview_models.length)
+      || (Array.isArray(card.model_dirs) && card.model_dirs.length)
+  );
+}
+
+export function mergeSubscriptionSourcesForLightRefresh(currentSection = {}, lightSection = {}) {
+  const currentItems = Array.isArray(currentSection?.items) ? currentSection.items : [];
+  const lightItems = Array.isArray(lightSection?.items) ? lightSection.items : [];
+  if (!currentItems.length || !lightItems.length) {
+    return {
+      ...(lightSection || {}),
+      items: lightItems,
+      count: lightItems.length,
+    };
+  }
+  const currentByKey = new Map(
+    currentItems
+      .map((item) => [String(item?.key || "").trim(), item])
+      .filter(([key]) => Boolean(key)),
+  );
+  const items = lightItems.map((item) => {
+    const key = String(item?.key || "").trim();
+    const currentItem = key ? currentByKey.get(key) : null;
+    if (!currentItem || !cardHasFullVisuals(currentItem)) {
+      return item;
+    }
+    return {
+      ...item,
+      preview_models: currentItem.preview_models,
+      preview_snapshot_url: currentItem.preview_snapshot_url,
+      cover_url: currentItem.cover_url || item.cover_url,
+      avatar_url: currentItem.avatar_url || item.avatar_url,
+      model_dirs: currentItem.model_dirs,
+      model_count: currentItem.model_count,
+      local_model_count: currentItem.local_model_count,
+      stats: currentItem.stats,
+      recent_summary: currentItem.recent_summary,
+    };
+  });
+  return {
+    ...(lightSection || {}),
+    items,
+    count: items.length,
+  };
+}
+
 export function subscriptionModeLabel(mode) {
   if (mode === "author_upload") {
     return "作者页";

@@ -168,6 +168,7 @@ import { subscribeStateRefresh } from "../lib/stateEvents";
 import {
   DEFAULT_SUBSCRIPTION_SETTINGS,
   createEmptySubscriptionsPayload,
+  mergeSubscriptionSourcesForLightRefresh,
   normalizeSubscriptionsPayload,
 } from "../lib/subscriptions";
 
@@ -388,15 +389,16 @@ async function load({ silent = false, pages = routePage(), hydrateFull = false }
       return;
     }
     const section = subscriptionSourcesSection(response);
+    const displaySection = mergeSubscriptionSourcesForLightRefresh(subscriptionSources.value, section);
     payload.value = replaceSubscriptionSourcesSection(
       response,
-      section?.items || [],
+      displaySection?.items || [],
       {
-        ...(section || {}),
+        ...(displaySection || {}),
         page: pagesToLoad,
         page_size: PAGE_SIZE,
-        has_more: Boolean(section?.has_more),
-        total: Number(section?.total || section?.items?.length || 0),
+        has_more: Boolean(displaySection?.has_more),
+        total: Number(displaySection?.total || displaySection?.items?.length || 0),
       },
     );
     initialLoaded.value = true;

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { normalizeSubscriptionsPayload } from "./subscriptions.js";
+import { mergeSubscriptionSourcesForLightRefresh, normalizeSubscriptionsPayload } from "./subscriptions.js";
 
 const pageSource = readFileSync(new URL("../pages/SubscriptionsPage.vue", import.meta.url), "utf8");
 
@@ -47,6 +47,82 @@ test("subscription payload normalization repairs malformed section paging fields
   assert.equal(payload.sections[0].page, 2);
   assert.equal(payload.sections[0].page_size, 8);
   assert.equal(payload.sections[0].has_more, true);
+});
+
+test("light subscription refresh preserves existing full card visuals", () => {
+  const fullCard = {
+    key: "author:mw:alice",
+    title: "Alice",
+    preview_models: [
+      { model_dir: "model-a", title: "Model A", cover_url: "/archive/model-a/cover.webp" },
+    ],
+    preview_snapshot_url: "/api/source-library/snapshots/alice.webp?v=full",
+    model_dirs: ["model-a"],
+    model_count: 1,
+    stats: [{ label: "模型", value: 1 }],
+    recent_summary: "最近归档 Model A",
+  };
+  const currentSection = {
+    key: "subscription_sources",
+    items: [fullCard],
+    count: 1,
+    total: 1,
+    page: 1,
+    page_size: 8,
+    has_more: false,
+  };
+  const lightSection = {
+    key: "subscription_sources",
+    items: [
+      {
+        key: "author:mw:alice",
+        title: "Alice",
+        preview_models: [],
+        preview_snapshot_url: "",
+        model_dirs: [],
+        model_count: 0,
+        stats: [{ label: "模型", value: 0 }],
+        recent_summary: "",
+      },
+    ],
+    count: 1,
+    total: 1,
+    page: 1,
+    page_size: 8,
+    has_more: false,
+  };
+
+  const merged = mergeSubscriptionSourcesForLightRefresh(currentSection, lightSection);
+
+  assert.equal(merged.items[0].preview_snapshot_url, "/api/source-library/snapshots/alice.webp?v=full");
+  assert.deepEqual(merged.items[0].preview_models, fullCard.preview_models);
+  assert.deepEqual(merged.items[0].model_dirs, ["model-a"]);
+  assert.deepEqual(merged.items[0].stats, fullCard.stats);
+  assert.equal(merged.items[0].recent_summary, "最近归档 Model A");
+});
+
+test("light subscription refresh still shows newly discovered cards", () => {
+  const merged = mergeSubscriptionSourcesForLightRefresh(
+    {
+      key: "subscription_sources",
+      items: [{ key: "author:mw:alice", preview_snapshot_url: "/snapshot/alice.webp" }],
+    },
+    {
+      key: "subscription_sources",
+      items: [
+        { key: "author:mw:alice", preview_snapshot_url: "" },
+        { key: "collection:mw:new", title: "New Collection", preview_snapshot_url: "" },
+      ],
+      total: 2,
+      page: 1,
+      page_size: 8,
+      has_more: false,
+    },
+  );
+
+  assert.equal(merged.items.length, 2);
+  assert.equal(merged.items[0].preview_snapshot_url, "/snapshot/alice.webp");
+  assert.equal(merged.items[1].title, "New Collection");
 });
 
 test("subscriptions page requests eight-card pages and auto-loads more", () => {

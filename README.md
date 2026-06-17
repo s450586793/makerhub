@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.34`
+> 当前版本：`v0.9.35`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -205,6 +205,12 @@ uvicorn app.main:app --reload
 - 详细配置见 [MakerHub iOS 快捷指令文档](docs/ios-makerhub-shortcut.md)。
 
 ## 更新记录
+
+### 2026-06-17 · v0.9.35
+
+- 修复订阅库刷新期间先显示轻量卡片、刷新完成后再切换完整卡片造成的页面跳变。
+- 订阅库已有完整卡片时，轻量刷新只更新统计和运行状态，继续保留预览图、快照、模型数量、摘要和可分享模型列表。
+- 新增订阅库轻量刷新合并测试，覆盖保留完整卡片视觉和新增来源仍能显示的场景。
 
 ### 2026-06-17 · v0.9.34
 
