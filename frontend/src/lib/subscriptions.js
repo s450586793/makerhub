@@ -1,3 +1,6 @@
+import { resolveHydratedLightPhase } from "./hydratedPageLoader.js";
+
+
 export const DEFAULT_SUBSCRIPTION_SETTINGS = {
   default_cron: "0 */6 * * *",
   default_enabled: true,
@@ -64,15 +67,12 @@ function cardHasFullVisuals(card = {}) {
 }
 
 export function shouldDeferLightSubscriptionCards({ hydrateFull = false, currentSection = {}, displaySection = {} } = {}) {
-  if (!hydrateFull) {
-    return false;
-  }
-  const displayItems = Array.isArray(displaySection?.items) ? displaySection.items : [];
-  if (!displayItems.length) {
-    return false;
-  }
   const currentItems = Array.isArray(currentSection?.items) ? currentSection.items : [];
-  return !currentItems.some((item) => cardHasFullVisuals(item));
+  return !resolveHydratedLightPhase({
+    hydrateFull,
+    incomingItems: displaySection?.items || [],
+    hasStableView: currentItems.some((item) => cardHasFullVisuals(item)),
+  }).renderLight;
 }
 
 export function mergeSubscriptionSourcesForLightRefresh(currentSection = {}, lightSection = {}) {

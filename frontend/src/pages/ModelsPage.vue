@@ -116,6 +116,7 @@ import ShareDialog from "../components/ShareDialog.vue";
 import { subscribeArchiveCompletion } from "../lib/archiveEvents";
 import { apiRequest } from "../lib/api";
 import { createAutoLoadObserver } from "../lib/autoLoadObserver";
+import { resolveHydratedLightPhase } from "../lib/hydratedPageLoader";
 import { getPageCache, setPageCache } from "../lib/pageCache";
 import { createPagePerformanceTracker } from "../lib/performance";
 
@@ -379,6 +380,13 @@ function mergeUniqueModelItems(currentItems = [], incomingItems = []) {
   return mergedItems;
 }
 
+function hasStableModelListView(items = payload.value.items) {
+  return (Array.isArray(items) ? items : []).some((item) => (
+    String(item?.cover_url || "").trim()
+      || String(item?.author?.avatar_url || "").trim()
+  ));
+}
+
 function routePage() {
   const rawPage = Array.isArray(route.query.page) ? route.query.page[0] : route.query.page;
   const page = Number.parseInt(String(rawPage || ""), 10);
@@ -474,6 +482,13 @@ async function load({ append = false, refresh = false, hydrateFull = false } = {
     return;
   }
 
+  const incomingItems = response.items || [];
+  const lightDecision = resolveHydratedLightPhase({
+    hydrateFull: !append && hydrateFull,
+    incomingItems,
+    hasStableView: hasStableModelListView(),
+  });
+
   if (append) {
     const mergedItems = mergeUniqueModelItems(payload.value.items, response.items || []);
     payload.value = {
@@ -481,8 +496,8 @@ async function load({ append = false, refresh = false, hydrateFull = false } = {
       items: mergedItems,
       count: mergedItems.length,
     };
-  } else {
-    const mergedItems = response.items || [];
+  } else if (lightDecision.renderLight) {
+    const mergedItems = incomingItems;
     payload.value = {
       ...response,
       items: mergedItems,
@@ -490,13 +505,19 @@ async function load({ append = false, refresh = false, hydrateFull = false } = {
       page: nextPage,
     };
   }
-  loaded.value = true;
-  rememberModelList();
-  await nextTick();
-  ensureObserver();
+  if (append || lightDecision.renderLight) {
+    loaded.value = true;
+    rememberModelList();
+    await nextTick();
+    ensureObserver();
+  }
   if (!append) {
-    await scrollToRouteAnchor();
-    if (hydrateFull) {
+    if (lightDecision.renderLight) {
+      await scrollToRouteAnchor();
+    }
+    if (lightDecision.hydrateImmediately) {
+      await refreshFullModelList({ refresh });
+    } else if (lightDecision.hydrateFull) {
       scheduleFullModelHydration({ refresh });
     }
   }

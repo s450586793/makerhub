@@ -180,6 +180,12 @@ test("ModelsPage restores deep pages with a single include-until-page request", 
   assert.doesNotMatch(modelsPageSource, /for \(let page = append \? nextPage : 1; page <= nextPage;/);
 });
 
+test("ModelsPage uses the shared hydrated light-phase decision", () => {
+  assert.match(modelsPageSource, /resolveHydratedLightPhase/);
+  assert.match(modelsPageSource, /hasStableModelListView/);
+  assert.match(modelsPageSource, /await refreshFullModelList\(\{ refresh \}\)/);
+});
+
 test("SubscriptionsPage restores deep pages with a single include-until-page request", () => {
   assert.match(subscriptionsPageSource, /apiRequest\("\/api\/subscriptions\/light/);
   assert.match(subscriptionsPageSource, /refreshFullSubscriptions/);
