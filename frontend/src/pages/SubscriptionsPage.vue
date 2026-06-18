@@ -170,6 +170,7 @@ import {
   createEmptySubscriptionsPayload,
   mergeSubscriptionSourcesForLightRefresh,
   normalizeSubscriptionsPayload,
+  shouldDeferLightSubscriptionCards,
 } from "../lib/subscriptions";
 
 
@@ -389,22 +390,30 @@ async function load({ silent = false, pages = routePage(), hydrateFull = false }
       return;
     }
     const section = subscriptionSourcesSection(response);
-    const displaySection = mergeSubscriptionSourcesForLightRefresh(subscriptionSources.value, section);
-    payload.value = replaceSubscriptionSourcesSection(
-      response,
-      displaySection?.items || [],
-      {
-        ...(displaySection || {}),
-        page: pagesToLoad,
-        page_size: PAGE_SIZE,
-        has_more: Boolean(displaySection?.has_more),
-        total: Number(displaySection?.total || displaySection?.items?.length || 0),
-      },
-    );
-    initialLoaded.value = true;
-    initialLoadFailed.value = false;
-    pruneSelectionsToLoadedCards();
-    rememberSubscriptionsPage();
+    const currentSection = subscriptionSources.value;
+    const displaySection = mergeSubscriptionSourcesForLightRefresh(currentSection, section);
+    const shouldDeferLightCards = shouldDeferLightSubscriptionCards({
+      hydrateFull,
+      currentSection,
+      displaySection,
+    });
+    if (!shouldDeferLightCards) {
+      payload.value = replaceSubscriptionSourcesSection(
+        response,
+        displaySection?.items || [],
+        {
+          ...(displaySection || {}),
+          page: pagesToLoad,
+          page_size: PAGE_SIZE,
+          has_more: Boolean(displaySection?.has_more),
+          total: Number(displaySection?.total || displaySection?.items?.length || 0),
+        },
+      );
+      initialLoaded.value = true;
+      initialLoadFailed.value = false;
+      pruneSelectionsToLoadedCards();
+      rememberSubscriptionsPage();
+    }
     if (hydrateFull) {
       shouldHydrateFull = true;
     }
@@ -423,7 +432,11 @@ async function load({ silent = false, pages = routePage(), hydrateFull = false }
     }
   }
   if (shouldHydrateFull && currentToken === requestToken) {
-    scheduleFullSubscriptionsHydration({ pages: pagesToLoad });
+    if (initialLoaded.value) {
+      scheduleFullSubscriptionsHydration({ pages: pagesToLoad });
+    } else {
+      await refreshFullSubscriptions({ pages: pagesToLoad });
+    }
   }
 }
 
@@ -456,6 +469,9 @@ async function refreshFullSubscriptions({ pages = Number(subscriptionSources.val
     rememberSubscriptionsPage();
   } catch (error) {
     failed = true;
+    if (!initialLoaded.value && currentToken === requestToken) {
+      initialLoadFailed.value = true;
+    }
     status.value = error instanceof Error ? error.message : "刷新完整订阅库失败。";
   } finally {
     if (currentToken === requestToken) {

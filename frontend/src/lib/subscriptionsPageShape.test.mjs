@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { mergeSubscriptionSourcesForLightRefresh, normalizeSubscriptionsPayload } from "./subscriptions.js";
+import {
+  mergeSubscriptionSourcesForLightRefresh,
+  normalizeSubscriptionsPayload,
+  shouldDeferLightSubscriptionCards,
+} from "./subscriptions.js";
 
 const pageSource = readFileSync(new URL("../pages/SubscriptionsPage.vue", import.meta.url), "utf8");
 
@@ -125,6 +129,34 @@ test("light subscription refresh still shows newly discovered cards", () => {
   assert.equal(merged.items[1].title, "New Collection");
 });
 
+test("subscription page defers light cards when full hydration has no full visuals to preserve", () => {
+  assert.equal(
+    shouldDeferLightSubscriptionCards({
+      hydrateFull: true,
+      currentSection: { key: "subscription_sources", items: [] },
+      displaySection: {
+        key: "subscription_sources",
+        items: [{ key: "author:mw:alice", preview_snapshot_url: "", preview_models: [], model_dirs: [] }],
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    shouldDeferLightSubscriptionCards({
+      hydrateFull: true,
+      currentSection: {
+        key: "subscription_sources",
+        items: [{ key: "author:mw:alice", preview_snapshot_url: "/snapshot/alice.webp" }],
+      },
+      displaySection: {
+        key: "subscription_sources",
+        items: [{ key: "author:mw:alice", preview_snapshot_url: "/snapshot/alice.webp" }],
+      },
+    }),
+    false,
+  );
+});
+
 test("subscriptions page requests eight-card pages and auto-loads more", () => {
   assert.match(pageSource, /PAGE_SIZE\s*=\s*8/);
   assert.match(pageSource, /routePage\(/);
@@ -145,4 +177,10 @@ test("subscriptions page leaves initial loading when the first request fails", (
   assert.match(pageSource, /initialLoadFailed\.value\s*=\s*true/);
   assert.match(pageSource, /v-else-if="initialLoadFailed"/);
   assert.match(pageSource, /重试/);
+});
+
+test("subscriptions page marks initial load failed when deferred full hydration fails", () => {
+  assert.match(pageSource, /shouldDeferLightSubscriptionCards/);
+  assert.match(pageSource, /await refreshFullSubscriptions\(\{ pages: pagesToLoad \}\)/);
+  assert.match(pageSource, /if \(!initialLoaded\.value && currentToken === requestToken\) \{\s*initialLoadFailed\.value = true;/s);
 });

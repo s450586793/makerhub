@@ -63,6 +63,18 @@ function cardHasFullVisuals(card = {}) {
   );
 }
 
+export function shouldDeferLightSubscriptionCards({ hydrateFull = false, currentSection = {}, displaySection = {} } = {}) {
+  if (!hydrateFull) {
+    return false;
+  }
+  const displayItems = Array.isArray(displaySection?.items) ? displaySection.items : [];
+  if (!displayItems.length) {
+    return false;
+  }
+  const currentItems = Array.isArray(currentSection?.items) ? currentSection.items : [];
+  return !currentItems.some((item) => cardHasFullVisuals(item));
+}
+
 export function mergeSubscriptionSourcesForLightRefresh(currentSection = {}, lightSection = {}) {
   const currentItems = Array.isArray(currentSection?.items) ? currentSection.items : [];
   const lightItems = Array.isArray(lightSection?.items) ? lightSection.items : [];

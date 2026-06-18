@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.35`
+> 当前版本：`v0.9.36`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-18 · v0.9.36
+
+- 修复订阅库首次进入、浏览器刷新或缓存失效时仍先展示轻量占位卡片的问题。
+- 订阅库需要完整 hydration 且没有完整卡片可保留时，会继续显示加载态并立即请求完整数据，避免刷新期间和刷新完成后出现两套页面样式。
+- 完整订阅库加载失败时会进入订阅库加载失败态，避免一直停在加载中。
+
 ### 2026-06-17 · v0.9.35
 
 - 修复订阅库刷新期间先显示轻量卡片、刷新完成后再切换完整卡片造成的页面跳变。
@@ -218,6 +224,9 @@ uvicorn app.main:app --reload
 - 新增系统更新进度状态映射测试，覆盖执行中、完成、失败、重启等待和未知阶段，避免显示虚假的 Docker layer 下载百分比。
 - 优化系统更新进度条的深色/浅色样式和失败态展示，保留现有网页一键更新后端流程不变。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-16 · v0.9.33
 
 - 精简运行镜像，移除未使用的 `xvfb`、Scrapling 浏览器预下载和额外字体包，保留本地 3D 预览仍需使用的 Chromium / Node 链路。
@@ -229,9 +238,6 @@ uvicorn app.main:app --reload
 - 修复数据库索引重建或强制迁移会用旧 `config.json` 覆盖 Postgres 当前配置的问题，避免订阅库数量被旧配置打回。
 - 强制迁移会保护账号来源库存和同步状态，不再把 `cookie_source_inventory` 覆盖为空导致账号来源保护清单丢失。
 - 旧错误 `@user_数字` 作者订阅清理会跳过当前账号库存确认过的来源，避免合法 MakerWorld 作者被误删。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-15 · v0.9.31
 
