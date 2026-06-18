@@ -126,13 +126,20 @@ def _normalize_archive_runtime_item(item: Any, default_status: str) -> dict:
         "last_progress_at",
         "parent_task_id",
         "blocked_reason",
+        "archive_stage",
     ):
         value = source.get(field)
         if value is not None:
             normalized[field] = str(value)
 
+    if "archive_stage_progress" in source:
+        normalized["archive_stage_progress"] = _archive_subtask_int(source.get("archive_stage_progress"), 0)
+
     if "attempt_count" in source or "attempts" in source or normalized["status"] == "running":
         normalized["attempt_count"] = max(task_attempt_count(source), 1 if normalized["status"] == "running" else 0)
+    subtasks = _derive_archive_subtasks(normalized, source.get("subtasks"))
+    if subtasks:
+        normalized["subtasks"] = subtasks
     return normalized
 
 
@@ -176,6 +183,182 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+ARCHIVE_SUBTASK_DEFINITIONS = (
+    {"type": "metadata", "label": "元数据", "start": 0, "end": 40},
+    {"type": "media", "label": "图片资源", "start": 40, "end": 50},
+    {"type": "attachments", "label": "附件", "start": 50, "end": 52},
+    {"type": "comments", "label": "评论", "start": 52, "end": 55},
+    {"type": "three_mf", "label": "3MF", "start": 55, "end": 78},
+    {"type": "finalize", "label": "落盘与索引", "start": 78, "end": 100},
+)
+ARCHIVE_SUBTASK_TYPES = tuple(item["type"] for item in ARCHIVE_SUBTASK_DEFINITIONS)
+ARCHIVE_SUBTASK_ALIASES = {
+    "metadata_fetch": "metadata",
+    "metadata": "metadata",
+    "summary": "media",
+    "media_assets": "media",
+    "media": "media",
+    "images": "media",
+    "download_attachments": "attachments",
+    "attachments": "attachments",
+    "comments": "comments",
+    "comment_assets": "comments",
+    "three_mf_download": "three_mf",
+    "missing_3mf": "three_mf",
+    "three_mf": "three_mf",
+    "3mf": "three_mf",
+    "finalize_index": "finalize",
+    "rebuild": "finalize",
+    "finalize": "finalize",
+}
+
+
+def _archive_subtask_int(value: Any, default: int = 0) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(0, min(number, 100))
+
+
+def _normalize_archive_stage(value: Any) -> str:
+    stage = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return ARCHIVE_SUBTASK_ALIASES.get(stage, "")
+
+
+def _should_attach_archive_subtasks(item: dict[str, Any]) -> bool:
+    mode = str(item.get("mode") or "").strip()
+    if mode == "single_model":
+        return True
+    meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+    if any(meta.get(key) for key in ("three_mf_download", "missing_3mf_retry", "profile_metadata_only")):
+        return True
+    url = str(item.get("url") or item.get("title") or "").lower()
+    return "/models/" in url or "/model/" in url
+
+
+def _infer_archive_stage(progress: int, message: str) -> str:
+    text = str(message or "").strip().lower()
+    if "附件" in text:
+        return "attachments"
+    if "评论" in text and "摘要、图片与评论整理完成" not in text:
+        return "comments"
+    if "3mf" in text or "实例" in text or "打印配置" in text:
+        return "three_mf"
+    if "归档目录" in text or "落盘" in text or "索引" in text or "元数据已生成" in text or "归档完成" in text:
+        return "finalize"
+    if "图片" in text or "摘要" in text or "头像" in text:
+        return "media"
+    if progress >= 78:
+        return "finalize"
+    if progress >= 55:
+        return "three_mf"
+    if progress >= 52:
+        return "comments"
+    if progress >= 50:
+        return "attachments"
+    if progress >= 40:
+        return "media"
+    return "metadata"
+
+
+def _subtask_index(stage: str) -> int:
+    try:
+        return ARCHIVE_SUBTASK_TYPES.index(stage)
+    except ValueError:
+        return 0
+
+
+def _progress_within_subtask(definition: dict[str, Any], overall_progress: int) -> int:
+    start = int(definition.get("start") or 0)
+    end = int(definition.get("end") or start)
+    if overall_progress <= start:
+        return 0
+    if overall_progress >= end or end <= start:
+        return 100
+    return _archive_subtask_int(round((overall_progress - start) * 100 / (end - start)))
+
+
+def _normalize_existing_archive_subtasks(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, list):
+        return {}
+    normalized: dict[str, dict[str, Any]] = {}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        subtask_type = _normalize_archive_stage(item.get("type"))
+        if not subtask_type:
+            continue
+        status = str(item.get("status") or "").strip().lower()
+        if status == "completed":
+            status = "done"
+        if status not in {"pending", "running", "done", "failed", "skipped", "blocked"}:
+            status = "pending"
+        normalized[subtask_type] = {
+            "type": subtask_type,
+            "label": str(item.get("label") or "").strip(),
+            "status": status,
+            "progress": _archive_subtask_int(item.get("progress"), 0),
+            "message": _sanitize_message_text(item.get("message") or ""),
+        }
+    return normalized
+
+
+def _derive_archive_subtasks(item: dict[str, Any], existing_subtasks: Any = None) -> list[dict[str, Any]]:
+    if not _should_attach_archive_subtasks(item):
+        return []
+
+    progress = _archive_subtask_int(item.get("progress"), 0)
+    message = str(item.get("message") or "").strip()
+    task_status = normalize_runtime_status(item.get("status"), "queued")
+    current_stage = _normalize_archive_stage(item.get("archive_stage")) or _infer_archive_stage(progress, message)
+    current_index = _subtask_index(current_stage)
+    stage_progress = item.get("archive_stage_progress")
+    explicit_stage_progress = stage_progress is not None and str(stage_progress).strip() != ""
+    existing = _normalize_existing_archive_subtasks(existing_subtasks)
+
+    is_queued = task_status in {"queued", "pending"}
+    is_done = task_status in {"completed", "success", "done"} or progress >= 100
+    is_failed = task_status in {"failed", "error", "timed_out", "timeout"}
+
+    subtasks: list[dict[str, Any]] = []
+    for index, definition in enumerate(ARCHIVE_SUBTASK_DEFINITIONS):
+        subtask_type = str(definition["type"])
+        previous = existing.get(subtask_type, {})
+        subtask = {
+            "type": subtask_type,
+            "label": str(previous.get("label") or definition["label"]),
+            "status": "pending",
+            "progress": 0,
+            "message": str(previous.get("message") or ""),
+        }
+
+        if is_done:
+            subtask["status"] = "done"
+            subtask["progress"] = 100
+        elif is_queued:
+            subtask["status"] = "pending"
+            subtask["progress"] = 0
+        elif index < current_index:
+            subtask["status"] = "done"
+            subtask["progress"] = 100
+        elif index == current_index:
+            subtask["status"] = "failed" if is_failed else "running"
+            subtask["progress"] = (
+                _archive_subtask_int(stage_progress, 0)
+                if explicit_stage_progress
+                else _progress_within_subtask(definition, progress)
+            )
+            subtask["message"] = message or subtask["message"]
+        else:
+            subtask["status"] = "pending"
+            subtask["progress"] = 0
+
+        subtasks.append(subtask)
+
+    return subtasks
 
 
 def _organize_count_needs_backfill(*, item_count: int, total_count: int) -> bool:

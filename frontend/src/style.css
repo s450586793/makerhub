@@ -3249,6 +3249,75 @@ html[data-theme="dark"] .system-update-progress.is-failed .system-update-progres
   white-space: normal;
 }
 
+.archive-subtasks {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.archive-subtask {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-soft);
+}
+
+.archive-subtask__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.archive-subtask__head span,
+.archive-subtask__head strong {
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.archive-subtask__head span {
+  color: var(--text);
+}
+
+.archive-subtask__head strong {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.archive-subtask.is-done .archive-subtask__head strong {
+  color: var(--brand-strong);
+}
+
+.archive-subtask.is-running {
+  border-color: color-mix(in srgb, var(--brand) 48%, var(--border));
+  background: var(--brand-soft);
+}
+
+.archive-subtask.is-failed .archive-subtask__head strong,
+.archive-subtask.is-blocked .archive-subtask__head strong {
+  color: var(--danger);
+}
+
+.archive-subtask__bar {
+  height: 4px;
+  margin-top: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 68%, transparent);
+}
+
+.archive-subtask__bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--brand);
+}
+
 .missing-actions {
   display: flex;
   gap: 6px;

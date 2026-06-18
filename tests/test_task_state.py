@@ -7,6 +7,7 @@ from app.services import state_events
 from app.services.task_state import (
     TaskStateStore,
     _ORGANIZER_TERMINAL_LOG_CACHE,
+    _normalize_archive_queue,
     _normalize_organize_tasks,
     _normalize_source_refresh_queue,
     _normalize_source_refresh_runs,
@@ -167,6 +168,73 @@ class OrganizeTaskStateTest(unittest.TestCase):
 
 
 class ArchiveQueueStateTest(unittest.TestCase):
+    def test_archive_queue_backfills_ordered_subtasks_for_legacy_items(self):
+        normalized = _normalize_archive_queue(
+            {
+                "active": [
+                    {
+                        "id": "task-1",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "mode": "single_model",
+                        "status": "running",
+                        "progress": 42,
+                        "message": "正在整理摘要与设计图片",
+                    }
+                ]
+            }
+        )
+
+        subtasks = normalized["active"][0]["subtasks"]
+
+        self.assertEqual(
+            [item["type"] for item in subtasks],
+            ["metadata", "media", "attachments", "comments", "three_mf", "finalize"],
+        )
+        self.assertEqual(subtasks[0]["status"], "done")
+        self.assertEqual(subtasks[1]["status"], "running")
+        self.assertEqual(subtasks[1]["progress"], 20)
+        self.assertEqual(subtasks[-1]["label"], "落盘与索引")
+
+    def test_update_active_task_marks_subtask_progress_from_archive_stage(self):
+        state = {}
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
+            store.save_archive_queue(
+                {
+                    "active": [
+                        {
+                            "id": "task-1",
+                            "url": "https://makerworld.com.cn/zh/models/123",
+                            "mode": "single_model",
+                            "status": "running",
+                            "progress": 30,
+                        }
+                    ],
+                    "queued": [],
+                    "recent_failures": [],
+                }
+            )
+
+            queue = store.update_active_task(
+                "task-1",
+                progress=52,
+                message="正在下载附件（1/2）",
+                archive_stage="attachments",
+                archive_stage_progress=50,
+            )
+
+        subtasks = queue["active"][0]["subtasks"]
+        by_type = {item["type"]: item for item in subtasks}
+
+        self.assertEqual(by_type["metadata"]["status"], "done")
+        self.assertEqual(by_type["media"]["status"], "done")
+        self.assertEqual(by_type["attachments"]["status"], "running")
+        self.assertEqual(by_type["attachments"]["progress"], 50)
+        self.assertEqual(by_type["attachments"]["message"], "正在下载附件（1/2）")
+        self.assertEqual(by_type["comments"]["status"], "pending")
+
     def test_normalize_source_refresh_queue_counts_active_queued_and_failures(self):
         normalized = _normalize_source_refresh_queue(
             {

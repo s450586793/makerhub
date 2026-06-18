@@ -120,6 +120,13 @@ test("TasksPage renders grouped archive queue display items", () => {
   assert.doesNotMatch(tasksPageSource, /visibleQueuedTasks = computed\(\(\) => payload\.value\.archive_queue\.queued/);
 });
 
+test("TasksPage renders archive subtask progress inside queue items", () => {
+  assert.match(tasksPageSource, /archive-subtasks/);
+  assert.match(tasksPageSource, /archiveSubtasks\(item\)/);
+  assert.match(tasksPageSource, /archiveSubtaskStatusLabel/);
+  assert.match(tasksPageSource, /metadata.*media.*attachments.*comments.*three_mf.*finalize/s);
+});
+
 test("SettingsPage uses shared page refresh controller for system update state", () => {
   assert.match(settingsPageSource, /createPageRefreshController/);
   assert.match(settingsPageSource, /settingsRefreshController/);

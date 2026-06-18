@@ -186,6 +186,21 @@
               <span>{{ runtimeStatusLabel(item) }}</span>
               <div v-if="item.progress" class="progress-bar"><span :style="{ width: `${item.progress}%` }"></span></div>
               <p>{{ item.message || "正在执行中" }}</p>
+              <div v-if="archiveSubtasks(item).length" class="archive-subtasks">
+                <div
+                  v-for="subtask in archiveSubtasks(item)"
+                  :key="subtask.type"
+                  :class="['archive-subtask', `is-${subtask.status || 'pending'}`]"
+                >
+                  <div class="archive-subtask__head">
+                    <span>{{ subtask.label }}</span>
+                    <strong>{{ archiveSubtaskStatusLabel(subtask.status) }}</strong>
+                  </div>
+                  <div v-if="subtask.status === 'running' || subtask.progress" class="archive-subtask__bar">
+                    <span :style="{ width: `${subtask.progress || 0}%` }"></span>
+                  </div>
+                </div>
+              </div>
               <a
                 v-if="runtimeExternalAction(item)"
                 class="button button-secondary button-small"
@@ -215,6 +230,18 @@
               <strong>{{ item.title || item.url || "未命名任务" }}</strong>
               <span>{{ runtimeStatusLabel(item) }}</span>
               <p>{{ item.message || "等待归档" }}</p>
+              <div v-if="archiveSubtasks(item).length" class="archive-subtasks">
+                <div
+                  v-for="subtask in archiveSubtasks(item)"
+                  :key="subtask.type"
+                  :class="['archive-subtask', `is-${subtask.status || 'pending'}`]"
+                >
+                  <div class="archive-subtask__head">
+                    <span>{{ subtask.label }}</span>
+                    <strong>{{ archiveSubtaskStatusLabel(subtask.status) }}</strong>
+                  </div>
+                </div>
+              </div>
             </div>
             <div v-if="(archiveQueueForDisplay.queued || []).length > queuedVisibleLimit" class="task-list-footer">
               <button class="button button-secondary button-small" type="button" @click="queuedVisibleLimit += TASKS_PAGE_SIZE">
@@ -247,6 +274,21 @@
               <strong>{{ item.title || item.url || "未命名任务" }}</strong>
               <span>{{ runtimeStatusLabel(item) }}</span>
               <p>{{ item.message || "失败原因未记录" }}</p>
+              <div v-if="archiveSubtasks(item).length" class="archive-subtasks">
+                <div
+                  v-for="subtask in archiveSubtasks(item)"
+                  :key="subtask.type"
+                  :class="['archive-subtask', `is-${subtask.status || 'pending'}`]"
+                >
+                  <div class="archive-subtask__head">
+                    <span>{{ subtask.label }}</span>
+                    <strong>{{ archiveSubtaskStatusLabel(subtask.status) }}</strong>
+                  </div>
+                  <div v-if="subtask.status === 'running' || subtask.progress" class="archive-subtask__bar">
+                    <span :style="{ width: `${subtask.progress || 0}%` }"></span>
+                  </div>
+                </div>
+              </div>
             </div>
             <div v-if="(archiveQueueForDisplay.recent_failures || []).length > failureVisibleLimit" class="task-list-footer">
               <button class="button button-secondary button-small" type="button" @click="failureVisibleLimit += TASKS_PAGE_SIZE">
@@ -431,6 +473,7 @@ const runtimeMode = computed(() => taskShape.value.mode === "runtime");
 const runtimeRuns = computed(() => (runtimeMode.value ? taskShape.value.runs : []));
 const runtimeBatches = computed(() => (runtimeMode.value ? taskShape.value.batches : []));
 const runtimeFailures = computed(() => (runtimeMode.value ? taskShape.value.failures : []));
+const ARCHIVE_SUBTASK_ORDER = ["metadata", "media", "attachments", "comments", "three_mf", "finalize"];
 
 function getMissingKey(item) {
   return [
@@ -505,6 +548,27 @@ function runtimeAction(item) {
 function runtimeExternalAction(item) {
   const action = runtimeAction(item);
   return action?.kind === "external" ? action : null;
+}
+
+function archiveSubtasks(item) {
+  const subtasks = Array.isArray(item?.subtasks) ? item.subtasks : [];
+  return [...subtasks]
+    .filter((subtask) => subtask && subtask.type)
+    .sort((left, right) => {
+      const leftIndex = ARCHIVE_SUBTASK_ORDER.indexOf(left.type);
+      const rightIndex = ARCHIVE_SUBTASK_ORDER.indexOf(right.type);
+      return (leftIndex < 0 ? 99 : leftIndex) - (rightIndex < 0 ? 99 : rightIndex);
+    });
+}
+
+function archiveSubtaskStatusLabel(status) {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized === "done" || normalized === "completed") return "完成";
+  if (normalized === "running") return "进行中";
+  if (normalized === "failed" || normalized === "error") return "失败";
+  if (normalized === "blocked") return "阻塞";
+  if (normalized === "skipped") return "跳过";
+  return "等待";
 }
 
 function closeArchiveSubmitDialog() {

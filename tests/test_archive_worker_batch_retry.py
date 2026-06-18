@@ -425,6 +425,63 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
         self.assertNotIn("child_enqueued", structured_events)
         self.assertEqual(structured_events.count("batch_enqueued"), 1)
 
+    def test_run_single_task_records_current_archive_subtask_progress(self):
+        state = {}
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager.store = _ArchiveBatchRefreshStore()
+        progress_snapshots = []
+
+        def fake_archive_job(**kwargs):
+            kwargs["progress_callback"](
+                {
+                    "percent": 50,
+                    "message": "正在下载附件（1/2）",
+                }
+            )
+            progress_snapshots.append(manager.task_store.load_archive_queue())
+            return {
+                "base_name": "Demo",
+                "work_dir": "/tmp/Demo",
+                "missing_3mf": [],
+                "action": "created",
+                "model_id": "123",
+            }
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.archive_worker._select_cookie", return_value="cookie"), \
+                patch("app.services.archive_worker.run_archive_model_job", side_effect=fake_archive_job), \
+                patch("app.services.archive_worker._read_three_mf_limit_guard", return_value={"active": False}), \
+                patch("app.services.archive_worker._sync_account_health_for_archive_result"), \
+                patch("app.services.archive_worker.invalidate_model_detail_cache"), \
+                patch("app.services.archive_worker.invalidate_archive_snapshot"), \
+                patch("app.services.archive_worker.upsert_archive_snapshot_model", return_value=True):
+            manager.task_store.save_archive_queue(
+                {
+                    "active": [
+                        {
+                            "id": "single-1",
+                            "url": "https://makerworld.com.cn/zh/models/123",
+                            "mode": "single_model",
+                            "status": "running",
+                        }
+                    ],
+                    "queued": [],
+                    "recent_failures": [],
+                }
+            )
+
+            manager._run_single_task("single-1", "https://makerworld.com.cn/zh/models/123")
+
+        subtasks = progress_snapshots[0]["active"][0]["subtasks"]
+        by_type = {item["type"]: item for item in subtasks}
+
+        self.assertEqual(by_type["attachments"]["status"], "running")
+        self.assertEqual(by_type["attachments"]["progress"], 0)
+        self.assertEqual(by_type["attachments"]["message"], "正在下载附件（1/2）")
+        self.assertEqual(state["missing_3mf"]["items"], [])
+        self.assertEqual(state["archive_queue"]["active"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -362,6 +362,64 @@ def _missing_3mf_message_from_result(
     return "等待重新下载"
 
 
+def _archive_stage_from_progress_payload(payload: dict[str, Any]) -> str:
+    stage = str(payload.get("archive_stage") or payload.get("stage") or "").strip().lower()
+    if stage:
+        return stage
+    message = str(payload.get("message") or "").strip().lower()
+    try:
+        percent = int(payload.get("percent") or 0)
+    except (TypeError, ValueError):
+        percent = 0
+    if "附件" in message:
+        return "attachments"
+    if "评论" in message and "摘要、图片与评论整理完成" not in message:
+        return "comments"
+    if "3mf" in message or "实例" in message or "打印配置" in message:
+        return "three_mf"
+    if "归档目录" in message or "落盘" in message or "索引" in message or "元数据已生成" in message or "归档完成" in message:
+        return "finalize"
+    if "图片" in message or "摘要" in message or "头像" in message:
+        return "media"
+    if percent >= 78:
+        return "finalize"
+    if percent >= 55:
+        return "three_mf"
+    if percent >= 52:
+        return "comments"
+    if percent >= 50:
+        return "attachments"
+    if percent >= 40:
+        return "media"
+    return "metadata"
+
+
+def _archive_stage_progress_from_payload(payload: dict[str, Any], stage: str) -> int:
+    if payload.get("archive_stage_progress") is not None:
+        try:
+            return max(0, min(int(payload.get("archive_stage_progress") or 0), 100))
+        except (TypeError, ValueError):
+            return 0
+    try:
+        percent = max(0, min(int(payload.get("percent") or 0), 100))
+    except (TypeError, ValueError):
+        percent = 0
+    ranges = {
+        "metadata": (0, 40),
+        "media": (40, 50),
+        "attachments": (50, 52),
+        "comments": (52, 55),
+        "three_mf": (55, 78),
+        "finalize": (78, 100),
+    }
+    start, end = ranges.get(stage, (0, 100))
+    if percent <= start:
+        return 0
+    if percent >= end or end <= start:
+        return 100
+    return max(0, min(round((percent - start) * 100 / (end - start)), 100))
+
+
 def _account_health_failure_from_missing_items(
     missing_items: list[dict[str, Any]],
 ) -> Optional[dict[str, str]]:
@@ -2149,10 +2207,13 @@ class ArchiveTaskManager:
             )
 
         def progress_callback(payload: dict) -> None:
+            archive_stage = _archive_stage_from_progress_payload(payload)
             self.task_store.update_active_task(
                 task_id,
                 progress=int(payload.get("percent") or 0),
                 message=str(payload.get("message") or ""),
+                archive_stage=archive_stage,
+                archive_stage_progress=_archive_stage_progress_from_payload(payload, archive_stage),
             )
 
         cn_daily_limit, global_daily_limit = _three_mf_daily_limits(config)
