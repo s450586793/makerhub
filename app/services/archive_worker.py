@@ -1,3 +1,4 @@
+import os
 import re
 import threading
 import time
@@ -29,6 +30,7 @@ from app.services.catalog import (
 )
 from app.services.process_jobs import run_archive_model_job, run_discover_batch_urls_job
 from app.services.proxy_policy import temporary_proxy_env
+from app.services.resource_limiter import resource_slot
 from app.services.task_state import TaskStateStore
 from app.services.three_mf import (
     describe_three_mf_failure,
@@ -61,6 +63,17 @@ BATCH_CHILD_TRANSIENT_FAILURE_TOKENS = (
     "temporarily unavailable",
     "timed out",
 )
+
+
+def _archive_worker_concurrency(config: Any = None) -> int:
+    runtime_config = getattr(config, "runtime", None)
+    configured = getattr(runtime_config, "worker_concurrency", None)
+    raw = str(configured if configured is not None else os.environ.get("MAKERHUB_WORKER_CONCURRENCY") or "2").strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 2
+    return max(1, min(value, 4))
 
 
 def _normalize_three_mf_daily_limit(value: Any, fallback: int = DEFAULT_THREE_MF_DAILY_LIMIT) -> int:
@@ -488,7 +501,10 @@ class ArchiveTaskManager:
         self.background_enabled = BACKGROUND_TASKS_ENABLED if background_enabled is None else bool(background_enabled)
         self._lock = threading.Lock()
         self._worker: Optional[threading.Thread] = None
+        self._workers: list[threading.Thread] = []
+        self._worker_sequence = 0
         self._preview_lock = threading.Lock()
+        self._batch_refresh_lock = threading.Lock()
         self._batch_previews: dict[str, dict] = {}
 
     def submit(self, url: str, force: bool = False, preview_token: str = "", meta: Optional[dict] = None) -> dict:
@@ -817,6 +833,10 @@ class ArchiveTaskManager:
         return restored_count
 
     def _refresh_batch_tasks(self) -> bool:
+        with self._batch_refresh_lock:
+            return self._refresh_batch_tasks_locked()
+
+    def _refresh_batch_tasks_locked(self) -> bool:
         restored_count = self._restore_orphaned_batch_parents()
         snapshot = self._queue_state_snapshot()
         active_items = snapshot["active"]
@@ -1082,6 +1102,35 @@ class ArchiveTaskManager:
                 "message": message,
                 "updated_at": china_now().isoformat(),
             }
+        )
+        return task_id
+
+    def _enqueue_three_mf_stage_task_from_result(self, url: str, result: dict[str, Any], meta: dict[str, Any]) -> str:
+        instances = result.get("instances") if isinstance(result.get("instances"), list) else []
+        task_id = self._enqueue_single_task(
+            normalize_source_url(url),
+            message="等待下载 3MF",
+            mode="single_model",
+            meta={
+                "three_mf_download": True,
+                "model_id": str(result.get("model_id") or meta.get("model_id") or extract_model_id(url) or "").strip(),
+                "model_url": normalize_source_url(url),
+                "title": str(result.get("base_name") or meta.get("title") or "").strip(),
+                "instance_ids": [
+                    str(item.get("id") or item.get("profileId") or item.get("instanceId") or "").strip()
+                    for item in instances
+                    if isinstance(item, dict)
+                    and str(item.get("id") or item.get("profileId") or item.get("instanceId") or "").strip()
+                ],
+            },
+        )
+        _log_archive(
+            "three_mf_stage_submitted",
+            "3MF 下载子任务已入队。",
+            url=normalize_source_url(url),
+            task_id=task_id,
+            model_id=str(result.get("model_id") or ""),
+            instances=len(instances),
         )
         return task_id
 
@@ -1889,10 +1938,22 @@ class ArchiveTaskManager:
         if not self.background_enabled:
             return
         with self._lock:
-            if self._worker and self._worker.is_alive():
-                return
-            self._worker = threading.Thread(target=self._run_loop, daemon=True)
-            self._worker.start()
+            self._workers = [worker for worker in self._workers if worker.is_alive()]
+            try:
+                config = self.store.load()
+            except Exception:
+                config = None
+            target_count = _archive_worker_concurrency(config)
+            while len(self._workers) < target_count:
+                self._worker_sequence += 1
+                worker = threading.Thread(
+                    target=self._run_loop,
+                    daemon=True,
+                    name=f"makerhub-archive-worker-{self._worker_sequence}",
+                )
+                worker.start()
+                self._workers.append(worker)
+            self._worker = self._workers[0] if self._workers else None
 
     def ensure_worker_for_pending(self) -> dict:
         queue = self.task_store.load_archive_queue()
@@ -1930,7 +1991,7 @@ class ArchiveTaskManager:
                     continue
                 return
 
-            task = self._next_executable_task(queue)
+            task = self.task_store.lease_next_archive_task(self._next_executable_task)
             if task is None:
                 if has_active_batch:
                     time.sleep(ACTIVE_BATCH_IDLE_POLL_SECONDS)
@@ -1940,7 +2001,6 @@ class ArchiveTaskManager:
             task_url = str(task.get("url") or "")
             task_meta = task.get("meta") if isinstance(task.get("meta"), dict) else {}
             profile_metadata_only = bool(task_meta.get("profile_metadata_only"))
-            self.task_store.start_archive_task(task_id)
             self.task_store.update_active_task(task_id, message="正在准备归档", progress=1)
             _log_archive(
                 "task_started",
@@ -2193,7 +2253,12 @@ class ArchiveTaskManager:
         model_id = extract_model_id(url)
         limit_guard = _read_three_mf_limit_guard()
         daily_limit_active = _is_three_mf_limit_guard_active_for_url(url, limit_guard)
-        skip_three_mf_fetch = profile_metadata_only or daily_limit_active
+        defer_three_mf_download = not (
+            profile_metadata_only
+            or missing_3mf_retry
+            or three_mf_download_task
+        )
+        skip_three_mf_fetch = profile_metadata_only or daily_limit_active or defer_three_mf_download
         skip_three_mf_message = _three_mf_limit_message(limit_guard) if daily_limit_active and not profile_metadata_only else ""
         if model_id and missing_3mf_retry:
             self.task_store.update_missing_3mf_status(
@@ -2218,28 +2283,41 @@ class ArchiveTaskManager:
 
         cn_daily_limit, global_daily_limit = _three_mf_daily_limits(config)
         three_mf_captcha_result_header = ""
-        with _temporary_proxy_env(config, url):
-            result = run_archive_model_job(
-                url=url,
-                cookie=cookie,
-                download_dir=str(ARCHIVE_DIR),
-                logs_dir=str(LOGS_DIR),
-                existing_root=str(ARCHIVE_DIR),
-                progress_callback=progress_callback,
-                skip_three_mf_fetch=skip_three_mf_fetch,
-                three_mf_skip_message=skip_three_mf_message,
-                profile_metadata_only=profile_metadata_only,
-                download_assets=download_assets,
-                download_comment_assets=download_comment_assets,
-                rebuild_archive=rebuild_archive,
-                record_missing_3mf_log=record_missing_3mf_log,
-                three_mf_skip_state="download_limited" if daily_limit_active and not profile_metadata_only else "",
-                three_mf_daily_limit_cn=cn_daily_limit,
-                three_mf_daily_limit_global=global_daily_limit,
-                existing_model_dir=existing_model_dir,
-                proxy_config=config.proxy,
-                three_mf_captcha_result_header=three_mf_captcha_result_header,
-            )
+        def run_job() -> dict[str, Any]:
+            with _temporary_proxy_env(config, url):
+                return run_archive_model_job(
+                    url=url,
+                    cookie=cookie,
+                    download_dir=str(ARCHIVE_DIR),
+                    logs_dir=str(LOGS_DIR),
+                    existing_root=str(ARCHIVE_DIR),
+                    progress_callback=progress_callback,
+                    skip_three_mf_fetch=skip_three_mf_fetch,
+                    three_mf_skip_message=skip_three_mf_message,
+                    profile_metadata_only=profile_metadata_only,
+                    download_assets=download_assets,
+                    download_comment_assets=download_comment_assets,
+                    rebuild_archive=rebuild_archive,
+                    record_missing_3mf_log=record_missing_3mf_log,
+                    three_mf_skip_state=(
+                        "download_limited"
+                        if daily_limit_active and not profile_metadata_only
+                        else "pending_download"
+                        if defer_three_mf_download
+                        else ""
+                    ),
+                    three_mf_daily_limit_cn=cn_daily_limit,
+                    three_mf_daily_limit_global=global_daily_limit,
+                    existing_model_dir=existing_model_dir,
+                    proxy_config=config.proxy,
+                    three_mf_captcha_result_header=three_mf_captcha_result_header,
+                )
+
+        if three_mf_download_task:
+            with resource_slot("three_mf_download", detail=normalize_source_url(url)):
+                result = run_job()
+        else:
+            result = run_job()
 
         missing_items = []
         limit_guard_state: Optional[dict[str, Any]] = limit_guard if daily_limit_active else None
@@ -2296,6 +2374,9 @@ class ArchiveTaskManager:
                 reason="archive_worker_single_task_completed",
             ):
                 invalidate_archive_snapshot("archive_worker_single_task_completed")
+
+        if defer_three_mf_download and isinstance(result.get("instances"), list) and result.get("instances"):
+            self._enqueue_three_mf_stage_task_from_result(url, result, meta)
 
         result_name = result.get("base_name") or result.get("work_dir") or ""
         if three_mf_download_task:

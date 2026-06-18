@@ -456,6 +456,78 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(task["lease_expires_at"], "2026-06-04T10:30:00+08:00")
         self.assertGreaterEqual(task["attempt_count"], 1)
 
+    def test_lease_next_archive_task_skips_batch_parent_waiting_for_children(self):
+        state = {
+            "archive_queue": {
+                "active": [],
+                "queued": [
+                    {
+                        "id": "batch-1",
+                        "title": "Batch",
+                        "mode": "author_upload",
+                        "status": "queued",
+                        "meta": {
+                            "batch_expected_items": [
+                                {"url": "https://makerworld.com.cn/zh/models/1", "status": "queued"}
+                            ]
+                        },
+                    },
+                    {
+                        "id": "child-1",
+                        "url": "https://makerworld.com.cn/zh/models/1",
+                        "mode": "single_model",
+                        "status": "queued",
+                    },
+                ],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        def select_child(queue):
+            for item in queue.get("queued") or []:
+                meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+                if not meta.get("batch_expected_items"):
+                    return item
+            return None
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.china_now_iso", return_value="2026-06-04T10:00:00+08:00"), \
+                patch("app.services.task_state.lease_expiry_from_now", return_value="2026-06-04T10:30:00+08:00"):
+            claimed_task = store.lease_next_archive_task(select_child)
+            queue = store.load_archive_queue()
+
+        self.assertEqual(claimed_task["id"], "child-1")
+        self.assertEqual(queue["active"][0]["id"], "child-1")
+        self.assertEqual(queue["active"][0]["status"], "running")
+        self.assertEqual(queue["active"][0]["lease_expires_at"], "2026-06-04T10:30:00+08:00")
+        self.assertEqual([item["id"] for item in queue["queued"]], ["batch-1"])
+
+    def test_lease_next_archive_task_claims_distinct_tasks_across_calls(self):
+        state = {
+            "archive_queue": {
+                "active": [],
+                "queued": [
+                    {"id": "task-1", "url": "https://makerworld.com.cn/zh/models/1", "mode": "single_model"},
+                    {"id": "task-2", "url": "https://makerworld.com.cn/zh/models/2", "mode": "single_model"},
+                ],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
+            first = store.lease_next_archive_task()
+            second = store.lease_next_archive_task()
+            queue = store.load_archive_queue()
+
+        self.assertEqual(first["id"], "task-1")
+        self.assertEqual(second["id"], "task-2")
+        self.assertEqual([item["id"] for item in queue["active"]], ["task-1", "task-2"])
+        self.assertEqual(queue["queued_count"], 0)
+
     def test_batch_parent_normalizes_to_waiting_children(self):
         store = TaskStateStore()
         state = {

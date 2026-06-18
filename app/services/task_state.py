@@ -1701,6 +1701,55 @@ class TaskStateStore:
 
         return self._update_archive_queue(_mutate)
 
+    def lease_next_archive_task(self, selector=None) -> Optional[dict[str, Any]]:
+        leased_task: Optional[dict[str, Any]] = None
+
+        def _mutate(payload: dict) -> dict:
+            nonlocal leased_task
+            queued = [
+                _normalize_archive_runtime_item(item, "queued")
+                for item in (payload.get("queued") or [])
+            ]
+            active = [
+                _normalize_archive_runtime_item(item, "running")
+                for item in (payload.get("active") or [])
+            ]
+            selected_index: Optional[int] = None
+            selected_task: Optional[dict[str, Any]] = None
+
+            if callable(selector):
+                selected_task = selector({"active": active, "queued": queued, "recent_failures": payload.get("recent_failures") or []})
+                selected_id = str((selected_task or {}).get("id") or "").strip()
+                if selected_id:
+                    for index, item in enumerate(queued):
+                        if str(item.get("id") or "").strip() == selected_id:
+                            selected_index = index
+                            break
+            elif queued:
+                selected_index = 0
+
+            if selected_index is None:
+                return payload
+
+            now = china_now_iso()
+            task = queued.pop(selected_index)
+            task["status"] = "running"
+            task["started_at"] = task.get("started_at") or now
+            task["heartbeat_at"] = now
+            task["last_progress_at"] = now
+            task["lease_expires_at"] = lease_expiry_from_now()
+            task["attempt_count"] = max(task_attempt_count(task) + 1, 1)
+            task["updated_at"] = now
+            active.append(task)
+            leased_task = task
+
+            payload["queued"] = queued
+            payload["active"] = active
+            return payload
+
+        self._update_archive_queue(_mutate)
+        return leased_task
+
     def update_active_task(self, task_id: str, **changes: Any) -> dict:
         def _mutate(payload: dict) -> dict:
             active = []

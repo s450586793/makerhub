@@ -1,4 +1,7 @@
+import threading
+import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.services.archive_worker import ArchiveTaskManager
@@ -7,6 +10,14 @@ from app.services.archive_worker import ArchiveTaskManager
 class _ArchiveBatchRefreshConfig:
     cookies = []
     proxy = None
+    runtime = SimpleNamespace(worker_concurrency=2)
+    advanced = SimpleNamespace(
+        remote_refresh_model_workers=2,
+        makerworld_request_limit=2,
+        comment_asset_download_limit=4,
+        three_mf_download_limit=1,
+        disk_io_limit=1,
+    )
 
 
 class _ArchiveBatchRefreshStore:
@@ -15,6 +26,38 @@ class _ArchiveBatchRefreshStore:
 
 
 class ArchiveWorkerBatchRetryTest(unittest.TestCase):
+    def test_ensure_worker_starts_configured_archive_workers(self):
+        manager = ArchiveTaskManager(background_enabled=True)
+        manager.store = SimpleNamespace(load=lambda: SimpleNamespace(runtime=SimpleNamespace(worker_concurrency=3)))
+        started = []
+
+        class FakeThread:
+            def __init__(self, target=None, daemon=False, name=""):
+                self.target = target
+                self.daemon = daemon
+                self.name = name
+                self.started = False
+
+            def is_alive(self):
+                return self.started
+
+            def start(self):
+                self.started = True
+                started.append(self.name)
+
+        with patch("app.services.archive_worker.threading.Thread", side_effect=FakeThread):
+            manager._ensure_worker()
+            manager._ensure_worker()
+
+        self.assertEqual(
+            started,
+            [
+                "makerhub-archive-worker-1",
+                "makerhub-archive-worker-2",
+                "makerhub-archive-worker-3",
+            ],
+        )
+
     def test_resume_keeps_batch_parents_tracking_but_prioritizes_single_model_child(self):
         state = {}
         manager = ArchiveTaskManager(background_enabled=False)
@@ -366,6 +409,63 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
         self.assertEqual(child["status"], "failed")
         self.assertEqual(child["attempts"], 3)
         self.assertIn("Cloudflare", child["last_failure_message"])
+
+    def test_refresh_batch_tasks_serializes_child_requeue(self):
+        state = {}
+        manager = ArchiveTaskManager(background_enabled=False)
+        requeue_calls = []
+        original_requeue = manager._requeue_batch_child
+
+        def save_state(key, value):
+            state[key] = value
+            return value
+
+        def slow_requeue(**kwargs):
+            requeue_calls.append(kwargs["item"]["task_key"])
+            time.sleep(0.05)
+            return original_requeue(**kwargs)
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=save_state), \
+                patch.object(manager, "_archived_task_keys", return_value=set()):
+            manager.task_store.save_archive_queue(
+                {
+                    "active": [
+                        {
+                            "id": "batch-race",
+                            "url": "https://makerworld.com.cn/zh/@ace/upload",
+                            "mode": "author_upload",
+                            "status": "running",
+                            "meta": {
+                                "batch_expected_items": [
+                                    {
+                                        "url": "https://makerworld.com.cn/zh/models/656269",
+                                        "task_key": "model:656269",
+                                        "model_id": "656269",
+                                        "attempts": 1,
+                                        "status": "queued",
+                                    }
+                                ]
+                            },
+                        }
+                    ],
+                    "queued": [],
+                    "recent_failures": [],
+                }
+            )
+
+            with patch.object(manager, "_requeue_batch_child", side_effect=slow_requeue):
+                threads = [threading.Thread(target=manager._refresh_batch_tasks) for _ in range(2)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=2)
+
+            queue = manager.task_store.load_archive_queue()
+
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertEqual(requeue_calls, ["model:656269"])
+        self.assertEqual(queue["queued_count"], 1)
 
     def test_run_batch_task_throttles_parent_progress_and_success_logs(self):
         state = {}

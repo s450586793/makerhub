@@ -302,6 +302,7 @@ FAKE_THREE_MF_DOWNLOAD_ENV = "MAKERHUB_FAKE_THREE_MF_DOWNLOADS"
 FAKE_THREE_MF_DOWNLOAD_URL_PREFIX = "makerhub://fake-3mf/"
 FAKE_THREE_MF_DOWNLOAD_MESSAGE = "本地 Docker 已启用 3MF 假下载，不会请求 MakerWorld 实际文件。"
 COMMENT_ASSET_DOWNLOAD_WORKERS = 4
+IMAGE_ASSET_DOWNLOAD_WORKERS = 4
 SHARED_AVATAR_REL_DIR = "_shared/avatars"
 VERBOSE_THREE_MF_FETCH_LOG = os.getenv("MAKERHUB_VERBOSE_THREE_MF_FETCH_LOG", "").strip().lower() in {
     "1",
@@ -1786,6 +1787,47 @@ def _download_comment_assets(tasks: list[dict], progress_callback, progress_star
             except Exception as exc:
                 stats["failed"] += 1
                 log(task.get("error_message") or "评论资源下载失败，保留原始链接：", task.get("url") or "", exc)
+                continue
+            stats["completed"] += 1
+            for apply_ref in task.get("apply") or []:
+                try:
+                    apply_ref()
+                except Exception:
+                    continue
+    return stats
+
+
+def _download_image_assets(
+    tasks: list[dict],
+    progress_callback,
+    progress_start: int,
+    progress_end: int,
+    message: str,
+) -> dict[str, int]:
+    stats = {"completed": 0, "failed": 0}
+    if not tasks:
+        return stats
+    total = len(tasks)
+    completed = 0
+    workers = max(1, min(IMAGE_ASSET_DOWNLOAD_WORKERS, total))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {executor.submit(task["download"]): task for task in tasks}
+        for future in as_completed(future_map):
+            task = future_map[future]
+            completed += 1
+            _emit_stage_progress(
+                progress_callback,
+                progress_start,
+                progress_end,
+                completed,
+                total,
+                message,
+            )
+            try:
+                future.result()
+            except Exception as exc:
+                stats["failed"] += 1
+                log(task.get("error_message") or "图片下载失败，保留原始链接：", task.get("url") or "", exc)
                 continue
             stats["completed"] += 1
             for apply_ref in task.get("apply") or []:
@@ -3299,6 +3341,7 @@ def parse_summary(
     existing_summary_lookup = _build_existing_media_lookup(existing_summary_images, url_fields=("originalUrl", "url"))
 
     total_images = len(image_nodes)
+    summary_download_tasks: list[dict[str, Any]] = []
     for idx, (img, src) in enumerate(image_nodes, start=1):
         _emit_stage_progress(
             progress_callback,
@@ -3347,29 +3390,44 @@ def parse_summary(
             )
             continue
         try:
-            download_file(
-                session,
-                src,
-                out_dir / name,
-                overwrite=True,
-                max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
+            target = out_dir / name
+            summary_download_tasks.append(
+                {
+                    "url": src,
+                    "error_message": "摘要图片下载失败，保留原始链接：",
+                    "download": lambda s=session, u=src, d=target: _download_asset_with_fresh_session(s, u, d),
+                    "apply": [
+                        lambda img=img, src=src, name=name, idx=idx: (
+                            img.__setitem__("src", f"./images/{name}"),
+                            summary_images.append(
+                                {
+                                    "index": idx,
+                                    "originalUrl": src,
+                                    "relPath": f"images/{name}",
+                                    "fileName": name,
+                                }
+                            ),
+                        )
+                    ],
+                }
             )
         except Exception as exc:
-            log("摘要图片下载失败，保留原始链接：", src, exc)
+            log("摘要图片任务准备失败，保留原始链接：", src, exc)
             continue
-        img["src"] = f"./images/{name}"
-        summary_images.append(
-            {
-                "index": idx,
-                "originalUrl": src,
-                "relPath": f"images/{name}",
-                "fileName": name,
-            }
+
+    if summary_download_tasks:
+        _download_image_assets(
+            summary_download_tasks,
+            progress_callback,
+            progress_start,
+            progress_end,
+            "正在下载摘要图片",
         )
 
     if total_images:
         emit_progress(progress_callback, progress_end, "摘要图片整理完成")
 
+    summary_images.sort(key=lambda item: int(item.get("index") or 0) if isinstance(item, dict) else 0)
     html_local = str(soup)
     text_plain = " ".join(unescape(soup.get_text()).split())
 
@@ -3616,6 +3674,7 @@ def collect_design_images(
     design_images = []
     cover_meta = None
     existing_lookup = _build_existing_media_lookup(existing_images or [], url_fields=("originalUrl", "url"))
+    design_download_tasks: list[dict[str, Any]] = []
     for idx, p in enumerate(pics, start=1):
         _emit_stage_progress(
             progress_callback,
@@ -3669,26 +3728,35 @@ def collect_design_images(
             if cover_meta is None:
                 cover_meta = meta
             continue
-        try:
-            download_file(
-                session,
-                url,
-                out_dir / fname,
-                overwrite=True,
-                max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
-            )
-        except Exception as exc:
-            log("设计图片下载失败，保留原始链接：", url, exc)
-            continue
         meta = {
             "index": idx,
             "originalUrl": url,
             "relPath": rel,
             "fileName": fname,
         }
-        design_images.append(meta)
-        if cover_meta is None:
-            cover_meta = meta
+        target = out_dir / fname
+        design_download_tasks.append(
+            {
+                "url": url,
+                "error_message": "设计图片下载失败，保留原始链接：",
+                "download": lambda s=session, u=url, d=target: _download_asset_with_fresh_session(s, u, d),
+                "apply": [
+                    lambda meta=meta: design_images.append(meta)
+                ],
+            }
+        )
+
+    if design_download_tasks:
+        _download_image_assets(
+            design_download_tasks,
+            progress_callback,
+            progress_start,
+            progress_end,
+            "正在下载设计图片",
+        )
+    design_images.sort(key=lambda item: int(item.get("index") or 0) if isinstance(item, dict) else 0)
+    if cover_meta is None and design_images:
+        cover_meta = design_images[0]
     emit_progress(progress_callback, progress_end, "设计图片整理完成")
     return design_images, cover_meta
 
@@ -7180,6 +7248,7 @@ def archive_model(
         "metadata_only_missing_3mf_count": len(missing_3mf) if profile_metadata_only else 0,
         "action": action,
         "model_id": design_id,
+        "instances": inst_list,
         "stats": {
             "timings_ms": timings_ms,
             "comments": comments_bundle.get("assetStats") if isinstance(comments_bundle.get("assetStats"), dict) else {},
