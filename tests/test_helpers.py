@@ -5,6 +5,15 @@ from copy import deepcopy
 from unittest.mock import patch
 
 
+def iter_app_routes(app):
+    for route in app.routes:
+        if hasattr(route, "effective_route_contexts"):
+            for route_context in route.effective_route_contexts():
+                yield route_context
+            continue
+        yield route
+
+
 class InMemoryDatabaseState:
     def __init__(self, initial: dict | None = None) -> None:
         self.state = deepcopy(initial or {})

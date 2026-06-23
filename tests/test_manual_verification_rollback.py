@@ -6,20 +6,21 @@ from fastapi.testclient import TestClient
 
 from app import main as main_app
 from app.services import archive_worker
+from tests.test_helpers import iter_app_routes
 
 
 class ManualVerificationRollbackTest(unittest.TestCase):
     def test_embedded_verification_api_routes_are_removed(self):
         route_prefix = "/" + "/".join(["api", "-".join(["browser", "verification"])])
         sessions_route = f"{route_prefix}/sessions"
-        paths = {route.path for route in main_app.app.routes}
+        paths = {route.path for route in iter_app_routes(main_app.app)}
         self.assertNotIn(sessions_route, paths)
         self.assertFalse(any(str(path).startswith(route_prefix) for path in paths))
 
     def test_embedded_verification_spa_route_is_removed(self):
         route_prefix = "/" + "-".join(["browser", "verification"])
         route_path = f"{route_prefix}/{{session_id}}"
-        paths = {route.path for route in main_app.app.routes}
+        paths = {route.path for route in iter_app_routes(main_app.app)}
         self.assertNotIn(route_path, paths)
         response = TestClient(main_app.app).get(f"{route_prefix}/bv_test", follow_redirects=False)
         self.assertIn(response.status_code, {302, 303, 404})
