@@ -698,6 +698,180 @@ class ArchiveTaskManager:
         )
         return child_task_id
 
+    def _batch_parent_key(self, item: dict[str, Any]) -> tuple[str, str]:
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        if not meta.get("batch_expected_items"):
+            return ("", "")
+
+        source_url = normalize_source_url(str(item.get("url") or item.get("title") or ""))
+        if not source_url:
+            return ("", "")
+
+        mode = str(item.get("mode") or "").strip() or detect_archive_mode(source_url)
+        if mode not in BATCH_TASK_MODES:
+            mode = detect_archive_mode(source_url)
+        if mode not in BATCH_TASK_MODES:
+            return ("", "")
+        return (mode, source_url)
+
+    def _expected_item_key(self, item: dict[str, Any]) -> str:
+        return str(item.get("task_key") or "").strip() or _task_key(str(item.get("url") or ""))
+
+    def _expected_item_from_child(self, item: dict[str, Any], fallback_status: str) -> Optional[dict[str, Any]]:
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        child_url = normalize_source_url(str(item.get("url") or item.get("title") or ""))
+        key = str(meta.get("batch_task_key") or "").strip() or _task_key(child_url)
+        if not child_url or not key:
+            return None
+        try:
+            attempts = max(int(meta.get("batch_attempts") or item.get("attempt_count") or item.get("attempts") or 1), 1)
+        except (TypeError, ValueError):
+            attempts = 1
+        return {
+            "url": child_url,
+            "task_key": key,
+            "model_id": str(meta.get("model_id") or extract_model_id(child_url) or "").strip(),
+            "attempts": attempts,
+            "status": str(item.get("status") or fallback_status).strip() or fallback_status,
+            "last_task_id": str(item.get("id") or "").strip(),
+            "last_failure_message": _failure_message_from_queue_item(item)[:400],
+        }
+
+    def _merge_batch_expected_items(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
+        for candidate in candidates:
+            normalized_items = self._normalize_batch_expected_items([candidate])
+            if not normalized_items:
+                continue
+            normalized = normalized_items[0]
+            key = self._expected_item_key(normalized)
+            if not key:
+                continue
+            if key not in merged:
+                order.append(key)
+            merged[key] = {**merged.get(key, {}), **normalized}
+        return [merged[key] for key in order]
+
+    def _merge_duplicate_batch_parents(self) -> int:
+        queue = self.task_store.load_archive_queue()
+        active_items = list(queue.get("active") or [])
+        queued_items = list(queue.get("queued") or [])
+        failed_items = list(queue.get("recent_failures") or [])
+
+        kept_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        duplicate_parent_ids: dict[str, str] = {}
+        duplicate_expected: dict[tuple[str, str], list[dict[str, Any]]] = {}
+
+        def _collect_parent(item: dict[str, Any]) -> bool:
+            key = self._batch_parent_key(item)
+            if not all(key):
+                return False
+
+            kept = kept_by_key.get(key)
+            if kept is None:
+                kept_by_key[key] = item
+                return False
+
+            duplicate_id = str(item.get("id") or "").strip()
+            kept_id = str(kept.get("id") or "").strip()
+            if duplicate_id and kept_id:
+                duplicate_parent_ids[duplicate_id] = kept_id
+
+            meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+            duplicate_expected.setdefault(key, []).extend(self._normalize_batch_expected_items(meta.get("batch_expected_items")))
+            return True
+
+        duplicate_ids: set[str] = set()
+        for section in (active_items, queued_items, failed_items):
+            for item in section:
+                if isinstance(item, dict) and _collect_parent(item):
+                    duplicate_id = str(item.get("id") or "").strip()
+                    if duplicate_id:
+                        duplicate_ids.add(duplicate_id)
+
+        if not duplicate_ids and not duplicate_parent_ids:
+            return 0
+
+        def _rewrite_child(item: dict[str, Any], fallback_status: str) -> tuple[dict[str, Any], bool]:
+            meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+            batch_source_url = normalize_source_url(str(meta.get("batch_source_url") or ""))
+            if not batch_source_url:
+                return item, False
+
+            mode = detect_archive_mode(batch_source_url)
+            if mode not in BATCH_TASK_MODES:
+                mode = "author_upload"
+            parent = kept_by_key.get((mode, batch_source_url))
+            if not parent:
+                return item, False
+
+            kept_id = str(parent.get("id") or "").strip()
+            if not kept_id:
+                return item, False
+
+            current_parent_id = str(meta.get("batch_parent_id") or "").strip()
+            if current_parent_id == kept_id:
+                return item, False
+
+            updated = dict(item)
+            updated_meta = dict(meta)
+            updated_meta["batch_parent_id"] = kept_id
+            updated["meta"] = updated_meta
+            expected = self._expected_item_from_child(updated, fallback_status)
+            if expected:
+                duplicate_expected.setdefault((mode, batch_source_url), []).append(expected)
+            return updated, True
+
+        changed = len(duplicate_ids)
+
+        def _rewrite_section(items: list[dict[str, Any]], fallback_status: str) -> list[dict[str, Any]]:
+            nonlocal changed
+            rewritten = []
+            for item in items:
+                if not isinstance(item, dict):
+                    rewritten.append(item)
+                    continue
+                if str(item.get("id") or "").strip() in duplicate_ids:
+                    continue
+                updated, did_change = _rewrite_child(item, fallback_status)
+                if did_change:
+                    changed += 1
+                rewritten.append(updated)
+            return rewritten
+
+        active_items = _rewrite_section(active_items, "running")
+        queued_items = _rewrite_section(queued_items, "queued")
+        failed_items = _rewrite_section(failed_items, "failed")
+
+        for key, parent in kept_by_key.items():
+            additions = duplicate_expected.get(key) or []
+            if not additions:
+                continue
+            meta = dict(parent.get("meta") or {})
+            merged = self._merge_batch_expected_items(
+                self._normalize_batch_expected_items(meta.get("batch_expected_items")) + additions
+            )
+            if merged == self._normalize_batch_expected_items(meta.get("batch_expected_items")):
+                continue
+            meta["batch_expected_items"] = merged
+            parent["meta"] = meta
+            parent["message"] = "批量任务已合并重复父任务，正在同步子任务状态。"
+            parent["updated_at"] = china_now().isoformat()
+            changed += 1
+
+        if changed <= 0:
+            return 0
+
+        self.task_store.save_archive_queue(
+            {
+                "active": active_items,
+                "queued": queued_items,
+                "recent_failures": failed_items,
+            }
+        )
+        return changed
+
     def _restore_orphaned_batch_parents(self) -> int:
         restored_count = 0
 
@@ -838,6 +1012,7 @@ class ArchiveTaskManager:
 
     def _refresh_batch_tasks_locked(self) -> bool:
         restored_count = self._restore_orphaned_batch_parents()
+        merged_count = self._merge_duplicate_batch_parents()
         snapshot = self._queue_state_snapshot()
         active_items = snapshot["active"]
         batch_tasks = [
@@ -847,7 +1022,7 @@ class ArchiveTaskManager:
             and self._normalize_batch_expected_items((item.get("meta") or {}).get("batch_expected_items"))
         ]
         if not batch_tasks:
-            return restored_count > 0
+            return restored_count > 0 or merged_count > 0
 
         active_batch_ids = {str(item.get("id") or "") for item in batch_tasks}
         active_child_by_key = {

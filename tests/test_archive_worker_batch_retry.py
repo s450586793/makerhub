@@ -289,6 +289,106 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
         )
         self.assertNotIn("batch-failed", {item["id"] for item in queue["recent_failures"]})
 
+    def test_refresh_batch_merges_duplicate_parent_for_same_source_url(self):
+        state = {}
+        manager = ArchiveTaskManager(background_enabled=False)
+        source_url = "https://makerworld.com.cn/zh/@ace/upload"
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch.object(manager, "_archived_task_keys", return_value=set()):
+            manager.task_store.save_archive_queue(
+                {
+                    "active": [
+                        {
+                            "id": "batch-active",
+                            "url": source_url,
+                            "title": source_url,
+                            "mode": "author_upload",
+                            "status": "running",
+                            "meta": {
+                                "batch_expected_items": [
+                                    {
+                                        "url": "https://makerworld.com.cn/zh/models/1001",
+                                        "task_key": "model:1001",
+                                        "model_id": "1001",
+                                        "attempts": 1,
+                                        "status": "queued",
+                                        "last_task_id": "child-active",
+                                    }
+                                ]
+                            },
+                        }
+                    ],
+                    "queued": [
+                        {
+                            "id": "batch-queued",
+                            "url": source_url,
+                            "title": source_url,
+                            "mode": "author_upload",
+                            "status": "queued",
+                            "meta": {
+                                "batch_expected_items": [
+                                    {
+                                        "url": "https://makerworld.com.cn/zh/models/1002",
+                                        "task_key": "model:1002",
+                                        "model_id": "1002",
+                                        "attempts": 1,
+                                        "status": "queued",
+                                        "last_task_id": "child-queued",
+                                    }
+                                ]
+                            },
+                        },
+                        {
+                            "id": "child-active",
+                            "url": "https://makerworld.com.cn/zh/models/1001",
+                            "title": "https://makerworld.com.cn/zh/models/1001",
+                            "mode": "single_model",
+                            "status": "queued",
+                            "meta": {
+                                "batch_parent_id": "batch-active",
+                                "batch_source_url": source_url,
+                            },
+                        },
+                        {
+                            "id": "child-queued",
+                            "url": "https://makerworld.com.cn/zh/models/1002",
+                            "title": "https://makerworld.com.cn/zh/models/1002",
+                            "mode": "single_model",
+                            "status": "queued",
+                            "meta": {
+                                "batch_parent_id": "batch-queued",
+                                "batch_source_url": source_url,
+                            },
+                        },
+                    ],
+                    "recent_failures": [],
+                }
+            )
+
+            refreshed = manager._refresh_batch_tasks()
+            queue = manager.task_store.load_archive_queue()
+
+        self.assertTrue(refreshed)
+        source_parents = [
+            item
+            for item in queue["active"] + queue["queued"]
+            if item.get("mode") == "author_upload" and item.get("url") == source_url
+        ]
+        self.assertEqual([item["id"] for item in source_parents], ["batch-active"])
+        child_parent_ids = {
+            (item.get("meta") or {}).get("batch_parent_id")
+            for item in queue["queued"]
+            if (item.get("meta") or {}).get("batch_source_url") == source_url
+        }
+        self.assertEqual(child_parent_ids, {"batch-active"})
+        expected_items = source_parents[0]["meta"]["batch_expected_items"]
+        self.assertEqual(
+            {item["task_key"] for item in expected_items},
+            {"model:1001", "model:1002"},
+        )
+
     def test_refresh_batch_requeues_transient_failure_beyond_normal_limit(self):
         state = {}
         manager = ArchiveTaskManager(background_enabled=False)
