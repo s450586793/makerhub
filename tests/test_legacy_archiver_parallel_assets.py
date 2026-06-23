@@ -3,6 +3,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import requests
+
 from app.services import legacy_archiver
 
 
@@ -90,6 +92,27 @@ class LegacyArchiverParallelAssetsTest(unittest.TestCase):
             ["design_01.jpg", "design_02.jpg"],
         )
         self.assertEqual(cover["fileName"], "design_01.jpg")
+
+    def test_fresh_asset_session_inherits_base_session_cookies(self):
+        captured = []
+        base_session = requests.Session()
+        base_session.cookies.set("maker_session", "secret", domain="example.test", path="/")
+
+        with TemporaryDirectory() as temp_dir:
+            dest = Path(temp_dir) / "asset.jpg"
+
+            def fake_download(session, _url, _dest, **_kwargs):
+                captured.append(session.cookies.get("maker_session", domain="example.test", path="/"))
+                _dest.write_text("ok", encoding="utf-8")
+
+            with patch.object(legacy_archiver, "download_file", side_effect=fake_download):
+                legacy_archiver._download_asset_with_fresh_session(
+                    base_session,
+                    "https://example.test/asset.jpg",
+                    dest,
+                )
+
+        self.assertEqual(captured, ["secret"])
 
 
 if __name__ == "__main__":

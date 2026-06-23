@@ -190,7 +190,13 @@ test("ModelsPage restores deep pages with a single include-until-page request", 
 test("ModelsPage uses the shared hydrated light-phase decision", () => {
   assert.match(modelsPageSource, /resolveHydratedLightPhase/);
   assert.match(modelsPageSource, /hasStableModelListView/);
-  assert.match(modelsPageSource, /await refreshFullModelList\(\{ refresh \}\)/);
+  assert.match(modelsPageSource, /refreshFullModelList/);
+});
+
+test("ModelsPage falls back to the light response when immediate full hydration fails", () => {
+  assert.match(modelsPageSource, /function renderLightModelListResponse/);
+  assert.match(modelsPageSource, /await refreshFullModelList\(\{ refresh, throwOnError: true \}\)/);
+  assert.match(modelsPageSource, /renderLightModelListResponse\(response, nextPage\)/);
 });
 
 test("SubscriptionsPage restores deep pages with a single include-until-page request", () => {

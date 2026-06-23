@@ -144,7 +144,7 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
         self.assertEqual(enqueued[0]["meta"]["model_id"], "123")
         self.assertEqual(enqueued[0]["message"], "等待下载 3MF")
 
-    def test_three_mf_download_task_uses_three_mf_resource_slot(self):
+    def test_three_mf_download_task_does_not_wrap_archive_job_in_resource_slot(self):
         manager = ArchiveTaskManager(background_enabled=False)
         manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[], proxy=None, three_mf_limits=None))
         resource_names = []
@@ -185,12 +185,13 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
             manager._run_single_task(
                 "task-3mf",
                 "https://makerworld.com.cn/zh/models/123",
-                {"three_mf_download": True, "model_id": "123"},
+                {"three_mf_download": True, "model_id": "123", "instance_ids": ["profile-1", "", None, " profile-2 "]},
             )
 
-        self.assertEqual(resource_names, ["three_mf_download"])
+        self.assertEqual(resource_names, [])
         self.assertFalse(run_kwargs[0]["skip_three_mf_fetch"])
         self.assertTrue(run_kwargs[0]["download_assets"])
+        self.assertEqual(run_kwargs[0]["instance_ids"], ["profile-1", "profile-2"])
         self.assertEqual(completed, ["task-3mf"])
 
 

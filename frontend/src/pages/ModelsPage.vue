@@ -423,6 +423,20 @@ function rememberModelList() {
   });
 }
 
+async function renderLightModelListResponse(response, page) {
+  const incomingItems = response.items || [];
+  payload.value = {
+    ...response,
+    items: incomingItems,
+    count: incomingItems.length,
+    page,
+  };
+  loaded.value = true;
+  rememberModelList();
+  await nextTick();
+  ensureObserver();
+}
+
 async function hydrateModelListFromCache() {
   const cached = getPageCache(modelListCacheKey());
   if (!cached?.payload) {
@@ -497,26 +511,30 @@ async function load({ append = false, refresh = false, hydrateFull = false } = {
       count: mergedItems.length,
     };
   } else if (lightDecision.renderLight) {
-    const mergedItems = incomingItems;
-    payload.value = {
-      ...response,
-      items: mergedItems,
-      count: mergedItems.length,
-      page: nextPage,
-    };
+    await renderLightModelListResponse(response, nextPage);
   }
   if (append || lightDecision.renderLight) {
-    loaded.value = true;
-    rememberModelList();
-    await nextTick();
-    ensureObserver();
+    if (append) {
+      loaded.value = true;
+      rememberModelList();
+      await nextTick();
+      ensureObserver();
+    }
   }
   if (!append) {
     if (lightDecision.renderLight) {
       await scrollToRouteAnchor();
     }
     if (lightDecision.hydrateImmediately) {
-      await refreshFullModelList({ refresh });
+      const hydrationToken = requestToken + 1;
+      try {
+        await refreshFullModelList({ refresh, throwOnError: true });
+      } catch {
+        if (!lightDecision.renderLight && requestToken === hydrationToken) {
+          await renderLightModelListResponse(response, nextPage);
+          await scrollToRouteAnchor();
+        }
+      }
     } else if (lightDecision.hydrateFull) {
       scheduleFullModelHydration({ refresh });
     }
@@ -551,7 +569,7 @@ async function reloadVisiblePages({ refresh = false } = {}) {
   ensureObserver();
 }
 
-async function refreshFullModelList({ refresh = false } = {}) {
+async function refreshFullModelList({ refresh = false, throwOnError = false } = {}) {
   const pagesToLoad = Math.max(Number(payload.value.page) || routePage(), 1);
   const currentToken = ++requestToken;
   loadMoreToken += 1;
@@ -580,6 +598,9 @@ async function refreshFullModelList({ refresh = false } = {}) {
     ensureObserver();
   } catch (error) {
     status.value = error instanceof Error ? error.message : "刷新完整模型库失败。";
+    if (throwOnError) {
+      throw error;
+    }
   }
 }
 

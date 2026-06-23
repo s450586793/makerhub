@@ -1752,6 +1752,7 @@ def _download_asset_with_fresh_session(base_session: requests.Session, url: str,
             return
         with requests.Session() as asset_session:
             asset_session.headers.update(getattr(base_session, "headers", {}) or {})
+            asset_session.cookies.update(getattr(base_session, "cookies", {}) or {})
             download_file(
                 asset_session,
                 url,
@@ -6677,6 +6678,7 @@ def archive_model(
     three_mf_daily_limit_global: int = 100,
     existing_model_dir: str = "",
     three_mf_captcha_result_header: str = "",
+    instance_ids: Optional[list[str]] = None,
 ):
     """
     对外主入口：采集 + 下载文件 + 生成 meta，并整理归档目录。
@@ -6975,6 +6977,23 @@ def archive_model(
     planned_instances_dir = work_dir / "instances"
     existing_instance_index = _build_existing_instance_index(existing_meta.get("instances"))
     extracted_instances = extract_instances(design)
+    target_instance_ids = {
+        str(item or "").strip()
+        for item in (instance_ids or [])
+        if str(item or "").strip()
+    }
+    if target_instance_ids:
+        extracted_instances = [
+            inst
+            for inst in extracted_instances
+            if str(
+                inst.get("id")
+                or inst.get("instanceId")
+                or inst.get("profileId")
+                or inst.get("profile_id")
+                or ""
+            ).strip() in target_instance_ids
+        ]
     total_instances = max(len(extracted_instances), 1)
     instance_stage_started_at = time.perf_counter()
     payload_hint_hits = 0

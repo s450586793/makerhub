@@ -30,7 +30,6 @@ from app.services.catalog import (
 )
 from app.services.process_jobs import run_archive_model_job, run_discover_batch_urls_job
 from app.services.proxy_policy import temporary_proxy_env
-from app.services.resource_limiter import resource_slot
 from app.services.task_state import TaskStateStore
 from app.services.three_mf import (
     describe_three_mf_failure,
@@ -180,6 +179,21 @@ def _failure_message_from_queue_item(item: Optional[dict[str, Any]]) -> str:
     if not isinstance(item, dict):
         return ""
     return str(item.get("message") or item.get("detail") or "").strip()
+
+
+def _clean_instance_ids(value: Any) -> list[str]:
+    return [
+        str(item or "").strip()
+        for item in (value or [])
+        if str(item or "").strip()
+    ]
+
+
+def _is_three_mf_failure_item(item: Optional[dict[str, Any]]) -> bool:
+    if not isinstance(item, dict):
+        return False
+    meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+    return bool(meta.get("three_mf_download") or meta.get("missing_3mf_retry"))
 
 
 def _append_batch_queue_log(event: str, **payload: Any) -> None:
@@ -1072,14 +1086,8 @@ class ArchiveTaskManager:
                     queued_count += 1
                     continue
 
-                if key in archived_keys:
-                    if status != "archived":
-                        item["status"] = "archived"
-                        updated = True
-                    completed_count += 1
-                    continue
-
-                if key in failed_by_key:
+                failed_item = failed_by_key.get(key)
+                if failed_item is not None and (key not in archived_keys or _is_three_mf_failure_item(failed_item)):
                     failure_message = _failure_message_from_queue_item(failed_by_key.get(key))
                     if failure_message and item.get("last_failure_message") != failure_message[:400]:
                         item["last_failure_message"] = failure_message[:400]
@@ -1106,6 +1114,13 @@ class ArchiveTaskManager:
                         item["status"] = "failed"
                         updated = True
                     failed_count += 1
+                    continue
+
+                if key in archived_keys:
+                    if status != "archived":
+                        item["status"] = "archived"
+                        updated = True
+                    completed_count += 1
                     continue
 
                 attempts = max(int(item.get("attempts") or 1), 1)
@@ -1434,11 +1449,7 @@ class ArchiveTaskManager:
                 "url": clean_url,
             }
 
-        clean_instance_ids = [
-            str(item or "").strip()
-            for item in (instance_ids or [])
-            if str(item or "").strip()
-        ]
+        clean_instance_ids = _clean_instance_ids(instance_ids)
         task_id = self._enqueue_single_task(
             clean_url,
             message="等待下载新增 3MF",
@@ -2416,6 +2427,7 @@ class ArchiveTaskManager:
         profile_metadata_only = bool(meta.get("profile_metadata_only"))
         missing_3mf_retry = bool(meta.get("missing_3mf_retry"))
         three_mf_download_task = bool(meta.get("three_mf_download"))
+        instance_ids = _clean_instance_ids(meta.get("instance_ids"))
         default_asset_download = not profile_metadata_only
         download_assets = _meta_bool(meta, "download_assets", default_asset_download)
         download_comment_assets = _meta_bool(
@@ -2486,13 +2498,10 @@ class ArchiveTaskManager:
                     existing_model_dir=existing_model_dir,
                     proxy_config=config.proxy,
                     three_mf_captcha_result_header=three_mf_captcha_result_header,
+                    instance_ids=instance_ids,
                 )
 
-        if three_mf_download_task:
-            with resource_slot("three_mf_download", detail=normalize_source_url(url)):
-                result = run_job()
-        else:
-            result = run_job()
+        result = run_job()
 
         missing_items = []
         limit_guard_state: Optional[dict[str, Any]] = limit_guard if daily_limit_active else None

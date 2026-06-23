@@ -243,6 +243,68 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
         self.assertEqual(queue["queued_count"], 1)
         self.assertEqual(queue["active"][0]["meta"]["batch_expected_items"][0]["status"], "queued")
 
+    def test_refresh_batch_counts_recent_three_mf_failure_before_archived_key(self):
+        state = {}
+        manager = ArchiveTaskManager(background_enabled=False)
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch.object(manager, "_archived_task_keys", return_value={"model:973599"}), \
+                patch.object(manager.task_store, "update_active_task", wraps=manager.task_store.update_active_task) as update_active_task:
+            manager.task_store.save_archive_queue(
+                {
+                    "active": [
+                        {
+                            "id": "batch-1",
+                            "url": "https://makerworld.com/zh/@ace/upload",
+                            "mode": "author_upload",
+                            "status": "running",
+                            "meta": {
+                                "batch_expected_items": [
+                                    {
+                                        "url": "https://makerworld.com/zh/models/973599",
+                                        "task_key": "model:973599",
+                                        "model_id": "973599",
+                                        "attempts": 1,
+                                        "status": "archived",
+                                        "last_task_id": "missing-3mf-task",
+                                    }
+                                ]
+                            },
+                        }
+                    ],
+                    "queued": [],
+                    "recent_failures": [
+                        {
+                            "id": "missing-3mf-task",
+                            "url": "https://makerworld.com/zh/models/973599",
+                            "title": "https://makerworld.com/zh/models/973599",
+                            "mode": "single_model",
+                            "status": "failed",
+                            "message": "3MF 下载失败：需要完成验证。",
+                            "meta": {"three_mf_download": True},
+                        }
+                    ],
+                }
+            )
+
+            refreshed = manager._refresh_batch_tasks()
+            queue = manager.task_store.load_archive_queue()
+
+        self.assertTrue(refreshed)
+        self.assertEqual(queue["active"], [])
+        self.assertEqual(queue["running_count"], 0)
+        self.assertEqual(queue["failed_count"], 1)
+        self.assertEqual(
+            update_active_task.call_args.kwargs["meta"]["batch_progress"]["completed"],
+            0,
+        )
+        self.assertEqual(
+            update_active_task.call_args.kwargs["meta"]["batch_progress"]["failed"],
+            1,
+        )
+        self.assertEqual(update_active_task.call_args.kwargs["message"], "批量归档完成：成功 0 个，失败 1 个。")
+
     def test_refresh_batch_restores_parent_removed_from_recent_failures(self):
         state = {}
         manager = ArchiveTaskManager(background_enabled=False)
