@@ -304,7 +304,10 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
 
         self.assertEqual(resource_names, [])
         self.assertFalse(run_kwargs[0]["skip_three_mf_fetch"])
-        self.assertTrue(run_kwargs[0]["download_assets"])
+        self.assertFalse(run_kwargs[0]["download_assets"])
+        self.assertFalse(run_kwargs[0]["download_comment_assets"])
+        self.assertFalse(run_kwargs[0].get("collect_comments_data", True))
+        self.assertTrue(run_kwargs[0]["rebuild_archive"])
         self.assertEqual(run_kwargs[0]["instance_ids"], ["profile-1", "profile-2"])
         self.assertEqual(completed, ["task-3mf"])
 

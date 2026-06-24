@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.42`
+> 当前版本：`v0.9.43`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-24 · v0.9.43
+
+- `3MF` 下载子任务和缺失 `3MF` 重试默认改为轻量执行，只获取必要的模型 / 实例信息和 `3MF` 下载地址，不再同步图片、附件、评论资源或评论分页数据。
+- 兼容线上已经排队的旧 `three_mf_download` / `missing_3mf_retry` 任务，Worker 重启后即使旧任务没有新元数据，也会按轻量逻辑继续处理。
+- 补充归档 Worker 和进程包装回归测试，锁定 `collect_comments_data=false`、资源下载关闭和实例 ID 定向下载参数传递。
+
 ### 2026-06-23 · v0.9.42
 
 - 首页国内站 / 国际站卡片新增平台级 `3MF` gate：验证、Cookie 异常或每日上限只暂停该平台 `3MF` 下载，不再阻塞图片、评论、描述等普通归档。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - 缺失 `3MF` 重试任务会按实例 ID 定向下载，图片资源下载继承基础会话 Cookie，模型库完整刷新失败时回退轻量响应，避免刷新期间空白或卡住。
 - 升级 FastAPI / Starlette、Vite / Vue / ws 等依赖，并补充批量归档、`3MF` 子任务、资源下载、模型页刷新和路由兼容回归测试。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-19 · v0.9.39
 
 - 归档队列支持按 Worker 并发数同时消费多个单模型任务，最高 4 并发，并通过原子 lease 避免重复领取同一任务。
 - 普通归档会先完成元数据、图片、评论和落盘，`3MF` 下载拆成独立子任务并继续受 `3MF` 下载限流保护，避免大文件拖住整批模型归档。
 - 摘要图、设计图和评论资源下载改为受限并发，批量父任务刷新增加并发保护，现有排队任务可继续兼容执行。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-19 · v0.9.38
 

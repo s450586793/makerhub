@@ -1359,6 +1359,9 @@ class ArchiveTaskManager:
             mode="single_model",
             meta={
                 "three_mf_download": True,
+                "download_assets": False,
+                "download_comment_assets": False,
+                "collect_comments_data": False,
                 "model_id": str(result.get("model_id") or meta.get("model_id") or extract_model_id(url) or "").strip(),
                 "model_url": normalize_source_url(url),
                 "title": str(result.get("base_name") or meta.get("title") or "").strip(),
@@ -1524,6 +1527,9 @@ class ArchiveTaskManager:
             mode="single_model",
             meta={
                 "three_mf_download": True,
+                "download_assets": False,
+                "download_comment_assets": False,
+                "collect_comments_data": False,
                 "model_id": str(model_id or extract_model_id(clean_url) or "").strip(),
                 "model_url": clean_url,
                 "title": str(title or "").strip(),
@@ -1723,6 +1729,9 @@ class ArchiveTaskManager:
             force=True,
             meta={
                 "missing_3mf_retry": True,
+                "download_assets": False,
+                "download_comment_assets": False,
+                "collect_comments_data": False,
                 "model_id": clean_model_id or extract_model_id(clean_url),
                 "model_url": clean_url,
                 "source": clean_source,
@@ -2496,12 +2505,18 @@ class ArchiveTaskManager:
         missing_3mf_retry = bool(meta.get("missing_3mf_retry"))
         three_mf_download_task = bool(meta.get("three_mf_download"))
         instance_ids = _clean_instance_ids(meta.get("instance_ids"))
-        default_asset_download = not profile_metadata_only
+        asset_lightweight_task = profile_metadata_only or missing_3mf_retry or three_mf_download_task
+        default_asset_download = not asset_lightweight_task
         download_assets = _meta_bool(meta, "download_assets", default_asset_download)
         download_comment_assets = _meta_bool(
             meta,
             "download_comment_assets",
-            False if profile_metadata_only else download_assets,
+            False if asset_lightweight_task else download_assets,
+        )
+        collect_comments_data = _meta_bool(
+            meta,
+            "collect_comments_data",
+            not asset_lightweight_task,
         )
         rebuild_archive = _meta_bool(meta, "rebuild_archive", not profile_metadata_only)
         record_missing_3mf_log = _meta_bool(meta, "record_missing_3mf_log", not profile_metadata_only)
@@ -2561,6 +2576,7 @@ class ArchiveTaskManager:
                     profile_metadata_only=profile_metadata_only,
                     download_assets=download_assets,
                     download_comment_assets=download_comment_assets,
+                    collect_comments_data=collect_comments_data,
                     rebuild_archive=rebuild_archive,
                     record_missing_3mf_log=record_missing_3mf_log,
                     three_mf_skip_state=(

@@ -6671,6 +6671,7 @@ def archive_model(
     profile_metadata_only: bool = False,
     download_assets: bool = True,
     download_comment_assets: Optional[bool] = None,
+    collect_comments_data: bool = True,
     rebuild_archive: bool = True,
     record_missing_3mf_log: bool = True,
     three_mf_skip_state: str = "",
@@ -6948,24 +6949,37 @@ def archive_model(
             attachments=len(attachments),
         )
     comments_started_at = time.perf_counter()
-    comments_bundle = collect_comments(
-        next_data,
-        design,
-        sess,
-        images_dir,
-        progress_callback=progress_callback,
-        progress_start=50,
-        progress_end=55,
-        download_assets=comment_download_assets,
-        existing_comments=existing_meta.get("comments") if isinstance(existing_meta.get("comments"), list) else [],
-        api_host_hint=api_host_hint,
-    )
+    if collect_comments_data:
+        comments_bundle = collect_comments(
+            next_data,
+            design,
+            sess,
+            images_dir,
+            progress_callback=progress_callback,
+            progress_start=50,
+            progress_end=55,
+            download_assets=comment_download_assets,
+            existing_comments=existing_meta.get("comments") if isinstance(existing_meta.get("comments"), list) else [],
+            api_host_hint=api_host_hint,
+        )
+    else:
+        existing_stats = existing_meta.get("stats") if isinstance(existing_meta.get("stats"), dict) else {}
+        try:
+            existing_comment_count = int(existing_stats.get("comments") or 0)
+        except (TypeError, ValueError):
+            existing_comment_count = 0
+        comments_bundle = {
+            "count": max(existing_comment_count, 0),
+            "items": existing_meta.get("comments") if isinstance(existing_meta.get("comments"), list) else [],
+            "assetStats": {},
+        }
     timings_ms["collect_comments"] = _log_perf(
         "archive.collect_comments",
         comments_started_at,
         logger=logger,
         comments=len(comments_bundle.get("items") or []),
         comment_count=comments_bundle.get("count") or 0,
+        skipped=not collect_comments_data,
     )
     emit_progress(progress_callback, 55, "摘要、图片与评论整理完成")
 
