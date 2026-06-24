@@ -156,6 +156,31 @@ test("verification retry action covers cookie cards that mention verification ch
   ]);
 });
 
+test("cookie invalid source card submits verified retry without detail text", () => {
+  const card = {
+    key: "cn",
+    action_label: "打开官网",
+    url: "https://makerworld.com.cn",
+    state: "cookie_invalid",
+    status: "Cookie 异常",
+  };
+
+  assert.deepEqual(dashboardStatusActions(card), [
+    {
+      kind: "external",
+      label: "打开官网",
+      href: "https://makerworld.com.cn",
+    },
+    {
+      kind: "api",
+      label: "已验证",
+      endpoint: "/api/tasks/missing-3mf/verification-verified",
+      method: "POST",
+      body: { platform: "cn" },
+    },
+  ]);
+});
+
 test("source health cards with checks hide duplicated detail", () => {
   assert.equal(shouldShowDashboardStatusDetail({
     detail: "账号连接正常；3MF 下载历史失败待重试。",

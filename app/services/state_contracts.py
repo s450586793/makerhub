@@ -52,6 +52,7 @@ MISSING_3MF_STATUSES = frozenset(
         "verification_required",
         "cloudflare",
         "auth_required",
+        "cookie_invalid",
         "pending_download",
     }
 )

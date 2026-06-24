@@ -501,7 +501,7 @@ function retryLabel(item) {
 
 function needsManualVerification(item) {
   const status = String(item?.status || "").toLowerCase();
-  return ["verification_required", "cloudflare", "auth_required"].includes(status);
+  return ["verification_required", "cloudflare", "auth_required", "cookie_invalid"].includes(status);
 }
 
 function sourceHomepageForMissingItem(item) {
@@ -531,7 +531,7 @@ function formatMissingStatus(status) {
   if (normalized === "running") return "处理中";
   if (normalized === "failed") return "失败";
   if (normalized === "verification_required" || normalized === "cloudflare") return "需要验证";
-  if (normalized === "auth_required") return "Cookie 失效";
+  if (normalized === "auth_required" || normalized === "cookie_invalid") return "Cookie 失效";
   if (normalized === "download_limited") return "到达自动下载上限";
   if (normalized === "not_found") return "源端无文件";
   return status || "missing";

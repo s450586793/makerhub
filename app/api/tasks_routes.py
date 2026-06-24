@@ -206,7 +206,18 @@ async def retry_verified_missing_3mf(payload: Missing3mfVerificationRetryRequest
     _require_session_auth(request)
     if _runtime_engine_enabled():
         def _submit_verified_runtime_retry() -> dict:
-            result = _submit_runtime_run("missing_3mf_retry", {"platform": payload.platform, "status": "verification_required"})
+            result = _submit_runtime_run(
+                "missing_3mf_retry",
+                {
+                    "platform": payload.platform,
+                    "statuses": [
+                        "verification_required",
+                        "cloudflare",
+                        "auth_required",
+                        "cookie_invalid",
+                    ],
+                },
+            )
             snapshot = mark_account_ok(
                 payload.platform,
                 source="manual_verification",

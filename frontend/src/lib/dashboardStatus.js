@@ -20,7 +20,7 @@ const BLOCKED_REASON_LABELS = {
   worker_stopped: "Worker 未运行",
 };
 
-const SOURCE_VERIFICATION_STATES = new Set(["verification_required", "cloudflare", "auth_required"]);
+const SOURCE_VERIFICATION_STATES = new Set(["verification_required", "cloudflare", "auth_required", "cookie_invalid"]);
 const SOURCE_VERIFICATION_LABELS = new Set(["需要验证", "验证页", "cloudflare"]);
 const SOURCE_VERIFICATION_TEXT_MARKERS = ["需要验证", "验证页", "cf_clearance", "cloudflare"];
 

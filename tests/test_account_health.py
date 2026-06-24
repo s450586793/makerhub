@@ -157,6 +157,85 @@ class AccountHealthServiceTest(unittest.TestCase):
                 self.assertEqual(card["tone"], tone)
                 self.assertEqual(card["url"], "https://makerworld.com")
 
+    def test_update_three_mf_gate_preserves_account_status_and_updates_card(self):
+        with patch.object(account_health, "china_now_iso", return_value="2026-06-23T16:40:00+08:00"):
+            snapshot = account_health.update_three_mf_gate(
+                "cn",
+                gate="cookie_invalid",
+                reason="cf_clearance_rejected",
+                detail="国内站网页验证失效，请重新验证并更新 Cookie。",
+                model_url="https://makerworld.com.cn/zh/models/1461337",
+                model_id="1461337",
+                instance_id="profile-1",
+            )
+
+        self.assertEqual(snapshot["status"], "ok")
+        self.assertEqual(snapshot["three_mf_gate"], "cookie_invalid")
+        self.assertEqual(snapshot["three_mf_reason"], "cf_clearance_rejected")
+        self.assertEqual(snapshot["detail"], "国内站网页验证失效，请重新验证并更新 Cookie。")
+
+        card = account_health.snapshot_to_source_card("cn", snapshot)
+        self.assertEqual(card["state"], "cookie_invalid")
+        self.assertEqual(card["status"], "Cookie 异常")
+        self.assertEqual(card["three_mf_gate"], "cookie_invalid")
+        self.assertEqual(card["account_status"], "ok")
+
+    def test_mark_account_ok_reopens_three_mf_gate_for_platform(self):
+        account_health.update_three_mf_gate("global", gate="verification_required", reason="manual")
+
+        snapshot = account_health.mark_account_ok("global", source="manual_verification")
+
+        self.assertEqual(snapshot["status"], "ok")
+        self.assertEqual(snapshot["three_mf_gate"], "open")
+        self.assertEqual(snapshot["three_mf_reason"], "")
+
+    def test_open_three_mf_gate_preserves_account_status(self):
+        account_health.update_account_health(
+            "cn",
+            status="network_error",
+            reason="probe_failed",
+            source="web_probe",
+            detail="账号页暂时不可达。",
+        )
+        account_health.update_three_mf_gate(
+            "cn",
+            gate="daily_limit",
+            reason="download_limited",
+            detail="已达到 MakerWorld 每日下载上限。",
+        )
+
+        snapshot = account_health.open_three_mf_gate(
+            "cn",
+            source="three_mf_limit_guard",
+            detail="每日上限已恢复。",
+        )
+
+        self.assertEqual(snapshot["status"], "network_error")
+        self.assertEqual(snapshot["reason"], "probe_failed")
+        self.assertEqual(snapshot["three_mf_gate"], "open")
+        self.assertEqual(snapshot["three_mf_reason"], "")
+        self.assertEqual(snapshot["three_mf_detail"], "")
+
+    def test_update_account_health_preserves_existing_three_mf_gate(self):
+        account_health.update_three_mf_gate(
+            "cn",
+            gate="cookie_invalid",
+            reason="cf_clearance_rejected",
+            detail="国内站网页验证失效，请重新验证并更新 Cookie。",
+        )
+
+        snapshot = account_health.update_account_health(
+            "cn",
+            status="ok",
+            source="web_probe",
+            detail="账号页面可访问。",
+        )
+
+        self.assertEqual(snapshot["status"], "ok")
+        self.assertEqual(snapshot["detail"], "账号页面可访问。")
+        self.assertEqual(snapshot["three_mf_gate"], "cookie_invalid")
+        self.assertEqual(snapshot["three_mf_reason"], "cf_clearance_rejected")
+
 
 if __name__ == "__main__":
     unittest.main()

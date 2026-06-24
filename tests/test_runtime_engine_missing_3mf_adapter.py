@@ -57,6 +57,43 @@ class Missing3mfRuntimeAdapterTest(unittest.TestCase):
 
         self.assertEqual([item["model_id"] for item in candidates], ["2"])
 
+    def test_discover_treats_cookie_invalid_as_retryable(self):
+        task_store = SimpleNamespace(
+            load_missing_3mf=lambda: {
+                "items": [
+                    {"model_id": "1", "source": "cn", "status": "cookie_invalid"},
+                    {"model_id": "2", "source": "cn", "status": "daily_limit"},
+                ]
+            }
+        )
+        adapter = Missing3mfRuntimeAdapter(task_store=task_store)
+
+        candidates = adapter.discover({"platform": "cn"})
+
+        self.assertEqual([item["model_id"] for item in candidates], ["1"])
+
+    def test_discover_filters_requested_statuses_when_present(self):
+        task_store = SimpleNamespace(
+            load_missing_3mf=lambda: {
+                "items": [
+                    {"model_id": "1", "source": "cn", "status": "verification_required"},
+                    {"model_id": "2", "source": "cn", "status": "cookie_invalid"},
+                    {"model_id": "3", "source": "cn", "status": "download_limited"},
+                    {"model_id": "4", "source": "global", "status": "cookie_invalid"},
+                ]
+            }
+        )
+        adapter = Missing3mfRuntimeAdapter(task_store=task_store)
+
+        candidates = adapter.discover(
+            {
+                "platform": "cn",
+                "statuses": ["verification_required", "cookie_invalid"],
+            }
+        )
+
+        self.assertEqual([item["model_id"] for item in candidates], ["1", "2"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -339,7 +339,6 @@ class Missing3mfTest(unittest.TestCase):
                     },
                 ), \
                 patch.object(archive_worker_module, "mark_account_ok") as mark_account_ok_mock, \
-                patch.object(archive_worker_module, "update_account_health") as update_account_health_mock, \
                 patch.object(archive_worker_module, "invalidate_model_detail_cache"), \
                 patch.object(archive_worker_module, "upsert_archive_snapshot_model", return_value=True), \
                 patch.object(archive_worker_module, "invalidate_archive_snapshot"), \
@@ -357,7 +356,6 @@ class Missing3mfTest(unittest.TestCase):
             model_id="973599",
             instance_id="profile-1",
         )
-        update_account_health_mock.assert_not_called()
         self.assertEqual(replaced_missing, [("973599", [])])
         self.assertEqual(
             removed_failures,
@@ -366,7 +364,7 @@ class Missing3mfTest(unittest.TestCase):
         self.assertEqual(completed, ["task-1"])
         self.assertEqual(active_updates[-1][1]["progress"], 100)
 
-    def test_run_single_task_updates_account_health_for_verification_required_missing_3mf(self):
+    def test_run_single_task_updates_three_mf_gate_for_verification_required_missing_3mf(self):
         manager = ArchiveTaskManager(background_enabled=False)
         manager.store = SimpleNamespace(
             load=lambda: SimpleNamespace(cookies=[], proxy=None, three_mf_limits=None)
@@ -400,7 +398,7 @@ class Missing3mfTest(unittest.TestCase):
                     },
                 ), \
                 patch.object(archive_worker_module, "mark_account_ok") as mark_account_ok_mock, \
-                patch.object(archive_worker_module, "update_account_health") as update_account_health_mock, \
+                patch.object(archive_worker_module, "update_three_mf_gate") as update_three_mf_gate_mock, \
                 patch.object(archive_worker_module, "invalidate_model_detail_cache"), \
                 patch.object(archive_worker_module, "upsert_archive_snapshot_model", return_value=True), \
                 patch.object(archive_worker_module, "invalidate_archive_snapshot"), \
@@ -411,9 +409,9 @@ class Missing3mfTest(unittest.TestCase):
             )
 
         mark_account_ok_mock.assert_not_called()
-        update_account_health_mock.assert_called_once_with(
+        update_three_mf_gate_mock.assert_called_once_with(
             "cn",
-            status="verification_required",
+            gate="verification_required",
             reason="three_mf_download_failed",
             source="archive_download",
             detail="MakerWorld 需要验证，前往官网任意下载一个模型。",
@@ -430,6 +428,7 @@ class Missing3mfTest(unittest.TestCase):
         completed = []
         log_calls = []
         manager.task_store = SimpleNamespace(
+            update_missing_3mf_status=lambda **_payload: None,
             replace_missing_3mf_for_model=lambda *_args, **_kwargs: None,
             remove_recent_failures_for_model=lambda *_args, **_kwargs: None,
             update_active_task=lambda *_args, **_kwargs: None,
@@ -451,7 +450,6 @@ class Missing3mfTest(unittest.TestCase):
                     },
                 ), \
                 patch.object(archive_worker_module, "mark_account_ok", side_effect=RuntimeError("db down")), \
-                patch.object(archive_worker_module, "update_account_health") as update_account_health_mock, \
                 patch.object(archive_worker_module, "invalidate_model_detail_cache"), \
                 patch.object(archive_worker_module, "upsert_archive_snapshot_model", return_value=True), \
                 patch.object(archive_worker_module, "invalidate_archive_snapshot"), \
@@ -459,9 +457,9 @@ class Missing3mfTest(unittest.TestCase):
             manager._run_single_task(
                 "task-sync-fail",
                 "https://makerworld.com/zh/models/973599",
+                {"missing_3mf_retry": True, "instance_id": "profile-1"},
             )
 
-        update_account_health_mock.assert_not_called()
         self.assertEqual(completed, ["task-sync-fail"])
         self.assertTrue(
             any(args and args[0] == "account_health_sync_failed" for args, _kwargs in log_calls)

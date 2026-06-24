@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.41`
+> 当前版本：`v0.9.42`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -205,6 +205,12 @@ uvicorn app.main:app --reload
 - 详细配置见 [MakerHub iOS 快捷指令文档](docs/ios-makerhub-shortcut.md)。
 
 ## 更新记录
+
+### 2026-06-23 · v0.9.42
+
+- 首页国内站 / 国际站卡片新增平台级 `3MF` gate：验证、Cookie 异常或每日上限只暂停该平台 `3MF` 下载，不再阻塞图片、评论、描述等普通归档。
+- 归档 Worker 会在平台 `3MF` gate 关闭时跳过 `3MF` 拉取并保留缺失记录，普通归档和拆分后的资源子任务继续完成。
+- 点击“已验证”会重新打开对应平台的 `3MF` gate，并重新入队同平台验证 / Cookie 类缺失 `3MF`，不需要刷新全部任务。
 
 ### 2026-06-23 · v0.9.41
 

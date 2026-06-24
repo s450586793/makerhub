@@ -539,6 +539,37 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         )
         self.assertEqual(payload["account_health"]["status"], "ok")
 
+    def test_verified_missing_3mf_runtime_route_retries_cookie_invalid_items(self):
+        request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
+        runtime_payload = {
+            "run_id": "run-verified",
+            "total": 2,
+            "message": "已提交运行核心。",
+        }
+
+        with patch.object(tasks_routes, "_require_session_auth") as require_auth, \
+                patch.object(tasks_routes, "_runtime_engine_enabled", return_value=True), \
+                patch.object(tasks_routes, "run_task_api", side_effect=lambda func, *args, **kwargs: func(*args, **kwargs)), \
+                patch.object(tasks_routes, "_submit_runtime_run", return_value=runtime_payload) as submit_runtime_run, \
+                patch.object(tasks_routes, "mark_account_ok", return_value={"status": "ok"}), \
+                patch.object(tasks_routes, "append_business_log"):
+            payload = asyncio.run(
+                tasks_routes.retry_verified_missing_3mf(
+                    tasks_routes.Missing3mfVerificationRetryRequest(platform="cn"),
+                    request,
+                )
+            )
+
+        require_auth.assert_called_once_with(request)
+        submit_runtime_run.assert_called_once()
+        run_type, context = submit_runtime_run.call_args.args
+        self.assertEqual(run_type, "missing_3mf_retry")
+        self.assertEqual(context["platform"], "cn")
+        self.assertIn("cookie_invalid", context["statuses"])
+        self.assertIn("verification_required", context["statuses"])
+        self.assertNotIn("status", context)
+        self.assertEqual(payload["account_health"]["status"], "ok")
+
 
 if __name__ == "__main__":
     unittest.main()

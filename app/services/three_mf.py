@@ -19,6 +19,7 @@ _THREE_MF_FAILURE_PRIORITY = {
     "download_limited": 60,
     "verification_required": 50,
     "cloudflare": 45,
+    "cookie_invalid": 40,
     "auth_required": 40,
     "http_error": 30,
     "not_found": 20,
@@ -61,6 +62,8 @@ _THREE_MF_FAILURE_INFERENCE_KEYWORDS = {
     ),
     "auth_required": (
         "cookie 失效",
+        "cookie 异常",
+        "cookie invalid",
         "登录态",
         "请登录",
         "please log in",
@@ -82,6 +85,11 @@ _THREE_MF_LEGACY_MESSAGES = {
         "You've reached your daily download limit.",
     },
     "auth_required": {
+        "下载 3MF 需要有效登录 Cookie，请检查 Cookie 是否过期。",
+        "下载 3MF 需要有效登录态，请检查 Cookie / token 是否过期。",
+        "Please log in to download models.",
+    },
+    "cookie_invalid": {
         "下载 3MF 需要有效登录 Cookie，请检查 Cookie 是否过期。",
         "下载 3MF 需要有效登录态，请检查 Cookie / token 是否过期。",
         "Please log in to download models.",
@@ -158,6 +166,8 @@ def _default_three_mf_failure_message(state: str, source: str) -> str:
         if source == "cn":
             return "国区下载 3MF 需要有效登录态；请更新国内站 Cookie / token。"
         return "下载 3MF 需要有效登录态，请检查 Cookie / token 是否过期。"
+    if state == "cookie_invalid":
+        return _default_three_mf_failure_message("auth_required", source)
     if state == "not_found":
         return "源端没有返回该打印配置的 3MF 下载地址。"
     if state == "http_error":
@@ -182,6 +192,8 @@ def describe_three_mf_failure(
 
     if normalized_state == "download_limited" and normalized_limit:
         return normalized_limit
+    if normalized_state == "cookie_invalid":
+        normalized_state = "auth_required"
     if normalized_state in {"verification_required", "cloudflare"}:
         return _default_three_mf_failure_message(normalized_state, normalized_source)
 
@@ -220,6 +232,7 @@ def normalize_three_mf_failure_state(
         "download_limited",
         "cloudflare",
         "verification_required",
+        "cookie_invalid",
         "auth_required",
         "not_found",
         "missing",
@@ -236,6 +249,7 @@ def normalize_three_mf_failure_state(
         "download_limited",
         "cloudflare",
         "verification_required",
+        "cookie_invalid",
         "auth_required",
         "not_found",
         "missing",

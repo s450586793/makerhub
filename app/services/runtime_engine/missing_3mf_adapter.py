@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 from app.api.dependencies import crawler, task_state_store
@@ -13,8 +14,30 @@ RETRYABLE_MISSING_3MF_STATUSES = {
     "verification_required",
     "cloudflare",
     "auth_required",
+    "cookie_invalid",
     "download_limited",
 }
+
+
+def _normalize_requested_statuses(context: dict[str, Any]) -> set[str]:
+    statuses: set[str] = set()
+    raw_statuses = context.get("statuses")
+    if isinstance(raw_statuses, str):
+        raw_iterable: Iterable[Any] = raw_statuses.split(",")
+    elif isinstance(raw_statuses, Iterable):
+        raw_iterable = raw_statuses
+    else:
+        raw_iterable = ()
+
+    for item in raw_iterable:
+        status = str(item or "").strip().lower()
+        if status:
+            statuses.add(status)
+
+    single_status = str(context.get("status") or "").strip().lower()
+    if single_status:
+        statuses.add(single_status)
+    return statuses
 
 
 class Missing3mfRuntimeAdapter:
@@ -39,7 +62,7 @@ class Missing3mfRuntimeAdapter:
             ]
 
         platform = normalize_makerworld_source(context.get("platform")) or ""
-        requested_status = str(context.get("status") or "").strip().lower()
+        requested_statuses = _normalize_requested_statuses(context)
         payload = self.task_store.load_missing_3mf()
         candidates: list[dict[str, Any]] = []
         for item in payload.get("items") or []:
@@ -49,7 +72,7 @@ class Missing3mfRuntimeAdapter:
             status = str(item.get("status") or "").strip().lower()
             if platform and item_platform and item_platform != platform:
                 continue
-            if requested_status and status != requested_status:
+            if requested_statuses and status not in requested_statuses:
                 continue
             if status not in RETRYABLE_MISSING_3MF_STATUSES:
                 continue

@@ -20,7 +20,7 @@ from app.services.batch_discovery import (
     normalize_source_url,
     resolve_batch_source_name,
 )
-from app.services.account_health import mark_account_ok, update_account_health
+from app.services.account_health import get_account_health, mark_account_ok, open_three_mf_gate, update_three_mf_gate
 from app.services.business_logs import append_business_log, append_structured_log
 from app.services.catalog import (
     get_archive_snapshot,
@@ -452,7 +452,7 @@ def _account_health_failure_from_missing_items(
 ) -> Optional[dict[str, str]]:
     for item in missing_items:
         status = str(item.get("status") or "").strip()
-        if status in {"verification_required", "cloudflare", "auth_required", "download_limited"}:
+        if status in {"verification_required", "cloudflare", "auth_required", "cookie_invalid", "download_limited"}:
             return {
                 "status": status,
                 "detail": str(item.get("message") or "").strip(),
@@ -473,9 +473,9 @@ def _sync_account_health_for_archive_result(
     classified_failure = _account_health_failure_from_missing_items(missing_items)
     try:
         if classified_failure is not None:
-            update_account_health(
+            update_three_mf_gate(
                 platform,
-                status=classified_failure["status"],
+                gate=classified_failure["status"],
                 reason="three_mf_download_failed",
                 source="archive_download",
                 detail=classified_failure["detail"],
@@ -483,7 +483,7 @@ def _sync_account_health_for_archive_result(
                 model_id=model_id,
                 instance_id=classified_failure["instance_id"] or instance_id,
             )
-        elif not missing_items:
+        elif missing_3mf_retry and not missing_items:
             mark_account_ok(
                 platform,
                 source="missing_3mf_retry" if missing_3mf_retry else "archive_download",
@@ -500,6 +500,62 @@ def _sync_account_health_for_archive_result(
             url=model_url,
             error=str(exc)[:240],
         )
+
+
+def three_mf_gate_for_url(url: str, meta: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    meta = meta if isinstance(meta, dict) else {}
+    platform = normalize_makerworld_source(meta.get("source"), url)
+    if platform not in {"cn", "global"}:
+        return {"open": True, "state": "open", "message": "", "platform": platform}
+    try:
+        snapshot = get_account_health(platform)
+    except Exception as exc:
+        _log_archive(
+            "three_mf_gate_read_failed",
+            "读取平台 3MF 状态失败，本次不暂停 3MF 下载。",
+            level="warning",
+            url=url,
+            platform=platform,
+            error=str(exc)[:240],
+        )
+        return {"open": True, "state": "open", "message": "", "platform": platform}
+
+    gate = str(snapshot.get("three_mf_gate") or "open").strip().lower()
+    if gate in {"", "open", "ok"}:
+        return {"open": True, "state": "open", "message": "", "platform": platform}
+
+    if gate == "daily_limit":
+        limit_guard = _read_three_mf_limit_guard()
+        if not _is_three_mf_limit_guard_active_for_url(url, limit_guard):
+            try:
+                open_three_mf_gate(
+                    platform,
+                    source="three_mf_limit_guard",
+                    detail="MakerWorld 每日下载上限暂停已过期，恢复 3MF 下载。",
+                )
+            except Exception as exc:
+                _log_archive(
+                    "three_mf_gate_open_failed",
+                    "每日上限暂停已过期，但清理平台 3MF 状态失败，本次先恢复下载。",
+                    level="warning",
+                    url=url,
+                    platform=platform,
+                    error=str(exc)[:240],
+                )
+            return {"open": True, "state": "open", "message": "", "platform": platform}
+        message = _three_mf_limit_message(limit_guard)
+        return {"open": False, "state": "daily_limit", "message": message, "platform": platform}
+
+    detail = str(snapshot.get("three_mf_detail") or snapshot.get("detail") or "").strip()
+    message = detail or describe_three_mf_failure(gate, source=platform, url=url)
+    return {"open": False, "state": gate, "message": message, "platform": platform}
+
+
+def _three_mf_skip_state_from_gate(gate_state: Any) -> str:
+    normalized = str(gate_state or "").strip().lower()
+    if normalized == "daily_limit":
+        return "download_limited"
+    return normalized
 
 
 @contextmanager
@@ -1449,6 +1505,18 @@ class ArchiveTaskManager:
                 "url": clean_url,
             }
 
+        platform = normalize_makerworld_source(url=clean_url)
+        platform_gate = three_mf_gate_for_url(clean_url, {"source": platform})
+        if not bool(platform_gate.get("open")):
+            return {
+                "accepted": False,
+                "paused": True,
+                "state": platform_gate.get("state") or "",
+                "message": str(platform_gate.get("message") or "当前平台 3MF 下载暂停，等待账号状态恢复。"),
+                "mode": "single_model",
+                "url": clean_url,
+            }
+
         clean_instance_ids = _clean_instance_ids(instance_ids)
         task_id = self._enqueue_single_task(
             clean_url,
@@ -1697,7 +1765,7 @@ class ArchiveTaskManager:
     def retry_verification_missing_3mf(self, *, platform: str, primary: Optional[dict] = None) -> dict:
         normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
         primary_item = primary if isinstance(primary, dict) else {}
-        verification_states = {"verification_required", "cloudflare", "auth_required"}
+        verification_states = {"verification_required", "cloudflare", "auth_required", "cookie_invalid"}
         missing_payload = self.task_store.load_missing_3mf()
         candidates: list[dict[str, Any]] = []
         seen: set[tuple[str, str, str, str]] = set()
@@ -2440,13 +2508,22 @@ class ArchiveTaskManager:
         model_id = extract_model_id(url)
         limit_guard = _read_three_mf_limit_guard()
         daily_limit_active = _is_three_mf_limit_guard_active_for_url(url, limit_guard)
+        platform_gate = three_mf_gate_for_url(url, meta)
+        platform_gate_active = not bool(platform_gate.get("open")) and not profile_metadata_only
+        platform_gate_skip_state = _three_mf_skip_state_from_gate(platform_gate.get("state"))
         defer_three_mf_download = not (
             profile_metadata_only
             or missing_3mf_retry
             or three_mf_download_task
         )
-        skip_three_mf_fetch = profile_metadata_only or daily_limit_active or defer_three_mf_download
-        skip_three_mf_message = _three_mf_limit_message(limit_guard) if daily_limit_active and not profile_metadata_only else ""
+        skip_three_mf_fetch = profile_metadata_only or daily_limit_active or platform_gate_active or defer_three_mf_download
+        skip_three_mf_message = (
+            _three_mf_limit_message(limit_guard)
+            if daily_limit_active and not profile_metadata_only
+            else str(platform_gate.get("message") or "")
+            if platform_gate_active
+            else ""
+        )
         if model_id and missing_3mf_retry:
             self.task_store.update_missing_3mf_status(
                 model_id=model_id,
@@ -2489,6 +2566,8 @@ class ArchiveTaskManager:
                     three_mf_skip_state=(
                         "download_limited"
                         if daily_limit_active and not profile_metadata_only
+                        else platform_gate_skip_state
+                        if platform_gate_active
                         else "pending_download"
                         if defer_three_mf_download
                         else ""
