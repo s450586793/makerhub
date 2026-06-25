@@ -1,9 +1,11 @@
 import json
 import os
+import re
 import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 from app.core.database_json_state import load_database_json_state, save_database_json_state
 from app.core.settings import LOGS_DIR, STATE_DIR, ensure_app_dirs
@@ -57,6 +59,11 @@ ORGANIZER_TERMINAL_EVENTS = {
     "worker_timeout",
 }
 METADATA_ONLY_MISSING_3MF_MESSAGE = "信息补全任务会整理打印配置详情、实例展示媒体和评论回复，不下载 3MF。"
+ARCHIVE_BATCH_TASK_MODES = {"author_upload", "collection_models"}
+ARCHIVE_MODEL_PATH_RE = re.compile(r"/(?:[a-z]{2}/)?models/(\d+)(?:[^\"'\\s<>]*)?", re.I)
+ARCHIVE_AUTHOR_UPLOAD_RE = re.compile(r"/(?:[a-z]{2}/)?@([^/?#]+)/upload(?:[/?#]|$)", re.I)
+ARCHIVE_AUTHOR_ROOT_RE = re.compile(r"^/(?:[a-z]{2}/)?@[^/?#]+/?$", re.I)
+ARCHIVE_COLLECTION_DETAIL_RE = re.compile(r"/(?:[a-z]{2}/)?collections/\d+(?:-[^/?#]+)?(?:[/?#]|$)", re.I)
 _STATE_LOCK = threading.RLock()
 _ORGANIZER_HISTORY_COUNT_CACHE = {
     "mtime_ns": 0,
@@ -107,6 +114,127 @@ def _normalize_source_refresh_item(item: dict) -> dict:
 
 def _normalize_task_item(item: Any, default_status: str) -> dict:
     return task_messages.normalize_task_item(item, default_status)
+
+
+def _normalize_archive_identity_url(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("/"):
+        absolute = urljoin("https://makerworld.com.cn", raw)
+    elif not raw.startswith(("http://", "https://")):
+        absolute = f"https://{raw.lstrip('/')}"
+    else:
+        absolute = raw
+
+    parsed = urlparse(absolute)
+    path = parsed.path or ""
+    author_match = ARCHIVE_AUTHOR_UPLOAD_RE.search(path)
+    if author_match:
+        handle = author_match.group(1)
+        normalized_path = f"/zh/@{quote(handle, safe='@._-')}/upload"
+        return urlunparse(parsed._replace(path=normalized_path, query="", fragment=""))
+    if ARCHIVE_AUTHOR_ROOT_RE.fullmatch(path):
+        handle = path.rstrip("/").split("@", 1)[-1]
+        normalized_path = f"/zh/@{quote(handle, safe='@._-')}/upload"
+        return urlunparse(parsed._replace(path=normalized_path, query="", fragment=""))
+    if ARCHIVE_COLLECTION_DETAIL_RE.search(path):
+        return urlunparse(parsed._replace(query="", fragment=""))
+    return urlunparse(parsed._replace(fragment=""))
+
+
+def _archive_model_id_from_url(value: Any) -> str:
+    normalized = _normalize_archive_identity_url(value)
+    match = ARCHIVE_MODEL_PATH_RE.search(urlparse(normalized).path or "")
+    return match.group(1) if match else ""
+
+
+def _archive_task_mode_from_url(value: Any) -> str:
+    path = urlparse(_normalize_archive_identity_url(value)).path or ""
+    if ARCHIVE_AUTHOR_UPLOAD_RE.search(path) or ARCHIVE_AUTHOR_ROOT_RE.fullmatch(path):
+        return "author_upload"
+    if "/collections/models" in path.lower() or ARCHIVE_COLLECTION_DETAIL_RE.search(path):
+        return "collection_models"
+    if ARCHIVE_MODEL_PATH_RE.search(path):
+        return "single_model"
+    return ""
+
+
+def _archive_task_instance_ids(meta: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for value in meta.get("instance_ids") or []:
+        clean = str(value or "").strip()
+        if clean and clean not in values:
+            values.append(clean)
+    instance_id = str(meta.get("instance_id") or "").strip()
+    if instance_id and instance_id not in values:
+        values.append(instance_id)
+    return values
+
+
+def _archive_model_instance_identity(model_id: str, instance_ids: list[str]) -> str:
+    suffix = f":instances:{'|'.join(sorted(instance_ids))}" if instance_ids else ""
+    return f"model:{model_id}{suffix}"
+
+
+def _archive_task_identity_key(item: Any, *, failure: bool = False) -> str:
+    if not isinstance(item, dict):
+        return ""
+    meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+    title = str(item.get("title") or "").strip()
+    raw_url = item.get("url") or meta.get("model_url") or ""
+    if not raw_url and (
+        title.startswith(("/", "http://", "https://"))
+        or "makerworld." in title.lower()
+    ):
+        raw_url = title
+    url = _normalize_archive_identity_url(raw_url)
+    mode = str(item.get("mode") or "").strip() or _archive_task_mode_from_url(url)
+    if mode in ARCHIVE_BATCH_TASK_MODES:
+        return f"batch:{mode}:{url}" if url else ""
+
+    model_id = str(meta.get("model_id") or "").strip() or _archive_model_id_from_url(url)
+    if model_id:
+        instance_ids = _archive_task_instance_ids(meta)
+        if failure and instance_ids:
+            return f"model:{model_id}:instance:{'|'.join(sorted(instance_ids))}"
+        if meta.get("three_mf_download"):
+            return f"three_mf_download:{_archive_model_instance_identity(model_id, instance_ids)}"
+        if meta.get("missing_3mf_retry"):
+            return f"missing_3mf_retry:{_archive_model_instance_identity(model_id, instance_ids)}"
+        if meta.get("profile_metadata_only"):
+            return f"profile_metadata:model:{model_id}"
+        return f"model:{model_id}"
+
+    if url:
+        return f"url:{url}"
+    return f"title:{title}" if title else ""
+
+
+def _archive_existing_identity_map(items: list[dict], default_status: str) -> dict[str, dict]:
+    by_key: dict[str, dict] = {}
+    for item in items:
+        normalized = _normalize_archive_runtime_item(item, default_status)
+        key = _archive_task_identity_key(normalized)
+        if key and key not in by_key:
+            by_key[key] = normalized
+    return by_key
+
+
+def _dedupe_archive_items(items: list[dict], default_status: str, *, failure: bool = False) -> tuple[list[dict], int]:
+    kept: list[dict] = []
+    seen: set[str] = set()
+    deduped = 0
+    for item in items:
+        normalized = _normalize_archive_runtime_item(item, default_status)
+        key = _archive_task_identity_key(normalized, failure=failure)
+        if key and key in seen:
+            deduped += 1
+            continue
+        if key:
+            seen.add(key)
+        kept.append(normalized)
+    return kept, deduped
 
 
 def _normalize_archive_runtime_item(item: Any, default_status: str) -> dict:
@@ -1646,13 +1774,38 @@ class TaskStateStore:
             return self.save_model_flags(flags)
 
     def enqueue_archive_task(self, item: dict) -> dict:
+        enqueued = False
+        existing_task_id = ""
+        duplicate_key = ""
+
         def _mutate(payload: dict) -> dict:
-            queued = list(payload.get("queued") or [])
-            queued.append(_normalize_task_item(item, "queued"))
+            nonlocal enqueued, existing_task_id, duplicate_key
+            active = [_normalize_archive_runtime_item(item, "running") for item in (payload.get("active") or [])]
+            queued = [_normalize_archive_runtime_item(item, "queued") for item in (payload.get("queued") or [])]
+            target = _normalize_archive_runtime_item(item, "queued")
+            target_key = _archive_task_identity_key(target)
+            duplicate_key = target_key
+            if target_key:
+                existing = _archive_existing_identity_map(active + queued, "queued").get(target_key)
+                if existing is not None:
+                    existing_task_id = str(existing.get("id") or "")
+                    payload["active"] = active
+                    payload["queued"] = queued
+                    return payload
+
+            queued.append(target)
+            enqueued = True
+            payload["active"] = active
             payload["queued"] = queued
             return payload
 
-        return self._update_archive_queue(_mutate)
+        queue = self._update_archive_queue(_mutate)
+        queue["enqueued"] = enqueued
+        if existing_task_id:
+            queue["existing_task_id"] = existing_task_id
+        if duplicate_key:
+            queue["task_identity_key"] = duplicate_key
+        return queue
 
     def start_archive_task(self, task_id: str) -> dict:
         def _mutate(payload: dict) -> dict:
@@ -1827,6 +1980,13 @@ class TaskStateStore:
 
             recent_failures = [_normalize_task_item(item, "failed") for item in (payload.get("recent_failures") or [])]
             if failed_item is not None:
+                failed_key = _archive_task_identity_key(failed_item, failure=True)
+                if failed_key:
+                    recent_failures = [
+                        item
+                        for item in recent_failures
+                        if _archive_task_identity_key(item, failure=True) != failed_key
+                    ]
                 recent_failures.insert(0, failed_item)
                 recent_failures = recent_failures[:20]
                 failed_item_payload = failed_item
@@ -1854,23 +2014,37 @@ class TaskStateStore:
 
     def requeue_active_tasks(self, message: str = "服务重启后自动恢复") -> dict:
         recovered_count = 0
+        deduplicated_count = 0
 
         def _mutate(payload: dict) -> dict:
-            nonlocal recovered_count
-            active_items = [_normalize_task_item(item, "running") for item in (payload.get("active") or [])]
-            queued_items = [_normalize_task_item(item, "queued") for item in (payload.get("queued") or [])]
+            nonlocal recovered_count, deduplicated_count
+            active_items = [_normalize_archive_runtime_item(item, "running") for item in (payload.get("active") or [])]
+            queued_items, initial_deduped = _dedupe_archive_items(list(payload.get("queued") or []), "queued")
+            deduplicated_count += initial_deduped
             if not active_items:
                 recovered_count = 0
+                payload["queued"] = queued_items
                 return payload
 
             recovered = []
+            queued_keys = {
+                key
+                for key in (_archive_task_identity_key(item) for item in queued_items)
+                if key
+            }
             now = china_now_iso()
             for item in active_items:
+                key = _archive_task_identity_key(item)
+                if key and key in queued_keys:
+                    deduplicated_count += 1
+                    continue
                 item["status"] = "queued"
                 item["progress"] = 0
                 item["message"] = message
                 item["updated_at"] = now
                 recovered.append(item)
+                if key:
+                    queued_keys.add(key)
 
             recovered_count = len(recovered)
             payload["active"] = []
@@ -1879,6 +2053,7 @@ class TaskStateStore:
 
         queue = self._update_archive_queue(_mutate)
         queue["recovered_count"] = recovered_count
+        queue["deduplicated_count"] = deduplicated_count
         return queue
 
     def repair_archive_queue(self, *, max_attempts: int = DEFAULT_MAX_ATTEMPTS) -> dict:
@@ -1888,14 +2063,21 @@ class TaskStateStore:
             "failed": 0,
             "finalized": 0,
             "skipped": 0,
+            "deduplicated": 0,
             "errors": [],
         }
 
         def _mutate(payload: dict) -> dict:
             now = china_now_iso()
             active = []
-            queued = [_normalize_archive_runtime_item(item, "queued") for item in (payload.get("queued") or [])]
-            recent_failures = [_normalize_archive_runtime_item(item, "failed") for item in (payload.get("recent_failures") or [])]
+            queued, queued_deduped = _dedupe_archive_items(list(payload.get("queued") or []), "queued")
+            recent_failures, failure_deduped = _dedupe_archive_items(list(payload.get("recent_failures") or []), "failed", failure=True)
+            summary["deduplicated"] += queued_deduped + failure_deduped
+            queued_keys = {
+                key
+                for key in (_archive_task_identity_key(item) for item in queued)
+                if key
+            }
 
             for item in payload.get("active") or []:
                 normalized = _normalize_archive_runtime_item(item, "running")
@@ -1919,11 +2101,24 @@ class TaskStateStore:
                 if task_attempts_remaining(normalized, max_attempts=max_attempts):
                     normalized["status"] = "queued"
                     normalized["message"] = "检测到任务心跳过期，已重新排队。"
+                    key = _archive_task_identity_key(normalized)
+                    if key and key in queued_keys:
+                        summary["deduplicated"] += 1
+                        continue
                     queued.insert(0, normalized)
+                    if key:
+                        queued_keys.add(key)
                     summary["requeued"] += 1
                 else:
                     normalized["status"] = "failed"
                     normalized["message"] = "任务心跳过期且已达到最大重试次数。"
+                    failed_key = _archive_task_identity_key(normalized, failure=True)
+                    if failed_key:
+                        recent_failures = [
+                            item
+                            for item in recent_failures
+                            if _archive_task_identity_key(item, failure=True) != failed_key
+                        ]
                     recent_failures.insert(0, normalized)
                     summary["failed"] += 1
 

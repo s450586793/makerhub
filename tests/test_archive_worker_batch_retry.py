@@ -26,6 +26,22 @@ class _ArchiveBatchRefreshStore:
 
 
 class ArchiveWorkerBatchRetryTest(unittest.TestCase):
+    def test_enqueue_single_task_returns_existing_id_when_state_dedupes(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager.task_store = SimpleNamespace(
+            enqueue_archive_task=lambda _item: {
+                "enqueued": False,
+                "existing_task_id": "existing-task",
+            }
+        )
+
+        task_id = manager._enqueue_single_task(
+            "https://makerworld.com.cn/zh/models/123",
+            mode="single_model",
+        )
+
+        self.assertEqual(task_id, "existing-task")
+
     def test_ensure_worker_starts_configured_archive_workers(self):
         manager = ArchiveTaskManager(background_enabled=True)
         manager.store = SimpleNamespace(load=lambda: SimpleNamespace(runtime=SimpleNamespace(worker_concurrency=3)))

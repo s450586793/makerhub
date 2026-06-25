@@ -438,6 +438,198 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(events[-1][1], "state.changed")
         self.assertEqual(events[-1][2]["queued_count"], 1)
 
+    def test_enqueue_archive_task_skips_duplicate_batch_url(self):
+        state = {
+            "archive_queue": {
+                "active": [
+                    {
+                        "id": "active-batch",
+                        "url": "https://makerworld.com.cn/zh/@demo/upload",
+                        "mode": "author_upload",
+                        "status": "running",
+                    }
+                ],
+                "queued": [],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
+            queue = store.enqueue_archive_task(
+                {
+                    "id": "duplicate-batch",
+                    "url": "https://makerworld.com.cn/zh/@demo/upload",
+                    "mode": "author_upload",
+                    "status": "queued",
+                }
+            )
+
+        self.assertFalse(queue["enqueued"])
+        self.assertEqual(queue["existing_task_id"], "active-batch")
+        self.assertEqual(queue["queued_count"], 0)
+        self.assertEqual([item["id"] for item in queue["active"]], ["active-batch"])
+
+    def test_enqueue_archive_task_keeps_distinct_missing_3mf_instances(self):
+        state = {
+            "archive_queue": {
+                "active": [],
+                "queued": [
+                    {
+                        "id": "retry-profile-1",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "mode": "single_model",
+                        "status": "queued",
+                        "meta": {
+                            "missing_3mf_retry": True,
+                            "model_id": "123",
+                            "instance_id": "profile-1",
+                        },
+                    }
+                ],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
+            queue = store.enqueue_archive_task(
+                {
+                    "id": "retry-profile-2",
+                    "url": "https://makerworld.com.cn/zh/models/123",
+                    "mode": "single_model",
+                    "status": "queued",
+                    "meta": {
+                        "missing_3mf_retry": True,
+                        "model_id": "123",
+                        "instance_id": "profile-2",
+                    },
+                }
+            )
+
+        self.assertTrue(queue["enqueued"])
+        self.assertEqual([item["id"] for item in queue["queued"]], ["retry-profile-1", "retry-profile-2"])
+
+    def test_enqueue_archive_task_skips_duplicate_missing_3mf_instance(self):
+        state = {
+            "archive_queue": {
+                "active": [],
+                "queued": [
+                    {
+                        "id": "retry-profile-1",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "mode": "single_model",
+                        "status": "queued",
+                        "meta": {
+                            "missing_3mf_retry": True,
+                            "model_id": "123",
+                            "instance_id": "profile-1",
+                        },
+                    }
+                ],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
+            queue = store.enqueue_archive_task(
+                {
+                    "id": "retry-profile-1-copy",
+                    "url": "https://makerworld.com.cn/zh/models/123",
+                    "mode": "single_model",
+                    "status": "queued",
+                    "meta": {
+                        "missing_3mf_retry": True,
+                        "model_id": "123",
+                        "instance_id": "profile-1",
+                    },
+                }
+            )
+
+        self.assertFalse(queue["enqueued"])
+        self.assertEqual(queue["existing_task_id"], "retry-profile-1")
+        self.assertEqual([item["id"] for item in queue["queued"]], ["retry-profile-1"])
+
+    def test_requeue_active_tasks_skips_duplicate_existing_queue_item(self):
+        state = {
+            "archive_queue": {
+                "active": [
+                    {
+                        "id": "active-batch",
+                        "url": "https://makerworld.com.cn/zh/@demo/upload",
+                        "mode": "author_upload",
+                        "status": "running",
+                    }
+                ],
+                "queued": [
+                    {
+                        "id": "queued-batch",
+                        "url": "https://makerworld.com.cn/zh/@demo/upload",
+                        "mode": "author_upload",
+                        "status": "queued",
+                    }
+                ],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.china_now_iso", return_value="2026-06-04T10:00:00+08:00"):
+            queue = store.requeue_active_tasks()
+
+        self.assertEqual(queue["recovered_count"], 0)
+        self.assertEqual(queue["running_count"], 0)
+        self.assertEqual([item["id"] for item in queue["queued"]], ["queued-batch"])
+
+    def test_requeue_active_tasks_keeps_distinct_missing_3mf_instances(self):
+        state = {
+            "archive_queue": {
+                "active": [
+                    {
+                        "id": "active-profile-2",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "mode": "single_model",
+                        "status": "running",
+                        "meta": {
+                            "missing_3mf_retry": True,
+                            "model_id": "123",
+                            "instance_id": "profile-2",
+                        },
+                    }
+                ],
+                "queued": [
+                    {
+                        "id": "queued-profile-1",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "mode": "single_model",
+                        "status": "queued",
+                        "meta": {
+                            "missing_3mf_retry": True,
+                            "model_id": "123",
+                            "instance_id": "profile-1",
+                        },
+                    }
+                ],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.china_now_iso", return_value="2026-06-04T10:00:00+08:00"):
+            queue = store.requeue_active_tasks()
+
+        self.assertEqual(queue["recovered_count"], 1)
+        self.assertEqual(queue["deduplicated_count"], 0)
+        self.assertEqual([item["id"] for item in queue["queued"]], ["active-profile-2", "queued-profile-1"])
+
     def test_start_archive_task_assigns_runtime_lease_fields(self):
         state = {"archive_queue": {"active": [], "queued": [{"id": "task-1", "title": "Demo"}], "recent_failures": []}}
         store = TaskStateStore()
@@ -618,6 +810,84 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(result["queue"]["queued"][0]["id"], "task-expired")
         self.assertEqual(result["queue"]["queued"][0]["status"], "queued")
 
+    def test_repair_archive_queue_drops_expired_duplicate_already_queued(self):
+        state = {
+            "archive_queue": {
+                "active": [
+                    {
+                        "id": "task-expired",
+                        "url": "https://makerworld.com.cn/zh/models/1",
+                        "mode": "single_model",
+                        "status": "running",
+                        "lease_expires_at": "2026-06-04T09:00:00+08:00",
+                        "attempt_count": 1,
+                    }
+                ],
+                "queued": [
+                    {
+                        "id": "task-queued",
+                        "url": "https://makerworld.com.cn/zh/models/1",
+                        "mode": "single_model",
+                        "status": "queued",
+                    }
+                ],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.is_lease_expired", return_value=True), \
+                patch("app.services.task_state.china_now_iso", return_value="2026-06-04T10:00:00+08:00"):
+            result = store.repair_archive_queue()
+
+        self.assertEqual(result["summary"]["examined"], 1)
+        self.assertEqual(result["summary"]["requeued"], 0)
+        self.assertEqual(result["summary"]["deduplicated"], 1)
+        self.assertEqual(result["queue"]["active"], [])
+        self.assertEqual([item["id"] for item in result["queue"]["queued"]], ["task-queued"])
+
+    def test_repair_archive_queue_keeps_distinct_missing_3mf_instances(self):
+        state = {
+            "archive_queue": {
+                "active": [],
+                "queued": [
+                    {
+                        "id": "retry-profile-1",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "mode": "single_model",
+                        "status": "queued",
+                        "meta": {
+                            "missing_3mf_retry": True,
+                            "model_id": "123",
+                            "instance_id": "profile-1",
+                        },
+                    },
+                    {
+                        "id": "retry-profile-2",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "mode": "single_model",
+                        "status": "queued",
+                        "meta": {
+                            "missing_3mf_retry": True,
+                            "model_id": "123",
+                            "instance_id": "profile-2",
+                        },
+                    },
+                ],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
+            result = store.repair_archive_queue()
+
+        self.assertEqual(result["summary"]["deduplicated"], 0)
+        self.assertEqual([item["id"] for item in result["queue"]["queued"]], ["retry-profile-1", "retry-profile-2"])
+
     def test_repair_archive_queue_fails_expired_task_without_attempts(self):
         state = {
             "archive_queue": {
@@ -644,6 +914,62 @@ class ArchiveQueueStateTest(unittest.TestCase):
 
         self.assertEqual(result["summary"]["failed"], 1)
         self.assertEqual(result["queue"]["recent_failures"][0]["id"], "task-dead")
+
+    def test_fail_archive_task_dedupes_same_model_instance_failure(self):
+        state = {
+            "archive_queue": {
+                "active": [
+                    {
+                        "id": "task-new",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "mode": "single_model",
+                        "status": "running",
+                        "meta": {
+                            "missing_3mf_retry": True,
+                            "model_id": "123",
+                            "instance_id": "profile-1",
+                        },
+                    }
+                ],
+                "queued": [],
+                "recent_failures": [
+                    {
+                        "id": "task-old-same",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "mode": "single_model",
+                        "status": "failed",
+                        "message": "old",
+                        "meta": {
+                            "missing_3mf_retry": True,
+                            "model_id": "123",
+                            "instance_id": "profile-1",
+                        },
+                    },
+                    {
+                        "id": "task-old-other-instance",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "mode": "single_model",
+                        "status": "failed",
+                        "message": "old",
+                        "meta": {
+                            "missing_3mf_retry": True,
+                            "model_id": "123",
+                            "instance_id": "profile-2",
+                        },
+                    },
+                ],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.china_now_iso", return_value="2026-06-04T10:00:00+08:00"):
+            queue = store.fail_archive_task("task-new", "Cloudflare")
+
+        self.assertEqual([item["id"] for item in queue["recent_failures"]], ["task-new", "task-old-other-instance"])
+        self.assertEqual(queue["recent_failures"][0]["message"], "Cloudflare")
+        self.assertEqual(queue["active"], [])
 
     def test_repair_archive_queue_skips_paused_task(self):
         state = {

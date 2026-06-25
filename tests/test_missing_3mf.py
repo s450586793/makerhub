@@ -250,6 +250,58 @@ class Missing3mfTest(unittest.TestCase):
         self.assertEqual(len(submitted), 1)
         self.assertTrue(submitted[0]["force"])
 
+    def test_manual_missing_retry_allows_distinct_instances_for_same_model_in_queue(self):
+        original_select_cookie = archive_worker_module._select_cookie
+        state = {
+            "archive_queue": {
+                "active": [],
+                "queued": [
+                    {
+                        "id": "retry-profile-1",
+                        "url": "https://makerworld.com/zh/models/2193050",
+                        "mode": "single_model",
+                        "status": "queued",
+                        "meta": {
+                            "missing_3mf_retry": True,
+                            "model_id": "2193050",
+                            "instance_id": "profile-1",
+                        },
+                    }
+                ],
+                "recent_failures": [],
+            }
+        }
+        try:
+            with patch.object(archive_worker_module, "load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                    patch.object(archive_worker_module, "save_database_json_state", side_effect=lambda key, payload: state.__setitem__(key, payload) or payload), \
+                    patch.object(task_state_module, "load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                    patch.object(task_state_module, "save_database_json_state", side_effect=lambda key, payload: state.__setitem__(key, payload) or payload), \
+                    patch.object(archive_worker_module, "reset_three_mf_daily_quota", return_value={"reset": False, "source": "global"}), \
+                    patch.object(archive_worker_module, "get_archive_snapshot", return_value={"archived_keys": []}), \
+                    patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
+                    patch.object(archive_worker_module, "_is_three_mf_limit_guard_active_for_url", return_value=False), \
+                    patch.object(archive_worker_module, "three_mf_gate_for_url", return_value={"open": True}), \
+                    patch.object(archive_worker_module, "threading") as threading_mock:
+                threading_mock.Thread.side_effect = AssertionError("worker should not start in this test")
+                manager = ArchiveTaskManager(background_enabled=False)
+                manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[]))
+                manager.task_store.update_missing_3mf_status = lambda **_payload: None
+                manager._deleted_task_lookup = lambda: {}
+                archive_worker_module._select_cookie = lambda *_: "cookie"
+
+                result = manager.retry_missing_3mf(
+                    model_url="https://makerworld.com/zh/models/2193050",
+                    model_id="2193050",
+                    title="Demo",
+                    instance_id="profile-2",
+                )
+        finally:
+            archive_worker_module._select_cookie = original_select_cookie
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual([item["id"] for item in state["archive_queue"]["queued"]], ["retry-profile-1", result["task_id"]])
+        self.assertEqual(state["archive_queue"]["queued"][1]["meta"]["instance_id"], "profile-2")
+
     def test_manual_missing_retry_uses_source_when_model_url_is_missing(self):
         original_select_cookie = archive_worker_module._select_cookie
         try:

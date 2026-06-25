@@ -153,6 +153,25 @@ def _queue_item_key(item: dict) -> str:
     return _task_key(item.get("url") or item.get("title") or "")
 
 
+def _queue_missing_3mf_retry_key(url: str, meta: Optional[dict[str, Any]] = None) -> str:
+    meta = meta if isinstance(meta, dict) else {}
+    model_id = str(meta.get("model_id") or extract_model_id(url) or "").strip()
+    if not model_id:
+        return ""
+    instance_id = str(meta.get("instance_id") or "").strip()
+    suffix = f":instance:{instance_id}" if instance_id else ""
+    return f"missing_3mf_retry:model:{model_id}{suffix}"
+
+
+def _queue_item_missing_3mf_retry_key(item: dict) -> str:
+    if not isinstance(item, dict):
+        return ""
+    meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+    if not meta.get("missing_3mf_retry"):
+        return ""
+    return _queue_missing_3mf_retry_key(item.get("url") or item.get("title") or "", meta)
+
+
 def _is_batch_parent_waiting_for_children(item: dict[str, Any]) -> bool:
     if str(item.get("mode") or "") not in BATCH_TASK_MODES:
         return False
@@ -628,6 +647,15 @@ class ArchiveTaskManager:
         items = (queue.get("active") or []) + (queue.get("queued") or [])
         return {_queue_item_key(item) for item in items if item.get("url") or item.get("title")}
 
+    def _queued_missing_3mf_retry_keys(self) -> set[str]:
+        queue = self.task_store.load_archive_queue()
+        items = (queue.get("active") or []) + (queue.get("queued") or [])
+        return {
+            key
+            for key in (_queue_item_missing_3mf_retry_key(item) for item in items)
+            if key
+        }
+
     def _archived_task_keys(self) -> set[str]:
         snapshot = get_archive_snapshot()
         return set(snapshot.get("archived_keys") or [])
@@ -681,6 +709,16 @@ class ArchiveTaskManager:
                 _queue_item_key(item): item
                 for item in recent_failures
                 if _queue_item_key(item)
+            },
+            "active_missing_3mf_retry_by_key": {
+                _queue_item_missing_3mf_retry_key(item): item
+                for item in active
+                if _queue_item_missing_3mf_retry_key(item)
+            },
+            "queued_missing_3mf_retry_by_key": {
+                _queue_item_missing_3mf_retry_key(item): item
+                for item in queued
+                if _queue_item_missing_3mf_retry_key(item)
             },
         }
 
@@ -1336,7 +1374,7 @@ class ArchiveTaskManager:
 
     def _enqueue_single_task(self, url: str, message: str = "等待归档", mode: str = "", meta: Optional[dict] = None) -> str:
         task_id = uuid.uuid4().hex
-        self.task_store.enqueue_archive_task(
+        queue = self.task_store.enqueue_archive_task(
             {
                 "id": task_id,
                 "url": url,
@@ -1349,6 +1387,9 @@ class ArchiveTaskManager:
                 "updated_at": china_now().isoformat(),
             }
         )
+        queue = queue if isinstance(queue, dict) else {}
+        if queue.get("enqueued") is False and str(queue.get("existing_task_id") or "").strip():
+            return str(queue.get("existing_task_id") or "").strip()
         return task_id
 
     def _enqueue_three_mf_stage_task_from_result(self, url: str, result: dict[str, Any], meta: dict[str, Any]) -> str:
@@ -1385,6 +1426,12 @@ class ArchiveTaskManager:
 
     def _submit_single(self, clean_url: str, force: bool = False, meta: Optional[dict] = None) -> dict:
         task_key = _task_key(clean_url)
+        task_meta = dict(meta or {})
+        missing_retry_key = (
+            _queue_missing_3mf_retry_key(clean_url, task_meta)
+            if force or task_meta.get("missing_3mf_retry")
+            else ""
+        )
         deleted_item = self._deleted_task_lookup().get(task_key)
         if deleted_item is not None:
             message = f"该模型已在 MakerHub 端删除，默认不会再次归档：{deleted_item.get('title') or clean_url}"
@@ -1409,7 +1456,11 @@ class ArchiveTaskManager:
                 "mode": "single_model",
                 "url": clean_url,
             }
-        if task_key in self._queued_task_keys():
+        if missing_retry_key:
+            queued_duplicate = missing_retry_key in self._queued_missing_3mf_retry_keys()
+        else:
+            queued_duplicate = task_key in self._queued_task_keys()
+        if queued_duplicate:
             _log_archive("single_submit_skipped", "单模型已在归档队列中。", url=clean_url, task_key=task_key)
             return {
                 "accepted": False,
@@ -1427,7 +1478,6 @@ class ArchiveTaskManager:
             }
 
         queue_message = "等待归档" if not force else "等待重新下载缺失 3MF"
-        task_meta = dict(meta or {})
         if force:
             task_meta.setdefault("missing_3mf_retry", True)
         task_id = self._enqueue_single_task(clean_url, message=queue_message, mode="single_model", meta=task_meta)

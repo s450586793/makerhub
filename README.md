@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.43`
+> 当前版本：`v0.9.44`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-25 · v0.9.44
+
+- 归档队列写入新增业务 identity 去重，批量作者页 / 收藏夹父任务在重试、订阅同步或服务重启恢复时不会重复进入 queued。
+- 归档失败记录按 `model_id + instance_id` 去重，同一打印配置的 Cloudflare / 验证失败只保留最新一条，同时保留同模型不同打印配置。
+- 归档队列修复会清理已有 queued / recent failures 重复项，线上已有重复队列可通过修复流程自动压平。
+
 ### 2026-06-24 · v0.9.43
 
 - `3MF` 下载子任务和缺失 `3MF` 重试默认改为轻量执行，只获取必要的模型 / 实例信息和 `3MF` 下载地址，不再同步图片、附件、评论资源或评论分页数据。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - 归档 Worker 会在平台 `3MF` gate 关闭时跳过 `3MF` 拉取并保留缺失记录，普通归档和拆分后的资源子任务继续完成。
 - 点击“已验证”会重新打开对应平台的 `3MF` gate，并重新入队同平台验证 / Cookie 类缺失 `3MF`，不需要刷新全部任务。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-23 · v0.9.41
 
 - 修复 Worker 重启后批量归档父任务按不同任务 ID 恢复，导致同一作者页或合集页重复出现在 active / queued 队列的问题。
 - 缺失 `3MF` 重试任务会按实例 ID 定向下载，图片资源下载继承基础会话 Cookie，模型库完整刷新失败时回退轻量响应，避免刷新期间空白或卡住。
 - 升级 FastAPI / Starlette、Vite / Vue / ws 等依赖，并补充批量归档、`3MF` 子任务、资源下载、模型页刷新和路由兼容回归测试。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-19 · v0.9.39
 
