@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.44`
+> 当前版本：`v0.9.45`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-26 · v0.9.45
+
+- 缺失 `3MF` 批量重试改为按模型合并队列项，同一模型的多个打印配置会汇总到一个重试任务，避免线上重复生成大量缺失 `3MF` 任务。
+- 已存在队列中的缺失 `3MF` 重试会保持缺失列表为“已排队 / 已合并”状态，不再误回落为缺失或反复重新入队。
+- 任务轻量接口只整理首屏可见归档项，同时保留真实队列总数，降低 2000+ 归档任务场景下首页 / 任务页刷新负载。
+
 ### 2026-06-25 · v0.9.44
 
 - 归档队列写入新增业务 identity 去重，批量作者页 / 收藏夹父任务在重试、订阅同步或服务重启恢复时不会重复进入 queued。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - 兼容线上已经排队的旧 `three_mf_download` / `missing_3mf_retry` 任务，Worker 重启后即使旧任务没有新元数据，也会按轻量逻辑继续处理。
 - 补充归档 Worker 和进程包装回归测试，锁定 `collect_comments_data=false`、资源下载关闭和实例 ID 定向下载参数传递。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-23 · v0.9.42
 
 - 首页国内站 / 国际站卡片新增平台级 `3MF` gate：验证、Cookie 异常或每日上限只暂停该平台 `3MF` 下载，不再阻塞图片、评论、描述等普通归档。
 - 归档 Worker 会在平台 `3MF` gate 关闭时跳过 `3MF` 拉取并保留缺失记录，普通归档和拆分后的资源子任务继续完成。
 - 点击“已验证”会重新打开对应平台的 `3MF` gate，并重新入队同平台验证 / Cookie 类缺失 `3MF`，不需要刷新全部任务。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-23 · v0.9.41
 

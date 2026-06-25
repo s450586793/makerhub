@@ -250,7 +250,7 @@ class Missing3mfTest(unittest.TestCase):
         self.assertEqual(len(submitted), 1)
         self.assertTrue(submitted[0]["force"])
 
-    def test_manual_missing_retry_allows_distinct_instances_for_same_model_in_queue(self):
+    def test_manual_missing_retry_merges_distinct_instances_for_same_model_in_queue(self):
         original_select_cookie = archive_worker_module._select_cookie
         state = {
             "archive_queue": {
@@ -265,6 +265,7 @@ class Missing3mfTest(unittest.TestCase):
                             "missing_3mf_retry": True,
                             "model_id": "2193050",
                             "instance_id": "profile-1",
+                            "instance_ids": ["profile-1"],
                         },
                     }
                 ],
@@ -298,9 +299,100 @@ class Missing3mfTest(unittest.TestCase):
         finally:
             archive_worker_module._select_cookie = original_select_cookie
 
-        self.assertTrue(result["accepted"])
-        self.assertEqual([item["id"] for item in state["archive_queue"]["queued"]], ["retry-profile-1", result["task_id"]])
-        self.assertEqual(state["archive_queue"]["queued"][1]["meta"]["instance_id"], "profile-2")
+        self.assertFalse(result["accepted"])
+        self.assertTrue(result["merged"])
+        self.assertEqual(result["task_id"], "retry-profile-1")
+        self.assertEqual([item["id"] for item in state["archive_queue"]["queued"]], ["retry-profile-1"])
+        self.assertEqual(state["archive_queue"]["queued"][0]["meta"]["instance_ids"], ["profile-1", "profile-2"])
+
+    def test_manual_missing_retry_reports_existing_queue_item_without_new_instance_as_queued(self):
+        original_select_cookie = archive_worker_module._select_cookie
+        state = {
+            "archive_queue": {
+                "active": [],
+                "queued": [
+                    {
+                        "id": "retry-profile-1",
+                        "url": "https://makerworld.com/zh/models/2193050",
+                        "mode": "single_model",
+                        "status": "queued",
+                        "meta": {
+                            "missing_3mf_retry": True,
+                            "model_id": "2193050",
+                            "instance_id": "profile-1",
+                            "instance_ids": ["profile-1"],
+                        },
+                    }
+                ],
+                "recent_failures": [],
+            }
+        }
+        try:
+            with patch.object(archive_worker_module, "load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                    patch.object(archive_worker_module, "save_database_json_state", side_effect=lambda key, payload: state.__setitem__(key, payload) or payload), \
+                    patch.object(task_state_module, "load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                    patch.object(task_state_module, "save_database_json_state", side_effect=lambda key, payload: state.__setitem__(key, payload) or payload), \
+                    patch.object(archive_worker_module, "reset_three_mf_daily_quota", return_value={"reset": False, "source": "global"}), \
+                    patch.object(archive_worker_module, "get_archive_snapshot", return_value={"archived_keys": []}), \
+                    patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
+                    patch.object(archive_worker_module, "_is_three_mf_limit_guard_active_for_url", return_value=False), \
+                    patch.object(archive_worker_module, "three_mf_gate_for_url", return_value={"open": True}), \
+                    patch.object(archive_worker_module, "threading") as threading_mock:
+                threading_mock.Thread.side_effect = AssertionError("worker should not start in this test")
+                manager = ArchiveTaskManager(background_enabled=False)
+                manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[]))
+                manager.task_store.update_missing_3mf_status = lambda **_payload: None
+                manager._deleted_task_lookup = lambda: {}
+                archive_worker_module._select_cookie = lambda *_: "cookie"
+
+                result = manager.retry_missing_3mf(
+                    model_url="https://makerworld.com/zh/models/2193050",
+                    model_id="2193050",
+                    title="Demo",
+                    instance_id="profile-1",
+                )
+        finally:
+            archive_worker_module._select_cookie = original_select_cookie
+
+        self.assertFalse(result["accepted"])
+        self.assertTrue(result["queued"])
+        self.assertFalse(result.get("merged", False))
+        self.assertEqual(result["task_id"], "retry-profile-1")
+        self.assertEqual([item["id"] for item in state["archive_queue"]["queued"]], ["retry-profile-1"])
+
+    def test_manual_missing_retry_keeps_existing_queue_item_status_queued(self):
+        original_select_cookie = archive_worker_module._select_cookie
+        updates = []
+        try:
+            with patch.object(archive_worker_module, "load_database_json_state", side_effect=lambda _key, default: dict(default)), \
+                    patch.object(archive_worker_module, "save_database_json_state", side_effect=lambda _key, payload: payload), \
+                    patch.object(archive_worker_module, "reset_three_mf_daily_quota", return_value={"reset": False, "source": "global"}):
+                manager = ArchiveTaskManager()
+                manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[]))
+                manager.task_store = SimpleNamespace(
+                    update_missing_3mf_status=lambda **payload: updates.append(payload)
+                )
+                manager.submit = lambda *_args, **_kwargs: {
+                    "accepted": False,
+                    "queued": True,
+                    "task_id": "retry-profile-1",
+                    "message": "该模型的缺失 3MF 重试已在队列中。",
+                }
+                archive_worker_module._select_cookie = lambda *_: "cookie"
+
+                result = manager.retry_missing_3mf(
+                    model_url="https://makerworld.com/zh/models/2193050",
+                    model_id="2193050",
+                    title="Demo",
+                    instance_id="profile-1",
+                )
+        finally:
+            archive_worker_module._select_cookie = original_select_cookie
+
+        self.assertFalse(result["accepted"])
+        self.assertTrue(result["queued"])
+        self.assertEqual(updates[-1]["status"], "queued")
+        self.assertEqual(updates[-1]["message"], "已存在于重新下载队列")
 
     def test_manual_missing_retry_uses_source_when_model_url_is_missing(self):
         original_select_cookie = archive_worker_module._select_cookie
@@ -358,6 +450,111 @@ class Missing3mfTest(unittest.TestCase):
 
         self.assertTrue(result["accepted"])
         self.assertEqual(calls[0]["source"], "global")
+
+    def test_retry_all_missing_groups_instances_by_model_before_queueing(self):
+        manager = ArchiveTaskManager()
+        manager.task_store = SimpleNamespace(
+            load_missing_3mf=lambda: {
+                "items": [
+                    {
+                        "model_id": "2193050",
+                        "model_url": "https://makerworld.com/zh/models/2193050",
+                        "title": "Profile A",
+                        "instance_id": "profile-1",
+                        "source": "global",
+                    },
+                    {
+                        "model_id": "2193050",
+                        "model_url": "https://makerworld.com/zh/models/2193050",
+                        "title": "Profile B",
+                        "instance_id": "profile-2",
+                        "source": "global",
+                    },
+                ]
+            },
+            mark_missing_3mf_retrying=lambda *_args, **_kwargs: None,
+        )
+        calls = []
+        manager.retry_missing_3mf = lambda **payload: calls.append(payload) or {"accepted": True, "message": "queued"}
+
+        with patch.object(archive_worker_module, "load_database_json_state", side_effect=lambda _key, default: dict(default)), \
+                patch.object(archive_worker_module, "save_database_json_state", side_effect=lambda _key, payload: payload), \
+                patch.object(archive_worker_module, "append_business_log"), \
+                patch.object(archive_worker_module, "_reset_three_mf_daily_quota_for_manual_retry"):
+            result = manager.retry_all_missing_3mf()
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["accepted_count"], 1)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["model_id"], "2193050")
+        self.assertEqual(calls[0]["instance_id"], "")
+
+    def test_retry_all_missing_counts_merged_retry_as_queued(self):
+        manager = ArchiveTaskManager()
+        manager.task_store = SimpleNamespace(
+            load_missing_3mf=lambda: {
+                "items": [
+                    {
+                        "model_id": "2193050",
+                        "model_url": "https://makerworld.com/zh/models/2193050",
+                        "title": "Demo",
+                        "instance_id": "profile-1",
+                        "source": "global",
+                    }
+                ]
+            },
+            mark_missing_3mf_retrying=lambda *_args, **_kwargs: None,
+        )
+        manager.retry_missing_3mf = lambda **_payload: {
+            "accepted": False,
+            "queued": True,
+            "merged": True,
+            "message": "该模型的缺失 3MF 重试已在队列中，已合并缺失实例。",
+        }
+
+        with patch.object(archive_worker_module, "load_database_json_state", side_effect=lambda _key, default: dict(default)), \
+                patch.object(archive_worker_module, "save_database_json_state", side_effect=lambda _key, payload: payload), \
+                patch.object(archive_worker_module, "append_business_log"), \
+                patch.object(archive_worker_module, "_reset_three_mf_daily_quota_for_manual_retry"):
+            result = manager.retry_all_missing_3mf()
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["accepted_count"], 0)
+        self.assertEqual(result["queued_count"], 1)
+        self.assertEqual(result["failed_count"], 0)
+
+    def test_retry_verification_missing_counts_merged_retry_as_queued(self):
+        manager = ArchiveTaskManager()
+        manager.task_store = SimpleNamespace(
+            load_missing_3mf=lambda: {
+                "items": [
+                    {
+                        "model_id": "2193050",
+                        "model_url": "https://makerworld.com/zh/models/2193050",
+                        "title": "Demo",
+                        "instance_id": "profile-1",
+                        "source": "global",
+                        "status": "verification_required",
+                        "message": "MakerWorld 需要验证，前往官网任意下载一个模型。",
+                    }
+                ]
+            },
+            mark_missing_3mf_retrying=lambda *_args, **_kwargs: None,
+        )
+        manager.retry_missing_3mf = lambda **_payload: {
+            "accepted": False,
+            "queued": True,
+            "merged": True,
+            "message": "该模型的缺失 3MF 重试已在队列中，已合并缺失实例。",
+        }
+
+        with patch.object(archive_worker_module, "append_business_log"):
+            result = manager.retry_verification_missing_3mf(platform="global")
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["accepted_count"], 0)
+        self.assertEqual(result["queued_count"], 1)
+        self.assertEqual(result["failed_count"], 0)
 
     def test_run_single_task_marks_account_ok_after_missing_3mf_retry_success(self):
         manager = ArchiveTaskManager(background_enabled=False)

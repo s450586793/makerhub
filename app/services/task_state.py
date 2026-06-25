@@ -177,6 +177,26 @@ def _archive_model_instance_identity(model_id: str, instance_ids: list[str]) -> 
     return f"model:{model_id}{suffix}"
 
 
+def _merge_archive_task_instance_scope(target: dict[str, Any], source: dict[str, Any]) -> bool:
+    target_meta = target.get("meta") if isinstance(target.get("meta"), dict) else {}
+    source_meta = source.get("meta") if isinstance(source.get("meta"), dict) else {}
+    merged_instance_ids: list[str] = []
+    for value in _archive_task_instance_ids(target_meta) + _archive_task_instance_ids(source_meta):
+        clean = str(value or "").strip()
+        if clean and clean not in merged_instance_ids:
+            merged_instance_ids.append(clean)
+    if not merged_instance_ids:
+        return False
+
+    previous = _archive_task_instance_ids(target_meta)
+    updated_meta = dict(target_meta)
+    updated_meta["instance_ids"] = merged_instance_ids
+    if not str(updated_meta.get("instance_id") or "").strip():
+        updated_meta["instance_id"] = merged_instance_ids[0]
+    target["meta"] = updated_meta
+    return previous != merged_instance_ids
+
+
 def _archive_task_identity_key(item: Any, *, failure: bool = False) -> str:
     if not isinstance(item, dict):
         return ""
@@ -201,7 +221,7 @@ def _archive_task_identity_key(item: Any, *, failure: bool = False) -> str:
         if meta.get("three_mf_download"):
             return f"three_mf_download:{_archive_model_instance_identity(model_id, instance_ids)}"
         if meta.get("missing_3mf_retry"):
-            return f"missing_3mf_retry:{_archive_model_instance_identity(model_id, instance_ids)}"
+            return f"missing_3mf_retry:model:{model_id}"
         if meta.get("profile_metadata_only"):
             return f"profile_metadata:model:{model_id}"
         return f"model:{model_id}"
@@ -223,16 +243,17 @@ def _archive_existing_identity_map(items: list[dict], default_status: str) -> di
 
 def _dedupe_archive_items(items: list[dict], default_status: str, *, failure: bool = False) -> tuple[list[dict], int]:
     kept: list[dict] = []
-    seen: set[str] = set()
+    seen: dict[str, dict] = {}
     deduped = 0
     for item in items:
         normalized = _normalize_archive_runtime_item(item, default_status)
         key = _archive_task_identity_key(normalized, failure=failure)
         if key and key in seen:
+            _merge_archive_task_instance_scope(seen[key], normalized)
             deduped += 1
             continue
         if key:
-            seen.add(key)
+            seen[key] = normalized
         kept.append(normalized)
     return kept, deduped
 
@@ -1775,11 +1796,12 @@ class TaskStateStore:
 
     def enqueue_archive_task(self, item: dict) -> dict:
         enqueued = False
+        merged = False
         existing_task_id = ""
         duplicate_key = ""
 
         def _mutate(payload: dict) -> dict:
-            nonlocal enqueued, existing_task_id, duplicate_key
+            nonlocal enqueued, merged, existing_task_id, duplicate_key
             active = [_normalize_archive_runtime_item(item, "running") for item in (payload.get("active") or [])]
             queued = [_normalize_archive_runtime_item(item, "queued") for item in (payload.get("queued") or [])]
             target = _normalize_archive_runtime_item(item, "queued")
@@ -1789,6 +1811,15 @@ class TaskStateStore:
                 existing = _archive_existing_identity_map(active + queued, "queued").get(target_key)
                 if existing is not None:
                     existing_task_id = str(existing.get("id") or "")
+                    merged = _merge_archive_task_instance_scope(existing, target)
+                    if merged:
+                        existing["updated_at"] = china_now_iso()
+                        existing["message"] = str(existing.get("message") or target.get("message") or "")
+                        for collection in (active, queued):
+                            for index, candidate in enumerate(collection):
+                                if str(candidate.get("id") or "") == existing_task_id:
+                                    collection[index] = existing
+                                    break
                     payload["active"] = active
                     payload["queued"] = queued
                     return payload
@@ -1801,6 +1832,7 @@ class TaskStateStore:
 
         queue = self._update_archive_queue(_mutate)
         queue["enqueued"] = enqueued
+        queue["merged"] = merged
         if existing_task_id:
             queue["existing_task_id"] = existing_task_id
         if duplicate_key:
@@ -2032,10 +2064,19 @@ class TaskStateStore:
                 for key in (_archive_task_identity_key(item) for item in queued_items)
                 if key
             }
+            queued_by_key = {
+                key: item
+                for item in queued_items
+                for key in [_archive_task_identity_key(item)]
+                if key
+            }
             now = china_now_iso()
             for item in active_items:
                 key = _archive_task_identity_key(item)
                 if key and key in queued_keys:
+                    existing = queued_by_key.get(key)
+                    if existing is not None:
+                        _merge_archive_task_instance_scope(existing, item)
                     deduplicated_count += 1
                     continue
                 item["status"] = "queued"
@@ -2045,6 +2086,7 @@ class TaskStateStore:
                 recovered.append(item)
                 if key:
                     queued_keys.add(key)
+                    queued_by_key[key] = item
 
             recovered_count = len(recovered)
             payload["active"] = []
@@ -2056,7 +2098,7 @@ class TaskStateStore:
         queue["deduplicated_count"] = deduplicated_count
         return queue
 
-    def repair_archive_queue(self, *, max_attempts: int = DEFAULT_MAX_ATTEMPTS) -> dict:
+    def repair_archive_queue(self, *, max_attempts: int = DEFAULT_MAX_ATTEMPTS, repair_active: bool = True) -> dict:
         summary = {
             "examined": 0,
             "requeued": 0,
@@ -2078,6 +2120,15 @@ class TaskStateStore:
                 for key in (_archive_task_identity_key(item) for item in queued)
                 if key
             }
+
+            if not repair_active:
+                payload["active"] = [
+                    _normalize_archive_runtime_item(item, "running")
+                    for item in (payload.get("active") or [])
+                ]
+                payload["queued"] = queued
+                payload["recent_failures"] = recent_failures[:20]
+                return payload
 
             for item in payload.get("active") or []:
                 normalized = _normalize_archive_runtime_item(item, "running")

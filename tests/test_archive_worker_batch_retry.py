@@ -74,6 +74,80 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
             ],
         )
 
+    def test_ensure_worker_for_pending_repairs_duplicate_missing_3mf_retries_before_starting(self):
+        state = {}
+        manager = ArchiveTaskManager(background_enabled=False)
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
+            manager.task_store.save_archive_queue(
+                {
+                    "active": [],
+                    "queued": [
+                        {
+                            "id": "retry-profile-1",
+                            "url": "https://makerworld.com/zh/models/2193050",
+                            "mode": "single_model",
+                            "status": "queued",
+                            "meta": {
+                                "missing_3mf_retry": True,
+                                "model_id": "2193050",
+                                "instance_id": "profile-1",
+                                "instance_ids": ["profile-1"],
+                            },
+                        },
+                        {
+                            "id": "retry-profile-2",
+                            "url": "https://makerworld.com/zh/models/2193050",
+                            "mode": "single_model",
+                            "status": "queued",
+                            "meta": {
+                                "missing_3mf_retry": True,
+                                "model_id": "2193050",
+                                "instance_id": "profile-2",
+                            },
+                        },
+                    ],
+                    "recent_failures": [],
+                }
+            )
+
+            queue = manager.ensure_worker_for_pending()
+
+        self.assertEqual(queue["queued_count"], 1)
+        self.assertEqual(queue["queued"][0]["id"], "retry-profile-1")
+        self.assertEqual(queue["queued"][0]["meta"]["instance_ids"], ["profile-1", "profile-2"])
+
+    def test_ensure_worker_for_pending_does_not_requeue_expired_active_tasks_after_initial_repair(self):
+        state = {}
+        manager = ArchiveTaskManager(background_enabled=False)
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.is_lease_expired", return_value=True):
+            manager.task_store.save_archive_queue(
+                {
+                    "active": [
+                        {
+                            "id": "active-expired",
+                            "url": "https://makerworld.com/zh/models/2193050",
+                            "mode": "single_model",
+                            "status": "running",
+                            "lease_expires_at": "2026-06-04T09:00:00+08:00",
+                            "attempt_count": 1,
+                        }
+                    ],
+                    "queued": [],
+                    "recent_failures": [],
+                }
+            )
+
+            manager.ensure_worker_for_pending()
+            queue = manager.ensure_worker_for_pending()
+
+        self.assertEqual([item["id"] for item in queue["active"]], ["active-expired"])
+        self.assertEqual(queue["queued"], [])
+
     def test_resume_keeps_batch_parents_tracking_but_prioritizes_single_model_child(self):
         state = {}
         manager = ArchiveTaskManager(background_enabled=False)

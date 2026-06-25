@@ -120,6 +120,36 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         self.assertEqual(payload["organize_tasks"]["active_count"], 14)
         self.assertLess(len(json.dumps(payload, ensure_ascii=False)), 8000)
 
+    def test_tasks_light_payload_groups_only_visible_archive_items(self):
+        class GuardedQueueItems(list):
+            def __iter__(self):
+                for index, item in enumerate(super().__iter__()):
+                    if index >= 5:
+                        raise AssertionError("light payload should not iterate hidden archive queue items")
+                    yield item
+
+        archive_queue = {
+            "active": [],
+            "queued": GuardedQueueItems([{"id": f"queued-{index}", "status": "queued"} for index in range(2000)]),
+            "recent_failures": [],
+            "running_count": 0,
+            "queued_count": 2000,
+        }
+        missing_3mf = {"items": [], "count": 0}
+
+        with patch("app.services.catalog.load_database_json_state", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_archive_queue", return_value=archive_queue), \
+                patch.object(catalog.TaskStateStore, "load_missing_3mf", return_value=missing_3mf), \
+                patch.object(catalog.TaskStateStore, "load_remote_refresh_state", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_source_refresh_queue", return_value={"active": [], "queued": [], "recent_failures": []}), \
+                patch.object(catalog.TaskStateStore, "load_source_refresh_runs", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_organize_tasks", return_value={"items": [], "count": 0}):
+            payload = catalog.build_tasks_light_payload()
+
+        self.assertEqual(payload["archive_queue"]["queued_count"], 2000)
+        self.assertEqual(payload["archive_queue_display"]["raw_queued_count"], 2000)
+        self.assertLessEqual(len(payload["archive_queue_display"]["queued"]), 5)
+
     def test_tasks_payload_groups_subscription_children_for_display(self):
         archive_queue = {
             "active": [

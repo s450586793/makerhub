@@ -675,12 +675,29 @@ def _archive_display_item_from_group(
     return payload
 
 
-def _group_archive_queue_for_display(archive_queue: dict, *, item_limit: int | None = None) -> dict:
+def _limited_archive_items(raw_items: Any, limit: int | None) -> list[dict[str, Any]]:
+    if not isinstance(raw_items, list):
+        return []
+    if limit is None:
+        return [item for item in raw_items if isinstance(item, dict)]
+    clean_limit = max(0, int(limit or 0))
+    if clean_limit <= 0:
+        return []
+    return [item for item in raw_items[:clean_limit] if isinstance(item, dict)]
+
+
+def _group_archive_queue_for_display(
+    archive_queue: dict,
+    *,
+    item_limit: int | None = None,
+    visible_only: bool = False,
+) -> dict:
     def _group_items(raw_items: Any, default_status: str) -> list[dict[str, Any]]:
         groups: dict[str, list[dict[str, Any]]] = {}
         ordered_keys: list[str] = []
         display_items: list[dict[str, Any]] = []
-        for raw_item in raw_items if isinstance(raw_items, list) else []:
+        source_items = _limited_archive_items(raw_items, item_limit if visible_only else None)
+        for raw_item in source_items:
             if not isinstance(raw_item, dict):
                 continue
             item = dict(raw_item)
@@ -707,19 +724,22 @@ def _group_archive_queue_for_display(archive_queue: dict, *, item_limit: int | N
     active = active_all if item_limit is None else active_all[:max(0, int(item_limit or 0))]
     queued = queued_all if item_limit is None else queued_all[:max(0, int(item_limit or 0))]
     recent_failures = failures_all if item_limit is None else failures_all[:max(0, int(item_limit or 0))]
+    raw_running_count = int(archive_queue.get("running_count") or _count_items(archive_queue.get("active")))
+    raw_queued_count = int(archive_queue.get("queued_count") or _count_items(archive_queue.get("queued")))
+    raw_failed_count = int(archive_queue.get("failed_count") or _count_items(archive_queue.get("recent_failures")))
     return {
         "active": active,
         "queued": queued,
         "recent_failures": recent_failures,
-        "running_count": len(active_all),
-        "queued_count": len(queued_all),
-        "failed_count": len(failures_all),
-        "active_truncated": len(active_all) > len(active),
-        "queued_truncated": len(queued_all) > len(queued),
-        "recent_failures_truncated": len(failures_all) > len(recent_failures),
-        "raw_running_count": int(archive_queue.get("running_count") or _count_items(archive_queue.get("active"))),
-        "raw_queued_count": int(archive_queue.get("queued_count") or _count_items(archive_queue.get("queued"))),
-        "raw_failed_count": int(archive_queue.get("failed_count") or _count_items(archive_queue.get("recent_failures"))),
+        "running_count": raw_running_count if visible_only else len(active_all),
+        "queued_count": raw_queued_count if visible_only else len(queued_all),
+        "failed_count": raw_failed_count if visible_only else len(failures_all),
+        "active_truncated": raw_running_count > len(active),
+        "queued_truncated": raw_queued_count > len(queued),
+        "recent_failures_truncated": raw_failed_count > len(recent_failures),
+        "raw_running_count": raw_running_count,
+        "raw_queued_count": raw_queued_count,
+        "raw_failed_count": raw_failed_count,
     }
 
 
@@ -3099,7 +3119,7 @@ def build_tasks_light_payload(missing_fallback: Optional[list[dict]] = None) -> 
     store = TaskStateStore()
     raw_archive_queue = store.load_archive_queue()
     archive_queue = _compact_archive_queue_payload(raw_archive_queue)
-    archive_queue_display = _group_archive_queue_for_display(raw_archive_queue, item_limit=5)
+    archive_queue_display = _group_archive_queue_for_display(raw_archive_queue, item_limit=5, visible_only=True)
     missing_3mf = _compact_missing_3mf_payload(store.load_missing_3mf(fallback_items=missing_fallback))
     organize_tasks = _compact_organize_tasks_payload(store.load_organize_tasks())
     remote_refresh = compact_remote_refresh_state(store.load_remote_refresh_state(), include_current=True)

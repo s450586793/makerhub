@@ -471,7 +471,7 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(queue["queued_count"], 0)
         self.assertEqual([item["id"] for item in queue["active"]], ["active-batch"])
 
-    def test_enqueue_archive_task_keeps_distinct_missing_3mf_instances(self):
+    def test_enqueue_archive_task_merges_distinct_missing_3mf_instances(self):
         state = {
             "archive_queue": {
                 "active": [],
@@ -485,6 +485,7 @@ class ArchiveQueueStateTest(unittest.TestCase):
                             "missing_3mf_retry": True,
                             "model_id": "123",
                             "instance_id": "profile-1",
+                            "instance_ids": ["profile-1"],
                         },
                     }
                 ],
@@ -509,8 +510,11 @@ class ArchiveQueueStateTest(unittest.TestCase):
                 }
             )
 
-        self.assertTrue(queue["enqueued"])
-        self.assertEqual([item["id"] for item in queue["queued"]], ["retry-profile-1", "retry-profile-2"])
+        self.assertFalse(queue["enqueued"])
+        self.assertTrue(queue["merged"])
+        self.assertEqual(queue["existing_task_id"], "retry-profile-1")
+        self.assertEqual([item["id"] for item in queue["queued"]], ["retry-profile-1"])
+        self.assertEqual(queue["queued"][0]["meta"]["instance_ids"], ["profile-1", "profile-2"])
 
     def test_enqueue_archive_task_skips_duplicate_missing_3mf_instance(self):
         state = {
@@ -587,7 +591,7 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(queue["running_count"], 0)
         self.assertEqual([item["id"] for item in queue["queued"]], ["queued-batch"])
 
-    def test_requeue_active_tasks_keeps_distinct_missing_3mf_instances(self):
+    def test_requeue_active_tasks_merges_distinct_missing_3mf_instances(self):
         state = {
             "archive_queue": {
                 "active": [
@@ -613,6 +617,7 @@ class ArchiveQueueStateTest(unittest.TestCase):
                             "missing_3mf_retry": True,
                             "model_id": "123",
                             "instance_id": "profile-1",
+                            "instance_ids": ["profile-1"],
                         },
                     }
                 ],
@@ -626,9 +631,10 @@ class ArchiveQueueStateTest(unittest.TestCase):
                 patch("app.services.task_state.china_now_iso", return_value="2026-06-04T10:00:00+08:00"):
             queue = store.requeue_active_tasks()
 
-        self.assertEqual(queue["recovered_count"], 1)
-        self.assertEqual(queue["deduplicated_count"], 0)
-        self.assertEqual([item["id"] for item in queue["queued"]], ["active-profile-2", "queued-profile-1"])
+        self.assertEqual(queue["recovered_count"], 0)
+        self.assertEqual(queue["deduplicated_count"], 1)
+        self.assertEqual([item["id"] for item in queue["queued"]], ["queued-profile-1"])
+        self.assertEqual(queue["queued"][0]["meta"]["instance_ids"], ["profile-1", "profile-2"])
 
     def test_start_archive_task_assigns_runtime_lease_fields(self):
         state = {"archive_queue": {"active": [], "queued": [{"id": "task-1", "title": "Demo"}], "recent_failures": []}}
@@ -848,7 +854,7 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(result["queue"]["active"], [])
         self.assertEqual([item["id"] for item in result["queue"]["queued"]], ["task-queued"])
 
-    def test_repair_archive_queue_keeps_distinct_missing_3mf_instances(self):
+    def test_repair_archive_queue_merges_distinct_missing_3mf_instances_for_same_model(self):
         state = {
             "archive_queue": {
                 "active": [],
@@ -862,6 +868,7 @@ class ArchiveQueueStateTest(unittest.TestCase):
                             "missing_3mf_retry": True,
                             "model_id": "123",
                             "instance_id": "profile-1",
+                            "instance_ids": ["profile-1"],
                         },
                     },
                     {
@@ -885,8 +892,9 @@ class ArchiveQueueStateTest(unittest.TestCase):
                 patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
             result = store.repair_archive_queue()
 
-        self.assertEqual(result["summary"]["deduplicated"], 0)
-        self.assertEqual([item["id"] for item in result["queue"]["queued"]], ["retry-profile-1", "retry-profile-2"])
+        self.assertEqual(result["summary"]["deduplicated"], 1)
+        self.assertEqual([item["id"] for item in result["queue"]["queued"]], ["retry-profile-1"])
+        self.assertEqual(result["queue"]["queued"][0]["meta"]["instance_ids"], ["profile-1", "profile-2"])
 
     def test_repair_archive_queue_fails_expired_task_without_attempts(self):
         state = {

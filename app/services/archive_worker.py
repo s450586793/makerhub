@@ -158,9 +158,7 @@ def _queue_missing_3mf_retry_key(url: str, meta: Optional[dict[str, Any]] = None
     model_id = str(meta.get("model_id") or extract_model_id(url) or "").strip()
     if not model_id:
         return ""
-    instance_id = str(meta.get("instance_id") or "").strip()
-    suffix = f":instance:{instance_id}" if instance_id else ""
-    return f"missing_3mf_retry:model:{model_id}{suffix}"
+    return f"missing_3mf_retry:model:{model_id}"
 
 
 def _queue_item_missing_3mf_retry_key(item: dict) -> str:
@@ -1372,7 +1370,13 @@ class ArchiveTaskManager:
                 return None
             return dict(preview)
 
-    def _enqueue_single_task(self, url: str, message: str = "等待归档", mode: str = "", meta: Optional[dict] = None) -> str:
+    def _enqueue_single_task_with_queue(
+        self,
+        url: str,
+        message: str = "等待归档",
+        mode: str = "",
+        meta: Optional[dict] = None,
+    ) -> tuple[str, dict]:
         task_id = uuid.uuid4().hex
         queue = self.task_store.enqueue_archive_task(
             {
@@ -1389,7 +1393,11 @@ class ArchiveTaskManager:
         )
         queue = queue if isinstance(queue, dict) else {}
         if queue.get("enqueued") is False and str(queue.get("existing_task_id") or "").strip():
-            return str(queue.get("existing_task_id") or "").strip()
+            return str(queue.get("existing_task_id") or "").strip(), queue
+        return task_id, queue
+
+    def _enqueue_single_task(self, url: str, message: str = "等待归档", mode: str = "", meta: Optional[dict] = None) -> str:
+        task_id, _queue = self._enqueue_single_task_with_queue(url, message=message, mode=mode, meta=meta)
         return task_id
 
     def _enqueue_three_mf_stage_task_from_result(self, url: str, result: dict[str, Any], meta: dict[str, Any]) -> str:
@@ -1456,10 +1464,7 @@ class ArchiveTaskManager:
                 "mode": "single_model",
                 "url": clean_url,
             }
-        if missing_retry_key:
-            queued_duplicate = missing_retry_key in self._queued_missing_3mf_retry_keys()
-        else:
-            queued_duplicate = task_key in self._queued_task_keys()
+        queued_duplicate = False if missing_retry_key else task_key in self._queued_task_keys()
         if queued_duplicate:
             _log_archive("single_submit_skipped", "单模型已在归档队列中。", url=clean_url, task_key=task_key)
             return {
@@ -1480,8 +1485,22 @@ class ArchiveTaskManager:
         queue_message = "等待归档" if not force else "等待重新下载缺失 3MF"
         if force:
             task_meta.setdefault("missing_3mf_retry", True)
-        task_id = self._enqueue_single_task(clean_url, message=queue_message, mode="single_model", meta=task_meta)
+            instance_ids = _clean_instance_ids(task_meta.get("instance_ids"))
+            instance_id = str(task_meta.get("instance_id") or "").strip()
+            if instance_id and instance_id not in instance_ids:
+                instance_ids.append(instance_id)
+            if instance_ids:
+                task_meta["instance_ids"] = instance_ids
+        task_id, enqueue_queue = self._enqueue_single_task_with_queue(
+            clean_url,
+            message=queue_message,
+            mode="single_model",
+            meta=task_meta,
+        )
         self._ensure_worker()
+        task_merged = bool(enqueue_queue.get("merged"))
+        task_enqueued = bool(enqueue_queue.get("enqueued", True))
+        existing_task_id = str(enqueue_queue.get("existing_task_id") or task_id).strip()
         _log_archive(
             "single_submitted",
             "单模型归档任务已入队。" if not force else "缺失 3MF 重新下载任务已入队。",
@@ -1489,10 +1508,34 @@ class ArchiveTaskManager:
             task_id=task_id,
             task_key=task_key,
             force=force,
+            merged=task_merged,
+            enqueued=task_enqueued,
         )
+        if force and not task_enqueued and task_merged:
+            return {
+                "accepted": False,
+                "merged": True,
+                "queued": True,
+                "task_id": existing_task_id,
+                "mode": "single_model",
+                "url": clean_url,
+                "message": "该模型的缺失 3MF 重试已在队列中，已合并缺失实例。",
+            }
+        if force and not task_enqueued:
+            return {
+                "accepted": False,
+                "merged": False,
+                "queued": True,
+                "task_id": existing_task_id,
+                "mode": "single_model",
+                "url": clean_url,
+                "message": "该模型的缺失 3MF 重试已在队列中。",
+            }
         return {
             "accepted": True,
             "task_id": task_id,
+            "merged": task_merged,
+            "existing_task_id": existing_task_id if task_merged else "",
             "mode": "single_model",
             "url": clean_url,
             "message": "归档任务已加入队列。" if not force else "缺失 3MF 重新下载任务已加入队列。",
@@ -1800,6 +1843,28 @@ class ArchiveTaskManager:
             )
             return result
 
+        if result.get("merged"):
+            self.task_store.update_missing_3mf_status(
+                model_id=clean_model_id,
+                title="" if clean_model_id else title,
+                instance_id="" if clean_model_id else instance_id,
+                model_url="" if clean_model_id else clean_url,
+                status="queued",
+                message="已合并到重新下载队列",
+            )
+            return result
+
+        if result.get("queued"):
+            self.task_store.update_missing_3mf_status(
+                model_id=clean_model_id,
+                title="" if clean_model_id else title,
+                instance_id="" if clean_model_id else instance_id,
+                model_url="" if clean_model_id else clean_url,
+                status="queued",
+                message="已存在于重新下载队列",
+            )
+            return result
+
         message = str(result.get("message") or "")
         if "已经在归档队列中" in message:
             self.task_store.update_missing_3mf_status(
@@ -1827,14 +1892,13 @@ class ArchiveTaskManager:
         verification_states = {"verification_required", "cloudflare", "auth_required", "cookie_invalid"}
         missing_payload = self.task_store.load_missing_3mf()
         candidates: list[dict[str, Any]] = []
-        seen: set[tuple[str, str, str, str]] = set()
+        seen: set[tuple[str, str, str]] = set()
 
-        def _candidate_key(item: dict[str, Any]) -> tuple[str, str, str, str]:
+        def _candidate_key(item: dict[str, Any]) -> tuple[str, str, str]:
             return (
                 str(item.get("model_id") or "").strip(),
                 str(item.get("model_url") or "").strip(),
-                str(item.get("title") or "").strip(),
-                str(item.get("instance_id") or "").strip(),
+                normalize_makerworld_source(item.get("source"), item.get("model_url")),
             )
 
         for raw_item in [primary_item, *(missing_payload.get("items") or [])]:
@@ -1856,6 +1920,7 @@ class ArchiveTaskManager:
                 "model_id": str(raw_item.get("model_id") or raw_item.get("id") or extract_model_id(item_url) or "").strip(),
                 "title": str(raw_item.get("title") or raw_item.get("name") or "").strip(),
                 "instance_id": str(raw_item.get("instance_id") or raw_item.get("profileId") or raw_item.get("instanceId") or "").strip(),
+                "source": item_platform,
             }
             key = _candidate_key(candidate)
             if key in seen:
@@ -1885,7 +1950,7 @@ class ArchiveTaskManager:
             last_message = str(result.get("message") or "")
             if result.get("accepted"):
                 accepted += 1
-            elif "已经在归档队列中" in last_message:
+            elif result.get("queued") or result.get("merged") or "已经在归档队列中" in last_message:
                 queued += 1
             else:
                 failed += 1
@@ -1979,7 +2044,27 @@ class ArchiveTaskManager:
             message="等待重新下载 3MF",
         )
 
+        grouped_items: list[dict[str, Any]] = []
+        seen_group_keys: set[tuple[str, str, str]] = set()
         for item in items:
+            item_url = normalize_source_url(str(item.get("model_url") or ""))
+            item_model_id = str(item.get("model_id") or extract_model_id(item_url) or "").strip()
+            item_source = normalize_makerworld_source(item.get("source"), item_url)
+            group_key = (item_model_id, item_url, item_source)
+            if group_key in seen_group_keys:
+                continue
+            seen_group_keys.add(group_key)
+            grouped_items.append(
+                {
+                    "model_url": item_url,
+                    "model_id": item_model_id,
+                    "source": item_source,
+                    "title": str(item.get("title") or ""),
+                    "instance_id": "",
+                }
+            )
+
+        for item in grouped_items:
             result = self.retry_missing_3mf(
                 model_url=str(item.get("model_url") or ""),
                 model_id=str(item.get("model_id") or ""),
@@ -1991,7 +2076,7 @@ class ArchiveTaskManager:
             if result.get("accepted"):
                 accepted += 1
                 continue
-            if "已经在归档队列中" in last_message:
+            if result.get("queued") or result.get("merged") or "已经在归档队列中" in last_message:
                 queued += 1
             else:
                 failed += 1
@@ -2269,13 +2354,45 @@ class ArchiveTaskManager:
             self._worker = self._workers[0] if self._workers else None
 
     def ensure_worker_for_pending(self) -> dict:
-        queue = self.task_store.load_archive_queue()
+        queue = self._repair_queue_before_worker_start(repair_active=False)
         if int(queue.get("queued_count") or 0) > 0:
             self._ensure_worker()
         return queue
 
+    def _repair_queue_before_worker_start(self, *, repair_active: bool = False) -> dict:
+        queue = self.task_store.load_archive_queue()
+        if int(queue.get("queued_count") or 0) <= 0 and int(queue.get("running_count") or 0) <= 0:
+            return queue
+        if repair_active:
+            result = self.task_store.repair_archive_queue()
+            repaired_queue = result.get("queue") if isinstance(result, dict) else None
+            queue = repaired_queue if isinstance(repaired_queue, dict) else self.task_store.load_archive_queue()
+        else:
+            result = self.task_store.repair_archive_queue(repair_active=False)
+            repaired_queue = result.get("queue") if isinstance(result, dict) else None
+            queue = repaired_queue if isinstance(repaired_queue, dict) else self.task_store.load_archive_queue()
+        if int(queue.get("queued_count") or 0) > 0:
+            summary = result.get("summary") if repair_active and isinstance(result, dict) else {}
+            deduplicated = (
+                int(summary.get("deduplicated") or 0)
+                if isinstance(summary, dict)
+                else int(result.get("deduplicated_count") or 0)
+                if isinstance(result, dict)
+                else 0
+            )
+            if deduplicated:
+                _log_archive(
+                    "archive_queue_repaired_before_worker_start",
+                    "归档 worker 启动前已合并重复队列任务。",
+                    deduplicated=deduplicated,
+                    queued_count=int(queue.get("queued_count") or 0),
+                )
+        return queue
+
     def resume_pending_tasks(self) -> dict:
         queue = self.task_store.requeue_active_tasks()
+        if int(queue.get("queued_count") or 0) > 0:
+            queue = self._repair_queue_before_worker_start(repair_active=True)
         if (queue.get("queued_count") or 0) > 0:
             self._ensure_worker()
         return queue
@@ -2555,6 +2672,7 @@ class ArchiveTaskManager:
         missing_3mf_retry = bool(meta.get("missing_3mf_retry"))
         three_mf_download_task = bool(meta.get("three_mf_download"))
         instance_ids = _clean_instance_ids(meta.get("instance_ids"))
+        archive_instance_ids = instance_ids if three_mf_download_task else []
         asset_lightweight_task = profile_metadata_only or missing_3mf_retry or three_mf_download_task
         default_asset_download = not asset_lightweight_task
         download_assets = _meta_bool(meta, "download_assets", default_asset_download)
@@ -2643,7 +2761,7 @@ class ArchiveTaskManager:
                     existing_model_dir=existing_model_dir,
                     proxy_config=config.proxy,
                     three_mf_captcha_result_header=three_mf_captcha_result_header,
-                    instance_ids=instance_ids,
+                    instance_ids=archive_instance_ids,
                 )
 
         result = run_job()
