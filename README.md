@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.45`
+> 当前版本：`v0.9.46`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,11 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-26 · v0.9.46
+
+- 归档子进程上报 `100% / 归档完成` 后如果没有返回最终结果，会在短超时内自动终止并释放归档 Worker 槽位，避免 `3MF` 子任务长时间占住 active。
+- 新增后台任务尾段卡住回归测试，覆盖“最终进度后无结果”和“最终进度后正常返回结果”两种路径。
+
 ### 2026-06-26 · v0.9.45
 
 - 缺失 `3MF` 批量重试改为按模型合并队列项，同一模型的多个打印配置会汇总到一个重试任务，避免线上重复生成大量缺失 `3MF` 任务。
@@ -218,14 +223,14 @@ uvicorn app.main:app --reload
 - 归档失败记录按 `model_id + instance_id` 去重，同一打印配置的 Cloudflare / 验证失败只保留最新一条，同时保留同模型不同打印配置。
 - 归档队列修复会清理已有 queued / recent failures 重复项，线上已有重复队列可通过修复流程自动压平。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-24 · v0.9.43
 
 - `3MF` 下载子任务和缺失 `3MF` 重试默认改为轻量执行，只获取必要的模型 / 实例信息和 `3MF` 下载地址，不再同步图片、附件、评论资源或评论分页数据。
 - 兼容线上已经排队的旧 `three_mf_download` / `missing_3mf_retry` 任务，Worker 重启后即使旧任务没有新元数据，也会按轻量逻辑继续处理。
 - 补充归档 Worker 和进程包装回归测试，锁定 `collect_comments_data=false`、资源下载关闭和实例 ID 定向下载参数传递。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-23 · v0.9.42
 

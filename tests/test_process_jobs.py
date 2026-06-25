@@ -1,4 +1,5 @@
 import unittest
+import time
 from unittest.mock import patch
 
 from app.services import process_jobs
@@ -12,6 +13,17 @@ def _write_error_file_only(_queue, payload):
     process_jobs._write_job_result_file(payload, "error", {"message": "boom"})
 
 
+def _emit_final_progress_without_result(queue, _payload):
+    queue.put({"type": "progress", "payload": {"percent": 100, "message": "归档完成"}})
+    time.sleep(1)
+
+
+def _emit_final_progress_then_result(queue, payload):
+    queue.put({"type": "progress", "payload": {"percent": 100, "message": "归档完成"}})
+    time.sleep(0.05)
+    process_jobs._emit_finished(queue, payload, "result", {"ok": True})
+
+
 class ProcessJobsTest(unittest.TestCase):
     def test_run_process_job_reads_result_file_when_queue_event_is_missing(self):
         result = process_jobs._run_process_job(_write_result_file_only, {})
@@ -21,6 +33,24 @@ class ProcessJobsTest(unittest.TestCase):
     def test_run_process_job_reads_error_file_when_queue_event_is_missing(self):
         with self.assertRaisesRegex(RuntimeError, "boom"):
             process_jobs._run_process_job(_write_error_file_only, {})
+
+    def test_run_process_job_times_out_quickly_after_final_progress_without_result(self):
+        with self.assertRaisesRegex(RuntimeError, "后台任务已上报完成进度，但没有返回结果"):
+            process_jobs._run_process_job(
+                _emit_final_progress_without_result,
+                {},
+                idle_timeout_seconds=30,
+                final_progress_timeout_seconds=0.1,
+            )
+
+    def test_run_process_job_accepts_result_after_final_progress(self):
+        result = process_jobs._run_process_job(
+            _emit_final_progress_then_result,
+            {},
+            final_progress_timeout_seconds=1,
+        )
+
+        self.assertEqual(result, {"ok": True})
 
     def test_run_discover_batch_urls_job_passes_proxy_config_to_env(self):
         calls = []

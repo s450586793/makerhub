@@ -21,6 +21,7 @@ JOB_CONTEXT = get_context("spawn")
 JOB_POLL_SECONDS = 0.5
 JOB_EXIT_TIMEOUT_SECONDS = 5
 DEFAULT_JOB_IDLE_TIMEOUT_SECONDS = 30 * 60
+DEFAULT_FINAL_PROGRESS_TIMEOUT_SECONDS = 60
 DEFAULT_THREE_MF_DAILY_LIMIT = 100
 DEFAULT_HEAVY_JOB_NICE = 5
 
@@ -65,6 +66,14 @@ def _job_idle_timeout_seconds() -> int:
     except (TypeError, ValueError):
         return DEFAULT_JOB_IDLE_TIMEOUT_SECONDS
     return max(value, 30)
+
+
+def _final_progress_timeout_seconds() -> int:
+    try:
+        value = int(os.environ.get("MAKERHUB_FINAL_PROGRESS_TIMEOUT_SECONDS") or DEFAULT_FINAL_PROGRESS_TIMEOUT_SECONDS)
+    except (TypeError, ValueError):
+        return DEFAULT_FINAL_PROGRESS_TIMEOUT_SECONDS
+    return max(value, 5)
 
 
 def _heavy_job_nice_increment() -> int:
@@ -278,6 +287,7 @@ def _run_process_job(
     *,
     progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
     idle_timeout_seconds: Optional[int] = None,
+    final_progress_timeout_seconds: Optional[float] = None,
 ) -> Any:
     queue = JOB_CONTEXT.Queue()
     result_fd, result_file = tempfile.mkstemp(prefix="makerhub_job_result_", suffix=".json")
@@ -294,10 +304,26 @@ def _run_process_job(
     result: Any = None
     error_payload: Optional[dict[str, Any]] = None
     timeout_seconds = int(idle_timeout_seconds or _job_idle_timeout_seconds())
+    final_timeout_seconds = float(
+        _final_progress_timeout_seconds()
+        if final_progress_timeout_seconds is None
+        else final_progress_timeout_seconds
+    )
     last_event_at = time.monotonic()
+    final_progress_at: Optional[float] = None
+
+    def _is_final_progress(progress_payload: Any) -> bool:
+        if not isinstance(progress_payload, dict):
+            return False
+        try:
+            percent = int(progress_payload.get("percent") or progress_payload.get("progress") or 0)
+        except (TypeError, ValueError):
+            percent = 0
+        message = str(progress_payload.get("message") or "")
+        return percent >= 100 and ("完成" in message)
 
     def handle_message(message: Any) -> bool:
-        nonlocal result, error_payload, last_event_at
+        nonlocal result, error_payload, last_event_at, final_progress_at
         if not isinstance(message, dict):
             return False
         last_event_at = time.monotonic()
@@ -305,6 +331,8 @@ def _run_process_job(
         event_payload = message.get("payload")
 
         if event_type == "progress":
+            if _is_final_progress(event_payload):
+                final_progress_at = time.monotonic()
             if callable(progress_callback) and isinstance(event_payload, dict):
                 try:
                     progress_callback(event_payload)
@@ -356,6 +384,11 @@ def _run_process_job(
             except Empty:
                 if not process.is_alive():
                     drain_final_messages()
+                    break
+                if final_progress_at is not None and time.monotonic() - final_progress_at >= final_timeout_seconds:
+                    error_payload = {
+                        "message": "后台任务已上报完成进度，但没有返回结果，已自动终止。",
+                    }
                     break
                 if time.monotonic() - last_event_at >= timeout_seconds:
                     error_payload = {
@@ -465,6 +498,7 @@ def run_archive_model_job(
                 "instance_ids": instance_ids,
             },
             progress_callback=progress_callback,
+            final_progress_timeout_seconds=_final_progress_timeout_seconds(),
         )
 
 
