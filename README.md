@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.46`
+> 当前版本：`v0.9.47`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-26 · v0.9.47
+
+- 待验证、Cookie 异常等平台级 `3MF` gate 关闭时，归档 Worker 会在调度层跳过同平台缺失 `3MF` 重试 / 新增 `3MF` 下载任务，避免它们占住 active 槽位。
+- 普通归档、批量 / 订阅归档父任务仍可继续执行，保持“只暂停 `3MF` 下载，不阻塞图片、评论、描述等其他资源”的预期。
+- 补充队列选择回归测试，覆盖 gate 关闭时普通归档越过 `3MF-only` 任务，以及队列只剩被 gate 阻塞的 `3MF-only` 任务时不再领取。
+
 ### 2026-06-26 · v0.9.46
 
 - 归档子进程上报 `100% / 归档完成` 后如果没有返回最终结果，会在短超时内自动终止并释放归档 Worker 槽位，避免 `3MF` 子任务长时间占住 active。
@@ -217,14 +223,14 @@ uvicorn app.main:app --reload
 - 已存在队列中的缺失 `3MF` 重试会保持缺失列表为“已排队 / 已合并”状态，不再误回落为缺失或反复重新入队。
 - 任务轻量接口只整理首屏可见归档项，同时保留真实队列总数，降低 2000+ 归档任务场景下首页 / 任务页刷新负载。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-25 · v0.9.44
 
 - 归档队列写入新增业务 identity 去重，批量作者页 / 收藏夹父任务在重试、订阅同步或服务重启恢复时不会重复进入 queued。
 - 归档失败记录按 `model_id + instance_id` 去重，同一打印配置的 Cloudflare / 验证失败只保留最新一条，同时保留同模型不同打印配置。
 - 归档队列修复会清理已有 queued / recent failures 重复项，线上已有重复队列可通过修复流程自动压平。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-24 · v0.9.43
 

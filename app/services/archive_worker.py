@@ -213,6 +213,10 @@ def _is_three_mf_failure_item(item: Optional[dict[str, Any]]) -> bool:
     return bool(meta.get("three_mf_download") or meta.get("missing_3mf_retry"))
 
 
+def _is_three_mf_only_task(item: Optional[dict[str, Any]]) -> bool:
+    return _is_three_mf_failure_item(item)
+
+
 def _append_batch_queue_log(event: str, **payload: Any) -> None:
     append_structured_log(
         BATCH_QUEUE_LOG_PATH.name,
@@ -2400,9 +2404,23 @@ class ArchiveTaskManager:
     def _next_executable_task(self, queue: dict) -> Optional[dict]:
         queued = list(queue.get("queued") or [])
         for item in queued:
-            if not _is_batch_parent_waiting_for_children(item):
+            if _is_batch_parent_waiting_for_children(item):
+                continue
+            if self._is_three_mf_only_task_blocked_by_gate(item):
+                continue
+            return item
+        for item in queued:
+            if not _is_three_mf_only_task(item):
                 return item
-        return queued[0] if queued else None
+        return None
+
+    def _is_three_mf_only_task_blocked_by_gate(self, item: dict) -> bool:
+        if not _is_three_mf_only_task(item):
+            return False
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        url = normalize_source_url(str(meta.get("model_url") or item.get("url") or item.get("title") or ""))
+        gate = three_mf_gate_for_url(url, meta)
+        return not bool(gate.get("open"))
 
     def _run_loop(self) -> None:
         while True:
