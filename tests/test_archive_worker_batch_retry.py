@@ -1,6 +1,7 @@
 import threading
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -147,6 +148,43 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in queue["active"]], ["active-expired"])
         self.assertEqual(queue["queued"], [])
+
+    def test_ensure_worker_for_pending_refreshes_recent_active_without_requeue(self):
+        state = {}
+        manager = ArchiveTaskManager(background_enabled=False)
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.is_lease_expired", return_value=True), \
+                patch("app.services.task_state.china_now", return_value=datetime(2026, 6, 4, 10, 0, tzinfo=timezone(timedelta(hours=8)))), \
+                patch("app.services.task_state.china_now_iso", return_value="2026-06-04T10:00:00+08:00"), \
+                patch("app.services.task_state.lease_expiry_from_now", return_value="2026-06-04T10:30:00+08:00"):
+            manager.task_store.save_archive_queue(
+                {
+                    "active": [
+                        {
+                            "id": "active-recent",
+                            "url": "https://makerworld.com/zh/models/2193050",
+                            "mode": "single_model",
+                            "status": "running",
+                            "progress": 1,
+                            "message": "正在准备归档",
+                            "updated_at": "2026-06-04T09:59:45+08:00",
+                            "lease_expires_at": "",
+                            "attempt_count": 1,
+                        }
+                    ],
+                    "queued": [],
+                    "recent_failures": [],
+                }
+            )
+
+            queue = manager.ensure_worker_for_pending()
+
+        self.assertEqual([item["id"] for item in queue["active"]], ["active-recent"])
+        self.assertEqual(queue["queued"], [])
+        self.assertEqual(queue["active"][0]["heartbeat_at"], "2026-06-04T10:00:00+08:00")
+        self.assertEqual(queue["active"][0]["lease_expires_at"], "2026-06-04T10:30:00+08:00")
 
     def test_resume_keeps_batch_parents_tracking_but_prioritizes_single_model_child(self):
         state = {}

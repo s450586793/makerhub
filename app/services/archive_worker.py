@@ -2358,6 +2358,8 @@ class ArchiveTaskManager:
 
     def ensure_worker_for_pending(self) -> dict:
         queue = self._repair_queue_before_worker_start(repair_active=False)
+        if int(queue.get("running_count") or 0) > 0:
+            queue = self.task_store.refresh_recent_active_archive_leases()
         if int(queue.get("queued_count") or 0) > 0:
             self._ensure_worker()
         return queue

@@ -1981,6 +1981,34 @@ class TaskStateStore:
 
         return self._update_archive_queue(_mutate)
 
+    def refresh_recent_active_archive_leases(self) -> dict:
+        refreshed_count = 0
+
+        def _mutate(payload: dict) -> dict:
+            nonlocal refreshed_count
+            active = []
+            now = china_now_iso()
+            for item in payload.get("active") or []:
+                normalized = _normalize_archive_runtime_item(item, "running")
+                status = normalize_runtime_status(normalized.get("status"), "running")
+                if (
+                    status == "running"
+                    and is_lease_expired(normalized.get("lease_expires_at"))
+                    and _has_recent_archive_progress(normalized)
+                ):
+                    normalized["heartbeat_at"] = now
+                    normalized["last_progress_at"] = now
+                    normalized["lease_expires_at"] = lease_expiry_from_now()
+                    normalized["updated_at"] = now
+                    refreshed_count += 1
+                active.append(normalized)
+            payload["active"] = active
+            return payload
+
+        queue = self._update_archive_queue(_mutate)
+        queue["refreshed_count"] = refreshed_count
+        return queue
+
     def complete_archive_task(self, task_id: str, **changes: Any) -> dict:
         completed_item: Optional[dict[str, Any]] = None
 

@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.50`
+> 当前版本：`v0.9.51`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-26 · v0.9.51
+
+- Worker 常规轮询会自动续租最近仍有进度的 active 归档任务，避免旧脏状态缺少 `lease_expires_at` 时必须人工点击队列修复。
+- 新增只续租、不重排的轻量 active 修复路径，保留“不要把可能仍在运行的任务重复排队”的保护。
+- 补充回归测试，覆盖缺租约 running active 自动恢复租约且不会进入 queued。
+
 ### 2026-06-26 · v0.9.50
 
 - 归档活动任务每次进度更新都会刷新 `heartbeat_at`、`last_progress_at` 和 `lease_expires_at`，避免长时间下载图片或整理资源时被误判为 stale。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - 路由兼容测试继续使用统一 route context 遍历，兼容新版 FastAPI / Starlette 的路由结构。
 - 保持当前归档队列、`3MF` gate 和完成态清理修复不回退，并补齐本次 release 元数据。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-26 · v0.9.48
 
 - 队列修复和服务启动恢复会识别 `100% / 归档完成` 等完成态 running 快照，直接移出 active，避免已完成任务继续占用归档槽位。
 - 归档 Worker 完成单模型、批量归档或 `3MF` 子任务时，会在同一次队列更新中写入最终进度并完成任务，减少完成态残留窗口。
 - 补充队列恢复和修复回归测试，覆盖完成态 running 快照不会被重新排队。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-26 · v0.9.47
 
