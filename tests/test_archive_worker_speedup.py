@@ -298,7 +298,7 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
             replace_missing_3mf_for_model=lambda model_id, items: replaced_missing.append((model_id, items)),
             remove_recent_failures_for_model=lambda *_args, **_kwargs: None,
             update_active_task=lambda task_id, **payload: updates.append((task_id, payload)),
-            complete_archive_task=lambda task_id: completed.append(task_id),
+            complete_archive_task=lambda task_id, **_payload: completed.append(task_id),
             enqueue_archive_task=lambda item: enqueued.append(item),
         )
 
@@ -345,7 +345,7 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
             replace_missing_3mf_for_model=lambda *_args, **_kwargs: None,
             remove_recent_failures_for_model=lambda *_args, **_kwargs: None,
             update_active_task=lambda *_args, **_kwargs: None,
-            complete_archive_task=lambda task_id: completed.append(task_id),
+            complete_archive_task=lambda task_id, **_payload: completed.append(task_id),
         )
 
         def fake_resource_slot(name, **_kwargs):
@@ -398,7 +398,7 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
             replace_missing_3mf_for_model=lambda model_id, items: replaced_missing.append((model_id, items)),
             remove_recent_failures_for_model=lambda *_args, **_kwargs: None,
             update_active_task=lambda *_args, **_kwargs: None,
-            complete_archive_task=lambda task_id: completed.append(task_id),
+            complete_archive_task=lambda task_id, **_payload: completed.append(task_id),
         )
 
         def fake_archive_job(**kwargs):

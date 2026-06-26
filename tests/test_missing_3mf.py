@@ -570,7 +570,7 @@ class Missing3mfTest(unittest.TestCase):
             replace_missing_3mf_for_model=lambda model_id, items: replaced_missing.append((model_id, items)),
             remove_recent_failures_for_model=lambda model_id, url="": removed_failures.append((model_id, url)),
             update_active_task=lambda task_id, **payload: active_updates.append((task_id, payload)),
-            complete_archive_task=lambda task_id: completed.append(task_id),
+            complete_archive_task=lambda task_id, **payload: completed.append((task_id, payload)),
         )
 
         with patch.object(archive_worker_module, "_select_cookie", return_value="cookie"), \
@@ -610,8 +610,8 @@ class Missing3mfTest(unittest.TestCase):
             removed_failures,
             [("973599", "https://makerworld.com/zh/models/973599")],
         )
-        self.assertEqual(completed, ["task-1"])
-        self.assertEqual(active_updates[-1][1]["progress"], 100)
+        self.assertEqual(completed, [("task-1", {"progress": 100, "message": "归档完成：Demo Model"})])
+        self.assertFalse(active_updates)
 
     def test_run_single_task_updates_three_mf_gate_for_verification_required_missing_3mf(self):
         manager = ArchiveTaskManager(background_enabled=False)
@@ -681,7 +681,7 @@ class Missing3mfTest(unittest.TestCase):
             replace_missing_3mf_for_model=lambda *_args, **_kwargs: None,
             remove_recent_failures_for_model=lambda *_args, **_kwargs: None,
             update_active_task=lambda *_args, **_kwargs: None,
-            complete_archive_task=lambda task_id: completed.append(task_id),
+            complete_archive_task=lambda task_id, **_payload: completed.append(task_id),
         )
 
         with patch.object(archive_worker_module, "_select_cookie", return_value="cookie"), \

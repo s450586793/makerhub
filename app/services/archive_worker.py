@@ -1289,13 +1289,12 @@ class ArchiveTaskManager:
                 summary = (
                     f"批量归档完成：成功 {completed_count} 个，失败 {failed_count} 个。"
                 )
-                self.task_store.update_active_task(
+                self.task_store.complete_archive_task(
                     batch_id,
                     progress=100,
                     message=summary,
                     meta=meta,
                 )
-                self.task_store.complete_archive_task(batch_id)
                 _append_batch_queue_log(
                     "batch_completed",
                     batch_task_id=batch_id,
@@ -2659,13 +2658,12 @@ class ArchiveTaskManager:
             scan_mode=discovered.get("mode") or "",
         )
         if queued_count <= 0:
-            self.task_store.update_active_task(
+            self.task_store.complete_archive_task(
                 task_id,
                 progress=100,
                 message=summary_message,
                 meta=meta,
             )
-            self.task_store.complete_archive_task(task_id)
             _log_archive("batch_completed_no_new", summary_message, task_id=task_id, url=url, mode=mode)
             return
 
@@ -2854,12 +2852,11 @@ class ArchiveTaskManager:
             completion_event = "single_completed"
             completion_message = f"归档完成：{result_name}"
 
-        self.task_store.update_active_task(
+        self.task_store.complete_archive_task(
             task_id,
             progress=100,
             message=completion_message,
         )
-        self.task_store.complete_archive_task(task_id)
         _log_archive(
             completion_event,
             completion_message,

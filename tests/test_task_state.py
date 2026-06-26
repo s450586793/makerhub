@@ -636,6 +636,33 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in queue["queued"]], ["queued-profile-1"])
         self.assertEqual(queue["queued"][0]["meta"]["instance_ids"], ["profile-1", "profile-2"])
 
+    def test_requeue_active_tasks_finalizes_completed_running_snapshot(self):
+        state = {
+            "archive_queue": {
+                "active": [
+                    {
+                        "id": "task-done",
+                        "title": "Done",
+                        "status": "running",
+                        "progress": 100,
+                        "message": "归档完成",
+                    }
+                ],
+                "queued": [],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
+            queue = store.requeue_active_tasks()
+
+        self.assertEqual(queue["recovered_count"], 0)
+        self.assertEqual(queue["finalized_count"], 1)
+        self.assertEqual(queue["running_count"], 0)
+        self.assertEqual(queue["queued_count"], 0)
+
     def test_start_archive_task_assigns_runtime_lease_fields(self):
         state = {"archive_queue": {"active": [], "queued": [{"id": "task-1", "title": "Demo"}], "recent_failures": []}}
         store = TaskStateStore()
@@ -815,6 +842,35 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(result["summary"]["requeued"], 1)
         self.assertEqual(result["queue"]["queued"][0]["id"], "task-expired")
         self.assertEqual(result["queue"]["queued"][0]["status"], "queued")
+
+    def test_repair_archive_queue_finalizes_completed_running_snapshot(self):
+        state = {
+            "archive_queue": {
+                "active": [
+                    {
+                        "id": "task-done",
+                        "title": "Done",
+                        "status": "running",
+                        "progress": 100,
+                        "message": "归档完成",
+                        "lease_expires_at": "",
+                    }
+                ],
+                "queued": [],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.is_lease_expired", return_value=True):
+            result = store.repair_archive_queue()
+
+        self.assertEqual(result["summary"]["examined"], 1)
+        self.assertEqual(result["summary"]["finalized"], 1)
+        self.assertEqual(result["queue"]["active"], [])
+        self.assertEqual(result["queue"]["queued"], [])
 
     def test_repair_archive_queue_drops_expired_duplicate_already_queued(self):
         state = {

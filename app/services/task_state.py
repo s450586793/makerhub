@@ -64,6 +64,12 @@ ARCHIVE_MODEL_PATH_RE = re.compile(r"/(?:[a-z]{2}/)?models/(\d+)(?:[^\"'\\s<>]*)
 ARCHIVE_AUTHOR_UPLOAD_RE = re.compile(r"/(?:[a-z]{2}/)?@([^/?#]+)/upload(?:[/?#]|$)", re.I)
 ARCHIVE_AUTHOR_ROOT_RE = re.compile(r"^/(?:[a-z]{2}/)?@[^/?#]+/?$", re.I)
 ARCHIVE_COLLECTION_DETAIL_RE = re.compile(r"/(?:[a-z]{2}/)?collections/\d+(?:-[^/?#]+)?(?:[/?#]|$)", re.I)
+ARCHIVE_COMPLETION_MESSAGE_MARKERS = (
+    "归档完成",
+    "批量归档完成",
+    "新增 3MF 下载完成",
+    "信息补全完成",
+)
 _STATE_LOCK = threading.RLock()
 _ORGANIZER_HISTORY_COUNT_CACHE = {
     "mtime_ns": 0,
@@ -290,6 +296,16 @@ def _normalize_archive_runtime_item(item: Any, default_status: str) -> dict:
     if subtasks:
         normalized["subtasks"] = subtasks
     return normalized
+
+
+def _is_completed_archive_running_snapshot(item: dict[str, Any]) -> bool:
+    status = normalize_runtime_status(item.get("status"), "running")
+    if status != "running":
+        return False
+    if _archive_subtask_int(item.get("progress"), 0) < 100:
+        return False
+    message = str(item.get("message") or "").strip()
+    return any(marker in message for marker in ARCHIVE_COMPLETION_MESSAGE_MARKERS)
 
 
 def _normalize_archive_queue(payload: Any) -> dict:
@@ -1949,15 +1965,18 @@ class TaskStateStore:
 
         return self._update_archive_queue(_mutate)
 
-    def complete_archive_task(self, task_id: str) -> dict:
+    def complete_archive_task(self, task_id: str, **changes: Any) -> dict:
         completed_item: Optional[dict[str, Any]] = None
 
         def _mutate(payload: dict) -> dict:
             nonlocal completed_item
             active_items = []
             for item in payload.get("active") or []:
-                normalized = _normalize_task_item(item, "running")
+                normalized = _normalize_archive_runtime_item(item, "running")
                 if normalized["id"] == task_id:
+                    if changes:
+                        normalized.update({key: value for key, value in changes.items() if value is not None})
+                        normalized["updated_at"] = china_now_iso()
                     completed_item = normalized
                     continue
                 active_items.append(normalized)
@@ -2047,18 +2066,21 @@ class TaskStateStore:
     def requeue_active_tasks(self, message: str = "服务重启后自动恢复") -> dict:
         recovered_count = 0
         deduplicated_count = 0
+        finalized_items: list[dict[str, Any]] = []
 
         def _mutate(payload: dict) -> dict:
-            nonlocal recovered_count, deduplicated_count
+            nonlocal recovered_count, deduplicated_count, finalized_items
             active_items = [_normalize_archive_runtime_item(item, "running") for item in (payload.get("active") or [])]
             queued_items, initial_deduped = _dedupe_archive_items(list(payload.get("queued") or []), "queued")
             deduplicated_count += initial_deduped
             if not active_items:
                 recovered_count = 0
+                finalized_items = []
                 payload["queued"] = queued_items
                 return payload
 
             recovered = []
+            finalized_items = []
             queued_keys = {
                 key
                 for key in (_archive_task_identity_key(item) for item in queued_items)
@@ -2072,6 +2094,9 @@ class TaskStateStore:
             }
             now = china_now_iso()
             for item in active_items:
+                if _is_completed_archive_running_snapshot(item):
+                    finalized_items.append(item)
+                    continue
                 key = _archive_task_identity_key(item)
                 if key and key in queued_keys:
                     existing = queued_by_key.get(key)
@@ -2096,6 +2121,19 @@ class TaskStateStore:
         queue = self._update_archive_queue(_mutate)
         queue["recovered_count"] = recovered_count
         queue["deduplicated_count"] = deduplicated_count
+        queue["finalized_count"] = len(finalized_items)
+        for item in finalized_items:
+            self._publish_state_event(
+                ARCHIVE_QUEUE_STATE_KEY,
+                queue,
+                "archive.completed",
+                {
+                    "id": item.get("id") or "",
+                    "mode": item.get("mode") or "",
+                    "url": item.get("url") or "",
+                    "title": item.get("title") or "",
+                },
+            )
         return queue
 
     def repair_archive_queue(self, *, max_attempts: int = DEFAULT_MAX_ATTEMPTS, repair_active: bool = True) -> dict:
@@ -2108,10 +2146,13 @@ class TaskStateStore:
             "deduplicated": 0,
             "errors": [],
         }
+        finalized_items: list[dict[str, Any]] = []
 
         def _mutate(payload: dict) -> dict:
+            nonlocal finalized_items
             now = china_now_iso()
             active = []
+            finalized_items = []
             queued, queued_deduped = _dedupe_archive_items(list(payload.get("queued") or []), "queued")
             recent_failures, failure_deduped = _dedupe_archive_items(list(payload.get("recent_failures") or []), "failed", failure=True)
             summary["deduplicated"] += queued_deduped + failure_deduped
@@ -2134,6 +2175,11 @@ class TaskStateStore:
                 normalized = _normalize_archive_runtime_item(item, "running")
                 status = normalize_runtime_status(normalized.get("status"), "running")
                 summary["examined"] += 1
+
+                if _is_completed_archive_running_snapshot(normalized):
+                    summary["finalized"] += 1
+                    finalized_items.append(normalized)
+                    continue
 
                 if status in {"paused", "waiting_children", "blocked"}:
                     summary["skipped"] += 1
@@ -2179,6 +2225,18 @@ class TaskStateStore:
             return payload
 
         queue = self._update_archive_queue(_mutate)
+        for item in finalized_items:
+            self._publish_state_event(
+                ARCHIVE_QUEUE_STATE_KEY,
+                queue,
+                "archive.completed",
+                {
+                    "id": item.get("id") or "",
+                    "mode": item.get("mode") or "",
+                    "url": item.get("url") or "",
+                    "title": item.get("title") or "",
+                },
+            )
         return {"summary": summary, "queue": queue}
 
     def remove_recent_failures_for_model(self, model_id: str, url: str = "") -> dict:

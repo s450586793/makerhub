@@ -340,7 +340,7 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
         with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
                 patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
                 patch.object(manager, "_archived_task_keys", return_value={"model:973599"}), \
-                patch.object(manager.task_store, "update_active_task", wraps=manager.task_store.update_active_task) as update_active_task:
+                patch.object(manager.task_store, "complete_archive_task", wraps=manager.task_store.complete_archive_task) as complete_archive_task:
             manager.task_store.save_archive_queue(
                 {
                     "active": [
@@ -386,14 +386,14 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
         self.assertEqual(queue["running_count"], 0)
         self.assertEqual(queue["failed_count"], 1)
         self.assertEqual(
-            update_active_task.call_args.kwargs["meta"]["batch_progress"]["completed"],
+            complete_archive_task.call_args.kwargs["meta"]["batch_progress"]["completed"],
             0,
         )
         self.assertEqual(
-            update_active_task.call_args.kwargs["meta"]["batch_progress"]["failed"],
+            complete_archive_task.call_args.kwargs["meta"]["batch_progress"]["failed"],
             1,
         )
-        self.assertEqual(update_active_task.call_args.kwargs["message"], "批量归档完成：成功 0 个，失败 1 个。")
+        self.assertEqual(complete_archive_task.call_args.kwargs["message"], "批量归档完成：成功 0 个，失败 1 个。")
 
     def test_refresh_batch_restores_parent_removed_from_recent_failures(self):
         state = {}
