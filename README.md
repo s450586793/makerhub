@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.48`
+> 当前版本：`v0.9.49`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-26 · v0.9.49
+
+- 合并依赖安全修复分支，确认 FastAPI / Starlette、Vite / Vue / ws 等后端与前端依赖升级已进入主线。
+- 路由兼容测试继续使用统一 route context 遍历，兼容新版 FastAPI / Starlette 的路由结构。
+- 保持当前归档队列、`3MF` gate 和完成态清理修复不回退，并补齐本次 release 元数据。
+
 ### 2026-06-26 · v0.9.48
 
 - 队列修复和服务启动恢复会识别 `100% / 归档完成` 等完成态 running 快照，直接移出 active，避免已完成任务继续占用归档槽位。
@@ -218,13 +224,13 @@ uvicorn app.main:app --reload
 - 普通归档、批量 / 订阅归档父任务仍可继续执行，保持“只暂停 `3MF` 下载，不阻塞图片、评论、描述等其他资源”的预期。
 - 补充队列选择回归测试，覆盖 gate 关闭时普通归档越过 `3MF-only` 任务，以及队列只剩被 gate 阻塞的 `3MF-only` 任务时不再领取。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-26 · v0.9.46
 
 - 归档子进程上报 `100% / 归档完成` 后如果没有返回最终结果，会在短超时内自动终止并释放归档 Worker 槽位，避免 `3MF` 子任务长时间占住 active。
 - 新增后台任务尾段卡住回归测试，覆盖“最终进度后无结果”和“最终进度后正常返回结果”两种路径。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-26 · v0.9.45
 
