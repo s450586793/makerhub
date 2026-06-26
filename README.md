@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.49`
+> 当前版本：`v0.9.50`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-26 · v0.9.50
+
+- 归档活动任务每次进度更新都会刷新 `heartbeat_at`、`last_progress_at` 和 `lease_expires_at`，避免长时间下载图片或整理资源时被误判为 stale。
+- 队列修复遇到租约缺失或过期、但最近仍有进度更新的任务时，会续租并保留 active，不再把仍在运行的归档任务重复排队。
+- 补充回归测试，覆盖国际区 `3MF` gate 关闭不阻挡国区 `3MF` 下载，以及活动任务租约刷新和旧队列修复续租。
+
 ### 2026-06-26 · v0.9.49
 
 - 合并依赖安全修复分支，确认 FastAPI / Starlette、Vite / Vue / ws 等后端与前端依赖升级已进入主线。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - 归档 Worker 完成单模型、批量归档或 `3MF` 子任务时，会在同一次队列更新中写入最终进度并完成任务，减少完成态残留窗口。
 - 补充队列恢复和修复回归测试，覆盖完成态 running 快照不会被重新排队。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-26 · v0.9.47
 
 - 待验证、Cookie 异常等平台级 `3MF` gate 关闭时，归档 Worker 会在调度层跳过同平台缺失 `3MF` 重试 / 新增 `3MF` 下载任务，避免它们占住 active 槽位。
 - 普通归档、批量 / 订阅归档父任务仍可继续执行，保持“只暂停 `3MF` 下载，不阻塞图片、评论、描述等其他资源”的预期。
 - 补充队列选择回归测试，覆盖 gate 关闭时普通归档越过 `3MF-only` 任务，以及队列只剩被 gate 阻塞的 `3MF-only` 任务时不再领取。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-26 · v0.9.46
 
