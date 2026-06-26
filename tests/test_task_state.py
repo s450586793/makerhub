@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 from tempfile import TemporaryDirectory
 from pathlib import Path
 from unittest.mock import patch
@@ -780,7 +781,7 @@ class ArchiveQueueStateTest(unittest.TestCase):
 
         self.assertEqual(queue["active"][0]["status"], "waiting_children")
 
-    def test_update_active_task_preserves_runtime_lease_fields(self):
+    def test_update_active_task_refreshes_runtime_lease_fields(self):
         state = {
             "archive_queue": {
                 "active": [
@@ -803,15 +804,16 @@ class ArchiveQueueStateTest(unittest.TestCase):
 
         with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
                 patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
-                patch("app.services.task_state.china_now_iso", return_value="2026-06-04T10:05:00+08:00"):
+                patch("app.services.task_state.china_now_iso", return_value="2026-06-04T10:05:00+08:00"), \
+                patch("app.services.task_state.lease_expiry_from_now", return_value="2026-06-04T10:35:00+08:00"):
             queue = store.update_active_task("task-1", progress=50, message="处理中")
 
         task = queue["active"][0]
         self.assertEqual(task["progress"], 50)
-        self.assertEqual(task["lease_expires_at"], "2026-06-04T10:30:00+08:00")
-        self.assertEqual(task["heartbeat_at"], "2026-06-04T10:00:00+08:00")
+        self.assertEqual(task["lease_expires_at"], "2026-06-04T10:35:00+08:00")
+        self.assertEqual(task["heartbeat_at"], "2026-06-04T10:05:00+08:00")
         self.assertEqual(task["started_at"], "2026-06-04T10:00:00+08:00")
-        self.assertEqual(task["last_progress_at"], "2026-06-04T10:00:00+08:00")
+        self.assertEqual(task["last_progress_at"], "2026-06-04T10:05:00+08:00")
         self.assertEqual(task["attempt_count"], 2)
 
     def test_repair_archive_queue_requeues_expired_running_task(self):
@@ -842,6 +844,46 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(result["summary"]["requeued"], 1)
         self.assertEqual(result["queue"]["queued"][0]["id"], "task-expired")
         self.assertEqual(result["queue"]["queued"][0]["status"], "queued")
+
+    def test_repair_archive_queue_refreshes_recent_progress_with_expired_lease(self):
+        state = {
+            "archive_queue": {
+                "active": [
+                    {
+                        "id": "task-progressing",
+                        "title": "Progressing",
+                        "status": "running",
+                        "progress": 43,
+                        "message": "正在下载摘要图片（34/45）",
+                        "updated_at": "2026-06-04T09:59:45+08:00",
+                        "lease_expires_at": "",
+                        "attempt_count": 1,
+                    }
+                ],
+                "queued": [],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.is_lease_expired", return_value=True), \
+                patch("app.services.task_state.china_now", return_value=datetime(2026, 6, 4, 10, 0, tzinfo=timezone(timedelta(hours=8)))), \
+                patch("app.services.task_state.china_now_iso", return_value="2026-06-04T10:00:00+08:00"), \
+                patch("app.services.task_state.lease_expiry_from_now", return_value="2026-06-04T10:30:00+08:00"):
+            result = store.repair_archive_queue()
+
+        self.assertEqual(result["summary"]["examined"], 1)
+        self.assertEqual(result["summary"]["requeued"], 0)
+        self.assertEqual(result["summary"]["skipped"], 1)
+        task = result["queue"]["active"][0]
+        self.assertEqual(task["id"], "task-progressing")
+        self.assertEqual(task["status"], "running")
+        self.assertEqual(task["heartbeat_at"], "2026-06-04T10:00:00+08:00")
+        self.assertEqual(task["last_progress_at"], "2026-06-04T10:00:00+08:00")
+        self.assertEqual(task["lease_expires_at"], "2026-06-04T10:30:00+08:00")
+        self.assertEqual(result["queue"]["queued"], [])
 
     def test_repair_archive_queue_finalizes_completed_running_snapshot(self):
         state = {

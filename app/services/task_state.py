@@ -24,6 +24,7 @@ from app.services.state_contracts import (
 )
 from app.services.state_events import publish_state_event, task_counts_payload
 from app.services.task_runtime import (
+    DEFAULT_LEASE_SECONDS,
     DEFAULT_MAX_ATTEMPTS,
     is_lease_expired,
     lease_expiry_from_now,
@@ -306,6 +307,17 @@ def _is_completed_archive_running_snapshot(item: dict[str, Any]) -> bool:
         return False
     message = str(item.get("message") or "").strip()
     return any(marker in message for marker in ARCHIVE_COMPLETION_MESSAGE_MARKERS)
+
+
+def _has_recent_archive_progress(item: dict[str, Any]) -> bool:
+    latest = None
+    for field in ("heartbeat_at", "last_progress_at", "updated_at"):
+        parsed = parse_datetime(str(item.get(field) or "").strip())
+        if parsed is not None and (latest is None or parsed > latest):
+            latest = parsed
+    if latest is None:
+        return False
+    return (china_now() - latest).total_seconds() < DEFAULT_LEASE_SECONDS
 
 
 def _normalize_archive_queue(payload: Any) -> dict:
@@ -1954,11 +1966,15 @@ class TaskStateStore:
     def update_active_task(self, task_id: str, **changes: Any) -> dict:
         def _mutate(payload: dict) -> dict:
             active = []
+            now = china_now_iso()
             for item in payload.get("active") or []:
                 normalized = _normalize_archive_runtime_item(item, "running")
                 if normalized["id"] == task_id:
                     normalized.update({key: value for key, value in changes.items() if value is not None})
-                    normalized["updated_at"] = china_now_iso()
+                    normalized["heartbeat_at"] = now
+                    normalized["last_progress_at"] = now
+                    normalized["lease_expires_at"] = lease_expiry_from_now()
+                    normalized["updated_at"] = now
                 active.append(normalized)
             payload["active"] = active
             return payload
@@ -2187,6 +2203,15 @@ class TaskStateStore:
                     continue
 
                 if status != "running" or not is_lease_expired(normalized.get("lease_expires_at")):
+                    summary["skipped"] += 1
+                    active.append(normalized)
+                    continue
+
+                if _has_recent_archive_progress(normalized):
+                    normalized["heartbeat_at"] = now
+                    normalized["last_progress_at"] = now
+                    normalized["lease_expires_at"] = lease_expiry_from_now()
+                    normalized["updated_at"] = now
                     summary["skipped"] += 1
                     active.append(normalized)
                     continue
