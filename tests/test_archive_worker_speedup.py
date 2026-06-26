@@ -285,6 +285,41 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
 
         self.assertIsNone(task)
 
+    def test_next_executable_task_does_not_block_cn_three_mf_when_global_gate_is_closed(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        queue = {
+            "queued": [
+                {
+                    "id": "retry-global",
+                    "url": "https://makerworld.com/zh/models/1461337",
+                    "mode": "single_model",
+                    "meta": {"missing_3mf_retry": True, "source": "global"},
+                },
+                {
+                    "id": "download-cn",
+                    "url": "https://makerworld.com.cn/zh/models/2000000",
+                    "mode": "single_model",
+                    "meta": {"three_mf_download": True, "source": "cn"},
+                },
+            ]
+        }
+
+        def fake_gate(url, meta):
+            if meta.get("source") == "global":
+                return {
+                    "open": False,
+                    "state": "verification_required",
+                    "message": "MakerWorld 需要验证，前往官网任意下载一个模型。",
+                    "platform": "global",
+                }
+            return {"open": True, "state": "open", "message": "", "platform": "cn"}
+
+        with patch.object(archive_worker_module, "three_mf_gate_for_url", side_effect=fake_gate) as gate_mock:
+            task = manager._next_executable_task(queue)
+
+        self.assertEqual(task["id"], "download-cn")
+        self.assertEqual(gate_mock.call_count, 2)
+
     def test_regular_archive_skips_3mf_and_queues_three_mf_stage(self):
         manager = ArchiveTaskManager(background_enabled=False)
         manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[], proxy=None, three_mf_limits=None))
@@ -439,6 +474,56 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
         self.assertEqual(replaced_missing[0][0], "1461337")
         self.assertEqual(replaced_missing[0][1][0]["status"], "cookie_invalid")
         self.assertEqual(completed, ["task-3mf-gated"])
+
+    def test_cn_three_mf_download_ignores_global_account_gate(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[], proxy=None, three_mf_limits=None))
+        run_kwargs = []
+        completed = []
+
+        manager.task_store = SimpleNamespace(
+            replace_missing_3mf_for_model=lambda *_args, **_kwargs: None,
+            remove_recent_failures_for_model=lambda *_args, **_kwargs: None,
+            update_active_task=lambda *_args, **_kwargs: None,
+            complete_archive_task=lambda task_id, **_payload: completed.append(task_id),
+        )
+
+        def fake_archive_job(**kwargs):
+            run_kwargs.append(kwargs)
+            return {
+                "model_id": "2000000",
+                "base_name": "CN Model",
+                "work_dir": "",
+                "missing_3mf": [],
+            }
+
+        def fake_get_account_health(platform):
+            if platform == "global":
+                return {
+                    "three_mf_gate": "verification_required",
+                    "three_mf_detail": "国际站需要验证。",
+                }
+            return {"three_mf_gate": "open", "three_mf_detail": ""}
+
+        with patch.object(archive_worker_module, "_select_cookie", return_value="cookie"), \
+                patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
+                patch.object(archive_worker_module, "_temporary_proxy_env", side_effect=lambda *_args, **_kwargs: nullcontext()), \
+                patch.object(archive_worker_module, "get_account_health", side_effect=fake_get_account_health), \
+                patch.object(archive_worker_module, "run_archive_model_job", side_effect=fake_archive_job), \
+                patch.object(archive_worker_module, "_sync_account_health_for_archive_result"), \
+                patch.object(archive_worker_module, "invalidate_model_detail_cache"), \
+                patch.object(archive_worker_module, "upsert_archive_snapshot_model", return_value=True), \
+                patch.object(archive_worker_module, "invalidate_archive_snapshot"), \
+                patch.object(archive_worker_module, "_log_archive"):
+            manager._run_single_task(
+                "task-cn-3mf",
+                "https://makerworld.com.cn/zh/models/2000000",
+                {"three_mf_download": True, "source": "cn", "model_id": "2000000"},
+            )
+
+        self.assertFalse(run_kwargs[0]["skip_three_mf_fetch"])
+        self.assertEqual(run_kwargs[0]["three_mf_skip_state"], "")
+        self.assertEqual(completed, ["task-cn-3mf"])
 
 
 if __name__ == "__main__":
