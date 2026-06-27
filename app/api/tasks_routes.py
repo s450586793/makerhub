@@ -204,8 +204,14 @@ async def retry_all_missing_3mf(request: Request):
 @router.post("/tasks/missing-3mf/verification-verified")
 async def retry_verified_missing_3mf(payload: Missing3mfVerificationRetryRequest, request: Request):
     _require_session_auth(request)
+    verification_detail = "用户已在 MakerWorld 完成验证，已重新启动同平台 3MF 重试。"
     if _runtime_engine_enabled():
         def _submit_verified_runtime_retry() -> dict:
+            snapshot = mark_account_ok(
+                payload.platform,
+                source="manual_verification",
+                detail=verification_detail,
+            )
             result = _submit_runtime_run(
                 "missing_3mf_retry",
                 {
@@ -217,11 +223,6 @@ async def retry_verified_missing_3mf(payload: Missing3mfVerificationRetryRequest
                         "cookie_invalid",
                     ],
                 },
-            )
-            snapshot = mark_account_ok(
-                payload.platform,
-                source="manual_verification",
-                detail="用户已在 MakerWorld 完成验证，已重新启动同平台 3MF 重试。",
             )
             result["account_health"] = snapshot
             return result
@@ -238,12 +239,12 @@ async def retry_verified_missing_3mf(payload: Missing3mfVerificationRetryRequest
         return result
 
     def _retry_and_mark_verified() -> dict:
-        result = dict(crawler.manager.retry_verification_missing_3mf(platform=payload.platform) or {})
         snapshot = mark_account_ok(
             payload.platform,
             source="manual_verification",
-            detail="用户已在 MakerWorld 完成验证，已重新启动同平台 3MF 重试。",
+            detail=verification_detail,
         )
+        result = dict(crawler.manager.retry_verification_missing_3mf(platform=payload.platform) or {})
         result["account_health"] = snapshot
         return result
 

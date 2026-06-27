@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.51`
+> 当前版本：`v0.9.52`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-27 · v0.9.52
+
+- 点击首页源站卡片的“已验证”后，会先立即打开对应平台的 `3MF` gate 并写入账号健康状态，再提交同平台验证类缺失 `3MF` 重试，避免重试队列较慢时页面长时间仍显示“需要验证”。
+- 运行核心和旧队列路径统一使用同一条确认文案，按钮返回结果会携带已恢复的 `account_health` 快照。
+- 补充回归测试，锁定“已验证”接口必须先恢复账号状态，再执行缺失 `3MF` 重试。
+
 ### 2026-06-26 · v0.9.51
 
 - Worker 常规轮询会自动续租最近仍有进度的 active 归档任务，避免旧脏状态缺少 `lease_expires_at` 时必须人工点击队列修复。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - 队列修复遇到租约缺失或过期、但最近仍有进度更新的任务时，会续租并保留 active，不再把仍在运行的归档任务重复排队。
 - 补充回归测试，覆盖国际区 `3MF` gate 关闭不阻挡国区 `3MF` 下载，以及活动任务租约刷新和旧队列修复续租。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-26 · v0.9.49
 
 - 合并依赖安全修复分支，确认 FastAPI / Starlette、Vite / Vue / ws 等后端与前端依赖升级已进入主线。
 - 路由兼容测试继续使用统一 route context 遍历，兼容新版 FastAPI / Starlette 的路由结构。
 - 保持当前归档队列、`3MF` gate 和完成态清理修复不回退，并补齐本次 release 元数据。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-26 · v0.9.48
 

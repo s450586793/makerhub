@@ -569,6 +569,39 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         )
         self.assertEqual(payload["account_health"]["status"], "ok")
 
+    def test_verified_missing_3mf_route_marks_account_ok_before_retrying_items(self):
+        request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
+        call_order = []
+
+        def _retry(platform):
+            call_order.append(f"retry:{platform}")
+            return {
+                "accepted": True,
+                "accepted_count": 1,
+                "queued_count": 0,
+                "failed_count": 0,
+                "message": "验证后重试完成。",
+            }
+
+        def _mark(platform, **_kwargs):
+            call_order.append(f"mark:{platform}")
+            return {"status": "ok"}
+
+        with patch.object(tasks_routes, "_require_session_auth"), \
+                patch.object(tasks_routes, "run_task_api", side_effect=lambda func, **kwargs: func(**kwargs)), \
+                patch.object(tasks_routes.crawler.manager, "retry_verification_missing_3mf", side_effect=_retry), \
+                patch.object(tasks_routes, "mark_account_ok", side_effect=_mark), \
+                patch.object(tasks_routes, "append_business_log"):
+            payload = asyncio.run(
+                tasks_routes.retry_verified_missing_3mf(
+                    tasks_routes.Missing3mfVerificationRetryRequest(platform="global"),
+                    request,
+                )
+            )
+
+        self.assertEqual(call_order, ["mark:global", "retry:global"])
+        self.assertEqual(payload["account_health"]["status"], "ok")
+
     def test_verified_missing_3mf_runtime_route_retries_cookie_invalid_items(self):
         request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
         runtime_payload = {
