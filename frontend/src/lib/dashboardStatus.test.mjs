@@ -130,7 +130,7 @@ test("verification retry action tolerates localized source status text", () => {
   ]);
 });
 
-test("verification retry action covers cookie cards that mention verification challenge", () => {
+test("cookie invalid source card does not submit verification retry", () => {
   const card = {
     key: "global",
     action_label: "打开官网",
@@ -146,23 +146,16 @@ test("verification retry action covers cookie cards that mention verification ch
       label: "打开官网",
       href: "https://makerworld.com",
     },
-    {
-      kind: "api",
-      label: "已验证",
-      endpoint: "/api/tasks/missing-3mf/verification-verified",
-      method: "POST",
-      body: { platform: "global" },
-    },
   ]);
 });
 
-test("cookie invalid source card submits verified retry without detail text", () => {
+test("auth required source card does not submit verification retry", () => {
   const card = {
     key: "cn",
     action_label: "打开官网",
     url: "https://makerworld.com.cn",
-    state: "cookie_invalid",
-    status: "Cookie 异常",
+    state: "auth_required",
+    status: "Cookie 失效",
   };
 
   assert.deepEqual(dashboardStatusActions(card), [
@@ -170,13 +163,6 @@ test("cookie invalid source card submits verified retry without detail text", ()
       kind: "external",
       label: "打开官网",
       href: "https://makerworld.com.cn",
-    },
-    {
-      kind: "api",
-      label: "已验证",
-      endpoint: "/api/tasks/missing-3mf/verification-verified",
-      method: "POST",
-      body: { platform: "cn" },
     },
   ]);
 });

@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.52`
+> 当前版本：`v0.9.53`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-27 · v0.9.53
+
+- 首页源站卡片不再把 `Cookie 异常` / `auth_required` 当作“已验证”流程处理，避免 Cookie 或 token 失效时反复点击验证按钮。
+- `Cookie 异常` 卡片只保留打开官网入口，明确提示需要更新对应站点 Cookie / token；真正的 `verification_required` / `cloudflare` 才显示“已验证”重试动作。
+- 任务页缺失 `3MF` 列表把 Cloudflare 风控单独显示为 `Cloudflare 校验`，和普通“需要验证”区分开。
+
 ### 2026-06-27 · v0.9.52
 
 - 点击首页源站卡片的“已验证”后，会先立即打开对应平台的 `3MF` gate 并写入账号健康状态，再提交同平台验证类缺失 `3MF` 重试，避免重试队列较慢时页面长时间仍显示“需要验证”。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - 新增只续租、不重排的轻量 active 修复路径，保留“不要把可能仍在运行的任务重复排队”的保护。
 - 补充回归测试，覆盖缺租约 running active 自动恢复租约且不会进入 queued。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-26 · v0.9.50
 
 - 归档活动任务每次进度更新都会刷新 `heartbeat_at`、`last_progress_at` 和 `lease_expires_at`，避免长时间下载图片或整理资源时被误判为 stale。
 - 队列修复遇到租约缺失或过期、但最近仍有进度更新的任务时，会续租并保留 active，不再把仍在运行的归档任务重复排队。
 - 补充回归测试，覆盖国际区 `3MF` gate 关闭不阻挡国区 `3MF` 下载，以及活动任务租约刷新和旧队列修复续租。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-26 · v0.9.49
 

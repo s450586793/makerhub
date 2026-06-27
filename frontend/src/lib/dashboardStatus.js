@@ -20,7 +20,7 @@ const BLOCKED_REASON_LABELS = {
   worker_stopped: "Worker 未运行",
 };
 
-const SOURCE_VERIFICATION_STATES = new Set(["verification_required", "cloudflare", "auth_required", "cookie_invalid"]);
+const SOURCE_VERIFICATION_STATES = new Set(["verification_required", "cloudflare"]);
 const SOURCE_VERIFICATION_LABELS = new Set(["需要验证", "验证页", "cloudflare"]);
 const SOURCE_VERIFICATION_TEXT_MARKERS = ["需要验证", "验证页", "cf_clearance", "cloudflare"];
 
@@ -39,6 +39,9 @@ function sourceVerificationRetryPlatform(item = {}) {
     ? item.checks.map((check) => String(check?.state || check?.status || "").trim().toLowerCase())
     : [];
   const states = [directState, ...checkStates].filter(Boolean);
+  if (states.some((state) => ["auth_required", "cookie_invalid"].includes(state))) {
+    return "";
+  }
   const isVerificationState = states.some((state) => SOURCE_VERIFICATION_STATES.has(state));
   const isVerificationText = [...SOURCE_VERIFICATION_LABELS].some((label) => directLabel.includes(label.toLowerCase()))
     || SOURCE_VERIFICATION_TEXT_MARKERS.some((marker) => directLabel.includes(marker.toLowerCase()));

@@ -23,3 +23,8 @@ test("task page can infer a MakerWorld homepage when model URL is missing", () =
   assert.match(source, /https:\/\/makerworld\.com\.cn/);
   assert.match(source, /https:\/\/makerworld\.com/);
 });
+
+test("task page distinguishes Cloudflare from manual verification status", () => {
+  assert.match(source, /normalized === "verification_required"\) return "需要验证"/);
+  assert.match(source, /normalized === "cloudflare"\) return "Cloudflare 校验"/);
+});
