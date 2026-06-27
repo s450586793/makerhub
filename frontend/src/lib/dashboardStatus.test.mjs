@@ -167,6 +167,24 @@ test("auth required source card does not submit verification retry", () => {
   ]);
 });
 
+test("cookie status text without state does not submit verification retry", () => {
+  const card = {
+    key: "global",
+    action_label: "打开官网",
+    url: "https://makerworld.com",
+    status: "Cookie 异常",
+    detail: "国际区下载 3MF 需要有效登录态；如果最近出现验证页，请更新 global Cookie / token，必要时补充 cf_clearance。",
+  };
+
+  assert.deepEqual(dashboardStatusActions(card), [
+    {
+      kind: "external",
+      label: "打开官网",
+      href: "https://makerworld.com",
+    },
+  ]);
+});
+
 test("source health cards with checks hide duplicated detail", () => {
   assert.equal(shouldShowDashboardStatusDetail({
     detail: "账号连接正常；3MF 下载历史失败待重试。",

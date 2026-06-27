@@ -358,7 +358,7 @@
               :href="missingVerificationHref(item)"
               target="_blank"
               rel="noreferrer noopener"
-              @click="missingStatus = '请在 MakerWorld 完成验证后回到 MakerHub 重试。'"
+              @click="missingStatus = missingActionHint(item)"
             >
               访问源页面
             </a>
@@ -519,6 +519,17 @@ function missingVerificationHref(item) {
     return url;
   }
   return sourceHomepageForMissingItem(item);
+}
+
+function missingActionHint(item) {
+  const status = String(item?.status || "").toLowerCase();
+  if (status === "cloudflare") {
+    return "请完成 Cloudflare 校验或补充 cf_clearance 后回到 MakerHub 重试。";
+  }
+  if (status === "auth_required" || status === "cookie_invalid") {
+    return "请更新对应站点 Cookie / token 后回到 MakerHub 重试。";
+  }
+  return "请在 MakerWorld 完成验证后回到 MakerHub 重试。";
 }
 
 function missingDetailPath(item) {

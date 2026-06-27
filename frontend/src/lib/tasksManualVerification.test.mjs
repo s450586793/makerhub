@@ -28,3 +28,9 @@ test("task page distinguishes Cloudflare from manual verification status", () =>
   assert.match(source, /normalized === "verification_required"\) return "需要验证"/);
   assert.match(source, /normalized === "cloudflare"\) return "Cloudflare 校验"/);
 });
+
+test("task page uses status-specific missing 3MF action hints", () => {
+  assert.match(source, /function missingActionHint\(item\)/);
+  assert.match(source, /Cloudflare 校验或补充 cf_clearance 后回到 MakerHub 重试/);
+  assert.match(source, /更新对应站点 Cookie \/ token 后回到 MakerHub 重试/);
+});

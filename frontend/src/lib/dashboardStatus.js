@@ -23,6 +23,7 @@ const BLOCKED_REASON_LABELS = {
 const SOURCE_VERIFICATION_STATES = new Set(["verification_required", "cloudflare"]);
 const SOURCE_VERIFICATION_LABELS = new Set(["需要验证", "验证页", "cloudflare"]);
 const SOURCE_VERIFICATION_TEXT_MARKERS = ["需要验证", "验证页", "cf_clearance", "cloudflare"];
+const SOURCE_COOKIE_TEXT_MARKERS = ["cookie 异常", "cookie 失效", "cookie invalid", "登录态", "token 是否过期"];
 
 function sourceVerificationRetryPlatform(item = {}) {
   const key = String(item?.key || item?.platform || "").trim().toLowerCase();
@@ -40,6 +41,9 @@ function sourceVerificationRetryPlatform(item = {}) {
     : [];
   const states = [directState, ...checkStates].filter(Boolean);
   if (states.some((state) => ["auth_required", "cookie_invalid"].includes(state))) {
+    return "";
+  }
+  if (SOURCE_COOKIE_TEXT_MARKERS.some((marker) => directLabel.includes(marker.toLowerCase()))) {
     return "";
   }
   const isVerificationState = states.some((state) => SOURCE_VERIFICATION_STATES.has(state));

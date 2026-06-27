@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.53`
+> 当前版本：`v0.9.54`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-27 · v0.9.54
+
+- 首页源站状态即使只返回 `Cookie 异常` 文案、缺少结构化 `state`，也不会再因为 `cf_clearance` 关键词误显示“已验证”按钮。
+- 任务页访问缺失 `3MF` 源页面后，会按 `验证` / `Cloudflare` / `Cookie` 状态给出不同提示，避免把 Cookie 失效误引导成普通验证。
+- 补充前端回归测试，覆盖缺少 `state` 的 Cookie 异常卡片和缺失 `3MF` 操作提示。
+
 ### 2026-06-27 · v0.9.53
 
 - 首页源站卡片不再把 `Cookie 异常` / `auth_required` 当作“已验证”流程处理，避免 Cookie 或 token 失效时反复点击验证按钮。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - 运行核心和旧队列路径统一使用同一条确认文案，按钮返回结果会携带已恢复的 `account_health` 快照。
 - 补充回归测试，锁定“已验证”接口必须先恢复账号状态，再执行缺失 `3MF` 重试。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-26 · v0.9.51
 
 - Worker 常规轮询会自动续租最近仍有进度的 active 归档任务，避免旧脏状态缺少 `lease_expires_at` 时必须人工点击队列修复。
 - 新增只续租、不重排的轻量 active 修复路径，保留“不要把可能仍在运行的任务重复排队”的保护。
 - 补充回归测试，覆盖缺租约 running active 自动恢复租约且不会进入 queued。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-26 · v0.9.50
 
