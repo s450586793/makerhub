@@ -1,5 +1,11 @@
 # 更新说明
 
+## 2026-06-28 · v0.9.55
+
+- 首页源站 `Cookie 异常` / `auth_required` 卡片恢复手动处理入口，更新 Cookie 后可点击“已更新 Cookie”重新打开同平台 `3MF` gate 并重排对应缺失 `3MF`。
+- 真正的 `verification_required` / `cloudflare` 卡片继续显示“已验证”，Cookie 异常不再复用这个按钮文案，避免把 Cookie 失效误判成普通验证。
+- 补充前端回归测试，覆盖结构化 Cookie 状态和只有 Cookie 文案的源站卡片都能显示恢复动作。
+
 ## 2026-06-27 · v0.9.54
 
 - 首页源站状态即使只返回 `Cookie 异常` 文案、缺少结构化 `state`，也不会再因为 `cf_clearance` 关键词误显示“已验证”按钮。

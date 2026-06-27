@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.54`
+> 当前版本：`v0.9.55`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-28 · v0.9.55
+
+- 首页源站 `Cookie 异常` / `auth_required` 卡片恢复手动处理入口，更新 Cookie 后可点击“已更新 Cookie”重新打开同平台 `3MF` gate 并重排对应缺失 `3MF`。
+- 真正的 `verification_required` / `cloudflare` 卡片继续显示“已验证”，Cookie 异常不再复用这个按钮文案，避免把 Cookie 失效误判成普通验证。
+- 补充前端回归测试，覆盖结构化 Cookie 状态和只有 Cookie 文案的源站卡片都能显示恢复动作。
+
 ### 2026-06-27 · v0.9.54
 
 - 首页源站状态即使只返回 `Cookie 异常` 文案、缺少结构化 `state`，也不会再因为 `cf_clearance` 关键词误显示“已验证”按钮。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - `Cookie 异常` 卡片只保留打开官网入口，明确提示需要更新对应站点 Cookie / token；真正的 `verification_required` / `cloudflare` 才显示“已验证”重试动作。
 - 任务页缺失 `3MF` 列表把 Cloudflare 风控单独显示为 `Cloudflare 校验`，和普通“需要验证”区分开。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-27 · v0.9.52
 
 - 点击首页源站卡片的“已验证”后，会先立即打开对应平台的 `3MF` gate 并写入账号健康状态，再提交同平台验证类缺失 `3MF` 重试，避免重试队列较慢时页面长时间仍显示“需要验证”。
 - 运行核心和旧队列路径统一使用同一条确认文案，按钮返回结果会携带已恢复的 `account_health` 快照。
 - 补充回归测试，锁定“已验证”接口必须先恢复账号状态，再执行缺失 `3MF` 重试。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-26 · v0.9.51
 

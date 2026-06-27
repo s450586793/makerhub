@@ -25,10 +25,10 @@ const SOURCE_VERIFICATION_LABELS = new Set(["需要验证", "验证页", "cloudf
 const SOURCE_VERIFICATION_TEXT_MARKERS = ["需要验证", "验证页", "cf_clearance", "cloudflare"];
 const SOURCE_COOKIE_TEXT_MARKERS = ["cookie 异常", "cookie 失效", "cookie invalid", "登录态", "token 是否过期"];
 
-function sourceVerificationRetryPlatform(item = {}) {
+function sourceRecoveryAction(item = {}) {
   const key = String(item?.key || item?.platform || "").trim().toLowerCase();
   if (!["cn", "global"].includes(key)) {
-    return "";
+    return null;
   }
   const directState = String(item?.state || item?.status || "").trim().toLowerCase();
   const directLabel = [
@@ -41,15 +41,15 @@ function sourceVerificationRetryPlatform(item = {}) {
     : [];
   const states = [directState, ...checkStates].filter(Boolean);
   if (states.some((state) => ["auth_required", "cookie_invalid"].includes(state))) {
-    return "";
+    return { platform: key, label: "已更新 Cookie" };
   }
   if (SOURCE_COOKIE_TEXT_MARKERS.some((marker) => directLabel.includes(marker.toLowerCase()))) {
-    return "";
+    return { platform: key, label: "已更新 Cookie" };
   }
   const isVerificationState = states.some((state) => SOURCE_VERIFICATION_STATES.has(state));
   const isVerificationText = [...SOURCE_VERIFICATION_LABELS].some((label) => directLabel.includes(label.toLowerCase()))
     || SOURCE_VERIFICATION_TEXT_MARKERS.some((marker) => directLabel.includes(marker.toLowerCase()));
-  return isVerificationState || isVerificationText ? key : "";
+  return isVerificationState || isVerificationText ? { platform: key, label: "已验证" } : null;
 }
 
 export function dashboardStatusActions(item = {}) {
@@ -68,14 +68,14 @@ export function dashboardStatusActions(item = {}) {
       href: item.url,
     });
   }
-  const retryPlatform = sourceVerificationRetryPlatform(item);
-  if (retryPlatform) {
+  const recoveryAction = sourceRecoveryAction(item);
+  if (recoveryAction) {
     actions.push({
       kind: "api",
-      label: "已验证",
+      label: recoveryAction.label,
       endpoint: "/api/tasks/missing-3mf/verification-verified",
       method: "POST",
-      body: { platform: retryPlatform },
+      body: { platform: recoveryAction.platform },
     });
   }
   return actions;
