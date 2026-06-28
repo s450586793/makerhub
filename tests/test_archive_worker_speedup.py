@@ -209,6 +209,54 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
         self.assertEqual(queue["queued"], [])
         self.assertEqual(queue["active"], [])
 
+    def test_run_loop_closes_three_mf_gate_when_page_fetch_needs_verification(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        task = {
+            "id": "task-cloudflare",
+            "url": "https://makerworld.com.cn/zh/models/1595694",
+            "mode": "single_model",
+            "status": "queued",
+            "meta": {"missing_3mf_retry": True, "source": "cn"},
+        }
+        load_calls = []
+        failed = []
+        missing_updates = []
+
+        def fake_load_archive_queue():
+            load_calls.append(True)
+            if len(load_calls) == 1:
+                return {"active": [], "queued": [task], "recent_failures": []}
+            return {"active": [], "queued": [], "recent_failures": []}
+
+        manager.task_store = SimpleNamespace(
+            load_archive_queue=fake_load_archive_queue,
+            lease_next_archive_task=lambda _selector: task,
+            update_active_task=lambda *_args, **_kwargs: None,
+            update_missing_3mf_status=lambda **payload: missing_updates.append(payload),
+            fail_archive_task=lambda task_id, message: failed.append((task_id, message)),
+        )
+
+        with patch.object(manager, "_refresh_batch_tasks", return_value=False), \
+                patch.object(manager, "_run_single_task", side_effect=RuntimeError("页面被 Cloudflare 验证拦截，请更新 cookie（含 cf_clearance）后重试")), \
+                patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
+                patch.object(archive_worker_module, "_is_three_mf_limit_guard_active", return_value=False), \
+                patch.object(archive_worker_module, "update_three_mf_gate") as update_gate, \
+                patch.object(archive_worker_module, "_log_archive"):
+            manager._run_loop()
+
+        update_gate.assert_called_once_with(
+            "cn",
+            gate="cloudflare",
+            reason="archive_task_failed",
+            source="archive_task",
+            detail="页面被 Cloudflare 验证拦截，请更新 cookie（含 cf_clearance）后重试",
+            model_url="https://makerworld.com.cn/zh/models/1595694",
+            model_id="1595694",
+            instance_id="",
+        )
+        self.assertEqual(failed[0][0], "task-cloudflare")
+        self.assertEqual(missing_updates[0]["model_id"], "1595694")
+
     def test_next_executable_task_skips_gated_missing_3mf_retry(self):
         manager = ArchiveTaskManager(background_enabled=False)
         queue = {

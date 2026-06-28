@@ -523,6 +523,45 @@ def _sync_account_health_for_archive_result(
         )
 
 
+def _sync_account_health_for_archive_exception(
+    *,
+    task_meta: dict[str, Any],
+    model_url: str,
+    model_id: str,
+    detail: str,
+) -> None:
+    state = normalize_three_mf_failure_state(
+        "",
+        detail,
+        source=task_meta.get("source"),
+        url=model_url,
+    )
+    if state not in {"verification_required", "cloudflare", "auth_required", "cookie_invalid", "download_limited"}:
+        return
+
+    platform = normalize_makerworld_source(task_meta.get("source"), model_url)
+    try:
+        update_three_mf_gate(
+            platform,
+            gate=state,
+            reason="archive_task_failed",
+            source="archive_task",
+            detail=detail,
+            model_url=model_url,
+            model_id=model_id,
+            instance_id=str(task_meta.get("instance_id") or "").strip(),
+        )
+    except Exception as exc:
+        _log_archive(
+            "account_health_sync_failed",
+            "账号健康状态同步失败，归档失败状态已保留。",
+            level="warning",
+            model_id=model_id,
+            url=model_url,
+            error=str(exc)[:240],
+        )
+
+
 def three_mf_gate_for_url(url: str, meta: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     meta = meta if isinstance(meta, dict) else {}
     platform = normalize_makerworld_source(meta.get("source"), url)
@@ -2467,16 +2506,23 @@ class ArchiveTaskManager:
                     self._run_single_task(task_id, task_url, meta=task_meta)
             except Exception as exc:
                 model_id = extract_model_id(task.get("url") or "")
+                error_message = str(exc)
                 if model_id:
                     self.task_store.update_missing_3mf_status(
                         model_id=model_id,
                         status="missing",
-                        message=str(exc),
+                        message=error_message,
                     )
-                self.task_store.fail_archive_task(task_id, str(exc))
+                _sync_account_health_for_archive_exception(
+                    task_meta=task_meta,
+                    model_url=normalize_source_url(task_url),
+                    model_id=model_id,
+                    detail=error_message,
+                )
+                self.task_store.fail_archive_task(task_id, error_message)
                 _log_archive(
                     "task_failed",
-                    str(exc),
+                    error_message,
                     level="error",
                     task_id=task_id,
                     url=task_url,

@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.55`
+> 当前版本：`v0.9.56`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-28 · v0.9.56
+
+- 归档任务在抓取模型页面阶段直接遇到 Cloudflare / 验证 / Cookie 异常时，会同步关闭对应平台 `3MF` gate，不再把“已验证”手动确认后的状态长期保留为正常。
+- 平台 gate 关闭后，Worker 会跳过同平台缺失 `3MF` 重试和新增 `3MF` 下载任务，避免继续消耗队列但待补数量不下降。
+- 补充归档 Worker 回归测试，覆盖页面抓取阶段被 Cloudflare 拦截时必须写回账号健康和 `3MF` gate。
+
 ### 2026-06-28 · v0.9.55
 
 - 首页源站 `Cookie 异常` / `auth_required` 卡片恢复手动处理入口，更新 Cookie 后可点击“已更新 Cookie”重新打开同平台 `3MF` gate 并重排对应缺失 `3MF`。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - 任务页访问缺失 `3MF` 源页面后，会按 `验证` / `Cloudflare` / `Cookie` 状态给出不同提示，避免把 Cookie 失效误引导成普通验证。
 - 补充前端回归测试，覆盖缺少 `state` 的 Cookie 异常卡片和缺失 `3MF` 操作提示。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-27 · v0.9.53
 
 - 首页源站卡片不再把 `Cookie 异常` / `auth_required` 当作“已验证”流程处理，避免 Cookie 或 token 失效时反复点击验证按钮。
 - `Cookie 异常` 卡片只保留打开官网入口，明确提示需要更新对应站点 Cookie / token；真正的 `verification_required` / `cloudflare` 才显示“已验证”重试动作。
 - 任务页缺失 `3MF` 列表把 Cloudflare 风控单独显示为 `Cloudflare 校验`，和普通“需要验证”区分开。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-27 · v0.9.52
 
