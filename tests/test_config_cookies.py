@@ -414,6 +414,8 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
             with patch.object(config_api, "store", store), \
                     patch.object(config_api, "_run_online_account_cookie_test", return_value=test_result), \
                     patch.object(config_api, "online_account_metadata_from_cookie", return_value=metadata), \
+                    patch.object(config_api, "mark_account_ok") as mark_account_ok_mock, \
+                    patch.object(config_api, "update_three_mf_gate") as update_gate_mock, \
                     patch.object(config_api, "cookie_source_inventory_payload", return_value={"platforms": {}}), \
                     patch.object(config_api, "cookie_source_sync_state_payload", return_value={}), \
                     patch.object(config_api, "compact_remote_refresh_state", return_value={}), \
@@ -428,6 +430,59 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(saved_cookie.avatar_url, "https://example.com/avatar.jpg")
             self.assertEqual(saved_cookie.message, "国内账号可用，Cookie 已保存。")
             self.assertEqual(payload["test_result"], test_result)
+            mark_account_ok_mock.assert_called_once_with(
+                "cn",
+                source="online_account_test",
+                detail="国内账号可用，Cookie 已保存。",
+            )
+            update_gate_mock.assert_not_called()
+
+    async def test_online_account_test_failure_closes_three_mf_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            config.cookies = [CookiePair(platform="global", cookie="token=old", username="ace@example.com")]
+            store.save(config)
+
+            request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
+            test_result = {
+                "ok": False,
+                "state": "verification_required",
+                "message": "MakerWorld 需要验证，前往官网任意下载一个模型。",
+                "success_count": 0,
+                "target_count": 2,
+                "results": [],
+            }
+            metadata = {
+                "platform": "global",
+                "username": "ace@example.com",
+                "status": "verification_required",
+                "message": "MakerWorld 需要验证，前往官网任意下载一个模型。",
+                "last_tested_at": "2026-06-28T15:00:00+08:00",
+                "updated_at": "2026-06-28T15:00:00+08:00",
+            }
+
+            with patch.object(config_api, "store", store), \
+                    patch.object(config_api, "_run_online_account_cookie_test", return_value=test_result), \
+                    patch.object(config_api, "online_account_metadata_from_cookie", return_value=metadata), \
+                    patch.object(config_api, "mark_account_ok") as mark_account_ok_mock, \
+                    patch.object(config_api, "update_three_mf_gate") as update_gate_mock, \
+                    patch.object(config_api, "cookie_source_inventory_payload", return_value={"platforms": {}}), \
+                    patch.object(config_api, "cookie_source_sync_state_payload", return_value={}), \
+                    patch.object(config_api, "compact_remote_refresh_state", return_value={}), \
+                    patch.object(config_api.task_state_store, "load_remote_refresh_state", return_value={}), \
+                    patch.object(config_api, "append_business_log"):
+                payload = await config_api.test_config_online_account("global", request)
+
+            self.assertEqual(payload["test_result"], test_result)
+            mark_account_ok_mock.assert_not_called()
+            update_gate_mock.assert_called_once_with(
+                "global",
+                gate="verification_required",
+                reason="online_account_test",
+                detail="MakerWorld 需要验证，前往官网任意下载一个模型。",
+                source="online_account_test",
+            )
 
 class OnlineAccountServiceTest(unittest.TestCase):
     def _response(self, status_code=200, payload=None, text=None, headers=None):

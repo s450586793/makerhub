@@ -51,6 +51,7 @@ def test_state_event_scopes_cover_dashboard_consumers():
         "remote_refresh_state",
         "source_refresh_queue",
         "source_refresh_runs",
+        "account_health",
         "dashboard",
     ]
 
@@ -125,6 +126,7 @@ def test_dashboard_scopes_are_plain_strings_for_frontend_payloads():
     assert "archive_queue" in scopes
     assert "source_refresh_queue" in scopes
     assert "source_refresh_runs" in scopes
+    assert "account_health" in scopes
     assert "dashboard" in scopes
 
 

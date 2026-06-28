@@ -53,6 +53,25 @@ function sourceRecoveryAction(item = {}) {
 }
 
 export function dashboardStatusActions(item = {}) {
+  if (Array.isArray(item?.actions) && item.actions.length) {
+    return item.actions
+      .filter((action) => action && typeof action === "object")
+      .map((action) => ({
+        kind: String(action.kind || "").trim() || "external",
+        label: String(action.label || "").trim() || String(item.action_label || "").trim() || "打开",
+        ...(action.to ? { to: action.to } : {}),
+        ...(action.href ? { href: action.href } : {}),
+        ...(action.endpoint ? { endpoint: action.endpoint } : {}),
+        ...(action.method ? { method: action.method } : {}),
+        ...(Object.prototype.hasOwnProperty.call(action, "body") ? { body: action.body } : {}),
+      }))
+      .filter((action) => (
+        (action.kind === "route" && action.to)
+        || (action.kind === "external" && action.href)
+        || (action.kind === "api" && action.endpoint)
+      ));
+  }
+
   const actions = [];
   if (item?.route && item?.action_label) {
     actions.push({

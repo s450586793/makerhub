@@ -640,6 +640,7 @@ onMounted(async () => {
       "remote_refresh_state",
       "source_refresh_queue",
       "source_refresh_runs",
+      "account_health",
       "dashboard",
     ],
     handleArchiveCompleted,

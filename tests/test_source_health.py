@@ -78,8 +78,22 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(card_map["cn"]["status"], "需要验证")
         self.assertEqual(card_map["cn"]["detail"], "需要完成 MakerWorld 验证。")
         self.assertEqual(card_map["cn"]["source"], "probe")
-        self.assertEqual(card_map["cn"].get("action_label"), "打开官网")
+        self.assertEqual(card_map["cn"].get("action_label"), "手动过 CF")
         self.assertEqual(card_map["cn"].get("url"), "https://makerworld.com.cn")
+        self.assertEqual(card_map["cn"].get("actions"), [
+            {
+                "kind": "external",
+                "label": "手动过 CF",
+                "href": "https://makerworld.com.cn",
+            },
+            {
+                "kind": "api",
+                "label": "重新检测",
+                "endpoint": "/api/config/online-accounts/cn/test",
+                "method": "POST",
+                "body": {},
+            },
+        ])
         self.assertNotIn("route", card_map["cn"])
         self.assertEqual(card_map["global"]["state"], "unknown")
         self.assertEqual(card_map["global"]["status"], "未检测")

@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.56`
+> 当前版本：`v0.9.57`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-28 · v0.9.57
+
+- Worker 新增线上账号 Cookie 定时检测，默认每 12 小时检查国内 / 国际账号 Cookie 可用性，并把结果写入账号健康状态。
+- 检测到 Cloudflare / 验证 / Cookie 异常时会自动关闭对应平台 `3MF` gate，首页源站卡片显示“手动过 CF”和“重新检测”，避免任务继续盲跑。
+- 账号测试接口会同步恢复或关闭对应平台 gate，用户手动通过 Cloudflare 后可直接在首页点“重新检测”恢复状态。
+
 ### 2026-06-28 · v0.9.56
 
 - 归档任务在抓取模型页面阶段直接遇到 Cloudflare / 验证 / Cookie 异常时，会同步关闭对应平台 `3MF` gate，不再把“已验证”手动确认后的状态长期保留为正常。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - 真正的 `verification_required` / `cloudflare` 卡片继续显示“已验证”，Cookie 异常不再复用这个按钮文案，避免把 Cookie 失效误判成普通验证。
 - 补充前端回归测试，覆盖结构化 Cookie 状态和只有 Cookie 文案的源站卡片都能显示恢复动作。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-27 · v0.9.54
 
 - 首页源站状态即使只返回 `Cookie 异常` 文案、缺少结构化 `state`，也不会再因为 `cf_clearance` 关键词误显示“已验证”按钮。
 - 任务页访问缺失 `3MF` 源页面后，会按 `验证` / `Cloudflare` / `Cookie` 状态给出不同提示，避免把 Cookie 失效误引导成普通验证。
 - 补充前端回归测试，覆盖缺少 `state` 的 Cookie 异常卡片和缺失 `3MF` 操作提示。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-27 · v0.9.53
 

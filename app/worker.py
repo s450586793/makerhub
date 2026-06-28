@@ -6,6 +6,7 @@ import time
 from app.core.settings import APP_VERSION, LOCAL_PREVIEW_POLL_SECONDS, PROCESS_ROLE, ensure_app_dirs
 from app.core.store import JsonStore
 from app.core.timezone import now_iso as china_now_iso
+from app.services.account_cookie_maintenance import run_account_cookie_maintenance_once
 from app.services.archive_worker import ArchiveTaskManager
 from app.services.archive_profile_backfill import (
     queue_profile_backfill,
@@ -24,6 +25,7 @@ from app.services.task_state import TaskStateStore
 
 WORKER_POLL_SECONDS = 2.0
 LOCAL_PREVIEW_IDLE_POLL_SECONDS = 15 * 60
+ACCOUNT_COOKIE_MAINTENANCE_POLL_SECONDS = 10 * 60
 
 
 def _runtime_engine_enabled() -> bool:
@@ -153,6 +155,7 @@ def main() -> int:
     last_local_preview_full_scan = 0.0
     last_local_preview_marker_mtime = local_preview_queue_marker_mtime()
     local_preview_active = False
+    last_account_cookie_poll = 0.0
     profile_backfill_thread: threading.Thread | None = None
     try:
         while not stop_event.wait(WORKER_POLL_SECONDS):
@@ -174,6 +177,18 @@ def main() -> int:
             if profile_backfill_status.get("running") and profile_backfill_thread is None:
                 profile_backfill_thread = _start_profile_backfill_worker(archive_manager, profile_backfill_status)
             now = time.monotonic()
+            if now - last_account_cookie_poll >= ACCOUNT_COOKIE_MAINTENANCE_POLL_SECONDS:
+                last_account_cookie_poll = now
+                try:
+                    run_account_cookie_maintenance_once(store=store)
+                except Exception as exc:
+                    append_business_log(
+                        "settings",
+                        "online_account_cookie_maintenance_failed",
+                        "线上账号 Cookie 定时检测失败。",
+                        level="warning",
+                        error=str(exc),
+                    )
             marker_mtime = local_preview_queue_marker_mtime()
             marker_changed = bool(marker_mtime and marker_mtime != last_local_preview_marker_mtime)
             quick_interval = max(int(LOCAL_PREVIEW_POLL_SECONDS or 20), 5)

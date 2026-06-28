@@ -103,6 +103,7 @@ from app.services.archive_model_index import resolve_model_dir_from_short_key
 from app.services.batch_discovery import extract_model_id, normalize_source_url
 from app.services.subscriptions import cookie_source_inventory_payload, cookie_source_sync_state_payload
 from app.services.source_health import probe_cookie_auth_status
+from app.services.account_health import mark_account_ok, update_three_mf_gate
 from app.services.state_events import (
     StateEventWaiter,
     current_state_event_id,
@@ -2097,6 +2098,39 @@ def _preserve_account_profile_metadata(metadata: dict, existing: CookiePair) -> 
     return next_metadata
 
 
+def _account_health_status_from_online_account_result(result: dict, metadata: dict) -> str:
+    status = str((metadata or {}).get("status") or "").strip().lower()
+    state = str((result or {}).get("state") or "").strip().lower()
+    if bool((result or {}).get("ok")) or status == "ok":
+        return "ok"
+    for candidate in (status, state):
+        if candidate == "cloudflare":
+            return "verification_required"
+        if candidate in {"auth_required", "missing_cookie"}:
+            return "cookie_invalid"
+        if candidate in {"verification_required", "cookie_invalid", "network_error"}:
+            return candidate
+    return "network_error"
+
+
+def _sync_account_health_from_online_account_test(platform: str, result: dict, metadata: dict) -> dict:
+    status = _account_health_status_from_online_account_result(result, metadata)
+    detail = str((result or {}).get("message") or (metadata or {}).get("message") or "").strip()
+    if status == "ok":
+        return mark_account_ok(
+            platform,
+            source="online_account_test",
+            detail=detail,
+        )
+    return update_three_mf_gate(
+        platform,
+        gate=status,
+        reason="online_account_test",
+        detail=detail,
+        source="online_account_test",
+    )
+
+
 def _upsert_cookie_pair(cookies: list[CookiePair], next_pair: CookiePair) -> list[CookiePair]:
     updated: list[CookiePair] = []
     inserted = False
@@ -3071,6 +3105,7 @@ async def test_config_online_account(platform: str, request: Request):
             metadata=metadata,
         ),
     )
+    account_health_snapshot = _sync_account_health_from_online_account_test(clean_platform, result, metadata)
     saved = store.save(config)
     append_business_log(
         "settings",
@@ -3081,6 +3116,7 @@ async def test_config_online_account(platform: str, request: Request):
     )
     response = _public_config_payload(saved)
     response["test_result"] = result
+    response["account_health"] = account_health_snapshot
     return response
 
 

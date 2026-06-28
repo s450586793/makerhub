@@ -5,6 +5,7 @@ from typing import Any
 from app.core.database_json_state import load_database_json_state, save_database_json_state
 from app.core.timezone import now_iso as china_now_iso
 from app.services.state_contracts import ACCOUNT_HEALTH_STATE_KEY
+from app.services.state_events import publish_state_event
 from app.services.three_mf import normalize_makerworld_source
 
 
@@ -122,7 +123,9 @@ def save_account_health(payload: dict[str, Any]) -> dict[str, Any]:
     for platform in ACCOUNT_HEALTH_PLATFORMS:
         snapshot = payload.get(platform) if isinstance(payload.get(platform), dict) else {}
         normalized[platform] = _normalize_snapshot(platform, snapshot)
-    return save_database_json_state(ACCOUNT_HEALTH_STATE_KEY, normalized)
+    saved = save_database_json_state(ACCOUNT_HEALTH_STATE_KEY, normalized)
+    publish_state_event(ACCOUNT_HEALTH_STATE_KEY, "account_health.changed", {"reason": "account_health_saved"})
+    return saved
 
 
 def get_account_health(platform: Any) -> dict[str, Any]:
@@ -281,7 +284,9 @@ def snapshot_to_source_card(platform: Any, snapshot: dict[str, Any] | None = Non
     gate = current["three_mf_gate"]
     card_state = gate if gate != "open" else current["status"]
     meta = THREE_MF_GATE_CARD_META.get(card_state, ACCOUNT_HEALTH_CARD_META.get(current["status"], ACCOUNT_HEALTH_CARD_META["unknown"]))
-    return {
+    platform_url = PLATFORM_URLS.get(normalized_platform, "")
+    verification_required = meta["state"] == "verification_required"
+    card = {
         "key": normalized_platform,
         "title": PLATFORM_TITLES.get(normalized_platform, normalized_platform),
         "status": meta["status"],
@@ -292,12 +297,28 @@ def snapshot_to_source_card(platform: Any, snapshot: dict[str, Any] | None = Non
         "three_mf_gate": current["three_mf_gate"],
         "three_mf_reason": current["three_mf_reason"],
         "checks": [],
-        "url": PLATFORM_URLS.get(normalized_platform, ""),
-        "action_label": "打开官网",
+        "url": platform_url,
+        "action_label": "手动过 CF" if verification_required else "打开官网",
         "updated_at": current["updated_at"],
         "reason": current["reason"],
         "source": current["source"],
     }
+    if verification_required:
+        card["actions"] = [
+            {
+                "kind": "external",
+                "label": "手动过 CF",
+                "href": platform_url,
+            },
+            {
+                "kind": "api",
+                "label": "重新检测",
+                "endpoint": f"/api/config/online-accounts/{normalized_platform}/test",
+                "method": "POST",
+                "body": {},
+            },
+        ]
+    return card
 
 
 def _normalize_snapshot(

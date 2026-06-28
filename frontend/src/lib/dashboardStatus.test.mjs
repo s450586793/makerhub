@@ -106,6 +106,44 @@ test("cn verification status card submits verified retry for cn platform", () =>
   ]);
 });
 
+test("dashboard status card uses explicit backend actions before inferred recovery actions", () => {
+  const card = {
+    key: "global",
+    action_label: "手动过 CF",
+    url: "https://makerworld.com",
+    state: "verification_required",
+    actions: [
+      {
+        kind: "external",
+        label: "手动过 CF",
+        href: "https://makerworld.com",
+      },
+      {
+        kind: "api",
+        label: "重新检测",
+        endpoint: "/api/config/online-accounts/global/test",
+        method: "POST",
+        body: {},
+      },
+    ],
+  };
+
+  assert.deepEqual(dashboardStatusActions(card), [
+    {
+      kind: "external",
+      label: "手动过 CF",
+      href: "https://makerworld.com",
+    },
+    {
+      kind: "api",
+      label: "重新检测",
+      endpoint: "/api/config/online-accounts/global/test",
+      method: "POST",
+      body: {},
+    },
+  ]);
+});
+
 test("verification retry action tolerates localized source status text", () => {
   const card = {
     key: "cn",

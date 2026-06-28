@@ -18,6 +18,7 @@ class AccountHealthServiceTest(unittest.TestCase):
                 "save_database_json_state",
                 side_effect=lambda key, value: self.state.__setitem__(key, value) or value,
             ),
+            patch.object(account_health, "publish_state_event"),
         ]
         for item in self.db_patches:
             item.start()
@@ -130,6 +131,40 @@ class AccountHealthServiceTest(unittest.TestCase):
         self.assertEqual(card["tone"], "ok")
         self.assertEqual(card["action_label"], "打开官网")
         self.assertEqual(card["url"], "https://makerworld.com.cn")
+        self.assertNotIn("actions", card)
+
+    def test_snapshot_to_source_card_prompts_manual_cloudflare_verification(self):
+        card = account_health.snapshot_to_source_card(
+            "global",
+            {
+                "platform": "global",
+                "status": "verification_required",
+                "reason": "scheduled_cookie_check",
+                "source": "scheduled_cookie_check",
+                "detail": "国际站需要完成 Cloudflare 验证。",
+                "updated_at": "2026-06-28T15:30:00+08:00",
+            },
+        )
+
+        self.assertEqual(card["state"], "verification_required")
+        self.assertEqual(card["status"], "需要验证")
+        self.assertEqual(card["detail"], "国际站需要完成 Cloudflare 验证。")
+        self.assertEqual(card["action_label"], "手动过 CF")
+        self.assertEqual(card["url"], "https://makerworld.com")
+        self.assertEqual(card["actions"], [
+            {
+                "kind": "external",
+                "label": "手动过 CF",
+                "href": "https://makerworld.com",
+            },
+            {
+                "kind": "api",
+                "label": "重新检测",
+                "endpoint": "/api/config/online-accounts/global/test",
+                "method": "POST",
+                "body": {},
+            },
+        ])
 
     def test_snapshot_to_source_card_uses_planned_status_copy(self):
         cases = [
