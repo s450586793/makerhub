@@ -433,6 +433,56 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
         )
         self.assertEqual(complete_archive_task.call_args.kwargs["message"], "批量归档完成：成功 0 个，失败 1 个。")
 
+    def test_refresh_batch_completes_parent_when_child_disappeared_after_archive(self):
+        state = {}
+        manager = ArchiveTaskManager(background_enabled=False)
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch.object(manager, "_archived_task_keys", return_value={"model:2673662"}):
+            manager.task_store.save_archive_queue(
+                {
+                    "active": [
+                        {
+                            "id": "batch-1",
+                            "url": "https://makerworld.com.cn/zh/@ace/upload",
+                            "mode": "author_upload",
+                            "status": "waiting_children",
+                            "meta": {
+                                "batch_expected_items": [
+                                    {
+                                        "url": "https://makerworld.com.cn/zh/models/2673662",
+                                        "task_key": "model:2673662",
+                                        "model_id": "2673662",
+                                        "attempts": 1,
+                                        "status": "queued",
+                                        "last_task_id": "child-completed",
+                                    }
+                                ],
+                                "batch_progress": {
+                                    "total": 1,
+                                    "completed": 0,
+                                    "failed": 0,
+                                    "running": 0,
+                                    "queued": 1,
+                                    "remaining": 1,
+                                },
+                            },
+                        }
+                    ],
+                    "queued": [],
+                    "recent_failures": [],
+                }
+            )
+
+            refreshed = manager._refresh_batch_tasks()
+            queue = manager.task_store.load_archive_queue()
+
+        self.assertTrue(refreshed)
+        self.assertEqual(queue["active"], [])
+        self.assertEqual(queue["running_count"], 0)
+        self.assertEqual(queue["queued_count"], 0)
+
     def test_refresh_batch_restores_parent_removed_from_recent_failures(self):
         state = {}
         manager = ArchiveTaskManager(background_enabled=False)

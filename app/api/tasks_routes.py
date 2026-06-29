@@ -23,7 +23,7 @@ from app.services.archive_worker import BATCH_TASK_MODES, detect_archive_mode
 from app.services.account_health import mark_account_ok
 from app.services.business_logs import append_business_log
 from app.services.catalog import build_tasks_light_payload, build_tasks_payload
-from app.services.request_threads import run_task_api, run_ui_io, run_web_io
+from app.services.request_threads import TASK_API_EXECUTOR, run_task_api, run_ui_io, run_web_io
 
 
 router = APIRouter(prefix="/api")
@@ -44,6 +44,23 @@ def _submit_runtime_run(run_type: str, context: dict) -> dict:
     runtime_engine.adapters.setdefault("archive", ArchiveRuntimeAdapter())
     runtime_engine.adapters.setdefault("missing_3mf_retry", Missing3mfRuntimeAdapter())
     return runtime_engine.submit_run(run_type, context)
+
+
+def _submit_background_task(func, *args, **kwargs) -> bool:
+    def _run() -> None:
+        try:
+            func(*args, **kwargs)
+        except Exception as exc:
+            append_business_log(
+                "system",
+                "background_task_failed",
+                "后台任务执行失败。",
+                error=str(exc),
+                task=getattr(func, "__name__", str(func)),
+            )
+
+    TASK_API_EXECUTOR.submit(_run)
+    return True
 
 
 @router.get("/tasks")
@@ -98,11 +115,14 @@ async def repair_archive_queue(request: Request):
 
     def _repair_payload() -> dict:
         result = task_state_store.repair_archive_queue()
+        archive_queue = result.get("queue") or {}
+        crawler.manager._refresh_batch_tasks()
+        archive_queue = task_state_store.load_archive_queue()
         return {
             "success": True,
             "message": "队列状态修复完成。",
             "summary": result.get("summary") or {},
-            "archive_queue": result.get("queue") or {},
+            "archive_queue": archive_queue,
         }
 
     result = await run_task_api(_repair_payload)
@@ -205,13 +225,13 @@ async def retry_all_missing_3mf(request: Request):
 async def retry_verified_missing_3mf(payload: Missing3mfVerificationRetryRequest, request: Request):
     _require_session_auth(request)
     verification_detail = "用户已在 MakerWorld 完成验证，已重新启动同平台 3MF 重试。"
+    snapshot = mark_account_ok(
+        payload.platform,
+        source="manual_verification",
+        detail=verification_detail,
+    )
     if _runtime_engine_enabled():
         def _submit_verified_runtime_retry() -> dict:
-            snapshot = mark_account_ok(
-                payload.platform,
-                source="manual_verification",
-                detail=verification_detail,
-            )
             result = _submit_runtime_run(
                 "missing_3mf_retry",
                 {
@@ -238,17 +258,19 @@ async def retry_verified_missing_3mf(payload: Missing3mfVerificationRetryRequest
         )
         return result
 
-    def _retry_and_mark_verified() -> dict:
-        snapshot = mark_account_ok(
-            payload.platform,
-            source="manual_verification",
-            detail=verification_detail,
-        )
-        result = dict(crawler.manager.retry_verification_missing_3mf(platform=payload.platform) or {})
-        result["account_health"] = snapshot
-        return result
-
-    result = await run_task_api(_retry_and_mark_verified)
+    submitted = _submit_background_task(
+        crawler.manager.retry_verification_missing_3mf,
+        platform=payload.platform,
+    )
+    result = {
+        "accepted": submitted,
+        "accepted_count": 0,
+        "queued_count": 0,
+        "failed_count": 0,
+        "total_count": 0,
+        "account_health": snapshot,
+        "message": "已确认验证完成，正在后台重试同平台验证类 3MF 任务。",
+    }
     append_business_log(
         "missing_3mf",
         "verification_verified_retry_requested",

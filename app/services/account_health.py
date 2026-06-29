@@ -312,10 +312,10 @@ def snapshot_to_source_card(platform: Any, snapshot: dict[str, Any] | None = Non
             },
             {
                 "kind": "api",
-                "label": "重新检测",
-                "endpoint": f"/api/config/online-accounts/{normalized_platform}/test",
+                "label": "已验证",
+                "endpoint": "/api/tasks/missing-3mf/verification-verified",
                 "method": "POST",
-                "body": {},
+                "body": {"platform": normalized_platform},
             },
         ]
     return card

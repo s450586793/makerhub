@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.57`
+> 当前版本：`v0.9.59`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,11 +206,26 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-29 · v0.9.59
+
+- 首页源站需要手动验证时，按钮恢复为“已验证”，点击后直接确认当前平台已完成验证，而不是只做账号 Cookie 重新检测。
+- “已验证”接口会先立即打开对应平台 `3MF` gate 并返回账号健康快照，再把同平台验证类缺失 `3MF` 重试放到后台执行，避免按钮长时间停在 `提交中`。
+- 补充首页源站卡片和验证确认接口回归测试，锁定手动验证完成后的快速恢复流程。
+
+### 2026-06-29 · v0.9.58
+
+- 任务页“修复队列”现在会在释放过期 lease / finalize 残留 running 任务后，立即刷新批量父任务汇总，避免子任务已完成但父任务继续停在 `waiting_children`。
+- 修复队列接口返回刷新后的归档队列状态，前端点击后能直接看到 running 数和父任务状态收敛，不再需要等待 Worker 下一轮轮询。
+- 补充后端回归测试，覆盖修复队列后的批量父任务刷新，以及子任务已归档但父任务仍等待时的完成收尾。
+
 ### 2026-06-28 · v0.9.57
 
 - Worker 新增线上账号 Cookie 定时检测，默认每 12 小时检查国内 / 国际账号 Cookie 可用性，并把结果写入账号健康状态。
 - 检测到 Cloudflare / 验证 / Cookie 异常时会自动关闭对应平台 `3MF` gate，首页源站卡片显示“手动过 CF”和“重新检测”，避免任务继续盲跑。
 - 账号测试接口会同步恢复或关闭对应平台 gate，用户手动通过 Cloudflare 后可直接在首页点“重新检测”恢复状态。
+
+<details>
+<summary>历史更新记录</summary>
 
 ### 2026-06-28 · v0.9.56
 
@@ -223,9 +238,6 @@ uvicorn app.main:app --reload
 - 首页源站 `Cookie 异常` / `auth_required` 卡片恢复手动处理入口，更新 Cookie 后可点击“已更新 Cookie”重新打开同平台 `3MF` gate 并重排对应缺失 `3MF`。
 - 真正的 `verification_required` / `cloudflare` 卡片继续显示“已验证”，Cookie 异常不再复用这个按钮文案，避免把 Cookie 失效误判成普通验证。
 - 补充前端回归测试，覆盖结构化 Cookie 状态和只有 Cookie 文案的源站卡片都能显示恢复动作。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-27 · v0.9.54
 

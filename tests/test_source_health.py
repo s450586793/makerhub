@@ -88,10 +88,10 @@ class SourceHealthCardsTest(unittest.TestCase):
             },
             {
                 "kind": "api",
-                "label": "重新检测",
-                "endpoint": "/api/config/online-accounts/cn/test",
+                "label": "已验证",
+                "endpoint": "/api/tasks/missing-3mf/verification-verified",
                 "method": "POST",
-                "body": {},
+                "body": {"platform": "cn"},
             },
         ])
         self.assertNotIn("route", card_map["cn"])

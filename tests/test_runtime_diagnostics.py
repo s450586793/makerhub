@@ -499,6 +499,8 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
 
         with patch.object(tasks_routes, "_require_session_auth") as require_auth, \
                 patch.object(tasks_routes.task_state_store, "repair_archive_queue", return_value=repair_payload), \
+                patch.object(tasks_routes.crawler.manager, "_refresh_batch_tasks", return_value=False), \
+                patch.object(tasks_routes.task_state_store, "load_archive_queue", return_value=repair_payload["queue"]), \
                 patch.object(tasks_routes, "append_business_log"):
             payload = asyncio.run(tasks_routes.repair_archive_queue(request))
 
@@ -506,20 +508,58 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertEqual(payload["summary"]["requeued"], 1)
 
-    def test_verified_missing_3mf_route_retries_same_platform_verification_items(self):
+    def test_repair_archive_queue_route_refreshes_batch_parent_after_repair(self):
         request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
-        retry_payload = {
-            "accepted": True,
-            "accepted_count": 2,
-            "queued_count": 1,
+        repair_payload = {
+            "summary": {
+                "examined": 3,
+                "requeued": 0,
+                "failed": 0,
+                "finalized": 2,
+                "skipped": 1,
+                "errors": [],
+            },
+            "queue": {
+                "running_count": 1,
+                "queued_count": 0,
+                "failed_count": 0,
+                "active": [
+                    {
+                        "id": "batch-1",
+                        "mode": "author_upload",
+                        "status": "waiting_children",
+                    }
+                ],
+                "queued": [],
+                "recent_failures": [],
+            },
+        }
+        refreshed_queue = {
+            "running_count": 0,
+            "queued_count": 0,
             "failed_count": 0,
-            "message": "验证后重试完成。",
+            "active": [],
+            "queued": [],
+            "recent_failures": [],
         }
 
+        with patch.object(tasks_routes, "_require_session_auth"), \
+                patch.object(tasks_routes.task_state_store, "repair_archive_queue", return_value=repair_payload), \
+                patch.object(tasks_routes.crawler.manager, "_refresh_batch_tasks", return_value=True) as refresh_batches, \
+                patch.object(tasks_routes.task_state_store, "load_archive_queue", return_value=refreshed_queue), \
+                patch.object(tasks_routes, "append_business_log"):
+            payload = asyncio.run(tasks_routes.repair_archive_queue(request))
+
+        refresh_batches.assert_called_once_with()
+        self.assertEqual(payload["archive_queue"], refreshed_queue)
+
+    def test_verified_missing_3mf_route_queues_same_platform_verification_items_in_background(self):
+        request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
+
         with patch.object(tasks_routes, "_require_session_auth") as require_auth, \
-                patch.object(tasks_routes, "run_task_api", side_effect=lambda func, **kwargs: func(**kwargs)) as run_task_api, \
-                patch.object(tasks_routes.crawler.manager, "retry_verification_missing_3mf", return_value=retry_payload) as retry_mock, \
-                patch.object(tasks_routes, "mark_account_ok", return_value={"status": "ok"}) as mark_account_ok_mock, \
+                patch.object(tasks_routes.crawler.manager, "retry_verification_missing_3mf") as retry_mock, \
+                patch.object(tasks_routes, "mark_account_ok", return_value={"status": "ok", "three_mf_gate": "open"}) as mark_account_ok_mock, \
+                patch.object(tasks_routes, "_submit_background_task", return_value=True) as background_mock, \
                 patch.object(tasks_routes, "append_business_log") as log_mock:
             payload = asyncio.run(
                 tasks_routes.retry_verified_missing_3mf(
@@ -529,14 +569,15 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
             )
 
         require_auth.assert_called_once_with(request)
-        retry_mock.assert_called_once_with(platform="global")
+        retry_mock.assert_not_called()
         mark_account_ok_mock.assert_called_once_with(
             "global",
             source="manual_verification",
             detail="用户已在 MakerWorld 完成验证，已重新启动同平台 3MF 重试。",
         )
-        run_task_api.assert_called_once()
-        self.assertEqual(payload["accepted_count"], retry_payload["accepted_count"])
+        background_mock.assert_called_once_with(retry_mock, platform="global")
+        self.assertTrue(payload["accepted"])
+        self.assertEqual(payload["accepted_count"], 0)
         self.assertEqual(payload["account_health"]["status"], "ok")
         log_mock.assert_called_once()
 
@@ -551,9 +592,9 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         }
 
         with patch.object(tasks_routes, "_require_session_auth"), \
-                patch.object(tasks_routes, "run_task_api", side_effect=lambda func, **kwargs: func(**kwargs)), \
                 patch.object(tasks_routes.crawler.manager, "retry_verification_missing_3mf", return_value=retry_payload), \
                 patch.object(tasks_routes, "mark_account_ok", return_value={"status": "ok"}) as mark_account_ok_mock, \
+                patch.object(tasks_routes, "_submit_background_task", return_value=True), \
                 patch.object(tasks_routes, "append_business_log"):
             payload = asyncio.run(
                 tasks_routes.retry_verified_missing_3mf(
@@ -569,28 +610,22 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         )
         self.assertEqual(payload["account_health"]["status"], "ok")
 
-    def test_verified_missing_3mf_route_marks_account_ok_before_retrying_items(self):
+    def test_verified_missing_3mf_route_marks_account_ok_before_background_retry(self):
         request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
         call_order = []
-
-        def _retry(platform):
-            call_order.append(f"retry:{platform}")
-            return {
-                "accepted": True,
-                "accepted_count": 1,
-                "queued_count": 0,
-                "failed_count": 0,
-                "message": "验证后重试完成。",
-            }
 
         def _mark(platform, **_kwargs):
             call_order.append(f"mark:{platform}")
             return {"status": "ok"}
 
+        def _background(_func, **kwargs):
+            call_order.append(f"background:{kwargs['platform']}")
+            return True
+
         with patch.object(tasks_routes, "_require_session_auth"), \
-                patch.object(tasks_routes, "run_task_api", side_effect=lambda func, **kwargs: func(**kwargs)), \
-                patch.object(tasks_routes.crawler.manager, "retry_verification_missing_3mf", side_effect=_retry), \
+                patch.object(tasks_routes.crawler.manager, "retry_verification_missing_3mf"), \
                 patch.object(tasks_routes, "mark_account_ok", side_effect=_mark), \
+                patch.object(tasks_routes, "_submit_background_task", side_effect=_background), \
                 patch.object(tasks_routes, "append_business_log"):
             payload = asyncio.run(
                 tasks_routes.retry_verified_missing_3mf(
@@ -599,8 +634,30 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(call_order, ["mark:global", "retry:global"])
+        self.assertEqual(call_order, ["mark:global", "background:global"])
         self.assertEqual(payload["account_health"]["status"], "ok")
+
+    def test_verified_missing_3mf_route_returns_after_marking_account_ok(self):
+        request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
+
+        with patch.object(tasks_routes, "_require_session_auth"), \
+                patch.object(tasks_routes.crawler.manager, "retry_verification_missing_3mf") as retry_mock, \
+                patch.object(tasks_routes, "mark_account_ok", return_value={"status": "ok", "three_mf_gate": "open"}) as mark_account_ok_mock, \
+                patch.object(tasks_routes, "_submit_background_task", return_value=True) as background_mock, \
+                patch.object(tasks_routes, "append_business_log"):
+            payload = asyncio.run(
+                tasks_routes.retry_verified_missing_3mf(
+                    tasks_routes.Missing3mfVerificationRetryRequest(platform="cn"),
+                    request,
+                )
+            )
+
+        mark_account_ok_mock.assert_called_once()
+        retry_mock.assert_not_called()
+        background_mock.assert_called_once()
+        self.assertTrue(payload["accepted"])
+        self.assertEqual(payload["queued_count"], 0)
+        self.assertEqual(payload["account_health"]["three_mf_gate"], "open")
 
     def test_verified_missing_3mf_runtime_route_retries_cookie_invalid_items(self):
         request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
