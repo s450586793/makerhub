@@ -30,6 +30,12 @@ class MobileImportTokenTest(unittest.TestCase):
             query_params={},
         )
 
+    def _query_token_request(self, token: str):
+        return SimpleNamespace(
+            headers={},
+            query_params={"token": token} if token else {},
+        )
+
     def _filename_request(self, *, query_filename="", makerhub_header="", header_filename="", content_disposition=""):
         headers = {}
         if makerhub_header:
@@ -69,6 +75,26 @@ class MobileImportTokenTest(unittest.TestCase):
                 store.save(saved)
                 with self.assertRaises(HTTPException):
                     config_api._require_mobile_import_token(self._request(raw_token))
+
+    def test_mobile_import_token_rejects_url_query_parameter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            store = JsonStore(path=config_path)
+            raw_token = "mhi_test_token"
+            config = AppConfig()
+            config.mobile_import = MobileImportConfig(
+                enabled=True,
+                token_prefix=raw_token[:12],
+                token_hash=hash_api_token(raw_token),
+                created_at="2026-05-12T10:00:00+08:00",
+            )
+            store.save(config)
+
+            with patch.object(config_api, "store", store):
+                with self.assertRaises(HTTPException):
+                    config_api._require_mobile_import_token(self._query_token_request(raw_token))
+
+                config_api._require_mobile_import_token(self._request(raw_token))
 
     def test_mobile_import_accepts_unified_token_with_permission(self):
         with tempfile.TemporaryDirectory() as tmp:

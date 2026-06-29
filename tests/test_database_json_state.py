@@ -80,8 +80,10 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
 
         self.assertEqual(self.state["app_config"]["cookies"][0]["cookie"], "token=makerworld")
         self.assertEqual(self.state["app_config"]["api_tokens"][0]["token_value"], raw_token)
+        self.assertEqual(self.state["app_config"]["api_tokens"][0]["token_hash"], hash_api_token(raw_token))
         self.assertEqual(loaded.cookies[0].cookie, "token=makerworld")
         self.assertEqual(loaded.api_tokens[0].token_value, raw_token)
+        self.assertEqual(loaded.api_tokens[0].token_hash, hash_api_token(raw_token))
 
     def test_json_store_backfills_cookie_from_legacy_file_when_database_has_empty_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:

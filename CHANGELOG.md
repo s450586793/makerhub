@@ -1,5 +1,12 @@
 # 更新说明
 
+## 2026-06-29 · v0.9.62
+
+- 通用 API Token 和移动端导入 Token 不再接受 URL query 传递，只接受 `Authorization: Bearer` 或兼容 token header。
+- 分享接收增加 SSRF 防护，拒绝内网/localhost 分享端、跨 origin 重定向和 manifest 中的绝对文件下载 URL。
+- 默认 Compose 不再挂载 Docker socket，数据库密码改由 `.env` 中的 `MAKERHUB_POSTGRES_PASSWORD` 提供。
+- 缺失 `3MF` 重试遇到 MakerWorld 验证 / Cookie / Cloudflare 拦截后，会暂停同平台排队中的缺失 `3MF` 重试，避免归档 Worker 长时间被不可执行任务占住。
+
 ## 2026-06-29 · v0.9.61
 
 - 修复任务页在 runtime 快照为空时误切到“批次任务”视图的问题，右上角有运行 / 排队数量时会继续显示真实归档队列。

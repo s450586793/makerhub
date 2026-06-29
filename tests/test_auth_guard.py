@@ -8,6 +8,7 @@ from unittest.mock import patch
 from fastapi import HTTPException
 
 from app.core.security import hash_api_token
+from app.core.security import verify_password
 from app.core.store import JsonStore
 from app.schemas.models import ApiTokenRecord, AppConfig
 from app.core.api_permissions import api_token_permission_for_request, is_public_api_route, is_session_only_api_route
@@ -97,6 +98,47 @@ class AuthGuardTokenPermissionTest(unittest.TestCase):
                 )
             )
             self.assertIsNone(manager.resolve_request_auth(self._request(raw_token)))
+
+    def test_api_token_query_parameter_is_not_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            raw_token = "mht_archive_token"
+            store = JsonStore(Path(tmp) / "config.json")
+            config = AppConfig()
+            config.api_tokens = [_token_record(raw_token, ["archive_write"])]
+            store.save(config)
+            manager = AuthManager(store=store, sessions_path=Path(tmp) / "sessions.json")
+            request = SimpleNamespace(
+                cookies={},
+                headers={},
+                query_params={"token": raw_token},
+            )
+
+            self.assertIsNone(
+                manager.resolve_request_auth(
+                    request,
+                    api_token_permission="archive_write",
+                )
+            )
+
+    def test_api_token_plaintext_is_persisted_and_returned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            manager = AuthManager(store=store, sessions_path=Path(tmp) / "sessions.json")
+
+            raw_token, created = manager.create_api_token("automation", permissions=["archive_write"])
+            saved = store.load()
+            listed = manager.list_api_tokens()
+
+            self.assertTrue(raw_token.startswith("mht_"))
+            self.assertEqual(created.token_value, raw_token)
+            self.assertEqual(saved.api_tokens[0].token_value, raw_token)
+            self.assertEqual(listed[0].token_value, raw_token)
+            self.assertIsNotNone(
+                manager.resolve_request_auth(
+                    self._request(raw_token),
+                    api_token_permission="archive_write",
+                )
+            )
 
     def test_models_read_token_allows_only_model_read_permission(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -205,7 +247,7 @@ class AuthLoginHardeningTest(unittest.IsolatedAsyncioTestCase):
                 for _ in range(5):
                     with self.assertRaises(HTTPException) as failed:
                         await auth_api.login(payload, request)
-                    self.assertEqual(failed.exception.status_code, 401)
+                self.assertEqual(failed.exception.status_code, 401)
 
                 key = manager.login_failure_key(request, "admin")
                 self.assertGreater(manager.login_backoff_seconds(key), 0)
@@ -218,6 +260,28 @@ class AuthLoginHardeningTest(unittest.IsolatedAsyncioTestCase):
                 response = await auth_api.login(SimpleNamespace(username="admin", password="admin"), request)
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(manager.login_backoff_seconds(key), 0)
+
+    async def test_default_admin_password_can_create_session_and_reports_warning_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            manager = AuthManager(store=store, sessions_path=Path(tmp) / "sessions.json")
+            with patch.object(auth_api, "store", store), \
+                    patch.object(auth_api, "auth_manager", manager), \
+                    patch.object(auth_api, "append_business_log"):
+                response = await auth_api.login(
+                    SimpleNamespace(username="admin", password="admin"),
+                    self._login_request(),
+                )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn('"default_password":true', response.body.decode("utf-8"))
+
+    async def test_admin_password_environment_does_not_replace_default_login(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"MAKERHUB_ADMIN_PASSWORD": "custom-secret"}):
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+
+            self.assertTrue(verify_password("admin", config.user.password_hash))
 
     async def test_login_sets_secure_cookie_behind_https_proxy_and_reports_default_password(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -234,6 +298,26 @@ class AuthLoginHardeningTest(unittest.IsolatedAsyncioTestCase):
             cookie = response.headers.get("set-cookie", "")
             self.assertIn("Secure", cookie)
             self.assertIn('"default_password":true', response.body.decode("utf-8"))
+
+
+class CsrfOriginGuardTest(unittest.TestCase):
+    def _request(self, *, origin: str = "", referer: str = "", host: str = "maker.example", scheme: str = "https"):
+        headers = {"host": host}
+        if origin:
+            headers["origin"] = origin
+        if referer:
+            headers["referer"] = referer
+        return SimpleNamespace(
+            method="POST",
+            headers=headers,
+            url=SimpleNamespace(scheme=scheme),
+        )
+
+    def test_session_write_requires_same_origin_header(self):
+        self.assertFalse(main_app._csrf_origin_is_valid(self._request()))
+        self.assertFalse(main_app._csrf_origin_is_valid(self._request(origin="https://evil.example")))
+        self.assertTrue(main_app._csrf_origin_is_valid(self._request(origin="https://maker.example")))
+        self.assertTrue(main_app._csrf_origin_is_valid(self._request(referer="https://maker.example/settings")))
 
 
 if __name__ == "__main__":

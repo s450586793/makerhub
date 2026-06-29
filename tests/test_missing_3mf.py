@@ -360,6 +360,54 @@ class Missing3mfTest(unittest.TestCase):
         self.assertEqual(result["task_id"], "retry-profile-1")
         self.assertEqual([item["id"] for item in state["archive_queue"]["queued"]], ["retry-profile-1"])
 
+    def test_duplicate_missing_retry_log_reports_existing_queue_item(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        logged = []
+
+        with patch.object(manager, "_deleted_task_lookup", return_value={}), \
+                patch.object(manager, "_archived_task_keys", return_value=set()), \
+                patch.object(
+                    manager,
+                    "_enqueue_single_task_with_queue",
+                    return_value=(
+                        "retry-profile-1",
+                        {
+                            "enqueued": False,
+                            "merged": False,
+                            "existing_task_id": "retry-profile-1",
+                            "task_identity_key": "missing_3mf_retry:model:2193050",
+                        },
+                    ),
+                ), \
+                patch.object(manager, "_ensure_worker"), \
+                patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
+                patch.object(archive_worker_module, "_is_three_mf_limit_guard_active_for_url", return_value=False), \
+                patch.object(
+                    archive_worker_module,
+                    "_log_archive",
+                    side_effect=lambda *args, **kwargs: logged.append((args, kwargs)),
+                ):
+            result = manager._submit_single(
+                "https://makerworld.com.cn/zh/models/2193050",
+                force=True,
+                meta={
+                    "missing_3mf_retry": True,
+                    "model_id": "2193050",
+                    "instance_id": "profile-1",
+                },
+            )
+
+        self.assertFalse(result["accepted"])
+        self.assertTrue(result["queued"])
+        self.assertEqual(result["task_id"], "retry-profile-1")
+        self.assertEqual(result["message"], "该模型的缺失 3MF 重试已在队列中。")
+        self.assertTrue(logged)
+        event_args, event_kwargs = logged[-1]
+        self.assertEqual(event_args[0], "single_submit_skipped")
+        self.assertEqual(event_args[1], "缺失 3MF 重试已在队列中。")
+        self.assertFalse(event_kwargs["enqueued"])
+        self.assertEqual(event_kwargs["existing_task_id"], "retry-profile-1")
+
     def test_manual_missing_retry_keeps_existing_queue_item_status_queued(self):
         original_select_cookie = archive_worker_module._select_cookie
         updates = []

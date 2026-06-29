@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.61`
+> 当前版本：`v0.9.62`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -80,7 +80,13 @@ mkdir -p "/volume2/entertainment/3D打印/makerhub/local"
 
 ### 2. 使用完整 `compose.yaml`
 
-默认密码直接写在 compose 里。正式使用前建议把下面所有 `makerhub_password_123456` 改成自己的纯英文数字密码，避免使用 `@`、`:`、`/`、`#` 这类需要 URL 转义的字符。
+先在 `compose.yaml` 同目录创建 `.env`，不要使用下面的示例值：
+
+```env
+MAKERHUB_POSTGRES_PASSWORD=change-this-db-password
+```
+
+`MAKERHUB_POSTGRES_PASSWORD` 会同时用于 App、Worker 和 Postgres，建议使用纯英文数字，避免 `@`、`:`、`/`、`#` 这类需要 URL 转义的字符。
 
 ```yaml
 services:
@@ -95,11 +101,12 @@ services:
       MAKERHUB_BACKGROUND_TASKS: "false"
       MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
       MAKERHUB_WEB_WORKERS: "1"
-      MAKERHUB_DATABASE_URL: postgresql://makerhub:makerhub_password_123456@makerhub-postgres:5432/makerhub
+      MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
     volumes:
       - /volume4/docker/docker/makerhub:/app/config
       - /volume2/entertainment/3D打印/makerhub:/app/data
-      - /var/run/docker.sock:/var/run/docker.sock
+      # 高风险可选：只有明确需要网页一键更新时再挂载 Docker socket。
+      # - /var/run/docker.sock:/var/run/docker.sock
     # 高级可选：如果希望 App 等 Postgres 健康后再启动，取消下面三行注释，并同时打开 Postgres 的 healthcheck。
     # depends_on:
     #   makerhub-postgres:
@@ -115,7 +122,7 @@ services:
       MAKERHUB_BACKGROUND_TASKS: "true"
       MAKERHUB_WORKER_CONCURRENCY: "2"
       MAKERHUB_HEAVY_JOB_NICE: "10"
-      MAKERHUB_DATABASE_URL: postgresql://makerhub:makerhub_password_123456@makerhub-postgres:5432/makerhub
+      MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
     volumes:
       - /volume4/docker/docker/makerhub:/app/config
       - /volume2/entertainment/3D打印/makerhub:/app/data
@@ -131,7 +138,7 @@ services:
     environment:
       POSTGRES_DB: makerhub
       POSTGRES_USER: makerhub
-      POSTGRES_PASSWORD: makerhub_password_123456
+      POSTGRES_PASSWORD: ${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}
     volumes:
       - /volume4/docker/docker/makerhub/postgres:/var/lib/postgresql/data
     # 高级可选：需要配合上面的 depends_on 使用时再打开。
@@ -155,7 +162,7 @@ docker compose up -d
 http://你的服务器IP:9042
 ```
 
-默认登录账号密码为 `admin` / `admin`。首次登录后请先到设置页修改密码，再添加 MakerWorld 国内或国际账号。
+默认登录账号密码为 `admin/admin`。首次登录后建议到设置页修改密码，再添加 MakerWorld 国内或国际账号。
 
 首次启动数据库版本后，Worker 会自动迁移旧配置、Cookie / Token、订阅、任务状态、来源库 metadata、分享记录、更新状态、历史业务日志和模型卡片索引。迁移不会移动或删除模型文件。
 
@@ -183,7 +190,7 @@ docker compose pull makerhub-app makerhub-worker makerhub-postgres
 docker compose up -d
 ```
 
-默认 compose 已挂载 Docker socket，因此设置页可以直接执行网页一键更新。这个挂载只建议在可信内网环境使用。
+默认 compose 不再挂载 Docker socket，因此设置页不会默认拥有宿主机 Docker 控制权限。只有明确需要网页一键更新时，才取消 `compose.yaml` 中 `/var/run/docker.sock:/var/run/docker.sock` 那一行注释，并仅在可信内网环境使用；不挂载时请用上面的手动更新命令。
 
 ## 本地开发
 
@@ -206,6 +213,13 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-29 · v0.9.62
+
+- 通用 API Token 和移动端导入 Token 不再接受 URL query 传递，只接受 `Authorization: Bearer` 或兼容 token header。
+- 分享接收增加 SSRF 防护，拒绝内网/localhost 分享端、跨 origin 重定向和 manifest 中的绝对文件下载 URL。
+- 默认 Compose 不再挂载 Docker socket，数据库密码改由 `.env` 中的 `MAKERHUB_POSTGRES_PASSWORD` 提供。
+- 缺失 `3MF` 重试遇到 MakerWorld 验证 / Cookie / Cloudflare 拦截后，会暂停同平台排队中的缺失 `3MF` 重试，避免归档 Worker 长时间被不可执行任务占住。
+
 ### 2026-06-29 · v0.9.61
 
 - 修复任务页在 runtime 快照为空时误切到“批次任务”视图的问题，右上角有运行 / 排队数量时会继续显示真实归档队列。
@@ -218,14 +232,14 @@ uvicorn app.main:app --reload
 - 当队列已经没有 active 任务但仍有 queued 时，会丢弃本进程里可能卡住的旧归档线程记录并重新补起消费者，避免 queued 长时间无人领取。
 - 补充队列状态和归档 Worker 回归测试，覆盖完成态残留和 stale worker 线程恢复。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-29 · v0.9.59
 
 - 首页源站需要手动验证时，按钮恢复为“已验证”，点击后直接确认当前平台已完成验证，而不是只做账号 Cookie 重新检测。
 - “已验证”接口会先立即打开对应平台 `3MF` gate 并返回账号健康快照，再把同平台验证类缺失 `3MF` 重试放到后台执行，避免按钮长时间停在 `提交中`。
 - 补充首页源站卡片和验证确认接口回归测试，锁定手动验证完成后的快速恢复流程。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-29 · v0.9.58
 

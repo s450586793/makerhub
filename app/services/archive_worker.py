@@ -490,7 +490,7 @@ def _sync_account_health_for_archive_result(
     instance_id: str,
     missing_items: list[dict[str, Any]],
     missing_3mf_retry: bool,
-) -> None:
+) -> Optional[dict[str, str]]:
     classified_failure = _account_health_failure_from_missing_items(missing_items)
     try:
         if classified_failure is not None:
@@ -504,6 +504,7 @@ def _sync_account_health_for_archive_result(
                 model_id=model_id,
                 instance_id=classified_failure["instance_id"] or instance_id,
             )
+            return classified_failure
         elif missing_3mf_retry and not missing_items:
             mark_account_ok(
                 platform,
@@ -521,6 +522,7 @@ def _sync_account_health_for_archive_result(
             url=model_url,
             error=str(exc)[:240],
         )
+    return None
 
 
 def _sync_account_health_for_archive_exception(
@@ -1543,6 +1545,42 @@ class ArchiveTaskManager:
         task_merged = bool(enqueue_queue.get("merged"))
         task_enqueued = bool(enqueue_queue.get("enqueued", True))
         existing_task_id = str(enqueue_queue.get("existing_task_id") or task_id).strip()
+        if force and not task_enqueued:
+            log_message = (
+                "缺失 3MF 重试已在队列中，已合并缺失实例。"
+                if task_merged
+                else "缺失 3MF 重试已在队列中。"
+            )
+            _log_archive(
+                "single_submit_skipped",
+                log_message,
+                url=clean_url,
+                task_id=existing_task_id,
+                existing_task_id=existing_task_id,
+                task_key=task_key,
+                force=force,
+                merged=task_merged,
+                enqueued=task_enqueued,
+            )
+            if task_merged:
+                return {
+                    "accepted": False,
+                    "merged": True,
+                    "queued": True,
+                    "task_id": existing_task_id,
+                    "mode": "single_model",
+                    "url": clean_url,
+                    "message": "该模型的缺失 3MF 重试已在队列中，已合并缺失实例。",
+                }
+            return {
+                "accepted": False,
+                "merged": False,
+                "queued": True,
+                "task_id": existing_task_id,
+                "mode": "single_model",
+                "url": clean_url,
+                "message": "该模型的缺失 3MF 重试已在队列中。",
+            }
         _log_archive(
             "single_submitted",
             "单模型归档任务已入队。" if not force else "缺失 3MF 重新下载任务已入队。",
@@ -1553,26 +1591,6 @@ class ArchiveTaskManager:
             merged=task_merged,
             enqueued=task_enqueued,
         )
-        if force and not task_enqueued and task_merged:
-            return {
-                "accepted": False,
-                "merged": True,
-                "queued": True,
-                "task_id": existing_task_id,
-                "mode": "single_model",
-                "url": clean_url,
-                "message": "该模型的缺失 3MF 重试已在队列中，已合并缺失实例。",
-            }
-        if force and not task_enqueued:
-            return {
-                "accepted": False,
-                "merged": False,
-                "queued": True,
-                "task_id": existing_task_id,
-                "mode": "single_model",
-                "url": clean_url,
-                "message": "该模型的缺失 3MF 重试已在队列中。",
-            }
         return {
             "accepted": True,
             "task_id": task_id,
@@ -1798,6 +1816,62 @@ class ArchiveTaskManager:
             limited_until=guard_state.get("limited_until") or "",
         )
         return len(paused_items)
+
+    def _pause_three_mf_retry_tasks_for_gate(
+        self,
+        *,
+        platform: str,
+        state: str,
+        message: str,
+    ) -> int:
+        normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
+        if normalized_platform not in {"cn", "global"}:
+            return 0
+        if not hasattr(self.task_store, "load_archive_queue") or not hasattr(self.task_store, "save_archive_queue"):
+            return 0
+
+        queue = self.task_store.load_archive_queue()
+        queued_items = list(queue.get("queued") or [])
+        paused_count = 0
+        pause_message = str(message or "").strip() or describe_three_mf_failure(
+            state,
+            source=normalized_platform,
+        )
+        now = china_now().isoformat()
+
+        for item in queued_items:
+            status = str(item.get("status") or "queued").strip().lower()
+            if status not in {"", "queued", "pending"}:
+                continue
+            if not self._is_missing_3mf_retry_task(item):
+                continue
+
+            meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+            item_url = normalize_source_url(str(meta.get("model_url") or item.get("url") or ""))
+            item_platform = normalize_makerworld_source(meta.get("source"), item_url)
+            if item_platform != normalized_platform:
+                continue
+
+            item["status"] = "paused"
+            item["blocked_reason"] = "needs_verification"
+            item["message"] = pause_message
+            item["updated_at"] = now
+            paused_count += 1
+
+        if not paused_count:
+            return 0
+
+        queue["queued"] = queued_items
+        self.task_store.save_archive_queue(queue)
+        append_business_log(
+            "missing_3mf",
+            "retry_queue_paused_account_gate",
+            pause_message,
+            paused_count=paused_count,
+            platform=normalized_platform,
+            state=str(state or "").strip(),
+        )
+        return paused_count
 
     def retry_missing_3mf(
         self,
@@ -2448,12 +2522,18 @@ class ArchiveTaskManager:
     def _next_executable_task(self, queue: dict) -> Optional[dict]:
         queued = list(queue.get("queued") or [])
         for item in queued:
+            status = str(item.get("status") or "queued").strip().lower()
+            if status not in {"", "queued", "pending"}:
+                continue
             if _is_batch_parent_waiting_for_children(item):
                 continue
             if self._is_three_mf_only_task_blocked_by_gate(item):
                 continue
             return item
         for item in queued:
+            status = str(item.get("status") or "queued").strip().lower()
+            if status not in {"", "queued", "pending"}:
+                continue
             if not _is_three_mf_only_task(item):
                 return item
         return None
@@ -2866,7 +2946,7 @@ class ArchiveTaskManager:
             account_platform = normalize_makerworld_source(meta.get("source"), url)
             account_model_url = normalize_source_url(url)
             account_instance_id = str(meta.get("instance_id") or "").strip()
-            _sync_account_health_for_archive_result(
+            account_gate_failure = _sync_account_health_for_archive_result(
                 platform=account_platform,
                 model_url=account_model_url,
                 model_id=resolved_model_id,
@@ -2874,6 +2954,12 @@ class ArchiveTaskManager:
                 missing_items=missing_items,
                 missing_3mf_retry=missing_3mf_retry,
             )
+            if isinstance(account_gate_failure, dict):
+                self._pause_three_mf_retry_tasks_for_gate(
+                    platform=account_platform,
+                    state=account_gate_failure.get("status") or "",
+                    message=account_gate_failure.get("detail") or "",
+                )
         if limit_guard_state is not None and not profile_metadata_only:
             self._pause_missing_3mf_retry_tasks_for_limit(limit_guard_state)
         self.task_store.remove_recent_failures_for_model(

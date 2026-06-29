@@ -355,7 +355,7 @@ class AuthManager:
         custom = str(request.headers.get("X-API-Token") or request.headers.get("X-Token") or "").strip()
         if custom:
             return custom
-        return str(request.query_params.get("token") or "").strip()
+        return ""
 
     def resolve_request_auth(
         self,

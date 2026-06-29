@@ -4,7 +4,7 @@
 
 - 维护 Dockerfile、compose、entrypoint 和运行环境变量。
 - 支持 App / Worker / Postgres 三容器部署。
-- 提供设置页的一键更新能力：拉镜像、重建 worker/app、延迟清理旧镜像。
+- 在显式挂载 Docker socket 时提供设置页一键更新能力：拉镜像、重建 worker/app、延迟清理旧镜像。
 - 检测旧 compose 是否缺少数据库配置，并给出升级保护提示。
 - 维护 README 部署说明、compose 示例、iOS 快捷指令下载链接。
 
@@ -45,7 +45,7 @@
   - 更新状态存于 `makerhub_json_state:system_update`。
   - 数据库迁移状态由 Core/归档索引模块维护。
 - Docker:
-  - 默认 compose 挂载 `/var/run/docker.sock`，设置页可直接网页更新。
+  - 默认 compose 不挂载 `/var/run/docker.sock`；只有用户显式 opt-in 后，设置页才可直接网页更新。
   - `depends_on` 与 Postgres `healthcheck` 作为高级可选注释保留，默认不启用。
   - 默认目录布局为 `/app/config/{config,logs,state}` 与 `/app/data`，compose 只映射 `/app/config`、`/app/data` 和 Postgres 数据目录。
   - `makerhub-app` 和 `makerhub-worker` 应使用同一镜像版本。

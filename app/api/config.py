@@ -5,11 +5,13 @@ import base64
 import copy
 import hashlib
 import hmac
+import ipaddress
 import json
 import mimetypes
 import os
 import re
 import secrets
+import socket
 import time
 import uuid
 import zipfile
@@ -17,7 +19,7 @@ from datetime import timedelta
 from io import BytesIO
 from pathlib import Path
 from tempfile import SpooledTemporaryFile
-from urllib.parse import quote, unquote, urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse, urlunparse
 
 import requests
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, Request, UploadFile
@@ -457,6 +459,45 @@ def _decode_share_code(value: str) -> dict:
 
 def _share_receive_remote_error(action: str) -> ValueError:
     return ValueError(f"{action}失败：无法连接分享端，请确认分享码仍有效且分享端公开访问地址可用。")
+
+
+def _host_is_private_or_local(hostname: str) -> bool:
+    host = str(hostname or "").strip().strip("[]").lower()
+    if not host:
+        return True
+    if host in {"localhost"} or host.endswith(".localhost"):
+        return True
+    try:
+        addresses = [ipaddress.ip_address(host)]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        except socket.gaierror:
+            return True
+        addresses = []
+        for info in infos:
+            try:
+                addresses.append(ipaddress.ip_address(info[4][0]))
+            except (IndexError, ValueError):
+                continue
+    if not addresses:
+        return True
+    return any(
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+        or address.is_unspecified
+        for address in addresses
+    )
+
+
+def _origin_for_url(value: str) -> str:
+    parsed = urlparse(str(value or ""))
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), "", "", "", ""))
 
 
 def _share_receive_limit_error(message: str) -> ValueError:
@@ -1012,6 +1053,7 @@ def _active_share_conflict_message(conflicts: list[dict]) -> str:
 def _fetch_share_manifest(share_code: str) -> tuple[dict, dict]:
     decoded = _decode_share_code(share_code)
     _validate_share_receive_base_url(decoded["base_url"])
+    expected_origin = _origin_for_url(decoded["base_url"])
     if decoded.get("access_code"):
         manifest_url = urljoin(
             f"{decoded['base_url']}/",
@@ -1027,6 +1069,14 @@ def _fetch_share_manifest(share_code: str) -> tuple[dict, dict]:
         response = requests.get(manifest_url, timeout=(8, 30), headers={"Accept": "application/json"}, stream=True)
     except requests.RequestException:
         raise _share_receive_remote_error("读取分享") from None
+    final_response_url = str(getattr(response, "url", "") or manifest_url)
+    if _origin_for_url(final_response_url) != expected_origin:
+        response.close()
+        raise ValueError("读取分享失败：分享端重定向到了不受信任的地址。")
+    final_host = urlparse(final_response_url).hostname or ""
+    if _host_is_private_or_local(final_host):
+        response.close()
+        raise ValueError("读取分享失败：分享端重定向到了内网地址。")
     if response.status_code != 200:
         response.close()
         raise ValueError(f"读取分享失败：HTTP {response.status_code}")
@@ -1060,13 +1110,22 @@ def _fetch_share_manifest(share_code: str) -> tuple[dict, dict]:
 
 
 def _validate_share_receive_base_url(base_url: str) -> None:
+    normalized = _normalize_public_base_url(base_url)
+    parsed = urlparse(normalized)
+    if _host_is_private_or_local(parsed.hostname or ""):
+        raise ValueError("公开访问地址不能指向内网、localhost 或链路本地地址。")
     try:
-        _run_public_base_url_test(base_url)
+        result = _run_public_base_url_test(normalized)
     except ValueError as exc:
         message = str(exc)
         if "必须以 http:// 或 https:// 开头" in message:
             raise
         raise _share_receive_remote_error("验证分享端") from exc
+    final_url = str((result or {}).get("final_url") or normalized)
+    if _origin_for_url(final_url) != _origin_for_url(normalized):
+        raise ValueError("公开访问地址检测失败：分享端重定向到了不受信任的地址。")
+    if _host_is_private_or_local(urlparse(final_url).hostname or ""):
+        raise ValueError("公开访问地址检测失败：分享端重定向到了内网地址。")
 
 
 def _share_manifest_files(manifest: dict) -> list[dict]:
@@ -1297,15 +1356,29 @@ def _download_share_file(base_url: str, file_item: dict, target_path: Path) -> t
     file_url = str(file_item.get("url") or "")
     if not file_url:
         raise ValueError("分享文件缺少下载地址。")
+    parsed_file_url = urlparse(file_url)
+    if parsed_file_url.scheme or parsed_file_url.netloc or file_url.startswith("//"):
+        raise ValueError("分享文件下载地址无效。")
     declared_size = _safe_int_value(file_item.get("size"), 0)
     if declared_size > SHARE_RECEIVE_MAX_FILE_BYTES:
         raise _share_receive_limit_error("单个文件过大。")
     url = urljoin(f"{base_url}/", file_url.lstrip("/"))
+    expected_origin = _origin_for_url(base_url)
+    if _origin_for_url(url) != expected_origin:
+        raise ValueError("分享文件下载地址无效。")
     response = None
     try:
         response = requests.get(url, timeout=(8, 120), stream=True)
     except requests.RequestException:
         raise _share_receive_remote_error("下载分享文件") from None
+    final_response_url = str(getattr(response, "url", "") or url)
+    if _origin_for_url(final_response_url) != expected_origin:
+        response.close()
+        raise ValueError("下载分享文件失败：分享端重定向到了不受信任的地址。")
+    final_host = urlparse(final_response_url).hostname or ""
+    if _host_is_private_or_local(final_host):
+        response.close()
+        raise ValueError("下载分享文件失败：分享端重定向到了内网地址。")
     if response.status_code != 200:
         response.close()
         raise ValueError(f"下载分享文件失败：HTTP {response.status_code}")
@@ -1888,7 +1961,7 @@ def _run_public_base_url_test(base_url: str) -> dict:
         response = session.get(
             ping_url,
             timeout=(6, 12),
-            allow_redirects=True,
+            allow_redirects=False,
         )
         elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
         content_type = str(response.headers.get("Content-Type") or "")
@@ -2330,7 +2403,7 @@ def _extract_bearer_token(request: Request) -> str:
     custom = str(request.headers.get("X-Mobile-Import-Token") or request.headers.get("X-API-Token") or request.headers.get("X-Token") or "").strip()
     if custom:
         return custom
-    return str(request.query_params.get("token") or "").strip()
+    return ""
 
 
 def _validate_mobile_import_token(raw_token: str) -> None:
@@ -4078,9 +4151,9 @@ async def mobile_import_ping(request: Request):
 
 
 @router.get("/mobile-import/ping-ipv4")
-async def mobile_import_ping_ipv4(token: str = Query("")):
+async def mobile_import_ping_ipv4(request: Request):
     try:
-        _validate_mobile_import_token(token)
+        _validate_mobile_import_token(_extract_bearer_token(request))
     except HTTPException:
         return "makerhub:unauthorized"
     _mark_mobile_import_used()
@@ -4089,9 +4162,9 @@ async def mobile_import_ping_ipv4(token: str = Query("")):
 
 
 @router.post("/mobile-import/raw-ipv4")
-async def mobile_import_raw_ipv4_file(request: Request, background_tasks: BackgroundTasks, token: str = Query("")):
+async def mobile_import_raw_ipv4_file(request: Request, background_tasks: BackgroundTasks):
     try:
-        _validate_mobile_import_token(token)
+        _validate_mobile_import_token(_extract_bearer_token(request))
     except HTTPException:
         return {
             "success": False,

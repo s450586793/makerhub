@@ -24,8 +24,10 @@
 1. 从共享表单接收文件。直接运行快捷指令而不从微信或文件 App 分享文件时，上传体会为空。
 
 2. `获取 URL 内容`
-   - URL: `MakerHubBaseUrl` + `/api/mobile-import/ping-ipv4?token=` + `MakerHubToken`
+   - URL: `MakerHubBaseUrl` + `/api/mobile-import/ping-ipv4`
    - 方法: `GET`
+   - 请求头:
+     - `Authorization` = `Bearer ` + `MakerHubToken`
    - 返回内容需要包含 `makerhub:ok`
 
 3. 地址不可用或 Token 错误时，iOS 会显示请求失败或 MakerHub 会拒绝上传。
@@ -35,9 +37,10 @@
    - 保存为变量 `FileName`
 
 5. `获取 URL 内容`
-   - URL: `MakerHubBaseUrl` + `/api/mobile-import/raw-ipv4?token=` + `MakerHubToken` + `&filename=` + `FileName`
+   - URL: `MakerHubBaseUrl` + `/api/mobile-import/raw-ipv4?filename=` + `FileName`
    - 方法: `POST`
    - 请求头:
+     - `Authorization` = `Bearer ` + `MakerHubToken`
      - `X-MakerHub-Filename` = `FileName`
    - 请求体: `文件`
    - 文件: `快捷指令输入`
@@ -48,9 +51,9 @@
 ## 接口说明
 
 - `GET /api/mobile-import/ping`: 用 Token 验证当前地址是否可用。
-- `GET /api/mobile-import/ping-ipv4?token=...`: 给 iOS 快捷指令用的简化探测接口。
+- `GET /api/mobile-import/ping-ipv4`: 给 iOS 快捷指令用的简化探测接口，Token 放在 `Authorization: Bearer ...` 请求头里。
 - `POST /api/mobile-import/raw?background=1`: 接收单个文件，并在后台进入本地导入整理流程。
-- `POST /api/mobile-import/raw-ipv4?token=...&filename=...`: 给 iOS 快捷指令用的简化单文件上传接口；文件名会同时通过 URL 参数和 `X-MakerHub-Filename` 请求头传递，兼容微信中文附件名。
+- `POST /api/mobile-import/raw-ipv4?filename=...`: 给 iOS 快捷指令用的简化单文件上传接口；Token 放在 `Authorization: Bearer ...` 请求头里，文件名会同时通过 URL 参数和 `X-MakerHub-Filename` 请求头传递，兼容微信中文附件名。
 - `POST /api/mobile-import`: 仍保留网页/脚本使用的 multipart 批量上传入口。
 
 文件已推送给 MakerHub 后提示 `已上传`，后续整理进度在 MakerHub 的本地整理进度卡片里查看。

@@ -341,8 +341,8 @@
           <ol>
             <li>创建带“本地导入”权限的 Token。</li>
             <li>在手机快捷指令里填写 Token 和 MakerHub 地址。</li>
-            <li>用 Token 请求选定地址的 <code>/api/mobile-import/ping-ipv4</code>。</li>
-            <li>地址可用后，把文件上传到 <code>/api/mobile-import/raw-ipv4</code>。</li>
+            <li>用 <code>Authorization: Bearer Token</code> 请求选定地址的 <code>/api/mobile-import/ping-ipv4</code>。</li>
+            <li>地址可用后，用同一个请求头把文件上传到 <code>/api/mobile-import/raw-ipv4</code>。</li>
             <li>上传成功提示“已上传”，地址不可用时 iOS 会显示请求失败。</li>
           </ol>
         </div>
@@ -732,7 +732,7 @@
             更新会复用当前容器名称、挂载、端口和重启策略。App + Worker 部署下会先更新后台 Worker，再更新 App 容器；页面短暂报错通常只是容器正在重启。
           </p>
           <p v-else-if="!systemUpdate.compose_migration_required">
-            首次仍需要手动在部署里挂载 <code>/var/run/docker.sock:/var/run/docker.sock</code>。启用后，这个页面才能直接拉取新镜像并重建容器。
+            默认部署不会挂载 Docker socket。只有明确接受网页更新会获得宿主机 Docker 控制权限时，才在 compose 里启用 <code>/var/run/docker.sock:/var/run/docker.sock</code>；不启用时请使用手动更新命令。
           </p>
           <code v-if="!systemUpdate.compose_migration_required" class="system-update-code">{{ manualUpdateCommand }}</code>
         </div>
@@ -2113,7 +2113,7 @@ function buildShortcutConfigText() {
     `Token: ${tokenValue}`,
     "MakerHub 地址: <在手机快捷指令里填写，例如 http://192.168.1.20:1111 或 https://你的公网地址>",
     "",
-    "流程: 从共享表单接收文件；先 GET MakerHub 地址 /api/mobile-import/ping-ipv4?token=Token；可用后 POST 文件到 /api/mobile-import/raw-ipv4?token=Token；上传成功提示 已上传。",
+    "流程: 从共享表单接收文件；先 GET MakerHub 地址 /api/mobile-import/ping-ipv4，带请求头 Authorization: Bearer Token；可用后 POST 文件到 /api/mobile-import/raw-ipv4?filename=文件名，继续带 Authorization 请求头；上传成功提示 已上传。",
   ];
   return lines.join("\n");
 }
@@ -2442,7 +2442,7 @@ async function revokeToken(tokenId) {
 
 async function copyTokenValue(item) {
   if (!item?.token_value) {
-    statuses.tokens = "这个 Token 没有保存明文，只能重新生成后复制。";
+    statuses.tokens = "这个 Token 暂无可复制内容。";
     return;
   }
   try {

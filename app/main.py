@@ -1,5 +1,5 @@
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
@@ -62,6 +62,38 @@ SPA_SHELL_PATHS = {
     "/logs",
     "/detail-preview",
 }
+
+UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _request_origin(request: Request) -> str:
+    forwarded_proto = str(request.headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip().lower()
+    scheme = forwarded_proto if forwarded_proto in {"http", "https"} else str(request.url.scheme or "").lower()
+    host = str(request.headers.get("host") or "").strip().lower()
+    if not scheme or not host:
+        return ""
+    return f"{scheme}://{host}"
+
+
+def _origin_from_header(value: str) -> str:
+    text = str(value or "").strip()
+    if not text or text.lower() == "null":
+        return ""
+    parsed = urlparse(text)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+
+
+def _csrf_origin_is_valid(request: Request) -> bool:
+    expected_origin = _request_origin(request)
+    if not expected_origin:
+        return False
+    origin = _origin_from_header(request.headers.get("origin") or "")
+    if origin:
+        return origin == expected_origin
+    referer = _origin_from_header(request.headers.get("referer") or "")
+    return bool(referer and referer == expected_origin)
 
 
 def _apply_cache_headers(path: str, response):
@@ -199,6 +231,14 @@ async def auth_guard(request: Request, call_next):
 
     if path == "/login":
         return finish(RedirectResponse(url="/", status_code=303))
+
+    if (
+        identity.get("kind") == "session"
+        and request.method.upper() in UNSAFE_METHODS
+        and path.startswith("/api/")
+        and not _csrf_origin_is_valid(request)
+    ):
+        return finish(JSONResponse({"detail": "CSRF origin check failed"}, status_code=403))
 
     response = await call_next(request)
     return finish(response)

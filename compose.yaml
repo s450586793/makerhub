@@ -10,11 +10,12 @@ services:
       MAKERHUB_BACKGROUND_TASKS: "false"
       MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
       MAKERHUB_WEB_WORKERS: "1"
-      MAKERHUB_DATABASE_URL: postgresql://makerhub:makerhub_password_123456@makerhub-postgres:5432/makerhub
+      MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
     volumes:
       - /volume4/docker/docker/makerhub:/app/config
       - /volume2/entertainment/3D打印/makerhub:/app/data
-      - /var/run/docker.sock:/var/run/docker.sock
+      # 高风险可选：只有明确需要网页一键更新时再挂载 Docker socket。
+      # - /var/run/docker.sock:/var/run/docker.sock
     # 高级可选：如果希望 App 等 Postgres 健康后再启动，取消下面三行注释，并同时打开 Postgres 的 healthcheck。
     # depends_on:
     #   makerhub-postgres:
@@ -30,7 +31,7 @@ services:
       MAKERHUB_BACKGROUND_TASKS: "true"
       MAKERHUB_WORKER_CONCURRENCY: "2"
       MAKERHUB_HEAVY_JOB_NICE: "10"
-      MAKERHUB_DATABASE_URL: postgresql://makerhub:makerhub_password_123456@makerhub-postgres:5432/makerhub
+      MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
     volumes:
       - /volume4/docker/docker/makerhub:/app/config
       - /volume2/entertainment/3D打印/makerhub:/app/data
@@ -46,7 +47,7 @@ services:
     environment:
       POSTGRES_DB: makerhub
       POSTGRES_USER: makerhub
-      POSTGRES_PASSWORD: makerhub_password_123456
+      POSTGRES_PASSWORD: ${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}
     volumes:
       - /volume4/docker/docker/makerhub/postgres:/var/lib/postgresql/data
     # 高级可选：需要配合上面的 depends_on 使用时再打开。

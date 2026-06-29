@@ -16,7 +16,10 @@
     {
       "action": "获取 URL 内容",
       "method": "GET",
-      "url": "${MakerHubBaseUrl}/api/mobile-import/ping-ipv4?token=${MakerHubToken}",
+      "url": "${MakerHubBaseUrl}/api/mobile-import/ping-ipv4",
+      "headers": {
+        "Authorization": "Bearer ${MakerHubToken}"
+      },
       "expect": "makerhub:ok"
     },
     {
@@ -29,8 +32,9 @@
     {
       "action": "获取 URL 内容",
       "method": "POST",
-      "url": "${MakerHubBaseUrl}/api/mobile-import/raw-ipv4?token=${MakerHubToken}&filename=${FileName}",
+      "url": "${MakerHubBaseUrl}/api/mobile-import/raw-ipv4?filename=${FileName}",
       "headers": {
+        "Authorization": "Bearer ${MakerHubToken}",
         "X-MakerHub-Filename": "${FileName}"
       },
       "request_body": "文件",
@@ -42,8 +46,8 @@
     }
   ],
   "makerhub_endpoints": {
-    "probe": "/api/mobile-import/ping-ipv4?token=...",
-    "upload": "/api/mobile-import/raw-ipv4?token=...&filename=..."
+    "probe": "/api/mobile-import/ping-ipv4 with Authorization: Bearer ...",
+    "upload": "/api/mobile-import/raw-ipv4?filename=... with Authorization: Bearer ..."
   },
   "network_rule": "在 MakerHub 地址里填写当前手机能访问的局域网或公网地址；地址不可用时由 iOS 显示请求失败。"
 }
