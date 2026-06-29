@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.60`
+> 当前版本：`v0.9.61`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -206,6 +206,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-29 · v0.9.61
+
+- 修复任务页在 runtime 快照为空时误切到“批次任务”视图的问题，右上角有运行 / 排队数量时会继续显示真实归档队列。
+- 空的 runtime `runs` / `batches` / `failures` 不再覆盖旧归档队列 payload，避免列表显示 0 个运行 / 0 个批次。
+- 补充前端回归测试，覆盖空 runtime 快照下归档队列仍可见。
+
 ### 2026-06-29 · v0.9.60
 
 - Worker 轮询会自动 finalize `running + 100% + 归档完成` 的残留归档任务，不再需要手动点“修复队列”释放 active 槽。
@@ -218,14 +224,14 @@ uvicorn app.main:app --reload
 - “已验证”接口会先立即打开对应平台 `3MF` gate 并返回账号健康快照，再把同平台验证类缺失 `3MF` 重试放到后台执行，避免按钮长时间停在 `提交中`。
 - 补充首页源站卡片和验证确认接口回归测试，锁定手动验证完成后的快速恢复流程。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-29 · v0.9.58
 
 - 任务页“修复队列”现在会在释放过期 lease / finalize 残留 running 任务后，立即刷新批量父任务汇总，避免子任务已完成但父任务继续停在 `waiting_children`。
 - 修复队列接口返回刷新后的归档队列状态，前端点击后能直接看到 running 数和父任务状态收敛，不再需要等待 Worker 下一轮轮询。
 - 补充后端回归测试，覆盖修复队列后的批量父任务刷新，以及子任务已归档但父任务仍等待时的完成收尾。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-28 · v0.9.57
 

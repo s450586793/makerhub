@@ -33,11 +33,19 @@ export function runtimeFailureLabel(status = "") {
 export function runtimeTaskShape(payload = {}) {
   const runtime = payload?.runtime;
   if (runtime && Array.isArray(runtime.runs) && Array.isArray(runtime.batches)) {
+    const failures = Array.isArray(runtime.failures) ? runtime.failures : [];
+    const hasRuntimeItems = runtime.runs.length > 0 || runtime.batches.length > 0 || failures.length > 0;
+    if (!hasRuntimeItems) {
+      return {
+        mode: "legacy",
+        legacy: payload,
+      };
+    }
     return {
       mode: "runtime",
       runs: runtime.runs,
       batches: runtime.batches,
-      failures: Array.isArray(runtime.failures) ? runtime.failures : [],
+      failures,
     };
   }
   return {

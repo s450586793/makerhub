@@ -36,6 +36,24 @@ test("runtime task shape prefers runtime payload when present", () => {
   assert.equal(payload.failures.length, 1);
 });
 
+test("runtime task shape falls back when runtime payload is empty", () => {
+  const payload = runtimeTaskShape({
+    runtime: {
+      runs: [],
+      batches: [],
+      failures: [],
+    },
+    archive_queue: {
+      active: [{ id: "archive-1" }],
+      queued: [{ id: "archive-2" }],
+    },
+  });
+
+  assert.equal(payload.mode, "legacy");
+  assert.equal(payload.legacy.archive_queue.active[0].id, "archive-1");
+  assert.equal(payload.legacy.archive_queue.queued[0].id, "archive-2");
+});
+
 test("runtime task shape falls back to legacy payload", () => {
   const payload = runtimeTaskShape({ archive_queue: { active: [{ id: "legacy" }] } });
 
