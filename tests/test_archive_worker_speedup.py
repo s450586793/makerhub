@@ -150,6 +150,37 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
         self.assertEqual(len(started_threads), 4)
         self.assertEqual(len({thread.name for thread in started_threads}), 4)
 
+    def test_ensure_worker_for_pending_replaces_stale_threads_when_queue_has_no_active_tasks(self):
+        manager = ArchiveTaskManager(background_enabled=True)
+        started_threads = []
+
+        class StaleThread:
+            def is_alive(self):
+                return True
+
+        class FakeThread:
+            def __init__(self, *, target, daemon=True, name=""):
+                self.target = target
+                self.daemon = daemon
+                self.name = name
+
+            def is_alive(self):
+                return True
+
+            def start(self):
+                started_threads.append(self)
+
+        manager._workers = [StaleThread(), StaleThread()]
+
+        with patch.object(manager, "_repair_queue_before_worker_start", return_value={"running_count": 0, "queued_count": 3}), \
+                patch.object(archive_worker_module, "_archive_worker_concurrency", return_value=2, create=True), \
+                patch.object(archive_worker_module.threading, "Thread", side_effect=lambda **kwargs: FakeThread(**kwargs)):
+            queue = manager.ensure_worker_for_pending()
+
+        self.assertEqual(queue["queued_count"], 3)
+        self.assertEqual(len(started_threads), 2)
+        self.assertEqual(len(manager._workers), 2)
+
     def test_run_loop_can_start_four_single_model_tasks_without_duplicate_leases(self):
         state = {}
         manager = ArchiveTaskManager(background_enabled=False)

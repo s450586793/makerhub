@@ -854,6 +854,42 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(task["last_progress_at"], "2026-06-04T10:00:00+08:00")
         self.assertEqual(task["lease_expires_at"], "2026-06-04T10:30:00+08:00")
 
+    def test_refresh_recent_active_archive_leases_finalizes_completed_running_snapshot(self):
+        state = {
+            "archive_queue": {
+                "active": [
+                    {
+                        "id": "task-done",
+                        "title": "Done",
+                        "status": "running",
+                        "progress": 100,
+                        "message": "归档完成",
+                        "updated_at": "2026-06-04T09:59:00+08:00",
+                        "lease_expires_at": "2026-06-04T10:30:00+08:00",
+                        "attempt_count": 1,
+                    }
+                ],
+                "queued": [],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+        events = []
+
+        def capture_event(*args):
+            if len(args) >= 4:
+                events.append((args[2], args[3]))
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch.object(store, "_publish_state_event", side_effect=capture_event):
+            result = store.refresh_recent_active_archive_leases()
+
+        self.assertEqual(result["finalized_count"], 1)
+        self.assertEqual(result["running_count"], 0)
+        self.assertEqual(result["active"], [])
+        self.assertEqual(events, [("archive.completed", {"id": "task-done", "mode": "", "url": "", "title": "Done"})])
+
     def test_repair_archive_queue_requeues_expired_running_task(self):
         state = {
             "archive_queue": {

@@ -1983,13 +1983,18 @@ class TaskStateStore:
 
     def refresh_recent_active_archive_leases(self) -> dict:
         refreshed_count = 0
+        finalized_items: list[dict[str, Any]] = []
 
         def _mutate(payload: dict) -> dict:
-            nonlocal refreshed_count
+            nonlocal refreshed_count, finalized_items
             active = []
+            finalized_items = []
             now = china_now_iso()
             for item in payload.get("active") or []:
                 normalized = _normalize_archive_runtime_item(item, "running")
+                if _is_completed_archive_running_snapshot(normalized):
+                    finalized_items.append(normalized)
+                    continue
                 status = normalize_runtime_status(normalized.get("status"), "running")
                 if (
                     status == "running"
@@ -2007,6 +2012,19 @@ class TaskStateStore:
 
         queue = self._update_archive_queue(_mutate)
         queue["refreshed_count"] = refreshed_count
+        queue["finalized_count"] = len(finalized_items)
+        for item in finalized_items:
+            self._publish_state_event(
+                ARCHIVE_QUEUE_STATE_KEY,
+                queue,
+                "archive.completed",
+                {
+                    "id": item.get("id") or "",
+                    "mode": item.get("mode") or "",
+                    "url": item.get("url") or "",
+                    "title": item.get("title") or "",
+                },
+            )
         return queue
 
     def complete_archive_task(self, task_id: str, **changes: Any) -> dict:

@@ -2399,6 +2399,10 @@ class ArchiveTaskManager:
         queue = self._repair_queue_before_worker_start(repair_active=False)
         if int(queue.get("running_count") or 0) > 0:
             queue = self.task_store.refresh_recent_active_archive_leases()
+        if int(queue.get("queued_count") or 0) > 0 and int(queue.get("running_count") or 0) <= 0:
+            with self._lock:
+                self._workers = []
+                self._worker = None
         if int(queue.get("queued_count") or 0) > 0:
             self._ensure_worker()
         return queue
