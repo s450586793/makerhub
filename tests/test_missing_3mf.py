@@ -117,6 +117,26 @@ class Missing3mfTest(unittest.TestCase):
         self.assertEqual(normalized["items"][0]["status"], "verification_required")
         self.assertEqual(normalized["items"][0]["message"], "MakerWorld 需要验证，前往官网任意下载一个模型。")
 
+    def test_normalize_infers_not_found_status_from_makerworld_404_message(self):
+        payload = {
+            "items": [
+                {
+                    "model_id": "1590150",
+                    "title": "0.2mm 层高, 2 层墙, 15% 填充",
+                    "status": "missing",
+                    "model_url": "https://makerworld.com.cn/zh/models/1590150",
+                    "message": "模型页面返回 404，可能已下架、设为私有或转为草稿。",
+                }
+            ]
+        }
+
+        with patch.object(task_state_module, "load_database_json_state", return_value={}):
+            normalized = _normalize_missing_3mf(payload)
+
+        self.assertEqual(len(normalized["items"]), 1)
+        self.assertEqual(normalized["items"][0]["status"], "not_found")
+        self.assertIn("404", normalized["items"][0]["message"])
+
     def test_retry_state_is_not_reclassified_by_old_verification_message(self):
         payload = {
             "items": [

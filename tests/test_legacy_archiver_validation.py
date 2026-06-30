@@ -165,6 +165,54 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         self.assertEqual(design["title"], "Scrapling model")
         self.assertEqual(session.calls, [])
 
+    def test_archive_model_reports_makerworld_404_page_as_source_deleted(self):
+        makerworld_404_html = """
+        <!doctype html>
+        <html>
+          <head><title>MakerWorld - 404</title></head>
+          <body>
+            <h1>404</h1>
+            <p>该模型可能被改为草稿、下架或者设为私有。</p>
+          </body>
+        </html>
+        """
+
+        with TemporaryDirectory() as temp_dir, patch(
+            "app.services.legacy_archiver.fetch_html_with_requests",
+            return_value=makerworld_404_html,
+        ), patch("app.services.legacy_archiver.fetch_html_with_curl", return_value=makerworld_404_html), patch(
+            "app.services.legacy_archiver.fetch_design_from_api",
+            return_value=None,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "404|下架|私有|草稿"):
+                legacy_archiver.archive_model(
+                    "https://makerworld.com.cn/zh/models/1590150",
+                    "",
+                    Path(temp_dir) / "archive",
+                    Path(temp_dir) / "logs",
+                )
+
+    def test_three_mf_fetch_html_404_is_not_classified_as_cloudflare(self):
+        makerworld_404_html = """
+        <!doctype html>
+        <html>
+          <head><title>404</title></head>
+          <body>该模型可能被改为草稿、下架或者设为私有。</body>
+        </html>
+        """
+
+        failure = legacy_archiver._classify_3mf_fetch_failure(
+            status_code=404,
+            text=makerworld_404_html,
+            source="cn",
+        )
+
+        self.assertEqual(failure["state"], "not_found")
+        self.assertIn("404", failure["message"])
+        self.assertIn("私有", failure["message"])
+        self.assertNotIn("验证", failure["message"])
+        self.assertNotIn("Cloudflare", failure["message"])
+
     def test_fetch_html_with_curl_retries_transient_dns_failure(self):
         calls = []
 

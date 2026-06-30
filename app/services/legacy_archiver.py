@@ -1155,6 +1155,46 @@ def _is_cloudflare_challenge(html_text: str) -> bool:
     )
 
 
+def _is_makerworld_not_found_page(html_text: str) -> bool:
+    if not html_text:
+        return False
+    lowered = unescape(str(html_text or "")).lower()
+    compact = re.sub(r"\s+", "", lowered)
+    explicit_markers = (
+        "该模型可能被改为草稿",
+        "下架或者设为私有",
+        "下架或设为私有",
+        "已下架",
+        "设为私有",
+        "转为草稿",
+        "改为草稿",
+        "页面不存在",
+        "route not found",
+        "\"detail\":\"not found\"",
+    )
+    if any(marker in lowered for marker in explicit_markers):
+        return True
+    compact_markers = (
+        "该模型可能被改为草稿、下架或者设为私有",
+        "该模型可能被改为草稿下架或者设为私有",
+    )
+    if any(marker in compact for marker in compact_markers):
+        return True
+    return "404" in lowered and any(
+        marker in lowered
+        for marker in (
+            "not found",
+            "model may have",
+            "模型可能",
+            "页面找不到",
+        )
+    )
+
+
+def _makerworld_not_found_message() -> str:
+    return "模型页面返回 404，可能已下架、设为私有或转为草稿。"
+
+
 def _unwrap_design_payload(payload: object) -> Optional[dict]:
     if not isinstance(payload, dict):
         return _find_best_design(payload)
@@ -4156,11 +4196,6 @@ def _classify_3mf_fetch_failure(
     combined = " ".join(part for part in (raw_text, payload_text) if part).lower()
     normalized_source = normalize_makerworld_source(source=source)
 
-    if cloudflare or _is_cloudflare_challenge(raw_text) or _looks_like_html(raw_text):
-        return {
-            "state": "cloudflare",
-            "message": describe_three_mf_failure("cloudflare", source=normalized_source),
-        }
     if status_code == 418 or any(
         keyword in combined
         for keyword in (
@@ -4194,10 +4229,20 @@ def _classify_3mf_fetch_failure(
             "state": "auth_required",
             "message": describe_three_mf_failure("auth_required", source=normalized_source),
         }
+    if _is_makerworld_not_found_page(raw_text):
+        return {
+            "state": "not_found",
+            "message": _makerworld_not_found_message(),
+        }
     if status_code == 404 or "route not found" in combined or "\"detail\":\"not found\"" in combined or "not found" in combined:
         return {
             "state": "not_found",
             "message": describe_three_mf_failure("not_found", source=normalized_source),
+        }
+    if cloudflare or _is_cloudflare_challenge(raw_text) or _looks_like_html(raw_text):
+        return {
+            "state": "cloudflare",
+            "message": describe_three_mf_failure("cloudflare", source=normalized_source),
         }
     if status_code >= 400:
         return {
@@ -6731,10 +6776,13 @@ def archive_model(
 
     has_app_data = "__NEXT_DATA__" in html_text or "__NUXT__" in html_text
     is_cloudflare_challenge = _is_cloudflare_challenge(html_text)
+    is_makerworld_not_found = _is_makerworld_not_found_page(html_text)
     if not has_app_data:
         log(logger, "页面未包含 __NEXT_DATA__，前 300 字符:", (html_text or "")[:300])
     if is_cloudflare_challenge and not has_app_data:
         log(logger, "疑似 Cloudflare 验证拦截，请更新 cookie 中的 cf_clearance")
+    if is_makerworld_not_found and not has_app_data:
+        log(logger, "模型页面返回 404，可能已下架、设为私有或转为草稿")
 
     design = None
     design_payload_error = ""
@@ -6754,7 +6802,9 @@ def archive_model(
                 _normalize_design_payload_identity(design, fetch_url)
         if design is None:
             if not api_fallback_reason:
-                if is_cloudflare_challenge:
+                if is_makerworld_not_found:
+                    api_fallback_reason = "模型页面返回 404"
+                elif is_cloudflare_challenge:
                     api_fallback_reason = "页面疑似验证拦截"
                 elif not has_app_data:
                     api_fallback_reason = "页面未包含内嵌模型数据"
@@ -6788,6 +6838,8 @@ def archive_model(
         )
 
     if design is None:
+        if is_makerworld_not_found:
+            raise RuntimeError(_makerworld_not_found_message())
         if is_cloudflare_challenge:
             raise RuntimeError("页面被 Cloudflare 验证拦截，请更新 cookie（含 cf_clearance）后重试")
         if design_payload_error:

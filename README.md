@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.63`
+> 当前版本：`v0.9.64`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -213,6 +213,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-30 · v0.9.64
+
+- 归档抓取会识别 MakerWorld 模型页 `404`、下架、私有或转为草稿的页面，不再误提示为 Cloudflare 验证拦截。
+- 缺失 `3MF` 的 HTML `404` 响应会归类为 `not_found`，最近失败和缺失列表会提示源端不可用，而不是引导更新 Cookie。
+- 补充归档页面分类和缺失 `3MF` 状态归一化回归测试。
+
 ### 2026-06-30 · v0.9.63
 
 - 删除旧 JSON 状态和历史日志文件导入 Postgres 的过渡迁移层，数据库索引重建不再调用旧文件迁移。
@@ -226,14 +232,14 @@ uvicorn app.main:app --reload
 - 默认 Compose 不再挂载 Docker socket，数据库密码改由 `.env` 中的 `MAKERHUB_POSTGRES_PASSWORD` 提供。
 - 缺失 `3MF` 重试遇到 MakerWorld 验证 / Cookie / Cloudflare 拦截后，会暂停同平台排队中的缺失 `3MF` 重试，避免归档 Worker 长时间被不可执行任务占住。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-29 · v0.9.61
 
 - 修复任务页在 runtime 快照为空时误切到“批次任务”视图的问题，右上角有运行 / 排队数量时会继续显示真实归档队列。
 - 空的 runtime `runs` / `batches` / `failures` 不再覆盖旧归档队列 payload，避免列表显示 0 个运行 / 0 个批次。
 - 补充前端回归测试，覆盖空 runtime 快照下归档队列仍可见。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-29 · v0.9.60
 
