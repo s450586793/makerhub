@@ -486,11 +486,11 @@ async def start_archive_profile_backfill(request: Request):
         state = write_profile_backfill_status(
             {
                 "running": True,
-                "phase": "database_migration",
+                "phase": "database_index_rebuild",
                 "database_rebuild_requested": True,
                 "force_database_rebuild": True,
                 "database_only": False,
-                "auto_database_migration": False,
+                "auto_database_index_rebuild": False,
                 "started_at": started_at,
                 "finished_at": "",
                 "last_error": "",

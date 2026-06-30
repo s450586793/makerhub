@@ -4,20 +4,20 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.62`
+> 当前版本：`v0.9.63`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
 MakerHub 是一个面向个人 NAS、DSM、Unraid、Portainer 和自托管服务器的 MakerWorld 本地归档系统。它不是公开模型站，而是把你关注、收藏、下载和本地积累的模型统一整理成自己的 MakerWorld 私有资料库。
 
-你可以归档单个模型，也可以批量归档作者页、收藏夹、合集；可以创建订阅定时同步新模型；也可以把手机、网页或本地文件夹里的 `3MF`、`STL`、`STEP`、`OBJ`、压缩包和附件导入 MakerHub。V0.7.0 开始推荐使用 App / Worker / Postgres 三容器部署：App 负责页面和 API，Worker 负责后台抓取、整理和迁移，Postgres 保存结构化配置、任务状态、业务日志和模型卡片索引。
+你可以归档单个模型，也可以批量归档作者页、收藏夹、合集；可以创建订阅定时同步新模型；也可以把手机、网页或本地文件夹里的 `3MF`、`STL`、`STEP`、`OBJ`、压缩包和附件导入 MakerHub。V0.7.0 开始推荐使用 App / Worker / Postgres 三容器部署：App 负责页面和 API，Worker 负责后台抓取、整理和索引重建，Postgres 保存结构化配置、任务状态、业务日志和模型卡片索引。
 
 ## 当前重点
 
 - 数据库化运行状态：配置、Cookie / Token、订阅、来源库 metadata、任务状态、分享记录、限流状态、系统更新状态和业务日志进入 Postgres。
 - 模型索引入库：归档模型卡片索引写入 `archive_model_index`，模型库、订阅库和来源库读取更稳定。
 - 三容器部署：默认 Compose 调整为 `makerhub-app`、`makerhub-worker`、`makerhub-postgres`。
-- 历史数据迁移：首次连接数据库后自动迁移旧 JSON 状态、历史日志和模型索引；设置页保留手动重建数据库索引与历史信息补全入口。
+- 数据库索引重建：首次连接数据库后自动遍历历史归档库建立模型卡片索引；设置页保留手动重建数据库索引与历史信息补全入口。
 - 手动验证回退：`3MF` 下载遇到 MakerWorld 验证时，首页和任务页只外跳官网或模型页；MakerHub 不内嵌验证窗口、不自动点击验证码，也不绕过 MakerWorld 验证，用户在 MakerWorld 完成验证后回到 MakerHub 重试。
 - 系统更新更安全：旧 compose 缺少 Postgres 配置时会阻止网页一键更新，并提示先升级 compose。
 - 文档重整：补齐架构说明、模块边界、Compose 安装、升级说明和 V0.7.0 更新记录。
@@ -41,14 +41,14 @@ MakerHub 是一个面向个人 NAS、DSM、Unraid、Portainer 和自托管服务
 推荐生产部署由三类服务组成：
 
 - `makerhub-app`：FastAPI API、Vue SPA、登录鉴权、轻量写操作和页面数据读取。
-- `makerhub-worker`：归档队列、订阅同步、源端刷新、本地整理、数据库迁移、模型索引和封面生成。
-- `makerhub-postgres`：结构化配置、JSON 状态、业务日志、模型卡片索引和迁移标记。
+- `makerhub-worker`：归档队列、订阅同步、源端刷新、本地整理、模型索引重建和封面生成。
+- `makerhub-postgres`：结构化配置、JSON 状态、业务日志、模型卡片索引和索引状态。
 
 数据边界：
 
 - Postgres 保存结构化状态、运行日志、模型卡片索引和跨进程协同状态。
 - 文件系统保存模型本体、图片、附件、导入入口、历史 `meta.json` 和本地临时文件。
-- 旧版 JSON、marker、日志和 `meta.json` 会作为迁移输入保留；V0.7.0 不会删除用户已有模型文件。
+- 当前运行状态、业务日志和配置以 Postgres 为准；文件系统继续保存模型本体、图片、附件和历史 `meta.json`。
 
 更多内部说明见：
 
@@ -69,9 +69,9 @@ mkdir -p "/volume2/entertainment/3D打印/makerhub/local"
 
 目录含义：
 
-- `/app/config/config`：运行配置和旧配置迁移输入。
-- `/app/config/state`：旧任务状态、marker、系统状态迁移输入、上传暂存、预览队列 marker 和少量运行临时状态。
-- `/app/config/logs`：旧日志迁移输入；新业务日志写入 Postgres。
+- `/app/config/config`：运行配置目录。
+- `/app/config/state`：上传暂存、预览队列 marker、备份和少量运行临时文件。
+- `/app/config/logs`：兼容挂载目录；新业务日志写入 Postgres。
 - `/app/data`：归档模型、图片、附件、模型文件和历史 `meta.json`。旧 DSM 模型目录可以继续直接放在这里。
 - `/app/data/local`：本地导入和整理入口。
 - `/var/lib/postgresql/data`：Postgres 数据库目录。
@@ -164,9 +164,9 @@ http://你的服务器IP:9042
 
 默认登录账号密码为 `admin/admin`。首次登录后建议到设置页修改密码，再添加 MakerWorld 国内或国际账号。
 
-首次启动数据库版本后，Worker 会自动迁移旧配置、Cookie / Token、订阅、任务状态、来源库 metadata、分享记录、更新状态、历史业务日志和模型卡片索引。迁移不会移动或删除模型文件。
+首次启动数据库版本后，Worker 会自动遍历已有归档目录，重建模型卡片数据库索引。配置、Cookie / Token、订阅、任务状态、来源库 metadata、分享记录、更新状态和业务日志都以 Postgres 中的运行数据为准。
 
-`/app/logs`、`/app/state`、`/app/archive`、`/app/local` 默认不再单独映射。新业务日志写入 Postgres；旧日志和旧状态保留在宿主机 `/volume4/docker/docker/makerhub/logs`、`/volume4/docker/docker/makerhub/state` 时，容器内会分别显示为 `/app/config/logs`、`/app/config/state` 并参与迁移。
+`/app/logs`、`/app/state`、`/app/archive`、`/app/local` 默认不再单独映射。新业务日志和结构化运行状态写入 Postgres；容器内 `/app/config/logs`、`/app/config/state` 仅保留给兼容挂载、上传暂存、预览队列 marker、备份和临时文件使用。
 
 ## 从旧版升级
 
@@ -213,6 +213,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-30 · v0.9.63
+
+- 删除旧 JSON 状态和历史日志文件导入 Postgres 的过渡迁移层，数据库索引重建不再调用旧文件迁移。
+- 运行期配置不再从旧 `config.json` 回填 Cookie，Postgres 中的 `app_config` 是唯一运行期配置来源。
+- 设置页和 Worker 状态统一改为“数据库索引重建”语义，只展示模型索引和历史缺失信息补全进度。
+
 ### 2026-06-29 · v0.9.62
 
 - 通用 API Token 和移动端导入 Token 不再接受 URL query 传递，只接受 `Authorization: Bearer` 或兼容 token header。
@@ -226,14 +232,14 @@ uvicorn app.main:app --reload
 - 空的 runtime `runs` / `batches` / `failures` 不再覆盖旧归档队列 payload，避免列表显示 0 个运行 / 0 个批次。
 - 补充前端回归测试，覆盖空 runtime 快照下归档队列仍可见。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-29 · v0.9.60
 
 - Worker 轮询会自动 finalize `running + 100% + 归档完成` 的残留归档任务，不再需要手动点“修复队列”释放 active 槽。
 - 当队列已经没有 active 任务但仍有 queued 时，会丢弃本进程里可能卡住的旧归档线程记录并重新补起消费者，避免 queued 长时间无人领取。
 - 补充队列状态和归档 Worker 回归测试，覆盖完成态残留和 stale worker 线程恢复。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-29 · v0.9.59
 

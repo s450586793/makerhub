@@ -52,8 +52,8 @@
   - `archive_model_index`
 - 文件:
   - `/app/data/<model_dir>/meta.json`
-  - `/app/config/state/remote_refresh_state.json`
-  - `/app/config/logs/remote_refresh.log` 仅作为历史日志迁移输入。
+  - `/app/config/state/remote_refresh_batches/`：批次 resume manifest 和临时 batch buffer。
+  - `/app/config/logs`：兼容日志目录；运行期业务日志写入 Postgres。
 
 ## 常用测试命令
 

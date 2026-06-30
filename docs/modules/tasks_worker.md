@@ -63,18 +63,9 @@ Batch parent tasks track child progress and should use `waiting_children` while 
   - `archive_profile_backfill_status`
   - `archive_snapshot_marker`
   - `local_preview_queue_marker`
-- 旧文件迁移输入:
-  - `/app/config/state/archive_queue.json`
-  - `/app/config/state/missing_3mf.json`
-  - `/app/config/state/organize_tasks.json`
-  - `/app/config/state/subscriptions_state.json`
-  - `/app/config/state/remote_refresh_state.json`
-  - `/app/config/state/three_mf_daily_quota.json`
-  - `/app/config/state/archive_repair_status.json`
-  - `/app/config/state/archive_profile_backfill_status.json`
-  - `/app/config/state/archive_snapshot.marker`
-  - `/app/config/state/local_preview_queue.marker`
-  - `/app/config/logs/*.log`
+- 文件:
+  - `/app/config/state`：锁、上传暂存、预览队列 marker、备份和少量运行临时文件。
+  - `/app/config/logs`：兼容日志目录；运行期业务日志写入 Postgres。
 
 ## 常用测试命令
 
@@ -90,7 +81,7 @@ Batch parent tasks track child progress and should use `waiting_children` while 
 - worker CPU 打满时，App 页面仍应尽量能读取状态。
 - 一个任务的状态来源要统一，不能出现首页、本地库、弹窗三个进度互相矛盾。
 - 终态任务要能清理；重复/失败/跳过要有可读原因。
-- 数据库版本运行期状态以 Postgres 为准；旧 state 文件只用于迁移导入。
+- 数据库版本运行期状态以 Postgres 为准；不要新增旧 state 文件读写分支。
 - 日志和任务 message 要过滤 HTML 验证页长文本。
 
 ## 给 Codex 的上下文入口

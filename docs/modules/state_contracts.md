@@ -39,7 +39,6 @@ This document records MakerHub's Postgres-backed JSON state keys, common fields,
 | `runtime_batches` | Runtime Engine | runtime engine writers | runtime APIs, dashboard, runtime-aware pages | `runtime.batch.progress`, `runtime.batch.completed` |
 | `runtime_failures` | Runtime Engine | runtime engine writers | runtime APIs, diagnostics, retry surfaces | `runtime.failure.created` |
 | `runtime_snapshots` | Runtime Engine | runtime engine writers | runtime APIs, dashboard snapshot readers | coarse runtime snapshot refresh |
-| `runtime_migration` | Runtime Engine | migration/compatibility helpers | runtime engine startup and diagnostics | migration marker only |
 | `model_flags` | `TaskStateStore` | model APIs, source deletion checks | model pages, catalog | `model_flags` |
 | `three_mf_limit_guard` | source health/archive worker | 3MF quota logic | dashboard, tasks, archive worker | `three_mf_limit_guard` |
 | `three_mf_daily_quota` | 3MF quota service | archive worker | archive worker, settings | `three_mf_daily_quota` |

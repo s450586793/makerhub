@@ -764,7 +764,7 @@
             <article class="field-card system-update-stat">
               <span>索引进度</span>
               <strong>{{ profileBackfillStats.databaseProcessed }}/{{ profileBackfillStats.databaseTotal }}</strong>
-              <small>{{ profileBackfillStats.databaseFailed || profileBackfillStats.jsonStateFailed ? `失败：${profileBackfillStats.databaseFailed + profileBackfillStats.jsonStateFailed}` : profileBackfillDatabaseProgressHint }}</small>
+              <small>{{ profileBackfillStats.databaseFailed ? `失败：${profileBackfillStats.databaseFailed}` : profileBackfillDatabaseProgressHint }}</small>
             </article>
             <article class="field-card system-update-stat">
               <span>缺失补全</span>
@@ -1175,11 +1175,7 @@ const mobileImportTokenItem = computed(() => (
 const profileBackfillStats = computed(() => {
   const result = profileBackfill.value.last_result || {};
   const databaseIndex = result.database_index || {};
-  const jsonState = databaseIndex.json_state || {};
   return {
-    jsonStateProcessed: Number(jsonState.processed || 0),
-    jsonStateUpdated: Number(jsonState.updated || 0),
-    jsonStateFailed: Number(jsonState.failed || 0),
     databaseTotal: Number(databaseIndex.total || 0),
     databaseProcessed: Number(databaseIndex.processed || 0),
     databaseUpdated: Number(databaseIndex.updated || 0),
@@ -1191,7 +1187,7 @@ const profileBackfillStats = computed(() => {
   };
 });
 const profileBackfillRunningLabel = computed(() => (
-  profileBackfill.value.phase === "database_migration" ? "索引中..." : "扫描中..."
+  profileBackfill.value.phase === "database_index_rebuild" ? "索引中..." : "扫描中..."
 ));
 const profileBackfillDatabaseLabel = computed(() => {
   const database = profileBackfill.value.database || {};
@@ -1201,7 +1197,7 @@ const profileBackfillDatabaseLabel = computed(() => {
   if (!database.driver_available) {
     return "驱动缺失";
   }
-  if (profileBackfill.value.running && profileBackfill.value.phase === "database_migration") {
+  if (profileBackfill.value.running && profileBackfill.value.phase === "database_index_rebuild") {
     return "索引中";
   }
   if (database.bootstrapped) {
@@ -1221,7 +1217,7 @@ const profileBackfillDatabaseHint = computed(() => {
   if (database.error) {
     return database.error;
   }
-  if (profileBackfill.value.running && profileBackfill.value.phase === "database_migration") {
+  if (profileBackfill.value.running && profileBackfill.value.phase === "database_index_rebuild") {
     return "正在把已有模型信息写入数据库索引。";
   }
   if (database.bootstrapped && marker.completed_at) {
@@ -1233,14 +1229,11 @@ const profileBackfillDatabaseHint = computed(() => {
   return "等待数据库连接。";
 });
 const profileBackfillDatabaseProgressHint = computed(() => {
-  if (profileBackfill.value.running && profileBackfill.value.phase === "database_migration") {
+  if (profileBackfill.value.running && profileBackfill.value.phase === "database_index_rebuild") {
     return "索引过程中页面会自动刷新。";
   }
   if (profileBackfillStats.value.databaseUpdated) {
-    return `模型 ${profileBackfillStats.value.databaseUpdated}，运行状态 ${profileBackfillStats.value.jsonStateUpdated}`;
-  }
-  if (profileBackfillStats.value.jsonStateUpdated) {
-    return `运行状态已写入：${profileBackfillStats.value.jsonStateUpdated}`;
+    return `模型索引已写入：${profileBackfillStats.value.databaseUpdated}`;
   }
   return "尚未初始化索引。";
 });
@@ -1251,7 +1244,7 @@ const profileBackfillStatusText = computed(() => {
   if (profileBackfill.value.last_error) {
     return profileBackfill.value.last_error;
   }
-  if (profileBackfill.value.running && profileBackfill.value.phase === "database_migration") {
+  if (profileBackfill.value.running && profileBackfill.value.phase === "database_index_rebuild") {
     return `数据库索引初始化中：${profileBackfillStats.value.databaseProcessed}/${profileBackfillStats.value.databaseTotal}，页面会自动刷新状态。`;
   }
   if (profileBackfill.value.running) {
@@ -1259,7 +1252,7 @@ const profileBackfillStatusText = computed(() => {
   }
   const result = profileBackfill.value.last_result || {};
   if (profileBackfill.value.finished_at && Object.keys(result).length > 0) {
-    return `处理完成：模型索引写入 ${profileBackfillStats.value.databaseUpdated} 个，运行状态写入 ${profileBackfillStats.value.jsonStateUpdated} 个，发现 ${profileBackfillStats.value.scanned} 个缺信息模型，新增入队 ${profileBackfillStats.value.queued} 个，已在队列 ${profileBackfillStats.value.alreadyQueued} 个，失败 ${profileBackfillStats.value.failed} 个。`;
+    return `处理完成：模型索引写入 ${profileBackfillStats.value.databaseUpdated} 个，发现 ${profileBackfillStats.value.scanned} 个缺信息模型，新增入队 ${profileBackfillStats.value.queued} 个，已在队列 ${profileBackfillStats.value.alreadyQueued} 个，失败 ${profileBackfillStats.value.failed} 个。`;
   }
   return profileBackfill.value.message || "首次连接新数据库后会自动初始化历史库索引；手动重建会重新扫描归档库并刷新数据库索引。";
 });
@@ -1314,7 +1307,7 @@ function defaultProfileBackfillState() {
     phase: "idle",
     database_rebuild_requested: false,
     force_database_rebuild: false,
-    auto_database_migration: false,
+    auto_database_index_rebuild: false,
     started_at: "",
     finished_at: "",
     last_error: "",

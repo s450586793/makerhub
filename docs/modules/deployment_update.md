@@ -11,7 +11,7 @@
 ## 不负责
 
 - 不决定具体业务抓取规则。
-- 不在更新流程里同步执行耗时数据迁移；迁移应由 worker 后台跑并显示状态。
+- 不在更新流程里同步执行耗时数据重建；模型索引重建应由 worker 后台跑并显示状态。
 - 不主动推送 GitHub；只有用户明确要求“推送”时才执行 `git push`。
 - 用户要求发布/推送改动时，必须同步版本号和更新说明：小修复升 patch，小功能/较大功能升 minor，破坏性或迁移密集变更升 major。
 
@@ -43,7 +43,7 @@
   - `VERSION`
 - Postgres/JSON state:
   - 更新状态存于 `makerhub_json_state:system_update`。
-  - 数据库迁移状态由 Core/归档索引模块维护。
+  - 数据库索引状态由 Core/归档索引模块维护。
 - Docker:
   - 默认 compose 不挂载 `/var/run/docker.sock`；只有用户显式 opt-in 后，设置页才可直接网页更新。
   - `depends_on` 与 Postgres `healthcheck` 作为高级可选注释保留，默认不启用。

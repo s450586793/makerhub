@@ -64,8 +64,8 @@
 - 文件:
   - `/app/data/local`：导入入口和本地整理工作目录。
   - `/app/data/LOCAL_*`：本地模型最终目录。
-  - `/app/config/logs/organizer.log` 仅作为历史日志迁移输入。
-  - `/app/config/state/organize_tasks.json` 仅作为旧部署迁移输入。
+  - `/app/config/state`：上传暂存、整理备份、预览队列 marker 和临时文件。
+  - `/app/config/logs`：兼容日志目录；运行期业务日志写入 Postgres。
 
 ## 常用测试命令
 

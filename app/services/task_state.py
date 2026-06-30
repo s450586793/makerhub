@@ -1,5 +1,4 @@
 import json
-import os
 import re
 import threading
 from contextlib import contextmanager
@@ -1423,26 +1422,14 @@ class TaskStateStore:
         state_key = _json_state_key_for_path(path)
         if state_key:
             return load_database_json_state(state_key, default)
-        if not path.exists():
-            self._write_json(path, default)
-            return default
-
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            self._write_json(path, default)
-            return default
-        return payload
+        raise RuntimeError(f"未登记的运行状态 key：{path}")
 
     def _write_json(self, path: Path, payload: dict) -> None:
         state_key = _json_state_key_for_path(path)
         if state_key:
             save_database_json_state(state_key, payload)
             return
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp_path.replace(path)
+        raise RuntimeError(f"未登记的运行状态 key：{path}")
 
     @contextmanager
     def _state_file_lock(self, path: Path):

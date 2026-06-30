@@ -6,14 +6,13 @@ from unittest.mock import patch
 from app.core.security import hash_api_token
 from app.core import database
 from app.core.store import JsonStore
-from app.schemas.models import ApiTokenRecord, AppConfig, CookiePair, SubscriptionRecord
+from app.schemas.models import ApiTokenRecord, AppConfig, CookiePair
 from app.services import (
     archive_profile_backfill,
     archive_repair,
     archive_worker,
     auth,
     catalog,
-    database_migration,
     local_preview_worker,
     self_update,
     source_health,
@@ -46,11 +45,6 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
             patch("app.core.database_json_state.database_driver_available", return_value=True),
             patch("app.core.database_json_state.load_json_state", side_effect=lambda key: self.state.get(key)),
             patch("app.core.database_json_state.save_json_state", side_effect=lambda key, value: self.state.__setitem__(key, value) or value),
-            patch("app.services.database_migration.database_configured", return_value=True),
-            patch("app.services.database_migration.database_driver_available", return_value=True),
-            patch("app.services.database_migration.load_json_state", side_effect=lambda key: self.state.get(key)),
-            patch("app.services.database_migration.save_json_state", side_effect=lambda key, value: self.state.__setitem__(key, value) or value),
-            patch("app.services.database_migration.append_business_log"),
         ]
         for item in self.patches:
             item.start()
@@ -85,7 +79,7 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
         self.assertEqual(loaded.api_tokens[0].token_value, raw_token)
         self.assertEqual(loaded.api_tokens[0].token_hash, hash_api_token(raw_token))
 
-    def test_json_store_backfills_cookie_from_legacy_file_when_database_has_empty_defaults(self):
+    def test_json_store_does_not_backfill_cookie_from_legacy_file_at_runtime(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"
             legacy_config = AppConfig()
@@ -105,11 +99,11 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
                 store = JsonStore(config_path)
                 loaded = store.load()
 
-        self.assertEqual(loaded.cookies[0].cookie, "token=legacy")
-        self.assertEqual(loaded.cookies[0].display_name, "艾斯")
-        self.assertEqual(self.state["app_config"]["cookies"][0]["cookie"], "token=legacy")
+        self.assertEqual(loaded.cookies[0].cookie, "")
+        self.assertEqual(loaded.cookies[0].display_name, "")
+        self.assertEqual(self.state["app_config"]["cookies"][0]["cookie"], "")
 
-    def test_json_store_backfills_only_missing_cookie_platforms_from_legacy_file(self):
+    def test_json_store_keeps_database_cookies_as_runtime_source_of_truth(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"
             legacy_config = AppConfig()
@@ -131,10 +125,10 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
 
         cookies = {item.platform: item.cookie for item in loaded.cookies}
         self.assertEqual(cookies["cn"], "token=db-cn")
-        self.assertEqual(cookies["global"], "token=legacy-global")
+        self.assertEqual(cookies["global"], "")
         db_cookies = {item["platform"]: item["cookie"] for item in self.state["app_config"]["cookies"]}
         self.assertEqual(db_cookies["cn"], "token=db-cn")
-        self.assertEqual(db_cookies["global"], "token=legacy-global")
+        self.assertEqual(db_cookies["global"], "")
 
     def test_task_state_stores_subscription_model_lists_in_database(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -242,7 +236,7 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
         )
         repair_status = archive_repair.read_archive_repair_status()
         archive_profile_backfill.write_profile_backfill_status(
-            {"phase": "database_migration", "auto_database_migration": True}
+            {"phase": "database_index_rebuild", "auto_database_index_rebuild": True}
         )
         backfill_status = archive_profile_backfill.read_profile_backfill_status()
         self_update._write_update_state({"phase": "installing", "target_version": "9.9.9"})
@@ -250,8 +244,8 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
 
         self.assertEqual(self.state["archive_repair_status"]["run_id"], "repair-1")
         self.assertEqual(repair_status["progress"]["done"], 2)
-        self.assertEqual(self.state["archive_profile_backfill_status"]["phase"], "database_migration")
-        self.assertTrue(backfill_status["auto_database_migration"])
+        self.assertEqual(self.state["archive_profile_backfill_status"]["phase"], "database_index_rebuild")
+        self.assertTrue(backfill_status["auto_database_index_rebuild"])
         self.assertFalse(backfill_status["database_only"])
         self.assertEqual(self.state["system_update"]["target_version"], "9.9.9")
         self.assertEqual(update_status["phase"], "installing")
@@ -298,239 +292,6 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
         self.assertEqual(loaded_token, token)
         self.assertEqual(self.state["local_preview_queue_marker"]["reason"], "unit_test")
         self.assertGreater(preview_version, 0)
-
-    def test_database_migration_preserves_legacy_text_marker_files(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            archive_marker_path = Path(tmp) / "archive_snapshot.marker"
-            preview_marker_path = Path(tmp) / "local_preview_queue.marker"
-            secret_path = Path(tmp) / "bambu_studio_download_secret"
-            archive_marker_path.write_text("legacy-archive-token", encoding="utf-8")
-            preview_marker_path.write_text("legacy-preview-token", encoding="utf-8")
-            with patch.object(
-                database_migration,
-                "JSON_STATE_FILE_MIGRATIONS",
-                (
-                    ("archive_snapshot_marker", archive_marker_path, {}),
-                    ("local_preview_queue_marker", preview_marker_path, {}),
-                ),
-            ), patch.object(database_migration, "BAMBU_STUDIO_SECRET_PATH", secret_path):
-                result = database_migration.migrate_json_files_to_database(force=True)
-
-        self.assertEqual(result["updated"], 3)
-        self.assertEqual(self.state["archive_snapshot_marker"]["token"], "legacy-archive-token")
-        self.assertEqual(self.state["local_preview_queue_marker"]["token"], "legacy-preview-token")
-
-    def test_database_migration_reads_legacy_config_path_under_parent_config_mount(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            config_root = Path(tmp) / "config"
-            new_config_dir = config_root / "config"
-            legacy_config_path = config_root / "config.json"
-            new_config_path = new_config_dir / "config.json"
-            legacy_config_path.parent.mkdir(parents=True, exist_ok=True)
-            legacy_config_path.write_text(
-                AppConfig(cookies=[CookiePair(platform="cn", cookie="token=legacy-parent")]).model_dump_json(),
-                encoding="utf-8",
-            )
-            with patch.object(database_migration, "CONFIG_PATH", new_config_path), \
-                    patch.object(database_migration, "CONFIG_DIR", new_config_dir), \
-                    patch.object(database_migration, "LEGACY_CONFIG_PATH", legacy_config_path), \
-                    patch.object(
-                        database_migration,
-                        "JSON_STATE_FILE_MIGRATIONS",
-                        (("app_config", new_config_path, {}),),
-                    ):
-                result = database_migration.migrate_json_files_to_database(force=True)
-
-        self.assertEqual(result["updated"], 2)
-        self.assertEqual(self.state["app_config"]["cookies"][0]["cookie"], "token=legacy-parent")
-        self.assertEqual(result["items"][0]["path"], legacy_config_path.as_posix())
-
-    def test_force_database_migration_protects_existing_app_config(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            config_path = Path(tmp) / "config.json"
-            legacy_config = AppConfig(
-                subscriptions=[
-                    SubscriptionRecord(
-                        id="legacy-sub",
-                        name="旧订阅",
-                        url="https://makerworld.com.cn/zh/@legacy/upload",
-                        mode="author_upload",
-                    )
-                ]
-            )
-            config_path.write_text(legacy_config.model_dump_json(), encoding="utf-8")
-            self.state["app_config"] = AppConfig(
-                cookies=[CookiePair(platform="cn", cookie="token=current")],
-                subscriptions=[
-                    SubscriptionRecord(
-                        id="current-sub-1",
-                        name="当前订阅 1",
-                        url="https://makerworld.com.cn/zh/@current1/upload",
-                        mode="author_upload",
-                    ),
-                    SubscriptionRecord(
-                        id="current-sub-2",
-                        name="当前订阅 2",
-                        url="https://makerworld.com.cn/zh/@current2/upload",
-                        mode="author_upload",
-                    ),
-                ],
-            ).model_dump()
-
-            with patch.object(
-                database_migration,
-                "JSON_STATE_FILE_MIGRATIONS",
-                (("app_config", config_path, {}),),
-            ):
-                result = database_migration.migrate_json_files_to_database(force=True)
-
-        self.assertEqual(len(self.state["app_config"]["subscriptions"]), 2)
-        self.assertEqual(self.state["app_config"]["subscriptions"][0]["id"], "current-sub-1")
-        self.assertEqual(result["updated"], 1)
-        self.assertEqual(result["skipped"], 1)
-        self.assertEqual(result["items"][0]["status"], "protected_runtime_state")
-
-    def test_database_migration_backfills_empty_model_flags_from_legacy_state_dir(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            state_root = Path(tmp) / "config" / "state"
-            legacy_state_root = Path(tmp) / "state"
-            model_flags_path = state_root / "model_flags.json"
-            legacy_flags_path = legacy_state_root / "model_flags.json"
-            legacy_flags_path.parent.mkdir(parents=True, exist_ok=True)
-            legacy_flags_path.write_text(
-                '{"favorites": [], "printed": [], "deleted": ["remote/model-1"]}',
-                encoding="utf-8",
-            )
-            self.state["model_flags"] = {"favorites": [], "printed": [], "deleted": []}
-
-            with patch.object(database_migration, "MODEL_FLAGS_PATH", model_flags_path), \
-                    patch.object(database_migration, "LEGACY_STATE_DIR", legacy_state_root), \
-                    patch.object(
-                        database_migration,
-                        "JSON_STATE_FILE_MIGRATIONS",
-                        (("model_flags", model_flags_path, {"favorites": [], "printed": [], "deleted": []}),),
-                    ):
-                result = database_migration.migrate_json_files_to_database(force=False)
-
-        self.assertEqual(self.state["model_flags"]["deleted"], ["remote/model-1"])
-        self.assertEqual(result["updated"], 2)
-        self.assertEqual(result["items"][0]["status"], "backfilled")
-        self.assertEqual(result["items"][0]["path"], legacy_flags_path.as_posix())
-
-    def test_database_migration_keeps_existing_model_flags_when_database_has_user_data(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            state_root = Path(tmp) / "config" / "state"
-            legacy_state_root = Path(tmp) / "state"
-            model_flags_path = state_root / "model_flags.json"
-            legacy_flags_path = legacy_state_root / "model_flags.json"
-            legacy_flags_path.parent.mkdir(parents=True, exist_ok=True)
-            legacy_flags_path.write_text(
-                '{"favorites": [], "printed": [], "deleted": ["legacy/model"]}',
-                encoding="utf-8",
-            )
-            self.state["model_flags"] = {"favorites": [], "printed": [], "deleted": ["db/model"]}
-
-            with patch.object(database_migration, "MODEL_FLAGS_PATH", model_flags_path), \
-                    patch.object(database_migration, "LEGACY_STATE_DIR", legacy_state_root), \
-                    patch.object(
-                        database_migration,
-                        "JSON_STATE_FILE_MIGRATIONS",
-                        (("model_flags", model_flags_path, {"favorites": [], "printed": [], "deleted": []}),),
-                    ):
-                result = database_migration.migrate_json_files_to_database(force=False)
-
-        self.assertEqual(self.state["model_flags"]["deleted"], ["db/model"])
-        self.assertEqual(result["updated"], 1)
-        self.assertEqual(result["skipped"], 1)
-        self.assertEqual(result["items"][0]["status"], "exists")
-
-    def test_force_database_migration_protects_existing_runtime_state(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            remote_refresh_path = Path(tmp) / "remote_refresh_state.json"
-            remote_refresh_path.write_text('{"status": "idle", "last_run_at": "2026-05-25T03:42:02+08:00"}', encoding="utf-8")
-            self.state["remote_refresh_state"] = {
-                "status": "running",
-                "running": True,
-                "last_run_at": "2026-06-05T17:10:51+08:00",
-                "active_run": {"batch_id": "live-batch", "status": "running"},
-            }
-
-            with patch.object(
-                database_migration,
-                "JSON_STATE_FILE_MIGRATIONS",
-                (("remote_refresh_state", remote_refresh_path, {}),),
-            ):
-                result = database_migration.migrate_json_files_to_database(force=True)
-
-        self.assertEqual(self.state["remote_refresh_state"]["active_run"]["batch_id"], "live-batch")
-        self.assertEqual(result["updated"], 1)
-        self.assertEqual(result["skipped"], 1)
-        self.assertEqual(result["items"][0]["status"], "protected_runtime_state")
-
-    def test_force_database_migration_protects_existing_cookie_source_inventory(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            inventory_path = Path(tmp) / "cookie_source_inventory.json"
-            self.state["cookie_source_inventory"] = {
-                "platforms": {
-                    "cn": {
-                        "imported_sources": [
-                            {
-                                "subscription_id": "sub-current-user-author",
-                                "url": "https://makerworld.com.cn/zh/@user_1751098586/upload",
-                                "mode": "author_upload",
-                            }
-                        ],
-                        "source_urls": ["https://makerworld.com.cn/zh/@user_1751098586/upload"],
-                        "followed_authors": [
-                            {"url": "https://makerworld.com.cn/zh/@user_1751098586/upload"},
-                        ],
-                    }
-                },
-                "updated_at": "2026-06-16T00:00:00+08:00",
-            }
-
-            with patch.object(
-                database_migration,
-                "JSON_STATE_FILE_MIGRATIONS",
-                (("cookie_source_inventory", inventory_path, {"platforms": {}, "updated_at": ""}),),
-            ):
-                result = database_migration.migrate_json_files_to_database(force=True)
-
-        self.assertEqual(
-            self.state["cookie_source_inventory"]["platforms"]["cn"]["source_urls"],
-            ["https://makerworld.com.cn/zh/@user_1751098586/upload"],
-        )
-        self.assertEqual(result["updated"], 1)
-        self.assertEqual(result["skipped"], 1)
-        self.assertEqual(result["items"][0]["status"], "protected_runtime_state")
-
-    def test_force_database_migration_allows_runtime_bootstrap_and_explicit_restore(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            remote_refresh_path = Path(tmp) / "remote_refresh_state.json"
-            remote_refresh_path.write_text('{"status": "idle", "last_run_at": "2026-05-25T03:42:02+08:00"}', encoding="utf-8")
-            with patch.object(
-                database_migration,
-                "JSON_STATE_FILE_MIGRATIONS",
-                (("remote_refresh_state", remote_refresh_path, {}),),
-            ):
-                bootstrap = database_migration.migrate_json_files_to_database(force=True)
-
-            self.assertEqual(self.state["remote_refresh_state"]["last_run_at"], "2026-05-25T03:42:02+08:00")
-            self.assertEqual(bootstrap["items"][0]["status"], "updated")
-
-            remote_refresh_path.write_text(
-                '{"_makerhub_restore": true, "status": "idle", "last_run_at": "2026-06-06T10:00:00+08:00"}',
-                encoding="utf-8",
-            )
-            with patch.object(
-                database_migration,
-                "JSON_STATE_FILE_MIGRATIONS",
-                (("remote_refresh_state", remote_refresh_path, {}),),
-            ):
-                restored = database_migration.migrate_json_files_to_database(force=True)
-
-        self.assertEqual(self.state["remote_refresh_state"]["last_run_at"], "2026-06-06T10:00:00+08:00")
-        self.assertEqual(restored["items"][0]["status"], "restored_runtime_state")
 
 
 class DatabaseStatusTest(unittest.TestCase):

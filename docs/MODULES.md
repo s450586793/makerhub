@@ -4,7 +4,7 @@
 
 | 模块 | 文档 | 负责范围 | 主要 owner files | 常用验证 |
 | --- | --- | --- | --- | --- |
-| Core / 配置 / 鉴权 / 数据库 / 日志 | [core.md](modules/core.md) | 配置、账号、Cookie、Token、权限、Postgres、JSON 状态、业务日志 | `app/core/*`, `app/services/auth.py`, `app/services/business_logs.py`, `app/services/database_migration.py`, `app/api/auth.py`, `app/api/config.py` 配置段 | `test_auth_guard.py`, `test_config_cookies.py`, `test_database_json_state.py`, `test_business_logs.py` |
+| Core / 配置 / 鉴权 / 数据库 / 日志 | [core.md](modules/core.md) | 配置、账号、Cookie、Token、权限、Postgres、JSON 状态、业务日志 | `app/core/*`, `app/services/auth.py`, `app/services/business_logs.py`, `app/api/auth.py`, `app/api/config.py` 配置段 | `test_auth_guard.py`, `test_config_cookies.py`, `test_database_json_state.py`, `test_business_logs.py` |
 | 模型库 / 详情 / 附件 | [model_catalog.md](modules/model_catalog.md) | 模型列表、详情页、评论展示、附件、flags、下载入口、索引读取 | `app/services/catalog.py`, `app/services/archive_model_index.py`, `app/services/model_attachments.py`, `frontend/src/pages/ModelsPage.vue`, `frontend/src/pages/ModelDetailPage.vue` | `test_archive_model_index.py`, `test_model_attachments.py`, `test_model_downloads.py`, `test_comment_replies.py` |
 | 本地导入 / 本地整理 | [local_import.md](modules/local_import.md) | Web/iOS/local 文件夹导入、zip/rar/文件夹整理、去重、编辑本地模型、Three.js 封面 | `local_import_upload.py`, `local_organizer.py`, `local_model_edit.py`, `local_preview_worker.py`, `OrganizerPage.vue` | `test_local_import_upload.py`, `test_local_organizer.py`, `test_local_model_edit.py`, `test_mobile_import.py` |
 | 归档 / MakerWorld / 下载 / 3MF | [archive.md](modules/archive.md) | 单模型归档、作者/收藏夹/合集批量发现、Scrapling、3MF 下载、缺失 3MF | `archive_worker.py`, `legacy_archiver.py`, `process_jobs.py`, `batch_discovery.py`, `scrapling_fetch.py`, `three_mf.py` | `test_batch_discovery.py`, `test_scrapling_fetch.py`, `test_missing_3mf.py`, `test_three_mf_quota.py` |
@@ -26,7 +26,7 @@
 - 归档和订阅批量发现都依赖 `batch_discovery.py`；MakerWorld 接口变化应优先修这里。
 - 来源库页面应通过 `source_library.py` 聚合模型、订阅状态和来源 metadata；不要让前端逐模型拼来源卡。
 - Cookie、Token、分享码、公网地址、下载签名等敏感值统一由 Core/鉴权/分享模块处理，日志必须脱敏。
-- 数据库迁移、compose 形态、README 更新和版本号属于部署模块；只有用户明确要求才推送 GitHub，发布/推送前要同步版本号和更新说明。
+- 数据库索引、compose 形态、README 更新和版本号属于部署模块；只有用户明确要求才推送 GitHub，发布/推送前要同步版本号和更新说明。
 
 ## 新需求归属判断
 

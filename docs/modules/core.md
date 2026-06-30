@@ -7,7 +7,7 @@
 - 管理 Cookie、线上账号、代理、分享默认设置、移动端导入 Token、运行资源配置。
 - 提供 Postgres 连接和 JSON 状态读写。
 - 写入业务日志，并对敏感字段脱敏。
-- 负责旧 JSON/日志文件到数据库的迁移入口；运行期不再把旧文件作为后备来源。
+- 维护 Postgres 结构化状态；运行期不再把旧 JSON、marker 或日志文件作为后备来源。
 
 ## 不负责
 
@@ -55,7 +55,6 @@
 - `list_log_files()` / 日志读取函数
 - `initialize_database()`
 - `load_json_state()` / `save_json_state()` / `delete_json_state()`
-- `migrate_json_files_to_database()` / `migrate_log_files_to_database()`
 - `build_runtime_diagnostics()`
 
 ### Runtime diagnostics
@@ -88,12 +87,10 @@ Runtime diagnostics include database table summaries, state-event counts, recent
   - `cookie_source_inventory`
   - `source_library_metadata`
   - `model_shares`
-- 旧文件迁移输入:
-  - `/app/config/config/config.json`
-  - 兼容旧部署的 `/app/config/config.json`
-  - `/app/config/state/*.json`
-  - `/app/config/state/*.marker`
-  - `/app/config/logs/*.log`
+- 兼容目录:
+  - `/app/config/config`
+  - `/app/config/state`
+  - `/app/config/logs`
 
 ## 常用测试命令
 
@@ -104,7 +101,7 @@ Runtime diagnostics include database table summaries, state-event counts, recent
 ## 修改时不能破坏
 
 - 数据库版本的结构化状态必须落在 Postgres；未配置 `MAKERHUB_DATABASE_URL` 时应提示升级 compose，而不是继续新增文件状态分支。
-- 业务日志运行期必须读写 `makerhub_logs`；旧 `/app/config/logs/*.log` 只作为迁移输入。
+- 业务日志运行期必须读写 `makerhub_logs`；不要新增旧 `/app/config/logs/*.log` 写入分支。
 - 高频状态事件和纯成功追踪日志应在后端合并或降噪；失败、告警和用户动作日志必须保留。
 - 保存 Cookie/Token/分享码/公网地址不能把明文写进业务日志。
 - Token 权限必须由后端校验，前端隐藏按钮不能替代后端权限。
@@ -114,7 +111,7 @@ Runtime diagnostics include database table summaries, state-event counts, recent
 
 ## 给 Codex 的上下文入口
 
-改设置、账号、Cookie、Token、日志、数据库迁移时，先读：
+改设置、账号、Cookie、Token、日志、数据库状态时，先读：
 
 - `app/schemas/models.py`
 - `app/core/settings.py`

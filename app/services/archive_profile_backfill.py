@@ -21,7 +21,6 @@ from app.services.archive_model_index import (
 from app.services.archive_worker import ArchiveTaskManager
 from app.services.business_logs import append_business_log
 from app.services.catalog import _normalize_model, invalidate_archive_snapshot
-from app.services.database_migration import migrate_json_files_to_database, migrate_log_files_to_database
 from app.services.legacy_archiver import PROFILE_DETAIL_SCHEMA_VERSION
 from app.services.state_events import publish_state_event
 
@@ -67,7 +66,7 @@ def _base_profile_backfill_status() -> dict[str, Any]:
         "database_rebuild_requested": False,
         "force_database_rebuild": False,
         "database_only": False,
-        "auto_database_migration": False,
+        "auto_database_index_rebuild": False,
         "started_at": "",
         "finished_at": "",
         "last_error": "",
@@ -90,7 +89,7 @@ def write_profile_backfill_status(payload: dict[str, Any]) -> dict[str, Any]:
                 "database_rebuild_requested": bool(payload.get("database_rebuild_requested", current.get("database_rebuild_requested"))),
                 "force_database_rebuild": bool(payload.get("force_database_rebuild", current.get("force_database_rebuild"))),
                 "database_only": bool(payload.get("database_only", current.get("database_only"))),
-                "auto_database_migration": bool(payload.get("auto_database_migration", current.get("auto_database_migration"))),
+                "auto_database_index_rebuild": bool(payload.get("auto_database_index_rebuild", current.get("auto_database_index_rebuild"))),
                 "started_at": str(payload.get("started_at", current.get("started_at")) or ""),
                 "finished_at": str(payload.get("finished_at", current.get("finished_at")) or ""),
                 "last_error": str(payload.get("last_error", current.get("last_error")) or ""),
@@ -124,7 +123,7 @@ def read_profile_backfill_status() -> dict[str, Any]:
                 "database_rebuild_requested": bool(payload.get("database_rebuild_requested")),
                 "force_database_rebuild": bool(payload.get("force_database_rebuild")),
                 "database_only": bool(payload.get("database_only")),
-                "auto_database_migration": bool(payload.get("auto_database_migration")),
+                "auto_database_index_rebuild": bool(payload.get("auto_database_index_rebuild")),
                 "started_at": str(payload.get("started_at") or ""),
                 "finished_at": str(payload.get("finished_at") or ""),
                 "last_error": str(payload.get("last_error") or ""),
@@ -322,7 +321,7 @@ def _write_database_index_progress(result: dict[str, Any]) -> None:
     write_profile_backfill_status(
         {
             "running": True,
-            "phase": "database_migration",
+            "phase": "database_index_rebuild",
             "last_error": "",
             "last_result": {"database_index": dict(result)},
         }
@@ -351,9 +350,7 @@ def rebuild_archive_model_database_index(
             "available": True,
             "skipped": True,
             "forced": False,
-            "json_state": {},
-            "log_state": {},
-            "reason": "数据库索引已迁移完成。",
+            "reason": "数据库索引已完成。",
             "total": _count_archive_meta_files(archive_root=archive_root),
             "processed": 0,
             "updated": 0,
@@ -367,19 +364,12 @@ def rebuild_archive_model_database_index(
         "available": True,
         "skipped": False,
         "forced": bool(force),
-        "json_state": {},
-        "log_state": {},
         "total": total,
         "processed": 0,
         "updated": 0,
         "failed": 0,
         "items": [],
     }
-    _write_database_index_progress(result)
-
-    result["json_state"] = migrate_json_files_to_database(force=force)
-    _write_database_index_progress(result)
-    result["log_state"] = migrate_log_files_to_database()
     _write_database_index_progress(result)
 
     if force:
@@ -440,7 +430,7 @@ def rebuild_archive_model_database_index(
     return result
 
 
-def should_auto_run_database_migration(archive_root: Path = ARCHIVE_DIR) -> bool:
+def should_auto_rebuild_database_index(archive_root: Path = ARCHIVE_DIR) -> bool:
     if not archive_model_index_configured():
         return False
     return not archive_model_index_is_bootstrapped(archive_root=archive_root)
@@ -459,7 +449,7 @@ def queue_profile_backfill(
     write_profile_backfill_status(
         {
             "running": True,
-            "phase": "database_migration" if rebuild_database else "profile_scan",
+            "phase": "database_index_rebuild" if rebuild_database else "profile_scan",
             "started_at": started_at,
             "finished_at": "",
             "last_error": "",
@@ -491,7 +481,7 @@ def queue_profile_backfill(
                         "database_rebuild_requested": False,
                         "force_database_rebuild": False,
                         "database_only": False,
-                        "auto_database_migration": False,
+                        "auto_database_index_rebuild": False,
                         "finished_at": finished_at,
                         "last_error": "",
                         "last_result": result,
@@ -555,7 +545,7 @@ def queue_profile_backfill(
                 "database_rebuild_requested": False,
                 "force_database_rebuild": False,
                 "database_only": False,
-                "auto_database_migration": False,
+                "auto_database_index_rebuild": False,
                 "finished_at": finished_at,
                 "last_error": "",
                 "last_result": result,
@@ -592,7 +582,7 @@ def queue_profile_backfill(
                 "database_rebuild_requested": False,
                 "force_database_rebuild": False,
                 "database_only": False,
-                "auto_database_migration": False,
+                "auto_database_index_rebuild": False,
                 "finished_at": finished_at,
                 "last_error": str(exc),
                 "last_result": result,

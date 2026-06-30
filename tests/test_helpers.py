@@ -57,7 +57,6 @@ class InMemoryDatabaseState:
             "app.services.source_health",
             "app.services.three_mf_quota",
             "app.services.self_update",
-            "app.services.database_migration",
             "app.api.config",
         )
         for module_name in module_names:

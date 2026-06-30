@@ -72,11 +72,11 @@ def _request_archive_model_index_rebuild(stale_model_dirs: list[str]) -> bool:
         sample = stale_model_dirs[:_STALE_MODEL_DIR_SAMPLE_LIMIT]
         payload: dict[str, Any] = {
             "running": True,
-            "phase": "database_migration",
+            "phase": "database_index_rebuild",
             "database_rebuild_requested": True,
             "force_database_rebuild": True,
             "database_only": True,
-            "auto_database_migration": False,
+            "auto_database_index_rebuild": False,
             "started_at": china_now_iso(),
             "finished_at": "",
             "last_error": "",
@@ -95,7 +95,7 @@ def _request_archive_model_index_rebuild(stale_model_dirs: list[str]) -> bool:
             "profile_backfill.changed",
             {
                 "running": True,
-                "phase": "database_migration",
+                "phase": "database_index_rebuild",
                 "database_only": True,
                 "stale_count": stale_count,
             },

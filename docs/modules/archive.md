@@ -56,11 +56,8 @@
   - `archive_model_index`
 - 文件:
   - `/app/data/<model_dir>/`
-  - 历史日志迁移输入：`/app/config/logs/business.log`
-  - 历史日志迁移输入：`/app/config/logs/batch_queue.log`
-  - 历史日志迁移输入：`/app/config/logs/batch_discovery.log`
-  - 旧状态迁移输入：`/app/config/state/archive_queue.json`
-  - 旧状态迁移输入：`/app/config/state/missing_3mf.json`
+  - `/app/config/state`：锁、临时文件和兼容挂载目录。
+  - `/app/config/logs`：兼容日志目录；运行期业务日志写入 Postgres。
 
 ## 常用测试命令
 

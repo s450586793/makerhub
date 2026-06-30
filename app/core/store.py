@@ -49,16 +49,7 @@ class JsonStore:
         return True
 
     def _file_payload_paths(self) -> list[Path]:
-        paths = [self.path]
-        if self._uses_database():
-            legacy_path = CONFIG_DIR.parent / "config.json"
-            try:
-                duplicate = legacy_path.resolve() == self.path.resolve()
-            except OSError:
-                duplicate = legacy_path == self.path
-            if not duplicate:
-                paths.append(legacy_path)
-        return paths
+        return [self.path]
 
     def _load_file_payload(self) -> dict:
         for path in self._file_payload_paths():
@@ -109,49 +100,6 @@ class JsonStore:
         merged["subscriptions"] = current_subscriptions
         return merged
 
-    @staticmethod
-    def _merge_missing_cookie_values(payload: dict, file_payload: dict) -> bool:
-        file_cookies_by_platform = {
-            str(item.get("platform") or "").strip(): item
-            for item in file_payload.get("cookies") or []
-            if isinstance(item, dict)
-            and str(item.get("platform") or "").strip()
-            and str(item.get("cookie") or "").strip()
-        }
-        if not file_cookies_by_platform:
-            return False
-
-        merged = []
-        seen = set()
-        changed = False
-        for item in payload.get("cookies") or []:
-            if not isinstance(item, dict):
-                continue
-            platform = str(item.get("platform") or "").strip()
-            replacement = file_cookies_by_platform.get(platform)
-            if replacement and not str(item.get("cookie") or "").strip():
-                next_item = dict(item)
-                for key, value in replacement.items():
-                    if key == "platform":
-                        continue
-                    if value not in (None, ""):
-                        next_item[key] = value
-                merged.append(next_item)
-                changed = True
-            else:
-                merged.append(dict(item))
-            if platform:
-                seen.add(platform)
-
-        for platform, item in file_cookies_by_platform.items():
-            if platform not in seen:
-                merged.append(dict(item))
-                changed = True
-
-        if changed:
-            payload["cookies"] = merged
-        return changed
-
     @contextmanager
     def _file_lock(self):
         lock_path = self.path.with_name(f"{self.path.name}.lock")
@@ -173,8 +121,6 @@ class JsonStore:
                 payload = self._load_file_payload()
             elif not payload:
                 payload = AppConfig().model_dump()
-                self._save_database_payload(payload)
-            elif self._uses_database() and self._merge_missing_cookie_values(payload, self._load_file_payload()):
                 self._save_database_payload(payload)
             config = AppConfig.model_validate(payload)
             self._loaded_subscription_fingerprints[id(config)] = self._subscription_fingerprint(config.model_dump())

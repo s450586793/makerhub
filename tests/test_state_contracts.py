@@ -31,13 +31,11 @@ def test_runtime_state_keys_are_stable():
     assert state_contracts.RUNTIME_BATCHES_STATE_KEY == "runtime_batches"
     assert state_contracts.RUNTIME_FAILURES_STATE_KEY == "runtime_failures"
     assert state_contracts.RUNTIME_SNAPSHOTS_STATE_KEY == "runtime_snapshots"
-    assert state_contracts.RUNTIME_MIGRATION_STATE_KEY == "runtime_migration"
     assert state_contracts.RUNTIME_STATE_KEYS == (
         "runtime_runs",
         "runtime_batches",
         "runtime_failures",
         "runtime_snapshots",
-        "runtime_migration",
     )
 
 

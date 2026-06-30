@@ -58,8 +58,8 @@
   - 来源 metadata cache。
   - `archive_model_index` 用于来源库聚合模型。
 - 文件:
-  - `/app/config/state/subscriptions_state.json`
-  - `/app/config/logs/subscriptions.log` 仅作为历史日志迁移输入。
+  - `/app/config/state`：来源快照、锁和兼容挂载目录。
+  - `/app/config/logs`：兼容日志目录；运行期业务日志写入 Postgres。
   - 来源快照图片通常保存在运行状态/快照目录，并通过 `/api/source-library/snapshots/{filename}` 暴露。
 
 ## 常用测试命令

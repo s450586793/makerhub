@@ -11,7 +11,7 @@ from app.services.archive_worker import ArchiveTaskManager
 from app.services.archive_profile_backfill import (
     queue_profile_backfill,
     read_profile_backfill_status,
-    should_auto_run_database_migration,
+    should_auto_rebuild_database_index,
     write_profile_backfill_status,
 )
 from app.services.business_logs import append_business_log
@@ -121,16 +121,16 @@ def main() -> int:
         initial_backfill_status = read_profile_backfill_status()
         if (
             not initial_backfill_status.get("running")
-            and should_auto_run_database_migration()
+            and should_auto_rebuild_database_index()
         ):
             write_profile_backfill_status(
                 {
                     "running": True,
-                    "phase": "database_migration",
+                    "phase": "database_index_rebuild",
                     "database_rebuild_requested": True,
                     "force_database_rebuild": False,
                     "database_only": False,
-                    "auto_database_migration": True,
+                    "auto_database_index_rebuild": True,
                     "started_at": china_now_iso(),
                     "finished_at": "",
                     "last_error": "",
@@ -139,13 +139,13 @@ def main() -> int:
             )
             append_business_log(
                 "database",
-                "archive_model_index_auto_migration_queued",
+                "archive_model_index_auto_rebuild_queued",
                 "检测到数据库索引未完成，已自动提交全库索引初始化。",
             )
     except Exception as exc:
         append_business_log(
             "database",
-            "archive_model_index_auto_migration_check_failed",
+            "archive_model_index_auto_rebuild_check_failed",
             "数据库索引自动初始化检测失败。",
             level="warning",
             error=str(exc),

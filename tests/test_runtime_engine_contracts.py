@@ -10,7 +10,6 @@ class RuntimeEngineContractsTest(unittest.TestCase):
         self.assertEqual(state_contracts.RUNTIME_BATCHES_STATE_KEY, "runtime_batches")
         self.assertEqual(state_contracts.RUNTIME_FAILURES_STATE_KEY, "runtime_failures")
         self.assertEqual(state_contracts.RUNTIME_SNAPSHOTS_STATE_KEY, "runtime_snapshots")
-        self.assertEqual(state_contracts.RUNTIME_MIGRATION_STATE_KEY, "runtime_migration")
 
     def test_normalize_run_summary_keeps_known_fields_and_defaults(self):
         run = contracts.normalize_run_summary(
