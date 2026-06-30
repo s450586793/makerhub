@@ -624,6 +624,63 @@ class Missing3mfTest(unittest.TestCase):
         self.assertEqual(result["queued_count"], 1)
         self.assertEqual(result["failed_count"], 0)
 
+    def test_retry_verification_missing_resumes_paused_queue_items(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        queue = {
+            "queued": [
+                {
+                    "id": "task-paused-cn",
+                    "status": "paused",
+                    "title": "https://makerworld.com.cn/zh/models/1590150",
+                    "url": "https://makerworld.com.cn/zh/models/1590150",
+                    "message": "MakerWorld 需要验证，前往官网任意下载一个模型。",
+                    "blocked_reason": "needs_verification",
+                    "meta": {
+                        "missing_3mf_retry": True,
+                        "model_id": "1590150",
+                        "model_url": "https://makerworld.com.cn/zh/models/1590150",
+                        "source": "cn",
+                    },
+                },
+                {
+                    "id": "task-paused-global",
+                    "status": "paused",
+                    "title": "https://makerworld.com/zh/models/2193050",
+                    "url": "https://makerworld.com/zh/models/2193050",
+                    "message": "MakerWorld 需要验证，前往官网任意下载一个模型。",
+                    "blocked_reason": "needs_verification",
+                    "meta": {
+                        "missing_3mf_retry": True,
+                        "model_id": "2193050",
+                        "model_url": "https://makerworld.com/zh/models/2193050",
+                        "source": "global",
+                    },
+                },
+            ],
+            "active": [],
+            "recent_failures": [],
+        }
+        saved = []
+        ensured = []
+        manager.task_store = SimpleNamespace(
+            load_missing_3mf=lambda: {"items": []},
+            mark_missing_3mf_retrying=lambda *_args, **_kwargs: None,
+            load_archive_queue=lambda: queue,
+            save_archive_queue=lambda payload: saved.append(payload) or payload,
+        )
+        manager._ensure_worker = lambda: ensured.append(True)
+
+        with patch.object(archive_worker_module, "append_business_log"):
+            result = manager.retry_verification_missing_3mf(platform="cn")
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["resumed_count"], 1)
+        self.assertEqual(saved[0]["queued"][0]["status"], "queued")
+        self.assertEqual(saved[0]["queued"][0]["message"], "验证已完成，等待重新下载 3MF")
+        self.assertNotIn("blocked_reason", saved[0]["queued"][0])
+        self.assertEqual(saved[0]["queued"][1]["status"], "paused")
+        self.assertEqual(ensured, [True])
+
     def test_run_single_task_marks_account_ok_after_missing_3mf_retry_success(self):
         manager = ArchiveTaskManager(background_enabled=False)
         manager.store = SimpleNamespace(

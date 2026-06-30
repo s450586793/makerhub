@@ -213,6 +213,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-30 · v0.9.66
+
+- 手动确认 MakerWorld 验证后，会恢复同平台已暂停的缺失 `3MF` 队列任务，不再只扫描缺失列表。
+- 旧队列里 `paused + missing_3mf_retry` 的任务会重新进入 `queued`，让 Worker 继续跑到新版 `404` 终态清理逻辑。
+- 补充回归测试，覆盖国区恢复时不会误恢复国际站暂停任务。
+
 ### 2026-06-30 · v0.9.65
 
 - 缺失 `3MF` 重试遇到 MakerWorld `404`、下架、私有或草稿页时，会作为终态处理，不再进入自动重试或最近失败队列。
@@ -225,14 +231,14 @@ uvicorn app.main:app --reload
 - 缺失 `3MF` 的 HTML `404` 响应会归类为 `not_found`，最近失败和缺失列表会提示源端不可用，而不是引导更新 Cookie。
 - 补充归档页面分类和缺失 `3MF` 状态归一化回归测试。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-30 · v0.9.63
 
 - 删除旧 JSON 状态和历史日志文件导入 Postgres 的过渡迁移层，数据库索引重建不再调用旧文件迁移。
 - 运行期配置不再从旧 `config.json` 回填 Cookie，Postgres 中的 `app_config` 是唯一运行期配置来源。
 - 设置页和 Worker 状态统一改为“数据库索引重建”语义，只展示模型索引和历史缺失信息补全进度。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-29 · v0.9.62
 

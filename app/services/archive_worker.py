@@ -2075,6 +2075,7 @@ class ArchiveTaskManager:
             else:
                 failed += 1
 
+        resumed = self._resume_paused_missing_3mf_retry_tasks_for_platform(normalized_platform)
         append_business_log(
             "missing_3mf",
             "verification_retry_completed",
@@ -2084,20 +2085,66 @@ class ArchiveTaskManager:
             accepted=accepted,
             queued=queued,
             failed=failed,
+            resumed=resumed,
         )
+        if resumed:
+            self._ensure_worker()
         return {
-            "accepted": accepted > 0 or queued > 0,
+            "accepted": accepted > 0 or queued > 0 or resumed > 0,
             "accepted_count": accepted,
             "queued_count": queued,
             "failed_count": failed,
+            "resumed_count": resumed,
             "total_count": len(candidates),
             "message": (
-                f"验证后重试完成：新增入队 {accepted} 个，已在队列 {queued} 个，失败 {failed} 个。"
-                if candidates
+                f"验证后重试完成：新增入队 {accepted} 个，已在队列 {queued} 个，恢复暂停 {resumed} 个，失败 {failed} 个。"
+                if candidates or resumed
                 else "当前没有同平台验证类 3MF 任务。"
             ),
             "last_message": last_message,
         }
+
+    def _resume_paused_missing_3mf_retry_tasks_for_platform(self, platform: str) -> int:
+        normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
+        if normalized_platform not in {"cn", "global"}:
+            return 0
+        if not hasattr(self.task_store, "load_archive_queue") or not hasattr(self.task_store, "save_archive_queue"):
+            return 0
+
+        queue = self.task_store.load_archive_queue()
+        queued_items = list(queue.get("queued") or [])
+        resumed = 0
+        now = china_now().isoformat()
+        for item in queued_items:
+            if str(item.get("status") or "").strip().lower() != "paused":
+                continue
+            if not self._is_missing_3mf_retry_task(item):
+                continue
+            meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+            item_url = normalize_source_url(str(meta.get("model_url") or item.get("url") or ""))
+            item_platform = normalize_makerworld_source(meta.get("source"), item_url)
+            if item_platform != normalized_platform:
+                continue
+
+            item["status"] = "queued"
+            item["message"] = "验证已完成，等待重新下载 3MF"
+            item["updated_at"] = now
+            item.pop("blocked_reason", None)
+            resumed += 1
+
+        if not resumed:
+            return 0
+
+        queue["queued"] = queued_items
+        self.task_store.save_archive_queue(queue)
+        append_business_log(
+            "missing_3mf",
+            "paused_retry_queue_resumed",
+            "验证完成后已恢复暂停的缺失 3MF 队列任务。",
+            platform=normalized_platform,
+            resumed_count=resumed,
+        )
+        return resumed
 
     def cancel_missing_3mf(self, model_id: str = "", model_url: str = "", title: str = "", instance_id: str = "") -> dict:
         clean_model_id = str(model_id or "").strip()
