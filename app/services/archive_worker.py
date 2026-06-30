@@ -231,6 +231,10 @@ def _log_archive(event: str, message: str = "", level: str = "info", **payload: 
     append_business_log("archive", event, message, level=level, **payload)
 
 
+def _is_not_found_archive_error(message: Any, url: str = "") -> bool:
+    return normalize_three_mf_failure_state("", message, url=url) == "not_found"
+
+
 def _base_three_mf_limit_guard() -> dict[str, Any]:
     return {
         "active": False,
@@ -2591,6 +2595,14 @@ class ArchiveTaskManager:
             except Exception as exc:
                 model_id = extract_model_id(task.get("url") or "")
                 error_message = str(exc)
+                if self._complete_terminal_not_found_task(
+                    task_id=task_id,
+                    url=task_url,
+                    meta=task_meta,
+                    model_id=model_id,
+                    message=error_message,
+                ):
+                    continue
                 if model_id:
                     self.task_store.update_missing_3mf_status(
                         model_id=model_id,
@@ -2616,6 +2628,50 @@ class ArchiveTaskManager:
                 self._refresh_batch_tasks()
                 if profile_metadata_only and PROFILE_BACKFILL_TASK_COOLDOWN_SECONDS > 0:
                     time.sleep(PROFILE_BACKFILL_TASK_COOLDOWN_SECONDS)
+
+    def _complete_terminal_not_found_task(
+        self,
+        *,
+        task_id: str,
+        url: str,
+        meta: dict[str, Any],
+        model_id: str,
+        message: str,
+    ) -> bool:
+        if not meta.get("missing_3mf_retry"):
+            return False
+        clean_url = normalize_source_url(str(meta.get("model_url") or url or ""))
+        clean_model_id = str(meta.get("model_id") or model_id or extract_model_id(clean_url) or "").strip()
+        if not clean_model_id:
+            return False
+        if not _is_not_found_archive_error(message, clean_url):
+            return False
+
+        title = str(meta.get("title") or "").strip()
+        instance_id = str(meta.get("instance_id") or "").strip()
+        self.task_store.remove_missing_3mf_item(
+            model_id=clean_model_id,
+            model_url=clean_url,
+            title=title,
+            instance_id=instance_id,
+        )
+        self.task_store.remove_recent_failures_for_model(clean_model_id, url=clean_url)
+        completion_message = f"源端已不可用，已停止缺失 3MF 重试：{message}"
+        self.task_store.complete_archive_task(
+            task_id,
+            progress=100,
+            message=completion_message,
+        )
+        _log_archive(
+            "missing_3mf_not_found_cleared",
+            "源端已不可用，已停止缺失 3MF 重试。",
+            task_id=task_id,
+            url=clean_url,
+            model_id=clean_model_id,
+            instance_id=instance_id,
+            message=message,
+        )
+        return True
 
     def _run_batch_task(self, task_id: str, url: str, mode: str, meta: Optional[dict] = None) -> None:
         config = self.store.load()

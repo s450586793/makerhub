@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.64`
+> 当前版本：`v0.9.65`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -213,6 +213,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-06-30 · v0.9.65
+
+- 缺失 `3MF` 重试遇到 MakerWorld `404`、下架、私有或草稿页时，会作为终态处理，不再进入自动重试或最近失败队列。
+- Worker 会清除对应缺失 `3MF` 项和历史失败记录，并记录“源端已不可用，已停止缺失 3MF 重试”的业务日志。
+- 普通单模型归档仍保留 `404` 失败记录，避免误吞真实归档失败；补充两条 Worker 回归测试覆盖这两种路径。
+
 ### 2026-06-30 · v0.9.64
 
 - 归档抓取会识别 MakerWorld 模型页 `404`、下架、私有或转为草稿的页面，不再误提示为 Cloudflare 验证拦截。
@@ -225,15 +231,15 @@ uvicorn app.main:app --reload
 - 运行期配置不再从旧 `config.json` 回填 Cookie，Postgres 中的 `app_config` 是唯一运行期配置来源。
 - 设置页和 Worker 状态统一改为“数据库索引重建”语义，只展示模型索引和历史缺失信息补全进度。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-29 · v0.9.62
 
 - 通用 API Token 和移动端导入 Token 不再接受 URL query 传递，只接受 `Authorization: Bearer` 或兼容 token header。
 - 分享接收增加 SSRF 防护，拒绝内网/localhost 分享端、跨 origin 重定向和 manifest 中的绝对文件下载 URL。
 - 默认 Compose 不再挂载 Docker socket，数据库密码改由 `.env` 中的 `MAKERHUB_POSTGRES_PASSWORD` 提供。
 - 缺失 `3MF` 重试遇到 MakerWorld 验证 / Cookie / Cloudflare 拦截后，会暂停同平台排队中的缺失 `3MF` 重试，避免归档 Worker 长时间被不可执行任务占住。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-29 · v0.9.61
 

@@ -782,6 +782,153 @@ class Missing3mfTest(unittest.TestCase):
             any(args and args[0] == "account_health_sync_failed" for args, _kwargs in log_calls)
         )
 
+    def test_run_loop_clears_missing_3mf_retry_when_model_is_not_found(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        task = {
+            "id": "task-404",
+            "url": "https://makerworld.com.cn/zh/models/1590150",
+            "mode": "single_model",
+            "meta": {
+                "missing_3mf_retry": True,
+                "model_id": "1590150",
+                "model_url": "https://makerworld.com.cn/zh/models/1590150",
+                "instance_id": "1738489",
+                "title": "按颜色分盘No AMS",
+                "source": "cn",
+            },
+        }
+        calls = []
+        load_calls = []
+        lease_calls = []
+
+        def load_archive_queue():
+            load_calls.append(True)
+            if len(load_calls) == 1:
+                return {"queued": [task], "active": [], "recent_failures": []}
+            return {"queued": [], "active": [], "recent_failures": []}
+
+        def lease_next_archive_task(_selector):
+            lease_calls.append(True)
+            if len(lease_calls) == 1:
+                return task
+            return None
+
+        manager.task_store = SimpleNamespace(
+            load_archive_queue=load_archive_queue,
+            lease_next_archive_task=lease_next_archive_task,
+            update_active_task=lambda *args, **kwargs: calls.append(("update_active", args, kwargs)),
+            update_missing_3mf_status=lambda *args, **kwargs: calls.append(("update_missing", args, kwargs)),
+            remove_missing_3mf_item=lambda **kwargs: calls.append(("remove_missing", (), kwargs)) or {"items": []},
+            remove_recent_failures_for_model=lambda *args, **kwargs: calls.append(("remove_failures", args, kwargs)),
+            complete_archive_task=lambda *args, **kwargs: calls.append(("complete", args, kwargs)),
+            fail_archive_task=lambda *args, **kwargs: calls.append(("fail", args, kwargs)),
+        )
+
+        with patch.object(manager, "_refresh_batch_tasks", return_value=False), \
+                patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
+                patch.object(
+                    manager,
+                    "_run_single_task",
+                    side_effect=RuntimeError("模型页面返回 404，可能已下架、设为私有或转为草稿。"),
+                ), \
+                patch.object(archive_worker_module, "_sync_account_health_for_archive_exception") as sync_health, \
+                patch.object(archive_worker_module, "_log_archive") as log_archive:
+            manager._run_loop()
+
+        self.assertIn(
+            (
+                "remove_missing",
+                (),
+                {
+                    "model_id": "1590150",
+                    "model_url": "https://makerworld.com.cn/zh/models/1590150",
+                    "title": "按颜色分盘No AMS",
+                    "instance_id": "1738489",
+                },
+            ),
+            calls,
+        )
+        self.assertIn(
+            ("remove_failures", ("1590150",), {"url": "https://makerworld.com.cn/zh/models/1590150"}),
+            calls,
+        )
+        self.assertIn(
+            (
+                "complete",
+                ("task-404",),
+                {
+                    "progress": 100,
+                    "message": "源端已不可用，已停止缺失 3MF 重试：模型页面返回 404，可能已下架、设为私有或转为草稿。",
+                },
+            ),
+            calls,
+        )
+        self.assertNotIn("fail", [call[0] for call in calls])
+        self.assertNotIn("update_missing", [call[0] for call in calls])
+        sync_health.assert_not_called()
+        log_archive.assert_any_call(
+            "missing_3mf_not_found_cleared",
+            "源端已不可用，已停止缺失 3MF 重试。",
+            task_id="task-404",
+            url="https://makerworld.com.cn/zh/models/1590150",
+            model_id="1590150",
+            instance_id="1738489",
+            message="模型页面返回 404，可能已下架、设为私有或转为草稿。",
+        )
+
+    def test_run_loop_keeps_regular_archive_not_found_as_failure(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        task = {
+            "id": "task-regular-404",
+            "url": "https://makerworld.com.cn/zh/models/1590150",
+            "mode": "single_model",
+            "meta": {},
+        }
+        calls = []
+        load_calls = []
+        lease_calls = []
+
+        def load_archive_queue():
+            load_calls.append(True)
+            if len(load_calls) == 1:
+                return {"queued": [task], "active": [], "recent_failures": []}
+            return {"queued": [], "active": [], "recent_failures": []}
+
+        def lease_next_archive_task(_selector):
+            lease_calls.append(True)
+            if len(lease_calls) == 1:
+                return task
+            return None
+
+        manager.task_store = SimpleNamespace(
+            load_archive_queue=load_archive_queue,
+            lease_next_archive_task=lease_next_archive_task,
+            update_active_task=lambda *args, **kwargs: calls.append(("update_active", args, kwargs)),
+            update_missing_3mf_status=lambda *args, **kwargs: calls.append(("update_missing", args, kwargs)),
+            remove_missing_3mf_item=lambda **kwargs: calls.append(("remove_missing", (), kwargs)),
+            remove_recent_failures_for_model=lambda *args, **kwargs: calls.append(("remove_failures", args, kwargs)),
+            complete_archive_task=lambda *args, **kwargs: calls.append(("complete", args, kwargs)),
+            fail_archive_task=lambda *args, **kwargs: calls.append(("fail", args, kwargs)),
+        )
+
+        with patch.object(manager, "_refresh_batch_tasks", return_value=False), \
+                patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
+                patch.object(
+                    manager,
+                    "_run_single_task",
+                    side_effect=RuntimeError("模型页面返回 404，可能已下架、设为私有或转为草稿。"),
+                ), \
+                patch.object(archive_worker_module, "_sync_account_health_for_archive_exception"), \
+                patch.object(archive_worker_module, "_log_archive"):
+            manager._run_loop()
+
+        self.assertIn(
+            ("fail", ("task-regular-404", "模型页面返回 404，可能已下架、设为私有或转为草稿。"), {}),
+            calls,
+        )
+        self.assertNotIn("remove_missing", [call[0] for call in calls])
+        self.assertNotIn("complete", [call[0] for call in calls])
+
     def test_cn_instance_api_candidates_prefer_bambulab_api(self):
         candidates = _build_instance_api_candidates(
             2864062,
