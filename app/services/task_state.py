@@ -2586,6 +2586,39 @@ class TaskStateStore:
 
         return self._update_missing_3mf(_mutate)
 
+    def mark_missing_3mf_platform_status(
+        self,
+        platform: str,
+        *,
+        status: str,
+        message: str = "",
+    ) -> dict:
+        normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
+        if normalized_platform not in {"cn", "global"}:
+            return self.load_missing_3mf()
+
+        clean_status = str(status or "").strip()
+        clean_message = str(message or "").strip()
+        if not clean_status and not clean_message:
+            return self.load_missing_3mf()
+
+        def _mutate(payload: dict) -> dict:
+            items = _normalize_missing_3mf(payload).get("items", [])
+            now = china_now_iso()
+            for item in items:
+                item_url = str(item.get("model_url") or "").strip()
+                item_platform = normalize_makerworld_source(item.get("source"), item_url)
+                if item_platform != normalized_platform:
+                    continue
+                if clean_status:
+                    item["status"] = clean_status
+                if clean_message:
+                    item["message"] = clean_message
+                item["updated_at"] = now
+            return {"items": items}
+
+        return self._update_missing_3mf(_mutate)
+
     def upsert_subscription_state(self, item: dict) -> dict:
         normalized_item = _normalize_subscription_state({"items": [item]}).get("items", [])
         if not normalized_item:

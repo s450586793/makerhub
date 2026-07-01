@@ -584,6 +584,28 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
                     },
                 ],
                 "recent_failures": [],
+            },
+            "missing_3mf": {
+                "items": [
+                    {
+                        "model_id": "222",
+                        "model_url": "https://makerworld.com.cn/zh/models/222",
+                        "source": "cn",
+                        "instance_id": "profile-222",
+                        "title": "CN profile",
+                        "status": "queued",
+                        "message": "已存在于重新下载队列",
+                    },
+                    {
+                        "model_id": "444",
+                        "model_url": "https://makerworld.com/zh/models/444",
+                        "source": "global",
+                        "instance_id": "profile-444",
+                        "title": "Global profile",
+                        "status": "queued",
+                        "message": "已存在于重新下载队列",
+                    },
+                ],
             }
         }
 
@@ -640,6 +662,10 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
         self.assertIn("MakerWorld 需要验证", queued["retry-cn"]["message"])
         self.assertEqual(queued["normal-cn"]["status"], "queued")
         self.assertEqual(queued["retry-global"]["status"], "queued")
+        missing_by_model = {item["model_id"]: item for item in queue_state["missing_3mf"]["items"]}
+        self.assertEqual(missing_by_model["222"]["status"], "verification_required")
+        self.assertIn("MakerWorld 需要验证", missing_by_model["222"]["message"])
+        self.assertEqual(missing_by_model["444"]["status"], "queued")
 
     def test_cn_three_mf_download_ignores_global_account_gate(self):
         manager = ArchiveTaskManager(background_enabled=False)

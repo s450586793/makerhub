@@ -650,9 +650,11 @@ class Missing3mfTest(unittest.TestCase):
         }
         saved = []
         ensured = []
+        marked_platform_status = []
         manager.task_store = SimpleNamespace(
             load_missing_3mf=lambda: {"items": []},
             mark_missing_3mf_retrying=lambda *_args, **_kwargs: None,
+            mark_missing_3mf_platform_status=lambda *args, **kwargs: marked_platform_status.append((args, kwargs)),
             load_archive_queue=lambda: queue,
             save_archive_queue=lambda payload: saved.append(payload) or payload,
         )
@@ -668,6 +670,9 @@ class Missing3mfTest(unittest.TestCase):
         self.assertNotIn("blocked_reason", saved[0]["queued"][0])
         self.assertEqual(saved[0]["queued"][1]["status"], "paused")
         self.assertEqual(ensured, [True])
+        self.assertEqual(marked_platform_status, [
+            (("cn",), {"status": "queued", "message": "验证已完成，等待重新下载 3MF"})
+        ])
 
     def test_run_single_task_marks_account_ok_after_missing_3mf_retry_success(self):
         manager = ArchiveTaskManager(background_enabled=False)

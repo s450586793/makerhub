@@ -1808,6 +1808,12 @@ class ArchiveTaskManager:
 
         queue["queued"] = queued_items
         self.task_store.save_archive_queue(queue)
+        if hasattr(self.task_store, "mark_missing_3mf_platform_status"):
+            self.task_store.mark_missing_3mf_platform_status(
+                normalized_platform,
+                status=str(state or "verification_required").strip() or "verification_required",
+                message=pause_message,
+            )
         append_business_log(
             "missing_3mf",
             "retry_queue_paused_account_gate",
@@ -2078,6 +2084,12 @@ class ArchiveTaskManager:
 
         queue["queued"] = queued_items
         self.task_store.save_archive_queue(queue)
+        if hasattr(self.task_store, "mark_missing_3mf_platform_status"):
+            self.task_store.mark_missing_3mf_platform_status(
+                normalized_platform,
+                status="queued",
+                message="验证已完成，等待重新下载 3MF",
+            )
         append_business_log(
             "missing_3mf",
             "paused_retry_queue_resumed",
