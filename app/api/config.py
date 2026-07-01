@@ -3502,49 +3502,6 @@ async def public_bambu_studio_download_file(model_dir: str, file_name: str, expi
     )
 
 
-async def backfill_model_source_metadata(model_dir: str, request: Request):
-    _require_session_auth(request)
-
-    def _submit_backfill() -> dict:
-        resolved_model_dir = _resolve_model_route_key(model_dir)
-        detail = get_model_detail(resolved_model_dir, include_detail=True)
-        if detail is None:
-            raise ValueError("模型不存在。")
-
-        source = str(detail.get("source") or "").strip().lower()
-        origin_url = str(detail.get("origin_url") or "").strip()
-        if source not in {"cn", "global"} or not origin_url:
-            raise ValueError("本地模型或缺少源端链接，无法补全源端信息。")
-
-        response = crawler.manager.submit_profile_metadata_backfill(
-            origin_url,
-            model_dir=str(detail.get("model_dir") or resolved_model_dir),
-            title=str(detail.get("title") or resolved_model_dir),
-        )
-        append_business_log(
-            "model",
-            "source_backfill_requested",
-            response.get("message") or "源端信息补全已提交。",
-            accepted=bool(response.get("accepted")),
-            queued=bool(response.get("queued")),
-            model_dir=str(detail.get("model_dir") or resolved_model_dir),
-            url=origin_url,
-            task_id=response.get("task_id"),
-        )
-        return {
-            **response,
-            "success": bool(response.get("accepted") or response.get("queued")),
-            "model_dir": str(detail.get("model_dir") or resolved_model_dir),
-        }
-
-    try:
-        return await run_task_api(_submit_backfill)
-    except ValueError as exc:
-        message = str(exc)
-        status_code = 404 if "不存在" in message else 400
-        raise HTTPException(status_code=status_code, detail=message) from exc
-
-
 async def get_model_detail_data(model_dir: str):
     resolved_model_dir = _resolve_model_route_key(model_dir)
     detail = await run_web_io(get_model_detail, resolved_model_dir)

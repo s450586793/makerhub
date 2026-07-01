@@ -57,14 +57,6 @@ class TaskMessagesTest(unittest.TestCase):
             "返回了 HTML 页面，通常是 Cookie 失效、代理错误或站点风控页。",
         )
 
-    def test_metadata_only_missing_3mf_placeholder_detection(self):
-        self.assertTrue(
-            task_messages.is_metadata_only_missing_3mf_placeholder(
-                {"message": "信息补全任务会整理评论回复，不下载 3MF。"}
-            )
-        )
-        self.assertFalse(task_messages.is_metadata_only_missing_3mf_placeholder({"message": "缺失 3MF"}))
-
 
 if __name__ == "__main__":
     unittest.main()

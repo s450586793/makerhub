@@ -17,7 +17,7 @@ from app.services.legacy_archiver import (
 )
 from app.services.archive_worker import ArchiveTaskManager
 from app.services.remote_refresh import _build_missing_3mf_items
-from app.services.task_state import METADATA_ONLY_MISSING_3MF_MESSAGE, _normalize_missing_3mf
+from app.services.task_state import _normalize_missing_3mf
 
 
 class Missing3mfTest(unittest.TestCase):
@@ -44,18 +44,12 @@ class Missing3mfTest(unittest.TestCase):
         self.assertEqual(failure["state"], "download_limited")
         self.assertEqual(failure["message"], "旧的每日下载上限消息")
 
-    def test_normalize_filters_metadata_only_placeholders(self):
+    def test_normalize_keeps_missing_3mf_items(self):
         payload = {
             "items": [
                 {
                     "model_id": "1686848",
                     "title": "仪羽毛球（球头无挖孔）",
-                    "status": "missing",
-                    "message": METADATA_ONLY_MISSING_3MF_MESSAGE,
-                },
-                {
-                    "model_id": "2",
-                    "title": "Real missing profile",
                     "status": "missing",
                     "message": "未获取到 3MF 下载地址。",
                 },
@@ -66,9 +60,9 @@ class Missing3mfTest(unittest.TestCase):
             normalized = _normalize_missing_3mf(payload)
 
         self.assertEqual(len(normalized["items"]), 1)
-        self.assertEqual(normalized["items"][0]["model_id"], "2")
+        self.assertEqual(normalized["items"][0]["model_id"], "1686848")
 
-    def test_remote_refresh_missing_builder_skips_metadata_only_placeholders(self):
+    def test_remote_refresh_missing_builder_keeps_missing_items(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             meta_path = Path(temp_dir) / "model" / "meta.json"
             meta_path.parent.mkdir(parents=True)
@@ -79,13 +73,7 @@ class Missing3mfTest(unittest.TestCase):
                 "instances": [
                     {
                         "id": "profile-1",
-                        "title": "信息补全占位配置",
-                        "downloadState": "missing",
-                        "downloadMessage": METADATA_ONLY_MISSING_3MF_MESSAGE,
-                    },
-                    {
-                        "id": "profile-2",
-                        "title": "真实缺失配置",
+                        "title": "缺失配置",
                         "downloadState": "missing",
                         "downloadMessage": "未获取到 3MF 下载地址。",
                     },
@@ -95,7 +83,7 @@ class Missing3mfTest(unittest.TestCase):
             items = _build_missing_3mf_items(meta_path, meta, resolved_files={"matches": {}})
 
         self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["instance_id"], "profile-2")
+        self.assertEqual(items[0]["instance_id"], "profile-1")
 
     def test_normalize_infers_verification_status_from_message(self):
         payload = {

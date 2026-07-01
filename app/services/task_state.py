@@ -58,7 +58,6 @@ ORGANIZER_TERMINAL_EVENTS = {
     "organize_failed",
     "worker_timeout",
 }
-METADATA_ONLY_MISSING_3MF_MESSAGE = "信息补全任务会整理打印配置详情、实例展示媒体和评论回复，不下载 3MF。"
 ARCHIVE_BATCH_TASK_MODES = {"author_upload", "collection_models"}
 ARCHIVE_MODEL_PATH_RE = re.compile(r"/(?:[a-z]{2}/)?models/(\d+)(?:[^\"'\\s<>]*)?", re.I)
 ARCHIVE_AUTHOR_UPLOAD_RE = re.compile(r"/(?:[a-z]{2}/)?@([^/?#]+)/upload(?:[/?#]|$)", re.I)
@@ -68,7 +67,6 @@ ARCHIVE_COMPLETION_MESSAGE_MARKERS = (
     "归档完成",
     "批量归档完成",
     "新增 3MF 下载完成",
-    "信息补全完成",
 )
 _STATE_LOCK = threading.RLock()
 _ORGANIZER_HISTORY_COUNT_CACHE = {
@@ -228,8 +226,6 @@ def _archive_task_identity_key(item: Any, *, failure: bool = False) -> str:
             return f"three_mf_download:{_archive_model_instance_identity(model_id, instance_ids)}"
         if meta.get("missing_3mf_retry"):
             return f"missing_3mf_retry:model:{model_id}"
-        if meta.get("profile_metadata_only"):
-            return f"profile_metadata:model:{model_id}"
         return f"model:{model_id}"
 
     if url:
@@ -409,7 +405,7 @@ def _should_attach_archive_subtasks(item: dict[str, Any]) -> bool:
     if mode == "single_model":
         return True
     meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
-    if any(meta.get(key) for key in ("three_mf_download", "missing_3mf_retry", "profile_metadata_only")):
+    if any(meta.get(key) for key in ("three_mf_download", "missing_3mf_retry")):
         return True
     url = str(item.get("url") or item.get("title") or "").lower()
     return "/models/" in url or "/model/" in url
@@ -601,8 +597,6 @@ def _normalize_missing_3mf(payload: Any, fallback_items: Optional[list[dict]] = 
             continue
         if not isinstance(item, dict):
             continue
-        if is_metadata_only_missing_3mf_placeholder(item):
-            continue
         message = _sanitize_message_text(item.get("message") or item.get("downloadMessage") or "")
         item_url = str(item.get("model_url") or item.get("url") or "")
         status = normalize_three_mf_failure_state(
@@ -654,10 +648,6 @@ def _normalize_missing_3mf(payload: Any, fallback_items: Optional[list[dict]] = 
             }
 
     return {"items": normalized}
-
-
-def is_metadata_only_missing_3mf_placeholder(item: Any) -> bool:
-    return task_messages.is_metadata_only_missing_3mf_placeholder(item)
 
 
 def _missing_3mf_key(item: dict) -> tuple[str, str, str]:

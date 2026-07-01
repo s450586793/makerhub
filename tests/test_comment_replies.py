@@ -6,7 +6,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.services import legacy_archiver
-from app.services.archive_profile_backfill import _meta_needs_profile_backfill
 from app.services.catalog import _normalize_comment_item, _normalize_comments, _normalize_comments_page, _normalize_model
 from app.services.legacy_archiver import (
     COMMENT_SCHEMA_VERSION,
@@ -898,116 +897,6 @@ class CommentRepliesTest(unittest.TestCase):
         self.assertEqual(bundle["items"][0]["id"], "blank-rating")
         self.assertEqual(bundle["items"][0]["content"], "")
         self.assertEqual(bundle["items"][0]["rating"], 5)
-
-    def test_profile_backfill_detects_models_missing_comment_replies(self):
-        meta = {
-            "instances": [
-                {
-                    "profileDetailVersion": PROFILE_DETAIL_SCHEMA_VERSION,
-                    "pictures": [{"url": "https://example.com/preview.jpg"}],
-                }
-            ],
-            "comments": [
-                {
-                    "id": "root-comment",
-                    "content": "主评论",
-                    "replyCount": 2,
-                }
-            ],
-        }
-
-        self.assertTrue(_meta_needs_profile_backfill(meta))
-
-    def test_profile_backfill_detects_flattened_top_level_reply_items(self):
-        meta = {
-            "instances": [
-                {
-                    "profileDetailVersion": PROFILE_DETAIL_SCHEMA_VERSION,
-                    "pictures": [{"url": "https://example.com/preview.jpg"}],
-                }
-            ],
-            "comments": [
-                {
-                    "id": "root-comment",
-                    "content": "主评论",
-                },
-                {
-                    "id": "reply-1",
-                    "rootCommentId": "root-comment",
-                    "content": "第一条回复",
-                    "replyToName": "楼主",
-                },
-            ],
-        }
-
-        self.assertTrue(_meta_needs_profile_backfill(meta))
-
-    def test_profile_backfill_detects_missing_replies_even_after_schema_upgrade(self):
-        meta = {
-            "commentSchemaVersion": COMMENT_SCHEMA_VERSION,
-            "instances": [
-                {
-                    "profileDetailVersion": PROFILE_DETAIL_SCHEMA_VERSION,
-                    "pictures": [{"url": "https://example.com/preview.jpg"}],
-                }
-            ],
-            "comments": [
-                {
-                    "id": "root-comment",
-                    "content": "主评论",
-                    "replyCount": 2,
-                }
-            ],
-        }
-
-        self.assertTrue(_meta_needs_profile_backfill(meta))
-
-    def test_profile_backfill_detects_partial_comment_pages(self):
-        meta = {
-            "commentSchemaVersion": COMMENT_SCHEMA_VERSION,
-            "commentCount": 3,
-            "instances": [
-                {
-                    "profileDetailVersion": PROFILE_DETAIL_SCHEMA_VERSION,
-                    "pictures": [{"url": "https://example.com/preview.jpg"}],
-                }
-            ],
-            "comments": [
-                {
-                    "id": "root-comment",
-                    "content": "只存了一条评论",
-                    "replyCount": 0,
-                }
-            ],
-        }
-
-        self.assertTrue(_meta_needs_profile_backfill(meta))
-
-    def test_profile_backfill_skips_complete_replies_after_schema_upgrade(self):
-        meta = {
-            "commentSchemaVersion": COMMENT_SCHEMA_VERSION,
-            "instances": [
-                {
-                    "profileDetailVersion": PROFILE_DETAIL_SCHEMA_VERSION,
-                    "pictures": [{"url": "https://example.com/preview.jpg"}],
-                }
-            ],
-            "comments": [
-                {
-                    "id": "root-comment",
-                    "content": "主评论",
-                    "replyCount": 1,
-                    "replies": [
-                        {
-                            "id": "reply-1",
-                            "content": "第一条回复",
-                        }
-                    ],
-                }
-            ],
-        }
-
-        self.assertFalse(_meta_needs_profile_backfill(meta))
 
     def test_curl_log_redacts_cookie_header(self):
         logged = _safe_curl_command_for_log([

@@ -43,7 +43,6 @@ BATCH_QUEUE_LOG_PATH = LOGS_DIR / "batch_queue.log"
 MAX_BATCH_CHILD_REQUEUE_ATTEMPTS = 3
 MAX_BATCH_CHILD_TRANSIENT_REQUEUE_ATTEMPTS = 5
 ACTIVE_BATCH_IDLE_POLL_SECONDS = 2.0
-PROFILE_BACKFILL_TASK_COOLDOWN_SECONDS = 0.5
 COLLECTION_DETAIL_RE = re.compile(r"/(?:[a-z]{2}/)?collections/\d+(?:-[^/?#]+)?(?:[/?#]|$)", re.I)
 THREE_MF_LIMIT_GUARD_PATH = STATE_DIR / "three_mf_limit_guard.json"
 THREE_MF_LIMIT_GUARD_KEY = "three_mf_limit_guard"
@@ -1637,15 +1636,6 @@ class ArchiveTaskManager:
             or queue_snapshot.get("queued_by_key", {}).get(task_key)
         )
         if queued_match:
-            queued_meta = queued_match.get("meta") if isinstance(queued_match.get("meta"), dict) else {}
-            if queued_meta.get("profile_metadata_only"):
-                return {
-                    "accepted": False,
-                    "queued": False,
-                    "message": "该模型当前只有信息补全任务在排队，暂不合并为新增 3MF 下载任务。",
-                    "mode": "single_model",
-                    "url": clean_url,
-                }
             _log_archive("three_mf_download_skipped_queued", "新增 3MF 下载任务已在归档队列中。", url=clean_url, task_key=task_key)
             return {
                 "accepted": False,
@@ -1709,55 +1699,6 @@ class ArchiveTaskManager:
             "mode": "single_model",
             "url": clean_url,
             "message": "新增 3MF 下载任务已加入队列。",
-        }
-
-    def submit_profile_metadata_backfill(self, url: str, model_dir: str = "", title: str = "") -> dict:
-        clean_url = normalize_source_url(url)
-        if not clean_url:
-            return {
-                "accepted": False,
-                "message": "缺少可用模型链接，无法补全信息。",
-            }
-
-        task_key = _task_key(clean_url)
-        if task_key in self._queued_task_keys():
-            return {
-                "accepted": False,
-                "message": "该模型已经在归档队列中。",
-                "mode": "single_model",
-                "url": clean_url,
-                "queued": True,
-            }
-
-        task_id = self._enqueue_single_task(
-            clean_url,
-            message="等待补全现有库信息",
-            mode="single_model",
-            meta={
-                "profile_metadata_only": True,
-                "download_assets": False,
-                "download_comment_assets": False,
-                "rebuild_archive": False,
-                "record_missing_3mf_log": False,
-                "existing_model_dir": str(model_dir or "").strip(),
-                "title": str(title or "").strip(),
-            },
-        )
-        self._ensure_worker()
-        _log_archive(
-            "profile_metadata_backfill_submitted",
-            "现有库信息补全任务已入队。",
-            url=clean_url,
-            task_id=task_id,
-            task_key=task_key,
-            model_dir=model_dir,
-        )
-        return {
-            "accepted": True,
-            "task_id": task_id,
-            "mode": "single_model",
-            "url": clean_url,
-            "message": "信息补全任务已加入归档队列。",
         }
 
     def _is_missing_3mf_retry_task(self, item: dict) -> bool:
@@ -2623,7 +2564,6 @@ class ArchiveTaskManager:
             task_id = task["id"]
             task_url = str(task.get("url") or "")
             task_meta = task.get("meta") if isinstance(task.get("meta"), dict) else {}
-            profile_metadata_only = bool(task_meta.get("profile_metadata_only"))
             self.task_store.update_active_task(task_id, message="正在准备归档", progress=1)
             _log_archive(
                 "task_started",
@@ -2673,8 +2613,6 @@ class ArchiveTaskManager:
                 )
             finally:
                 self._refresh_batch_tasks()
-                if profile_metadata_only and PROFILE_BACKFILL_TASK_COOLDOWN_SECONDS > 0:
-                    time.sleep(PROFILE_BACKFILL_TASK_COOLDOWN_SECONDS)
 
     def _complete_terminal_not_found_task(
         self,
@@ -2918,13 +2856,11 @@ class ArchiveTaskManager:
             raise RuntimeError("未找到可用 Cookie，请先到设置页配置对应站点 Cookie。")
 
         meta = meta if isinstance(meta, dict) else {}
-        existing_model_dir = str(meta.get("existing_model_dir") or "").strip().strip("/")
-        profile_metadata_only = bool(meta.get("profile_metadata_only"))
         missing_3mf_retry = bool(meta.get("missing_3mf_retry"))
         three_mf_download_task = bool(meta.get("three_mf_download"))
         instance_ids = _clean_instance_ids(meta.get("instance_ids"))
         archive_instance_ids = instance_ids if three_mf_download_task else []
-        asset_lightweight_task = profile_metadata_only or missing_3mf_retry or three_mf_download_task
+        asset_lightweight_task = missing_3mf_retry or three_mf_download_task
         default_asset_download = not asset_lightweight_task
         download_assets = _meta_bool(meta, "download_assets", default_asset_download)
         download_comment_assets = _meta_bool(
@@ -2937,23 +2873,22 @@ class ArchiveTaskManager:
             "collect_comments_data",
             not asset_lightweight_task,
         )
-        rebuild_archive = _meta_bool(meta, "rebuild_archive", not profile_metadata_only)
-        record_missing_3mf_log = _meta_bool(meta, "record_missing_3mf_log", not profile_metadata_only)
+        rebuild_archive = _meta_bool(meta, "rebuild_archive", True)
+        record_missing_3mf_log = _meta_bool(meta, "record_missing_3mf_log", True)
         model_id = extract_model_id(url)
         limit_guard = _read_three_mf_limit_guard()
         daily_limit_active = _is_three_mf_limit_guard_active_for_url(url, limit_guard)
         platform_gate = three_mf_gate_for_url(url, meta)
-        platform_gate_active = not bool(platform_gate.get("open")) and not profile_metadata_only
+        platform_gate_active = not bool(platform_gate.get("open"))
         platform_gate_skip_state = _three_mf_skip_state_from_gate(platform_gate.get("state"))
         defer_three_mf_download = not (
-            profile_metadata_only
-            or missing_3mf_retry
+            missing_3mf_retry
             or three_mf_download_task
         )
-        skip_three_mf_fetch = profile_metadata_only or daily_limit_active or platform_gate_active or defer_three_mf_download
+        skip_three_mf_fetch = daily_limit_active or platform_gate_active or defer_three_mf_download
         skip_three_mf_message = (
             _three_mf_limit_message(limit_guard)
-            if daily_limit_active and not profile_metadata_only
+            if daily_limit_active
             else str(platform_gate.get("message") or "")
             if platform_gate_active
             else ""
@@ -2992,7 +2927,6 @@ class ArchiveTaskManager:
                     progress_callback=progress_callback,
                     skip_three_mf_fetch=skip_three_mf_fetch,
                     three_mf_skip_message=skip_three_mf_message,
-                    profile_metadata_only=profile_metadata_only,
                     download_assets=download_assets,
                     download_comment_assets=download_comment_assets,
                     collect_comments_data=collect_comments_data,
@@ -3000,7 +2934,7 @@ class ArchiveTaskManager:
                     record_missing_3mf_log=record_missing_3mf_log,
                     three_mf_skip_state=(
                         "download_limited"
-                        if daily_limit_active and not profile_metadata_only
+                        if daily_limit_active
                         else platform_gate_skip_state
                         if platform_gate_active
                         else "pending_download"
@@ -3009,7 +2943,6 @@ class ArchiveTaskManager:
                     ),
                     three_mf_daily_limit_cn=cn_daily_limit,
                     three_mf_daily_limit_global=global_daily_limit,
-                    existing_model_dir=existing_model_dir,
                     proxy_config=config.proxy,
                     three_mf_captcha_result_header=three_mf_captcha_result_header,
                     instance_ids=archive_instance_ids,
@@ -3019,7 +2952,7 @@ class ArchiveTaskManager:
 
         missing_items = []
         limit_guard_state: Optional[dict[str, Any]] = limit_guard if daily_limit_active else None
-        for item in ([] if profile_metadata_only else result.get("missing_3mf") or []):
+        for item in result.get("missing_3mf") or []:
             if str(item.get("downloadState") or "").strip() == "download_limited":
                 if not _is_three_mf_limit_guard_active_for_url(url, limit_guard_state):
                     limit_guard_state = _activate_three_mf_limit_guard(
@@ -3044,26 +2977,25 @@ class ArchiveTaskManager:
                 }
             )
         resolved_model_id = str(result.get("model_id") or "")
-        if not profile_metadata_only:
-            self.task_store.replace_missing_3mf_for_model(resolved_model_id, missing_items)
-            account_platform = normalize_makerworld_source(meta.get("source"), url)
-            account_model_url = normalize_source_url(url)
-            account_instance_id = str(meta.get("instance_id") or "").strip()
-            account_gate_failure = _sync_account_health_for_archive_result(
+        self.task_store.replace_missing_3mf_for_model(resolved_model_id, missing_items)
+        account_platform = normalize_makerworld_source(meta.get("source"), url)
+        account_model_url = normalize_source_url(url)
+        account_instance_id = str(meta.get("instance_id") or "").strip()
+        account_gate_failure = _sync_account_health_for_archive_result(
+            platform=account_platform,
+            model_url=account_model_url,
+            model_id=resolved_model_id,
+            instance_id=account_instance_id,
+            missing_items=missing_items,
+            missing_3mf_retry=missing_3mf_retry,
+        )
+        if isinstance(account_gate_failure, dict):
+            self._pause_three_mf_retry_tasks_for_gate(
                 platform=account_platform,
-                model_url=account_model_url,
-                model_id=resolved_model_id,
-                instance_id=account_instance_id,
-                missing_items=missing_items,
-                missing_3mf_retry=missing_3mf_retry,
+                state=account_gate_failure.get("status") or "",
+                message=account_gate_failure.get("detail") or "",
             )
-            if isinstance(account_gate_failure, dict):
-                self._pause_three_mf_retry_tasks_for_gate(
-                    platform=account_platform,
-                    state=account_gate_failure.get("status") or "",
-                    message=account_gate_failure.get("detail") or "",
-                )
-        if limit_guard_state is not None and not profile_metadata_only:
+        if limit_guard_state is not None:
             self._pause_missing_3mf_retry_tasks_for_limit(limit_guard_state)
         self.task_store.remove_recent_failures_for_model(
             resolved_model_id,
@@ -3072,12 +3004,11 @@ class ArchiveTaskManager:
         archived_model_dir = _resolve_archive_result_model_dir(result)
         if archived_model_dir:
             invalidate_model_detail_cache(archived_model_dir)
-        if not profile_metadata_only:
-            if not archived_model_dir or not upsert_archive_snapshot_model(
-                archived_model_dir,
-                reason="archive_worker_single_task_completed",
-            ):
-                invalidate_archive_snapshot("archive_worker_single_task_completed")
+        if not archived_model_dir or not upsert_archive_snapshot_model(
+            archived_model_dir,
+            reason="archive_worker_single_task_completed",
+        ):
+            invalidate_archive_snapshot("archive_worker_single_task_completed")
 
         if defer_three_mf_download and isinstance(result.get("instances"), list) and result.get("instances"):
             self._enqueue_three_mf_stage_task_from_result(url, result, meta)
@@ -3086,9 +3017,6 @@ class ArchiveTaskManager:
         if three_mf_download_task:
             completion_event = "three_mf_download_completed"
             completion_message = f"新增 3MF 下载完成：{result_name}"
-        elif profile_metadata_only:
-            completion_event = "profile_metadata_completed"
-            completion_message = f"信息补全完成：{result_name}"
         else:
             completion_event = "single_completed"
             completion_message = f"归档完成：{result_name}"

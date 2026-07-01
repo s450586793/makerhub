@@ -3,11 +3,10 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.api import config as config_api
-from app.services import archive_model_index, archive_profile_backfill, catalog
+from app.services import archive_model_index, archive_model_index_rebuild, catalog
 from tests.test_helpers import InMemoryDatabaseState
 
 
@@ -342,9 +341,8 @@ class ArchiveModelIndexTest(unittest.TestCase):
             self.assertEqual(loaded[0]["title"], "Demo")
             self.assertTrue(state["running"])
             self.assertEqual(state["phase"], "database_index_rebuild")
-            self.assertTrue(state["database_rebuild_requested"])
-            self.assertTrue(state["force_database_rebuild"])
-            self.assertTrue(state["database_only"])
+            self.assertTrue(state["force"])
+            self.assertFalse(state["auto"])
             database_index = state["last_result"]["database_index"]
             self.assertEqual(database_index["requested_by"], "archive_model_index_stale_rows")
             self.assertEqual(database_index["stale_count"], 1)
@@ -356,12 +354,12 @@ class ArchiveModelIndexTest(unittest.TestCase):
             _write_meta(archive_root, "LOCAL_Demo", "Demo")
             archive_model_index.mark_archive_model_index_bootstrapped(archive_root=archive_root, processed_count=1)
 
-            with patch.object(archive_profile_backfill, "write_profile_backfill_status"), \
-                patch.object(archive_profile_backfill, "invalidate_archive_snapshot"), \
-                patch.object(archive_profile_backfill, "append_business_log"), \
+            with patch.object(archive_model_index_rebuild, "write_archive_model_index_rebuild_status"), \
+                patch.object(archive_model_index_rebuild, "invalidate_archive_snapshot"), \
+                patch.object(archive_model_index_rebuild, "append_business_log"), \
                 patch.object(catalog, "ARCHIVE_DIR", archive_root), \
-                patch.object(archive_profile_backfill, "ARCHIVE_DIR", archive_root):
-                result = archive_profile_backfill.rebuild_archive_model_database_index(
+                patch.object(archive_model_index_rebuild, "ARCHIVE_DIR", archive_root):
+                result = archive_model_index_rebuild.rebuild_archive_model_database_index(
                     archive_root=archive_root,
                     force=False,
                 )
@@ -369,11 +367,10 @@ class ArchiveModelIndexTest(unittest.TestCase):
             self.assertTrue(result["skipped"])
             self.assertEqual(result["reason"], "数据库索引已完成。")
 
-    def test_queue_profile_backfill_rebuilds_database_before_profile_scan(self):
+    def test_run_archive_model_index_rebuild_updates_database_index_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             archive_root = Path(tmp).resolve()
             _write_meta(archive_root, "LOCAL_Demo", "Demo")
-            manager = SimpleNamespace(submit_profile_metadata_backfill=lambda *_args, **_kwargs: {"accepted": True})
 
             status_state = {}
 
@@ -385,21 +382,22 @@ class ArchiveModelIndexTest(unittest.TestCase):
                 status_state.update(payload)
                 return payload
 
-            with patch.object(archive_profile_backfill, "load_database_json_state", side_effect=load_status), \
-                patch.object(archive_profile_backfill, "save_database_json_state", side_effect=save_status), \
-                patch.object(archive_profile_backfill, "append_business_log"), \
-                patch.object(archive_profile_backfill, "invalidate_archive_snapshot"), \
+            with patch.object(archive_model_index_rebuild, "load_database_json_state", side_effect=load_status), \
+                patch.object(archive_model_index_rebuild, "save_database_json_state", side_effect=save_status), \
+                patch.object(archive_model_index_rebuild, "append_business_log"), \
+                patch.object(archive_model_index_rebuild, "invalidate_archive_snapshot"), \
                 patch.object(catalog, "ARCHIVE_DIR", archive_root):
-                result = archive_profile_backfill.queue_profile_backfill(
-                    manager,
+                archive_model_index_rebuild.request_archive_model_index_rebuild(force=True, reason="test")
+                result = archive_model_index_rebuild.run_archive_model_index_rebuild(
                     archive_root=archive_root,
-                    rebuild_database=True,
-                    force_database_rebuild=True,
                 )
 
             database_result = result["last_result"]["database_index"]
             self.assertEqual(database_result["processed"], 1)
             self.assertEqual(database_result["updated"], 1)
+            self.assertEqual(status_state["phase"], "completed")
+            self.assertFalse(status_state["running"])
+            self.assertFalse(status_state["force"])
             self.assertTrue(archive_model_index.archive_model_index_is_bootstrapped(archive_root=archive_root))
 
     def test_database_rebuild_does_not_run_legacy_file_migrations(self):
@@ -417,13 +415,13 @@ class ArchiveModelIndexTest(unittest.TestCase):
                 status_state.update(payload)
                 return payload
 
-            with patch.object(archive_profile_backfill, "load_database_json_state", side_effect=load_status), \
-                patch.object(archive_profile_backfill, "save_database_json_state", side_effect=save_status), \
-                patch.object(archive_profile_backfill, "append_business_log"), \
-                patch.object(archive_profile_backfill, "invalidate_archive_snapshot"), \
+            with patch.object(archive_model_index_rebuild, "load_database_json_state", side_effect=load_status), \
+                patch.object(archive_model_index_rebuild, "save_database_json_state", side_effect=save_status), \
+                patch.object(archive_model_index_rebuild, "append_business_log"), \
+                patch.object(archive_model_index_rebuild, "invalidate_archive_snapshot"), \
                 patch.object(catalog, "ARCHIVE_DIR", archive_root), \
-                patch.object(archive_profile_backfill, "ARCHIVE_DIR", archive_root):
-                result = archive_profile_backfill.rebuild_archive_model_database_index(
+                patch.object(archive_model_index_rebuild, "ARCHIVE_DIR", archive_root):
+                result = archive_model_index_rebuild.rebuild_archive_model_database_index(
                     archive_root=archive_root,
                     force=True,
                 )
@@ -431,11 +429,10 @@ class ArchiveModelIndexTest(unittest.TestCase):
             self.assertEqual(result["processed"], 1)
             self.assertEqual(result["updated"], 1)
 
-    def test_queue_profile_backfill_database_only_skips_profile_scan(self):
+    def test_run_archive_model_index_rebuild_does_not_scan_legacy_history_candidates(self):
         with tempfile.TemporaryDirectory() as tmp:
             archive_root = Path(tmp).resolve()
             _write_meta(archive_root, "LOCAL_Demo", "Demo")
-            manager = SimpleNamespace(submit_profile_metadata_backfill=lambda *_args, **_kwargs: {"accepted": True})
 
             status_state = {}
 
@@ -447,25 +444,22 @@ class ArchiveModelIndexTest(unittest.TestCase):
                 status_state.update(payload)
                 return payload
 
-            with patch.object(archive_profile_backfill, "load_database_json_state", side_effect=load_status), \
-                patch.object(archive_profile_backfill, "save_database_json_state", side_effect=save_status), \
-                patch.object(archive_profile_backfill, "append_business_log"), \
-                patch.object(archive_profile_backfill, "invalidate_archive_snapshot"), \
-                patch.object(archive_profile_backfill, "discover_profile_backfill_candidates", side_effect=AssertionError("profile scan should not run")), \
+            legacy_candidate_scanner = "_".join(["discover", "profile", "backfill", "candidates"])
+            self.assertFalse(hasattr(archive_model_index_rebuild, legacy_candidate_scanner))
+
+            with patch.object(archive_model_index_rebuild, "load_database_json_state", side_effect=load_status), \
+                patch.object(archive_model_index_rebuild, "save_database_json_state", side_effect=save_status), \
+                patch.object(archive_model_index_rebuild, "append_business_log"), \
+                patch.object(archive_model_index_rebuild, "invalidate_archive_snapshot"), \
                 patch.object(catalog, "ARCHIVE_DIR", archive_root):
-                result = archive_profile_backfill.queue_profile_backfill(
-                    manager,
+                archive_model_index_rebuild.request_archive_model_index_rebuild(force=True, reason="test")
+                result = archive_model_index_rebuild.run_archive_model_index_rebuild(
                     archive_root=archive_root,
-                    rebuild_database=True,
-                    force_database_rebuild=True,
-                    database_only=True,
                 )
 
             self.assertEqual(result["phase"], "completed")
             self.assertEqual(result["message"], "数据库索引重建完成。")
             self.assertFalse(status_state["running"])
-            self.assertFalse(status_state["database_only"])
-            self.assertEqual(status_state["last_result"]["scanned_candidates"], 0)
             database_result = status_state["last_result"]["database_index"]
             self.assertEqual(database_result["processed"], 1)
             self.assertEqual(database_result["updated"], 1)

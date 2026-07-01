@@ -7,7 +7,7 @@
 - 调用 MakerWorld/Bambu API、Scrapling 和必要 fallback 获取模型详情。
 - 下载图片、评论、附件、打印配置、3MF 文件。
 - 维护缺失 3MF 列表、下载限额、防重复入队和失败原因。
-- 支持补全历史模型信息、重建模型索引、修复 3MF 映射。
+- 支持重建模型索引、修复 3MF 映射。
 
 ## 不负责
 
@@ -27,7 +27,6 @@
 - `POST /api/tasks/missing-3mf/cancel`
 - `GET /api/admin/archive/repair-3mf`
 - `POST /api/admin/archive/repair-3mf`
-- `POST /api/models/{model_dir:path}/source-backfill`
 
 ### Service 函数/类
 
@@ -85,4 +84,4 @@
 - `app/services/three_mf.py`
 - `app/services/three_mf_quota.py`
 - `app/services/archive_repair.py`
-- `app/services/archive_profile_backfill.py`
+- `app/services/archive_model_index_rebuild.py`

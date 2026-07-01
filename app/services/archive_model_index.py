@@ -24,7 +24,7 @@ from app.services.state_events import publish_state_event
 
 MODEL_INDEX_SCHEMA_VERSION = 2
 BOOTSTRAP_METADATA_KEY = "archive_model_index_bootstrap"
-PROFILE_BACKFILL_STATUS_KEY = "archive_profile_backfill_status"
+ARCHIVE_MODEL_INDEX_REBUILD_STATUS_KEY = "archive_model_index_rebuild_status"
 LOCAL_SHORT_KEY_START = 100001
 LOCAL_SHORT_KEY_PREFIX = "local"
 _SCHEMA_LOCK = threading.Lock()
@@ -66,17 +66,15 @@ def _request_archive_model_index_rebuild(stale_model_dirs: list[str]) -> bool:
     if stale_count <= 0:
         return False
     try:
-        current = load_database_json_state(PROFILE_BACKFILL_STATUS_KEY, {})
+        current = load_database_json_state(ARCHIVE_MODEL_INDEX_REBUILD_STATUS_KEY, {})
         if isinstance(current, dict) and current.get("running"):
             return False
         sample = stale_model_dirs[:_STALE_MODEL_DIR_SAMPLE_LIMIT]
         payload: dict[str, Any] = {
             "running": True,
             "phase": "database_index_rebuild",
-            "database_rebuild_requested": True,
-            "force_database_rebuild": True,
-            "database_only": True,
-            "auto_database_index_rebuild": False,
+            "force": True,
+            "auto": False,
             "started_at": china_now_iso(),
             "finished_at": "",
             "last_error": "",
@@ -89,14 +87,13 @@ def _request_archive_model_index_rebuild(stale_model_dirs: list[str]) -> bool:
                 }
             },
         }
-        save_database_json_state(PROFILE_BACKFILL_STATUS_KEY, payload)
+        save_database_json_state(ARCHIVE_MODEL_INDEX_REBUILD_STATUS_KEY, payload)
         publish_state_event(
-            PROFILE_BACKFILL_STATUS_KEY,
-            "profile_backfill.changed",
+            ARCHIVE_MODEL_INDEX_REBUILD_STATUS_KEY,
+            "archive_model_index_rebuild.changed",
             {
                 "running": True,
                 "phase": "database_index_rebuild",
-                "database_only": True,
                 "stale_count": stale_count,
             },
         )

@@ -596,17 +596,7 @@
             <strong>评论归档不完整</strong>
             <span>源端记录 {{ formatStat(commentsTotal) }} 条，本地已归档 {{ formatStat(commentsArchivedTotal) }} 条。</span>
           </div>
-          <button
-            class="button button-primary button-small"
-            type="button"
-            :disabled="sourceBackfillLoading"
-            @click="submitSourceBackfill"
-          >
-            {{ sourceBackfillLoading ? "已提交" : "补全评论" }}
-          </button>
         </div>
-        <p v-if="sourceBackfillMessage" class="mw-source-backfill-status is-success">{{ sourceBackfillMessage }}</p>
-        <p v-if="sourceBackfillError" class="mw-source-backfill-status is-error">{{ sourceBackfillError }}</p>
 
         <div class="mw-comment-toolbar">
           <div class="mw-comment-toolbar__sorts">
@@ -1185,9 +1175,6 @@ const commentsArchivedTotal = ref(0);
 const commentsNextOffset = ref(null);
 const commentsLoadingMore = ref(false);
 const commentsLoadError = ref("");
-const sourceBackfillLoading = ref(false);
-const sourceBackfillMessage = ref("");
-const sourceBackfillError = ref("");
 const shareDialogVisible = ref(false);
 const downloadMenuOpen = ref(false);
 const bambuStudioOpening = ref(false);
@@ -1526,12 +1513,12 @@ const isLocalModel = computed(() => String(detail.value?.source || "").toLowerCa
 
 const showCommentsSection = computed(() => !isLocalModel.value);
 
-const sourceBackfillAvailable = computed(() => {
+const hasSourceModelUrl = computed(() => {
   return ["cn", "global"].includes(String(detail.value?.source || "").toLowerCase()) && Boolean(detail.value?.origin_url);
 });
 
 const commentArchiveMismatch = computed(() => {
-  return sourceBackfillAvailable.value && commentsTotal.value > 0 && commentsTotal.value !== commentsArchivedTotal.value;
+  return hasSourceModelUrl.value && commentsTotal.value > 0 && commentsTotal.value !== commentsArchivedTotal.value;
 });
 
 const editableGallery = computed(() => {
@@ -3474,9 +3461,6 @@ function resetDetailViewState({ clearDetail = true } = {}) {
   commentsNextOffset.value = null;
   commentsLoadingMore.value = false;
   commentsLoadError.value = "";
-  sourceBackfillLoading.value = false;
-  sourceBackfillMessage.value = "";
-  sourceBackfillError.value = "";
   downloadMenuOpen.value = false;
   bambuStudioOpening.value = false;
   bambuStudioError.value = "";
@@ -3574,26 +3558,6 @@ async function loadMoreComments() {
     commentsLoadError.value = error instanceof Error ? error.message : "评论加载失败。";
   } finally {
     commentsLoadingMore.value = false;
-  }
-}
-
-async function submitSourceBackfill() {
-  if (!sourceBackfillAvailable.value || sourceBackfillLoading.value) {
-    return;
-  }
-  sourceBackfillLoading.value = true;
-  sourceBackfillMessage.value = "";
-  sourceBackfillError.value = "";
-  try {
-    const payload = await apiRequest(`/api/models/${encodeURIComponent(apiModelDir.value)}/source-backfill`, {
-      method: "POST",
-      body: {},
-    });
-    sourceBackfillMessage.value = payload.message || "补全任务已加入队列。";
-  } catch (error) {
-    sourceBackfillError.value = error instanceof Error ? error.message : "补全任务提交失败。";
-  } finally {
-    sourceBackfillLoading.value = false;
   }
 }
 
@@ -3839,9 +3803,6 @@ onBeforeUnmount(() => {
   commentsNextOffset.value = null;
   commentsLoadingMore.value = false;
   commentsLoadError.value = "";
-  sourceBackfillLoading.value = false;
-  sourceBackfillMessage.value = "";
-  sourceBackfillError.value = "";
   downloadMenuOpen.value = false;
   bambuStudioOpening.value = false;
   bambuStudioError.value = "";

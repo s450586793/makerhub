@@ -8,7 +8,7 @@ from app.core import database
 from app.core.store import JsonStore
 from app.schemas.models import ApiTokenRecord, AppConfig, CookiePair
 from app.services import (
-    archive_profile_backfill,
+    archive_model_index_rebuild,
     archive_repair,
     archive_worker,
     auth,
@@ -235,18 +235,18 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
             {"running": True, "run_id": "repair-1", "pid": 0, "progress": {"done": 2}}
         )
         repair_status = archive_repair.read_archive_repair_status()
-        archive_profile_backfill.write_profile_backfill_status(
-            {"phase": "database_index_rebuild", "auto_database_index_rebuild": True}
+        archive_model_index_rebuild.write_archive_model_index_rebuild_status(
+            {"phase": "database_index_rebuild", "auto": True}
         )
-        backfill_status = archive_profile_backfill.read_profile_backfill_status()
+        rebuild_status = archive_model_index_rebuild.read_archive_model_index_rebuild_status()
         self_update._write_update_state({"phase": "installing", "target_version": "9.9.9"})
         update_status = self_update._read_update_state()
 
         self.assertEqual(self.state["archive_repair_status"]["run_id"], "repair-1")
         self.assertEqual(repair_status["progress"]["done"], 2)
-        self.assertEqual(self.state["archive_profile_backfill_status"]["phase"], "database_index_rebuild")
-        self.assertTrue(backfill_status["auto_database_index_rebuild"])
-        self.assertFalse(backfill_status["database_only"])
+        self.assertEqual(self.state["archive_model_index_rebuild_status"]["phase"], "database_index_rebuild")
+        self.assertTrue(rebuild_status["auto"])
+        self.assertFalse(rebuild_status["force"])
         self.assertEqual(self.state["system_update"]["target_version"], "9.9.9")
         self.assertEqual(update_status["phase"], "installing")
 

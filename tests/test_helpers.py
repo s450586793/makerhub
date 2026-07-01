@@ -51,7 +51,7 @@ class InMemoryDatabaseState:
             "app.services.source_library",
             "app.services.catalog",
             "app.services.local_preview_worker",
-            "app.services.archive_profile_backfill",
+            "app.services.archive_model_index_rebuild",
             "app.services.archive_repair",
             "app.services.archive_worker",
             "app.services.source_health",

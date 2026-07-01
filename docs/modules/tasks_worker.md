@@ -60,7 +60,7 @@ Batch parent tasks track child progress and should use `waiting_children` while 
   - `three_mf_limit_guard`
   - `three_mf_daily_quota`
   - `archive_repair_status`
-  - `archive_profile_backfill_status`
+  - `archive_model_index_rebuild_status`
   - `archive_snapshot_marker`
   - `local_preview_queue_marker`
 - 文件:

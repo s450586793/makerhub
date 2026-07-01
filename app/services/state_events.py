@@ -46,7 +46,7 @@ STATE_EVENT_SCOPES = {
     REMOTE_REFRESH_STATE_KEY,
     SOURCE_REFRESH_QUEUE_STATE_KEY,
     SOURCE_REFRESH_RUNS_STATE_KEY,
-    "archive_profile_backfill_status",
+    "archive_model_index_rebuild_status",
     "system_update",
     "source_library",
     "models",

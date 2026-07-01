@@ -88,10 +88,3 @@ def organizer_event_message(payload: dict[str, Any], status: str) -> str:
     if status == "failed":
         return "本地 3MF 整理失败。"
     return ""
-
-
-def is_metadata_only_missing_3mf_placeholder(item: Any) -> bool:
-    if not isinstance(item, dict):
-        return False
-    message = str(item.get("message") or item.get("downloadMessage") or "").strip()
-    return "信息补全任务" in message and "不下载 3MF" in message

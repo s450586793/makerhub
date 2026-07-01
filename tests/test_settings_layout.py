@@ -8,7 +8,7 @@ from app.core import settings
 
 
 class SettingsLayoutTest(unittest.TestCase):
-    def test_settings_page_does_not_show_legacy_profile_backfill_panel(self):
+    def test_settings_page_does_not_show_legacy_history_maintenance_panel(self):
         source = (settings.ROOT_DIR / "frontend" / "src" / "pages" / "SettingsPage.vue").read_text(
             encoding="utf-8"
         )
@@ -16,6 +16,15 @@ class SettingsLayoutTest(unittest.TestCase):
         self.assertNotIn("数据库索引与历史信息补全", source)
         self.assertNotIn("历史缺失信息补全入口", source)
         self.assertNotIn("/api/admin/archive/profile-backfill", source)
+
+    def test_model_detail_does_not_show_legacy_source_maintenance_action(self):
+        source = (settings.ROOT_DIR / "frontend" / "src" / "pages" / "ModelDetailPage.vue").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("-".join(["source", "backfill"]), source)
+        self.assertNotIn("submitSourceBackfill", source)
+        self.assertNotIn("补全评论", source)
 
     def test_default_archive_dir_uses_data_root(self):
         with tempfile.TemporaryDirectory() as tmp:

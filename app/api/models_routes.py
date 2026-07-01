@@ -17,7 +17,6 @@ router.add_api_route(
     config_api.public_bambu_studio_download_file,
     methods=["GET"],
 )
-router.add_api_route("/models/{model_dir:path}/source-backfill", config_api.backfill_model_source_metadata, methods=["POST"])
 router.add_api_route("/models/{model_dir:path}/attachments", config_api.upload_model_attachment, methods=["POST"])
 router.add_api_route(
     "/models/{model_dir:path}/attachments/{attachment_id}",

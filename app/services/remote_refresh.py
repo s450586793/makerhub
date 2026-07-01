@@ -45,7 +45,7 @@ from app.services.remote_refresh_summary import (
     remote_refresh_result_record,
     sanitize_remote_refresh_message,
 )
-from app.services.task_state import TaskStateStore, is_metadata_only_missing_3mf_placeholder
+from app.services.task_state import TaskStateStore
 from app.services.task_runtime import is_lease_expired, normalize_runtime_status
 from app.services.three_mf import describe_three_mf_failure, normalize_makerworld_source, resolve_model_instance_files
 
@@ -645,8 +645,6 @@ def _build_missing_3mf_items(
         resolved_match = resolved_matches.get(index) if isinstance(resolved_matches, dict) else None
         resolved_path = resolved_match.get("path") if isinstance(resolved_match, dict) else None
         if isinstance(resolved_path, Path) and resolved_path.exists():
-            continue
-        if is_metadata_only_missing_3mf_placeholder(instance):
             continue
         instance_id = str(instance.get("id") or instance.get("profileId") or instance.get("instanceId") or "").strip()
         title = str(instance.get("title") or instance.get("name") or model_title).strip()

@@ -4153,20 +4153,6 @@ select:focus {
   line-height: 22px;
 }
 
-.mw-source-backfill-status {
-  margin: -6px 0 0;
-  font-size: 13px;
-  line-height: 20px;
-}
-
-.mw-source-backfill-status.is-success {
-  color: #15803d;
-}
-
-.mw-source-backfill-status.is-error {
-  color: #b91c1c;
-}
-
 .mw-comment-editor {
   display: flex;
   flex-direction: column;
@@ -5107,14 +5093,6 @@ html[data-theme="dark"] .detail-page--makerworld .mw-comment-sync-notice__body {
 
 html[data-theme="dark"] .detail-page--makerworld .mw-comment-sync-notice__body strong {
   color: #93c5fd;
-}
-
-html[data-theme="dark"] .detail-page--makerworld .mw-source-backfill-status.is-success {
-  color: #86efac;
-}
-
-html[data-theme="dark"] .detail-page--makerworld .mw-source-backfill-status.is-error {
-  color: #fca5a5;
 }
 
 html[data-theme="dark"] .detail-page--makerworld .mw-comment-gallery .comment-gallery__item {

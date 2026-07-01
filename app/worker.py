@@ -5,14 +5,13 @@ import time
 
 from app.core.settings import APP_VERSION, LOCAL_PREVIEW_POLL_SECONDS, PROCESS_ROLE, ensure_app_dirs
 from app.core.store import JsonStore
-from app.core.timezone import now_iso as china_now_iso
 from app.services.account_cookie_maintenance import run_account_cookie_maintenance_once
 from app.services.archive_worker import ArchiveTaskManager
-from app.services.archive_profile_backfill import (
-    queue_profile_backfill,
-    read_profile_backfill_status,
+from app.services.archive_model_index_rebuild import (
+    read_archive_model_index_rebuild_status,
+    request_archive_model_index_rebuild,
+    run_archive_model_index_rebuild,
     should_auto_rebuild_database_index,
-    write_profile_backfill_status,
 )
 from app.services.business_logs import append_business_log
 from app.services.local_organizer import LocalOrganizerService
@@ -38,38 +37,26 @@ def _execute_runtime_engine_once() -> dict:
     return runtime_engine.execute_next_batch()
 
 
-def _start_profile_backfill_worker(
-    archive_manager: ArchiveTaskManager,
-    profile_backfill_status: dict,
-) -> threading.Thread:
-    options = {
-        "database_rebuild_requested": bool(profile_backfill_status.get("database_rebuild_requested")),
-        "force_database_rebuild": bool(profile_backfill_status.get("force_database_rebuild")),
-        "database_only": bool(profile_backfill_status.get("database_only")),
-    }
+def _start_archive_model_index_rebuild_worker(status: dict) -> threading.Thread:
+    options = {"force": bool(status.get("force"))}
     thread = threading.Thread(
-        target=_run_profile_backfill_worker,
-        args=(archive_manager, options),
-        name="makerhub-profile-backfill",
+        target=_run_archive_model_index_rebuild_worker,
+        args=(options,),
+        name="makerhub-archive-model-index-rebuild",
         daemon=True,
     )
     thread.start()
     return thread
 
 
-def _run_profile_backfill_worker(archive_manager: ArchiveTaskManager, options: dict) -> None:
+def _run_archive_model_index_rebuild_worker(options: dict) -> None:
     try:
-        queue_profile_backfill(
-            archive_manager,
-            rebuild_database=bool(options.get("database_rebuild_requested")),
-            force_database_rebuild=bool(options.get("force_database_rebuild")),
-            database_only=bool(options.get("database_only")),
-        )
+        run_archive_model_index_rebuild(force=bool(options.get("force")))
     except Exception as exc:
         append_business_log(
-            "archive_backfill",
-            "profile_backfill_worker_failed",
-            "现有库信息补全后台线程失败。",
+            "database",
+            "archive_model_index_rebuild_worker_failed",
+            "归档模型数据库索引后台重建线程失败。",
             level="error",
             error=str(exc),
         )
@@ -118,24 +105,15 @@ def main() -> int:
         recovered_active=int(queue.get("recovered_count") or 0),
     )
     try:
-        initial_backfill_status = read_profile_backfill_status()
+        initial_rebuild_status = read_archive_model_index_rebuild_status()
         if (
-            not initial_backfill_status.get("running")
+            not initial_rebuild_status.get("running")
             and should_auto_rebuild_database_index()
         ):
-            write_profile_backfill_status(
-                {
-                    "running": True,
-                    "phase": "database_index_rebuild",
-                    "database_rebuild_requested": True,
-                    "force_database_rebuild": False,
-                    "database_only": False,
-                    "auto_database_index_rebuild": True,
-                    "started_at": china_now_iso(),
-                    "finished_at": "",
-                    "last_error": "",
-                    "last_result": {},
-                }
+            request_archive_model_index_rebuild(
+                force=False,
+                auto=True,
+                reason="worker_startup",
             )
             append_business_log(
                 "database",
@@ -156,7 +134,7 @@ def main() -> int:
     last_local_preview_marker_mtime = local_preview_queue_marker_mtime()
     local_preview_active = False
     last_account_cookie_poll = 0.0
-    profile_backfill_thread: threading.Thread | None = None
+    archive_model_index_rebuild_thread: threading.Thread | None = None
     try:
         while not stop_event.wait(WORKER_POLL_SECONDS):
             if _runtime_engine_enabled():
@@ -171,11 +149,11 @@ def main() -> int:
                         error=str(exc),
                     )
             archive_manager.ensure_worker_for_pending()
-            profile_backfill_status = read_profile_backfill_status()
-            if profile_backfill_thread is not None and not profile_backfill_thread.is_alive():
-                profile_backfill_thread = None
-            if profile_backfill_status.get("running") and profile_backfill_thread is None:
-                profile_backfill_thread = _start_profile_backfill_worker(archive_manager, profile_backfill_status)
+            archive_model_index_rebuild_status = read_archive_model_index_rebuild_status()
+            if archive_model_index_rebuild_thread is not None and not archive_model_index_rebuild_thread.is_alive():
+                archive_model_index_rebuild_thread = None
+            if archive_model_index_rebuild_status.get("running") and archive_model_index_rebuild_thread is None:
+                archive_model_index_rebuild_thread = _start_archive_model_index_rebuild_worker(archive_model_index_rebuild_status)
             now = time.monotonic()
             if now - last_account_cookie_poll >= ACCOUNT_COOKIE_MAINTENANCE_POLL_SECONDS:
                 last_account_cookie_poll = now

@@ -49,7 +49,7 @@ function ensureStateEventSource() {
   eventSource.addEventListener("archive.completed", dispatch);
   eventSource.addEventListener("archive.failed", dispatch);
   eventSource.addEventListener("organize.completed", dispatch);
-  eventSource.addEventListener("profile_backfill.changed", dispatch);
+  eventSource.addEventListener("archive_model_index_rebuild.changed", dispatch);
   eventSource.addEventListener("system_update.changed", dispatch);
 
   eventSource.onerror = () => {

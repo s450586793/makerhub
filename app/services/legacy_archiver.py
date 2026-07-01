@@ -253,19 +253,12 @@ def _extract_auth_token(raw_cookie: str) -> str:
 
 def _missing_3mf_failure_for_skipped_fetch(
     *,
-    profile_metadata_only: bool = False,
     skip_state: str = "",
     skip_message: str = "",
     existing_state: Any = "",
     existing_message: Any = "",
     fetch_url: str = "",
 ) -> dict[str, str]:
-    if profile_metadata_only:
-        return {
-            "state": "missing",
-            "message": "信息补全任务会整理打印配置详情、实例展示媒体和评论回复，不下载 3MF。",
-        }
-
     normalized_skip_state = str(skip_state or "").strip() or "pending_download"
     if normalized_skip_state == "download_limited" and (existing_state or existing_message):
         return {
@@ -6713,7 +6706,6 @@ def archive_model(
     progress_callback=None,
     skip_three_mf_fetch: bool = False,
     three_mf_skip_message: str = "",
-    profile_metadata_only: bool = False,
     download_assets: bool = True,
     download_comment_assets: Optional[bool] = None,
     collect_comments_data: bool = True,
@@ -7071,7 +7063,7 @@ def archive_model(
         if path.is_file()
     }
     reserved_planned_instance_names: set[str] = set()
-    three_mf_fetch_paused = bool(skip_three_mf_fetch or profile_metadata_only)
+    three_mf_fetch_paused = bool(skip_three_mf_fetch)
     normalized_three_mf_skip_state = str(three_mf_skip_state or "").strip()
     if skip_three_mf_fetch and not normalized_three_mf_skip_state:
         normalized_three_mf_skip_state = "pending_download"
@@ -7131,7 +7123,6 @@ def archive_model(
             url3mf = ""
             skipped_due_limit += 1
             failure_info = _missing_3mf_failure_for_skipped_fetch(
-                profile_metadata_only=profile_metadata_only,
                 skip_state=normalized_three_mf_skip_state,
                 skip_message=three_mf_skip_message,
                 existing_state=existing_inst.get("downloadState"),
@@ -7145,7 +7136,6 @@ def archive_model(
         elif three_mf_fetch_paused:
             skipped_due_limit += 1
             failure_info = _missing_3mf_failure_for_skipped_fetch(
-                profile_metadata_only=profile_metadata_only,
                 skip_state=normalized_three_mf_skip_state,
                 skip_message=three_mf_skip_message,
                 existing_state=existing_inst.get("downloadState"),
@@ -7313,7 +7303,7 @@ def archive_model(
 
     # 缺失 3MF 记录（仅记录，没有下载 3mf）
     missing_3mf = [inst for inst in inst_list if not inst.get("downloadUrl")]
-    if missing_3mf and not profile_metadata_only and record_missing_3mf_log:
+    if missing_3mf and record_missing_3mf_log:
         _record_missing_3mf_summary(logs_dir, base_name, missing_3mf, logger=logger)
 
     work_dir = meta_path.parent
@@ -7329,8 +7319,7 @@ def archive_model(
     return {
         "base_name": base_name,
         "work_dir": str(work_dir.resolve()),
-        "missing_3mf": [] if profile_metadata_only else missing_3mf,
-        "metadata_only_missing_3mf_count": len(missing_3mf) if profile_metadata_only else 0,
+        "missing_3mf": missing_3mf,
         "action": action,
         "model_id": design_id,
         "instances": inst_list,
