@@ -27,8 +27,6 @@
 - `POST /api/tasks/missing-3mf/cancel`
 - `GET /api/admin/archive/repair-3mf`
 - `POST /api/admin/archive/repair-3mf`
-- `GET /api/admin/archive/profile-backfill`
-- `POST /api/admin/archive/profile-backfill`
 - `POST /api/models/{model_dir:path}/source-backfill`
 
 ### Service 函数/类

@@ -8,6 +8,15 @@ from app.core import settings
 
 
 class SettingsLayoutTest(unittest.TestCase):
+    def test_settings_page_does_not_show_legacy_profile_backfill_panel(self):
+        source = (settings.ROOT_DIR / "frontend" / "src" / "pages" / "SettingsPage.vue").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("数据库索引与历史信息补全", source)
+        self.assertNotIn("历史缺失信息补全入口", source)
+        self.assertNotIn("/api/admin/archive/profile-backfill", source)
+
     def test_default_archive_dir_uses_data_root(self):
         with tempfile.TemporaryDirectory() as tmp:
             data_root = Path(tmp) / "data"

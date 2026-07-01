@@ -737,51 +737,6 @@
           <code v-if="!systemUpdate.compose_migration_required" class="system-update-code">{{ manualUpdateCommand }}</code>
         </div>
 
-        <section class="system-update-changelog system-maintenance-card">
-          <div class="section-card__header">
-            <div>
-              <span class="eyebrow">系统维护</span>
-              <h2>数据库索引与历史信息补全</h2>
-            </div>
-            <div class="settings-inline-actions">
-              <button class="button button-secondary" type="button" :disabled="profileBackfillLoading || profileBackfillSubmitting" @click="loadProfileBackfillStatus">
-                {{ profileBackfillLoading ? "读取中..." : "刷新状态" }}
-              </button>
-              <button class="button button-primary" type="button" :disabled="profileBackfillSubmitting || profileBackfill.running" @click="triggerProfileBackfill">
-                {{ profileBackfill.running ? profileBackfillRunningLabel : profileBackfillSubmitting ? "提交中..." : "手动重建索引" }}
-              </button>
-            </div>
-          </div>
-          <p class="archive-form__hint">
-            首次连接新数据库时会自动遍历已有本地归档库，把卡片级模型信息写入 Postgres 索引，用于加快模型库、订阅库和本地库读取。索引已完成后无需再处理；这里仅保留手动重建和历史缺失信息补全入口。
-          </p>
-          <div class="settings-grid settings-grid--four system-update-grid">
-            <article class="field-card system-update-stat">
-              <span>数据库索引</span>
-              <strong>{{ profileBackfillDatabaseLabel }}</strong>
-              <small>{{ profileBackfillDatabaseHint }}</small>
-            </article>
-            <article class="field-card system-update-stat">
-              <span>索引进度</span>
-              <strong>{{ profileBackfillStats.databaseProcessed }}/{{ profileBackfillStats.databaseTotal }}</strong>
-              <small>{{ profileBackfillStats.databaseFailed ? `失败：${profileBackfillStats.databaseFailed}` : profileBackfillDatabaseProgressHint }}</small>
-            </article>
-            <article class="field-card system-update-stat">
-              <span>缺失补全</span>
-              <strong>{{ profileBackfillStats.queued }}</strong>
-              <small>发现缺失：{{ profileBackfillStats.scanned }}，已在队列：{{ profileBackfillStats.alreadyQueued }}</small>
-            </article>
-            <article class="field-card system-update-stat">
-              <span>失败</span>
-              <strong>{{ profileBackfillStats.failed }}</strong>
-              <small>{{ profileBackfill.running ? profileBackfillRunningLabel : profileBackfill.finished_at ? `最近结束：${profileBackfill.finished_at}` : "等待执行" }}</small>
-            </article>
-          </div>
-          <div class="form-footer">
-            <span class="form-status">{{ profileBackfillStatusText }}</span>
-          </div>
-        </section>
-
         <section class="system-update-changelog">
           <div class="section-card__header">
             <div>
@@ -929,9 +884,6 @@ const systemUpdate = ref(defaultSystemUpdateState());
 const systemUpdateLoading = ref(false);
 const systemUpdateSubmitting = ref(false);
 const runtimeResourcesSaving = ref(false);
-const profileBackfill = ref(defaultProfileBackfillState());
-const profileBackfillLoading = ref(false);
-const profileBackfillSubmitting = ref(false);
 const proxySaving = ref(false);
 const accountDialogOpen = ref(false);
 let accountCodeTimer = null;
@@ -1039,7 +991,6 @@ const statuses = reactive({
   theme: "",
   system_update: "",
   runtime: "",
-  profile_backfill: "",
 });
 const testing = reactive({
   cookie_cn: false,
@@ -1172,91 +1123,6 @@ const changelogSummaryText = computed(() => {
 const mobileImportTokenItem = computed(() => (
   tokenItems.value.find((item) => hasTokenPermission(item, "mobile_import") && item.status === "active" && item.token_value) || null
 ));
-const profileBackfillStats = computed(() => {
-  const result = profileBackfill.value.last_result || {};
-  const databaseIndex = result.database_index || {};
-  return {
-    databaseTotal: Number(databaseIndex.total || 0),
-    databaseProcessed: Number(databaseIndex.processed || 0),
-    databaseUpdated: Number(databaseIndex.updated || 0),
-    databaseFailed: Number(databaseIndex.failed || 0),
-    scanned: Number(result.scanned_candidates || 0),
-    queued: Number(result.queued_count || 0),
-    alreadyQueued: Number(result.already_queued_count || 0),
-    failed: Number(result.failed_count || 0),
-  };
-});
-const profileBackfillRunningLabel = computed(() => (
-  profileBackfill.value.phase === "database_index_rebuild" ? "索引中..." : "扫描中..."
-));
-const profileBackfillDatabaseLabel = computed(() => {
-  const database = profileBackfill.value.database || {};
-  if (!database.configured) {
-    return "未配置";
-  }
-  if (!database.driver_available) {
-    return "驱动缺失";
-  }
-  if (profileBackfill.value.running && profileBackfill.value.phase === "database_index_rebuild") {
-    return "索引中";
-  }
-  if (database.bootstrapped) {
-    return `已完成 ${Number(database.row_count || 0)} 条`;
-  }
-  if (database.available) {
-    return "待初始化";
-  }
-  return "不可用";
-});
-const profileBackfillDatabaseHint = computed(() => {
-  const database = profileBackfill.value.database || {};
-  const marker = database.marker || {};
-  if (!database.configured) {
-    return "当前未启用 Postgres，页面会继续使用文件扫描。";
-  }
-  if (database.error) {
-    return database.error;
-  }
-  if (profileBackfill.value.running && profileBackfill.value.phase === "database_index_rebuild") {
-    return "正在把已有模型信息写入数据库索引。";
-  }
-  if (database.bootstrapped && marker.completed_at) {
-    return `完成于 ${marker.completed_at}`;
-  }
-  if (database.available) {
-    return "启动后会自动初始化索引，也可手动重建。";
-  }
-  return "等待数据库连接。";
-});
-const profileBackfillDatabaseProgressHint = computed(() => {
-  if (profileBackfill.value.running && profileBackfill.value.phase === "database_index_rebuild") {
-    return "索引过程中页面会自动刷新。";
-  }
-  if (profileBackfillStats.value.databaseUpdated) {
-    return `模型索引已写入：${profileBackfillStats.value.databaseUpdated}`;
-  }
-  return "尚未初始化索引。";
-});
-const profileBackfillStatusText = computed(() => {
-  if (statuses.profile_backfill) {
-    return statuses.profile_backfill;
-  }
-  if (profileBackfill.value.last_error) {
-    return profileBackfill.value.last_error;
-  }
-  if (profileBackfill.value.running && profileBackfill.value.phase === "database_index_rebuild") {
-    return `数据库索引初始化中：${profileBackfillStats.value.databaseProcessed}/${profileBackfillStats.value.databaseTotal}，页面会自动刷新状态。`;
-  }
-  if (profileBackfill.value.running) {
-    return "现有库信息补全正在后台扫描并入队，页面会自动刷新状态。";
-  }
-  const result = profileBackfill.value.last_result || {};
-  if (profileBackfill.value.finished_at && Object.keys(result).length > 0) {
-    return `处理完成：模型索引写入 ${profileBackfillStats.value.databaseUpdated} 个，发现 ${profileBackfillStats.value.scanned} 个缺信息模型，新增入队 ${profileBackfillStats.value.queued} 个，已在队列 ${profileBackfillStats.value.alreadyQueued} 个，失败 ${profileBackfillStats.value.failed} 个。`;
-  }
-  return profileBackfill.value.message || "首次连接新数据库后会自动初始化历史库索引；手动重建会重新扫描归档库并刷新数据库索引。";
-});
-
 function defaultSystemUpdateState() {
   return {
     status: "idle",
@@ -1301,32 +1167,9 @@ function defaultSystemUpdateState() {
   };
 }
 
-function defaultProfileBackfillState() {
-  return {
-    running: false,
-    phase: "idle",
-    database_rebuild_requested: false,
-    force_database_rebuild: false,
-    auto_database_index_rebuild: false,
-    started_at: "",
-    finished_at: "",
-    last_error: "",
-    last_result: {},
-    database: {},
-    message: "",
-  };
-}
-
 function applySystemUpdateStatus(payload) {
   systemUpdate.value = {
     ...defaultSystemUpdateState(),
-    ...(payload || {}),
-  };
-}
-
-function applyProfileBackfillStatus(payload) {
-  profileBackfill.value = {
-    ...defaultProfileBackfillState(),
     ...(payload || {}),
   };
 }
@@ -1682,7 +1525,6 @@ function setActiveTab(tab) {
   }
   if (activeTab.value === "system" && !systemUpdateLoading.value && !systemUpdateSubmitting.value) {
     loadSystemUpdateStatus({ force: true });
-    loadProfileBackfillStatus({ silent: true });
   }
   if (activeTab.value === "sharing" && !sharedSharesLoading.value) {
     loadSharedShares({ silent: true });
@@ -1695,9 +1537,6 @@ function refreshSystemPanelFromEvent() {
   }
   if (!systemUpdateLoading.value && !systemUpdateSubmitting.value) {
     void loadSystemUpdateStatus({ silent: true });
-  }
-  if (!profileBackfillLoading.value && !profileBackfillSubmitting.value) {
-    void loadProfileBackfillStatus({ silent: true });
   }
 }
 
@@ -1836,46 +1675,6 @@ async function applyRuntimeResources() {
     return;
   }
   await runSystemUpdate("这会按当前容器进程设置重建 App / Worker 容器，页面会短暂不可用。确定继续吗？");
-}
-
-async function loadProfileBackfillStatus(options = {}) {
-  const { silent = false } = options;
-  if (!silent) {
-    profileBackfillLoading.value = true;
-    statuses.profile_backfill = "";
-  }
-  try {
-    const payload = await apiRequest("/api/admin/archive/profile-backfill");
-    applyProfileBackfillStatus(payload);
-  } catch (error) {
-    if (!silent) {
-      statuses.profile_backfill = error instanceof Error ? error.message : "读取信息补全状态失败。";
-    }
-  } finally {
-    if (!silent) {
-      profileBackfillLoading.value = false;
-    }
-  }
-}
-
-async function triggerProfileBackfill() {
-  const shouldProceed = window.confirm("会重新遍历本地归档库，把模型卡片信息写入数据库索引，并把缺少详情媒体或评论回复字段的模型加入后台补整理队列。不会主动下载 3MF。确定手动重建索引吗？");
-  if (!shouldProceed) {
-    return;
-  }
-  profileBackfillSubmitting.value = true;
-  statuses.profile_backfill = "";
-  try {
-    const payload = await apiRequest("/api/admin/archive/profile-backfill", {
-      method: "POST",
-    });
-    applyProfileBackfillStatus(payload);
-    statuses.profile_backfill = payload.message || "数据库索引重建已提交，后台会继续处理。";
-  } catch (error) {
-    statuses.profile_backfill = error instanceof Error ? error.message : "提交信息补全失败。";
-  } finally {
-    profileBackfillSubmitting.value = false;
-  }
 }
 
 function resetAccountDialog(platform = "cn") {
@@ -2453,7 +2252,7 @@ watch(() => route.query.tab, (value) => {
 onMounted(async () => {
   const perf = createPagePerformanceTracker({ page: "settings", route: () => route.fullPath });
   settingsRefreshController = createPageRefreshController({
-    scopes: ["system_update", "archive_profile_backfill_status"],
+    scopes: ["system_update"],
     refresh: refreshSystemPanelFromEvent,
     delayMs: 450,
   });

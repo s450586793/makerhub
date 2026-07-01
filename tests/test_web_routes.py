@@ -38,6 +38,10 @@ class RemovedEmbeddedVerificationWebRouteTest(unittest.TestCase):
         self.assertIn("/api/subscriptions/light", paths)
         self.assertIn("/api/logs", paths)
 
+    def test_legacy_profile_backfill_admin_routes_are_removed(self):
+        paths = {route.path for route in iter_app_routes(main_app.app) if hasattr(route, "path")}
+        self.assertNotIn("/api/admin/archive/profile-backfill", paths)
+
     def test_logs_api_forwards_filter_parameters(self):
         captured = {}
 

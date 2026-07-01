@@ -17,7 +17,7 @@ MakerHub 是一个面向个人 NAS、DSM、Unraid、Portainer 和自托管服务
 - 数据库化运行状态：配置、Cookie / Token、订阅、来源库 metadata、任务状态、分享记录、限流状态、系统更新状态和业务日志进入 Postgres。
 - 模型索引入库：归档模型卡片索引写入 `archive_model_index`，模型库、订阅库和来源库读取更稳定。
 - 三容器部署：默认 Compose 调整为 `makerhub-app`、`makerhub-worker`、`makerhub-postgres`。
-- 数据库索引重建：首次连接数据库后自动遍历历史归档库建立模型卡片索引；设置页保留手动重建数据库索引与历史信息补全入口。
+- 数据库索引重建：首次连接数据库后由 Worker 自动遍历历史归档库建立模型卡片索引；设置页不再保留旧的手动补全入口。
 - 手动验证回退：`3MF` 下载遇到 MakerWorld 验证时，首页和任务页只外跳官网或模型页；MakerHub 不内嵌验证窗口、不自动点击验证码，也不绕过 MakerWorld 验证，用户在 MakerWorld 完成验证后回到 MakerHub 重试。
 - 系统更新更安全：旧 compose 缺少 Postgres 配置时会阻止网页一键更新，并提示先升级 compose。
 - 文档重整：补齐架构说明、模块边界、Compose 安装、升级说明和 V0.7.0 更新记录。
@@ -213,6 +213,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-01 · v0.9.67
+
+- 设置页移除“数据库索引与历史信息补全”维护面板，不再展示旧的手动重建索引 / 历史补全入口。
+- 系统页状态刷新只监听系统更新事件，不再轮询历史补全状态接口。
+- README 和数据模型说明同步改为自动索引重建语义，避免继续提示设置页手动入口。
+
 ### 2026-06-30 · v0.9.66
 
 - 手动确认 MakerWorld 验证后，会恢复同平台已暂停的缺失 `3MF` 队列任务，不再只扫描缺失列表。
@@ -225,14 +231,14 @@ uvicorn app.main:app --reload
 - Worker 会清除对应缺失 `3MF` 项和历史失败记录，并记录“源端已不可用，已停止缺失 3MF 重试”的业务日志。
 - 普通单模型归档仍保留 `404` 失败记录，避免误吞真实归档失败；补充两条 Worker 回归测试覆盖这两种路径。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-06-30 · v0.9.64
 
 - 归档抓取会识别 MakerWorld 模型页 `404`、下架、私有或转为草稿的页面，不再误提示为 Cloudflare 验证拦截。
 - 缺失 `3MF` 的 HTML `404` 响应会归类为 `not_found`，最近失败和缺失列表会提示源端不可用，而不是引导更新 Cookie。
 - 补充归档页面分类和缺失 `3MF` 状态归一化回归测试。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-30 · v0.9.63
 
@@ -828,7 +834,7 @@ uvicorn app.main:app --reload
 - 版本号升级到 `v0.7.0`，发布为数据库化架构版本。
 - 默认部署升级为 App / Worker / Postgres 三容器，Compose 增加 `makerhub-postgres` 和 `MAKERHUB_DATABASE_URL`；`depends_on` / `healthcheck` 作为高级可选注释保留。
 - 配置、Cookie / Token、订阅、来源库 metadata、任务状态、分享记录、系统更新状态、业务日志和模型卡片索引迁移到 Postgres。
-- 设置页新增数据库索引与历史信息补全状态，可手动重建历史模型索引并查看迁移/补全进度。
+- 当时设置页曾新增数据库索引与历史信息补全状态；该手动入口已在 v0.9.67 移除。
 - 首页 MW 状态拆分为 `账号` 与 `3MF 下载` 检查项，下载验证、每日上限、接口受限和 Cookie 问题会分别显示。
 - 在线账号、Cookie 认证探针和 MakerWorld/Bambu API 请求链路优化，减少普通 HTML/登录页被误判为“需要验证”。
 - 系统更新加入 compose 升级保护，旧部署缺少数据库配置时会提示先改 compose，避免网页更新后容器不可用。

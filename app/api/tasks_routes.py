@@ -16,8 +16,6 @@ from app.schemas.models import (
     Missing3mfRetryRequest,
     Missing3mfVerificationRetryRequest,
 )
-from app.services.archive_model_index import archive_model_index_status
-from app.services.archive_profile_backfill import read_profile_backfill_status, write_profile_backfill_status
 from app.services.archive_repair import read_archive_repair_status, run_archive_repair_job, write_archive_repair_status
 from app.services.archive_worker import BATCH_TASK_MODES, detect_archive_mode
 from app.services.account_health import mark_account_ok
@@ -29,7 +27,6 @@ from app.services.request_threads import TASK_API_EXECUTOR, run_task_api, run_ui
 router = APIRouter(prefix="/api")
 archive_repair_process: Process | None = None
 archive_repair_start_lock = asyncio.Lock()
-profile_backfill_start_lock = asyncio.Lock()
 
 
 def _runtime_engine_enabled() -> bool:
@@ -459,67 +456,3 @@ async def repair_archive_3mf(request: Request):
         }
     )
     return state
-
-
-@router.get("/admin/archive/profile-backfill")
-async def get_archive_profile_backfill_status(request: Request):
-    _require_session_auth(request)
-    status = await run_ui_io(read_profile_backfill_status)
-    return _compact_profile_backfill_status(status)
-
-
-@router.post("/admin/archive/profile-backfill")
-async def start_archive_profile_backfill(request: Request):
-    _require_session_auth(request)
-    async with profile_backfill_start_lock:
-        state = read_profile_backfill_status()
-        if state.get("running"):
-            state.update(
-                {
-                    "accepted": False,
-                    "message": "现有库信息补全正在扫描并持续入队，请稍后刷新状态。",
-                }
-            )
-            return _compact_profile_backfill_status(state)
-
-        started_at = china_now_iso()
-        state = write_profile_backfill_status(
-            {
-                "running": True,
-                "phase": "database_index_rebuild",
-                "database_rebuild_requested": True,
-                "force_database_rebuild": True,
-                "database_only": False,
-                "auto_database_index_rebuild": False,
-                "started_at": started_at,
-                "finished_at": "",
-                "last_error": "",
-                "last_result": {},
-            }
-        )
-
-    state.update(
-        {
-            "accepted": True,
-            "message": "数据库索引重建已提交，后台 worker 会先遍历历史库刷新索引，再继续检查缺失信息。",
-        }
-    )
-    return _compact_profile_backfill_status(state)
-
-
-def _compact_profile_backfill_status(status: dict) -> dict:
-    payload = dict(status or {})
-    try:
-        payload["database"] = archive_model_index_status()
-    except Exception:
-        payload["database"] = {}
-    result = payload.get("last_result")
-    if isinstance(result, dict):
-        compact_result = dict(result)
-        items = compact_result.get("items")
-        if isinstance(items, list) and len(items) > 50:
-            compact_result["items"] = items[:50]
-            compact_result["items_total"] = len(items)
-            compact_result["items_truncated"] = True
-        payload["last_result"] = compact_result
-    return payload
