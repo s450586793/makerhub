@@ -1,5 +1,11 @@
 # 更新说明
 
+## 2026-07-02 · v0.9.74
+
+- 修复 `3MF` 下载地址多路尝试同时出现登录态失效和验证页结果时，最终误优先显示“需要验证 / 手动过 CF”的问题。
+- `Please log in to download models.` 和 Cookie / token 失效类错误现在会稳定归类为 `auth_required` / `Cookie 异常`，避免误引导去手动过 CF。
+- 补充 `3MF` 失败合并和状态归一化回归测试，覆盖登录态错误被旧验证状态覆盖的场景。
+
 ## 2026-07-02 · v0.9.73
 
 - Worker 轮询会自动恢复旧的 `paused / needs_verification` 普通归档队列，FlareSolverr 验证通过后不再需要手动改数据库。

@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.73`
+> 当前版本：`v0.9.74`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -236,6 +236,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-02 · v0.9.74
+
+- 修复 `3MF` 下载地址多路尝试同时出现登录态失效和验证页结果时，最终误优先显示“需要验证 / 手动过 CF”的问题。
+- `Please log in to download models.` 和 Cookie / token 失效类错误现在会稳定归类为 `auth_required` / `Cookie 异常`，避免误引导去手动过 CF。
+- 补充 `3MF` 失败合并和状态归一化回归测试，覆盖登录态错误被旧验证状态覆盖的场景。
+
 ### 2026-07-02 · v0.9.73
 
 - Worker 轮询会自动恢复旧的 `paused / needs_verification` 普通归档队列，FlareSolverr 验证通过后不再需要手动改数据库。
@@ -248,14 +254,14 @@ uvicorn app.main:app --reload
 - 缺失 `3MF` 判断改为归档整理后的真实磁盘状态，避免仅因已经解析出 `downloadUrl` 就误判为已归档。
 - 保持图片、头像、附件和 `3MF` 静态文件直连下载，不把大文件流量压到 FlareSolverr。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-02 · v0.9.71
 
 - MakerWorld 页面、来源列表、评论和 `3MF` 下载地址 API 改为 FlareSolverr 单通道，失败时直接提示 FlareSolverr / 配置问题，不再回退旧 requests / curl 链路。
 - 图片、头像、附件和已解析出的 `3MF` 静态文件继续由普通下载器直接保存，避免把大文件流量压到 FlareSolverr；`3MF` 直链保存失败会写回缺失状态，避免仅因有 URL 就误判为已归档。
 - 默认 `compose.yaml` 新增 `makerhub-flaresolverr` 服务，并提供 `compose.external-flaresolverr.yaml` 复用已有 FlareSolverr。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-02 · v0.9.70
 

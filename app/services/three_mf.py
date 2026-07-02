@@ -17,10 +17,10 @@ _HASH_CHUNK_SIZE_BYTES = 512 * 1024
 _HASH_PAUSE_EVERY_BYTES = 4 * 1024 * 1024
 _THREE_MF_FAILURE_PRIORITY = {
     "download_limited": 60,
+    "cookie_invalid": 55,
+    "auth_required": 55,
     "verification_required": 50,
     "cloudflare": 45,
-    "cookie_invalid": 40,
-    "auth_required": 40,
     "http_error": 30,
     "not_found": 20,
     "missing": 10,
@@ -224,21 +224,21 @@ def normalize_three_mf_failure_state(
     normalized_state = str(state or "").strip()
     if normalized_state in _THREE_MF_TRANSIENT_STATES:
         return normalized_state
-    if normalized_state in _THREE_MF_FAILURE_PRIORITY and normalized_state not in {"missing", "available"}:
-        return normalized_state
 
     raw_message = str(message or "").strip()
     if not raw_message:
+        if normalized_state in _THREE_MF_FAILURE_PRIORITY and normalized_state not in {"missing", "available"}:
+            return normalized_state
         return normalized_state or "missing"
 
     lowered = raw_message.lower()
     normalized_message = _normalize_loose_identity_text(raw_message)
     for candidate_state in (
         "download_limited",
-        "cloudflare",
-        "verification_required",
         "cookie_invalid",
         "auth_required",
+        "cloudflare",
+        "verification_required",
         "not_found",
         "missing",
     ):
@@ -248,14 +248,17 @@ def normalize_three_mf_failure_state(
             if _normalize_loose_identity_text(keyword) in normalized_message:
                 return candidate_state
 
+    if normalized_state in _THREE_MF_FAILURE_PRIORITY and normalized_state not in {"missing", "available"}:
+        return normalized_state
+
     described = describe_three_mf_failure(normalized_state, raw_message, source=source, url=url)
     normalized_described = _normalize_loose_identity_text(described)
     for candidate_state in (
         "download_limited",
-        "cloudflare",
-        "verification_required",
         "cookie_invalid",
         "auth_required",
+        "cloudflare",
+        "verification_required",
         "not_found",
         "missing",
     ):
