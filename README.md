@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.74`
+> 当前版本：`v0.9.75`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -236,6 +236,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-03 · v0.9.75
+
+- 首页源站状态卡不再显示“手动过 CF / 已验证 / 已更新 Cookie”等手动恢复操作，只保留状态展示和打开官网入口。
+- 源站卡继续展示待验证、Cookie 异常和每日上限状态，避免旧 `3MF` gate 状态在首页引导手动确认。
+- 补充后端源站卡和前端状态卡回归测试，锁定验证 / Cookie 状态不会再自动生成恢复按钮。
+
 ### 2026-07-02 · v0.9.74
 
 - 修复 `3MF` 下载地址多路尝试同时出现登录态失效和验证页结果时，最终误优先显示“需要验证 / 手动过 CF”的问题。
@@ -248,14 +254,14 @@ uvicorn app.main:app --reload
 - 只恢复明确由 MakerWorld 验证暂停的归档项，保留手动暂停或其他阻塞状态，避免误放行不可执行任务。
 - 补充队列状态和归档 Worker 回归测试，覆盖旧验证暂停任务恢复后重新进入 `queued`。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-02 · v0.9.72
 
 - `3MF` 静态直链下载失败时会写回 `cloudflare` / `http_error` / `missing` 状态，并进入缺失 `3MF` 重试队列。
 - 缺失 `3MF` 判断改为归档整理后的真实磁盘状态，避免仅因已经解析出 `downloadUrl` 就误判为已归档。
 - 保持图片、头像、附件和 `3MF` 静态文件直连下载，不把大文件流量压到 FlareSolverr。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-02 · v0.9.71
 

@@ -285,7 +285,6 @@ def snapshot_to_source_card(platform: Any, snapshot: dict[str, Any] | None = Non
     card_state = gate if gate != "open" else current["status"]
     meta = THREE_MF_GATE_CARD_META.get(card_state, ACCOUNT_HEALTH_CARD_META.get(current["status"], ACCOUNT_HEALTH_CARD_META["unknown"]))
     platform_url = PLATFORM_URLS.get(normalized_platform, "")
-    verification_required = meta["state"] == "verification_required"
     card = {
         "key": normalized_platform,
         "title": PLATFORM_TITLES.get(normalized_platform, normalized_platform),
@@ -298,26 +297,11 @@ def snapshot_to_source_card(platform: Any, snapshot: dict[str, Any] | None = Non
         "three_mf_reason": current["three_mf_reason"],
         "checks": [],
         "url": platform_url,
-        "action_label": "手动过 CF" if verification_required else "打开官网",
+        "action_label": "打开官网",
         "updated_at": current["updated_at"],
         "reason": current["reason"],
         "source": current["source"],
     }
-    if verification_required:
-        card["actions"] = [
-            {
-                "kind": "external",
-                "label": "手动过 CF",
-                "href": platform_url,
-            },
-            {
-                "kind": "api",
-                "label": "已验证",
-                "endpoint": "/api/tasks/missing-3mf/verification-verified",
-                "method": "POST",
-                "body": {"platform": normalized_platform},
-            },
-        ]
     return card
 
 

@@ -20,38 +20,6 @@ const BLOCKED_REASON_LABELS = {
   worker_stopped: "Worker 未运行",
 };
 
-const SOURCE_VERIFICATION_STATES = new Set(["verification_required", "cloudflare"]);
-const SOURCE_VERIFICATION_LABELS = new Set(["需要验证", "验证页", "cloudflare"]);
-const SOURCE_VERIFICATION_TEXT_MARKERS = ["需要验证", "验证页", "cf_clearance", "cloudflare"];
-const SOURCE_COOKIE_TEXT_MARKERS = ["cookie 异常", "cookie 失效", "cookie invalid", "登录态", "token 是否过期"];
-
-function sourceRecoveryAction(item = {}) {
-  const key = String(item?.key || item?.platform || "").trim().toLowerCase();
-  if (!["cn", "global"].includes(key)) {
-    return null;
-  }
-  const directState = String(item?.state || item?.status || "").trim().toLowerCase();
-  const directLabel = [
-    item?.status,
-    item?.detail,
-    item?.message,
-  ].map((value) => String(value || "").trim().toLowerCase()).join(" ");
-  const checkStates = Array.isArray(item?.checks)
-    ? item.checks.map((check) => String(check?.state || check?.status || "").trim().toLowerCase())
-    : [];
-  const states = [directState, ...checkStates].filter(Boolean);
-  if (states.some((state) => ["auth_required", "cookie_invalid"].includes(state))) {
-    return { platform: key, label: "已更新 Cookie" };
-  }
-  if (SOURCE_COOKIE_TEXT_MARKERS.some((marker) => directLabel.includes(marker.toLowerCase()))) {
-    return { platform: key, label: "已更新 Cookie" };
-  }
-  const isVerificationState = states.some((state) => SOURCE_VERIFICATION_STATES.has(state));
-  const isVerificationText = [...SOURCE_VERIFICATION_LABELS].some((label) => directLabel.includes(label.toLowerCase()))
-    || SOURCE_VERIFICATION_TEXT_MARKERS.some((marker) => directLabel.includes(marker.toLowerCase()));
-  return isVerificationState || isVerificationText ? { platform: key, label: "已验证" } : null;
-}
-
 export function dashboardStatusActions(item = {}) {
   if (Array.isArray(item?.actions) && item.actions.length) {
     return item.actions
@@ -85,16 +53,6 @@ export function dashboardStatusActions(item = {}) {
       kind: "external",
       label: item.action_label,
       href: item.url,
-    });
-  }
-  const recoveryAction = sourceRecoveryAction(item);
-  if (recoveryAction) {
-    actions.push({
-      kind: "api",
-      label: recoveryAction.label,
-      endpoint: "/api/tasks/missing-3mf/verification-verified",
-      method: "POST",
-      body: { platform: recoveryAction.platform },
     });
   }
   return actions;

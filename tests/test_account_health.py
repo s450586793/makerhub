@@ -133,7 +133,7 @@ class AccountHealthServiceTest(unittest.TestCase):
         self.assertEqual(card["url"], "https://makerworld.com.cn")
         self.assertNotIn("actions", card)
 
-    def test_snapshot_to_source_card_prompts_manual_cloudflare_verification(self):
+    def test_snapshot_to_source_card_keeps_verification_status_without_manual_actions(self):
         card = account_health.snapshot_to_source_card(
             "global",
             {
@@ -149,22 +149,9 @@ class AccountHealthServiceTest(unittest.TestCase):
         self.assertEqual(card["state"], "verification_required")
         self.assertEqual(card["status"], "需要验证")
         self.assertEqual(card["detail"], "国际站需要完成 Cloudflare 验证。")
-        self.assertEqual(card["action_label"], "手动过 CF")
+        self.assertEqual(card["action_label"], "打开官网")
         self.assertEqual(card["url"], "https://makerworld.com")
-        self.assertEqual(card["actions"], [
-            {
-                "kind": "external",
-                "label": "手动过 CF",
-                "href": "https://makerworld.com",
-            },
-            {
-                "kind": "api",
-                "label": "已验证",
-                "endpoint": "/api/tasks/missing-3mf/verification-verified",
-                "method": "POST",
-                "body": {"platform": "global"},
-            },
-        ])
+        self.assertNotIn("actions", card)
 
     def test_snapshot_to_source_card_uses_planned_status_copy(self):
         cases = [

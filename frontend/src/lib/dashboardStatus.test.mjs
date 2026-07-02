@@ -52,7 +52,7 @@ test("historical 3MF source health issue does not add homepage retry action", ()
   ]);
 });
 
-test("verification status card opens the platform homepage", () => {
+test("verification status card only opens the platform homepage", () => {
   const card = {
     key: "global",
     action_label: "访问主页",
@@ -72,17 +72,10 @@ test("verification status card opens the platform homepage", () => {
       label: "访问主页",
       href: "https://makerworld.com",
     },
-    {
-      kind: "api",
-      label: "已验证",
-      endpoint: "/api/tasks/missing-3mf/verification-verified",
-      method: "POST",
-      body: { platform: "global" },
-    },
   ]);
 });
 
-test("cn verification status card submits verified retry for cn platform", () => {
+test("cn verification status card does not infer verified retry action", () => {
   const card = {
     key: "cn",
     action_label: "打开官网",
@@ -96,26 +89,19 @@ test("cn verification status card submits verified retry for cn platform", () =>
       label: "打开官网",
       href: "https://makerworld.com.cn",
     },
-    {
-      kind: "api",
-      label: "已验证",
-      endpoint: "/api/tasks/missing-3mf/verification-verified",
-      method: "POST",
-      body: { platform: "cn" },
-    },
   ]);
 });
 
 test("dashboard status card uses explicit backend actions before inferred recovery actions", () => {
   const card = {
     key: "global",
-    action_label: "手动过 CF",
+    action_label: "打开官网",
     url: "https://makerworld.com",
     state: "verification_required",
     actions: [
       {
         kind: "external",
-        label: "手动过 CF",
+        label: "打开官网",
         href: "https://makerworld.com",
       },
       {
@@ -131,7 +117,7 @@ test("dashboard status card uses explicit backend actions before inferred recove
   assert.deepEqual(dashboardStatusActions(card), [
     {
       kind: "external",
-      label: "手动过 CF",
+      label: "打开官网",
       href: "https://makerworld.com",
     },
     {
@@ -144,7 +130,7 @@ test("dashboard status card uses explicit backend actions before inferred recove
   ]);
 });
 
-test("verification retry action tolerates localized source status text", () => {
+test("localized verification source status text does not infer retry action", () => {
   const card = {
     key: "cn",
     action_label: "打开官网",
@@ -158,17 +144,10 @@ test("verification retry action tolerates localized source status text", () => {
       label: "打开官网",
       href: "https://makerworld.com.cn",
     },
-    {
-      kind: "api",
-      label: "已验证",
-      endpoint: "/api/tasks/missing-3mf/verification-verified",
-      method: "POST",
-      body: { platform: "cn" },
-    },
   ]);
 });
 
-test("cookie invalid source card submits cookie refresh retry", () => {
+test("cookie invalid source card only opens the platform homepage", () => {
   const card = {
     key: "global",
     action_label: "打开官网",
@@ -184,17 +163,10 @@ test("cookie invalid source card submits cookie refresh retry", () => {
       label: "打开官网",
       href: "https://makerworld.com",
     },
-    {
-      kind: "api",
-      label: "已更新 Cookie",
-      endpoint: "/api/tasks/missing-3mf/verification-verified",
-      method: "POST",
-      body: { platform: "global" },
-    },
   ]);
 });
 
-test("auth required source card submits cookie refresh retry", () => {
+test("auth required source card does not infer cookie refresh retry", () => {
   const card = {
     key: "cn",
     action_label: "打开官网",
@@ -209,17 +181,10 @@ test("auth required source card submits cookie refresh retry", () => {
       label: "打开官网",
       href: "https://makerworld.com.cn",
     },
-    {
-      kind: "api",
-      label: "已更新 Cookie",
-      endpoint: "/api/tasks/missing-3mf/verification-verified",
-      method: "POST",
-      body: { platform: "cn" },
-    },
   ]);
 });
 
-test("cookie status text without state submits cookie refresh retry", () => {
+test("cookie status text without state does not infer cookie refresh retry", () => {
   const card = {
     key: "global",
     action_label: "打开官网",
@@ -233,13 +198,6 @@ test("cookie status text without state submits cookie refresh retry", () => {
       kind: "external",
       label: "打开官网",
       href: "https://makerworld.com",
-    },
-    {
-      kind: "api",
-      label: "已更新 Cookie",
-      endpoint: "/api/tasks/missing-3mf/verification-verified",
-      method: "POST",
-      body: { platform: "global" },
     },
   ]);
 });
