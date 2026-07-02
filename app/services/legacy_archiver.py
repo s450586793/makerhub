@@ -5,7 +5,6 @@ import random
 import re
 import shutil
 import sys
-import subprocess
 import threading
 import time
 import zipfile
@@ -29,10 +28,19 @@ from bs4 import BeautifulSoup
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
 from app.services.business_logs import append_business_log
 from app.services.cookie_utils import extract_auth_token, parse_cookie_values, sanitize_cookie_header
+from app.services.flaresolverr_client import (
+    FlareSolverrError,
+    flaresolverr_get_json,
+    flaresolverr_get_text,
+)
 from app.services.profile_rating import normalize_profile_rating
 from app.services.resource_limiter import resource_slot
-from app.services.scrapling_fetch import fetch_json as scrapling_fetch_json, fetch_text as scrapling_fetch_text, scrapling_only
-from app.services.three_mf import describe_three_mf_failure, merge_three_mf_failure, normalize_makerworld_source
+from app.services.three_mf import (
+    describe_three_mf_failure,
+    merge_three_mf_failure,
+    normalize_makerworld_source,
+    normalize_three_mf_failure_state,
+)
 from app.services.three_mf_quota import reserve_three_mf_download_slot
 
 
@@ -201,6 +209,36 @@ def _record_missing_3mf_summary(logs_dir: Path, base_name: str, missing_3mf: lis
     log(logger, "缺失 3MF 已记录到数据库日志。")
 
 
+def _mark_instance_3mf_download_failed(inst: dict, error: Exception, logger=None) -> None:
+    message = f"3MF 静态文件下载失败：{error}"
+    state = normalize_three_mf_failure_state("", message)
+    if state == "missing":
+        state = "http_error"
+    inst["downloadState"] = state
+    inst["downloadMessage"] = message
+    log(logger, "3MF 静态文件下载失败:", inst.get("id") or inst.get("title") or inst.get("fileName") or "", error)
+
+
+def _instance_3mf_file_exists(work_dir: Path, inst: dict) -> bool:
+    file_name = str(inst.get("fileName") or "").strip()
+    return bool(file_name and (work_dir / "instances" / file_name).exists())
+
+
+def _missing_3mf_instances(instances: list[dict], work_dir: Path, *, require_local_file: bool = False) -> list[dict]:
+    missing = []
+    for inst in instances:
+        if not isinstance(inst, dict):
+            continue
+        if not inst.get("downloadUrl") or str(inst.get("downloadState") or "").strip():
+            missing.append(inst)
+            continue
+        if require_local_file and not _instance_3mf_file_exists(work_dir, inst):
+            inst["downloadState"] = "missing"
+            inst["downloadMessage"] = "3MF 文件尚未保存到本地，等待重新下载。"
+            missing.append(inst)
+    return missing
+
+
 def emit_progress(progress_callback, percent: int, message: str, extra: Optional[dict] = None):
     if not callable(progress_callback):
         return
@@ -290,7 +328,6 @@ CONNECT_TIMEOUT_SECONDS = 15
 READ_TIMEOUT_SECONDS = 30
 THREE_MF_DOWNLOAD_WAIT_MIN_SECONDS = 5.0
 THREE_MF_DOWNLOAD_WAIT_MAX_SECONDS = 10.0
-CURL_TRANSIENT_ERROR_CODES = {5, 6, 7, 28, 35, 52, 55, 56, 92}
 FAKE_THREE_MF_DOWNLOAD_ENV = "MAKERHUB_FAKE_THREE_MF_DOWNLOADS"
 FAKE_THREE_MF_DOWNLOAD_URL_PREFIX = "makerhub://fake-3mf/"
 FAKE_THREE_MF_DOWNLOAD_MESSAGE = "本地 Docker 已启用 3MF 假下载，不会请求 MakerWorld 实际文件。"
@@ -658,68 +695,11 @@ def fetch_html_with_requests(session: requests.Session, url: str, raw_cookie: st
     }
     if cookie_header:
         headers["Cookie"] = cookie_header
-    scrapling_result = scrapling_fetch_text(
-        url,
-        raw_cookie=cookie_header,
-        headers=headers,
-        timeout=30,
-        logger=log,
-    )
-    if scrapling_result.ok and scrapling_result.text:
-        _scrapling_trace("archive.fetch_html", scrapling_result, url=url, state="ok", used=True)
-        return scrapling_result.text
-    if scrapling_only():
-        _scrapling_trace(
-            "archive.fetch_html",
-            scrapling_result,
-            url=url,
-            state="failed",
-            used=False,
-            fallback="blocked_by_scrapling_only",
-            level="warning",
-        )
-        log("Scrapling only 模式获取页面失败:", scrapling_result.engine, scrapling_result.status_code, scrapling_result.error)
-        return None
-    _scrapling_trace(
-        "archive.fetch_html",
-        scrapling_result,
-        url=url,
-        state="failed",
-        used=False,
-        fallback="requests",
-        level="warning",
-    )
     try:
-        resp = session.get(url, timeout=30, headers=headers)
-    except Exception as e:
-        log("requests 获取页面失败:", e)
+        return flaresolverr_get_text(url, raw_cookie=cookie_header, headers=headers, session=session)
+    except FlareSolverrError as e:
+        log("FlareSolverr 获取页面失败:", e)
         return None
-    if resp.status_code >= 400:
-        log("requests 获取页面状态异常:", resp.status_code)
-        return None
-    return resp.text
-
-
-def fetch_json_with_scrapling(
-    url: str,
-    *,
-    raw_cookie: str = "",
-    headers: Optional[dict[str, str]] = None,
-    params: Optional[dict[str, object]] = None,
-    timeout: float = 30,
-    logger=None,
-):
-    result = scrapling_fetch_json(
-        url,
-        raw_cookie=raw_cookie,
-        headers=headers,
-        params=params,
-        timeout=timeout,
-        logger=logger or log,
-    )
-    if result.ok:
-        return result.payload, result
-    return None, result
 
 
 def _session_cookie_header(session: requests.Session) -> str:
@@ -731,82 +711,6 @@ def _session_cookie_header(session: requests.Session) -> str:
         )
     except Exception:
         return ""
-
-
-def fetch_html_with_curl(url: str, raw_cookie: str) -> str:
-    """
-    备用：使用 curl 拉取页面，尽量复刻浏览器最小头。
-    """
-    cookie_header = sanitize_cookie_header(raw_cookie)
-    base_cmd = [
-        "curl",
-        "-sSL",
-        "--compressed",
-        "--connect-timeout",
-        "20",
-        "--max-time",
-        "60",
-        "-H",
-        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "-H",
-        "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8",
-        "-H",
-        "Cache-Control: no-cache",
-        "-H",
-        "Connection: keep-alive",
-        "-H",
-        "Pragma: no-cache",
-        "-H",
-        "Upgrade-Insecure-Requests: 1",
-        "-H",
-        "Sec-Fetch-Dest: document",
-        "-H",
-        "Sec-Fetch-Mode: navigate",
-        "-H",
-        "Sec-Fetch-Site: none",
-        "-H",
-        "Sec-Fetch-User: ?1",
-        "-H",
-        "User-Agent: Mozilla/5.0 (MW-Fetcher-curl)",
-    ]
-    if cookie_header:
-        base_cmd.extend(["-H", f"Cookie: {cookie_header}"])
-
-    attempts = [
-        ("default", []),
-        ("http1_tls12", ["--http1.1", "--tlsv1.2"]),
-        ("ipv4_http1_tls12", ["--ipv4", "--http1.1", "--tlsv1.2"]),
-    ]
-    failed_messages: list[str] = []
-    result: Optional[subprocess.CompletedProcess[bytes]] = None
-    used_variant = ""
-    for variant, extra_args in attempts:
-        cmd = [*base_cmd, *extra_args, url]
-        log("尝试 curl 获取页面:", variant, _safe_curl_command_for_log(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=False)
-        if result.returncode == 0:
-            used_variant = variant
-            break
-        err_msg = result.stderr.decode(errors="ignore") if result.stderr else ""
-        failed_messages.append(f"{variant}: code={result.returncode} stderr={err_msg[:220]}")
-        if result.returncode not in CURL_TRANSIENT_ERROR_CODES:
-            break
-    if result is None or result.returncode != 0:
-        raise RuntimeError(f"curl 失败 {'; '.join(failed_messages)[:500]}")
-
-    stdout = result.stdout or b""
-    log("curl 返回长度:", len(stdout), "variant:", used_variant)
-
-    # 尝试直接 utf-8 解码
-    try:
-        return stdout.decode("utf-8")
-    except Exception:
-        # 若仍是 gzip/其它编码，尝试解压
-        try:
-            import gzip
-            return gzip.decompress(stdout).decode("utf-8", errors="ignore")
-        except Exception:
-            return stdout.decode("utf-8", errors="ignore")
 
 
 def _json_loads_maybe(raw: str) -> Optional[object]:
@@ -1261,70 +1165,26 @@ def fetch_design_from_api(
     if cookie_header:
         headers["Cookie"] = cookie_header
     for api_url in endpoints:
-        payload, scrapling_result = fetch_json_with_scrapling(
-            api_url,
-            raw_cookie=cookie_header,
-            headers=headers,
-            timeout=30,
-            logger=logger or log,
-        )
+        try:
+            payload = flaresolverr_get_json(
+                api_url,
+                raw_cookie=cookie_header,
+                headers=headers,
+                session=session,
+                allow_non_json=True,
+            )
+        except FlareSolverrError as exc:
+            log(logger, "FlareSolverr API 请求失败，尝试下一个候选:", api_url, exc)
+            continue
         if isinstance(payload, dict):
             design = _unwrap_design_payload(payload)
             if design:
                 payload_error = _design_payload_error(design, url)
                 if payload_error:
-                    _scrapling_trace(
-                        "archive.fetch_design_api",
-                        scrapling_result,
-                        url=api_url,
-                        state="invalid_payload",
-                        used=False,
-                        logger=logger,
-                        level="warning",
-                    )
-                    log(logger, "Scrapling API 返回的模型数据无效，跳过:", api_url, payload_error)
+                    log(logger, "FlareSolverr API 返回的模型数据无效，跳过:", api_url, payload_error)
                 else:
-                    _scrapling_trace(
-                        "archive.fetch_design_api",
-                        scrapling_result,
-                        url=api_url,
-                        state="ok",
-                        used=True,
-                        logger=logger,
-                    )
                     _normalize_design_payload_identity(design, url)
                     return design
-        elif scrapling_result is not None:
-            _scrapling_trace(
-                "archive.fetch_design_api",
-                scrapling_result,
-                url=api_url,
-                state="failed",
-                used=False,
-                fallback="next_candidate" if not scrapling_only() else "blocked_by_scrapling_only",
-                logger=logger,
-                level="info",
-            )
-        if scrapling_only():
-            continue
-        try:
-            resp = session.get(api_url, timeout=30, headers=headers)
-        except Exception:
-            continue
-        if resp.status_code >= 400:
-            continue
-        try:
-            payload = resp.json()
-        except Exception:
-            continue
-        design = _unwrap_design_payload(payload)
-        if design:
-            payload_error = _design_payload_error(design, url)
-            if payload_error:
-                log(logger, "API 返回的模型数据无效，跳过:", api_url, payload_error)
-                continue
-            _normalize_design_payload_identity(design, url)
-            return design
     return None
 
 
@@ -2704,55 +2564,22 @@ def _fetch_comment_reply_payload(
         reply_path,
         api_host_hint=api_host_hint,
     ):
-        payload, scrapling_result = fetch_json_with_scrapling(
-            api_url,
-            raw_cookie=_session_cookie_header(session),
-            headers=headers,
-            params=params or None,
-            timeout=15,
-        )
+        try:
+            payload = flaresolverr_get_json(
+                api_url,
+                raw_cookie=_session_cookie_header(session),
+                headers=headers,
+                params=params or None,
+                session=session,
+                allow_non_json=True,
+            )
+        except FlareSolverrError:
+            continue
         if payload is not None:
             if _extract_comment_replies_from_payload(payload, root_comment_id):
-                _scrapling_trace(
-                    "comments.fetch_replies",
-                    scrapling_result,
-                    url=api_url,
-                    state="ok",
-                    used=True,
-                    reply_kind=reply_kind,
-                )
                 return payload
             if fallback_payload is None:
                 fallback_payload = payload
-        elif scrapling_result is not None:
-            _scrapling_trace(
-                "comments.fetch_replies",
-                scrapling_result,
-                url=api_url,
-                state="failed",
-                used=False,
-                fallback="next_candidate" if not scrapling_only() else "blocked_by_scrapling_only",
-                level="info",
-                reply_kind=reply_kind,
-            )
-        if scrapling_only():
-            continue
-        try:
-            response = session.get(api_url, params=params or None, headers=headers, timeout=(5, 12))
-        except Exception:
-            continue
-        if response.status_code >= 400:
-            continue
-        if _looks_like_html_response(response.text):
-            continue
-        try:
-            payload = response.json()
-        except Exception:
-            continue
-        if _extract_comment_replies_from_payload(payload, root_comment_id):
-            return payload
-        if fallback_payload is None:
-            fallback_payload = payload
     return fallback_payload
 
 
@@ -2785,64 +2612,25 @@ def _fetch_comment_list_payload(
         "/commentandrating",
         api_host_hint=api_host_hint,
     ):
-        payload, scrapling_result = fetch_json_with_scrapling(
-            api_url,
-            raw_cookie=_session_cookie_header(session),
-            headers=headers,
-            params=params,
-            timeout=18,
-        )
+        try:
+            payload = flaresolverr_get_json(
+                api_url,
+                raw_cookie=_session_cookie_header(session),
+                headers=headers,
+                params=params,
+                session=session,
+                allow_non_json=True,
+            )
+        except FlareSolverrError:
+            continue
         if payload is not None:
             if _extract_comment_list_items(payload):
-                if offset <= 0:
-                    _scrapling_trace(
-                        "comments.fetch_list",
-                        scrapling_result,
-                        url=api_url,
-                        state="ok",
-                        used=True,
-                        offset=offset,
-                        hit_count=_comment_list_payload_hit_count(payload),
-                        total=_comment_list_payload_total(payload),
-                    )
                 return payload
             if fallback_payload is None or (
                 _comment_list_payload_total(payload) > _comment_list_payload_total(fallback_payload)
                 or _comment_list_payload_hit_count(payload) > _comment_list_payload_hit_count(fallback_payload)
             ):
                 fallback_payload = payload
-        elif scrapling_result is not None:
-            _scrapling_trace(
-                "comments.fetch_list",
-                scrapling_result,
-                url=api_url,
-                state="failed",
-                used=False,
-                fallback="next_candidate" if not scrapling_only() else "blocked_by_scrapling_only",
-                level="info",
-                offset=offset,
-            )
-        if scrapling_only():
-            continue
-        try:
-            response = session.get(api_url, params=params, headers=headers, timeout=(5, 15))
-        except Exception:
-            continue
-        if response.status_code >= 400:
-            continue
-        if _looks_like_html_response(response.text):
-            continue
-        try:
-            payload = response.json()
-        except Exception:
-            continue
-        if _extract_comment_list_items(payload):
-            return payload
-        if fallback_payload is None or (
-            _comment_list_payload_total(payload) > _comment_list_payload_total(fallback_payload)
-            or _comment_list_payload_hit_count(payload) > _comment_list_payload_hit_count(fallback_payload)
-        ):
-            fallback_payload = payload
     return fallback_payload
 
 
@@ -4306,303 +4094,65 @@ def fetch_instance_3mf(
         _wait_before_three_mf_download(f"获取下载地址 {inst_id}")
     for candidate in candidates:
         candidate_source = source_hint or normalize_makerworld_source(url=candidate)
+        cookie_header = effective_cookie
+        headers = {
+            **MAKERWORLD_API_BROWSER_HEADERS,
+            "Accept": "application/json, text/plain, */*",
+            "Referer": origin or "https://makerworld.com.cn/",
+            "Origin": origin or "https://makerworld.com.cn",
+            "User-Agent": session.headers.get("User-Agent", "Mozilla/5.0 (MW-Fetcher)"),
+        }
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+            headers["token"] = auth_token
+            headers["X-Token"] = auth_token
+            headers["X-Access-Token"] = auth_token
+        clean_captcha_result = str(captcha_result_header or "").strip()
+        if clean_captcha_result:
+            headers["x-bbl-captcha-result"] = clean_captcha_result
         try:
-            cookie_header = effective_cookie
-            headers = {
-                **MAKERWORLD_API_BROWSER_HEADERS,
-                "Accept": "application/json, text/plain, */*",
-                "Referer": origin or "https://makerworld.com.cn/",
-                "Origin": origin or "https://makerworld.com.cn",
-                "User-Agent": session.headers.get("User-Agent", "Mozilla/5.0 (MW-Fetcher)"),
-            }
-            if cookie_header:
-                headers["Cookie"] = cookie_header
-            if auth_token:
-                headers["Authorization"] = f"Bearer {auth_token}"
-                headers["token"] = auth_token
-                headers["X-Token"] = auth_token
-                headers["X-Access-Token"] = auth_token
-            clean_captcha_result = str(captcha_result_header or "").strip()
-            if clean_captcha_result:
-                headers["x-bbl-captcha-result"] = clean_captcha_result
-            data = None
-            scrapling_result = None
-            payload, scrapling_result = fetch_json_with_scrapling(
+            data = flaresolverr_get_json(
                 candidate,
                 raw_cookie=cookie_header,
                 headers=headers,
-                timeout=30,
+                session=session,
+                allow_non_json=True,
             )
-            if payload is not None:
-                data = payload
-                attempts.append({
-                    "method": scrapling_result.engine or "scrapling",
-                    "url": candidate,
-                    "status": scrapling_result.status_code,
-                    "state": "json",
-                })
-            elif scrapling_only():
-                text_preview = scrapling_result.text[:200] if scrapling_result and scrapling_result.text else ""
-                failure = _classify_3mf_fetch_failure(
-                    status_code=scrapling_result.status_code if scrapling_result else 0,
-                    text=text_preview or (scrapling_result.error if scrapling_result else ""),
-                    cloudflare=bool(text_preview and (_is_cloudflare_challenge(text_preview) or _looks_like_html(text_preview))),
-                    source=candidate_source,
-                )
-                last_failure = merge_three_mf_failure(last_failure, failure)
-                attempts.append({
-                    "method": scrapling_result.engine if scrapling_result else "scrapling",
-                    "url": candidate,
-                    "status": scrapling_result.status_code if scrapling_result else "error",
-                    "state": failure.get("state"),
-                })
-                _scrapling_trace(
-                    "three_mf.fetch_api",
-                    scrapling_result,
-                    url=candidate,
-                    state=str(failure.get("state") or "missing"),
-                    used=False,
-                    fallback="blocked_by_scrapling_only",
-                    level="info",
-                    instance_id=inst_id,
-                )
-                if _should_stop_three_mf_fetch(failure):
-                    log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
-                    return "", "", candidate, last_failure
-                continue
-            if data is not None:
-                name, url = _extract_instance_download(data)
-                if url:
-                    _scrapling_trace(
-                        "three_mf.fetch_api",
-                        scrapling_result,
-                        url=candidate,
-                        state="ok",
-                        used=True,
-                        instance_id=inst_id,
-                    )
-                    return name, url, candidate, {"state": "available", "message": ""}
-                text_preview = json.dumps(data, ensure_ascii=False)[:200]
-                failure = _classify_3mf_fetch_failure(
-                    status_code=scrapling_result.status_code if scrapling_result else 200,
-                    text=text_preview,
-                    payload=data,
-                    source=candidate_source,
-                )
-                last_failure = merge_three_mf_failure(last_failure, failure)
-                attempts.append({
-                    "method": scrapling_result.engine if scrapling_result else "scrapling",
-                    "url": candidate,
-                    "status": scrapling_result.status_code if scrapling_result else 200,
-                    "state": failure.get("state"),
-                })
-                _scrapling_trace(
-                    "three_mf.fetch_api",
-                    scrapling_result,
-                    url=candidate,
-                    state=str(failure.get("state") or "missing"),
-                    used=False,
-                    fallback="next_candidate",
-                    level="info",
-                    instance_id=inst_id,
-                )
-                if _should_stop_three_mf_fetch(failure):
-                    log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
-                    return "", "", candidate, last_failure
-                continue
-            if scrapling_result is not None:
-                _scrapling_trace(
-                    "three_mf.fetch_api",
-                    scrapling_result,
-                    url=candidate,
-                    state="failed",
-                    used=False,
-                    fallback="requests",
-                    level="info",
-                    instance_id=inst_id,
-                )
-            r = session.get(
-                candidate,
-                timeout=30,
-                headers=headers,
-            )
-            text_preview = r.text[:200] if r.text else ""
-            if VERBOSE_THREE_MF_FETCH_LOG:
-                log("[3MF] GET", candidate, "status", r.status_code)
-                log("[3MF] 响应前 200 字符:", text_preview)
-            if r.status_code >= 400:
-                if _is_cloudflare_challenge(text_preview) or _looks_like_html(text_preview):
-                    failure = _classify_3mf_fetch_failure(
-                        status_code=r.status_code,
-                        text=text_preview,
-                        cloudflare=True,
-                        source=candidate_source,
-                    )
-                    last_failure = merge_three_mf_failure(last_failure, failure)
-                    attempts.append({"method": "requests", "url": candidate, "status": r.status_code, "state": failure.get("state")})
-                    if _should_stop_three_mf_fetch(failure):
-                        log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
-                        return "", "", candidate, last_failure
-                    continue
-                last_error = RuntimeError(f"status={r.status_code}")
-                failure = _classify_3mf_fetch_failure(status_code=r.status_code, text=text_preview, source=candidate_source)
-                last_failure = merge_three_mf_failure(last_failure, failure)
-                attempts.append({"method": "requests", "url": candidate, "status": r.status_code, "state": failure.get("state")})
-                if _should_stop_three_mf_fetch(failure):
-                    log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
-                    return "", "", candidate, last_failure
-                continue
-            try:
-                data = r.json()
-            except Exception as je:
-                if _is_cloudflare_challenge(text_preview) or _looks_like_html(text_preview):
-                    failure = _classify_3mf_fetch_failure(
-                        status_code=r.status_code,
-                        text=text_preview,
-                        cloudflare=True,
-                        source=candidate_source,
-                    )
-                    last_failure = merge_three_mf_failure(last_failure, failure)
-                    attempts.append({"method": "requests", "url": candidate, "status": r.status_code, "state": failure.get("state")})
-                    if _should_stop_three_mf_fetch(failure):
-                        log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
-                        return "", "", candidate, last_failure
-                    continue
-                last_error = je
-                failure = _classify_3mf_fetch_failure(status_code=r.status_code, text=text_preview, source=candidate_source)
-                last_failure = merge_three_mf_failure(last_failure, failure)
-                attempts.append({"method": "requests", "url": candidate, "status": r.status_code, "state": failure.get("state")})
-                if _should_stop_three_mf_fetch(failure):
-                    log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
-                    return "", "", candidate, last_failure
-                continue
-            name, url = _extract_instance_download(data)
-            if url:
-                return name, url, candidate, {"state": "available", "message": ""}
-            failure = _classify_3mf_fetch_failure(
-                status_code=r.status_code,
-                text=text_preview,
-                payload=data,
-                source=candidate_source,
-            )
+        except FlareSolverrError as e:
+            last_error = e
+            failure = _classify_3mf_fetch_failure(text=str(e), source=candidate_source)
             last_failure = merge_three_mf_failure(last_failure, failure)
-            attempts.append({"method": "requests", "url": candidate, "status": r.status_code, "state": failure.get("state")})
+            attempts.append({"method": "flaresolverr", "url": candidate, "status": "exception", "state": failure.get("state")})
             if _should_stop_three_mf_fetch(failure):
                 log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
                 return "", "", candidate, last_failure
-        except Exception as e:
-            last_error = e
-            attempts.append({"method": "requests", "url": candidate, "status": "exception", "state": type(e).__name__})
             continue
+        if not isinstance(data, dict):
+            failure = _classify_3mf_fetch_failure(text="", source=candidate_source)
+            last_failure = merge_three_mf_failure(last_failure, failure)
+            attempts.append({"method": "flaresolverr", "url": candidate, "status": "non-json", "state": failure.get("state")})
+            continue
+        name, url = _extract_instance_download(data)
+        if url:
+            return name, url, candidate, {"state": "available", "message": ""}
+        text_preview = json.dumps(data, ensure_ascii=False)[:400]
+        failure = _classify_3mf_fetch_failure(
+            status_code=200,
+            text=text_preview,
+            payload=data,
+            source=candidate_source,
+        )
+        last_failure = merge_three_mf_failure(last_failure, failure)
+        attempts.append({"method": "flaresolverr", "url": candidate, "status": 200, "state": failure.get("state")})
+        if _should_stop_three_mf_fetch(failure):
+            log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
+            return "", "", candidate, last_failure
 
     if _should_stop_three_mf_fetch(last_failure):
         log("3MF 获取失败", inst_id, str(last_failure.get("state") or "missing"), str(last_failure.get("message") or ""))
         return "", "", candidates[-1] if candidates else api_url or "", last_failure
-    log("3MF 获取失败，尝试 curl", inst_id, _summarize_three_mf_fetch_attempts(attempts), last_error)
-    for candidate in candidates:
-        candidate_source = source_hint or normalize_makerworld_source(url=candidate)
-        cookie_header = effective_cookie
-        cmd = [
-            "curl",
-            "-sSL",
-            "--compressed",
-            "--connect-timeout",
-            "10",
-            "--max-time",
-            "30",
-            "-H",
-            "Accept: application/json, text/plain, */*",
-            "-H",
-            f"Referer: {origin or 'https://makerworld.com.cn/'}",
-            "-H",
-            f"Origin: {origin or 'https://makerworld.com.cn'}",
-            "-H",
-            "X-BBL-Client-Type: web",
-            "-H",
-            "X-BBL-Client-Version: 00.00.00.01",
-            "-H",
-            "X-BBL-App-Source: makerworld",
-            "-H",
-            "X-BBL-Client-Name: MakerWorld",
-            "-H",
-            f"User-Agent: {session.headers.get('User-Agent', 'Mozilla/5.0 (MW-Fetcher-curl)')}",
-        ]
-        if cookie_header:
-            cmd.extend([
-                "-H",
-                f"Cookie: {cookie_header}",
-            ])
-        if auth_token:
-            cmd.extend([
-                "-H",
-                f"Authorization: Bearer {auth_token}",
-                "-H",
-                f"token: {auth_token}",
-                "-H",
-                f"X-Token: {auth_token}",
-                "-H",
-                f"X-Access-Token: {auth_token}",
-            ])
-        clean_captcha_result = str(captcha_result_header or "").strip()
-        if clean_captcha_result:
-            cmd.extend([
-                "-H",
-                f"x-bbl-captcha-result: {clean_captcha_result}",
-            ])
-        cmd.append(candidate)
-        try:
-            res = subprocess.run(cmd, capture_output=True, text=False)
-            if res.returncode != 0:
-                err_msg = res.stderr.decode(errors="ignore") if res.stderr else ""
-                if VERBOSE_THREE_MF_FETCH_LOG:
-                    log("3MF curl 失败 code=", res.returncode, "stderr:", err_msg[:200])
-                failure = _classify_3mf_fetch_failure(text=err_msg, source=candidate_source)
-                last_failure = merge_three_mf_failure(last_failure, failure)
-                attempts.append({"method": "curl", "url": candidate, "status": f"exit-{res.returncode}", "state": failure.get("state")})
-                if _should_stop_three_mf_fetch(failure):
-                    log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
-                    return "", "", candidate, last_failure
-                continue
-            body = res.stdout or b""
-            preview = body[:200]
-            if VERBOSE_THREE_MF_FETCH_LOG:
-                log("3MF curl 返回长度:", len(body), "前 200 字符:", preview)
-            preview_text = body.decode("utf-8", errors="ignore")
-            try:
-                data = json.loads(preview_text)
-            except Exception as je:
-                if VERBOSE_THREE_MF_FETCH_LOG:
-                    log("3MF curl JSON 解析失败:", je)
-                failure = _classify_3mf_fetch_failure(
-                    text=preview_text[:400],
-                    cloudflare=_is_cloudflare_challenge(preview_text) or _looks_like_html(preview_text),
-                    source=candidate_source,
-                )
-                last_failure = merge_three_mf_failure(last_failure, failure)
-                attempts.append({"method": "curl", "url": candidate, "status": "json_error", "state": failure.get("state")})
-                if _should_stop_three_mf_fetch(failure):
-                    log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
-                    return "", "", candidate, last_failure
-                continue
-            name, url = _extract_instance_download(data)
-            if url:
-                return name, url, candidate, {"state": "available", "message": ""}
-            failure = _classify_3mf_fetch_failure(text=preview_text[:400], payload=data, source=candidate_source)
-            last_failure = merge_three_mf_failure(last_failure, failure)
-            attempts.append({"method": "curl", "url": candidate, "status": "no_url", "state": failure.get("state")})
-            if _should_stop_three_mf_fetch(failure):
-                log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
-                return "", "", candidate, last_failure
-        except Exception as ce:
-            if VERBOSE_THREE_MF_FETCH_LOG:
-                log("3MF curl 调用异常:", ce)
-            failure = _classify_3mf_fetch_failure(text=str(ce), source=candidate_source)
-            last_failure = merge_three_mf_failure(last_failure, failure)
-            attempts.append({"method": "curl", "url": candidate, "status": "exception", "state": failure.get("state")})
-            if _should_stop_three_mf_fetch(failure):
-                log("3MF 获取失败", inst_id, str(failure.get("state") or "missing"), str(failure.get("message") or ""))
-                return "", "", candidate, last_failure
-            continue
     log("3MF 获取失败", inst_id, _summarize_three_mf_fetch_attempts(attempts), str(last_failure.get("message") or ""))
     return "", "", api_url or "", last_failure
 
@@ -6578,12 +6128,21 @@ def rebuild_once(meta_path: Path, progress_callback=None, logger=None, build_off
         else:
             with resource_slot("three_mf_download", detail=dest.name):
                 _wait_before_three_mf_download(f"下载文件 {dest.name}", logger=logger)
-                download_file(
-                    REBUILD_SESSION,
-                    url,
-                    dest,
-                    max_duration=BINARY_TRANSFER_TIMEOUT_SECONDS,
-                )
+                try:
+                    download_file(
+                        REBUILD_SESSION,
+                        url,
+                        dest,
+                        max_duration=BINARY_TRANSFER_TIMEOUT_SECONDS,
+                    )
+                except Exception as exc:
+                    _mark_instance_3mf_download_failed(inst, exc, logger=logger)
+                    meta_changed = True
+                    continue
+        if inst.get("downloadState") or inst.get("downloadMessage"):
+            inst["downloadState"] = ""
+            inst["downloadMessage"] = ""
+            meta_changed = True
         inst_files.append({
             "id": inst.get("id"),
             "title": inst.get("title") or inst.get("name") or str(inst.get("id")),
@@ -6746,23 +6305,18 @@ def archive_model(
     log(logger, "请求头:", sess.headers)
     log(logger, "请求 Cookie:", summarize_cookie_header(raw_cookie_header, parsed_cookies))
 
-    # 优先用 requests 拉取页面，失败再回退 curl
     fetch_started_at = time.perf_counter()
-    fetch_used_curl = False
     emit_progress(progress_callback, 12, "正在获取模型页面")
     html_text = fetch_html_with_requests(sess, fetch_url, raw_cookie_header)
     if not html_text:
-        fetch_used_curl = True
-        html_text = fetch_html_with_curl(fetch_url, raw_cookie_header)
+        raise RuntimeError("FlareSolverr 获取模型页面失败，请检查 MAKERHUB_FLARESOLVERR_URL 和 FlareSolverr 服务状态。")
     elif "__NEXT_DATA__" not in html_text and "__NUXT__" not in html_text:
-        log(logger, "requests 页面未包含 __NEXT_DATA__，尝试 curl 回退")
-        fetch_used_curl = True
-        html_text = fetch_html_with_curl(fetch_url, raw_cookie_header)
+        log(logger, "FlareSolverr 页面未包含 __NEXT_DATA__ 或 __NUXT__。")
     timings_ms["fetch_html"] = _log_perf(
         "archive.fetch_html",
         fetch_started_at,
         logger=logger,
-        used_curl=fetch_used_curl,
+        via="flaresolverr",
         html_bytes=len(html_text or ""),
     )
 
@@ -7301,8 +6855,24 @@ def archive_model(
     else:
         log(logger, "已跳过归档目录整理。")
 
-    # 缺失 3MF 记录（仅记录，没有下载 3mf）
-    missing_3mf = [inst for inst in inst_list if not inst.get("downloadUrl")]
+    # 缺失 3MF 记录（仅记录，没有下载 3mf）。这里必须以整理后的磁盘状态为准：
+    # 直链已拿到但 3MF 文件没落地时，仍然要进入缺失重试队列。
+    final_meta = meta
+    try:
+        if meta_path.exists():
+            with meta_path.open("r", encoding="utf-8") as f:
+                loaded_meta = json.load(f)
+            if isinstance(loaded_meta, dict):
+                final_meta = loaded_meta
+    except Exception as e:
+        log(logger, "读取整理后 meta 失败，使用内存元数据计算缺失 3MF:", e)
+    final_instances = final_meta.get("instances") if isinstance(final_meta.get("instances"), list) else inst_list
+    missing_3mf = _missing_3mf_instances(final_instances, work_dir, require_local_file=bool(rebuild_archive))
+    if final_meta is not meta:
+        try:
+            meta_path.write_text(json.dumps(final_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            log(logger, "写回缺失 3MF 状态失败:", e)
     if missing_3mf and record_missing_3mf_log:
         _record_missing_3mf_summary(logs_dir, base_name, missing_3mf, logger=logger)
 

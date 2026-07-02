@@ -420,6 +420,50 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(result["failure_kind"], "verification_required")
         self.assertIn("验证页面", result["error"])
 
+    def test_auth_probe_uses_flaresolverr_without_session_get(self):
+        class FailingSession:
+            def close(self):
+                return None
+
+            def get(self, *_args, **_kwargs):
+                raise AssertionError("source health auth probe must use FlareSolverr")
+
+        calls = []
+
+        def fake_flaresolverr(url, **kwargs):
+            calls.append((url, kwargs))
+            return '{"uid": 1, "name": "ok"}'
+
+        with patch.object(source_health, "_make_session", return_value=FailingSession()), patch.object(
+            source_health,
+            "flaresolverr_get_text",
+            side_effect=fake_flaresolverr,
+        ):
+            payload = source_health._probe_auth_endpoints("cn", "token=abc", None)
+
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["used_proxy"])
+        self.assertTrue(calls)
+        self.assertIn("Cookie", calls[0][1]["headers"])
+
+    def test_web_probe_uses_flaresolverr_without_session_get(self):
+        class FailingSession:
+            def close(self):
+                return None
+
+            def get(self, *_args, **_kwargs):
+                raise AssertionError("source health web probe must use FlareSolverr")
+
+        with patch.object(source_health, "_make_session", return_value=FailingSession()), patch.object(
+            source_health,
+            "flaresolverr_get_text",
+            return_value="<html><script id=\"__NEXT_DATA__\"></script></html>",
+        ):
+            payload = source_health._probe_platform_web_page("cn", "token=abc", None)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["state"], "ok")
+
     def test_cookie_partial_success_message_avoids_probe_count_jargon(self):
         message = source_health._build_cookie_auth_message(
             "cn",

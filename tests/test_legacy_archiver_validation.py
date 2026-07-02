@@ -1,50 +1,22 @@
 import unittest
 from tempfile import TemporaryDirectory
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.services import legacy_archiver
 
 
-class _JsonResponse:
-    def __init__(self, status_code, payload=None):
-        self.status_code = status_code
-        self._payload = payload if payload is not None else {}
-        self.text = __import__("json").dumps(self._payload, ensure_ascii=False)
-
-    def json(self):
-        return self._payload
-
-
 class _ApiSession:
-    def __init__(self, payload_by_host=None):
+    def __init__(self):
         self.headers = {"User-Agent": "test"}
         self.calls = []
-        self.payload_by_host = payload_by_host or {}
 
     def get(self, url, timeout=None, headers=None):
         self.calls.append(url)
-        for host, payload in self.payload_by_host.items():
-            if host in url:
-                return _JsonResponse(200, payload)
-        return _JsonResponse(404, {})
+        raise AssertionError("MakerWorld control requests must use FlareSolverr")
 
 
 class LegacyArchiverValidationTest(unittest.TestCase):
-    def setUp(self):
-        self.scrapling_patcher = patch(
-            "app.services.legacy_archiver.fetch_json_with_scrapling",
-            return_value=(None, SimpleNamespace(ok=False, status_code=0, text="", error="", engine="disabled")),
-        )
-        self.scrapling_only_patcher = patch("app.services.legacy_archiver.scrapling_only", return_value=False)
-        self.scrapling_patcher.start()
-        self.scrapling_only_patcher.start()
-
-    def tearDown(self):
-        self.scrapling_patcher.stop()
-        self.scrapling_only_patcher.stop()
-
     def test_design_payload_rejects_empty_api_shell(self):
         error = legacy_archiver._design_payload_error(
             {"id": 0, "title": "", "coverUrl": "", "instances": []},
@@ -70,90 +42,94 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         self.assertIn("标题为空", error)
 
     def test_fetch_design_from_api_does_not_cross_cn_to_global(self):
-        session = _ApiSession(
-            {
-                "api.bambulab.com": {
-                    "id": 2416065,
-                    "title": "Global model with same numeric id",
-                    "coverUrl": "https://cdn.example.com/global.jpg",
-                    "instances": [],
-                }
-            }
-        )
+        session = _ApiSession()
+        calls = []
 
-        design = legacy_archiver.fetch_design_from_api(
-            session,
-            "",
-            "https://makerworld.com.cn/zh/models/2416065",
-            api_host_hint="https://api.bambulab.com",
-        )
+        def fake_flaresolverr(url, **_kwargs):
+            calls.append(url)
+            return None
+
+        with patch.object(legacy_archiver, "flaresolverr_get_json", side_effect=fake_flaresolverr):
+            design = legacy_archiver.fetch_design_from_api(
+                session,
+                "",
+                "https://makerworld.com.cn/zh/models/2416065",
+                api_host_hint="https://api.bambulab.com",
+            )
 
         self.assertIsNone(design)
-        self.assertFalse(any("api.bambulab.com" in call for call in session.calls))
+        self.assertFalse(any("api.bambulab.com" in call for call in calls))
+        self.assertEqual(session.calls, [])
 
     def test_fetch_design_from_api_accepts_matching_cn_payload(self):
-        session = _ApiSession(
-            {
-                "api.bambulab.cn": {
+        session = _ApiSession()
+
+        def fake_flaresolverr(url, **_kwargs):
+            if "api.bambulab.cn" in url:
+                return {
                     "id": "2416065",
                     "title": "十二生肖-兔女孩",
                     "coverUrl": "https://cdn.example.com/cn.jpg",
                     "instances": [],
                 }
-            }
-        )
+            return None
 
-        design = legacy_archiver.fetch_design_from_api(
-            session,
-            "",
-            "https://makerworld.com.cn/zh/models/2416065",
-        )
+        with patch.object(legacy_archiver, "flaresolverr_get_json", side_effect=fake_flaresolverr):
+            design = legacy_archiver.fetch_design_from_api(
+                session,
+                "",
+                "https://makerworld.com.cn/zh/models/2416065",
+            )
 
         self.assertIsInstance(design, dict)
         self.assertEqual(design["id"], 2416065)
         self.assertEqual(design["title"], "十二生肖-兔女孩")
+        self.assertEqual(session.calls, [])
 
     def test_fetch_design_from_api_prefers_global_bambulab_api(self):
-        session = _ApiSession(
-            {
-                "api.bambulab.com": {
+        session = _ApiSession()
+        calls = []
+
+        def fake_flaresolverr(url, **_kwargs):
+            calls.append(url)
+            if "api.bambulab.com" in url:
+                return {
                     "id": "2416065",
                     "title": "Global API model",
                     "coverUrl": "https://cdn.example.com/global.jpg",
                     "instances": [],
-                },
-                "makerworld.com": {
+                }
+            if "makerworld.com" in url:
+                return {
                     "id": "2416065",
                     "title": "Site domain model",
                     "coverUrl": "https://cdn.example.com/site.jpg",
                     "instances": [],
-                },
-            }
-        )
+                }
+            return None
 
-        design = legacy_archiver.fetch_design_from_api(
-            session,
-            "",
-            "https://makerworld.com/zh/models/2416065",
-        )
+        with patch.object(legacy_archiver, "flaresolverr_get_json", side_effect=fake_flaresolverr):
+            design = legacy_archiver.fetch_design_from_api(
+                session,
+                "",
+                "https://makerworld.com/zh/models/2416065",
+            )
 
         self.assertIsInstance(design, dict)
         self.assertEqual(design["title"], "Global API model")
-        self.assertIn("api.bambulab.com", session.calls[0])
+        self.assertIn("api.bambulab.com", calls[0])
+        self.assertEqual(session.calls, [])
 
-    def test_fetch_design_from_api_uses_scrapling_before_requests(self):
+    def test_fetch_design_from_api_uses_flaresolverr_without_requests(self):
         session = _ApiSession()
         with patch(
-            "app.services.legacy_archiver.fetch_json_with_scrapling",
-            return_value=(
-                {
-                    "id": "2416065",
-                    "title": "Scrapling model",
-                    "coverUrl": "https://cdn.example.com/cn.jpg",
-                    "instances": [],
-                },
-                SimpleNamespace(ok=True, status_code=200, text="", error="", engine="scrapling-static"),
-            ),
+            "app.services.legacy_archiver.flaresolverr_get_json",
+            return_value={
+                "id": "2416065",
+                "title": "FlareSolverr model",
+                "coverUrl": "https://cdn.example.com/cn.jpg",
+                "instances": [],
+            },
         ):
             design = legacy_archiver.fetch_design_from_api(
                 session,
@@ -162,8 +138,27 @@ class LegacyArchiverValidationTest(unittest.TestCase):
             )
 
         self.assertIsInstance(design, dict)
-        self.assertEqual(design["title"], "Scrapling model")
+        self.assertEqual(design["title"], "FlareSolverr model")
         self.assertEqual(session.calls, [])
+
+    def test_fetch_html_with_requests_uses_flaresolverr_without_old_fallback(self):
+        class FailingSession:
+            headers = {"User-Agent": "test-agent"}
+
+            def get(self, *_args, **_kwargs):
+                raise AssertionError("MakerWorld HTML must use FlareSolverr")
+
+        with patch(
+            "app.services.legacy_archiver.flaresolverr_get_text",
+            return_value="<html><script id=\"__NEXT_DATA__\"></script></html>",
+        ):
+            html = legacy_archiver.fetch_html_with_requests(
+                FailingSession(),
+                "https://makerworld.com.cn/zh/models/2416065",
+                "token=abc",
+            )
+
+        self.assertIn("__NEXT_DATA__", html)
 
     def test_archive_model_reports_makerworld_404_page_as_source_deleted(self):
         makerworld_404_html = """
@@ -180,7 +175,7 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         with TemporaryDirectory() as temp_dir, patch(
             "app.services.legacy_archiver.fetch_html_with_requests",
             return_value=makerworld_404_html,
-        ), patch("app.services.legacy_archiver.fetch_html_with_curl", return_value=makerworld_404_html), patch(
+        ), patch(
             "app.services.legacy_archiver.fetch_design_from_api",
             return_value=None,
         ):
@@ -212,30 +207,6 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         self.assertIn("私有", failure["message"])
         self.assertNotIn("验证", failure["message"])
         self.assertNotIn("Cloudflare", failure["message"])
-
-    def test_fetch_html_with_curl_retries_transient_dns_failure(self):
-        calls = []
-
-        def fake_run(cmd, capture_output=None, text=None):
-            calls.append(cmd)
-            if len(calls) == 1:
-                return SimpleNamespace(
-                    returncode=6,
-                    stdout=b"",
-                    stderr=b"curl: (6) Could not resolve host: makerworld.com.cn",
-                )
-            return SimpleNamespace(
-                returncode=0,
-                stdout=b"<html><script id=\"__NEXT_DATA__\"></script></html>",
-                stderr=b"",
-            )
-
-        with patch("app.services.legacy_archiver.subprocess.run", side_effect=fake_run):
-            html = legacy_archiver.fetch_html_with_curl("https://makerworld.com.cn/zh/models/1", "")
-
-        self.assertIn("__NEXT_DATA__", html)
-        self.assertGreaterEqual(len(calls), 2)
-        self.assertIn("--http1.1", calls[1])
 
     def test_comment_api_base_candidates_prefer_global_bambulab_api(self):
         candidates = legacy_archiver._comment_api_base_candidates(

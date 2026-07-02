@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 import zipfile
@@ -11,9 +12,11 @@ import app.services.legacy_archiver as legacy_archiver_module
 import app.services.task_state as task_state_module
 from app.services.legacy_archiver import (
     _build_instance_api_candidates,
+    _missing_3mf_instances,
     _missing_3mf_failure_for_skipped_fetch,
     download_file,
     fetch_instance_3mf,
+    rebuild_once,
 )
 from app.services.archive_worker import ArchiveTaskManager
 from app.services.remote_refresh import _build_missing_3mf_items
@@ -997,46 +1000,27 @@ class Missing3mfTest(unittest.TestCase):
 
     def test_fetch_instance_3mf_continues_after_auth_required_candidate(self):
         original_wait = legacy_archiver_module._wait_before_three_mf_download
-        original_scrapling_fetch_json = legacy_archiver_module.fetch_json_with_scrapling
-        original_scrapling_only = legacy_archiver_module.scrapling_only
         try:
             legacy_archiver_module._wait_before_three_mf_download = lambda *_args, **_kwargs: 0
-            legacy_archiver_module.fetch_json_with_scrapling = lambda *_args, **_kwargs: (
-                None,
-                SimpleNamespace(ok=False, status_code=0, text="", error="", engine="disabled"),
-            )
-            legacy_archiver_module.scrapling_only = lambda *_args, **_kwargs: False
             session = SimpleNamespace(headers={"User-Agent": "test-agent"})
             calls = []
 
-            class FakeResponse:
-                def __init__(self, status_code: int, payload: dict):
-                    self.status_code = status_code
-                    self._payload = payload
-                    self.text = __import__("json").dumps(payload, ensure_ascii=False)
-
-                def json(self):
-                    return self._payload
-
-            def fake_get(url, timeout=None, headers=None):
+            def fake_flaresolverr(url, **_kwargs):
                 calls.append(url)
                 if len(calls) == 1:
-                    return FakeResponse(403, {"code": 1, "error": "Please log in to download models."})
-                return FakeResponse(200, {"name": "ok.3mf", "url": "https://example.test/ok.3mf"})
+                    return {"code": 1, "error": "Please log in to download models."}
+                return {"name": "ok.3mf", "url": "https://example.test/ok.3mf"}
 
-            session.get = fake_get
-
-            name, url, used_api_url, failure = fetch_instance_3mf(
-                session,
-                2864062,
-                "token=abc",
-                api_url="https://makerworld.com.cn/api/v1/design-service/instance/2864062/f3mf?type=download&fileType=",
-                origin="https://makerworld.com.cn",
-            )
+            with patch.object(legacy_archiver_module, "flaresolverr_get_json", side_effect=fake_flaresolverr):
+                name, url, used_api_url, failure = fetch_instance_3mf(
+                    session,
+                    2864062,
+                    "token=abc",
+                    api_url="https://makerworld.com.cn/api/v1/design-service/instance/2864062/f3mf?type=download&fileType=",
+                    origin="https://makerworld.com.cn",
+                )
         finally:
             legacy_archiver_module._wait_before_three_mf_download = original_wait
-            legacy_archiver_module.fetch_json_with_scrapling = original_scrapling_fetch_json
-            legacy_archiver_module.scrapling_only = original_scrapling_only
 
         self.assertEqual(name, "ok.3mf")
         self.assertEqual(url, "https://example.test/ok.3mf")
@@ -1044,36 +1028,30 @@ class Missing3mfTest(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(used_api_url, calls[-1])
 
-    def test_fetch_instance_3mf_uses_scrapling_download_payload(self):
+    def test_fetch_instance_3mf_uses_flaresolverr_download_payload(self):
         original_wait = legacy_archiver_module._wait_before_three_mf_download
-        original_scrapling_fetch_json = legacy_archiver_module.fetch_json_with_scrapling
         try:
             legacy_archiver_module._wait_before_three_mf_download = lambda *_args, **_kwargs: 0
             session = SimpleNamespace(headers={"User-Agent": "test-agent"}, get=lambda *_args, **_kwargs: None)
             calls = []
 
-            def fake_scrapling(url, **kwargs):
+            def fake_flaresolverr(url, **kwargs):
                 calls.append((url, kwargs))
-                return (
-                    {"name": "from-scrapling.3mf", "url": "https://example.test/from-scrapling.3mf"},
-                    SimpleNamespace(ok=True, status_code=200, text="", error="", engine="scrapling-static"),
+                return {"name": "from-flaresolverr.3mf", "url": "https://example.test/from-flaresolverr.3mf"}
+
+            with patch.object(legacy_archiver_module, "flaresolverr_get_json", side_effect=fake_flaresolverr):
+                name, url, used_api_url, failure = fetch_instance_3mf(
+                    session,
+                    2864062,
+                    "token=abc",
+                    api_url="https://makerworld.com.cn/api/v1/design-service/instance/2864062/f3mf?type=download&fileType=",
+                    origin="https://makerworld.com.cn",
                 )
-
-            legacy_archiver_module.fetch_json_with_scrapling = fake_scrapling
-
-            name, url, used_api_url, failure = fetch_instance_3mf(
-                session,
-                2864062,
-                "token=abc",
-                api_url="https://makerworld.com.cn/api/v1/design-service/instance/2864062/f3mf?type=download&fileType=",
-                origin="https://makerworld.com.cn",
-            )
         finally:
             legacy_archiver_module._wait_before_three_mf_download = original_wait
-            legacy_archiver_module.fetch_json_with_scrapling = original_scrapling_fetch_json
 
-        self.assertEqual(name, "from-scrapling.3mf")
-        self.assertEqual(url, "https://example.test/from-scrapling.3mf")
+        self.assertEqual(name, "from-flaresolverr.3mf")
+        self.assertEqual(url, "https://example.test/from-flaresolverr.3mf")
         self.assertEqual(failure["state"], "available")
         self.assertEqual(used_api_url, calls[0][0])
         self.assertIn("Cookie", calls[0][1]["headers"])
@@ -1115,6 +1093,97 @@ class Missing3mfTest(unittest.TestCase):
                 metadata = archive.read("Metadata/makerhub_fake_download.json").decode("utf-8")
             self.assertIn("MakerHub", metadata)
             self.assertIn("real.3mf", metadata)
+
+    def test_rebuild_marks_three_mf_static_download_failure_as_missing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_dir = Path(temp_dir) / "LOCAL_Model"
+            model_dir.mkdir()
+            meta_path = model_dir / "meta.json"
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "id": "1686848",
+                        "url": "https://makerworld.com.cn/zh/models/1686848",
+                        "title": "Demo model",
+                        "baseName": "LOCAL_Model",
+                        "instances": [
+                            {
+                                "id": "profile-1",
+                                "title": "0.2mm profile",
+                                "name": "profile.3mf",
+                                "fileName": "profile.3mf",
+                                "downloadUrl": "https://cdn.example.test/profile.3mf",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(legacy_archiver_module, "download_file", side_effect=RuntimeError("403 Cloudflare challenge")), patch.object(
+                legacy_archiver_module, "_wait_before_three_mf_download", return_value=0
+            ):
+                rebuild_once(meta_path)
+
+            updated_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            instance = updated_meta["instances"][0]
+            self.assertEqual(instance["downloadState"], "cloudflare")
+            self.assertIn("403 Cloudflare challenge", instance["downloadMessage"])
+            self.assertFalse((model_dir / "instances" / "profile.3mf").exists())
+
+            items = _build_missing_3mf_items(meta_path, updated_meta, resolved_files={"matches": {}})
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["instance_id"], "profile-1")
+            self.assertIn("MakerWorld 需要验证", items[0]["message"])
+
+    def test_missing_three_mf_local_file_check_is_only_for_rebuild(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            work_dir = Path(temp_dir)
+            instance = {
+                "id": "profile-1",
+                "title": "0.2mm profile",
+                "fileName": "profile.3mf",
+                "downloadUrl": "https://cdn.example.test/profile.3mf",
+            }
+
+            self.assertEqual(_missing_3mf_instances([dict(instance)], work_dir, require_local_file=False), [])
+            missing = _missing_3mf_instances([dict(instance)], work_dir, require_local_file=True)
+
+            self.assertEqual(len(missing), 1)
+            self.assertEqual(missing[0]["downloadState"], "missing")
+            self.assertEqual(missing[0]["downloadMessage"], "3MF 文件尚未保存到本地，等待重新下载。")
+
+    def test_download_file_does_not_use_flaresolverr(self):
+        class FakeStreamResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def raise_for_status(self):
+                return None
+
+            def iter_content(self, chunk_size=0):
+                yield b"real-bytes"
+
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+
+            def get(self, url, timeout=None, stream=False):
+                self.calls.append((url, timeout, stream))
+                return FakeStreamResponse()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session = FakeSession()
+            dest = Path(temp_dir) / "asset.jpg"
+            download_file(session, "https://cdn.example.test/asset.jpg", dest)
+            self.assertEqual(dest.read_bytes(), b"real-bytes")
+
+        self.assertEqual(session.calls[0][0], "https://cdn.example.test/asset.jpg")
 
 
 if __name__ == "__main__":

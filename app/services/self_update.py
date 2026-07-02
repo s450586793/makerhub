@@ -63,6 +63,9 @@ POSTGRES_COMPOSE_MIGRATION_EXAMPLE = """services:
       MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
       MAKERHUB_WEB_WORKERS: "1"
       MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
+      MAKERHUB_FLARESOLVERR_URL: http://flaresolverr:8191/v1
+      MAKERHUB_FLARESOLVERR_TIMEOUT: "90"
+      MAKERHUB_FLARESOLVERR_MAX_CONCURRENCY: "1"
     volumes:
       - /volume4/docker/docker/makerhub:/app/config
       - /volume2/entertainment/3D打印/makerhub:/app/data
@@ -84,6 +87,9 @@ POSTGRES_COMPOSE_MIGRATION_EXAMPLE = """services:
       MAKERHUB_WORKER_CONCURRENCY: "2"
       MAKERHUB_HEAVY_JOB_NICE: "10"
       MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
+      MAKERHUB_FLARESOLVERR_URL: http://flaresolverr:8191/v1
+      MAKERHUB_FLARESOLVERR_TIMEOUT: "90"
+      MAKERHUB_FLARESOLVERR_MAX_CONCURRENCY: "1"
     volumes:
       - /volume4/docker/docker/makerhub:/app/config
       - /volume2/entertainment/3D打印/makerhub:/app/data
@@ -108,11 +114,19 @@ POSTGRES_COMPOSE_MIGRATION_EXAMPLE = """services:
     #   interval: 10s
     #   timeout: 5s
     #   retries: 10
+    restart: unless-stopped
+
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: makerhub-flaresolverr
+    environment:
+      LOG_LEVEL: info
+      TZ: Asia/Shanghai
     restart: unless-stopped"""
 POSTGRES_COMPOSE_MIGRATION_MESSAGE = (
     "当前版本将归档模型索引迁移到 Postgres。检测到当前容器仍是旧 compose，"
     "缺少 MAKERHUB_DATABASE_URL / makerhub-postgres 服务，或仍使用旧的 /app/state、/app/archive、/app/local 分散挂载；"
-    "请先按示例 compose 改成 App + Worker + Postgres 三容器，并使用 /app/config + /app/data 新目录布局后，再执行网页更新。"
+    "请先按示例 compose 改成 App + Worker + Postgres + FlareSolverr 部署，并使用 /app/config + /app/data 新目录布局后，再执行网页更新。"
 )
 
 

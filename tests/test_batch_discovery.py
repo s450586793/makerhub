@@ -216,30 +216,17 @@ class BatchDiscoveryTest(unittest.TestCase):
     def test_api_get_json_can_skip_empty_hits_and_continue_endpoint_probe(self):
         calls = []
 
-        class FakeScraplingResult:
-            status_code = 0
-            engine = "test"
-            error = ""
-
-        class FakeResponse:
-            status_code = 200
-            headers = {"content-type": "application/json"}
-            text = "{}"
-
-            def __init__(self, payload):
-                self._payload = payload
-
-            def json(self):
-                return self._payload
-
         class FakeSession:
             headers = {"User-Agent": "test-agent"}
 
             def get(self, url, **_kwargs):
-                calls.append(url)
-                if len(calls) == 1:
-                    return FakeResponse({"hits": [], "total": 0})
-                return FakeResponse({"hits": [{"id": 1001, "title": "A"}], "total": 1})
+                raise AssertionError("batch discovery API must use FlareSolverr")
+
+        def fake_flaresolverr(url, **_kwargs):
+            calls.append(url)
+            if len(calls) == 1:
+                return {"hits": [], "total": 0}
+            return {"hits": [{"id": 1001, "title": "A"}], "total": 1}
 
         with patch.object(
             batch_discovery,
@@ -247,11 +234,64 @@ class BatchDiscoveryTest(unittest.TestCase):
             return_value=["https://api.example.test/empty", "https://api.example.test/full"],
         ), patch.object(
             batch_discovery,
-            "fetch_json_with_scrapling",
-            return_value=(None, FakeScraplingResult()),
+            "flaresolverr_get_json",
+            side_effect=fake_flaresolverr,
         ), patch.object(batch_discovery, "_append_discovery_debug"):
             payload = batch_discovery._api_get_json(
                 FakeSession(),
+                "https://makerworld.com/zh/@ace/collections/models",
+                "token=ok",
+                "design-service",
+                "/favorites/designs/123",
+                {"offset": 0, "limit": 20},
+                skip_empty_hits=True,
+            )
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(payload["total"], 1)
+
+    def test_fetch_listing_html_uses_flaresolverr_without_curl_fallback(self):
+        session = requests.Session()
+
+        with patch.object(
+            batch_discovery,
+            "fetch_html_with_requests",
+            return_value="<html><script id=\"__NEXT_DATA__\"></script></html>",
+        ):
+            html = batch_discovery._fetch_listing_html(
+                session,
+                "https://makerworld.com.cn/zh/@ace/upload",
+                "token=ok",
+            )
+
+        self.assertIn("__NEXT_DATA__", html)
+
+    def test_api_get_json_uses_flaresolverr_without_requests(self):
+        calls = []
+
+        class FailingSession:
+            headers = {"User-Agent": "test-agent"}
+
+            def get(self, *_args, **_kwargs):
+                raise AssertionError("batch discovery API must use FlareSolverr")
+
+        def fake_flaresolverr(url, **kwargs):
+            calls.append((url, kwargs))
+            if url.endswith("/empty"):
+                return {"hits": [], "total": 0}
+            return {"hits": [{"id": 1001, "title": "A"}], "total": 1}
+
+        with patch.object(
+            batch_discovery,
+            "_service_endpoint_candidates",
+            return_value=["https://api.example.test/empty", "https://api.example.test/full"],
+        ), patch.object(
+            batch_discovery,
+            "flaresolverr_get_json",
+            side_effect=fake_flaresolverr,
+        ), patch.object(batch_discovery, "_append_discovery_debug"):
+            payload = batch_discovery._api_get_json(
+                FailingSession(),
                 "https://makerworld.com/zh/@ace/collections/models",
                 "token=ok",
                 "design-service",

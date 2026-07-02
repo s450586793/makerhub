@@ -11,15 +11,13 @@ from bs4 import BeautifulSoup
 from app.core.settings import LOGS_DIR
 from app.services.business_logs import append_structured_log
 from app.services.cookie_utils import extract_auth_token, sanitize_cookie_header
+from app.services.flaresolverr_client import FlareSolverrError, flaresolverr_get_json
 from app.services.legacy_archiver import (
     extract_next_data,
     fetch_design_from_api,
-    fetch_html_with_curl,
     fetch_html_with_requests,
-    fetch_json_with_scrapling,
     parse_cookies,
 )
-from app.services.scrapling_fetch import scrapling_only
 
 
 MODEL_PATH_RE = re.compile(r"/(?:[a-z]{2}/)?models/(\d+)(?:[^\"'\\s<>]*)?", re.I)
@@ -124,7 +122,7 @@ def _fetch_listing_html(session: requests.Session, page_url: str, raw_cookie: st
     html = fetch_html_with_requests(session, page_url, raw_cookie)
     if html:
         return html
-    return fetch_html_with_curl(page_url, raw_cookie)
+    raise RuntimeError("FlareSolverr 获取来源页面失败。")
 
 
 def _extract_auth_token(raw_cookie: str) -> str:
@@ -218,141 +216,69 @@ def _api_get_json(
     headers = _build_api_headers(session, raw_cookie, source_url)
     for api_url in _service_endpoint_candidates(source_url, service_name, path):
         started = time.time()
-        payload, scrapling_result = fetch_json_with_scrapling(
-            api_url,
-            raw_cookie=raw_cookie,
-            headers=headers,
-            params=params or None,
-            timeout=15,
-        )
-        if isinstance(payload, dict):
-            hits_payload = _extract_hits_payload(payload)
-            payload_summary = _payload_debug_summary(payload) if "/favorites" in path else []
-            if skip_empty_hits and _hits_payload_is_empty_result(hits_payload):
-                _append_discovery_debug(
-                    "api_empty_hits_skipped",
-                    api_url=api_url,
-                    service=service_name,
-                    path=path,
-                    params=params or {},
-                    status_code=scrapling_result.status_code,
-                    elapsed_ms=round((time.time() - started) * 1000, 1),
-                    engine=scrapling_result.engine,
-                    total=(hits_payload or {}).get("total"),
-                    payload_summary=payload_summary,
-                )
-                continue
-            _append_discovery_debug(
-                "api_ok",
-                api_url=api_url,
-                service=service_name,
-                path=path,
-                params=params or {},
-                status_code=scrapling_result.status_code,
-                elapsed_ms=round((time.time() - started) * 1000, 1),
-                engine=scrapling_result.engine,
-                uid=_extract_uid(payload),
-                hits=len((hits_payload or {}).get("hits") or []),
-                total=(hits_payload or {}).get("total"),
-                has_next=(hits_payload or {}).get("hasNext"),
-                search_session_id=_extract_search_session_id(hits_payload or payload),
-                payload_summary=payload_summary,
-            )
-            return payload
-        if scrapling_only():
-            _append_discovery_debug(
-                "api_error",
-                api_url=api_url,
-                service=service_name,
-                path=path,
-                params=params or {},
-                engine=getattr(scrapling_result, "engine", "scrapling"),
-                status_code=getattr(scrapling_result, "status_code", 0),
-                error=getattr(scrapling_result, "error", ""),
-                elapsed_ms=round((time.time() - started) * 1000, 1),
-            )
-            continue
         try:
-            response = session.get(api_url, params=params or None, headers=headers, timeout=(5, 12))
-        except Exception as exc:
+            payload = flaresolverr_get_json(
+                api_url,
+                raw_cookie=raw_cookie,
+                headers=headers,
+                params=params or None,
+                session=session,
+                allow_non_json=True,
+            )
+        except FlareSolverrError as exc:
             _append_discovery_debug(
                 "api_error",
                 api_url=api_url,
                 service=service_name,
                 path=path,
                 params=params or {},
+                engine="flaresolverr",
                 error=str(exc),
                 elapsed_ms=round((time.time() - started) * 1000, 1),
             )
             continue
-        if response.status_code >= 400:
-            _append_discovery_debug(
-                "api_response",
-                api_url=api_url,
-                service=service_name,
-                path=path,
-                params=params or {},
-                status_code=response.status_code,
-                elapsed_ms=round((time.time() - started) * 1000, 1),
-            )
-            continue
-        text = response.text or ""
-        if _looks_like_html_response(text):
-            _append_discovery_debug(
-                "api_html_response",
-                api_url=api_url,
-                service=service_name,
-                path=path,
-                params=params or {},
-                status_code=response.status_code,
-                elapsed_ms=round((time.time() - started) * 1000, 1),
-            )
-            continue
-        try:
-            payload = response.json()
-        except Exception:
+        if not isinstance(payload, dict):
             _append_discovery_debug(
                 "api_non_json",
                 api_url=api_url,
                 service=service_name,
                 path=path,
                 params=params or {},
-                status_code=response.status_code,
+                engine="flaresolverr",
                 elapsed_ms=round((time.time() - started) * 1000, 1),
             )
             continue
-        if isinstance(payload, dict):
-            hits_payload = _extract_hits_payload(payload)
-            payload_summary = _payload_debug_summary(payload) if "/favorites" in path else []
-            if skip_empty_hits and _hits_payload_is_empty_result(hits_payload):
-                _append_discovery_debug(
-                    "api_empty_hits_skipped",
-                    api_url=api_url,
-                    service=service_name,
-                    path=path,
-                    params=params or {},
-                    status_code=response.status_code,
-                    elapsed_ms=round((time.time() - started) * 1000, 1),
-                    total=(hits_payload or {}).get("total"),
-                    payload_summary=payload_summary,
-                )
-                continue
+        hits_payload = _extract_hits_payload(payload)
+        payload_summary = _payload_debug_summary(payload) if "/favorites" in path else []
+        if skip_empty_hits and _hits_payload_is_empty_result(hits_payload):
             _append_discovery_debug(
-                "api_ok",
+                "api_empty_hits_skipped",
                 api_url=api_url,
                 service=service_name,
                 path=path,
                 params=params or {},
-                status_code=response.status_code,
+                engine="flaresolverr",
                 elapsed_ms=round((time.time() - started) * 1000, 1),
-                uid=_extract_uid(payload),
-                hits=len((hits_payload or {}).get("hits") or []),
                 total=(hits_payload or {}).get("total"),
-                has_next=(hits_payload or {}).get("hasNext"),
-                search_session_id=_extract_search_session_id(hits_payload or payload),
                 payload_summary=payload_summary,
             )
-            return payload
+            continue
+        _append_discovery_debug(
+            "api_ok",
+            api_url=api_url,
+            service=service_name,
+            path=path,
+            params=params or {},
+            engine="flaresolverr",
+            elapsed_ms=round((time.time() - started) * 1000, 1),
+            uid=_extract_uid(payload),
+            hits=len((hits_payload or {}).get("hits") or []),
+            total=(hits_payload or {}).get("total"),
+            has_next=(hits_payload or {}).get("hasNext"),
+            search_session_id=_extract_search_session_id(hits_payload or payload),
+            payload_summary=payload_summary,
+        )
+        return payload
     return None
 
 

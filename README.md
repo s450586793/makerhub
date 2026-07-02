@@ -4,21 +4,21 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.70`
+> 当前版本：`v0.9.72`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
 MakerHub 是一个面向个人 NAS、DSM、Unraid、Portainer 和自托管服务器的 MakerWorld 本地归档系统。它不是公开模型站，而是把你关注、收藏、下载和本地积累的模型统一整理成自己的 MakerWorld 私有资料库。
 
-你可以归档单个模型，也可以批量归档作者页、收藏夹、合集；可以创建订阅定时同步新模型；也可以把手机、网页或本地文件夹里的 `3MF`、`STL`、`STEP`、`OBJ`、压缩包和附件导入 MakerHub。V0.7.0 开始推荐使用 App / Worker / Postgres 三容器部署：App 负责页面和 API，Worker 负责后台抓取、整理和索引重建，Postgres 保存结构化配置、任务状态、业务日志和模型卡片索引。
+你可以归档单个模型，也可以批量归档作者页、收藏夹、合集；可以创建订阅定时同步新模型；也可以把手机、网页或本地文件夹里的 `3MF`、`STL`、`STEP`、`OBJ`、压缩包和附件导入 MakerHub。当前默认推荐 App / Worker / Postgres / FlareSolverr 四容器部署：App 负责页面和 API，Worker 负责后台抓取、整理和索引重建，Postgres 保存结构化配置、任务状态、业务日志和模型卡片索引，FlareSolverr 负责 MakerWorld 控制面抓取。
 
 ## 当前重点
 
 - 数据库化运行状态：配置、Cookie / Token、订阅、来源库 metadata、任务状态、分享记录、限流状态、系统更新状态和业务日志进入 Postgres。
 - 模型索引入库：归档模型卡片索引写入 `archive_model_index`，模型库、订阅库和来源库读取更稳定。
-- 三容器部署：默认 Compose 调整为 `makerhub-app`、`makerhub-worker`、`makerhub-postgres`。
+- 四容器默认部署：默认 Compose 调整为 `makerhub-app`、`makerhub-worker`、`makerhub-postgres`、`makerhub-flaresolverr`。
 - 数据库索引重建：首次连接数据库后由 Worker 自动遍历历史归档库建立模型卡片索引；设置页不再保留旧的手动补全入口。
-- 手动验证回退：`3MF` 下载遇到 MakerWorld 验证时，首页和任务页只外跳官网或模型页；MakerHub 不内嵌验证窗口、不自动点击验证码，也不绕过 MakerWorld 验证，用户在 MakerWorld 完成验证后回到 MakerHub 重试。
+- FlareSolverr 抓取通道：MakerWorld 页面、列表、评论和下载地址 API 走 FlareSolverr；图片、附件和 `3MF` 静态文件仍由普通下载器直接保存，`3MF` 直链保存失败会重新标记为缺失。
 - 系统更新更安全：旧 compose 缺少 Postgres 配置时会阻止网页一键更新，并提示先升级 compose。
 - 文档重整：补齐架构说明、模块边界、Compose 安装、升级说明和 V0.7.0 更新记录。
 
@@ -43,6 +43,7 @@ MakerHub 是一个面向个人 NAS、DSM、Unraid、Portainer 和自托管服务
 - `makerhub-app`：FastAPI API、Vue SPA、登录鉴权、轻量写操作和页面数据读取。
 - `makerhub-worker`：归档队列、订阅同步、源端刷新、本地整理、模型索引重建和封面生成。
 - `makerhub-postgres`：结构化配置、JSON 状态、业务日志、模型卡片索引和索引状态。
+- `makerhub-flaresolverr`：MakerWorld 页面和控制面 API 的 Cloudflare 浏览器通道。
 
 数据边界：
 
@@ -88,6 +89,12 @@ MAKERHUB_POSTGRES_PASSWORD=change-this-db-password
 
 `MAKERHUB_POSTGRES_PASSWORD` 会同时用于 App、Worker 和 Postgres，建议使用纯英文数字，避免 `@`、`:`、`/`、`#` 这类需要 URL 转义的字符。
 
+仓库默认 `compose.yaml` 会新建 `makerhub-flaresolverr`。如果你已经有可用的 FlareSolverr，使用 `compose.external-flaresolverr.yaml`，并在 `.env` 里增加：
+
+```env
+MAKERHUB_FLARESOLVERR_URL=http://你的FlareSolverr地址:端口/v1
+```
+
 ```yaml
 services:
   makerhub-app:
@@ -102,6 +109,9 @@ services:
       MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
       MAKERHUB_WEB_WORKERS: "1"
       MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
+      MAKERHUB_FLARESOLVERR_URL: http://flaresolverr:8191/v1
+      MAKERHUB_FLARESOLVERR_TIMEOUT: "90"
+      MAKERHUB_FLARESOLVERR_MAX_CONCURRENCY: "1"
     volumes:
       - /volume4/docker/docker/makerhub:/app/config
       - /volume2/entertainment/3D打印/makerhub:/app/data
@@ -123,6 +133,9 @@ services:
       MAKERHUB_WORKER_CONCURRENCY: "2"
       MAKERHUB_HEAVY_JOB_NICE: "10"
       MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
+      MAKERHUB_FLARESOLVERR_URL: http://flaresolverr:8191/v1
+      MAKERHUB_FLARESOLVERR_TIMEOUT: "90"
+      MAKERHUB_FLARESOLVERR_MAX_CONCURRENCY: "1"
     volumes:
       - /volume4/docker/docker/makerhub:/app/config
       - /volume2/entertainment/3D打印/makerhub:/app/data
@@ -148,6 +161,14 @@ services:
     #   timeout: 5s
     #   retries: 10
     restart: unless-stopped
+
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: makerhub-flaresolverr
+    environment:
+      LOG_LEVEL: info
+      TZ: Asia/Shanghai
+    restart: unless-stopped
 ```
 
 ### 3. 启动
@@ -168,14 +189,16 @@ http://你的服务器IP:9042
 
 `/app/logs`、`/app/state`、`/app/archive`、`/app/local` 默认不再单独映射。新业务日志和结构化运行状态写入 Postgres；容器内 `/app/config/logs`、`/app/config/state` 仅保留给兼容挂载、上传暂存、预览队列 marker、备份和临时文件使用。
 
+MakerWorld 页面、作者 / 收藏 / 合集列表、评论和 `3MF` 下载地址 API 依赖 FlareSolverr。FlareSolverr 不可用时这些控制面请求会直接失败；已经拿到的图片、附件和 `3MF` 静态文件 URL 仍由 MakerHub 普通下载器直接保存，不会把大文件流量压到 FlareSolverr 上。若 `3MF` 静态直链实际保存失败，实例会写回 `cloudflare` / `http_error` / `missing` 状态并进入缺失 `3MF` 重试队列。
+
 ## 从旧版升级
 
-如果你之前是单容器 `makerhub`，或旧的 `makerhub-api` / `makerhub-web` 双容器，先停掉旧容器释放端口，再按上面的三容器 compose 启动：
+如果你之前是单容器 `makerhub`，或旧的 `makerhub-api` / `makerhub-web` 双容器，先停掉旧容器释放端口，再按上面的默认 compose 启动：
 
 ```bash
 docker rm -f makerhub || true
 docker rm -f makerhub-api makerhub-web || true
-docker compose pull makerhub-app makerhub-worker makerhub-postgres
+docker compose pull makerhub-app makerhub-worker makerhub-postgres flaresolverr
 docker compose up -d
 ```
 
@@ -186,7 +209,7 @@ docker compose up -d
 手动更新命令：
 
 ```bash
-docker compose pull makerhub-app makerhub-worker makerhub-postgres
+docker compose pull makerhub-app makerhub-worker makerhub-postgres flaresolverr
 docker compose up -d
 ```
 
@@ -213,11 +236,26 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-02 · v0.9.72
+
+- `3MF` 静态直链下载失败时会写回 `cloudflare` / `http_error` / `missing` 状态，并进入缺失 `3MF` 重试队列。
+- 缺失 `3MF` 判断改为归档整理后的真实磁盘状态，避免仅因已经解析出 `downloadUrl` 就误判为已归档。
+- 保持图片、头像、附件和 `3MF` 静态文件直连下载，不把大文件流量压到 FlareSolverr。
+
+### 2026-07-02 · v0.9.71
+
+- MakerWorld 页面、来源列表、评论和 `3MF` 下载地址 API 改为 FlareSolverr 单通道，失败时直接提示 FlareSolverr / 配置问题，不再回退旧 requests / curl 链路。
+- 图片、头像、附件和已解析出的 `3MF` 静态文件继续由普通下载器直接保存，避免把大文件流量压到 FlareSolverr；`3MF` 直链保存失败会写回缺失状态，避免仅因有 URL 就误判为已归档。
+- 默认 `compose.yaml` 新增 `makerhub-flaresolverr` 服务，并提供 `compose.external-flaresolverr.yaml` 复用已有 FlareSolverr。
+
 ### 2026-07-02 · v0.9.70
 
 - 任务页轻量接口不再加载配置里的历史缺失 `3MF` fallback，避免旧迁移数据把 `/api/tasks/light` 拖到超时。
 - 新增数据库 JSON 状态数组摘要读取，缺失 `3MF` 只取前几条展示项和总数，不再为任务页首屏全量读取和规范化列表。
 - 补充回归测试，覆盖轻量任务接口不读旧配置、缺失 `3MF` 紧凑读取和数据库摘要查询。
+
+<details>
+<summary>历史更新记录</summary>
 
 ### 2026-07-01 · v0.9.69
 
@@ -230,9 +268,6 @@ uvicorn app.main:app --reload
 - 删除历史补全维护后台链路：移除旧补全服务文件、任务提交入口、专用轻量补全执行分支和模型详情页手动补全按钮。
 - 数据库索引重建拆成独立 `archive_model_index_rebuild_status` 状态和后台 worker，不再复用历史补全状态。
 - 更新当前模块文档和回归测试，确保源码不再引用旧历史补全接口、状态 key 或补全任务。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-01 · v0.9.67
 

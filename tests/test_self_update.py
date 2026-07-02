@@ -37,6 +37,8 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
         self.assertNotIn("makerhub_password_123456", compose_text)
         self.assertNotIn("MAKERHUB_ADMIN_PASSWORD", compose_text)
         self.assertIn("MAKERHUB_POSTGRES_PASSWORD", compose_text)
+        self.assertIn("MAKERHUB_FLARESOLVERR_URL: http://flaresolverr:8191/v1", compose_text)
+        self.assertIn("makerhub-flaresolverr", compose_text)
         self.assertIn("# - /var/run/docker.sock:/var/run/docker.sock", compose_text)
         self.assertNotIn("      - /var/run/docker.sock:/var/run/docker.sock", compose_text)
         self.assertNotIn("    depends_on:", compose_text)
@@ -47,6 +49,16 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
         self.assertNotIn("/app/state", compose_text)
         self.assertNotIn("/app/archive", compose_text)
         self.assertNotIn("/app/local", compose_text)
+
+    def test_external_flaresolverr_compose_uses_env_url_without_embedded_service(self):
+        compose_text = (ROOT_DIR / "compose.external-flaresolverr.yaml").read_text(encoding="utf-8")
+
+        self.assertIn("MAKERHUB_FLARESOLVERR_URL: ${MAKERHUB_FLARESOLVERR_URL", compose_text)
+        self.assertNotIn("makerhub-flaresolverr", compose_text)
+        self.assertNotIn("ghcr.io/flaresolverr/flaresolverr", compose_text)
+        self.assertIn("makerhub-postgres", compose_text)
+        self.assertIn("/volume4/docker/docker/makerhub:/app/config", compose_text)
+        self.assertIn("/app/data", compose_text)
 
     def test_web_update_target_uses_current_image_when_web_image_is_not_set(self):
         original_name = self_update.os.environ.get(self_update.WEB_CONTAINER_NAME_ENV)
@@ -242,11 +254,14 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
 
             self.assertFalse(status["supported"])
             self.assertTrue(status["compose_migration_required"])
+            self.assertIn("FlareSolverr", status["compose_migration_reason"])
             self.assertIn("MAKERHUB_DATABASE_URL", status["compose_example"])
             self.assertNotIn("MAKERHUB_ADMIN_PASSWORD", status["compose_example"])
             self.assertIn("makerhub-postgres", status["compose_example"])
             self.assertNotIn("makerhub_password_123456", status["compose_example"])
             self.assertIn("MAKERHUB_POSTGRES_PASSWORD", status["compose_example"])
+            self.assertIn("MAKERHUB_FLARESOLVERR_URL: http://flaresolverr:8191/v1", status["compose_example"])
+            self.assertIn("makerhub-flaresolverr", status["compose_example"])
             self.assertIn("# - /var/run/docker.sock:/var/run/docker.sock", status["compose_example"])
             self.assertNotIn("      - /var/run/docker.sock:/var/run/docker.sock", status["compose_example"])
             self.assertNotIn("    depends_on:", status["compose_example"])

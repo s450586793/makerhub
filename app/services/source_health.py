@@ -15,8 +15,8 @@ from app.core.settings import STATE_DIR, ensure_app_dirs
 from app.core.timezone import now as china_now, parse_datetime
 from app.services.account_health import load_account_health, snapshot_to_source_card
 from app.services.cookie_utils import extract_auth_token, sanitize_cookie_header
+from app.services.flaresolverr_client import FlareSolverrError, flaresolverr_get_text
 from app.services.proxy_policy import effective_proxy_cache_state, proxy_mapping
-from app.services.scrapling_fetch import fetch_text as scrapling_fetch_text, scrapling_only
 from app.services.state_events import publish_state_event
 from app.services.three_mf import (
     describe_three_mf_failure,
@@ -346,7 +346,6 @@ def _probe_auth_endpoints(
         return _empty_cookie_auth_payload(platform, "http_error", "连接异常", "缺少认证探针配置。")
 
     session = _make_session()
-    proxies = _build_proxy_mapping(proxy_config, platform=platform, allow_domestic_proxy=allow_domestic_proxy)
     headers = _build_request_headers(PLATFORM_ORIGINS.get(platform, ""), raw_cookie)
     states: list[str] = []
     results: list[dict[str, Any]] = []
@@ -354,58 +353,21 @@ def _probe_auth_endpoints(
         for name, url in probes:
             started = time.perf_counter()
             try:
-                scrapling_result = scrapling_fetch_text(
-                    headers=headers,
-                    proxy_config=proxy_config,
-                    raw_cookie=raw_cookie,
-                    timeout=12,
-                    url=url,
-                    allow_domestic_proxy=allow_domestic_proxy,
-                )
-                if scrapling_result.ok:
-                    elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
-                    result = _auth_probe_result_from_response(
-                        name=name,
-                        url=url,
-                        status_code=int(scrapling_result.status_code or 0),
-                        text=scrapling_result.text or "",
-                        headers=scrapling_result.headers or {},
-                        elapsed_ms=elapsed_ms,
-                        engine=scrapling_result.engine,
-                    )
-                    results.append(result)
-                    states.append(_classify_auth_probe_result(result))
-                    continue
-                if scrapling_only():
-                    elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
-                    result = _auth_probe_result_from_response(
-                        name=name,
-                        url=url,
-                        status_code=int(scrapling_result.status_code or 0),
-                        text=scrapling_result.text or "",
-                        headers=scrapling_result.headers or {},
-                        elapsed_ms=elapsed_ms,
-                        engine=scrapling_result.engine,
-                    )
-                    if not result.get("error") or result.get("failure_kind") == "http_error":
-                        result["error"] = scrapling_result.error or "Scrapling 抓取失败。"
-                    results.append(result)
-                    states.append(_classify_auth_probe_result(result))
-                    continue
-                response = session.get(
+                text = flaresolverr_get_text(
                     url,
                     headers=headers,
-                    proxies=proxies or None,
-                    timeout=(6, 12),
+                    raw_cookie=raw_cookie,
+                    session=session,
                 )
                 elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
                 result = _auth_probe_result_from_response(
                     name=name,
                     url=url,
-                    status_code=int(response.status_code),
-                    text=response.text or "",
-                    headers=response.headers,
+                    status_code=200,
+                    text=text or "",
+                    headers={},
                     elapsed_ms=elapsed_ms,
+                    engine="flaresolverr",
                 )
             except Exception as exc:
                 elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
@@ -469,7 +431,7 @@ def _probe_auth_endpoints(
             "results": results,
             "success_count": success_count,
             "target_count": len(results),
-            "used_proxy": bool(proxies),
+            "used_proxy": False,
         }
     )
     payload["message"] = _build_cookie_auth_message(platform, payload)
@@ -645,56 +607,24 @@ def _probe_platform_web_page(platform: str, raw_cookie: str, proxy_config: Any) 
 
     session = _make_session()
     headers = _build_request_headers(PLATFORM_ORIGINS.get(platform_key, ""), raw_cookie)
-    proxies = _build_proxy_mapping(proxy_config, url, platform=platform_key)
     started = time.perf_counter()
     try:
-        scrapling_result = scrapling_fetch_text(
+        text = flaresolverr_get_text(
+            url,
             headers=headers,
-            proxy_config=proxy_config,
             raw_cookie=raw_cookie,
-            timeout=10,
+            session=session,
+        )
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+        return _web_probe_payload_from_response(
+            platform=platform_key,
             url=url,
+            status_code=200,
+            text=text or "",
+            headers={},
+            elapsed_ms=elapsed_ms,
+            engine="flaresolverr",
         )
-        should_use_scrapling_result = (
-            scrapling_result.ok
-            or scrapling_only()
-            or (
-                int(scrapling_result.status_code or 0) in {401, 403}
-                and (scrapling_result.text or scrapling_result.error)
-            )
-            or _contains_verification_markers(scrapling_result.text or "")
-        )
-        if should_use_scrapling_result:
-            elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
-            payload = _web_probe_payload_from_response(
-                platform=platform_key,
-                url=url,
-                status_code=int(scrapling_result.status_code or 0),
-                text=scrapling_result.text or "",
-                headers=scrapling_result.headers or {},
-                elapsed_ms=elapsed_ms,
-                engine=scrapling_result.engine,
-            )
-            if payload.get("state") == "http_error" and scrapling_result.error:
-                payload["detail"] = scrapling_result.error
-                payload["results"][0]["error"] = scrapling_result.error
-            return payload
-        else:
-            response = session.get(
-                url,
-                headers=headers,
-                proxies=proxies or None,
-                timeout=(5, 10),
-            )
-            elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
-            return _web_probe_payload_from_response(
-                platform=platform_key,
-                url=url,
-                status_code=int(response.status_code),
-                text=response.text or "",
-                headers=response.headers,
-                elapsed_ms=elapsed_ms,
-            )
     except Exception as exc:
         return {
             "ok": False,
