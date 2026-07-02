@@ -119,6 +119,48 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
         self.assertEqual(queue["queued"][0]["id"], "retry-profile-1")
         self.assertEqual(queue["queued"][0]["meta"]["instance_ids"], ["profile-1", "profile-2"])
 
+    def test_ensure_worker_for_pending_resumes_verification_paused_queue(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        calls = []
+        manager.task_store = SimpleNamespace(
+            resume_verification_paused_archive_tasks=lambda: calls.append("resume") or {
+                "active": [],
+                "queued": [{"id": "restored", "status": "queued"}],
+                "recent_failures": [],
+                "running_count": 0,
+                "queued_count": 1,
+                "resumed_count": 1,
+            },
+            refresh_recent_active_archive_leases=lambda: {
+                "active": [],
+                "queued": [{"id": "restored", "status": "queued"}],
+                "recent_failures": [],
+                "running_count": 0,
+                "queued_count": 1,
+            },
+            load_archive_queue=lambda: {
+                "active": [],
+                "queued": [{"id": "restored", "status": "queued"}],
+                "recent_failures": [],
+                "running_count": 0,
+                "queued_count": 1,
+            },
+            repair_archive_queue=lambda repair_active=False: {
+                "queue": {
+                    "active": [],
+                    "queued": [{"id": "restored", "status": "queued"}],
+                    "recent_failures": [],
+                    "running_count": 0,
+                    "queued_count": 1,
+                }
+            },
+        )
+
+        queue = manager.ensure_worker_for_pending()
+
+        self.assertEqual(calls, ["resume"])
+        self.assertEqual(queue["queued_count"], 1)
+
     def test_ensure_worker_for_pending_does_not_requeue_expired_active_tasks_after_initial_repair(self):
         state = {}
         manager = ArchiveTaskManager(background_enabled=False)

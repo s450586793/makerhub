@@ -2475,6 +2475,16 @@ class ArchiveTaskManager:
 
     def ensure_worker_for_pending(self) -> dict:
         queue = self._repair_queue_before_worker_start(repair_active=False)
+        if hasattr(self.task_store, "resume_verification_paused_archive_tasks"):
+            resumed_queue = self.task_store.resume_verification_paused_archive_tasks()
+            if int(resumed_queue.get("resumed_count") or 0) > 0:
+                queue = resumed_queue
+                _log_archive(
+                    "verification_paused_queue_resumed",
+                    "检测到验证已恢复，已重新排队旧的 MakerWorld 验证暂停任务。",
+                    resumed_count=int(resumed_queue.get("resumed_count") or 0),
+                    queued_count=int(resumed_queue.get("queued_count") or 0),
+                )
         if int(queue.get("running_count") or 0) > 0:
             queue = self.task_store.refresh_recent_active_archive_leases()
         if int(queue.get("queued_count") or 0) > 0 and int(queue.get("running_count") or 0) <= 0:

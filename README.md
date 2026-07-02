@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.72`
+> 当前版本：`v0.9.73`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -236,6 +236,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-02 · v0.9.73
+
+- Worker 轮询会自动恢复旧的 `paused / needs_verification` 普通归档队列，FlareSolverr 验证通过后不再需要手动改数据库。
+- 只恢复明确由 MakerWorld 验证暂停的归档项，保留手动暂停或其他阻塞状态，避免误放行不可执行任务。
+- 补充队列状态和归档 Worker 回归测试，覆盖旧验证暂停任务恢复后重新进入 `queued`。
+
 ### 2026-07-02 · v0.9.72
 
 - `3MF` 静态直链下载失败时会写回 `cloudflare` / `http_error` / `missing` 状态，并进入缺失 `3MF` 重试队列。
@@ -248,14 +254,14 @@ uvicorn app.main:app --reload
 - 图片、头像、附件和已解析出的 `3MF` 静态文件继续由普通下载器直接保存，避免把大文件流量压到 FlareSolverr；`3MF` 直链保存失败会写回缺失状态，避免仅因有 URL 就误判为已归档。
 - 默认 `compose.yaml` 新增 `makerhub-flaresolverr` 服务，并提供 `compose.external-flaresolverr.yaml` 复用已有 FlareSolverr。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-02 · v0.9.70
 
 - 任务页轻量接口不再加载配置里的历史缺失 `3MF` fallback，避免旧迁移数据把 `/api/tasks/light` 拖到超时。
 - 新增数据库 JSON 状态数组摘要读取，缺失 `3MF` 只取前几条展示项和总数，不再为任务页首屏全量读取和规范化列表。
 - 补充回归测试，覆盖轻量任务接口不读旧配置、缺失 `3MF` 紧凑读取和数据库摘要查询。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-01 · v0.9.69
 

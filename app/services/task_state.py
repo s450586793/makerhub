@@ -72,6 +72,8 @@ ARCHIVE_COMPLETION_MESSAGE_MARKERS = (
     "批量归档完成",
     "新增 3MF 下载完成",
 )
+ARCHIVE_VERIFICATION_REQUIRED_MESSAGE = "MakerWorld 需要验证，前往官网任意下载一个模型。"
+ARCHIVE_VERIFICATION_RESUMED_MESSAGE = "验证已通过，恢复归档队列。"
 _STATE_LOCK = threading.RLock()
 _ORGANIZER_HISTORY_COUNT_CACHE = {
     "mtime_ns": 0,
@@ -2303,6 +2305,39 @@ class TaskStateStore:
                 },
             )
         return {"summary": summary, "queue": queue}
+
+    def resume_verification_paused_archive_tasks(self) -> dict:
+        resumed_count = 0
+
+        def _mutate(payload: dict) -> dict:
+            nonlocal resumed_count
+            queued = []
+            now = china_now_iso()
+            for item in payload.get("queued") or []:
+                normalized = _normalize_archive_runtime_item(item, "queued")
+                status = str(normalized.get("status") or "").strip().lower()
+                blocked_reason = str(normalized.get("blocked_reason") or "").strip().lower()
+                message = str(normalized.get("message") or "").strip()
+                if (
+                    status == "paused"
+                    and (
+                        blocked_reason == "needs_verification"
+                        or message == ARCHIVE_VERIFICATION_REQUIRED_MESSAGE
+                    )
+                ):
+                    normalized["status"] = "queued"
+                    normalized["message"] = ARCHIVE_VERIFICATION_RESUMED_MESSAGE
+                    normalized["updated_at"] = now
+                    normalized.pop("blocked_reason", None)
+                    resumed_count += 1
+                queued.append(normalized)
+
+            payload["queued"] = queued
+            return payload
+
+        queue = self._update_archive_queue(_mutate)
+        queue["resumed_count"] = resumed_count
+        return queue
 
     def remove_recent_failures_for_model(self, model_id: str, url: str = "") -> dict:
         model_key = str(model_id or "").strip()

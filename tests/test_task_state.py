@@ -1176,6 +1176,48 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(result["summary"]["skipped"], 1)
         self.assertEqual(result["queue"]["active"][0]["status"], "paused")
 
+    def test_resume_verification_paused_archive_tasks_only_restores_matching_queued_items(self):
+        state = {
+            "archive_queue": {
+                "active": [],
+                "queued": [
+                    {
+                        "id": "needs-verification",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "mode": "single_model",
+                        "status": "paused",
+                        "blocked_reason": "needs_verification",
+                        "message": "MakerWorld 需要验证，前往官网任意下载一个模型。",
+                    },
+                    {
+                        "id": "manual-pause",
+                        "url": "https://makerworld.com.cn/zh/models/456",
+                        "mode": "single_model",
+                        "status": "paused",
+                        "blocked_reason": "manual",
+                        "message": "用户手动暂停。",
+                    },
+                ],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.china_now_iso", return_value="2026-07-02T16:00:00+08:00"):
+            queue = store.resume_verification_paused_archive_tasks()
+
+        restored = queue["queued"][0]
+        still_paused = queue["queued"][1]
+        self.assertEqual(queue["resumed_count"], 1)
+        self.assertEqual(restored["status"], "queued")
+        self.assertNotIn("blocked_reason", restored)
+        self.assertEqual(restored["message"], "验证已通过，恢复归档队列。")
+        self.assertEqual(restored["updated_at"], "2026-07-02T16:00:00+08:00")
+        self.assertEqual(still_paused["status"], "paused")
+        self.assertEqual(still_paused["blocked_reason"], "manual")
+
     def test_completed_archive_task_publishes_semantic_event(self):
         state = {}
         events = []

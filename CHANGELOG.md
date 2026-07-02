@@ -1,5 +1,11 @@
 # 更新说明
 
+## 2026-07-02 · v0.9.73
+
+- Worker 轮询会自动恢复旧的 `paused / needs_verification` 普通归档队列，FlareSolverr 验证通过后不再需要手动改数据库。
+- 只恢复明确由 MakerWorld 验证暂停的归档项，保留手动暂停或其他阻塞状态，避免误放行不可执行任务。
+- 补充队列状态和归档 Worker 回归测试，覆盖旧验证暂停任务恢复后重新进入 `queued`。
+
 ## 2026-06-29 · v0.9.62
 
 - 通用 API Token 和移动端导入 Token 不再接受 URL query 传递，只接受 `Authorization: Bearer` 或兼容 token header。
