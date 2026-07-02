@@ -20,7 +20,7 @@ archiver.py (app2)
 提取自 mw_fetch5.0.py，作为可导入模块使用：
 - 使用 archive_model(url, cookie, download_dir, logs_dir, logger=None)
 - 不包含全局 URL/COOKIE/OUT_DIR 配置
-- 保持 mw_fetch5.0 的采集、curl 兜底、3MF 获取、实例/图片处理逻辑
+- 保持 mw_fetch5.0 的采集、3MF 获取、实例/图片处理逻辑
 """
 
 import requests
@@ -308,18 +308,6 @@ def _missing_3mf_failure_for_skipped_fetch(
         "state": normalized_skip_state,
         "message": str(skip_message or "").strip() or describe_three_mf_failure(normalized_skip_state, url=fetch_url),
     }
-
-
-def _safe_curl_command_for_log(cmd: list[str]) -> str:
-    safe_args: list[str] = []
-    sensitive_headers = ("cookie:", "authorization:", "token:", "x-token:", "x-access-token:")
-    for arg in cmd:
-        if isinstance(arg, str) and arg.lower().startswith(sensitive_headers):
-            header = arg.split(":", 1)[0].strip() or "Header"
-            safe_args.append(f"{header}: [redacted]")
-        else:
-            safe_args.append(str(arg))
-    return " ".join(safe_args)
 
 
 IMAGE_TRANSFER_TIMEOUT_SECONDS = 45
@@ -679,7 +667,7 @@ def choose_unique_instance_filename(
         idx += 1
 
 
-def fetch_html_with_requests(session: requests.Session, url: str, raw_cookie: str) -> Optional[str]:
+def fetch_html_with_flaresolverr(session: requests.Session, url: str, raw_cookie: str) -> Optional[str]:
     cookie_header = sanitize_cookie_header(raw_cookie) or _session_cookie_header(session)
     headers = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -6307,7 +6295,7 @@ def archive_model(
 
     fetch_started_at = time.perf_counter()
     emit_progress(progress_callback, 12, "正在获取模型页面")
-    html_text = fetch_html_with_requests(sess, fetch_url, raw_cookie_header)
+    html_text = fetch_html_with_flaresolverr(sess, fetch_url, raw_cookie_header)
     if not html_text:
         raise RuntimeError("FlareSolverr 获取模型页面失败，请检查 MAKERHUB_FLARESOLVERR_URL 和 FlareSolverr 服务状态。")
     elif "__NEXT_DATA__" not in html_text and "__NUXT__" not in html_text:

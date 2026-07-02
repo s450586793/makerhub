@@ -15,7 +15,7 @@ from app.services.flaresolverr_client import FlareSolverrError, flaresolverr_get
 from app.services.legacy_archiver import (
     extract_next_data,
     fetch_design_from_api,
-    fetch_html_with_requests,
+    fetch_html_with_flaresolverr,
     parse_cookies,
 )
 
@@ -119,7 +119,7 @@ def extract_model_id(url: str) -> str:
 
 
 def _fetch_listing_html(session: requests.Session, page_url: str, raw_cookie: str) -> str:
-    html = fetch_html_with_requests(session, page_url, raw_cookie)
+    html = fetch_html_with_flaresolverr(session, page_url, raw_cookie)
     if html:
         return html
     raise RuntimeError("FlareSolverr 获取来源页面失败。")

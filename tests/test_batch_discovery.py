@@ -255,7 +255,7 @@ class BatchDiscoveryTest(unittest.TestCase):
 
         with patch.object(
             batch_discovery,
-            "fetch_html_with_requests",
+            "fetch_html_with_flaresolverr",
             return_value="<html><script id=\"__NEXT_DATA__\"></script></html>",
         ):
             html = batch_discovery._fetch_listing_html(

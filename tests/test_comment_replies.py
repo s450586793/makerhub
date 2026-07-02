@@ -10,7 +10,6 @@ from app.services.catalog import _normalize_comment_item, _normalize_comments, _
 from app.services.legacy_archiver import (
     COMMENT_SCHEMA_VERSION,
     PROFILE_DETAIL_SCHEMA_VERSION,
-    _safe_curl_command_for_log,
     _collect_comment_tree,
     collect_comments,
     normalize_threaded_comments,
@@ -54,6 +53,24 @@ class CommentRepliesTest(unittest.TestCase):
                 payload = self._payload(url, params or {}, headers or {}, timeout)
                 return CommentRepliesTest._DummyResponse(payload)
             return CommentRepliesTest._DummyResponse(self._payload)
+
+        def flare_get_json(self, url, **kwargs):
+            params = kwargs.get("params") or {}
+            headers = kwargs.get("headers") or {}
+            self.calls.append(
+                {
+                    "url": url,
+                    "params": params,
+                    "headers": headers,
+                    "timeout": None,
+                }
+            )
+            if callable(self._payload):
+                return self._payload(url, params, headers, None)
+            return self._payload
+
+        def patch_flaresolverr(self):
+            return patch.object(legacy_archiver, "flaresolverr_get_json", side_effect=self.flare_get_json)
 
     def test_catalog_normalizes_wrapped_reply_lists(self):
         comment = {
@@ -433,13 +450,14 @@ class CommentRepliesTest(unittest.TestCase):
         }
         session = self._DummySession(reply_payload)
 
-        bundle = collect_comments(
-            next_data,
-            design,
-            session,
-            Path("."),
-            download_assets=False,
-        )
+        with session.patch_flaresolverr():
+            bundle = collect_comments(
+                next_data,
+                design,
+                session,
+                Path("."),
+                download_assets=False,
+            )
 
         self.assertEqual(bundle["count"], 3)
         self.assertEqual(len(bundle["items"]), 1)
@@ -490,13 +508,14 @@ class CommentRepliesTest(unittest.TestCase):
         }
         session = self._DummySession(reply_payload)
 
-        bundle = collect_comments(
-            next_data,
-            design,
-            session,
-            Path("."),
-            download_assets=False,
-        )
+        with session.patch_flaresolverr():
+            bundle = collect_comments(
+                next_data,
+                design,
+                session,
+                Path("."),
+                download_assets=False,
+            )
 
         self.assertEqual(bundle["count"], 3)
         self.assertEqual(len(bundle["items"]), 1)
@@ -530,14 +549,15 @@ class CommentRepliesTest(unittest.TestCase):
         }
         session = self._DummySession(reply_payload)
 
-        bundle = collect_comments(
-            {},
-            design,
-            session,
-            Path("."),
-            download_assets=False,
-            existing_comments=existing_comments,
-        )
+        with session.patch_flaresolverr():
+            bundle = collect_comments(
+                {},
+                design,
+                session,
+                Path("."),
+                download_assets=False,
+                existing_comments=existing_comments,
+            )
 
         self.assertEqual(bundle["count"], 2)
         self.assertEqual(len(bundle["items"]), 1)
@@ -597,13 +617,14 @@ class CommentRepliesTest(unittest.TestCase):
 
         session = self._DummySession(payload)
 
-        bundle = collect_comments(
-            {},
-            {"id": "123456", "url": "https://makerworld.com.cn/zh/models/123456", "commentCount": 3},
-            session,
-            Path("."),
-            download_assets=False,
-        )
+        with session.patch_flaresolverr():
+            bundle = collect_comments(
+                {},
+                {"id": "123456", "url": "https://makerworld.com.cn/zh/models/123456", "commentCount": 3},
+                session,
+                Path("."),
+                download_assets=False,
+            )
 
         self.assertEqual(bundle["count"], 3)
         self.assertEqual([item["id"] for item in bundle["items"]], ["comment-1", "rating-1", "comment-2"])
@@ -637,13 +658,14 @@ class CommentRepliesTest(unittest.TestCase):
 
         session = self._DummySession(payload)
 
-        bundle = collect_comments(
-            {},
-            {"id": "2388805", "url": "https://makerworld.com.cn/zh/models/2388805", "commentCount": 41},
-            session,
-            Path("."),
-            download_assets=False,
-        )
+        with session.patch_flaresolverr():
+            bundle = collect_comments(
+                {},
+                {"id": "2388805", "url": "https://makerworld.com.cn/zh/models/2388805", "commentCount": 41},
+                session,
+                Path("."),
+                download_assets=False,
+            )
 
         self.assertEqual(bundle["count"], 41)
         self.assertEqual(len(bundle["items"]), 1)
@@ -662,13 +684,14 @@ class CommentRepliesTest(unittest.TestCase):
 
         session = self._DummySession(payload)
 
-        bundle = collect_comments(
-            {},
-            {"id": "2475775", "url": "https://makerworld.com.cn/zh/models/2475775", "commentCount": 432},
-            session,
-            Path("."),
-            download_assets=False,
-        )
+        with session.patch_flaresolverr():
+            bundle = collect_comments(
+                {},
+                {"id": "2475775", "url": "https://makerworld.com.cn/zh/models/2475775", "commentCount": 432},
+                session,
+                Path("."),
+                download_assets=False,
+            )
 
         self.assertEqual(bundle["count"], 0)
         self.assertEqual(bundle["items"], [])
@@ -703,13 +726,14 @@ class CommentRepliesTest(unittest.TestCase):
         session = self._DummySession(payload)
         legacy_archiver._comment_service_endpoint_candidates = fake_candidates
         try:
-            bundle = collect_comments(
-                {},
-                {"id": "2388805", "url": "https://makerworld.com.cn/zh/models/2388805", "commentCount": 1},
-                session,
-                Path("."),
-                download_assets=False,
-            )
+            with session.patch_flaresolverr():
+                bundle = collect_comments(
+                    {},
+                    {"id": "2388805", "url": "https://makerworld.com.cn/zh/models/2388805", "commentCount": 1},
+                    session,
+                    Path("."),
+                    download_assets=False,
+                )
         finally:
             legacy_archiver._comment_service_endpoint_candidates = original_candidates
 
@@ -765,13 +789,14 @@ class CommentRepliesTest(unittest.TestCase):
         session = self._DummySession(payload)
         legacy_archiver._comment_service_endpoint_candidates = fake_candidates
         try:
-            bundle = collect_comments(
-                {},
-                {"id": "2388805", "url": "https://makerworld.com.cn/zh/models/2388805", "commentCount": 1},
-                session,
-                Path("."),
-                download_assets=False,
-            )
+            with session.patch_flaresolverr():
+                bundle = collect_comments(
+                    {},
+                    {"id": "2388805", "url": "https://makerworld.com.cn/zh/models/2388805", "commentCount": 1},
+                    session,
+                    Path("."),
+                    download_assets=False,
+                )
         finally:
             legacy_archiver._comment_service_endpoint_candidates = original_candidates
 
@@ -842,13 +867,14 @@ class CommentRepliesTest(unittest.TestCase):
 
         session = self._DummySession(payload)
 
-        bundle = collect_comments(
-            {},
-            {"id": "123456", "url": "https://makerworld.com.cn/zh/models/123456", "commentCount": 1},
-            session,
-            Path("."),
-            download_assets=False,
-        )
+        with session.patch_flaresolverr():
+            bundle = collect_comments(
+                {},
+                {"id": "123456", "url": "https://makerworld.com.cn/zh/models/123456", "commentCount": 1},
+                session,
+                Path("."),
+                download_assets=False,
+            )
 
         self.assertEqual(len(bundle["items"]), 1)
         self.assertEqual(bundle["items"][0]["id"], "rating-root")
@@ -885,34 +911,19 @@ class CommentRepliesTest(unittest.TestCase):
 
         session = self._DummySession(payload)
 
-        bundle = collect_comments(
-            {},
-            {"id": "123456", "url": "https://makerworld.com.cn/zh/models/123456", "commentCount": 1},
-            session,
-            Path("."),
-            download_assets=False,
-        )
+        with session.patch_flaresolverr():
+            bundle = collect_comments(
+                {},
+                {"id": "123456", "url": "https://makerworld.com.cn/zh/models/123456", "commentCount": 1},
+                session,
+                Path("."),
+                download_assets=False,
+            )
 
         self.assertEqual(len(bundle["items"]), 1)
         self.assertEqual(bundle["items"][0]["id"], "blank-rating")
         self.assertEqual(bundle["items"][0]["content"], "")
         self.assertEqual(bundle["items"][0]["rating"], 5)
-
-    def test_curl_log_redacts_cookie_header(self):
-        logged = _safe_curl_command_for_log([
-            "curl",
-            "-H",
-            "Cookie: token=secret; cf_clearance=secret",
-            "-H",
-            "Authorization: Bearer secret",
-            "https://makerworld.com",
-        ])
-
-        self.assertIn("Cookie: [redacted]", logged)
-        self.assertIn("Authorization: [redacted]", logged)
-        self.assertNotIn("token=secret", logged)
-        self.assertNotIn("cf_clearance=secret", logged)
-        self.assertNotIn("Bearer secret", logged)
 
     def test_collect_comments_reuses_shared_avatar_cache_for_same_url(self):
         class BinaryResponse:

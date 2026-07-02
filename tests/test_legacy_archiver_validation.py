@@ -141,7 +141,7 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         self.assertEqual(design["title"], "FlareSolverr model")
         self.assertEqual(session.calls, [])
 
-    def test_fetch_html_with_requests_uses_flaresolverr_without_old_fallback(self):
+    def test_fetch_html_with_flaresolverr_uses_flaresolverr_without_old_fallback(self):
         class FailingSession:
             headers = {"User-Agent": "test-agent"}
 
@@ -152,7 +152,7 @@ class LegacyArchiverValidationTest(unittest.TestCase):
             "app.services.legacy_archiver.flaresolverr_get_text",
             return_value="<html><script id=\"__NEXT_DATA__\"></script></html>",
         ):
-            html = legacy_archiver.fetch_html_with_requests(
+            html = legacy_archiver.fetch_html_with_flaresolverr(
                 FailingSession(),
                 "https://makerworld.com.cn/zh/models/2416065",
                 "token=abc",
@@ -173,7 +173,7 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         """
 
         with TemporaryDirectory() as temp_dir, patch(
-            "app.services.legacy_archiver.fetch_html_with_requests",
+            "app.services.legacy_archiver.fetch_html_with_flaresolverr",
             return_value=makerworld_404_html,
         ), patch(
             "app.services.legacy_archiver.fetch_design_from_api",
