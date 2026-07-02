@@ -103,7 +103,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
 
         with patch("app.services.catalog.load_database_json_state", return_value={}), \
                 patch.object(catalog.TaskStateStore, "load_archive_queue", return_value=archive_queue), \
-                patch.object(catalog.TaskStateStore, "load_missing_3mf", return_value=missing_3mf), \
+                patch.object(catalog.TaskStateStore, "load_missing_3mf_compact", return_value=missing_3mf), \
                 patch.object(catalog.TaskStateStore, "load_remote_refresh_state", return_value={}), \
                 patch.object(catalog.TaskStateStore, "load_source_refresh_queue", return_value={"active": [], "queued": [], "recent_failures": []}), \
                 patch.object(catalog.TaskStateStore, "load_source_refresh_runs", return_value={}), \
@@ -139,7 +139,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
 
         with patch("app.services.catalog.load_database_json_state", return_value={}), \
                 patch.object(catalog.TaskStateStore, "load_archive_queue", return_value=archive_queue), \
-                patch.object(catalog.TaskStateStore, "load_missing_3mf", return_value=missing_3mf), \
+                patch.object(catalog.TaskStateStore, "load_missing_3mf_compact", return_value=missing_3mf), \
                 patch.object(catalog.TaskStateStore, "load_remote_refresh_state", return_value={}), \
                 patch.object(catalog.TaskStateStore, "load_source_refresh_queue", return_value={"active": [], "queued": [], "recent_failures": []}), \
                 patch.object(catalog.TaskStateStore, "load_source_refresh_runs", return_value={}), \
@@ -149,6 +149,66 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         self.assertEqual(payload["archive_queue"]["queued_count"], 2000)
         self.assertEqual(payload["archive_queue_display"]["raw_queued_count"], 2000)
         self.assertLessEqual(len(payload["archive_queue_display"]["queued"]), 5)
+
+    def test_tasks_light_payload_does_not_iterate_hidden_missing_3mf_items(self):
+        class GuardedMissingItems(list):
+            def __iter__(self):
+                for index, item in enumerate(super().__iter__()):
+                    if index >= 5:
+                        raise AssertionError("light payload should not iterate hidden missing 3MF items")
+                    yield item
+
+        missing_3mf = {
+            "items": GuardedMissingItems([
+                {
+                    "model_id": str(index),
+                    "title": f"missing-{index}",
+                    "status": "queued",
+                    "model_url": f"https://makerworld.com.cn/zh/models/{index}",
+                }
+                for index in range(2000)
+            ]),
+            "count": 2000,
+        }
+
+        with patch("app.services.catalog.load_database_json_state", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_archive_queue", return_value={"active": [], "queued": [], "recent_failures": [], "running_count": 0, "queued_count": 0}), \
+                patch.object(catalog.TaskStateStore, "load_missing_3mf_compact", return_value=missing_3mf), \
+                patch.object(catalog.TaskStateStore, "load_remote_refresh_state", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_source_refresh_queue", return_value={"active": [], "queued": [], "recent_failures": []}), \
+                patch.object(catalog.TaskStateStore, "load_source_refresh_runs", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_organize_tasks", return_value={"items": [], "count": 0}):
+            payload = catalog.build_tasks_light_payload()
+
+        self.assertEqual(payload["missing_3mf"]["count"], 2000)
+        self.assertTrue(payload["missing_3mf"]["items_truncated"])
+        self.assertLessEqual(len(payload["missing_3mf"]["items"]), 5)
+
+    def test_tasks_light_route_does_not_load_legacy_config_missing_3mf_fallback(self):
+        async def _run() -> dict:
+            with patch.object(tasks_routes.store, "load", side_effect=AssertionError("light tasks must not load app config")), \
+                    patch.object(tasks_routes, "build_tasks_light_payload", return_value={"light": True}), \
+                    patch.object(tasks_routes, "run_ui_io", side_effect=lambda func: func()):
+                return await tasks_routes.get_tasks_light_data()
+
+        payload = asyncio.run(_run())
+
+        self.assertEqual(payload, {"light": True})
+
+    def test_tasks_light_payload_uses_compact_missing_3mf_loader(self):
+        with patch("app.services.catalog.load_database_json_state", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_archive_queue", return_value={"active": [], "queued": [], "recent_failures": [], "running_count": 0, "queued_count": 0}), \
+                patch.object(catalog.TaskStateStore, "load_missing_3mf", side_effect=AssertionError("light payload must not normalize full missing 3MF state")), \
+                patch.object(catalog.TaskStateStore, "load_missing_3mf_compact", return_value={"items": [{"model_id": "1"}], "count": 2000, "items_truncated": True}), \
+                patch.object(catalog.TaskStateStore, "load_remote_refresh_state", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_source_refresh_queue", return_value={"active": [], "queued": [], "recent_failures": []}), \
+                patch.object(catalog.TaskStateStore, "load_source_refresh_runs", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_organize_tasks", return_value={"items": [], "count": 0}):
+            payload = catalog.build_tasks_light_payload()
+
+        self.assertEqual(payload["missing_3mf"]["count"], 2000)
+        self.assertEqual(payload["missing_3mf"]["items"], [{"model_id": "1"}])
+        self.assertTrue(payload["missing_3mf"]["items_truncated"])
 
     def test_tasks_payload_groups_subscription_children_for_display(self):
         archive_queue = {

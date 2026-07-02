@@ -6,7 +6,11 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote, urljoin, urlparse, urlunparse
 
-from app.core.database_json_state import load_database_json_state, save_database_json_state
+from app.core.database_json_state import (
+    load_database_json_state,
+    load_database_json_state_array_summary,
+    save_database_json_state,
+)
 from app.core.settings import LOGS_DIR, STATE_DIR, ensure_app_dirs
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
 from app.services import task_messages
@@ -1488,6 +1492,15 @@ class TaskStateStore:
         missing["count"] = len(missing["items"])
         return missing
 
+    def _load_missing_3mf_compact_unlocked(self, *, item_limit: int = 5) -> dict:
+        clean_limit = max(0, int(item_limit or 0))
+        summary = load_database_json_state_array_summary(MISSING_3MF_STATE_KEY, "items", limit=clean_limit)
+        normalized = _normalize_missing_3mf({"items": summary.get("items") or []})
+        count = int(summary.get("count") or 0)
+        normalized["count"] = count
+        normalized["items_truncated"] = count > len(normalized.get("items") or [])
+        return normalized
+
     def _save_missing_3mf_unlocked(self, payload: dict) -> dict:
         normalized = _normalize_missing_3mf(payload)
         self._write_json(MISSING_3MF_PATH, normalized)
@@ -1683,6 +1696,10 @@ class TaskStateStore:
     def load_missing_3mf(self, fallback_items: Optional[list[dict]] = None) -> dict:
         with _STATE_LOCK:
             return self._load_missing_3mf_unlocked(fallback_items=fallback_items)
+
+    def load_missing_3mf_compact(self, *, item_limit: int = 5) -> dict:
+        with _STATE_LOCK:
+            return self._load_missing_3mf_compact_unlocked(item_limit=item_limit)
 
     def load_organize_tasks(self) -> dict:
         with _STATE_LOCK:

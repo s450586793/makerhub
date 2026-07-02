@@ -73,9 +73,7 @@ async def get_tasks_data():
 @router.get("/tasks/light")
 async def get_tasks_light_data():
     def _tasks_payload() -> dict:
-        config = store.load()
-        fallback_items = [item.model_dump() for item in config.missing_3mf]
-        return build_tasks_light_payload(missing_fallback=fallback_items)
+        return build_tasks_light_payload()
 
     return await run_ui_io(_tasks_payload)
 

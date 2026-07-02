@@ -227,6 +227,58 @@ def load_json_state(key: str) -> Any:
     return None
 
 
+def load_json_state_array_summary(key: str, array_field: str, *, limit: int = 5) -> dict[str, Any]:
+    clean_key = str(key or "").strip()
+    clean_field = str(array_field or "").strip()
+    if not clean_key:
+        raise ValueError("JSON 状态 key 不能为空。")
+    if not clean_field:
+        raise ValueError("JSON 状态数组字段不能为空。")
+    clean_limit = max(0, int(limit or 0))
+    initialize_database()
+    with database_connection() as connection:
+        row = connection.execute(
+            """
+            WITH params AS (
+                SELECT %s::text AS array_field, %s::int AS item_limit, %s::text AS state_key
+            ),
+            state AS (
+                SELECT value -> params.array_field AS raw_items, params.item_limit
+                FROM makerhub_json_state, params
+                WHERE key = params.state_key
+            ),
+            counted AS (
+                SELECT
+                    raw_items,
+                    item_limit,
+                    CASE
+                        WHEN jsonb_typeof(raw_items) = 'array' THEN jsonb_array_length(raw_items)
+                        ELSE 0
+                    END AS item_count
+                FROM state
+            )
+            SELECT
+                item_count AS count,
+                COALESCE(
+                    (
+                        SELECT jsonb_agg(raw_items -> idx ORDER BY idx)
+                        FROM generate_series(0, LEAST(item_limit, item_count) - 1) AS idx
+                    ),
+                    '[]'::jsonb
+                ) AS items
+            FROM counted
+            """,
+            (clean_field, clean_limit, clean_key),
+        ).fetchone()
+    if not isinstance(row, dict):
+        return {"items": [], "count": 0}
+    items = row.get("items")
+    return {
+        "items": items if isinstance(items, list) else [],
+        "count": int(row.get("count") or 0),
+    }
+
+
 def save_json_state(key: str, value: Any) -> Any:
     clean_key = str(key or "").strip()
     if not clean_key:

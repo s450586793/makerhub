@@ -365,6 +365,42 @@ class DatabaseInitializationGuardTest(unittest.TestCase):
             1,
         )
 
+    def test_json_state_array_summary_reads_count_and_limited_items(self):
+        calls = []
+
+        class FakeResult:
+            def __init__(self, row=None):
+                self.row = row or {}
+
+            def fetchone(self):
+                return self.row
+
+        class FakeConnection:
+            def execute(self, sql, params=None):
+                calls.append((sql, params))
+                if "jsonb_array_length" in sql and "generate_series" in sql:
+                    return FakeResult({"count": 2000, "items": [{"model_id": "1"}]})
+                if "jsonb_array_elements" in sql:
+                    raise AssertionError("compact array summary must not expand the full JSON array")
+                if "SELECT value FROM makerhub_json_state" in sql:
+                    raise AssertionError("compact array summary must not load full JSON value")
+                return FakeResult()
+
+        class FakeContext:
+            def __enter__(self):
+                return FakeConnection()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        database._reset_database_initialization_for_tests()
+        with patch.object(database, "database_configured", return_value=True), \
+                patch.object(database, "database_connection", return_value=FakeContext()):
+            summary = database.load_json_state_array_summary("missing_3mf", "items", limit=5)
+
+        self.assertEqual(summary, {"items": [{"model_id": "1"}], "count": 2000})
+        self.assertTrue(any(params == ("items", 5, "missing_3mf") for _sql, params in calls))
+
     def test_initialization_guard_retries_after_failure(self):
         attempts = []
 

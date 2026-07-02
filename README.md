@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.65`
+> 当前版本：`v0.9.70`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -213,6 +213,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-02 · v0.9.70
+
+- 任务页轻量接口不再加载配置里的历史缺失 `3MF` fallback，避免旧迁移数据把 `/api/tasks/light` 拖到超时。
+- 新增数据库 JSON 状态数组摘要读取，缺失 `3MF` 只取前几条展示项和总数，不再为任务页首屏全量读取和规范化列表。
+- 补充回归测试，覆盖轻量任务接口不读旧配置、缺失 `3MF` 紧凑读取和数据库摘要查询。
+
 ### 2026-07-01 · v0.9.69
 
 - 缺失 `3MF` 重试因 MakerWorld 验证被平台 gate 暂停时，会同步把缺失列表状态改为“需要验证”，不再继续显示“已入队”。
@@ -225,14 +231,14 @@ uvicorn app.main:app --reload
 - 数据库索引重建拆成独立 `archive_model_index_rebuild_status` 状态和后台 worker，不再复用历史补全状态。
 - 更新当前模块文档和回归测试，确保源码不再引用旧历史补全接口、状态 key 或补全任务。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-01 · v0.9.67
 
 - 设置页移除“数据库索引与历史信息补全”维护面板，不再展示旧的手动重建索引 / 历史补全入口。
 - 系统页状态刷新只监听系统更新事件，不再轮询历史补全状态接口。
 - README 和数据模型说明同步改为自动索引重建语义，避免继续提示设置页手动入口。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-06-30 · v0.9.66
 

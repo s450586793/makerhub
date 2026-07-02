@@ -763,11 +763,14 @@ def _compact_archive_queue_payload(archive_queue: dict, *, item_limit: int = 5) 
 
 
 def _compact_missing_3mf_payload(missing_3mf: dict, *, item_limit: int = 5) -> dict:
-    items = _small_items(missing_3mf.get("items"), item_limit)
+    raw_items = missing_3mf.get("items")
+    items = _small_items(raw_items, item_limit)
+    raw_count = _count_items(raw_items)
+    count = int(missing_3mf.get("count") or raw_count)
     return {
         "items": items,
-        "count": int(missing_3mf.get("count") or _count_items(missing_3mf.get("items"))),
-        "items_truncated": _count_items(missing_3mf.get("items")) > len(items),
+        "count": count,
+        "items_truncated": bool(missing_3mf.get("items_truncated")) or count > len(items) or raw_count > len(items),
     }
 
 
@@ -3115,12 +3118,12 @@ def build_tasks_payload(
     return payload
 
 
-def build_tasks_light_payload(missing_fallback: Optional[list[dict]] = None) -> dict:
+def build_tasks_light_payload() -> dict:
     store = TaskStateStore()
     raw_archive_queue = store.load_archive_queue()
     archive_queue = _compact_archive_queue_payload(raw_archive_queue)
     archive_queue_display = _group_archive_queue_for_display(raw_archive_queue, item_limit=5, visible_only=True)
-    missing_3mf = _compact_missing_3mf_payload(store.load_missing_3mf(fallback_items=missing_fallback))
+    missing_3mf = _compact_missing_3mf_payload(store.load_missing_3mf_compact(item_limit=5))
     organize_tasks = _compact_organize_tasks_payload(store.load_organize_tasks())
     remote_refresh = compact_remote_refresh_state(store.load_remote_refresh_state(), include_current=True)
     source_refresh = _compact_source_refresh_payload(
@@ -3153,12 +3156,7 @@ def build_tasks_light_payload(missing_fallback: Optional[list[dict]] = None) -> 
 
 
 def build_dashboard_light_payload(config) -> dict:
-    tasks_payload = build_tasks_light_payload(
-        missing_fallback=[
-            item.model_dump() if hasattr(item, "model_dump") else item
-            for item in getattr(config, "missing_3mf", [])
-        ]
-    )
+    tasks_payload = build_tasks_light_payload()
     subscriptions_summary = _build_dashboard_subscriptions_light(config)
     remote_refresh = tasks_payload["remote_refresh"]
     source_refresh = tasks_payload["source_refresh"]
