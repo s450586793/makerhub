@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import { accountMessageText, accountStatusClass, accountStatusLabel } from "./accountStatus.js";
 
-test("account probe http error is warning when saved profile exists", () => {
+test("account probe http error is saved when saved profile exists", () => {
   const item = {
     platform: "cn",
     status: "http_error",
@@ -12,15 +12,15 @@ test("account probe http error is warning when saved profile exists", () => {
     message: "国内账号测试失败，暂时无法确认 Cookie 是否可用。",
   };
 
-  assert.equal(accountStatusLabel(item), "读取受限");
-  assert.equal(accountStatusClass(item), "is-warning");
+  assert.equal(accountStatusLabel(item), "已保存");
+  assert.equal(accountStatusClass(item), "");
   assert.equal(
     accountMessageText(item),
-    "国内账号已保存，账号资料或来源同步可读取；后台检测暂时无法确认账号探针。",
+    "国内账号已保存，账号资料或来源同步可读取。",
   );
 });
 
-test("account probe http error is warning when source sync is usable", () => {
+test("account probe http error is saved when source sync is usable", () => {
   const item = {
     platform: "global",
     status: "http_error",
@@ -34,11 +34,11 @@ test("account probe http error is warning when source sync is usable", () => {
     },
   };
 
-  assert.equal(accountStatusLabel(item, context), "读取受限");
-  assert.equal(accountStatusClass(item, context), "is-warning");
+  assert.equal(accountStatusLabel(item, context), "已保存");
+  assert.equal(accountStatusClass(item, context), "");
   assert.equal(
     accountMessageText(item, context),
-    "国际账号已保存，账号资料或来源同步可读取；后台检测暂时无法确认账号探针。",
+    "国际账号已保存，账号资料或来源同步可读取。",
   );
 });
 

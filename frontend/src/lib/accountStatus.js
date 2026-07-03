@@ -29,7 +29,7 @@ function displayStatus(item, context = {}) {
     (status === "http_error" || status === "html_response")
     && (hasProfileEvidence(item) || hasSourceEvidence(context.sourceInventory, context.sourceSync))
   ) {
-    return "html_response";
+    return "";
   }
   return status;
 }
@@ -58,8 +58,8 @@ export function accountMessageText(item, context = {}) {
   const status = displayStatus(item, context);
   const raw = cleanText(item?.message);
   if (raw) {
-    if (rawStatus === "http_error" && status === "html_response") {
-      return `${platformLabel}账号已保存，账号资料或来源同步可读取；后台检测暂时无法确认账号探针。`;
+    if ((rawStatus === "http_error" || rawStatus === "html_response") && !status) {
+      return `${platformLabel}账号已保存，账号资料或来源同步可读取。`;
     }
     if (/Cookie\s*部分成功/.test(raw) || /接口可访问/.test(raw) || /\b\d+\s*\/\s*\d+\b/.test(raw)) {
       return `${platformLabel}账号已保存，部分账号信息暂时读取失败；可以点击同步重试。`;
