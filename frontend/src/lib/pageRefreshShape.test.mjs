@@ -139,7 +139,10 @@ test("SettingsPage derives synced online account source counts from current subs
   assert.match(settingsPageSource, /onlineAccountOverview/);
   assert.match(settingsPageSource, /const subscriptionItems = Array\.isArray\(config\.value\?\.subscriptions\)/);
   assert.match(settingsPageSource, /syncStateAccount\.account_avatar_url/);
-  assert.match(settingsPageSource, /accountSourceStats\(\s*inventoryByPlatform\[item\.platform\],\s*syncStateByPlatform\[item\.platform\],\s*subscriptionItems,\s*item\.platform,/);
+  assert.match(settingsPageSource, /const sourceInventory = inventoryByPlatform\[item\.platform\]/);
+  assert.match(settingsPageSource, /const sourceSync = syncStateByPlatform\[item\.platform\]/);
+  assert.match(settingsPageSource, /accountSourceStats\(\s*sourceInventory,\s*sourceSync,\s*subscriptionItems,\s*item\.platform,/);
+  assert.match(settingsPageSource, /accountStatusLabel\(mergedItem,\s*statusContext\)/);
 });
 
 test("AppShell refreshes GitHub version status after navigation is visible", () => {

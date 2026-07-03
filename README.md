@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.79`
+> 当前版本：`v0.9.80`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -236,6 +236,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-03 · v0.9.80
+
+- 设置页线上账号状态展示会结合已保存账号资料和来源同步记录判断。
+- 已保存 Cookie 且账号资料 / 来源同步可读取时，旧认证探针的 `http_error` 不再显示为红色“连接异常”，改为黄色“读取受限”。
+- 保留 `Cookie 失效`、`需要验证` 等真实阻断状态的红色提示，避免掩盖需要重新登录的场景。
+
 ### 2026-07-03 · v0.9.79
 
 - 线上账号重新登录的快速路径继续收窄：拿到 `signuporlogin` 返回的 Cookie 后不再同步换 MakerWorld ticket，也不再同步探测账号 profile。
@@ -248,15 +254,15 @@ uvicorn app.main:app --reload
 - 线上账号“测试”改为后台检测，前台接口快速返回“检测中”，检测完成后自动更新账号状态。
 - 前端遇到 API 返回 HTML 页面时会显示具体接口路径和 HTTP 状态码，便于区分代理超时、登录页和上游风控页面。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-03 · v0.9.77
 
 - 手机号 / 邮箱验证码登录会短期复用发送验证码时的 Bambu 设备 Cookie，避免验证码提交阶段换成新会话后被上游判定为不存在或已过期。
 - `consentBody` 协议字段对齐 Bambu 当前网页登录 bundle，补齐 `tou / privacy` 的 `key` 字段。
 - 登录接口已返回可保存 Cookie 时，即使后续认证探针暂时失败也会先保存账号，避免验证码已被消费后再次提交变成“验证码不存在或已过期”。
 - 验证码登录失败提示补充“请用 MakerHub 当前弹窗重新发送验证码后尽快提交”，便于区分旧验证码和自动接口异常。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-03 · v0.9.76
 
