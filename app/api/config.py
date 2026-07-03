@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import socket
+import threading
 import time
 import uuid
 import zipfile
@@ -110,6 +111,7 @@ from app.services.state_events import (
     StateEventWaiter,
     current_state_event_id,
     fetch_state_events_after,
+    publish_state_event,
     start_state_event_listener,
 )
 from app.services.online_accounts import (
@@ -125,6 +127,8 @@ from app.services.legacy_archiver import sanitize_filename
 
 
 router = APIRouter(prefix="/api")
+ONLINE_ACCOUNT_TEST_LOCK = threading.Lock()
+ONLINE_ACCOUNT_TEST_RUNNING: set[str] = set()
 github_version_refresh_task: asyncio.Task | None = None
 github_version_refresh_lock = asyncio.Lock()
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/s450586793/makerhub/main/VERSION"
@@ -2105,6 +2109,7 @@ def _run_online_account_login(payload: OnlineAccountLoginRequest, proxy_config: 
         password=payload.password,
         verification_code=payload.verification_code,
         proxy_config=proxy_config,
+        verify_cookie=False,
     )
     return {
         "platform": result.platform,
@@ -2202,6 +2207,105 @@ def _sync_account_health_from_online_account_test(platform: str, result: dict, m
         detail=detail,
         source="online_account_test",
     )
+
+
+def _checking_online_account_test_result(platform: str) -> dict:
+    platform_label = _account_platform_short_label(platform)
+    return {
+        "ok": False,
+        "platform": platform,
+        "state": "checking",
+        "status": "检测中",
+        "message": f"{platform_label}账号测试已提交后台检测，完成后会自动更新状态。",
+        "detail": "后台检测正在运行。",
+        "results": [],
+        "success_count": 0,
+        "target_count": 0,
+        "used_proxy": False,
+    }
+
+
+def _run_and_store_online_account_cookie_test(platform: str, target: CookiePair, proxy_config: ProxyConfig) -> dict:
+    result = _run_online_account_cookie_test(
+        CookieTestRequest(platform=platform, cookie=target.cookie, proxy=proxy_config)
+    )
+    metadata = online_account_metadata_from_cookie(
+        platform=platform,
+        username=target.username,
+        cookie=target.cookie,
+        proxy_config=proxy_config,
+    )
+    metadata = _preserve_account_profile_metadata(metadata, target)
+    metadata["message"] = result.get("message") or metadata.get("message") or ""
+
+    config = store.load()
+    current_target = next((item for item in config.cookies if item.platform == platform), target)
+    if sanitize_cookie_header(current_target.cookie) != sanitize_cookie_header(target.cookie):
+        append_business_log(
+            "settings",
+            "online_account_test_stale",
+            "线上账号后台测试结果已过期，跳过写回。",
+            platform=platform,
+        )
+        return {
+            "test_result": result,
+            "stale": True,
+            "message": "账号已更新，忽略旧的后台检测结果。",
+        }
+    config.cookies = _upsert_cookie_pair(
+        config.cookies,
+        _cookie_pair_from_existing(
+            current_target,
+            platform=platform,
+            cookie=target.cookie,
+            metadata=metadata,
+        ),
+    )
+    account_health_snapshot = _sync_account_health_from_online_account_test(platform, result, metadata)
+    saved = store.save(config)
+    append_business_log(
+        "settings",
+        "online_account_tested",
+        result.get("message") or "线上账号测试已完成。",
+        ok=bool(result.get("ok")),
+        platform=platform,
+    )
+    response = _public_config_payload(saved)
+    response["test_result"] = result
+    response["account_health"] = account_health_snapshot
+    return response
+
+
+def _schedule_online_account_cookie_test(platform: str, target: CookiePair, proxy_config: ProxyConfig) -> None:
+    with ONLINE_ACCOUNT_TEST_LOCK:
+        if platform in ONLINE_ACCOUNT_TEST_RUNNING:
+            return
+        ONLINE_ACCOUNT_TEST_RUNNING.add(platform)
+    snapshot = target.model_copy(deep=True)
+    proxy_snapshot = proxy_config.model_copy(deep=True) if hasattr(proxy_config, "model_copy") else copy.deepcopy(proxy_config)
+
+    def _worker() -> None:
+        try:
+            _run_and_store_online_account_cookie_test(platform, snapshot, proxy_snapshot)
+            publish_state_event("dashboard", "state.changed", {"reason": "online_account_test_completed", "platform": platform})
+        except Exception as exc:
+            append_business_log(
+                "settings",
+                "online_account_test_failed",
+                f"线上账号后台测试失败：{exc}",
+                level="warning",
+                platform=platform,
+            )
+        finally:
+            with ONLINE_ACCOUNT_TEST_LOCK:
+                ONLINE_ACCOUNT_TEST_RUNNING.discard(platform)
+
+    thread = threading.Thread(
+        target=_worker,
+        name=f"makerhub-online-account-test-{platform}",
+        daemon=True,
+    )
+    thread.start()
 
 
 def _upsert_cookie_pair(cookies: list[CookiePair], next_pair: CookiePair) -> list[CookiePair]:
@@ -3038,9 +3142,11 @@ async def login_config_online_account(payload: OnlineAccountLoginRequest, reques
     saved = store.save(config)
     retry_result = subscription_manager.retry_error_subscriptions_for_platforms({platform})
     cookie_sources_result = subscription_manager.request_cookie_source_sync({platform}, reason="online_account_login")
+    _schedule_online_account_cookie_test(platform, pair, saved.proxy)
     response = _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
     response["subscription_retry"] = retry_result
     response["cookie_source_sync"] = cookie_sources_result
+    response["test_result"] = _checking_online_account_test_result(platform)
     return response
 
 
@@ -3153,43 +3259,15 @@ async def test_config_online_account(platform: str, request: Request):
     target = next((item for item in config.cookies if item.platform == clean_platform), None)
     if target is None or not sanitize_cookie_header(target.cookie):
         raise HTTPException(status_code=400, detail="这个平台还没有保存账号 Cookie。")
-    try:
-        result = await run_task_api(
-            _run_online_account_cookie_test,
-            CookieTestRequest(platform=clean_platform, cookie=target.cookie, proxy=config.proxy),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    metadata = online_account_metadata_from_cookie(
-        platform=clean_platform,
-        username=target.username,
-        cookie=target.cookie,
-        proxy_config=config.proxy,
-    )
-    metadata = _preserve_account_profile_metadata(metadata, target)
-    metadata["message"] = result.get("message") or metadata.get("message") or ""
-    config.cookies = _upsert_cookie_pair(
-        config.cookies,
-        _cookie_pair_from_existing(
-            target,
-            platform=clean_platform,
-            cookie=target.cookie,
-            metadata=metadata,
-        ),
-    )
-    account_health_snapshot = _sync_account_health_from_online_account_test(clean_platform, result, metadata)
-    saved = store.save(config)
+    _schedule_online_account_cookie_test(clean_platform, target, config.proxy)
     append_business_log(
         "settings",
-        "online_account_tested",
-        result.get("message") or "线上账号测试已完成。",
-        ok=bool(result.get("ok")),
+        "online_account_test_queued",
+        "线上账号测试已提交后台检测。",
         platform=clean_platform,
     )
-    response = _public_config_payload(saved)
-    response["test_result"] = result
-    response["account_health"] = account_health_snapshot
+    response = _public_config_payload(config)
+    response["test_result"] = _checking_online_account_test_result(clean_platform)
     return response
 
 

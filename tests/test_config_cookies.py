@@ -192,6 +192,7 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
                     patch.object(config_api, "_run_online_account_login", return_value=login_result) as login_mock, \
                     patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms", return_value=retry_result) as retry_mock, \
                     patch.object(config_api.subscription_manager, "request_cookie_source_sync", return_value=queued_result) as queue_mock, \
+                    patch.object(config_api, "_schedule_online_account_cookie_test") as schedule_mock, \
                     patch.object(config_api, "_get_github_version_status", return_value={}), \
                     patch.object(config_api, "cookie_source_inventory_payload", return_value={"platforms": {}}), \
                     patch.object(config_api, "cookie_source_sync_state_payload", return_value={}), \
@@ -208,11 +209,13 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(login_payload.verification_code, "123456")
             retry_mock.assert_called_once_with({"cn"})
             queue_mock.assert_called_once_with({"cn"}, reason="online_account_login")
+            schedule_mock.assert_called_once()
             saved_cookie = store.load().cookies[0]
             self.assertEqual(saved_cookie.cookie, "token=new")
             self.assertEqual(saved_cookie.display_name, "艾斯")
             self.assertEqual(saved_cookie.handle, "s450586793")
             self.assertEqual(payload["cookie_source_sync"], queued_result)
+            self.assertEqual(payload["test_result"]["state"], "checking")
 
     async def test_online_account_login_preserves_existing_profile_when_login_has_no_profile(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -251,6 +254,7 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
                     patch.object(config_api, "_run_online_account_login", return_value=login_result), \
                     patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms", return_value={"queued_count": 0, "subscription_ids": []}), \
                     patch.object(config_api.subscription_manager, "request_cookie_source_sync", return_value={"queued_count": 1, "platforms": ["cn"]}), \
+                    patch.object(config_api, "_schedule_online_account_cookie_test"), \
                     patch.object(config_api, "_get_github_version_status", return_value={}), \
                     patch.object(config_api, "cookie_source_inventory_payload", return_value={"platforms": {}}), \
                     patch.object(config_api, "cookie_source_sync_state_payload", return_value={}), \
@@ -373,7 +377,61 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(code_payload.phone, "")
             self.assertEqual(payload["message"], "验证码已发送，请查看邮箱。")
 
-    async def test_online_account_test_preserves_existing_profile_when_probe_has_no_profile(self):
+    async def test_online_account_login_worker_skips_inline_cookie_probe(self):
+        payload = OnlineAccountLoginRequest(
+            platform="cn",
+            username="13800138000",
+            verification_code="123456",
+        )
+        result = online_accounts.OnlineAccountLoginResult(
+            platform="cn",
+            username="13800138000",
+            cookie="token=ok",
+        )
+
+        with patch.object(config_api, "login_online_account", return_value=result) as login_mock:
+            config_api._run_online_account_login(payload, SimpleNamespace())
+
+        self.assertFalse(login_mock.call_args.kwargs["verify_cookie"])
+
+    async def test_online_account_test_returns_checking_and_runs_probe_in_background(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            config.cookies = [
+                CookiePair(
+                    platform="cn",
+                    cookie="token=ok",
+                    username="13800138000",
+                    display_name="艾斯",
+                    account_id="2024907479",
+                    handle="s450586793",
+                    avatar_url="https://example.com/avatar.jpg",
+                    status="ok",
+                    message="旧状态",
+                )
+            ]
+            store.save(config)
+
+            request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
+
+            with patch.object(config_api, "store", store), \
+                    patch.object(config_api, "_run_online_account_cookie_test", side_effect=AssertionError("manual account test should not block on probe")), \
+                    patch.object(config_api, "_schedule_online_account_cookie_test") as schedule_mock, \
+                    patch.object(config_api, "cookie_source_inventory_payload", return_value={"platforms": {}}), \
+                    patch.object(config_api, "cookie_source_sync_state_payload", return_value={}), \
+                    patch.object(config_api, "compact_remote_refresh_state", return_value={}), \
+                    patch.object(config_api.task_state_store, "load_remote_refresh_state", return_value={}):
+                payload = await config_api.test_config_online_account("cn", request)
+
+            schedule_mock.assert_called_once()
+            saved_cookie = store.load().cookies[0]
+            self.assertEqual(saved_cookie.message, "旧状态")
+            self.assertEqual(payload["test_result"]["state"], "checking")
+            self.assertIn("后台检测", payload["test_result"]["message"])
+            self.assertEqual(payload["cookies"][0]["message"], "旧状态")
+
+    async def test_online_account_probe_result_preserves_existing_profile_when_probe_has_no_profile(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")
             config = store.load()
@@ -423,7 +481,8 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
                     patch.object(config_api, "compact_remote_refresh_state", return_value={}), \
                     patch.object(config_api.task_state_store, "load_remote_refresh_state", return_value={}), \
                     patch.object(config_api, "append_business_log"):
-                payload = await config_api.test_config_online_account("cn", request)
+                target = store.load().cookies[0]
+                payload = config_api._run_and_store_online_account_cookie_test("cn", target, config.proxy)
 
             saved_cookie = store.load().cookies[0]
             self.assertEqual(saved_cookie.display_name, "艾斯")
@@ -439,14 +498,13 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
             )
             update_gate_mock.assert_not_called()
 
-    async def test_online_account_test_failure_closes_three_mf_gate(self):
+    async def test_online_account_probe_failure_closes_three_mf_gate(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")
             config = store.load()
             config.cookies = [CookiePair(platform="global", cookie="token=old", username="ace@example.com")]
             store.save(config)
 
-            request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
             test_result = {
                 "ok": False,
                 "state": "verification_required",
@@ -474,7 +532,8 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
                     patch.object(config_api, "compact_remote_refresh_state", return_value={}), \
                     patch.object(config_api.task_state_store, "load_remote_refresh_state", return_value={}), \
                     patch.object(config_api, "append_business_log"):
-                payload = await config_api.test_config_online_account("global", request)
+                target = store.load().cookies[0]
+                payload = config_api._run_and_store_online_account_cookie_test("global", target, config.proxy)
 
             self.assertEqual(payload["test_result"], test_result)
             mark_account_ok_mock.assert_not_called()
@@ -485,6 +544,61 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
                 detail="MakerWorld 需要验证，前往官网任意下载一个模型。",
                 source="online_account_test",
             )
+
+    async def test_stale_online_account_probe_result_does_not_overwrite_new_cookie(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            stale_target = CookiePair(platform="cn", cookie="token=old", username="13800138000", message="旧状态")
+            config.cookies = [CookiePair(platform="cn", cookie="token=new", username="13800138000", message="新状态")]
+            store.save(config)
+
+            test_result = {
+                "ok": True,
+                "message": "国内账号可用，Cookie 已保存。",
+                "success_count": 1,
+                "target_count": 2,
+                "results": [],
+            }
+
+            with patch.object(config_api, "store", store), \
+                    patch.object(config_api, "_run_online_account_cookie_test", return_value=test_result), \
+                    patch.object(config_api, "online_account_metadata_from_cookie", return_value={"status": "ok"}), \
+                    patch.object(config_api, "mark_account_ok") as mark_account_ok_mock, \
+                    patch.object(config_api, "update_three_mf_gate") as update_gate_mock, \
+                    patch.object(config_api, "append_business_log"):
+                payload = config_api._run_and_store_online_account_cookie_test("cn", stale_target, config.proxy)
+
+            saved_cookie = store.load().cookies[0]
+            self.assertEqual(saved_cookie.cookie, "token=new")
+            self.assertEqual(saved_cookie.message, "新状态")
+            self.assertTrue(payload["stale"])
+            mark_account_ok_mock.assert_not_called()
+            update_gate_mock.assert_not_called()
+
+    async def test_online_account_test_deduplicates_running_background_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            config.cookies = [CookiePair(platform="cn", cookie="token=ok", username="13800138000")]
+            store.save(config)
+
+            request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
+
+            with patch.object(config_api, "store", store), \
+                    patch.object(config_api.threading, "Thread") as thread_mock, \
+                    patch.object(config_api, "cookie_source_inventory_payload", return_value={"platforms": {}}), \
+                    patch.object(config_api, "cookie_source_sync_state_payload", return_value={}), \
+                    patch.object(config_api, "compact_remote_refresh_state", return_value={}), \
+                    patch.object(config_api.task_state_store, "load_remote_refresh_state", return_value={}), \
+                    patch.object(config_api, "append_business_log"):
+                config_api.ONLINE_ACCOUNT_TEST_RUNNING.clear()
+                await config_api.test_config_online_account("cn", request)
+                await config_api.test_config_online_account("cn", request)
+                config_api.ONLINE_ACCOUNT_TEST_RUNNING.clear()
+
+            self.assertEqual(thread_mock.call_count, 1)
+            thread_mock.return_value.start.assert_called_once()
 
 class OnlineAccountServiceTest(unittest.TestCase):
     def _response(self, status_code=200, payload=None, text=None, headers=None):

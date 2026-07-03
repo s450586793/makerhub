@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.77`
+> 当前版本：`v0.9.78`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -236,6 +236,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-03 · v0.9.78
+
+- 线上账号登录拿到 Cookie 后立即保存，不再同步等待 FlareSolverr 认证探针，避免反向代理超时返回 `504` HTML 页面。
+- 线上账号“测试”改为后台检测，前台接口快速返回“检测中”，检测完成后自动更新账号状态。
+- 前端遇到 API 返回 HTML 页面时会显示具体接口路径和 HTTP 状态码，便于区分代理超时、登录页和上游风控页面。
+
 ### 2026-07-03 · v0.9.77
 
 - 手机号 / 邮箱验证码登录会短期复用发送验证码时的 Bambu 设备 Cookie，避免验证码提交阶段换成新会话后被上游判定为不存在或已过期。
@@ -249,14 +255,14 @@ uvicorn app.main:app --reload
 - 同一模型里其他仍是验证、Cookie 或每日上限的打印配置会继续保留，避免因为单个终态 404 误清整模型。
 - 补充归档 Worker 回归测试，覆盖 `not_found` 配置清理与其他缺失配置保留的混合场景。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-03 · v0.9.75
 
 - 首页源站状态卡不再显示“手动过 CF / 已验证 / 已更新 Cookie”等手动恢复操作，只保留状态展示和打开官网入口。
 - 源站卡继续展示待验证、Cookie 异常和每日上限状态，避免旧 `3MF` gate 状态在首页引导手动确认。
 - 补充后端源站卡和前端状态卡回归测试，锁定验证 / Cookie 状态不会再自动生成恢复按钮。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-02 · v0.9.74
 

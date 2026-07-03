@@ -30,6 +30,14 @@ function sanitizeApiError(detail) {
   return text.replace(/\s+/g, " ").trim().slice(0, 400);
 }
 
+function withApiErrorContext(message, path, status) {
+  const cleanMessage = String(message || "").trim() || "请求失败。";
+  const cleanPath = String(path || "").trim();
+  const statusText = Number.isFinite(Number(status)) && Number(status) > 0 ? `HTTP ${Number(status)}` : "";
+  const context = [cleanPath, statusText].filter(Boolean).join(" ");
+  return context ? `${context}: ${cleanMessage}` : cleanMessage;
+}
+
 
 export async function apiRequest(path, options = {}) {
   const {
@@ -82,14 +90,15 @@ export async function apiRequest(path, options = {}) {
     : await response.text();
 
   if (response.ok && String(path || "").startsWith("/api/") && typeof payload === "string" && looksLikeHtmlError(payload)) {
-    throw new Error(sanitizeApiError(payload));
+    throw new Error(withApiErrorContext(sanitizeApiError(payload), path, response.status));
   }
 
   if (!response.ok) {
     const detail = typeof payload === "object" && payload !== null
       ? payload.detail || payload.message
       : payload;
-    throw new Error(sanitizeApiError(detail));
+    const message = sanitizeApiError(detail);
+    throw new Error(looksLikeHtmlError(detail) ? withApiErrorContext(message, path, response.status) : message);
   }
 
   return payload;

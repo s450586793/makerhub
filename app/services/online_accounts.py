@@ -510,6 +510,7 @@ def login_online_account(
     password: str,
     verification_code: str = "",
     proxy_config: ProxyConfig | dict[str, Any] | None = None,
+    verify_cookie: bool = True,
 ) -> OnlineAccountLoginResult:
     clean_platform = _normalize_platform(platform)
     clean_username = _clean_login_account(clean_platform, username)
@@ -554,18 +555,25 @@ def login_online_account(
                 errors.append(f"{login_url}: 未返回可保存的 Cookie。")
                 continue
 
-            auth_payload = probe_cookie_auth_status(
-                clean_platform,
-                cookie,
-                proxy_config or ProxyConfig(),
-                include_limit_guard=False,
-                use_cache=False,
-                allow_domestic_proxy=True,
-            )
-            auth_ok = bool(auth_payload.get("ok"))
-            status = "ok" if auth_ok else str(auth_payload.get("state") or "untested")
+            auth_payload: dict[str, Any] = {}
+            if verify_cookie:
+                auth_payload = probe_cookie_auth_status(
+                    clean_platform,
+                    cookie,
+                    proxy_config or ProxyConfig(),
+                    include_limit_guard=False,
+                    use_cache=False,
+                    allow_domestic_proxy=True,
+                )
+            auth_ok = bool(auth_payload.get("ok")) if verify_cookie else False
+            status = "ok" if auth_ok else str(auth_payload.get("state") or "checking")
             message = f"{PLATFORM_LABELS[clean_platform]}{_login_account_label(clean_platform)}登录成功，Cookie 已保存。"
-            if not auth_ok:
+            if not verify_cookie:
+                message = (
+                    f"{PLATFORM_LABELS[clean_platform]}{_login_account_label(clean_platform)}登录已返回 Cookie，"
+                    "已先保存；账号可用性会在后台检测。"
+                )
+            elif not auth_ok:
                 probe_message = str(auth_payload.get("message") or "账号测试失败").strip()
                 message = (
                     f"{PLATFORM_LABELS[clean_platform]}{_login_account_label(clean_platform)}登录已返回 Cookie，"
