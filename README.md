@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.75`
+> 当前版本：`v0.9.76`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -236,6 +236,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-03 · v0.9.76
+
+- 缺失 `3MF` 重试过程中如果源端明确返回 `not_found / 404`，对应打印配置会从缺失列表清除，不再继续进入自动重试。
+- 同一模型里其他仍是验证、Cookie 或每日上限的打印配置会继续保留，避免因为单个终态 404 误清整模型。
+- 补充归档 Worker 回归测试，覆盖 `not_found` 配置清理与其他缺失配置保留的混合场景。
+
 ### 2026-07-03 · v0.9.75
 
 - 首页源站状态卡不再显示“手动过 CF / 已验证 / 已更新 Cookie”等手动恢复操作，只保留状态展示和打开官网入口。
@@ -248,14 +254,14 @@ uvicorn app.main:app --reload
 - `Please log in to download models.` 和 Cookie / token 失效类错误现在会稳定归类为 `auth_required` / `Cookie 异常`，避免误引导去手动过 CF。
 - 补充 `3MF` 失败合并和状态归一化回归测试，覆盖登录态错误被旧验证状态覆盖的场景。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-02 · v0.9.73
 
 - Worker 轮询会自动恢复旧的 `paused / needs_verification` 普通归档队列，FlareSolverr 验证通过后不再需要手动改数据库。
 - 只恢复明确由 MakerWorld 验证暂停的归档项，保留手动暂停或其他阻塞状态，避免误放行不可执行任务。
 - 补充队列状态和归档 Worker 回归测试，覆盖旧验证暂停任务恢复后重新进入 `queued`。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-02 · v0.9.72
 

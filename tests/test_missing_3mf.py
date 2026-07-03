@@ -790,6 +790,98 @@ class Missing3mfTest(unittest.TestCase):
             instance_id="profile-9",
         )
 
+    def test_run_single_task_clears_not_found_missing_3mf_result_without_requeueing_it(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager.store = SimpleNamespace(
+            load=lambda: SimpleNamespace(cookies=[], proxy=None, three_mf_limits=None)
+        )
+        replaced_missing = []
+        removed_missing = []
+        removed_failures = []
+        log_calls = []
+        manager.task_store = SimpleNamespace(
+            update_missing_3mf_status=lambda **_payload: None,
+            replace_missing_3mf_for_model=lambda model_id, items: replaced_missing.append((model_id, items)),
+            remove_missing_3mf_item=lambda **payload: removed_missing.append(payload) or {"items": []},
+            remove_recent_failures_for_model=lambda model_id, url="": removed_failures.append((model_id, url)),
+            update_active_task=lambda *_args, **_kwargs: None,
+            complete_archive_task=lambda *_args, **_kwargs: None,
+        )
+
+        with patch.object(archive_worker_module, "_select_cookie", return_value="cookie"), \
+                patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
+                patch.object(archive_worker_module, "_is_three_mf_limit_guard_active_for_url", return_value=False), \
+                patch.object(archive_worker_module, "_temporary_proxy_env", side_effect=lambda *_args, **_kwargs: nullcontext()), \
+                patch.object(
+                    archive_worker_module,
+                    "run_archive_model_job",
+                    return_value={
+                        "model_id": "1590150",
+                        "base_name": "Gone Model",
+                        "work_dir": "",
+                        "missing_3mf": [
+                            {
+                                "id": "profile-gone",
+                                "title": "Gone profile",
+                                "downloadState": "not_found",
+                                "downloadMessage": "源端没有返回该打印配置的 3MF 下载地址。",
+                            },
+                            {
+                                "id": "profile-blocked",
+                                "title": "Blocked profile",
+                                "downloadState": "verification_required",
+                                "downloadMessage": "MakerWorld 需要验证，前往官网任意下载一个模型。",
+                            },
+                        ],
+                    },
+                ), \
+                patch.object(archive_worker_module, "mark_account_ok") as mark_account_ok_mock, \
+                patch.object(archive_worker_module, "update_three_mf_gate") as update_three_mf_gate_mock, \
+                patch.object(archive_worker_module, "invalidate_model_detail_cache"), \
+                patch.object(archive_worker_module, "upsert_archive_snapshot_model", return_value=True), \
+                patch.object(archive_worker_module, "invalidate_archive_snapshot"), \
+                patch.object(archive_worker_module, "_log_archive", side_effect=lambda *args, **kwargs: log_calls.append((args, kwargs))):
+            manager._run_single_task(
+                "task-not-found",
+                "https://makerworld.com.cn/zh/models/1590150",
+                {"missing_3mf_retry": True, "source": "cn", "model_id": "1590150"},
+            )
+
+        self.assertEqual(removed_missing, [
+            {
+                "model_id": "1590150",
+                "model_url": "https://makerworld.com.cn/zh/models/1590150",
+                "title": "Gone profile",
+                "instance_id": "profile-gone",
+            }
+        ])
+        self.assertEqual(replaced_missing, [
+            (
+                "1590150",
+                [
+                    {
+                        "model_id": "1590150",
+                        "model_url": "https://makerworld.com.cn/zh/models/1590150",
+                        "title": "Blocked profile",
+                        "instance_id": "profile-blocked",
+                        "status": "verification_required",
+                        "message": "MakerWorld 需要验证，前往官网任意下载一个模型。",
+                        "updated_at": replaced_missing[0][1][0]["updated_at"] if replaced_missing else "",
+                    }
+                ],
+            )
+        ])
+        self.assertEqual(
+            removed_failures,
+            [("1590150", "https://makerworld.com.cn/zh/models/1590150")],
+        )
+        mark_account_ok_mock.assert_not_called()
+        update_three_mf_gate_mock.assert_called_once()
+        self.assertEqual(update_three_mf_gate_mock.call_args.kwargs["instance_id"], "profile-blocked")
+        self.assertTrue(
+            any(args and args[0] == "missing_3mf_not_found_cleared" for args, _kwargs in log_calls)
+        )
+
     def test_run_single_task_completes_when_account_health_sync_fails(self):
         manager = ArchiveTaskManager(background_enabled=False)
         manager.store = SimpleNamespace(

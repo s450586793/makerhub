@@ -2973,35 +2973,55 @@ class ArchiveTaskManager:
         result = run_job()
 
         missing_items = []
+        cleared_not_found_items = []
         limit_guard_state: Optional[dict[str, Any]] = limit_guard if daily_limit_active else None
+        resolved_model_id = str(result.get("model_id") or "")
+        resolved_model_url = normalize_source_url(url)
         for item in result.get("missing_3mf") or []:
             if str(item.get("downloadState") or "").strip() == "download_limited":
                 if not _is_three_mf_limit_guard_active_for_url(url, limit_guard_state):
                     limit_guard_state = _activate_three_mf_limit_guard(
                         message=str(item.get("downloadMessage") or ""),
-                        model_id=str(result.get("model_id") or ""),
-                        model_url=normalize_source_url(url),
+                        model_id=resolved_model_id,
+                        model_url=resolved_model_url,
                         instance_id=str(item.get("id") or item.get("profileId") or item.get("instanceId") or ""),
                     )
-            missing_items.append(
-                {
-                    "model_id": str(result.get("model_id") or ""),
-                    "model_url": normalize_source_url(url),
-                    "title": str(item.get("title") or item.get("name") or result.get("base_name") or ""),
-                    "instance_id": str(item.get("id") or item.get("profileId") or item.get("instanceId") or ""),
-                    "status": normalize_three_mf_failure_state(
-                        item.get("downloadState") or "",
-                        item.get("downloadMessage") or "",
-                        url=url,
-                    ),
-                    "message": _missing_3mf_message_from_result(item, limit_guard_state, url=url),
-                    "updated_at": china_now().isoformat(),
-                }
-            )
-        resolved_model_id = str(result.get("model_id") or "")
+            missing_item = {
+                "model_id": resolved_model_id,
+                "model_url": resolved_model_url,
+                "title": str(item.get("title") or item.get("name") or result.get("base_name") or ""),
+                "instance_id": str(item.get("id") or item.get("profileId") or item.get("instanceId") or ""),
+                "status": normalize_three_mf_failure_state(
+                    item.get("downloadState") or "",
+                    item.get("downloadMessage") or "",
+                    url=url,
+                ),
+                "message": _missing_3mf_message_from_result(item, limit_guard_state, url=url),
+                "updated_at": china_now().isoformat(),
+            }
+            if missing_3mf_retry and missing_item["status"] == "not_found":
+                cleared_not_found_items.append(missing_item)
+                continue
+            missing_items.append(missing_item)
         self.task_store.replace_missing_3mf_for_model(resolved_model_id, missing_items)
+        for item in cleared_not_found_items:
+            self.task_store.remove_missing_3mf_item(
+                model_id=item["model_id"],
+                model_url=item["model_url"],
+                title=item["title"],
+                instance_id=item["instance_id"],
+            )
+            _log_archive(
+                "missing_3mf_not_found_cleared",
+                "源端已不可用，已停止缺失 3MF 重试。",
+                task_id=task_id,
+                url=item["model_url"],
+                model_id=item["model_id"],
+                instance_id=item["instance_id"],
+                message=item["message"],
+            )
         account_platform = normalize_makerworld_source(meta.get("source"), url)
-        account_model_url = normalize_source_url(url)
+        account_model_url = resolved_model_url
         account_instance_id = str(meta.get("instance_id") or "").strip()
         account_gate_failure = _sync_account_health_for_archive_result(
             platform=account_platform,
