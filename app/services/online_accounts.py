@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import re
+import threading
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -67,14 +69,17 @@ MAKERWORLD_TICKET_ENDPOINTS = {
 }
 CONSENT_FORMS = {
     "cn": {
-        "tou": {"formId": "TOU-CN", "op": "Opt-in"},
-        "privacy": {"formId": "PrivacyPolicy-CN", "op": "Opt-in"},
+        "tou": {"formId": "TOU-CN", "op": "Opt-in", "key": "tou"},
+        "privacy": {"formId": "PrivacyPolicy-CN", "op": "Opt-in", "key": "privacy"},
     },
     "global": {
-        "tou": {"formId": "TOU", "op": "Opt-in"},
-        "privacy": {"formId": "PrivacyPolicy", "op": "Opt-in"},
+        "tou": {"formId": "TOU", "op": "Opt-in", "key": "tou"},
+        "privacy": {"formId": "PrivacyPolicy", "op": "Opt-in", "key": "privacy"},
     },
 }
+LOGIN_CONTEXT_TTL_SECONDS = 10 * 60
+_LOGIN_CONTEXT_LOCK = threading.Lock()
+_LOGIN_CONTEXTS: dict[tuple[str, str], dict[str, Any]] = {}
 
 
 @dataclass
@@ -328,6 +333,71 @@ def _clean_login_account(platform: str, username: str) -> str:
     return clean_username
 
 
+def _session_cookie_items(session: requests.Session) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    try:
+        cookies = list(session.cookies)
+    except Exception:
+        cookies = []
+    for cookie in cookies:
+        name = str(getattr(cookie, "name", "") or "").strip()
+        value = str(getattr(cookie, "value", "") or "")
+        if not name or value == "":
+            continue
+        items.append(
+            {
+                "name": name,
+                "value": value,
+                "domain": str(getattr(cookie, "domain", "") or "").strip(),
+                "path": str(getattr(cookie, "path", "") or "/").strip() or "/",
+            }
+        )
+    return items
+
+
+def _remember_login_context(platform: str, account: str, session: requests.Session) -> None:
+    cookie_items = _session_cookie_items(session)
+    if not cookie_items:
+        return
+    key = (_normalize_platform(platform), str(account or "").strip())
+    expires_at = time.monotonic() + LOGIN_CONTEXT_TTL_SECONDS
+    with _LOGIN_CONTEXT_LOCK:
+        _LOGIN_CONTEXTS[key] = {"expires_at": expires_at, "cookies": cookie_items}
+
+
+def _apply_login_context(platform: str, account: str, session: requests.Session) -> None:
+    key = (_normalize_platform(platform), str(account or "").strip())
+    now = time.monotonic()
+    with _LOGIN_CONTEXT_LOCK:
+        expired_keys = [
+            item_key
+            for item_key, context in _LOGIN_CONTEXTS.items()
+            if float(context.get("expires_at") or 0) <= now
+        ]
+        for item_key in expired_keys:
+            _LOGIN_CONTEXTS.pop(item_key, None)
+        context = _LOGIN_CONTEXTS.get(key)
+        if not context:
+            return
+        cookie_items = list(context.get("cookies") or [])
+    for item in cookie_items:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        value = str(item.get("value") or "")
+        if not name or value == "":
+            continue
+        domain = str(item.get("domain") or "").strip()
+        path = str(item.get("path") or "/").strip() or "/"
+        try:
+            if domain:
+                session.cookies.set(name, value, domain=domain, path=path)
+            else:
+                session.cookies.set(name, value, path=path)
+        except Exception:
+            continue
+
+
 def send_online_account_sms_code(
     *,
     platform: str,
@@ -376,6 +446,7 @@ def send_online_account_sms_code(
                 if _is_authoritative_user_service_endpoint(endpoint):
                     break
                 continue
+            _remember_login_context(clean_platform, clean_account, session)
             return {
                 "ok": True,
                 "platform": clean_platform,
@@ -448,6 +519,7 @@ def login_online_account(
 
     errors: list[str] = []
     session = _session_from_platform(clean_platform)
+    _apply_login_context(clean_platform, clean_username, session)
     try:
         for login_url in CODE_LOGIN_ENDPOINTS[clean_platform]:
             try:
@@ -490,9 +562,15 @@ def login_online_account(
                 use_cache=False,
                 allow_domestic_proxy=True,
             )
-            if not auth_payload.get("ok"):
-                errors.append(f"{login_url}: {auth_payload.get('message') or 'Cookie 探针失败'}")
-                continue
+            auth_ok = bool(auth_payload.get("ok"))
+            status = "ok" if auth_ok else str(auth_payload.get("state") or "untested")
+            message = f"{PLATFORM_LABELS[clean_platform]}{_login_account_label(clean_platform)}登录成功，Cookie 已保存。"
+            if not auth_ok:
+                probe_message = str(auth_payload.get("message") or "账号测试失败").strip()
+                message = (
+                    f"{PLATFORM_LABELS[clean_platform]}{_login_account_label(clean_platform)}登录已返回 Cookie，"
+                    f"已先保存；{probe_message}，暂时无法确认 Cookie 是否可用。"
+                )
 
             profile = _extract_profile(response_payload)
             try:
@@ -511,8 +589,8 @@ def login_online_account(
                 account_id=str(profile.get("uid") or ""),
                 handle=str(profile.get("handle") or ""),
                 avatar_url=str(profile.get("avatar_url") or ""),
-                status="ok",
-                message=f"{PLATFORM_LABELS[clean_platform]}{_login_account_label(clean_platform)}登录成功，Cookie 已保存。",
+                status=status,
+                message=message,
                 login_url=login_url,
                 auth_payload=auth_payload,
             )
@@ -521,6 +599,7 @@ def login_online_account(
 
     hint = (
         f"{_login_account_label(clean_platform)}验证码登录失败。请确认验证码未过期，且已勾选用户协议和隐私政策；"
+        "请用 MakerHub 当前弹窗重新发送验证码后尽快提交；"
         "如果官网可以正常登录，多半是自动接口未返回可保存的 JSON/Cookie。"
     )
     if errors:

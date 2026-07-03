@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import requests
+
 from app.api import config as config_api
 from app.core.store import JsonStore
 from app.schemas.models import CookiePair, OnlineAccountLoginRequest, OnlineAccountSmsCodeRequest
@@ -616,11 +618,91 @@ class OnlineAccountServiceTest(unittest.TestCase):
         self.assertEqual(
             consent["formList"],
             [
-                {"formId": "TOU-CN", "op": "Opt-in"},
-                {"formId": "PrivacyPolicy-CN", "op": "Opt-in"},
+                {"formId": "TOU-CN", "op": "Opt-in", "key": "tou"},
+                {"formId": "PrivacyPolicy-CN", "op": "Opt-in", "key": "privacy"},
             ],
         )
         self.assertEqual(session.post.call_count, 1)
+
+    def test_code_login_reuses_recent_sms_code_device_cookies(self):
+        sms_session = requests.Session()
+
+        def sms_post(_url, **_kwargs):
+            sms_session.cookies.set("bbl_device_id", "device-id", domain=".bambulab.cn", path="/")
+            return self._response(payload={"code": 0})
+
+        sms_post = Mock(side_effect=sms_post)
+        sms_session.post = sms_post
+        sms_session.close = Mock()
+
+        login_session = requests.Session()
+        login_session.cookies.clear()
+
+        def login_post(_url, **_kwargs):
+            self.assertEqual(login_session.cookies.get("bbl_device_id", domain=".bambulab.cn"), "device-id")
+            return self._response(
+                payload={
+                    "code": 0,
+                    "body": {
+                        "token": "access-token",
+                        "refreshToken": "refresh-token",
+                        "uid": "2024907479",
+                    },
+                },
+            )
+
+        login_session.post = Mock(side_effect=login_post)
+        login_session.get = Mock(return_value=self._response(payload={"ticket": "ticket-ok"}))
+        login_session.close = Mock()
+
+        with patch.object(online_accounts, "_session_from_platform", side_effect=[sms_session, login_session]), \
+                patch.object(online_accounts, "probe_cookie_auth_status", return_value={"ok": True}), \
+                patch.object(online_accounts, "discover_cookie_account_profile", return_value={}):
+            online_accounts.send_online_account_sms_code(platform="cn", phone="13800138000")
+            result = online_accounts.login_online_account(
+                platform="cn",
+                username="13800138000",
+                password="",
+                verification_code="123456",
+            )
+
+        self.assertEqual(result.username, "13800138000")
+        self.assertEqual(login_session.post.call_count, 1)
+
+    def test_code_login_keeps_cookie_when_auth_probe_fails_after_token_response(self):
+        session = Mock()
+        session.cookies = []
+        session.post.return_value = self._response(
+            payload={
+                "code": 0,
+                "body": {
+                    "token": "access-token",
+                    "refreshToken": "refresh-token",
+                    "uid": "2024907479",
+                    "nickname": "艾斯",
+                },
+            },
+        )
+        session.get.return_value = self._response(payload={"ticket": "ticket-ok"})
+        session.close = Mock()
+
+        with patch.object(online_accounts, "_session_from_platform", return_value=session), \
+                patch.object(
+                    online_accounts,
+                    "probe_cookie_auth_status",
+                    return_value={"ok": False, "state": "http_error", "message": "国内账号测试失败"},
+                ), \
+                patch.object(online_accounts, "discover_cookie_account_profile", return_value={}):
+            result = online_accounts.login_online_account(
+                platform="cn",
+                username="13800138000",
+                password="",
+                verification_code="123456",
+            )
+
+        self.assertIn("token=access-token", result.cookie)
+        self.assertEqual(result.status, "http_error")
+        self.assertIn("暂时无法确认", result.message)
 
     def test_global_code_login_uses_email_account(self):
         session = Mock()

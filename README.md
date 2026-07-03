@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.76`
+> 当前版本：`v0.9.77`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -236,6 +236,13 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-03 · v0.9.77
+
+- 手机号 / 邮箱验证码登录会短期复用发送验证码时的 Bambu 设备 Cookie，避免验证码提交阶段换成新会话后被上游判定为不存在或已过期。
+- `consentBody` 协议字段对齐 Bambu 当前网页登录 bundle，补齐 `tou / privacy` 的 `key` 字段。
+- 登录接口已返回可保存 Cookie 时，即使后续认证探针暂时失败也会先保存账号，避免验证码已被消费后再次提交变成“验证码不存在或已过期”。
+- 验证码登录失败提示补充“请用 MakerHub 当前弹窗重新发送验证码后尽快提交”，便于区分旧验证码和自动接口异常。
+
 ### 2026-07-03 · v0.9.76
 
 - 缺失 `3MF` 重试过程中如果源端明确返回 `not_found / 404`，对应打印配置会从缺失列表清除，不再继续进入自动重试。
@@ -248,14 +255,14 @@ uvicorn app.main:app --reload
 - 源站卡继续展示待验证、Cookie 异常和每日上限状态，避免旧 `3MF` gate 状态在首页引导手动确认。
 - 补充后端源站卡和前端状态卡回归测试，锁定验证 / Cookie 状态不会再自动生成恢复按钮。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-02 · v0.9.74
 
 - 修复 `3MF` 下载地址多路尝试同时出现登录态失效和验证页结果时，最终误优先显示“需要验证 / 手动过 CF”的问题。
 - `Please log in to download models.` 和 Cookie / token 失效类错误现在会稳定归类为 `auth_required` / `Cookie 异常`，避免误引导去手动过 CF。
 - 补充 `3MF` 失败合并和状态归一化回归测试，覆盖登录态错误被旧验证状态覆盖的场景。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-02 · v0.9.73
 
