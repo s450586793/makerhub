@@ -818,6 +818,44 @@ class OnlineAccountServiceTest(unittest.TestCase):
         self.assertEqual(result.status, "http_error")
         self.assertIn("暂时无法确认", result.message)
 
+    def test_code_login_without_cookie_verification_skips_profile_network_calls(self):
+        session = Mock()
+        session.cookies = []
+        session.post.return_value = self._response(
+            payload={
+                "code": 0,
+                "body": {
+                    "token": "access-token",
+                    "refreshToken": "refresh-token",
+                    "uid": "2024907479",
+                    "nickname": "艾斯",
+                },
+            },
+        )
+        session.get = Mock(return_value=self._response(payload={"ticket": "ticket-ok"}))
+        session.close = Mock()
+        auth_probe_mock = Mock(return_value={"ok": True})
+        profile_mock = Mock(return_value={"handle": "s450586793"})
+
+        with patch.object(online_accounts, "_session_from_platform", return_value=session), \
+                patch.object(online_accounts, "probe_cookie_auth_status", auth_probe_mock), \
+                patch.object(online_accounts, "discover_cookie_account_profile", profile_mock):
+            result = online_accounts.login_online_account(
+                platform="cn",
+                username="13800138000",
+                password="",
+                verification_code="123456",
+                verify_cookie=False,
+            )
+
+        self.assertIn("token=access-token", result.cookie)
+        self.assertEqual(result.status, "checking")
+        self.assertEqual(result.account_id, "2024907479")
+        self.assertEqual(result.display_name, "艾斯")
+        session.get.assert_not_called()
+        auth_probe_mock.assert_not_called()
+        profile_mock.assert_not_called()
+
     def test_global_code_login_uses_email_account(self):
         session = Mock()
         session.cookies = []

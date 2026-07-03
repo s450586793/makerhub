@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.78`
+> 当前版本：`v0.9.79`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -236,6 +236,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-03 · v0.9.79
+
+- 线上账号重新登录的快速路径继续收窄：拿到 `signuporlogin` 返回的 Cookie 后不再同步换 MakerWorld ticket，也不再同步探测账号 profile。
+- 修复正确验证码场景下仍可能被后续 ticket/profile 网络请求拖到反向代理 `504` 的问题。
+- 后续账号可用性、来源同步和资料补全继续由后台检测流程处理。
+
 ### 2026-07-03 · v0.9.78
 
 - 线上账号登录拿到 Cookie 后立即保存，不再同步等待 FlareSolverr 认证探针，避免反向代理超时返回 `504` HTML 页面。
@@ -249,14 +255,14 @@ uvicorn app.main:app --reload
 - 登录接口已返回可保存 Cookie 时，即使后续认证探针暂时失败也会先保存账号，避免验证码已被消费后再次提交变成“验证码不存在或已过期”。
 - 验证码登录失败提示补充“请用 MakerHub 当前弹窗重新发送验证码后尽快提交”，便于区分旧验证码和自动接口异常。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-03 · v0.9.76
 
 - 缺失 `3MF` 重试过程中如果源端明确返回 `not_found / 404`，对应打印配置会从缺失列表清除，不再继续进入自动重试。
 - 同一模型里其他仍是验证、Cookie 或每日上限的打印配置会继续保留，避免因为单个终态 404 误清整模型。
 - 补充归档 Worker 回归测试，覆盖 `not_found` 配置清理与其他缺失配置保留的混合场景。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-03 · v0.9.75
 

@@ -549,7 +549,8 @@ def login_online_account(
                     break
                 continue
 
-            _exchange_makerworld_ticket(session, platform=clean_platform, proxy_config=proxy_config)
+            if verify_cookie:
+                _exchange_makerworld_ticket(session, platform=clean_platform, proxy_config=proxy_config)
             cookie = _cookie_with_response_tokens(session, response_payload)
             if not cookie:
                 errors.append(f"{login_url}: 未返回可保存的 Cookie。")
@@ -581,13 +582,14 @@ def login_online_account(
                 )
 
             profile = _extract_profile(response_payload)
-            try:
-                cookie_profile = discover_cookie_account_profile(clean_platform, cookie)
-            except Exception:
-                cookie_profile = {}
-            for key, value in cookie_profile.items():
-                if value and not profile.get(key):
-                    profile[key] = value
+            if verify_cookie:
+                try:
+                    cookie_profile = discover_cookie_account_profile(clean_platform, cookie)
+                except Exception:
+                    cookie_profile = {}
+                for key, value in cookie_profile.items():
+                    if value and not profile.get(key):
+                        profile[key] = value
 
             return OnlineAccountLoginResult(
                 platform=clean_platform,
