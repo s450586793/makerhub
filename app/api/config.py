@@ -2191,9 +2191,38 @@ def _account_health_status_from_online_account_result(result: dict, metadata: di
     return "network_error"
 
 
+def _has_online_account_source_evidence(platform: str, metadata: dict) -> bool:
+    profile_keys = ("display_name", "account_id", "handle", "avatar_url")
+    if any(str((metadata or {}).get(key) or "").strip() for key in profile_keys):
+        return True
+    try:
+        inventory = cookie_source_inventory_payload()
+        sync_state = cookie_source_sync_state_payload()
+    except Exception:
+        return False
+    inventory_item = ((inventory or {}).get("platforms") or {}).get(platform) or {}
+    sync_item = (sync_state or {}).get(platform) or {}
+    account = inventory_item.get("account") if isinstance(inventory_item.get("account"), dict) else {}
+    if any(str(account.get(key) or "").strip() for key in ("uid", "name", "handle", "avatar_url")):
+        return True
+    if any(str(sync_item.get(key) or "").strip() for key in ("account_uid", "account_name", "account_handle", "account_avatar_url")):
+        return True
+    last_status = str(sync_item.get("last_status") or inventory_item.get("last_status") or "").strip().lower()
+    return last_status in {"success", "warning", "pending"}
+
+
 def _sync_account_health_from_online_account_test(platform: str, result: dict, metadata: dict) -> dict:
     status = _account_health_status_from_online_account_result(result, metadata)
     detail = str((result or {}).get("message") or (metadata or {}).get("message") or "").strip()
+    state = str((result or {}).get("state") or "").strip().lower()
+    metadata_status = str((metadata or {}).get("status") or "").strip().lower()
+    if status == "network_error" and {state, metadata_status} & {"http_error", "html_response"}:
+        if _has_online_account_source_evidence(platform, metadata):
+            return mark_account_ok(
+                platform,
+                source="online_account_test",
+                detail=f"{_account_platform_short_label(platform)}账号已保存，账号资料或来源同步可读取。",
+            )
     if status == "ok":
         return mark_account_ok(
             platform,

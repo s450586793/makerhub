@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.81`
+> 当前版本：`v0.9.82`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -236,6 +236,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-04 · v0.9.82
+
+- 首页源站状态卡同步收窄线上账号探针状态：账号资料或来源同步可读取时，旧探针 `http_error` 不再把源站卡降成“网络异常”。
+- 线上账号测试仍会记录探针失败结果，但不会覆盖已确认可读的账号健康快照。
+- 保留真正的验证、Cookie 失效和每日上限状态，避免影响归档阻断判断。
+
 ### 2026-07-03 · v0.9.81
 
 - 设置页线上账号主状态进一步收窄：已保存 Cookie 且账号资料 / 来源同步可读取时，不再把旧认证探针失败显示成“读取受限”。
@@ -248,14 +254,14 @@ uvicorn app.main:app --reload
 - 已保存 Cookie 且账号资料 / 来源同步可读取时，旧认证探针的 `http_error` 不再显示为红色“连接异常”，改为黄色“读取受限”。
 - 保留 `Cookie 失效`、`需要验证` 等真实阻断状态的红色提示，避免掩盖需要重新登录的场景。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-03 · v0.9.79
 
 - 线上账号重新登录的快速路径继续收窄：拿到 `signuporlogin` 返回的 Cookie 后不再同步换 MakerWorld ticket，也不再同步探测账号 profile。
 - 修复正确验证码场景下仍可能被后续 ticket/profile 网络请求拖到反向代理 `504` 的问题。
 - 后续账号可用性、来源同步和资料补全继续由后台检测流程处理。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-03 · v0.9.78
 

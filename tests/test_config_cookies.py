@@ -545,6 +545,71 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
                 source="online_account_test",
             )
 
+    async def test_online_account_http_probe_failure_keeps_account_health_ok_with_source_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            config.cookies = [
+                CookiePair(
+                    platform="global",
+                    cookie="token=old",
+                    username="ace@example.com",
+                    display_name="艾斯",
+                    account_id="2073587493",
+                    handle="s450586793",
+                    status="ok",
+                )
+            ]
+            store.save(config)
+
+            test_result = {
+                "ok": False,
+                "state": "http_error",
+                "message": "国际账号测试失败，暂时无法确认 Cookie 是否可用。",
+                "success_count": 0,
+                "target_count": 2,
+                "results": [],
+            }
+            metadata = {
+                "platform": "global",
+                "username": "ace@example.com",
+                "display_name": "",
+                "account_id": "",
+                "handle": "",
+                "avatar_url": "",
+                "status": "http_error",
+                "message": "国际账号测试失败，暂时无法确认 Cookie 是否可用。",
+                "last_tested_at": "2026-07-04T08:56:00+08:00",
+                "updated_at": "2026-07-04T08:56:00+08:00",
+            }
+
+            with patch.object(config_api, "store", store), \
+                    patch.object(config_api, "_run_online_account_cookie_test", return_value=test_result), \
+                    patch.object(config_api, "online_account_metadata_from_cookie", return_value=metadata), \
+                    patch.object(config_api, "mark_account_ok") as mark_account_ok_mock, \
+                    patch.object(config_api, "update_three_mf_gate") as update_gate_mock, \
+                    patch.object(config_api, "cookie_source_inventory_payload", return_value={"platforms": {}}), \
+                    patch.object(config_api, "cookie_source_sync_state_payload", return_value={
+                        "global": {
+                            "last_status": "success",
+                            "account_uid": "2073587493",
+                            "account_name": "艾斯",
+                        }
+                    }), \
+                    patch.object(config_api, "compact_remote_refresh_state", return_value={}), \
+                    patch.object(config_api.task_state_store, "load_remote_refresh_state", return_value={}), \
+                    patch.object(config_api, "append_business_log"):
+                target = store.load().cookies[0]
+                payload = config_api._run_and_store_online_account_cookie_test("global", target, config.proxy)
+
+            self.assertEqual(payload["test_result"], test_result)
+            mark_account_ok_mock.assert_called_once_with(
+                "global",
+                source="online_account_test",
+                detail="国际账号已保存，账号资料或来源同步可读取。",
+            )
+            update_gate_mock.assert_not_called()
+
     async def test_stale_online_account_probe_result_does_not_overwrite_new_cookie(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")
