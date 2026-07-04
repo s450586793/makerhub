@@ -171,6 +171,14 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
                 started_threads.append(self)
 
         manager._workers = [StaleThread(), StaleThread()]
+        manager.task_store = SimpleNamespace(
+            resume_verification_paused_archive_tasks=lambda: {
+                "running_count": 0,
+                "queued_count": 3,
+                "resumed_count": 0,
+            },
+            refresh_recent_active_archive_leases=lambda: {"running_count": 0, "queued_count": 3},
+        )
 
         with patch.object(manager, "_repair_queue_before_worker_start", return_value={"running_count": 0, "queued_count": 3}), \
                 patch.object(archive_worker_module, "_archive_worker_concurrency", return_value=2, create=True), \
@@ -330,6 +338,47 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
             "https://makerworld.com.cn/zh/models/1461337",
             {"missing_3mf_retry": True, "source": "cn", "model_id": "1461337"},
         )
+
+    def test_next_executable_task_skips_batch_parents_when_only_gated_three_mf_tasks_remain(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        queue = {
+            "queued": [
+                {
+                    "id": "batch-parent",
+                    "url": "https://makerworld.com.cn/zh/@demo/upload",
+                    "mode": "author_upload",
+                    "meta": {
+                        "batch_expected_items": [
+                            {
+                                "url": "https://makerworld.com.cn/zh/models/2000000",
+                                "task_key": "model:2000000",
+                                "status": "queued",
+                            }
+                        ]
+                    },
+                },
+                {
+                    "id": "retry-cn",
+                    "url": "https://makerworld.com.cn/zh/models/1461337",
+                    "mode": "single_model",
+                    "meta": {"missing_3mf_retry": True, "source": "cn"},
+                },
+            ]
+        }
+
+        with patch.object(
+            archive_worker_module,
+            "three_mf_gate_for_url",
+            return_value={
+                "open": False,
+                "state": "verification_required",
+                "message": "MakerWorld 需要验证，前往官网任意下载一个模型。",
+                "platform": "cn",
+            },
+        ):
+            task = manager._next_executable_task(queue)
+
+        self.assertIsNone(task)
 
     def test_next_executable_task_returns_none_when_only_gated_three_mf_tasks_remain(self):
         manager = ArchiveTaskManager(background_enabled=False)

@@ -2548,6 +2548,8 @@ class ArchiveTaskManager:
             status = str(item.get("status") or "queued").strip().lower()
             if status not in {"", "queued", "pending"}:
                 continue
+            if _is_batch_parent_waiting_for_children(item):
+                continue
             if not _is_three_mf_only_task(item):
                 return item
         return None

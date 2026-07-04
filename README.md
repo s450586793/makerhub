@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.82`
+> 当前版本：`v0.9.83`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -236,6 +236,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-04 · v0.9.83
+
+- 修复归档 Worker 在 `3MF` gate 曾关闭时把已恢复的批量父任务重新租用，导致 4 个 worker 全部停在 `waiting_children`、后续单模型队列不再消费的问题。
+- 已进入“等待子任务”的批量父任务只作为进度跟踪，不再被当成普通可执行任务领取。
+- 补充归档 Worker 回归测试，覆盖批量父任务排在 gate 阻断的 `3MF` 任务前时不会再次占住 worker。
+
 ### 2026-07-04 · v0.9.82
 
 - 首页源站状态卡同步收窄线上账号探针状态：账号资料或来源同步可读取时，旧探针 `http_error` 不再把源站卡降成“网络异常”。
@@ -248,14 +254,14 @@ uvicorn app.main:app --reload
 - 账号卡片主状态改回中性的“已保存”，来源同步结果继续放在账号来源统计和同步提示里展示。
 - 真实的 `Cookie 失效`、`需要验证` 仍然保持阻断状态提示。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-03 · v0.9.80
 
 - 设置页线上账号状态展示会结合已保存账号资料和来源同步记录判断。
 - 已保存 Cookie 且账号资料 / 来源同步可读取时，旧认证探针的 `http_error` 不再显示为红色“连接异常”，改为黄色“读取受限”。
 - 保留 `Cookie 失效`、`需要验证` 等真实阻断状态的红色提示，避免掩盖需要重新登录的场景。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-03 · v0.9.79
 
