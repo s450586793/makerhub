@@ -1,5 +1,11 @@
 # 更新说明
 
+## 2026-07-07 · v0.9.84
+
+- 默认 `compose.yaml` 和外部 FlareSolverr 版 compose 都新增 `makerhub-cloakbrowser` 服务，随 MakerHub 一起部署浏览器 profile 管理容器。
+- App / Worker 增加 `MAKERHUB_CLOAKBROWSER_URL` 和 `MAKERHUB_CLOAKBROWSER_AUTH_TOKEN` 配置，供浏览器登录态采集与后续 `3MF` 探针确认调用。
+- 文档补充 CloakBrowser 持久化目录、`.env` 令牌、升级命令和流量边界说明，明确图片、附件和 `3MF` 静态文件仍不走 CloakBrowser。
+
 ## 2026-07-04 · v0.9.83
 
 - 修复归档 Worker 在 `3MF` gate 曾关闭时把已恢复的批量父任务重新租用，导致 4 个 worker 全部停在 `waiting_children`、后续单模型队列不再消费的问题。
