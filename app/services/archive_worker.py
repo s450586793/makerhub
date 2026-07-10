@@ -104,10 +104,37 @@ def detect_archive_mode(url: str) -> str:
 
 
 def _select_cookie(url: str, config) -> str:
-    netloc = urlparse(url).netloc.lower()
-    platform = "global" if "makerworld.com" in netloc and "makerworld.com.cn" not in netloc else "cn"
-    cookie_map = {item.platform: item.cookie for item in config.cookies}
-    return sanitize_cookie_header(cookie_map.get(platform) or "")
+    platform = normalize_makerworld_source(url=url) or "cn"
+    return _select_cookie_for_platform(platform, config)
+
+
+def _select_cookie_for_platform(platform: str, config) -> str:
+    clean_platform = normalize_makerworld_source(source=platform) or "cn"
+    cookie_map = {
+        str(getattr(item, "platform", "") or ""): getattr(item, "cookie", "")
+        for item in getattr(config, "cookies", []) or []
+    }
+    return sanitize_cookie_header(cookie_map.get(clean_platform) or "")
+
+
+def _is_cookie_stale_for_platform(store: Any, platform: str, job_cookie: str) -> bool:
+    clean_platform = normalize_makerworld_source(source=platform) or "cn"
+    clean_job_cookie = sanitize_cookie_header(job_cookie)
+    if not clean_job_cookie:
+        return False
+    try:
+        current_config = store.load()
+        current_cookie = _select_cookie_for_platform(clean_platform, current_config)
+    except Exception as exc:
+        _log_archive(
+            "cookie_staleness_check_failed",
+            "检查 Cookie 是否已更新失败，继续按当前任务结果同步状态。",
+            level="warning",
+            platform=clean_platform,
+            error=str(exc)[:240],
+        )
+        return False
+    return bool(current_cookie and current_cookie != clean_job_cookie)
 
 
 def _three_mf_daily_limits(config) -> tuple[int, int]:
@@ -3025,14 +3052,26 @@ class ArchiveTaskManager:
         account_platform = normalize_makerworld_source(meta.get("source"), url)
         account_model_url = resolved_model_url
         account_instance_id = str(meta.get("instance_id") or "").strip()
-        account_gate_failure = _sync_account_health_for_archive_result(
-            platform=account_platform,
-            model_url=account_model_url,
-            model_id=resolved_model_id,
-            instance_id=account_instance_id,
-            missing_items=missing_items,
-            missing_3mf_retry=missing_3mf_retry,
-        )
+        cookie_stale = _is_cookie_stale_for_platform(self.store, account_platform, cookie)
+        account_gate_failure = None
+        if cookie_stale and _account_health_failure_from_missing_items(missing_items) is not None:
+            _log_archive(
+                "stale_cookie_result_ignored",
+                "任务运行期间 Cookie 已更新，跳过旧 Cookie 失败状态写回。",
+                task_id=task_id,
+                platform=account_platform,
+                url=account_model_url,
+                model_id=resolved_model_id,
+            )
+        else:
+            account_gate_failure = _sync_account_health_for_archive_result(
+                platform=account_platform,
+                model_url=account_model_url,
+                model_id=resolved_model_id,
+                instance_id=account_instance_id,
+                missing_items=missing_items,
+                missing_3mf_retry=missing_3mf_retry,
+            )
         if isinstance(account_gate_failure, dict):
             self._pause_three_mf_retry_tasks_for_gate(
                 platform=account_platform,

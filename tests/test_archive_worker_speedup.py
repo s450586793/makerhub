@@ -716,6 +716,97 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
         self.assertIn("MakerWorld 需要验证", missing_by_model["222"]["message"])
         self.assertEqual(missing_by_model["444"]["status"], "queued")
 
+    def test_stale_cookie_failure_does_not_close_gate_or_pause_retries(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager.store = SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                cookies=[SimpleNamespace(platform="cn", cookie="token=new; cf_clearance=ok")],
+                proxy=None,
+                three_mf_limits=None,
+            )
+        )
+        queue_state = {
+            "archive_queue": {
+                "active": [],
+                "queued": [
+                    {
+                        "id": "retry-cn",
+                        "url": "https://makerworld.com.cn/zh/models/222",
+                        "mode": "single_model",
+                        "status": "queued",
+                        "meta": {"missing_3mf_retry": True, "source": "cn", "model_id": "222"},
+                    },
+                ],
+                "recent_failures": [],
+            },
+            "missing_3mf": {
+                "items": [
+                    {
+                        "model_id": "222",
+                        "model_url": "https://makerworld.com.cn/zh/models/222",
+                        "source": "cn",
+                        "instance_id": "profile-222",
+                        "title": "CN profile",
+                        "status": "queued",
+                        "message": "已存在于重新下载队列",
+                    },
+                ],
+            },
+        }
+
+        def fake_load_state(key, default):
+            return queue_state.get(key, default)
+
+        def fake_save_state(key, value):
+            queue_state[key] = value
+            return value
+
+        manager.task_store.replace_missing_3mf_for_model = lambda *_args, **_kwargs: None
+        manager.task_store.remove_recent_failures_for_model = lambda *_args, **_kwargs: None
+        manager.task_store.update_active_task = lambda *_args, **_kwargs: None
+        manager.task_store.complete_archive_task = lambda *_args, **_kwargs: None
+
+        def fake_archive_job(**_kwargs):
+            return {
+                "model_id": "111",
+                "base_name": "CN Model",
+                "work_dir": "",
+                "missing_3mf": [
+                    {
+                        "id": "profile-1",
+                        "title": "0.2mm",
+                        "downloadState": "auth_required",
+                        "downloadMessage": "国区下载 3MF 需要有效登录态；请更新国内站 Cookie / token。",
+                    }
+                ],
+            }
+
+        log_events = []
+        with patch("app.services.task_state.load_database_json_state", side_effect=fake_load_state), \
+                patch("app.services.task_state.save_database_json_state", side_effect=fake_save_state), \
+                patch.object(archive_worker_module, "_select_cookie", return_value="token=old"), \
+                patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
+                patch.object(archive_worker_module, "_is_three_mf_limit_guard_active_for_url", return_value=False), \
+                patch.object(archive_worker_module, "_temporary_proxy_env", side_effect=lambda *_args, **_kwargs: nullcontext()), \
+                patch.object(archive_worker_module, "run_archive_model_job", side_effect=fake_archive_job), \
+                patch.object(archive_worker_module, "update_three_mf_gate") as update_gate, \
+                patch.object(archive_worker_module, "mark_account_ok") as mark_ok, \
+                patch.object(archive_worker_module, "invalidate_model_detail_cache"), \
+                patch.object(archive_worker_module, "upsert_archive_snapshot_model", return_value=True), \
+                patch.object(archive_worker_module, "invalidate_archive_snapshot"), \
+                patch.object(archive_worker_module, "_log_archive", side_effect=lambda *args, **kwargs: log_events.append((args, kwargs))):
+            manager._run_single_task(
+                "task-cn-retry",
+                "https://makerworld.com.cn/zh/models/111",
+                {"missing_3mf_retry": True, "source": "cn", "model_id": "111"},
+            )
+
+        update_gate.assert_not_called()
+        mark_ok.assert_not_called()
+        queued = {item["id"]: item for item in queue_state["archive_queue"]["queued"]}
+        self.assertEqual(queued["retry-cn"]["status"], "queued")
+        self.assertTrue(any(args and args[0] == "stale_cookie_result_ignored" for args, _kwargs in log_events))
+
     def test_cn_three_mf_download_ignores_global_account_gate(self):
         manager = ArchiveTaskManager(background_enabled=False)
         manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[], proxy=None, three_mf_limits=None))

@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.84`
+> 当前版本：`v0.9.85`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -258,6 +258,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-08 · v0.9.85
+
+- 修复归档任务运行期间更新 Cookie 后，旧任务仍可把新的国内站 `3MF` gate 覆盖回 `Cookie 异常` 的问题。
+- 旧 Cookie 任务返回验证 / 登录态失败时，如果当前配置已换成新 Cookie，Worker 会跳过账号 gate 写回和同平台重试队列暂停。
+- 补充归档 Worker 回归测试，覆盖旧 Cookie 失败不能污染新登录态的场景。
+
 ### 2026-07-07 · v0.9.84
 
 - 默认 `compose.yaml` 和外部 FlareSolverr 版 compose 都新增 `makerhub-cloakbrowser` 服务，随 MakerHub 一起部署浏览器 profile 管理容器。
@@ -270,14 +276,14 @@ uvicorn app.main:app --reload
 - 已进入“等待子任务”的批量父任务只作为进度跟踪，不再被当成普通可执行任务领取。
 - 补充归档 Worker 回归测试，覆盖批量父任务排在 gate 阻断的 `3MF` 任务前时不会再次占住 worker。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-04 · v0.9.82
 
 - 首页源站状态卡同步收窄线上账号探针状态：账号资料或来源同步可读取时，旧探针 `http_error` 不再把源站卡降成“网络异常”。
 - 线上账号测试仍会记录探针失败结果，但不会覆盖已确认可读的账号健康快照。
 - 保留真正的验证、Cookie 失效和每日上限状态，避免影响归档阻断判断。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-03 · v0.9.81
 
