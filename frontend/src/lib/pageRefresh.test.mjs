@@ -170,6 +170,43 @@ test("createPageRefreshScheduler runs pending refresh after in-flight refresh fi
   assert.deepEqual(calls, ["first", "second"]);
 });
 
+test("createPageRefreshScheduler keeps one completion refresh after an in-flight event burst", async () => {
+  const timers = createTimerHarness();
+  const calls = [];
+  let resolveRefresh;
+  const scheduler = createPageRefreshScheduler({
+    refresh: (reason) => {
+      calls.push(reason);
+      if (calls.length > 1) {
+        return Promise.resolve();
+      }
+      return new Promise((resolve) => {
+        resolveRefresh = resolve;
+      });
+    },
+    delayMs: 1000,
+    resetExistingTimer: false,
+    isHidden: () => false,
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn,
+  });
+
+  scheduler.schedule("state.changed");
+  timers.scheduled[0].fn();
+  scheduler.schedule("state.changed");
+  scheduler.schedule("archive.completed");
+
+  assert.deepEqual(calls, ["state.changed"]);
+  resolveRefresh();
+  await Promise.resolve();
+
+  assert.equal(timers.scheduled.length, 2);
+  assert.equal(timers.scheduled[1].ms, 1000);
+  timers.scheduled[1].fn();
+  await Promise.resolve();
+  assert.deepEqual(calls, ["state.changed", "archive.completed"]);
+});
+
 test("createPageRefreshScheduler clears timer on dispose", () => {
   const timers = createTimerHarness();
   const scheduler = createPageRefreshScheduler({

@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.10.2`
+> 当前版本：`v0.10.3`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -266,6 +266,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-12 · v0.10.3
+
+- 修复归档 Worker 遗忘存活线程后重复扩容，以及任务先租约、后等待资源的问题；归档与源端刷新通过 FIFO 公平共享 MakerWorld 资源槽，避免并发超配和任务长期停在低进度。
+- 任务轻量接口改为仅读取有限队列摘要，并对归档进度写入、SSE 通知和任务页刷新降载，降低大队列下的数据库与 API 压力。
+- 验证暂停任务仅在对应 `3MF` gate 已恢复时重新入队，避免仍受 Cookie 或人工验证限制的队列被错误唤醒。
+
 ### 2026-07-11 · v0.10.2
 
 - 网页一键更新仍优先使用 Docker `AutoRemove` 删除临时 helper；新 App 启动后会延迟清理 DSM 遗留的已停止 `makerhub-self-update-*` 容器。
@@ -276,15 +282,15 @@ uvicorn app.main:app --reload
 - 修复指纹浏览器回收 Cookie 后等待 FlareSolverr 账号探针，导致设置页长期停在“浏览器同步中”的问题。
 - 浏览器与 MakerHub 的认证 token 一致时会直接保存 profile 和最终 Cookie，账号健康检测仍由后台任务继续执行。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-11 · v0.10.0
 
 - 设置页账号验证码登录成功后会自动创建或复用国内 / 国际固定 CloakBrowser profile，通过 CDP 注入 Cookie、完成 MakerWorld ticket 跳转并回收浏览器最终登录态，不再要求重复登录。
 - 自动同步失败时可从账号卡直接打开指纹浏览器；完成登录后后台会自动回写 Cookie，也支持手动“从浏览器同步”，并继续触发账号测试、来源同步和缺失 `3MF` 重试。
 - 增加旧 Cookie 结果保护和账号 ID 一致性校验，避免并发同步或误登其他账号覆盖当前 MakerHub 账号；Manager token 和 Cookie 不进入前端 URL 或业务日志。
 - 默认 Compose 增加 CloakBrowser 公开访问地址与超时配置，并把 early-alpha Manager 镜像固定到已验证的多架构 manifest digest。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-08 · v0.9.85
 

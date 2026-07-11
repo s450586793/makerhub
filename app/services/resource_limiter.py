@@ -1,6 +1,7 @@
 import os
 import threading
 import time
+from collections import deque
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
@@ -51,6 +52,9 @@ class _ResourceGate:
         self.wait_count = 0
         self.total_wait_ms = 0.0
         self.max_wait_ms = 0.0
+        self._next_ticket = 0
+        self._waiters: deque[int] = deque()
+        self._owners: dict[int, int] = {}
 
     def set_capacity(self, capacity: int) -> None:
         with self._condition:
@@ -59,10 +63,30 @@ class _ResourceGate:
 
     def acquire(self) -> float:
         started_at = time.perf_counter()
+        owner_id = threading.get_ident()
         with self._condition:
-            while self.active >= self.capacity:
-                self._condition.wait(timeout=1)
-            self.active += 1
+            owner_depth = self._owners.get(owner_id, 0)
+            if owner_depth > 0:
+                self._owners[owner_id] = owner_depth + 1
+                return 0.0
+
+            ticket = self._next_ticket
+            self._next_ticket += 1
+            self._waiters.append(ticket)
+            try:
+                while self.active >= self.capacity or self._waiters[0] != ticket:
+                    self._condition.wait(timeout=1)
+                self._waiters.popleft()
+                self.active += 1
+                self._owners[owner_id] = 1
+                self._condition.notify_all()
+            except BaseException:
+                try:
+                    self._waiters.remove(ticket)
+                except ValueError:
+                    pass
+                self._condition.notify_all()
+                raise
         wait_ms = (time.perf_counter() - started_at) * 1000
         with self._condition:
             if wait_ms >= 1:
@@ -72,15 +96,23 @@ class _ResourceGate:
         return wait_ms
 
     def release(self) -> None:
+        owner_id = threading.get_ident()
         with self._condition:
-            self.active = max(self.active - 1, 0)
-            self._condition.notify()
+            owner_depth = self._owners.get(owner_id, 0)
+            if owner_depth > 1:
+                self._owners[owner_id] = owner_depth - 1
+                return
+            if owner_depth == 1:
+                self._owners.pop(owner_id, None)
+                self.active = max(self.active - 1, 0)
+            self._condition.notify_all()
 
     def snapshot(self) -> dict[str, Any]:
         with self._condition:
             return {
                 "capacity": self.capacity,
                 "active": self.active,
+                "waiting": len(self._waiters),
                 "wait_count": self.wait_count,
                 "total_wait_ms": round(self.total_wait_ms, 1),
                 "max_wait_ms": round(self.max_wait_ms, 1),

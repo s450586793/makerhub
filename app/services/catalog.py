@@ -639,6 +639,7 @@ def _archive_display_item_from_group(
     items: list[dict[str, Any]],
     *,
     default_status: str,
+    partial: bool = False,
 ) -> dict[str, Any]:
     first = dict(items[0]) if items else {}
     child_count = max(len(items), _archive_display_child_total(first))
@@ -653,7 +654,9 @@ def _archive_display_item_from_group(
         for item in items
         if str(item.get("message") or "").strip()
     ]
-    if group_key:
+    if group_key and partial:
+        message = f"当前摘要显示 {len(items)} 个同来源模型，完整队列还有更多任务。"
+    elif group_key:
         message = f"发现 {child_count} 个模型，按来源聚合展示。"
     else:
         message = messages[0] if len(set(messages)) == 1 else f"{child_count} 个子任务正在处理"
@@ -668,9 +671,10 @@ def _archive_display_item_from_group(
         "display_kind": "subscription_source" if group_key else "task",
         "display_group_key": group_key,
         "child_count": child_count,
+        "display_partial": bool(group_key and partial),
         "source_mode": str(first.get("mode") or ""),
         "children_preview": _small_items(items, 5),
-        "children_truncated": len(items) > 5,
+        "children_truncated": len(items) > 5 or bool(group_key and partial),
     }
     return payload
 
@@ -692,7 +696,7 @@ def _group_archive_queue_for_display(
     item_limit: int | None = None,
     visible_only: bool = False,
 ) -> dict:
-    def _group_items(raw_items: Any, default_status: str) -> list[dict[str, Any]]:
+    def _group_items(raw_items: Any, default_status: str, *, partial: bool = False) -> list[dict[str, Any]]:
         groups: dict[str, list[dict[str, Any]]] = {}
         ordered_keys: list[str] = []
         display_items: list[dict[str, Any]] = []
@@ -710,7 +714,12 @@ def _group_archive_queue_for_display(
                 ordered_keys.append(group_key)
             groups[group_key].append(item)
         grouped_items = [
-            _archive_display_item_from_group(group_key, groups[group_key], default_status=default_status)
+            _archive_display_item_from_group(
+                group_key,
+                groups[group_key],
+                default_status=default_status,
+                partial=partial,
+            )
             for group_key in ordered_keys
         ]
         merged = grouped_items + display_items
@@ -718,15 +727,27 @@ def _group_archive_queue_for_display(
             return merged
         return merged[:max(0, int(item_limit or 0))]
 
-    active_all = _group_items(archive_queue.get("active"), "running")
-    queued_all = _group_items(archive_queue.get("queued"), "queued")
-    failures_all = _group_items(archive_queue.get("recent_failures"), "failed")
-    active = active_all if item_limit is None else active_all[:max(0, int(item_limit or 0))]
-    queued = queued_all if item_limit is None else queued_all[:max(0, int(item_limit or 0))]
-    recent_failures = failures_all if item_limit is None else failures_all[:max(0, int(item_limit or 0))]
     raw_running_count = int(archive_queue.get("running_count") or _count_items(archive_queue.get("active")))
     raw_queued_count = int(archive_queue.get("queued_count") or _count_items(archive_queue.get("queued")))
     raw_failed_count = int(archive_queue.get("failed_count") or _count_items(archive_queue.get("recent_failures")))
+    active_partial = visible_only and (
+        bool(archive_queue.get("active_truncated"))
+        or raw_running_count > _count_items(archive_queue.get("active"))
+    )
+    queued_partial = visible_only and (
+        bool(archive_queue.get("queued_truncated"))
+        or raw_queued_count > _count_items(archive_queue.get("queued"))
+    )
+    failures_partial = visible_only and (
+        bool(archive_queue.get("recent_failures_truncated"))
+        or raw_failed_count > _count_items(archive_queue.get("recent_failures"))
+    )
+    active_all = _group_items(archive_queue.get("active"), "running", partial=active_partial)
+    queued_all = _group_items(archive_queue.get("queued"), "queued", partial=queued_partial)
+    failures_all = _group_items(archive_queue.get("recent_failures"), "failed", partial=failures_partial)
+    active = active_all if item_limit is None else active_all[:max(0, int(item_limit or 0))]
+    queued = queued_all if item_limit is None else queued_all[:max(0, int(item_limit or 0))]
+    recent_failures = failures_all if item_limit is None else failures_all[:max(0, int(item_limit or 0))]
     return {
         "active": active,
         "queued": queued,
@@ -749,16 +770,17 @@ def _compact_archive_queue_payload(archive_queue: dict, *, item_limit: int = 5) 
     recent_failures = _small_items(archive_queue.get("recent_failures"), item_limit)
     running_count = int(archive_queue.get("running_count") or _count_items(archive_queue.get("active")))
     queued_count = int(archive_queue.get("queued_count") or _count_items(archive_queue.get("queued")))
+    failed_count = int(archive_queue.get("failed_count") or _count_items(archive_queue.get("recent_failures")))
     return {
         "active": active,
         "queued": queued,
         "recent_failures": recent_failures,
         "running_count": running_count,
         "queued_count": queued_count,
-        "failed_count": int(archive_queue.get("failed_count") or _count_items(archive_queue.get("recent_failures"))),
-        "active_truncated": _count_items(archive_queue.get("active")) > len(active),
-        "queued_truncated": _count_items(archive_queue.get("queued")) > len(queued),
-        "recent_failures_truncated": _count_items(archive_queue.get("recent_failures")) > len(recent_failures),
+        "failed_count": failed_count,
+        "active_truncated": bool(archive_queue.get("active_truncated")) or running_count > len(active),
+        "queued_truncated": bool(archive_queue.get("queued_truncated")) or queued_count > len(queued),
+        "recent_failures_truncated": bool(archive_queue.get("recent_failures_truncated")) or failed_count > len(recent_failures),
     }
 
 
@@ -3120,7 +3142,7 @@ def build_tasks_payload(
 
 def build_tasks_light_payload() -> dict:
     store = TaskStateStore()
-    raw_archive_queue = store.load_archive_queue()
+    raw_archive_queue = store.load_archive_queue_compact(item_limit=5)
     archive_queue = _compact_archive_queue_payload(raw_archive_queue)
     archive_queue_display = _group_archive_queue_for_display(raw_archive_queue, item_limit=5, visible_only=True)
     missing_3mf = _compact_missing_3mf_payload(store.load_missing_3mf_compact(item_limit=5))

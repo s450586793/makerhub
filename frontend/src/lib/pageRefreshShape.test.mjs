@@ -43,6 +43,12 @@ test("TasksPage uses shared page refresh controller for state events", () => {
   assert.match(tasksPageSource, /tasksRefreshController/);
 });
 
+test("TasksPage throttles state events from the first event in each refresh window", () => {
+  assert.match(tasksPageSource, /delayMs:\s*1000/);
+  assert.match(tasksPageSource, /debounceMs:\s*0/);
+  assert.match(tasksPageSource, /resetExistingTimer:\s*false/);
+});
+
 test("RemoteRefreshPage uses shared page refresh controller for throttled refresh", () => {
   assert.match(remoteRefreshPageSource, /createPageRefreshController/);
   assert.doesNotMatch(remoteRefreshPageSource, /function scheduleRefresh/);

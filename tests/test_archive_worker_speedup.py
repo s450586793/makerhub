@@ -1,7 +1,7 @@
 import threading
 import time
 import unittest
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -150,7 +150,7 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
         self.assertEqual(len(started_threads), 4)
         self.assertEqual(len({thread.name for thread in started_threads}), 4)
 
-    def test_ensure_worker_for_pending_replaces_stale_threads_when_queue_has_no_active_tasks(self):
+    def test_ensure_worker_for_pending_keeps_live_threads_when_queue_has_no_active_tasks(self):
         manager = ArchiveTaskManager(background_enabled=True)
         started_threads = []
 
@@ -170,9 +170,10 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
             def start(self):
                 started_threads.append(self)
 
-        manager._workers = [StaleThread(), StaleThread()]
+        live_threads = [StaleThread(), StaleThread()]
+        manager._workers = live_threads
         manager.task_store = SimpleNamespace(
-            resume_verification_paused_archive_tasks=lambda: {
+            resume_verification_paused_archive_tasks=lambda selector=None: {
                 "running_count": 0,
                 "queued_count": 3,
                 "resumed_count": 0,
@@ -186,8 +187,167 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
             queue = manager.ensure_worker_for_pending()
 
         self.assertEqual(queue["queued_count"], 3)
-        self.assertEqual(len(started_threads), 2)
-        self.assertEqual(len(manager._workers), 2)
+        self.assertEqual(len(started_threads), 0)
+        self.assertEqual(manager._workers, live_threads)
+        self.assertIs(manager._worker, live_threads[0])
+
+    def test_run_loop_retires_surplus_worker_after_concurrency_is_reduced(self):
+        manager = ArchiveTaskManager(background_enabled=True)
+        primary_worker = SimpleNamespace(is_alive=lambda: True)
+        current_worker = threading.current_thread()
+        manager._workers = [primary_worker, current_worker]
+        queue_reads = []
+        manager.task_store = SimpleNamespace(
+            load_archive_queue=lambda: queue_reads.append(True) or {
+                "active": [],
+                "queued": [],
+                "recent_failures": [],
+            },
+        )
+
+        with patch.object(archive_worker_module, "_archive_worker_concurrency", return_value=1):
+            manager._ensure_worker()
+
+        with patch.object(manager, "_refresh_batch_tasks", return_value=False), \
+                patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}):
+            manager._run_loop()
+
+        self.assertEqual(queue_reads, [])
+        self.assertEqual(manager._workers, [primary_worker])
+        self.assertIs(manager._worker, primary_worker)
+
+    def test_waiting_worker_rechecks_reduced_concurrency_before_leasing(self):
+        manager = ArchiveTaskManager(background_enabled=True)
+        primary_worker = SimpleNamespace(is_alive=lambda: True)
+        current_worker = threading.current_thread()
+        manager._workers = [primary_worker, current_worker]
+        manager._worker_target_count = 2
+        task = {
+            "id": "queued-after-resize",
+            "url": "https://makerworld.com.cn/zh/models/1",
+            "status": "queued",
+            "mode": "single_model",
+        }
+        lease_calls = []
+        manager.task_store = SimpleNamespace(
+            load_archive_queue=lambda: {
+                "active": [],
+                "queued": [task],
+                "recent_failures": [],
+            },
+            lease_next_archive_task=lambda _selector: lease_calls.append(True),
+        )
+
+        @contextmanager
+        def resize_while_waiting(_name, **_kwargs):
+            manager._worker_target_count = 1
+            yield 0.0
+
+        with patch.object(manager, "_refresh_batch_tasks", return_value=False), \
+                patch.object(archive_worker_module, "resource_slot", side_effect=resize_while_waiting), \
+                patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}):
+            manager._run_loop()
+
+        self.assertEqual(lease_calls, [])
+        self.assertEqual(manager._workers, [primary_worker])
+
+    def test_run_loop_acquires_makerworld_slot_before_leasing_task(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        task = {
+            "id": "task-1",
+            "url": "https://makerworld.com.cn/zh/models/1",
+            "mode": "single_model",
+            "meta": {},
+        }
+        events = []
+        queue_reads = iter(
+            [
+                {"active": [], "queued": [task], "recent_failures": []},
+                {"active": [], "queued": [], "recent_failures": []},
+            ]
+        )
+
+        def lease_next(_selector):
+            events.append("lease")
+            return task
+
+        manager.task_store = SimpleNamespace(
+            load_archive_queue=lambda: next(queue_reads),
+            lease_next_archive_task=lease_next,
+            update_active_task=lambda *_args, **_kwargs: None,
+        )
+
+        @contextmanager
+        def makerworld_slot(name, **_kwargs):
+            self.assertEqual(name, "makerworld_page_api")
+            events.append("resource_acquired")
+            try:
+                yield 0.0
+            finally:
+                events.append("resource_released")
+
+        with patch.object(manager, "_refresh_batch_tasks", return_value=False), \
+                patch.object(manager, "_run_single_task", side_effect=lambda *_args, **_kwargs: events.append("run")), \
+                patch.object(archive_worker_module, "resource_slot", side_effect=makerworld_slot, create=True), \
+                patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}):
+            manager._run_loop()
+
+        self.assertEqual(events[:4], ["resource_acquired", "lease", "run", "resource_released"])
+
+    def test_archive_progress_throttle_limits_same_stage_writes(self):
+        self.assertTrue(hasattr(archive_worker_module, "_ArchiveProgressThrottle"))
+        clock = iter([0.0, 0.1, 0.2, 2.1, 2.2, 2.3])
+        throttle = archive_worker_module._ArchiveProgressThrottle(
+            interval_seconds=2.0,
+            clock=lambda: next(clock),
+        )
+
+        self.assertTrue(throttle.should_persist(percent=10, stage="metadata"))
+        self.assertFalse(throttle.should_persist(percent=11, stage="metadata"))
+        self.assertFalse(throttle.should_persist(percent=12, stage="metadata"))
+        self.assertTrue(throttle.should_persist(percent=13, stage="metadata"))
+        self.assertTrue(throttle.should_persist(percent=14, stage="media"))
+        self.assertTrue(throttle.should_persist(percent=100, stage="finalize"))
+
+    def test_run_single_task_uses_progress_throttle(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[], proxy=None, three_mf_limits=None))
+        updates = []
+        manager.task_store = SimpleNamespace(
+            update_missing_3mf_status=lambda **_payload: None,
+            replace_missing_3mf_for_model=lambda *_args, **_kwargs: None,
+            remove_recent_failures_for_model=lambda *_args, **_kwargs: None,
+            update_active_task=lambda _task_id, **payload: updates.append(payload),
+            complete_archive_task=lambda *_args, **_kwargs: None,
+        )
+
+        def fake_archive_job(**kwargs):
+            callback = kwargs["progress_callback"]
+            callback({"percent": 10, "message": "正在读取元数据", "archive_stage": "metadata"})
+            callback({"percent": 11, "message": "仍在读取元数据", "archive_stage": "metadata"})
+            callback({"percent": 40, "message": "正在整理图片", "archive_stage": "media"})
+            callback({"percent": 90, "message": "正在整理目录", "archive_stage": "finalize"})
+            callback({"percent": 100, "message": "归档完成", "archive_stage": "finalize"})
+            return {"model_id": "123", "base_name": "Demo", "work_dir": "", "missing_3mf": []}
+
+        with patch.object(archive_worker_module, "_select_cookie", return_value="cookie"), \
+                patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
+                patch.object(archive_worker_module, "_is_three_mf_limit_guard_active_for_url", return_value=False), \
+                patch.object(archive_worker_module, "_temporary_proxy_env", side_effect=lambda *_args, **_kwargs: nullcontext()), \
+                patch.object(archive_worker_module, "run_archive_model_job", side_effect=fake_archive_job), \
+                patch.object(archive_worker_module, "_sync_account_health_for_archive_result"), \
+                patch.object(archive_worker_module, "invalidate_model_detail_cache"), \
+                patch.object(archive_worker_module, "upsert_archive_snapshot_model", return_value=True), \
+                patch.object(archive_worker_module, "invalidate_archive_snapshot"), \
+                patch.object(archive_worker_module, "_log_archive"), \
+                patch.object(archive_worker_module.time, "monotonic", side_effect=[0.0, 0.1, 0.2, 0.3, 0.4]):
+            manager._run_single_task(
+                "task-progress",
+                "https://makerworld.com.cn/zh/models/123",
+                {"missing_3mf_retry": True, "source": "cn", "model_id": "123"},
+            )
+
+        self.assertEqual([item["progress"] for item in updates], [10, 40, 90, 100])
 
     def test_run_loop_can_start_four_single_model_tasks_without_duplicate_leases(self):
         state = {}
@@ -207,6 +367,7 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
                 patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
                 patch.object(manager, "_refresh_batch_tasks", return_value=False), \
                 patch.object(manager, "_run_single_task", side_effect=fake_run_single), \
+                patch.object(archive_worker_module, "resource_slot", side_effect=lambda *_args, **_kwargs: nullcontext(0.0), create=True), \
                 patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}):
             manager.task_store.save_archive_queue(
                 {

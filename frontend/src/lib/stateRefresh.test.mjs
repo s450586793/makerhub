@@ -123,3 +123,26 @@ test("createScopedRefreshScheduler clears pending timer on dispose", () => {
 
   assert.deepEqual(cleared, [42]);
 });
+
+test("createScopedRefreshScheduler forwards a completion event without an extra debounce delay", () => {
+  const scheduled = [];
+  const received = [];
+  const scheduler = createScopedRefreshScheduler({
+    scopes: ["archive_queue"],
+    debounceMs: 0,
+    callback: (event) => received.push(event),
+    isHidden: () => false,
+    setTimeoutFn: (fn, ms) => {
+      scheduled.push({ fn, ms });
+      return scheduled.length;
+    },
+    clearTimeoutFn: () => {},
+  });
+
+  scheduler.handleEvent({ type: "archive.completed", scope: "archive_queue" });
+
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].ms, 0);
+  scheduled[0].fn();
+  assert.deepEqual(received, [{ type: "archive.completed", scope: "archive_queue" }]);
+});

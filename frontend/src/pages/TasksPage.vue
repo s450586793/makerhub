@@ -854,7 +854,9 @@ onMounted(async () => {
   tasksRefreshController = createPageRefreshController({
     scopes: ["archive_queue", "missing_3mf", "organize_tasks"],
     refresh: () => load({ hydrateFull: false }),
-    delayMs: 250,
+    delayMs: 1000,
+    debounceMs: 0,
+    resetExistingTimer: false,
   });
   await load({ hydrateFull: true });
   void perf.finish();

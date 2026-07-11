@@ -6,7 +6,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 from app.core.database_json_state import load_database_json_state, save_database_json_state
@@ -30,6 +30,7 @@ from app.services.catalog import (
 )
 from app.services.process_jobs import run_archive_model_job, run_discover_batch_urls_job
 from app.services.proxy_policy import temporary_proxy_env
+from app.services.resource_limiter import resource_slot
 from app.services.task_state import TaskStateStore
 from app.services.three_mf import (
     describe_three_mf_failure,
@@ -498,6 +499,33 @@ def _archive_stage_progress_from_payload(payload: dict[str, Any], stage: str) ->
     return max(0, min(round((percent - start) * 100 / (end - start)), 100))
 
 
+class _ArchiveProgressThrottle:
+    def __init__(
+        self,
+        *,
+        interval_seconds: float = 2.0,
+        clock: Optional[Callable[[], float]] = None,
+    ) -> None:
+        self.interval_seconds = max(float(interval_seconds or 0), 0.0)
+        self._clock = clock or time.monotonic
+        self._last_persisted_at: Optional[float] = None
+        self._last_stage = ""
+
+    def should_persist(self, *, percent: int, stage: str) -> bool:
+        now = self._clock()
+        clean_stage = str(stage or "").strip()
+        should_persist = (
+            self._last_persisted_at is None
+            or int(percent or 0) >= 100
+            or clean_stage != self._last_stage
+            or now - self._last_persisted_at >= self.interval_seconds
+        )
+        if should_persist:
+            self._last_persisted_at = now
+            self._last_stage = clean_stage
+        return should_persist
+
+
 def _account_health_failure_from_missing_items(
     missing_items: list[dict[str, Any]],
 ) -> Optional[dict[str, str]]:
@@ -665,6 +693,7 @@ class ArchiveTaskManager:
         self._worker: Optional[threading.Thread] = None
         self._workers: list[threading.Thread] = []
         self._worker_sequence = 0
+        self._worker_target_count = 0
         self._preview_lock = threading.Lock()
         self._batch_refresh_lock = threading.Lock()
         self._batch_previews: dict[str, dict] = {}
@@ -2489,6 +2518,7 @@ class ArchiveTaskManager:
             except Exception:
                 config = None
             target_count = _archive_worker_concurrency(config)
+            self._worker_target_count = target_count
             while len(self._workers) < target_count:
                 self._worker_sequence += 1
                 worker = threading.Thread(
@@ -2503,9 +2533,12 @@ class ArchiveTaskManager:
     def ensure_worker_for_pending(self) -> dict:
         queue = self._repair_queue_before_worker_start(repair_active=False)
         if hasattr(self.task_store, "resume_verification_paused_archive_tasks"):
-            resumed_queue = self.task_store.resume_verification_paused_archive_tasks()
+            gate_open_by_platform = self._verification_resume_gate_snapshot(queue)
+            resumed_queue = self.task_store.resume_verification_paused_archive_tasks(
+                selector=lambda item: self._verification_resume_allowed(item, gate_open_by_platform),
+            )
+            queue = resumed_queue
             if int(resumed_queue.get("resumed_count") or 0) > 0:
-                queue = resumed_queue
                 _log_archive(
                     "verification_paused_queue_resumed",
                     "检测到验证已恢复，已重新排队旧的 MakerWorld 验证暂停任务。",
@@ -2514,10 +2547,6 @@ class ArchiveTaskManager:
                 )
         if int(queue.get("running_count") or 0) > 0:
             queue = self.task_store.refresh_recent_active_archive_leases()
-        if int(queue.get("queued_count") or 0) > 0 and int(queue.get("running_count") or 0) <= 0:
-            with self._lock:
-                self._workers = []
-                self._worker = None
         if int(queue.get("queued_count") or 0) > 0:
             self._ensure_worker()
         return queue
@@ -2589,8 +2618,46 @@ class ArchiveTaskManager:
         gate = three_mf_gate_for_url(url, meta)
         return not bool(gate.get("open"))
 
+    @staticmethod
+    def _task_platform_and_url(item: dict) -> tuple[str, str, dict[str, Any]]:
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        url = normalize_source_url(str(meta.get("model_url") or item.get("url") or item.get("title") or ""))
+        platform = normalize_makerworld_source(meta.get("source"), url)
+        return platform, url, meta
+
+    def _verification_resume_gate_snapshot(self, queue: dict) -> dict[str, bool]:
+        gate_open_by_platform: dict[str, bool] = {}
+        for item in queue.get("queued") or []:
+            if str(item.get("status") or "").strip().lower() != "paused":
+                continue
+            platform, url, meta = self._task_platform_and_url(item)
+            if platform in gate_open_by_platform:
+                continue
+            gate_open_by_platform[platform] = bool(three_mf_gate_for_url(url, meta).get("open"))
+        return gate_open_by_platform
+
+    def _verification_resume_allowed(self, item: dict, gate_open_by_platform: dict[str, bool]) -> bool:
+        platform, _url, _meta = self._task_platform_and_url(item)
+        return bool(gate_open_by_platform.get(platform, False))
+
+    def _retire_current_worker_if_surplus(self) -> bool:
+        current_worker = threading.current_thread()
+        with self._lock:
+            try:
+                worker_index = self._workers.index(current_worker)
+            except ValueError:
+                return False
+            target_count = max(int(self._worker_target_count or 0), 1)
+            if worker_index < target_count:
+                return False
+            self._workers.pop(worker_index)
+            self._worker = self._workers[0] if self._workers else None
+            return True
+
     def _run_loop(self) -> None:
         while True:
+            if self._retire_current_worker_if_surplus():
+                return
             has_active_batch = self._refresh_batch_tasks()
             queue = self.task_store.load_archive_queue()
             queued = queue.get("queued") or []
@@ -2606,64 +2673,75 @@ class ArchiveTaskManager:
                     continue
                 return
 
-            task = self.task_store.lease_next_archive_task(self._next_executable_task)
-            if task is None:
+            candidate = self._next_executable_task(queue)
+            if candidate is None:
                 if has_active_batch:
                     time.sleep(ACTIVE_BATCH_IDLE_POLL_SECONDS)
                     continue
                 return
-            task_id = task["id"]
-            task_url = str(task.get("url") or "")
-            task_meta = task.get("meta") if isinstance(task.get("meta"), dict) else {}
-            self.task_store.update_active_task(task_id, message="正在准备归档", progress=1)
+
+            candidate_url = normalize_source_url(str(candidate.get("url") or ""))
+            with resource_slot("makerworld_page_api", detail=candidate_url):
+                if self._retire_current_worker_if_surplus():
+                    return
+                task = self.task_store.lease_next_archive_task(self._next_executable_task)
+                if task is None:
+                    continue
+                self._run_leased_task(task)
+
+    def _run_leased_task(self, task: dict[str, Any]) -> None:
+        task_id = task["id"]
+        task_url = str(task.get("url") or "")
+        task_meta = task.get("meta") if isinstance(task.get("meta"), dict) else {}
+        self.task_store.update_active_task(task_id, message="正在准备归档", progress=1)
+        _log_archive(
+            "task_started",
+            "归档任务开始执行。",
+            task_id=task_id,
+            url=task_url,
+            mode=str(task.get("mode") or "") or detect_archive_mode(task_url),
+        )
+
+        try:
+            task_mode = str(task.get("mode") or "") or detect_archive_mode(task_url)
+            if task_mode in {"author_upload", "collection_models"}:
+                self._run_batch_task(task_id, task_url, task_mode, meta=task_meta)
+            else:
+                self._run_single_task(task_id, task_url, meta=task_meta)
+        except Exception as exc:
+            model_id = extract_model_id(task.get("url") or "")
+            error_message = str(exc)
+            if self._complete_terminal_not_found_task(
+                task_id=task_id,
+                url=task_url,
+                meta=task_meta,
+                model_id=model_id,
+                message=error_message,
+            ):
+                return
+            if model_id:
+                self.task_store.update_missing_3mf_status(
+                    model_id=model_id,
+                    status="missing",
+                    message=error_message,
+                )
+            _sync_account_health_for_archive_exception(
+                task_meta=task_meta,
+                model_url=normalize_source_url(task_url),
+                model_id=model_id,
+                detail=error_message,
+            )
+            self.task_store.fail_archive_task(task_id, error_message)
             _log_archive(
-                "task_started",
-                "归档任务开始执行。",
+                "task_failed",
+                error_message,
+                level="error",
                 task_id=task_id,
                 url=task_url,
                 mode=str(task.get("mode") or "") or detect_archive_mode(task_url),
             )
-
-            try:
-                task_mode = str(task.get("mode") or "") or detect_archive_mode(task_url)
-                if task_mode in {"author_upload", "collection_models"}:
-                    self._run_batch_task(task_id, task_url, task_mode, meta=task_meta)
-                else:
-                    self._run_single_task(task_id, task_url, meta=task_meta)
-            except Exception as exc:
-                model_id = extract_model_id(task.get("url") or "")
-                error_message = str(exc)
-                if self._complete_terminal_not_found_task(
-                    task_id=task_id,
-                    url=task_url,
-                    meta=task_meta,
-                    model_id=model_id,
-                    message=error_message,
-                ):
-                    continue
-                if model_id:
-                    self.task_store.update_missing_3mf_status(
-                        model_id=model_id,
-                        status="missing",
-                        message=error_message,
-                    )
-                _sync_account_health_for_archive_exception(
-                    task_meta=task_meta,
-                    model_url=normalize_source_url(task_url),
-                    model_id=model_id,
-                    detail=error_message,
-                )
-                self.task_store.fail_archive_task(task_id, error_message)
-                _log_archive(
-                    "task_failed",
-                    error_message,
-                    level="error",
-                    task_id=task_id,
-                    url=task_url,
-                    mode=str(task.get("mode") or "") or detect_archive_mode(task_url),
-                )
-            finally:
-                self._refresh_batch_tasks()
+        finally:
+            self._refresh_batch_tasks()
 
     def _complete_terminal_not_found_task(
         self,
@@ -2955,11 +3033,16 @@ class ArchiveTaskManager:
                 ),
             )
 
+        progress_throttle = _ArchiveProgressThrottle()
+
         def progress_callback(payload: dict) -> None:
             archive_stage = _archive_stage_from_progress_payload(payload)
+            percent = int(payload.get("percent") or 0)
+            if not progress_throttle.should_persist(percent=percent, stage=archive_stage):
+                return
             self.task_store.update_active_task(
                 task_id,
-                progress=int(payload.get("percent") or 0),
+                progress=percent,
                 message=str(payload.get("message") or ""),
                 archive_stage=archive_stage,
                 archive_stage_progress=_archive_stage_progress_from_payload(payload, archive_stage),

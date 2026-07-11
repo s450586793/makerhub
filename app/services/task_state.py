@@ -1452,6 +1452,34 @@ class TaskStateStore:
         queue["failed_count"] = len(queue["recent_failures"])
         return queue
 
+    def _load_archive_queue_compact_unlocked(self, *, item_limit: int = 5) -> dict:
+        clean_limit = max(0, int(item_limit or 0))
+        summaries = {
+            field: load_database_json_state_array_summary(
+                ARCHIVE_QUEUE_STATE_KEY,
+                field,
+                limit=clean_limit,
+            )
+            for field in ("active", "queued", "recent_failures")
+        }
+        queue = _normalize_archive_queue(
+            {
+                field: summaries[field].get("items") or []
+                for field in summaries
+            }
+        )
+        counts = {
+            field: int(summaries[field].get("count") or 0)
+            for field in summaries
+        }
+        queue["running_count"] = counts["active"]
+        queue["queued_count"] = counts["queued"]
+        queue["failed_count"] = counts["recent_failures"]
+        queue["active_truncated"] = counts["active"] > len(queue["active"])
+        queue["queued_truncated"] = counts["queued"] > len(queue["queued"])
+        queue["recent_failures_truncated"] = counts["recent_failures"] > len(queue["recent_failures"])
+        return queue
+
     def _save_archive_queue_unlocked(self, payload: dict) -> dict:
         normalized = _normalize_archive_queue(payload)
         self._write_json(
@@ -1694,6 +1722,10 @@ class TaskStateStore:
     def load_archive_queue(self) -> dict:
         with _STATE_LOCK:
             return self._load_archive_queue_unlocked()
+
+    def load_archive_queue_compact(self, *, item_limit: int = 5) -> dict:
+        with _STATE_LOCK:
+            return self._load_archive_queue_compact_unlocked(item_limit=item_limit)
 
     def load_missing_3mf(self, fallback_items: Optional[list[dict]] = None) -> dict:
         with _STATE_LOCK:
@@ -2306,7 +2338,7 @@ class TaskStateStore:
             )
         return {"summary": summary, "queue": queue}
 
-    def resume_verification_paused_archive_tasks(self) -> dict:
+    def resume_verification_paused_archive_tasks(self, selector=None) -> dict:
         resumed_count = 0
 
         def _mutate(payload: dict) -> dict:
@@ -2318,13 +2350,17 @@ class TaskStateStore:
                 status = str(normalized.get("status") or "").strip().lower()
                 blocked_reason = str(normalized.get("blocked_reason") or "").strip().lower()
                 message = str(normalized.get("message") or "").strip()
-                if (
+                verification_paused = (
                     status == "paused"
                     and (
                         blocked_reason == "needs_verification"
-                        or message == ARCHIVE_VERIFICATION_REQUIRED_MESSAGE
+                        or (
+                            not blocked_reason
+                            and message == ARCHIVE_VERIFICATION_REQUIRED_MESSAGE
+                        )
                     )
-                ):
+                )
+                if verification_paused and (selector is None or selector(normalized)):
                     normalized["status"] = "queued"
                     normalized["message"] = ARCHIVE_VERIFICATION_RESUMED_MESSAGE
                     normalized["updated_at"] = now

@@ -1,3 +1,4 @@
+import inspect
 import unittest
 from datetime import datetime, timedelta, timezone
 from tempfile import TemporaryDirectory
@@ -1217,6 +1218,101 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(restored["updated_at"], "2026-07-02T16:00:00+08:00")
         self.assertEqual(still_paused["status"], "paused")
         self.assertEqual(still_paused["blocked_reason"], "manual")
+
+    def test_resume_verification_paused_archive_tasks_applies_selector_per_platform(self):
+        store = TaskStateStore()
+        self.assertIn("selector", inspect.signature(store.resume_verification_paused_archive_tasks).parameters)
+        state = {
+            "archive_queue": {
+                "active": [],
+                "queued": [
+                    {
+                        "id": "paused-cn",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "status": "paused",
+                        "blocked_reason": "needs_verification",
+                        "meta": {"source": "cn", "missing_3mf_retry": True},
+                    },
+                    {
+                        "id": "paused-global",
+                        "url": "https://makerworld.com/zh/models/456",
+                        "status": "paused",
+                        "blocked_reason": "needs_verification",
+                        "meta": {"source": "global", "missing_3mf_retry": True},
+                    },
+                    {
+                        "id": "paused-manual",
+                        "url": "https://makerworld.com.cn/zh/models/789",
+                        "status": "paused",
+                        "blocked_reason": "manual",
+                        "message": "MakerWorld 需要验证，前往官网任意下载一个模型。",
+                        "meta": {"source": "cn"},
+                    },
+                ],
+                "recent_failures": [],
+            }
+        }
+        selected_ids = []
+
+        def _select_cn(item):
+            selected_ids.append(item.get("id"))
+            return item.get("meta", {}).get("source") == "cn"
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
+            queue = store.resume_verification_paused_archive_tasks(
+                selector=_select_cn,
+            )
+
+        self.assertEqual(queue["resumed_count"], 1)
+        self.assertEqual(queue["queued"][0]["status"], "queued")
+        self.assertNotIn("blocked_reason", queue["queued"][0])
+        self.assertEqual(queue["queued"][1]["status"], "paused")
+        self.assertEqual(queue["queued"][1]["blocked_reason"], "needs_verification")
+        self.assertEqual(queue["queued"][2]["status"], "paused")
+        self.assertEqual(queue["queued"][2]["blocked_reason"], "manual")
+        self.assertEqual(selected_ids, ["paused-cn", "paused-global"])
+
+    def test_load_archive_queue_compact_reads_limited_items_and_full_counts(self):
+        summaries = {
+            "active": {
+                "items": [{"id": "active-1", "status": "running"}],
+                "count": 12,
+            },
+            "queued": {
+                "items": [{"id": "queued-1", "status": "queued"}],
+                "count": 2000,
+            },
+            "recent_failures": {
+                "items": [{"id": "failed-1", "status": "failed"}],
+                "count": 18,
+            },
+        }
+        store = TaskStateStore()
+
+        with patch(
+            "app.services.task_state.load_database_json_state_array_summary",
+            side_effect=lambda key, field, *, limit: summaries[field],
+        ) as load_summary:
+            queue = store.load_archive_queue_compact(item_limit=5)
+
+        self.assertEqual(queue["running_count"], 12)
+        self.assertEqual(queue["queued_count"], 2000)
+        self.assertEqual(queue["failed_count"], 18)
+        self.assertEqual([item["id"] for item in queue["active"]], ["active-1"])
+        self.assertEqual([item["id"] for item in queue["queued"]], ["queued-1"])
+        self.assertEqual([item["id"] for item in queue["recent_failures"]], ["failed-1"])
+        self.assertTrue(queue["active_truncated"])
+        self.assertTrue(queue["queued_truncated"])
+        self.assertTrue(queue["recent_failures_truncated"])
+        self.assertEqual(
+            [(args[0], args[1], kwargs["limit"]) for args, kwargs in load_summary.call_args_list],
+            [
+                ("archive_queue", "active", 5),
+                ("archive_queue", "queued", 5),
+                ("archive_queue", "recent_failures", 5),
+            ],
+        )
 
     def test_completed_archive_task_publishes_semantic_event(self):
         state = {}

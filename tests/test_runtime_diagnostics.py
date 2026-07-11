@@ -102,7 +102,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         }
 
         with patch("app.services.catalog.load_database_json_state", return_value={}), \
-                patch.object(catalog.TaskStateStore, "load_archive_queue", return_value=archive_queue), \
+                patch.object(catalog.TaskStateStore, "load_archive_queue_compact", return_value=archive_queue), \
                 patch.object(catalog.TaskStateStore, "load_missing_3mf_compact", return_value=missing_3mf), \
                 patch.object(catalog.TaskStateStore, "load_remote_refresh_state", return_value={}), \
                 patch.object(catalog.TaskStateStore, "load_source_refresh_queue", return_value={"active": [], "queued": [], "recent_failures": []}), \
@@ -138,7 +138,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         missing_3mf = {"items": [], "count": 0}
 
         with patch("app.services.catalog.load_database_json_state", return_value={}), \
-                patch.object(catalog.TaskStateStore, "load_archive_queue", return_value=archive_queue), \
+                patch.object(catalog.TaskStateStore, "load_archive_queue_compact", return_value=archive_queue), \
                 patch.object(catalog.TaskStateStore, "load_missing_3mf_compact", return_value=missing_3mf), \
                 patch.object(catalog.TaskStateStore, "load_remote_refresh_state", return_value={}), \
                 patch.object(catalog.TaskStateStore, "load_source_refresh_queue", return_value={"active": [], "queued": [], "recent_failures": []}), \
@@ -172,7 +172,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         }
 
         with patch("app.services.catalog.load_database_json_state", return_value={}), \
-                patch.object(catalog.TaskStateStore, "load_archive_queue", return_value={"active": [], "queued": [], "recent_failures": [], "running_count": 0, "queued_count": 0}), \
+                patch.object(catalog.TaskStateStore, "load_archive_queue_compact", return_value={"active": [], "queued": [], "recent_failures": [], "running_count": 0, "queued_count": 0}), \
                 patch.object(catalog.TaskStateStore, "load_missing_3mf_compact", return_value=missing_3mf), \
                 patch.object(catalog.TaskStateStore, "load_remote_refresh_state", return_value={}), \
                 patch.object(catalog.TaskStateStore, "load_source_refresh_queue", return_value={"active": [], "queued": [], "recent_failures": []}), \
@@ -197,7 +197,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
 
     def test_tasks_light_payload_uses_compact_missing_3mf_loader(self):
         with patch("app.services.catalog.load_database_json_state", return_value={}), \
-                patch.object(catalog.TaskStateStore, "load_archive_queue", return_value={"active": [], "queued": [], "recent_failures": [], "running_count": 0, "queued_count": 0}), \
+                patch.object(catalog.TaskStateStore, "load_archive_queue_compact", return_value={"active": [], "queued": [], "recent_failures": [], "running_count": 0, "queued_count": 0}), \
                 patch.object(catalog.TaskStateStore, "load_missing_3mf", side_effect=AssertionError("light payload must not normalize full missing 3MF state")), \
                 patch.object(catalog.TaskStateStore, "load_missing_3mf_compact", return_value={"items": [{"model_id": "1"}], "count": 2000, "items_truncated": True}), \
                 patch.object(catalog.TaskStateStore, "load_remote_refresh_state", return_value={}), \
@@ -209,6 +209,63 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         self.assertEqual(payload["missing_3mf"]["count"], 2000)
         self.assertEqual(payload["missing_3mf"]["items"], [{"model_id": "1"}])
         self.assertTrue(payload["missing_3mf"]["items_truncated"])
+
+    def test_tasks_light_payload_uses_compact_archive_queue_loader(self):
+        compact_queue = {
+            "active": [{"id": "active-1", "status": "running"}],
+            "queued": [{"id": "queued-1", "status": "queued"}],
+            "recent_failures": [],
+            "running_count": 12,
+            "queued_count": 2000,
+            "failed_count": 0,
+        }
+        with patch("app.services.catalog.load_database_json_state", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_archive_queue", side_effect=AssertionError("light payload must not load full archive queue")), \
+                patch.object(catalog.TaskStateStore, "load_archive_queue_compact", return_value=compact_queue, create=True), \
+                patch.object(catalog.TaskStateStore, "load_missing_3mf_compact", return_value={"items": [], "count": 0}), \
+                patch.object(catalog.TaskStateStore, "load_remote_refresh_state", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_source_refresh_queue", return_value={"active": [], "queued": [], "recent_failures": []}), \
+                patch.object(catalog.TaskStateStore, "load_source_refresh_runs", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_organize_tasks", return_value={"items": [], "count": 0}):
+            payload = catalog.build_tasks_light_payload()
+
+        self.assertEqual(payload["archive_queue"]["running_count"], 12)
+        self.assertEqual(payload["archive_queue"]["queued_count"], 2000)
+
+    def test_tasks_light_payload_marks_truncated_subscription_group_as_partial(self):
+        compact_queue = {
+            "active": [],
+            "queued": [
+                {
+                    "id": f"queued-{index}",
+                    "status": "queued",
+                    "url": f"https://makerworld.com.cn/zh/models/{index}",
+                    "meta": {
+                        "scan_mode": "subscription:sub-author",
+                        "subscription_name": "作者 A | 已发布",
+                    },
+                }
+                for index in range(5)
+            ],
+            "recent_failures": [],
+            "running_count": 0,
+            "queued_count": 20,
+            "failed_count": 0,
+            "queued_truncated": True,
+        }
+        with patch("app.services.catalog.load_database_json_state", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_archive_queue_compact", return_value=compact_queue), \
+                patch.object(catalog.TaskStateStore, "load_missing_3mf_compact", return_value={"items": [], "count": 0}), \
+                patch.object(catalog.TaskStateStore, "load_remote_refresh_state", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_source_refresh_queue", return_value={"active": [], "queued": [], "recent_failures": []}), \
+                patch.object(catalog.TaskStateStore, "load_source_refresh_runs", return_value={}), \
+                patch.object(catalog.TaskStateStore, "load_organize_tasks", return_value={"items": [], "count": 0}):
+            payload = catalog.build_tasks_light_payload()
+
+        grouped = payload["archive_queue_display"]["queued"][0]
+        self.assertTrue(grouped["display_partial"])
+        self.assertEqual(grouped["child_count"], 5)
+        self.assertEqual(grouped["message"], "当前摘要显示 5 个同来源模型，完整队列还有更多任务。")
 
     def test_tasks_payload_groups_subscription_children_for_display(self):
         archive_queue = {

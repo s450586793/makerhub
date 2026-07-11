@@ -122,15 +122,31 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
     def test_ensure_worker_for_pending_resumes_verification_paused_queue(self):
         manager = ArchiveTaskManager(background_enabled=False)
         calls = []
-        manager.task_store = SimpleNamespace(
-            resume_verification_paused_archive_tasks=lambda: calls.append("resume") or {
+
+        def resume_paused(selector=None):
+            item = {
+                "id": "restored",
+                "status": "paused",
+                "url": "https://makerworld.com.cn/zh/models/123",
+                "meta": {"missing_3mf_retry": True, "source": "cn"},
+            }
+            if selector is None or selector(item):
+                item["status"] = "queued"
+                resumed_count = 1
+            else:
+                resumed_count = 0
+            calls.append(selector)
+            return {
                 "active": [],
-                "queued": [{"id": "restored", "status": "queued"}],
+                "queued": [item],
                 "recent_failures": [],
                 "running_count": 0,
                 "queued_count": 1,
-                "resumed_count": 1,
-            },
+                "resumed_count": resumed_count,
+            }
+
+        manager.task_store = SimpleNamespace(
+            resume_verification_paused_archive_tasks=resume_paused,
             refresh_recent_active_archive_leases=lambda: {
                 "active": [],
                 "queued": [{"id": "restored", "status": "queued"}],
@@ -156,10 +172,185 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
             },
         )
 
-        queue = manager.ensure_worker_for_pending()
+        with patch("app.services.archive_worker.three_mf_gate_for_url", return_value={"open": True}):
+            queue = manager.ensure_worker_for_pending()
 
-        self.assertEqual(calls, ["resume"])
+        self.assertEqual(len(calls), 1)
+        self.assertIsNotNone(calls[0])
         self.assertEqual(queue["queued_count"], 1)
+
+    def test_ensure_worker_for_pending_keeps_verification_queue_paused_while_gate_closed(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        paused_item = {
+            "id": "paused-cn",
+            "status": "paused",
+            "blocked_reason": "needs_verification",
+            "url": "https://makerworld.com.cn/zh/models/123",
+            "meta": {"missing_3mf_retry": True, "source": "cn"},
+        }
+
+        def resume_paused(selector=None):
+            item = dict(paused_item)
+            if selector is None or selector(item):
+                item["status"] = "queued"
+                item.pop("blocked_reason", None)
+                resumed_count = 1
+            else:
+                resumed_count = 0
+            return {
+                "active": [],
+                "queued": [item],
+                "recent_failures": [],
+                "running_count": 0,
+                "queued_count": 1,
+                "resumed_count": resumed_count,
+            }
+
+        manager.task_store = SimpleNamespace(
+            resume_verification_paused_archive_tasks=resume_paused,
+        )
+
+        with patch.object(
+            manager,
+            "_repair_queue_before_worker_start",
+            return_value={
+                "active": [],
+                "queued": [paused_item],
+                "recent_failures": [],
+                "running_count": 0,
+                "queued_count": 1,
+            },
+        ), patch(
+            "app.services.archive_worker.three_mf_gate_for_url",
+            return_value={"open": False, "state": "cookie_invalid"},
+        ):
+            queue = manager.ensure_worker_for_pending()
+
+        self.assertEqual(queue["resumed_count"], 0)
+        self.assertEqual(queue["queued"][0]["status"], "paused")
+        self.assertEqual(queue["queued"][0]["blocked_reason"], "needs_verification")
+
+    def test_ensure_worker_for_pending_prefetches_platform_gates_before_queue_update(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        paused_items = [
+            {
+                "id": "paused-cn-1",
+                "status": "paused",
+                "blocked_reason": "needs_verification",
+                "url": "https://makerworld.com.cn/zh/models/1",
+                "meta": {"source": "cn", "missing_3mf_retry": True},
+            },
+            {
+                "id": "paused-cn-2",
+                "status": "paused",
+                "blocked_reason": "needs_verification",
+                "url": "https://makerworld.com.cn/zh/models/2",
+                "meta": {"source": "cn", "missing_3mf_retry": True},
+            },
+            {
+                "id": "paused-global",
+                "status": "paused",
+                "blocked_reason": "needs_verification",
+                "url": "https://makerworld.com/zh/models/3",
+                "meta": {"source": "global", "missing_3mf_retry": True},
+            },
+        ]
+        inside_queue_update = False
+        gate_platforms = []
+
+        def resume_paused(selector=None):
+            nonlocal inside_queue_update
+            inside_queue_update = True
+            try:
+                for item in paused_items:
+                    selector(item)
+            finally:
+                inside_queue_update = False
+            return {
+                "active": [],
+                "queued": paused_items,
+                "recent_failures": [],
+                "running_count": 0,
+                "queued_count": len(paused_items),
+                "resumed_count": len(paused_items),
+            }
+
+        def load_gate(_url, meta=None):
+            self.assertFalse(inside_queue_update)
+            platform = str((meta or {}).get("source") or "")
+            gate_platforms.append(platform)
+            return {"open": True, "state": "open", "platform": platform}
+
+        manager.task_store = SimpleNamespace(
+            resume_verification_paused_archive_tasks=resume_paused,
+        )
+
+        with patch.object(
+            manager,
+            "_repair_queue_before_worker_start",
+            return_value={
+                "active": [],
+                "queued": paused_items,
+                "recent_failures": [],
+                "running_count": 0,
+                "queued_count": len(paused_items),
+            },
+        ), patch(
+            "app.services.archive_worker.three_mf_gate_for_url",
+            side_effect=load_gate,
+        ):
+            manager.ensure_worker_for_pending()
+
+        self.assertEqual(gate_platforms, ["cn", "global"])
+
+    def test_ensure_worker_for_pending_keeps_legacy_verification_task_paused(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        paused_item = {
+            "id": "legacy-paused-cn",
+            "status": "paused",
+            "blocked_reason": "needs_verification",
+            "message": "正在重试缺失 3MF",
+            "url": "https://makerworld.com.cn/zh/models/123",
+        }
+
+        def resume_paused(selector=None):
+            item = dict(paused_item)
+            resumed_count = int(selector(item))
+            if resumed_count:
+                item["status"] = "queued"
+                item.pop("blocked_reason", None)
+            return {
+                "active": [],
+                "queued": [item],
+                "recent_failures": [],
+                "running_count": 0,
+                "queued_count": 1,
+                "resumed_count": resumed_count,
+            }
+
+        manager.task_store = SimpleNamespace(
+            resume_verification_paused_archive_tasks=resume_paused,
+        )
+
+        with patch.object(
+            manager,
+            "_repair_queue_before_worker_start",
+            return_value={
+                "active": [],
+                "queued": [paused_item],
+                "recent_failures": [],
+                "running_count": 0,
+                "queued_count": 1,
+            },
+        ), patch(
+            "app.services.archive_worker.three_mf_gate_for_url",
+            return_value={"open": False, "state": "cookie_invalid", "platform": "cn"},
+        ):
+            queue = manager.ensure_worker_for_pending()
+
+        self.assertEqual(queue["resumed_count"], 0)
+        self.assertEqual(queue["queued"][0]["status"], "paused")
+        self.assertEqual(queue["queued"][0]["blocked_reason"], "needs_verification")
 
     def test_ensure_worker_for_pending_does_not_requeue_expired_active_tasks_after_initial_repair(self):
         state = {}
