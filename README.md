@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.10.1`
+> 当前版本：`v0.10.2`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -266,6 +266,11 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-11 · v0.10.2
+
+- 网页一键更新仍优先使用 Docker `AutoRemove` 删除临时 helper；新 App 启动后会延迟清理 DSM 遗留的已停止 `makerhub-self-update-*` 容器。
+- 兜底清理同时校验 helper 标签、标准名称和停止状态，并跳过仍在运行的更新容器。
+
 ### 2026-07-11 · v0.10.1
 
 - 修复指纹浏览器回收 Cookie 后等待 FlareSolverr 账号探针，导致设置页长期停在“浏览器同步中”的问题。
@@ -278,14 +283,14 @@ uvicorn app.main:app --reload
 - 增加旧 Cookie 结果保护和账号 ID 一致性校验，避免并发同步或误登其他账号覆盖当前 MakerHub 账号；Manager token 和 Cookie 不进入前端 URL 或业务日志。
 - 默认 Compose 增加 CloakBrowser 公开访问地址与超时配置，并把 early-alpha Manager 镜像固定到已验证的多架构 manifest digest。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-08 · v0.9.85
 
 - 修复归档任务运行期间更新 Cookie 后，旧任务仍可把新的国内站 `3MF` gate 覆盖回 `Cookie 异常` 的问题。
 - 旧 Cookie 任务返回验证 / 登录态失败时，如果当前配置已换成新 Cookie，Worker 会跳过账号 gate 写回和同平台重试队列暂停。
 - 补充归档 Worker 回归测试，覆盖旧 Cookie 失败不能污染新登录态的场景。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-07 · v0.9.84
 

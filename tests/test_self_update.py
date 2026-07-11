@@ -560,6 +560,36 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             self.assertEqual(writes, [])
             append_log.assert_not_called()
 
+    def test_startup_schedules_stopped_update_helper_cleanup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "state"
+            original_state_dir = self_update.STATE_DIR
+            original_update_state = self_update.UPDATE_STATE_PATH
+            try:
+                self_update.STATE_DIR = state_dir
+                self_update.UPDATE_STATE_PATH = state_dir / "system_update.json"
+                self_update._write_update_state(
+                    {
+                        "status": "succeeded",
+                        "phase": "completed",
+                        "request_id": "completed-request",
+                        "old_image_ids": [],
+                        "image_cleanup_done": True,
+                    }
+                )
+
+                with patch.object(
+                    self_update,
+                    "_schedule_stopped_update_helper_cleanup",
+                    create=True,
+                ) as schedule_cleanup:
+                    self_update.mark_update_started_after_restart()
+            finally:
+                self_update.STATE_DIR = original_state_dir
+                self_update.UPDATE_STATE_PATH = original_update_state
+
+            schedule_cleanup.assert_called_once_with()
+
     def test_request_system_update_passes_web_container_to_helper(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_dir = Path(temp_dir) / "state"
@@ -1114,6 +1144,90 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             self.assertEqual(removed, [])
             self.assertTrue(result["image_cleanup_done"])
             self.assertEqual(result["image_cleanup_removed"], ["sha256:old-image"])
+
+    def test_cleanup_stopped_update_helpers_removes_only_labeled_stopped_helpers(self):
+        removed: list[str] = []
+
+        class FakeDockerSocketClient:
+            def list_containers(self, *, all_containers=False, filters=None):
+                self.filters = filters
+                return [
+                    {
+                        "Id": "stopped-helper",
+                        "Names": ["/makerhub-self-update-finished"],
+                        "Labels": {self_update.HELPER_LABEL_KEY: self_update.HELPER_LABEL_VALUE},
+                        "State": "exited",
+                    },
+                    {
+                        "Id": "running-helper",
+                        "Names": ["/makerhub-self-update-running"],
+                        "Labels": {self_update.HELPER_LABEL_KEY: self_update.HELPER_LABEL_VALUE},
+                        "State": "running",
+                    },
+                    {
+                        "Id": "unlabeled-lookalike",
+                        "Names": ["/makerhub-self-update-unlabeled"],
+                        "Labels": {},
+                        "State": "exited",
+                    },
+                    {
+                        "Id": "other-labeled-container",
+                        "Names": ["/makerhub-app"],
+                        "Labels": {self_update.HELPER_LABEL_KEY: self_update.HELPER_LABEL_VALUE},
+                        "State": "exited",
+                    },
+                ]
+
+            def remove_container(self, container_id, *, force=False, missing_ok=False):
+                removed.append(container_id)
+
+        client = FakeDockerSocketClient()
+        result = self_update._cleanup_stopped_update_helpers(client)
+
+        self.assertEqual(removed, ["stopped-helper"])
+        self.assertEqual(result["removed"], ["stopped-helper"])
+        self.assertEqual(result["active"], ["running-helper"])
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(
+            client.filters,
+            {"label": [f"{self_update.HELPER_LABEL_KEY}={self_update.HELPER_LABEL_VALUE}"]},
+        )
+
+    def test_delayed_helper_cleanup_retries_until_running_helper_stops(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            socket_path = Path(temp_dir) / "docker.sock"
+            socket_path.write_text("", encoding="utf-8")
+            original_socket = self_update.DOCKER_SOCKET_PATH
+            original_initial_delay = self_update.HELPER_CLEANUP_INITIAL_DELAY_SECONDS
+            original_retry_delay = self_update.HELPER_CLEANUP_RETRY_DELAY_SECONDS
+            original_attempts = self_update.HELPER_CLEANUP_MAX_ATTEMPTS
+            try:
+                self_update.DOCKER_SOCKET_PATH = socket_path
+                self_update.HELPER_CLEANUP_INITIAL_DELAY_SECONDS = 0
+                self_update.HELPER_CLEANUP_RETRY_DELAY_SECONDS = 0
+                self_update.HELPER_CLEANUP_MAX_ATTEMPTS = 2
+                with patch.object(self_update, "DockerSocketClient"), \
+                        patch.object(
+                            self_update,
+                            "_cleanup_stopped_update_helpers",
+                            side_effect=[
+                                {"removed": [], "active": ["running-helper"], "errors": []},
+                                {"removed": ["stopped-helper"], "active": [], "errors": []},
+                            ],
+                        ) as cleanup_helpers, \
+                        patch.object(self_update.time, "sleep") as sleep_mock, \
+                        patch.object(self_update, "append_business_log") as append_log:
+                    self_update._run_delayed_stopped_update_helper_cleanup()
+            finally:
+                self_update.DOCKER_SOCKET_PATH = original_socket
+                self_update.HELPER_CLEANUP_INITIAL_DELAY_SECONDS = original_initial_delay
+                self_update.HELPER_CLEANUP_RETRY_DELAY_SECONDS = original_retry_delay
+                self_update.HELPER_CLEANUP_MAX_ATTEMPTS = original_attempts
+
+            self.assertEqual(cleanup_helpers.call_count, 2)
+            self.assertEqual(sleep_mock.call_count, 2)
+            append_log.assert_called_once()
+            self.assertEqual(append_log.call_args.args[1], "self_update_helper_cleanup_succeeded")
 
     def test_cleanup_ignores_stale_snapshot_after_new_update_request_starts(self):
         with tempfile.TemporaryDirectory() as temp_dir:

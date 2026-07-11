@@ -1,5 +1,10 @@
 # 更新说明
 
+## 2026-07-11 · v0.10.2
+
+- 网页更新完成后由新 App 延迟扫描并清理残留的 `makerhub-self-update-*` 临时容器，作为 Docker `AutoRemove` 的兜底。
+- 清理仅匹配 MakerHub helper 标签、标准名称和已停止状态；运行中的更新 helper 不会被删除。
+
 ## 2026-07-11 · v0.10.1
 
 - 修复指纹浏览器回收 Cookie 后被 FlareSolverr 账号探针队列阻塞，设置页长期停在“浏览器同步中”的问题。

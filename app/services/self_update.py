@@ -42,8 +42,13 @@ STARTUP_WAIT_STABLE_POLLS = 3
 IMAGE_CLEANUP_INITIAL_DELAY_SECONDS = 45
 IMAGE_CLEANUP_RETRY_DELAY_SECONDS = 60
 IMAGE_CLEANUP_MAX_ATTEMPTS = 5
+HELPER_CLEANUP_INITIAL_DELAY_SECONDS = 15
+HELPER_CLEANUP_RETRY_DELAY_SECONDS = 10
+HELPER_CLEANUP_MAX_ATTEMPTS = 6
 _IMAGE_CLEANUP_THREAD: threading.Thread | None = None
 _IMAGE_CLEANUP_LOCK = threading.Lock()
+_HELPER_CLEANUP_THREAD: threading.Thread | None = None
+_HELPER_CLEANUP_LOCK = threading.Lock()
 
 try:
     import fcntl
@@ -483,12 +488,33 @@ class DockerSocketClient:
             expected_statuses={204, 304},
         )
 
-    def remove_container(self, container_id: str, *, force: bool = False) -> None:
+    def list_containers(
+        self,
+        *,
+        all_containers: bool = False,
+        filters: dict[str, list[str]] | None = None,
+    ) -> list[dict[str, Any]]:
+        path = f"/containers/json?all={1 if all_containers else 0}"
+        if filters:
+            encoded_filters = quote(json.dumps(filters, separators=(",", ":")), safe="")
+            path = f"{path}&filters={encoded_filters}"
+        _, payload, _ = self.request("GET", path, expected_statuses={200})
+        if not isinstance(payload, list):
+            raise RuntimeError("Docker 容器列表返回格式异常。")
+        return [item for item in payload if isinstance(item, dict)]
+
+    def remove_container(
+        self,
+        container_id: str,
+        *,
+        force: bool = False,
+        missing_ok: bool = False,
+    ) -> None:
         force_flag = "1" if force else "0"
         self.request(
             "DELETE",
             f"/containers/{quote(container_id, safe='')}" f"?force={force_flag}",
-            expected_statuses={204},
+            expected_statuses={204, 404} if missing_ok else {204},
         )
 
     def remove_image(self, image_id: str, *, force: bool = False, noprune: bool = False) -> None:
@@ -802,6 +828,88 @@ def _append_unique_image_id(values: list[str], value: str) -> None:
     if not image_id or image_id in values:
         return
     values.append(image_id)
+
+
+def _cleanup_stopped_update_helpers(client: DockerSocketClient) -> dict[str, list[str]]:
+    removed: list[str] = []
+    active: list[str] = []
+    errors: list[str] = []
+    filters = {"label": [f"{HELPER_LABEL_KEY}={HELPER_LABEL_VALUE}"]}
+    with _update_state_process_lock("helper-cleanup"):
+        containers = client.list_containers(all_containers=True, filters=filters)
+        for item in containers:
+            container_id = str(item.get("Id") or "").strip()
+            labels = item.get("Labels") if isinstance(item.get("Labels"), dict) else {}
+            names = item.get("Names") if isinstance(item.get("Names"), list) else []
+            managed_name = any(
+                str(name or "").strip().lstrip("/").startswith(f"{HELPER_CONTAINER_PREFIX}-")
+                for name in names
+            )
+            if (
+                not container_id
+                or labels.get(HELPER_LABEL_KEY) != HELPER_LABEL_VALUE
+                or not managed_name
+            ):
+                continue
+            state = str(item.get("State") or "").strip().lower()
+            if state not in {"exited", "dead"}:
+                active.append(container_id)
+                continue
+            try:
+                client.remove_container(container_id, force=True, missing_ok=True)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{container_id}: {_friendly_error_message(exc)}")
+            else:
+                removed.append(container_id)
+    return {"removed": removed, "active": active, "errors": errors}
+
+
+def _run_delayed_stopped_update_helper_cleanup() -> None:
+    time.sleep(max(float(HELPER_CLEANUP_INITIAL_DELAY_SECONDS), 0.0))
+    last_result: dict[str, list[str]] = {"removed": [], "active": [], "errors": []}
+    for attempt in range(max(int(HELPER_CLEANUP_MAX_ATTEMPTS), 1)):
+        if not DOCKER_SOCKET_PATH.exists():
+            return
+        try:
+            result = _cleanup_stopped_update_helpers(DockerSocketClient(timeout=30))
+        except Exception as exc:  # noqa: BLE001
+            result = {"removed": [], "active": [], "errors": [_friendly_error_message(exc)]}
+        last_result = result
+        if result.get("removed"):
+            append_business_log(
+                "system",
+                "self_update_helper_cleanup_succeeded",
+                "已清理网页更新留下的临时 helper 容器。",
+                container_ids=result.get("removed") or [],
+            )
+        if not result.get("active") and not result.get("errors"):
+            return
+        if attempt < max(int(HELPER_CLEANUP_MAX_ATTEMPTS), 1) - 1:
+            time.sleep(max(float(HELPER_CLEANUP_RETRY_DELAY_SECONDS), 1.0))
+
+    append_business_log(
+        "system",
+        "self_update_helper_cleanup_warning",
+        "网页更新临时 helper 容器自动清理未完成。",
+        level="warning",
+        active_container_ids=last_result.get("active") or [],
+        errors=last_result.get("errors") or [],
+    )
+
+
+def _schedule_stopped_update_helper_cleanup() -> None:
+    if not DOCKER_SOCKET_PATH.exists():
+        return
+    global _HELPER_CLEANUP_THREAD
+    with _HELPER_CLEANUP_LOCK:
+        if _HELPER_CLEANUP_THREAD and _HELPER_CLEANUP_THREAD.is_alive():
+            return
+        _HELPER_CLEANUP_THREAD = threading.Thread(
+            target=_run_delayed_stopped_update_helper_cleanup,
+            name="makerhub-helper-cleanup",
+            daemon=True,
+        )
+        _HELPER_CLEANUP_THREAD.start()
 
 
 def _cleanup_old_update_images(state: dict[str, Any]) -> dict[str, Any]:
@@ -1304,6 +1412,7 @@ def request_system_update(*, requested_by: str = "", target_version: str = "", f
 
 
 def mark_update_started_after_restart() -> None:
+    _schedule_stopped_update_helper_cleanup()
     state = _read_update_state()
     status = str(state.get("status") or "")
     if status == "pending_startup":
