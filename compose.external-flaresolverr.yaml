@@ -16,6 +16,8 @@ services:
       MAKERHUB_FLARESOLVERR_MAX_CONCURRENCY: "1"
       MAKERHUB_CLOAKBROWSER_URL: http://cloakbrowser:8080
       MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:-}
+      MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
+      MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
     volumes:
       - /volume4/docker/docker/makerhub:/app/config
       - /volume2/entertainment/3D打印/makerhub:/app/data
@@ -42,6 +44,8 @@ services:
       MAKERHUB_FLARESOLVERR_MAX_CONCURRENCY: "1"
       MAKERHUB_CLOAKBROWSER_URL: http://cloakbrowser:8080
       MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:-}
+      MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
+      MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
     volumes:
       - /volume4/docker/docker/makerhub:/app/config
       - /volume2/entertainment/3D打印/makerhub:/app/data
@@ -69,7 +73,7 @@ services:
     restart: unless-stopped
 
   cloakbrowser:
-    image: cloakhq/cloakbrowser-manager:latest
+    image: ${MAKERHUB_CLOAKBROWSER_IMAGE:-cloakhq/cloakbrowser-manager@sha256:44836e982192e8fedb28617f2d39192bdef91f8dd62cf36c522c96d7d8e15914}
     container_name: makerhub-cloakbrowser
     ports:
       - "9050:8080"

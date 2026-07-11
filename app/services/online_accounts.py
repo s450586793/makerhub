@@ -95,6 +95,7 @@ class OnlineAccountLoginResult:
     message: str = ""
     login_url: str = ""
     auth_payload: dict[str, Any] | None = None
+    cookie_items: list[dict[str, str]] | None = None
 
 
 class OnlineAccountLoginError(RuntimeError):
@@ -603,6 +604,7 @@ def login_online_account(
                 message=message,
                 login_url=login_url,
                 auth_payload=auth_payload,
+                cookie_items=_session_cookie_items(session),
             )
     finally:
         session.close()

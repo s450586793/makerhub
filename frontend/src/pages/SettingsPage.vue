@@ -64,6 +64,10 @@
               </div>
               <p>{{ item.message }}</p>
               <p v-if="item.sourceSyncText" class="online-account-item__sync-note">{{ item.sourceSyncText }}</p>
+              <div class="online-account-item__browser-state">
+                <span :class="['shared-list-item__status', item.browserStatusClass]">{{ item.browserStatusLabel }}</span>
+                <span>{{ item.browserMessage }}</span>
+              </div>
             </div>
             <div class="online-account-item__actions">
               <button
@@ -84,6 +88,22 @@
               </button>
               <button class="button button-secondary button-small" type="button" @click="openAccountDialog(item.platform)">
                 重新登录
+              </button>
+              <button
+                class="button button-secondary button-small"
+                type="button"
+                :disabled="item.browserBusy || item.browser_status === 'not_configured' || testing[`browser_open_${item.platform}`]"
+                @click="openSavedAccountBrowser(item)"
+              >
+                {{ testing[`browser_open_${item.platform}`] ? "启动中..." : "打开浏览器" }}
+              </button>
+              <button
+                class="button button-secondary button-small"
+                type="button"
+                :disabled="item.browserBusy || !item.browser_profile_id || testing[`browser_sync_${item.platform}`]"
+                @click="syncSavedAccountBrowser(item)"
+              >
+                {{ testing[`browser_sync_${item.platform}`] ? "读取中..." : "从浏览器同步" }}
               </button>
               <button class="button button-danger button-small" type="button" @click="deleteAccount(item.platform)">
                 删除
@@ -844,6 +864,13 @@ import { accountSourceOverview, accountSyncedSourceCounts } from "../lib/account
 import { accountMessageText, accountStatusClass, accountStatusLabel } from "../lib/accountStatus";
 import { apiRequest } from "../lib/api";
 import {
+  browserSessionBusy,
+  browserSessionMessage,
+  browserSessionStatusClass,
+  browserSessionStatusLabel,
+  resolveCloakBrowserPublicUrl,
+} from "../lib/browserSession";
+import {
   buildAdvancedPayload,
   buildProxyPayload,
   buildRuntimePayload,
@@ -1062,6 +1089,10 @@ const onlineAccountItems = computed(() => {
         statusClass: accountStatusClass(mergedItem, statusContext),
         updatedText: formatAccountDate(item.updated_at || item.last_login_at || item.last_tested_at),
         message: accountMessageText(mergedItem, statusContext),
+        browserStatusLabel: browserSessionStatusLabel(mergedItem),
+        browserStatusClass: browserSessionStatusClass(mergedItem),
+        browserMessage: browserSessionMessage(mergedItem),
+        browserBusy: browserSessionBusy(mergedItem),
         ...sourceStats,
       };
     });
@@ -1078,8 +1109,8 @@ const accountLoginInputMode = computed(() => isGlobalAccountDialog.value ? "emai
 const accountLoginPlaceholder = computed(() => isGlobalAccountDialog.value ? "请输入邮箱地址" : "请输入手机号");
 const accountCodePlaceholder = computed(() => isGlobalAccountDialog.value ? "邮箱验证码" : "短信验证码");
 const accountLoginHint = computed(() => isGlobalAccountDialog.value
-  ? "提交后会使用邮箱和邮箱验证码登录 MakerWorld 国际站，并自动保存返回的 Cookie。"
-  : "提交后会使用手机号和短信验证码登录 MakerWorld 国区，并自动保存返回的 Cookie。");
+  ? "提交后会使用邮箱验证码登录国际站，保存 Cookie，并自动同步到固定的指纹浏览器 profile。"
+  : "提交后会使用短信验证码登录国区，保存 Cookie，并自动同步到固定的指纹浏览器 profile。");
 const systemUpdateStatusLabel = computed(() => {
   const labelMap = {
     idle: "空闲",
@@ -1491,12 +1522,13 @@ function setActiveTab(tab) {
   }
 }
 
-function refreshSystemPanelFromEvent() {
-  if (activeTab.value !== "system") {
-    return;
+async function refreshSettingsPanelFromEvent() {
+  if (activeTab.value === "system" && !systemUpdateLoading.value && !systemUpdateSubmitting.value) {
+    await loadSystemUpdateStatus({ silent: true });
   }
-  if (!systemUpdateLoading.value && !systemUpdateSubmitting.value) {
-    void loadSystemUpdateStatus({ silent: true });
+  if (activeTab.value === "accounts") {
+    const payload = await refreshLightConfig();
+    applyConfigToForms(payload);
   }
 }
 
@@ -1784,6 +1816,57 @@ async function syncSavedAccount(platform) {
     statuses.accounts = "";
   } catch (error) {
     statuses.accounts = error instanceof Error ? error.message : "提交同步失败。";
+  } finally {
+    testing[key] = false;
+  }
+}
+
+async function openSavedAccountBrowser(item) {
+  const platform = item?.platform === "global" ? "global" : "cn";
+  const key = `browser_open_${platform}`;
+  testing[key] = true;
+  statuses.accounts = "";
+  const popup = window.open("about:blank", "_blank");
+  if (popup) {
+    popup.opener = null;
+  }
+  try {
+    const payload = await apiRequest(`/api/config/online-accounts/${encodeURIComponent(platform)}/browser/open`, {
+      method: "POST",
+    });
+    applyConfigPayload(payload);
+    applyConfigToForms(payload);
+    const publicUrl = resolveCloakBrowserPublicUrl(payload?.browser_session?.public_url, window.location);
+    if (popup) {
+      popup.location.replace(publicUrl);
+    } else {
+      window.open(publicUrl, "_blank", "noopener,noreferrer");
+    }
+    statuses.accounts = payload?.browser_session?.message || "指纹浏览器已打开，登录完成后会自动同步。";
+  } catch (error) {
+    if (popup) {
+      popup.close();
+    }
+    statuses.accounts = error instanceof Error ? error.message : "指纹浏览器启动失败。";
+  } finally {
+    testing[key] = false;
+  }
+}
+
+async function syncSavedAccountBrowser(item) {
+  const platform = item?.platform === "global" ? "global" : "cn";
+  const key = `browser_sync_${platform}`;
+  testing[key] = true;
+  statuses.accounts = "";
+  try {
+    const payload = await apiRequest(`/api/config/online-accounts/${encodeURIComponent(platform)}/browser/sync`, {
+      method: "POST",
+    });
+    applyConfigPayload(payload);
+    applyConfigToForms(payload);
+    statuses.accounts = payload?.browser_session?.message || "指纹浏览器登录态已同步。";
+  } catch (error) {
+    statuses.accounts = error instanceof Error ? error.message : "浏览器登录态同步失败。";
   } finally {
     testing[key] = false;
   }
@@ -2212,8 +2295,8 @@ watch(() => route.query.tab, (value) => {
 onMounted(async () => {
   const perf = createPagePerformanceTracker({ page: "settings", route: () => route.fullPath });
   settingsRefreshController = createPageRefreshController({
-    scopes: ["system_update"],
-    refresh: refreshSystemPanelFromEvent,
+    scopes: ["system_update", "online_accounts"],
+    refresh: refreshSettingsPanelFromEvent,
     delayMs: 450,
   });
   await load();

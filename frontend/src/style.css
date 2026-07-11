@@ -464,6 +464,20 @@ html[data-theme="dark"] .mw-attachment-upload__drop-copy em {
   font-size: var(--text-xs);
 }
 
+.online-account-item__browser-state {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.online-account-item__browser-state > span:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .online-account-code-field {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

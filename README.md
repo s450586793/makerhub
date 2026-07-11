@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.9.85`
+> 当前版本：`v0.10.0`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -19,7 +19,7 @@ MakerHub 是一个面向个人 NAS、DSM、Unraid、Portainer 和自托管服务
 - 五容器默认部署：默认 Compose 调整为 `makerhub-app`、`makerhub-worker`、`makerhub-postgres`、`makerhub-flaresolverr`、`makerhub-cloakbrowser`。
 - 数据库索引重建：首次连接数据库后由 Worker 自动遍历历史归档库建立模型卡片索引；设置页不再保留旧的手动补全入口。
 - FlareSolverr 抓取通道：MakerWorld 页面、列表、评论和下载地址 API 走 FlareSolverr；图片、附件和 `3MF` 静态文件仍由普通下载器直接保存，`3MF` 直链保存失败会重新标记为缺失。
-- CloakBrowser 部署：Compose 内置 `makerhub-cloakbrowser`，用于浏览器登录态采集和后续 `3MF` 探针确认，不承载图片、附件或 `3MF` 大文件下载流量。
+- CloakBrowser 登录桥接：设置页验证码登录后会自动创建或复用国内 / 国际固定 profile，通过 CDP 注入登录态并回收最终 Cookie；需要人工验证时可直接打开指纹浏览器，完成后自动同步回 MakerHub。
 - 系统更新更安全：旧 compose 缺少 Postgres 配置时会阻止网页一键更新，并提示先升级 compose。
 - 文档重整：补齐架构说明、模块边界、Compose 安装、升级说明和 V0.7.0 更新记录。
 
@@ -90,6 +90,10 @@ mkdir -p "/volume2/entertainment/3D打印/makerhub/local"
 MAKERHUB_POSTGRES_PASSWORD=change-this-db-password
 # 可选：给 CloakBrowser 管理界面和 MakerHub 调用使用的访问令牌。
 MAKERHUB_CLOAKBROWSER_AUTH_TOKEN=change-this-cloakbrowser-token
+# 推荐：用户浏览器可访问的 CloakBrowser Manager 地址；留空时设置页按当前主机的 9050 端口推导。
+MAKERHUB_CLOAKBROWSER_PUBLIC_URL=http://你的服务器IP:9050
+# 可选：升级前验证新镜像后再覆盖默认固定 digest。
+# MAKERHUB_CLOAKBROWSER_IMAGE=cloakhq/cloakbrowser-manager:经过验证的版本
 ```
 
 `MAKERHUB_POSTGRES_PASSWORD` 会同时用于 App、Worker 和 Postgres，建议使用纯英文数字，避免 `@`、`:`、`/`、`#` 这类需要 URL 转义的字符。
@@ -119,6 +123,8 @@ services:
       MAKERHUB_FLARESOLVERR_MAX_CONCURRENCY: "1"
       MAKERHUB_CLOAKBROWSER_URL: http://cloakbrowser:8080
       MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:-}
+      MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
+      MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
     volumes:
       - /volume4/docker/docker/makerhub:/app/config
       - /volume2/entertainment/3D打印/makerhub:/app/data
@@ -145,6 +151,8 @@ services:
       MAKERHUB_FLARESOLVERR_MAX_CONCURRENCY: "1"
       MAKERHUB_CLOAKBROWSER_URL: http://cloakbrowser:8080
       MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:-}
+      MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
+      MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
     volumes:
       - /volume4/docker/docker/makerhub:/app/config
       - /volume2/entertainment/3D打印/makerhub:/app/data
@@ -180,7 +188,7 @@ services:
     restart: unless-stopped
 
   cloakbrowser:
-    image: cloakhq/cloakbrowser-manager:latest
+    image: ${MAKERHUB_CLOAKBROWSER_IMAGE:-cloakhq/cloakbrowser-manager@sha256:44836e982192e8fedb28617f2d39192bdef91f8dd62cf36c522c96d7d8e15914}
     container_name: makerhub-cloakbrowser
     ports:
       - "9050:8080"
@@ -211,7 +219,7 @@ http://你的服务器IP:9042
 
 MakerWorld 页面、作者 / 收藏 / 合集列表、评论和 `3MF` 下载地址 API 依赖 FlareSolverr。FlareSolverr 不可用时这些控制面请求会直接失败；已经拿到的图片、附件和 `3MF` 静态文件 URL 仍由 MakerHub 普通下载器直接保存，不会把大文件流量压到 FlareSolverr 上。若 `3MF` 静态直链实际保存失败，实例会写回 `cloudflare` / `http_error` / `missing` 状态并进入缺失 `3MF` 重试队列。
 
-CloakBrowser 用于采集 MakerWorld 浏览器登录态，并为后续 `3MF` 探针确认提供可持久化的浏览器 profile。它不是 FlareSolverr 的替代下载器，也不负责图片、附件或 `3MF` 静态文件的大文件传输。
+CloakBrowser 用于采集 MakerWorld 浏览器登录态，并为后续 `3MF` 探针确认提供可持久化的浏览器 profile。设置页验证码登录成功后，MakerHub 会在后台复用 `MakerHub CN` / `MakerHub Global` 固定 profile，通过 CDP 注入 Cookie 和 MakerWorld ticket，再读取浏览器最终 Cookie 回写账号配置。自动注入失败时，账号卡会显示“需要浏览器确认”；点击“打开浏览器”完成登录后，MakerHub 会在 10 分钟内自动检测新登录态，也可以点击“从浏览器同步”立即读取。它不是 FlareSolverr 的替代下载器，也不负责图片、附件或 `3MF` 静态文件的大文件传输。
 
 ## 从旧版升级
 
@@ -258,6 +266,13 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-11 · v0.10.0
+
+- 设置页账号验证码登录成功后会自动创建或复用国内 / 国际固定 CloakBrowser profile，通过 CDP 注入 Cookie、完成 MakerWorld ticket 跳转并回收浏览器最终登录态，不再要求重复登录。
+- 自动同步失败时可从账号卡直接打开指纹浏览器；完成登录后后台会自动回写 Cookie，也支持手动“从浏览器同步”，并继续触发账号测试、来源同步和缺失 `3MF` 重试。
+- 增加旧 Cookie 结果保护和账号 ID 一致性校验，避免并发同步或误登其他账号覆盖当前 MakerHub 账号；Manager token 和 Cookie 不进入前端 URL 或业务日志。
+- 默认 Compose 增加 CloakBrowser 公开访问地址与超时配置，并把 early-alpha Manager 镜像固定到已验证的多架构 manifest digest。
+
 ### 2026-07-08 · v0.9.85
 
 - 修复归档任务运行期间更新 Cookie 后，旧任务仍可把新的国内站 `3MF` gate 覆盖回 `Cookie 异常` 的问题。
@@ -270,14 +285,14 @@ uvicorn app.main:app --reload
 - App / Worker 增加 `MAKERHUB_CLOAKBROWSER_URL` 和 `MAKERHUB_CLOAKBROWSER_AUTH_TOKEN` 配置，供浏览器登录态采集与后续 `3MF` 探针确认调用。
 - 安装文档补充 CloakBrowser 持久化目录、`.env` 令牌、升级命令和流量边界说明，明确图片、附件和 `3MF` 静态文件仍不走 CloakBrowser。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-04 · v0.9.83
 
 - 修复归档 Worker 在 `3MF` gate 曾关闭时把已恢复的批量父任务重新租用，导致 4 个 worker 全部停在 `waiting_children`、后续单模型队列不再消费的问题。
 - 已进入“等待子任务”的批量父任务只作为进度跟踪，不再被当成普通可执行任务领取。
 - 补充归档 Worker 回归测试，覆盖批量父任务排在 gate 阻断的 `3MF` 任务前时不会再次占住 worker。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-04 · v0.9.82
 

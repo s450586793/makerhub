@@ -1,5 +1,12 @@
 # 更新说明
 
+## 2026-07-11 · v0.10.0
+
+- 设置页验证码登录后自动同步登录态到固定 CloakBrowser profile，并通过 CDP 回收最终 Cookie。
+- 增加浏览器确认、自动监控和手动同步入口，完成登录后继续触发账号检测、来源同步与缺失 `3MF` 重试。
+- 增加并发旧结果保护和账号 ID 一致性检查，避免浏览器误登或旧 Cookie 覆盖当前账号。
+- 默认 Compose 增加公开访问 URL、CDP 超时配置，并固定 CloakBrowser Manager 多架构镜像 digest。
+
 ## 2026-07-07 · v0.9.84
 
 - 默认 `compose.yaml` 和外部 FlareSolverr 版 compose 都新增 `makerhub-cloakbrowser` 服务，随 MakerHub 一起部署浏览器 profile 管理容器。

@@ -29,6 +29,10 @@ class CookiePair(BaseModel):
     updated_at: str = ""
     last_login_at: str = ""
     last_tested_at: str = ""
+    browser_profile_id: str = ""
+    browser_status: str = ""
+    browser_message: str = ""
+    browser_synced_at: str = ""
 
 
 class ProxyConfig(BaseModel):
