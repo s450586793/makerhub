@@ -101,6 +101,42 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             three_mf_mock.assert_called_once_with({"cn"})
             test_mock.assert_called_once()
 
+    async def test_store_browser_session_skips_network_identity_probe_when_auth_token_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            target = CookiePair(
+                platform="global",
+                cookie="token=same-account; refreshToken=refresh",
+                account_id="account-a",
+            )
+            config.cookies = [target]
+            store.save(config)
+            result = CloakBrowserSessionResult(
+                profile_id="profile-global",
+                cookie="token=same-account; refreshToken=refresh; cf_clearance=verified",
+            )
+
+            with patch.object(config_api, "store", store), \
+                    patch.object(
+                        config_api,
+                        "online_account_metadata_from_cookie",
+                        side_effect=AssertionError("同一 token 不应等待账号网络探针"),
+                    ), \
+                    patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms"), \
+                    patch.object(config_api.subscription_manager, "request_cookie_source_sync"), \
+                    patch.object(config_api, "_retry_verification_missing_3mf_for_platforms"), \
+                    patch.object(config_api, "_schedule_online_account_cookie_test"), \
+                    patch.object(config_api, "append_business_log"), \
+                    patch.object(config_api, "publish_state_event"):
+                saved, applied = config_api._store_browser_session_result("global", target, result, config.proxy)
+
+            current = saved.cookies[0]
+            self.assertTrue(applied)
+            self.assertEqual(current.browser_profile_id, "profile-global")
+            self.assertEqual(current.browser_status, "synced")
+            self.assertIn("cf_clearance=verified", current.cookie)
+
     async def test_store_browser_session_blocks_different_account(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")

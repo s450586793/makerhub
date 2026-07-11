@@ -86,7 +86,7 @@ from app.services.catalog import (
     upsert_archive_snapshot_model,
 )
 from app.services.business_logs import append_business_log
-from app.services.cookie_utils import sanitize_cookie_header
+from app.services.cookie_utils import extract_auth_token, sanitize_cookie_header
 from app.services.cloakbrowser_session import (
     CloakBrowserError,
     CloakBrowserSessionResult,
@@ -2434,7 +2434,14 @@ def _store_browser_session_result(
 
     changed = candidate_cookie != sanitize_cookie_header(current.cookie)
     account_metadata: dict[str, str] = {}
-    if changed:
+    current_token = extract_auth_token(current.cookie)
+    candidate_token = extract_auth_token(candidate_cookie)
+    same_auth_identity = bool(
+        current_token
+        and candidate_token
+        and hmac.compare_digest(current_token, candidate_token)
+    )
+    if changed and not same_auth_identity:
         try:
             account_metadata = online_account_metadata_from_cookie(
                 platform=platform,
