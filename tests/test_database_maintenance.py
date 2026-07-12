@@ -62,6 +62,26 @@ def test_cleanup_is_bounded_and_zero_disables_each_table():
     assert all(table == "makerhub_state_events" for table, _days, _size in calls)
 
 
+def test_cleanup_clamps_explicit_and_environment_batch_size_to_one_thousand(monkeypatch):
+    calls = []
+
+    def fake_delete(table, *, retention_days, batch_size):
+        calls.append((table, batch_size))
+        return 0
+
+    monkeypatch.setenv("MAKERHUB_DATABASE_MAINTENANCE_BATCH_SIZE", "5000")
+    with patch.object(database_maintenance, "_delete_expired_batch", side_effect=fake_delete):
+        database_maintenance.cleanup_expired_rows(event_days=14, log_days=90)
+        database_maintenance.cleanup_expired_rows(
+            event_days=14,
+            log_days=90,
+            batch_size=5000,
+        )
+
+    assert calls
+    assert all(batch_size <= 1000 for _table, batch_size in calls)
+
+
 def test_cleanup_limits_batches_and_keeps_table_failures_independent():
     calls = []
 
@@ -83,6 +103,66 @@ def test_cleanup_limits_batches_and_keeps_table_failures_independent():
     assert result["logs_deleted"] == 200
     assert "events" in result["errors"]
     assert calls == ["makerhub_state_events", "makerhub_logs", "makerhub_logs"]
+
+
+def test_cleanup_preserves_partial_count_and_invalidates_after_later_batch_failure():
+    responses = {
+        "makerhub_state_events": [0],
+        "makerhub_logs": [1000, RuntimeError("second batch failed")],
+    }
+
+    def fake_delete(table, *, retention_days, batch_size):
+        result = responses[table].pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    with patch.object(database_maintenance, "_delete_expired_batch", side_effect=fake_delete), \
+            patch("app.services.business_logs.invalidate_log_facet_cache") as invalidate:
+        result = database_maintenance.cleanup_expired_rows(
+            event_days=14,
+            log_days=90,
+            batch_size=1000,
+            max_batches=3,
+        )
+
+    assert result["logs_deleted"] == 1000
+    assert "logs" in result["errors"]
+    invalidate.assert_called_once_with()
+
+
+def test_log_retention_index_is_created_concurrently_outside_schema_transaction():
+    calls = []
+
+    class FakeResult:
+        def fetchone(self):
+            return {"exists": False, "valid": False}
+
+    class FakeConnection:
+        autocommit = True
+
+        def execute(self, sql, params=None):
+            calls.append((sql, params))
+            return FakeResult()
+
+    class FakeContext:
+        def __enter__(self):
+            return FakeConnection()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    database_maintenance._reset_database_maintenance_for_tests()
+    with patch.object(
+        database_maintenance,
+        "database_autocommit_connection",
+        return_value=FakeContext(),
+    ):
+        database_maintenance._ensure_log_retention_index()
+
+    sql_text = "\n".join(sql for sql, _params in calls)
+    assert "CREATE INDEX CONCURRENTLY" in sql_text
+    assert "CREATE INDEX IF NOT EXISTS makerhub_logs_created_idx" not in sql_text
 
 
 def test_maintenance_scheduler_runs_once_per_interval():

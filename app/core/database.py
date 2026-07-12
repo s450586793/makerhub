@@ -166,6 +166,24 @@ def database_connection() -> Iterator[Any]:
         pool.putconn(connection)
 
 
+@contextmanager
+def database_autocommit_connection() -> Iterator[Any]:
+    pool = _get_database_pool()
+    try:
+        connection = pool.getconn()
+    except Exception:
+        raise DatabaseUnavailable("Postgres 连接池暂时不可用。") from None
+    previous_autocommit = bool(getattr(connection, "autocommit", False))
+    try:
+        connection.autocommit = True
+        yield connection
+    finally:
+        try:
+            connection.autocommit = previous_autocommit
+        finally:
+            pool.putconn(connection)
+
+
 def _initialize_database_schema() -> None:
     with database_connection() as connection:
         connection.execute(
@@ -226,9 +244,6 @@ def _initialize_database_schema() -> None:
         )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS makerhub_logs_file_created_idx ON makerhub_logs (file_name, created_at DESC, id DESC)"
-        )
-        connection.execute(
-            "CREATE INDEX IF NOT EXISTS makerhub_logs_created_idx ON makerhub_logs (created_at, id)"
         )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS makerhub_logs_level_idx ON makerhub_logs (level)"

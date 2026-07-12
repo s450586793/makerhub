@@ -163,6 +163,20 @@ def test_close_database_pool_is_idempotent():
     assert FakePool.instances[0].close_calls == 1
 
 
+def test_autocommit_connection_restores_mode_and_returns_to_pool():
+    with (
+        patch.object(database, "ConnectionPool", FakePool),
+        patch.object(database, "database_url", return_value="postgresql://example/db"),
+        patch.object(database, "dict_row", object()),
+    ):
+        with database.database_autocommit_connection() as connection:
+            assert connection.autocommit is True
+        pool = FakePool.instances[0]
+
+    assert connection.autocommit is False
+    assert pool.puts == 1
+
+
 def test_pool_checkout_failure_does_not_expose_database_url():
     class BrokenPool(FakePool):
         def getconn(self):

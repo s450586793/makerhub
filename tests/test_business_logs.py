@@ -285,6 +285,64 @@ class BusinessLogsTest(unittest.TestCase):
 
         invalidate.assert_called_once_with()
 
+    def test_facet_cache_is_bounded_and_drops_expired_keys(self):
+        class FakeResult:
+            def fetchall(self):
+                return []
+
+        class FakeConnection:
+            def execute(self, sql, params=None):
+                return FakeResult()
+
+        class FakeContext:
+            def __enter__(self):
+                return FakeConnection()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        with patch.object(business_logs, "_database_logs_enabled", return_value=True), \
+                patch.object(business_logs, "_ensure_database_logs_ready", return_value=True), \
+                patch.object(business_logs, "database_connection", return_value=FakeContext()), \
+                patch.object(business_logs.time, "monotonic", return_value=100.0):
+            for index in range(business_logs.LOG_FACET_CACHE_MAX_ITEMS + 25):
+                business_logs._read_database_log_facets("business.log", query=f"query-{index}")
+
+        self.assertLessEqual(
+            len(business_logs._LOG_FACET_CACHE),
+            business_logs.LOG_FACET_CACHE_MAX_ITEMS,
+        )
+
+    def test_facet_query_does_not_refill_cache_after_concurrent_invalidation(self):
+        calls = []
+
+        class FakeResult:
+            def fetchall(self):
+                return []
+
+        class FakeConnection:
+            def execute(self, sql, params=None):
+                calls.append(sql)
+                if len(calls) == 1:
+                    business_logs.invalidate_log_facet_cache()
+                return FakeResult()
+
+        class FakeContext:
+            def __enter__(self):
+                return FakeConnection()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        with patch.object(business_logs, "_database_logs_enabled", return_value=True), \
+                patch.object(business_logs, "_ensure_database_logs_ready", return_value=True), \
+                patch.object(business_logs, "database_connection", return_value=FakeContext()), \
+                patch.object(business_logs.time, "monotonic", return_value=100.0):
+            business_logs._read_database_log_facets("business.log")
+            business_logs._read_database_log_facets("business.log")
+
+        self.assertEqual(len(calls), 6)
+
 
 if __name__ == "__main__":
     unittest.main()

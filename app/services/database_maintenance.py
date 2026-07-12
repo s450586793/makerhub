@@ -5,7 +5,12 @@ import threading
 import time
 from typing import Any
 
-from app.core.database import database_connection, initialize_database
+from app.core.database import (
+    database_autocommit_connection,
+    database_connection,
+    database_url,
+    initialize_database,
+)
 
 
 DEFAULT_STATE_EVENT_RETENTION_DAYS = 14
@@ -16,6 +21,14 @@ DEFAULT_INTERVAL_SECONDS = 24 * 60 * 60
 _ALLOWED_TABLES = {"makerhub_state_events", "makerhub_logs"}
 _MAINTENANCE_LOCK = threading.Lock()
 _LAST_MAINTENANCE_AT: float | None = None
+_RETENTION_INDEX_LOCK = threading.Lock()
+_RETENTION_INDEX_READY_KEY: tuple[int, str] | None = None
+
+
+class PartialCleanupError(RuntimeError):
+    def __init__(self, deleted: int):
+        super().__init__("数据库分批清理未完整执行。")
+        self.deleted = max(int(deleted or 0), 0)
 
 
 def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
@@ -37,6 +50,8 @@ def _delete_expired_batch(table: str, *, retention_days: int, batch_size: int) -
     if table not in _ALLOWED_TABLES:
         raise ValueError("不支持的数据库清理表。")
     initialize_database()
+    if table == "makerhub_logs":
+        _ensure_log_retention_index()
     with database_connection() as connection:
         cursor = connection.execute(
             f"""
@@ -68,15 +83,53 @@ def _cleanup_table(
         return 0
     deleted = 0
     for _batch in range(max_batches):
-        batch_deleted = _delete_expired_batch(
-            table,
-            retention_days=retention_days,
-            batch_size=batch_size,
-        )
+        try:
+            batch_deleted = _delete_expired_batch(
+                table,
+                retention_days=retention_days,
+                batch_size=batch_size,
+            )
+        except Exception as exc:
+            raise PartialCleanupError(deleted) from exc
         deleted += batch_deleted
         if batch_deleted < batch_size:
             break
     return deleted
+
+
+def _ensure_log_retention_index() -> None:
+    global _RETENTION_INDEX_READY_KEY
+    key = (os.getpid(), database_url())
+    if _RETENTION_INDEX_READY_KEY == key:
+        return
+    with _RETENTION_INDEX_LOCK:
+        if _RETENTION_INDEX_READY_KEY == key:
+            return
+        with database_autocommit_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    to_regclass('public.makerhub_logs_created_idx') IS NOT NULL AS exists,
+                    COALESCE(
+                        (
+                            SELECT indisvalid
+                            FROM pg_index
+                            WHERE indexrelid = to_regclass('public.makerhub_logs_created_idx')
+                        ),
+                        false
+                    ) AS valid
+                """
+            ).fetchone()
+            exists = bool((row or {}).get("exists")) if isinstance(row, dict) else False
+            valid = bool((row or {}).get("valid")) if isinstance(row, dict) else False
+            if exists and not valid:
+                connection.execute("DROP INDEX CONCURRENTLY IF EXISTS makerhub_logs_created_idx")
+                exists = False
+            if not exists:
+                connection.execute(
+                    "CREATE INDEX CONCURRENTLY makerhub_logs_created_idx ON makerhub_logs (created_at, id)"
+                )
+        _RETENTION_INDEX_READY_KEY = key
 
 
 def cleanup_expired_rows(
@@ -101,10 +154,10 @@ def cleanup_expired_rows(
             "MAKERHUB_DATABASE_MAINTENANCE_BATCH_SIZE",
             DEFAULT_BATCH_SIZE,
             minimum=100,
-            maximum=5000,
+            maximum=1000,
         )
         if batch_size is None
-        else max(1, min(int(batch_size), 5000))
+        else max(1, min(int(batch_size), 1000))
     )
     clean_max_batches = (
         _env_int(
@@ -134,6 +187,9 @@ def cleanup_expired_rows(
                 batch_size=clean_batch_size,
                 max_batches=clean_max_batches,
             )
+        except PartialCleanupError as exc:
+            result[result_key] = exc.deleted
+            result["errors"][error_key] = "数据库清理失败。"
         except Exception:
             result["errors"][error_key] = "数据库清理失败。"
 
@@ -172,6 +228,8 @@ def run_database_maintenance_if_due(
 
 
 def _reset_database_maintenance_for_tests() -> None:
-    global _LAST_MAINTENANCE_AT
+    global _LAST_MAINTENANCE_AT, _RETENTION_INDEX_READY_KEY
     with _MAINTENANCE_LOCK:
         _LAST_MAINTENANCE_AT = None
+    with _RETENTION_INDEX_LOCK:
+        _RETENTION_INDEX_READY_KEY = None

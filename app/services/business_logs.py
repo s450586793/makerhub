@@ -2,6 +2,7 @@ import hashlib
 import json
 import threading
 import time
+from collections import OrderedDict
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -33,9 +34,14 @@ SENSITIVE_KEY_PARTS = (
 )
 _DB_LOGS_READY = False
 _DB_LOGS_LOCK = threading.Lock()
-_LOG_FACET_CACHE: dict[tuple[str, str, str], tuple[float, dict[str, list[dict[str, Any]]]]] = {}
+_LOG_FACET_CACHE: OrderedDict[
+    tuple[str, str, str],
+    tuple[float, dict[str, list[dict[str, Any]]]],
+] = OrderedDict()
 _LOG_FACET_CACHE_LOCK = threading.Lock()
+_LOG_FACET_CACHE_GENERATION = 0
 LOG_FACET_CACHE_SECONDS = 5.0
+LOG_FACET_CACHE_MAX_ITEMS = 128
 DATABASE_LOG_MAX_ATTEMPTS = 3
 NOISY_INFO_EVENTS = {
     ("scrapling", "fetch_trace"),
@@ -106,7 +112,9 @@ def _raw_hash(file_name: str, raw: str) -> str:
 
 
 def invalidate_log_facet_cache() -> None:
+    global _LOG_FACET_CACHE_GENERATION
     with _LOG_FACET_CACHE_LOCK:
+        _LOG_FACET_CACHE_GENERATION += 1
         _LOG_FACET_CACHE.clear()
 
 
@@ -455,8 +463,13 @@ def _read_database_log_facets(file_name: str, *, query: str = "", since: str = "
     cache_key = (safe_file_name, str(query or "").strip(), str(since or "").strip())
     now_value = time.monotonic()
     with _LOG_FACET_CACHE_LOCK:
+        expired_keys = [key for key, item in _LOG_FACET_CACHE.items() if item[0] <= now_value]
+        for key in expired_keys:
+            _LOG_FACET_CACHE.pop(key, None)
+        cache_generation = _LOG_FACET_CACHE_GENERATION
         cached = _LOG_FACET_CACHE.get(cache_key)
         if cached and cached[0] > now_value:
+            _LOG_FACET_CACHE.move_to_end(cache_key)
             return deepcopy(cached[1])
     base_where, base_params = _build_log_where_clause(safe_file_name, query=query, since=since)
     facets = {
@@ -494,7 +507,11 @@ def _read_database_log_facets(file_name: str, *, query: str = "", since: str = "
         "events": result.get("events", []),
     }
     with _LOG_FACET_CACHE_LOCK:
-        _LOG_FACET_CACHE[cache_key] = (now_value + LOG_FACET_CACHE_SECONDS, deepcopy(payload))
+        if _LOG_FACET_CACHE_GENERATION == cache_generation:
+            _LOG_FACET_CACHE[cache_key] = (now_value + LOG_FACET_CACHE_SECONDS, deepcopy(payload))
+            _LOG_FACET_CACHE.move_to_end(cache_key)
+            while len(_LOG_FACET_CACHE) > LOG_FACET_CACHE_MAX_ITEMS:
+                _LOG_FACET_CACHE.popitem(last=False)
     return payload
 
 
