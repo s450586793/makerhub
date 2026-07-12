@@ -56,13 +56,23 @@ def _single_resource_worker(state_dir, name, capacity, entered_queue, ready_queu
         entered_queue.put(os.getpid())
 
 
+def _delayed_resource_worker(state_dir, name, capacity, ready_queue, start_event, entered_queue):
+    _configure_process_resource(name, capacity, state_dir)
+    ready_queue.put(os.getpid())
+    start_event.wait(timeout=10)
+    with resource_limiter.resource_slot(name):
+        entered_queue.put(os.getpid())
+
+
 class ResourceLimiterConfigTest(unittest.TestCase):
     def setUp(self):
         self.original_limits = dict(resource_limiter.RESOURCE_LIMITS)
         self.original_gates = dict(resource_limiter._GATES)
+        self.original_published_limits = dict(resource_limiter._PUBLISHED_RESOURCE_LIMITS)
         self.original_state_dir = resource_limiter.STATE_DIR
         self.temp_dir = TemporaryDirectory()
         resource_limiter._GATES.clear()
+        resource_limiter._PUBLISHED_RESOURCE_LIMITS.clear()
         resource_limiter.STATE_DIR = Path(self.temp_dir.name)
 
     def tearDown(self):
@@ -70,6 +80,8 @@ class ResourceLimiterConfigTest(unittest.TestCase):
         resource_limiter.RESOURCE_LIMITS.update(self.original_limits)
         resource_limiter._GATES.clear()
         resource_limiter._GATES.update(self.original_gates)
+        resource_limiter._PUBLISHED_RESOURCE_LIMITS.clear()
+        resource_limiter._PUBLISHED_RESOURCE_LIMITS.update(self.original_published_limits)
         resource_limiter.STATE_DIR = self.original_state_dir
         self.temp_dir.cleanup()
 
@@ -199,6 +211,60 @@ class ResourceLimiterConfigTest(unittest.TestCase):
             for release_holder in release_holders:
                 release_holder.set()
             self._stop_processes(processes)
+
+    def test_stale_old_capacity_process_cannot_acquire_retired_slot_after_shrink(self):
+        old_ready = SPAWN_CONTEXT.Queue()
+        old_start = SPAWN_CONTEXT.Event()
+        old_entered = SPAWN_CONTEXT.Queue()
+        shrink_entered = SPAWN_CONTEXT.Queue()
+        release_shrink = SPAWN_CONTEXT.Event()
+        old_process = SPAWN_CONTEXT.Process(
+            target=_delayed_resource_worker,
+            args=(
+                self.temp_dir.name,
+                "shrink_epoch",
+                3,
+                old_ready,
+                old_start,
+                old_entered,
+            ),
+        )
+        shrink_holder = SPAWN_CONTEXT.Process(
+            target=_holding_resource_worker,
+            args=(self.temp_dir.name, "shrink_epoch", 1, shrink_entered, release_shrink),
+        )
+        processes = [old_process, shrink_holder]
+
+        try:
+            old_process.start()
+            old_ready.get(timeout=5)
+            shrink_holder.start()
+            shrink_entered.get(timeout=5)
+
+            old_start.set()
+            try:
+                entered_before_release = old_entered.get(timeout=0.4)
+            except Empty:
+                entered_before_release = None
+
+            release_shrink.set()
+            entered_after_release = entered_before_release or old_entered.get(timeout=5)
+            for process in processes:
+                process.join(timeout=5)
+
+            self.assertIsNone(entered_before_release)
+            self.assertTrue(entered_after_release)
+            self.assertTrue(all(process.exitcode == 0 for process in processes))
+        finally:
+            release_shrink.set()
+            old_start.set()
+            self._stop_processes(processes)
+
+    def test_resource_slot_directories_do_not_collide_after_name_sanitizing(self):
+        first = resource_limiter._resource_slot_directory("a/b")
+        second = resource_limiter._resource_slot_directory("a?b")
+
+        self.assertNotEqual(first, second)
 
     def test_global_resource_slots_are_isolated_by_resource_name(self):
         holder_entered = SPAWN_CONTEXT.Queue()

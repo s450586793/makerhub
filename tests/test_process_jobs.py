@@ -42,6 +42,25 @@ def _report_spawn_resource_limits(queue, payload):
 
 
 class ProcessJobsTest(unittest.TestCase):
+    def test_spawn_entry_applies_limits_without_republishing_stale_capacity(self):
+        calls = []
+
+        def target(_queue, _payload):
+            calls.append("target")
+
+        with patch.object(process_jobs, "configure_resource_limits") as configure:
+            process_jobs._run_spawned_job_entry(
+                target,
+                None,
+                {"__resource_limits": {"disk_io_limit": 1}},
+            )
+
+        configure.assert_called_once_with(
+            {"disk_io_limit": 1},
+            publish_global=False,
+        )
+        self.assertEqual(calls, ["target"])
+
     def test_run_process_job_passes_and_applies_current_resource_limits(self):
         original_limits = dict(resource_limiter.RESOURCE_LIMITS)
         expected_payload = {

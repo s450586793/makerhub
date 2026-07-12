@@ -1,4 +1,5 @@
 import errno
+import hashlib
 import os
 import re
 import threading
@@ -42,6 +43,7 @@ _CONFIG_FIELD_MAP = {
     "disk_io_limit": "disk_io",
 }
 _GLOBAL_SLOT_POLL_SECONDS = 0.05
+_PUBLISHED_RESOURCE_LIMITS: dict[str, int] = {}
 
 
 def _clamp_limit(name: str, value: Any) -> int:
@@ -144,8 +146,45 @@ _GATES_LOCK = threading.Lock()
 
 
 def _resource_slot_directory(name: str):
-    clean_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(name or "").strip()).strip("._") or "default"
+    raw_name = str(name or "").strip() or "default"
+    clean_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_name).strip("._") or "default"
+    if clean_name != raw_name:
+        digest = hashlib.sha256(raw_name.encode("utf-8")).hexdigest()[:12]
+        clean_name = f"{clean_name}-{digest}"
     return STATE_DIR / "resource_slots" / clean_name
+
+
+def _read_control_capacity(handle, fallback: int) -> tuple[int, bool]:
+    handle.seek(0)
+    raw = handle.read().strip()
+    try:
+        return max(int(raw), 1), True
+    except (TypeError, ValueError):
+        return max(int(fallback or 1), 1), False
+
+
+def _write_control_capacity(handle, capacity: int) -> None:
+    handle.seek(0)
+    handle.truncate()
+    handle.write(str(max(int(capacity or 1), 1)))
+    handle.flush()
+
+
+def _publish_global_capacity(name: str, capacity: int) -> None:
+    if fcntl is None:
+        return
+    slot_dir = _resource_slot_directory(name)
+    slot_dir.mkdir(parents=True, exist_ok=True)
+    control = (slot_dir / "capacity.control").open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(control.fileno(), fcntl.LOCK_EX)
+        current, valid = _read_control_capacity(control, capacity)
+        clean_capacity = max(int(capacity or 1), 1)
+        if not valid or current != clean_capacity:
+            _write_control_capacity(control, clean_capacity)
+    finally:
+        fcntl.flock(control.fileno(), fcntl.LOCK_UN)
+        control.close()
 
 
 def _retired_global_slots_are_draining(slot_dir, capacity: int) -> bool:
@@ -173,22 +212,32 @@ def _try_acquire_global_slot(name: str, capacity: int):
         return None
     slot_dir = _resource_slot_directory(name)
     slot_dir.mkdir(parents=True, exist_ok=True)
-    clean_capacity = max(int(capacity or 1), 1)
-    # Shrink keeps existing high-numbered holders alive, but drains all of
-    # them before assigning a slot from the reduced range.
-    if _retired_global_slots_are_draining(slot_dir, clean_capacity):
+    requested_capacity = max(int(capacity or 1), 1)
+    control = (slot_dir / "capacity.control").open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(control.fileno(), fcntl.LOCK_EX)
+        shared_capacity, valid = _read_control_capacity(control, requested_capacity)
+        if not valid or requested_capacity < shared_capacity:
+            shared_capacity = requested_capacity
+            _write_control_capacity(control, shared_capacity)
+
+        # 容量读取、退役槽扫描和新槽领取受同一个控制锁保护，避免缩容 TOCTOU。
+        if _retired_global_slots_are_draining(slot_dir, shared_capacity):
+            return None
+        for slot_number in range(shared_capacity):
+            handle = (slot_dir / f"{slot_number}.lock").open("a+", encoding="utf-8")
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                handle.close()
+                if exc.errno in (errno.EACCES, errno.EAGAIN):
+                    continue
+                raise
+            return handle
         return None
-    for slot_number in range(clean_capacity):
-        handle = (slot_dir / f"{slot_number}.lock").open("a+", encoding="utf-8")
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            handle.close()
-            if exc.errno in (errno.EACCES, errno.EAGAIN):
-                continue
-            raise
-        return handle
-    return None
+    finally:
+        fcntl.flock(control.fileno(), fcntl.LOCK_UN)
+        control.close()
 
 
 def _acquire_global_slot(name: str, gate: _ResourceGate):
@@ -221,7 +270,7 @@ def _gate_for(name: str) -> _ResourceGate:
         return gate
 
 
-def configure_resource_limits(config: Any) -> dict[str, int]:
+def configure_resource_limits(config: Any, *, publish_global: bool = True) -> dict[str, int]:
     raw_config = config.model_dump() if hasattr(config, "model_dump") else config
     if not isinstance(raw_config, dict):
         raw_config = {}
@@ -236,6 +285,9 @@ def configure_resource_limits(config: Any) -> dict[str, int]:
             gate = _GATES.get(resource_name)
             if gate is not None:
                 gate.set_capacity(next_limit)
+            if publish_global and _PUBLISHED_RESOURCE_LIMITS.get(resource_name) != next_limit:
+                _publish_global_capacity(resource_name, next_limit)
+                _PUBLISHED_RESOURCE_LIMITS[resource_name] = next_limit
     return changed
 
 

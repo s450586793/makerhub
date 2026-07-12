@@ -285,7 +285,7 @@ def _run_source_deleted_entry(queue, payload: dict[str, Any]) -> None:
 
 
 def _run_spawned_job_entry(target: Callable[..., None], queue, payload: dict[str, Any]) -> None:
-    configure_resource_limits(payload.get("__resource_limits") or {})
+    configure_resource_limits(payload.get("__resource_limits") or {}, publish_global=False)
     target(queue, payload)
 
 
