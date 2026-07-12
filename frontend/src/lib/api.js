@@ -46,6 +46,7 @@ export async function apiRequest(path, options = {}) {
     headers = {},
     cache = "no-store",
     redirectOn401 = true,
+    signal,
   } = options;
 
   const requestHeaders = new Headers(headers);
@@ -69,6 +70,7 @@ export async function apiRequest(path, options = {}) {
       body: requestBody,
       credentials: "include",
       cache,
+      signal,
     });
   } finally {
     recordApiDuration(path, (typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt);

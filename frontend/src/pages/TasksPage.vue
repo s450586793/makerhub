@@ -461,8 +461,8 @@ let loadingTasks = false;
 let loadingFullTasks = false;
 
 const tasksResource = createHydratedResource({
-  load: () => apiRequest("/api/tasks/light"),
-  enrich: () => apiRequest("/api/tasks"),
+  load: ({ signal }) => apiRequest("/api/tasks/light", { signal }),
+  enrich: (_current, { signal }) => apiRequest("/api/tasks", { signal }),
   onData: (response) => {
     payload.value = response;
     if (payload.value.archive_queue.recent_failures.length) {

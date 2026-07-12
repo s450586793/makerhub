@@ -463,7 +463,7 @@ let unsubscribeStateRefresh = null;
 let refreshWhenVisible = false;
 
 const dashboardResource = createHydratedResource({
-  load: () => apiRequest("/api/dashboard/light"),
+  load: ({ signal }) => apiRequest("/api/dashboard/light", { signal }),
   onData: (response) => {
     payload.value = response;
   },

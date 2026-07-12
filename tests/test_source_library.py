@@ -140,8 +140,9 @@ class SourceLibraryTest(unittest.TestCase):
         self.assertEqual(payload["sections"][0]["items"][0]["subscription_id"], "sub-1")
 
     def test_source_library_light_payload_includes_organizer_task_and_card_summaries(self):
-        local_model = _model("local-model", source="local")
-        local_model["local_flags"] = {"favorite": True, "printed": True, "deleted": False}
+        local_models = [_model(f"local-model-{index}", source="local") for index in range(6)]
+        for local_model in local_models:
+            local_model["local_flags"] = {"favorite": True, "printed": True, "deleted": False}
         source_deleted_model = _model("source-deleted")
         source_deleted_model["local_flags"] = {"favorite": False, "printed": False, "deleted": False}
         source_deleted_model["subscription_flags"] = {"deleted_on_source": True}
@@ -163,24 +164,46 @@ class SourceLibraryTest(unittest.TestCase):
 
         with patch(
             "app.services.source_library._load_models",
-            return_value=([local_model, source_deleted_model, locally_deleted_model], [local_model, source_deleted_model]),
+            return_value=([*local_models, source_deleted_model, locally_deleted_model], [*local_models, source_deleted_model]),
         ), patch("app.services.source_library.load_source_metadata_cache", return_value={"items": {}}):
             payload = build_source_library_light_payload(store=store, task_store=task_store)
 
         sections = {item["key"]: item for item in payload["sections"]}
         self.assertEqual(payload["organize_tasks"]["running_count"], 1)
         self.assertEqual(payload["organize_tasks"]["detected_total"], 3)
-        self.assertEqual(payload["summary"]["model_count"], 2)
-        self.assertEqual(sections["locals"]["items"][0]["model_count"], 1)
+        self.assertEqual(payload["summary"]["model_count"], 7)
+        self.assertEqual(sections["locals"]["items"][0]["model_count"], 6)
         self.assertEqual(
             {item["key"]: item["model_count"] for item in sections["states"]["items"]},
             {
-                "local_favorite": 1,
-                "printed": 1,
+                "local_favorite": 6,
+                "printed": 6,
                 "source_deleted": 1,
                 "local_deleted": 1,
             },
         )
+        for section_key in ("locals", "states"):
+            for card in sections[section_key]["items"]:
+                self.assertNotIn("model_dirs", card)
+                self.assertLessEqual(len(card.get("preview_models") or []), 4)
+
+    def test_source_library_light_query_filters_local_and_state_cards(self):
+        local_model = _model("local-model", source="local")
+        local_model["local_flags"] = {"favorite": True, "printed": False, "deleted": False}
+        task_store = type(
+            "TaskStoreStub",
+            (),
+            {"load_organize_tasks": lambda self: {}},
+        )()
+        config = type("ConfigStub", (), {"subscriptions": []})()
+        store = type("StoreStub", (), {"load": lambda self: config})()
+
+        with patch("app.services.source_library._load_models", return_value=([local_model], [local_model])), \
+                patch("app.services.source_library.load_source_metadata_cache", return_value={"items": {}}):
+            payload = build_source_library_light_payload(q="does-not-match", store=store, task_store=task_store)
+
+        self.assertEqual(payload["count"], 0)
+        self.assertTrue(all(not section["items"] for section in payload["sections"]))
 
     def test_saving_source_metadata_publishes_source_library_changed(self):
         state = {}
@@ -210,6 +233,102 @@ class SourceLibraryTest(unittest.TestCase):
             "source_library",
             "source_library.changed",
             {"source_key": "author-cn-demo"},
+        )
+
+    def test_refresh_source_metadata_publishes_one_change_event_for_a_batch(self):
+        state = {}
+        groups = {
+            "author-cn-first": {
+                "key": "author-cn-first",
+                "kind": "author",
+                "canonical_url": "https://makerworld.com.cn/zh/@first/upload",
+                "site": "cn",
+                "title": "First",
+            },
+            "author-cn-second": {
+                "key": "author-cn-second",
+                "kind": "author",
+                "canonical_url": "https://makerworld.com.cn/zh/@second/upload",
+                "site": "cn",
+                "title": "Second",
+            },
+        }
+        store = type("StoreStub", (), {"load": lambda self: object()})()
+        with patch("app.services.source_library.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.source_library.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.source_library._group_models", return_value=(groups, [], [])), \
+                patch("app.services.source_library.load_source_metadata_cache", return_value={"items": {}}), \
+                patch("app.services.source_library._fetch_author_metadata", return_value={"title": "Remote"}), \
+                patch("app.services.source_library.append_business_log"), \
+                patch("app.services.source_library.publish_state_event") as publish_event:
+            from app.services import source_library
+
+            source_library.refresh_source_metadata(store=store)
+
+        publish_event.assert_called_once_with(
+            "source_library",
+            "source_library.changed",
+            {"source_keys": ["author-cn-first", "author-cn-second"]},
+        )
+
+    def test_default_favorites_backfill_publishes_one_change_event_for_a_batch(self):
+        state = {}
+        source_url = "https://makerworld.com.cn/zh/@ace/collections/models"
+        subscription = type("SubscriptionStub", (), {"mode": "collection_models", "url": source_url})()
+        cookie = type("CookieStub", (), {"platform": "cn", "cookie": "session=ok"})()
+        config = type("ConfigStub", (), {
+            "subscriptions": [subscription, subscription],
+            "cookies": [cookie],
+            "proxy": {},
+        })()
+        store = type("StoreStub", (), {"load": lambda self: config})()
+        with patch("app.services.source_library.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.source_library.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.source_library.discover_cookie_account_profile", return_value={"handle": "ace"}), \
+                patch("app.services.source_library.default_favorites_subscription_source", return_value={"url": source_url, "avatar_url": "https://cdn.example.com/avatar.jpg"}), \
+                patch("app.services.source_library.append_business_log"), \
+                patch("app.services.source_library.publish_state_event") as publish_event:
+            from app.services import source_library
+
+            source_library.backfill_default_favorites_avatar_metadata(store=store)
+
+        publish_event.assert_called_once_with(
+            "source_library",
+            "source_library.changed",
+            {"source_keys": [source_library.source_identity_key(source_url, "collection_models")]},
+        )
+
+    def test_refresh_source_preview_snapshots_publishes_one_change_event_for_a_batch(self):
+        state = {}
+        groups = {
+            "local-first": {
+                "key": "local-first",
+                "kind": "local",
+                "preview_models": [{"model_dir": "first", "title": "First", "cover_url": ""}],
+            },
+            "local-second": {
+                "key": "local-second",
+                "kind": "local",
+                "preview_models": [{"model_dir": "second", "title": "Second", "cover_url": ""}],
+            },
+        }
+        with TemporaryDirectory() as temp_dir, \
+                patch("app.services.source_library.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.source_library.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.source_library._group_models", return_value=(groups, [], [])), \
+                patch("app.services.source_library.load_source_metadata_cache", return_value={"items": {}}), \
+                patch("app.services.source_library._render_source_preview_snapshot", return_value=True), \
+                patch("app.services.source_library.SOURCE_LIBRARY_SNAPSHOT_DIR", Path(temp_dir)), \
+                patch("app.services.source_library.append_business_log"), \
+                patch("app.services.source_library.publish_state_event") as publish_event:
+            from app.services import source_library
+
+            source_library.refresh_source_preview_snapshots()
+
+        publish_event.assert_called_once_with(
+            "source_library",
+            "source_library.changed",
+            {"source_keys": ["local-first", "local-second"]},
         )
 
     def test_subscription_flags_ignore_collection_missing_items(self):

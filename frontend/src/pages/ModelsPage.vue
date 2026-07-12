@@ -209,11 +209,11 @@ function buildRouteQuery(options = {}) {
 }
 
 async function fetchPage(page, options = {}) {
-  return apiRequest("/api/models/light?" + buildQuery(page, options).toString());
+  return apiRequest("/api/models/light?" + buildQuery(page, options).toString(), { signal: options.signal });
 }
 
 const modelsResource = createHydratedResource({
-  load: ({ page, requestOptions }) => fetchPage(page, requestOptions),
+  load: ({ page, requestOptions, signal }) => fetchPage(page, { ...requestOptions, signal }),
 });
 
 function decrementCount(value, amount) {

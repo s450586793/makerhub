@@ -297,7 +297,7 @@ const organizerProgressOpen = ref(false);
 let organizerRefreshController = null;
 
 const organizerResource = createHydratedResource({
-  load: () => apiRequest("/api/source-library/light"),
+  load: ({ signal }) => apiRequest("/api/source-library/light", { signal }),
   onData: (response) => {
     sourceLibraryPayload.value = {
       sections: Array.isArray(response?.sections) ? response.sections : [],

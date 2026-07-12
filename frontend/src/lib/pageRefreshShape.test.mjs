@@ -85,10 +85,21 @@ test("DashboardPage shows separate source refresh completion fields", () => {
 });
 
 test("DashboardPage treats the light snapshot as its final initial projection", () => {
-  assert.match(dashboardPageSource, /apiRequest\("\/api\/dashboard\/light"\)/);
+  assert.match(dashboardPageSource, /apiRequest\("\/api\/dashboard\/light"/);
   assert.match(dashboardPageSource, /createHydratedResource/);
   assert.doesNotMatch(dashboardPageSource, /scheduleFullDashboardHydration|requestIdleCallback/);
   assert.doesNotMatch(dashboardPageSource, /load\(\{ initial: true, hydrateFull: true \}\)/);
+});
+
+test("final light resource loaders forward cancellation signals to apiRequest", () => {
+  assert.match(dashboardPageSource, /load: \(\{ signal \}\) => apiRequest\("\/api\/dashboard\/light", \{ signal \}\)/);
+  assert.match(modelsPageSource, /fetchPage\(page, options = \{\}\).*apiRequest\([^\n]+, \{ signal: options\.signal \}\)/s);
+  assert.match(modelsPageSource, /load: \(\{ page, requestOptions, signal \}\) => fetchPage\(page, \{ \.\.\.requestOptions, signal \}\)/);
+  assert.match(organizerPageSource, /load: \(\{ signal \}\) => apiRequest\("\/api\/source-library\/light", \{ signal \}\)/);
+  assert.match(subscriptionsPageSource, /fetchSubscriptionsPage\(page = 1, options = \{\}\).*apiRequest\([^\n]+, \{ signal: options\.signal \}\)/s);
+  assert.match(subscriptionsPageSource, /load: \(\{ page, requestOptions, signal \}\) => fetchSubscriptionsPage\(page, \{ \.\.\.requestOptions, signal \}\)/);
+  assert.match(tasksPageSource, /load: \(\{ signal \}\) => apiRequest\("\/api\/tasks\/light", \{ signal \}\)/);
+  assert.match(tasksPageSource, /enrich: \(_current, \{ signal \}\) => apiRequest\("\/api\/tasks", \{ signal \}\)/);
 });
 
 test("RemoteRefreshPage explains active run progress from resumable batch state", () => {
@@ -111,7 +122,7 @@ test("OrganizerPage projects source cards and task state from one response", () 
 });
 
 test("TasksPage only enriches task details explicitly", () => {
-  assert.match(tasksPageSource, /apiRequest\("\/api\/tasks\/light"\)/);
+  assert.match(tasksPageSource, /apiRequest\("\/api\/tasks\/light"/);
   assert.match(tasksPageSource, /createHydratedResource/);
   assert.match(tasksPageSource, /refreshFullTasks/);
   assert.match(tasksPageSource, /\.enrich\(/);
@@ -212,7 +223,7 @@ test("SubscriptionsPage restores deep pages with one final light request", () =>
 });
 
 test("OrganizerPage loads tasks and source cards from one light source-library request", () => {
-  assert.match(organizerPageSource, /apiRequest\("\/api\/source-library\/light"\)/);
+  assert.match(organizerPageSource, /apiRequest\("\/api\/source-library\/light"/);
   assert.match(organizerPageSource, /createHydratedResource/);
   assert.doesNotMatch(organizerPageSource, /apiRequest\("\/api\/tasks\/light"\)/);
   assert.doesNotMatch(organizerPageSource, /refreshConfig|scheduleFullSourceLibraryHydration|requestIdleCallback/);

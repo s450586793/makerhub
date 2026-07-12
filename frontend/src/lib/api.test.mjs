@@ -79,3 +79,19 @@ test("apiRequest still accepts successful JSON API responses", async () => {
 
   assert.deepEqual(await apiRequest("/api/subscriptions"), { ok: true });
 });
+
+test("apiRequest forwards an AbortSignal to fetch", async () => {
+  const controller = new AbortController();
+  let requestOptions;
+  globalThis.fetch = async (_path, options) => {
+    requestOptions = options;
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  await apiRequest("/api/tasks/light", { signal: controller.signal });
+
+  assert.equal(requestOptions.signal, controller.signal);
+});

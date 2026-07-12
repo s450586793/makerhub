@@ -3,6 +3,7 @@ import json
 import re
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote, unquote, urlparse
@@ -72,6 +73,9 @@ _SOURCE_LIBRARY_PAYLOAD_REFRESH_STATE: dict[str, Any] = {
     "running": False,
     "last_started": 0.0,
 }
+_SOURCE_LIBRARY_CHANGE_LOCK = threading.RLock()
+_SOURCE_LIBRARY_CHANGE_BATCH_DEPTH = 0
+_SOURCE_LIBRARY_CHANGE_SOURCE_KEYS: set[str] = set()
 
 AUTHOR_NAME_KEYS = ("name", "nickname", "displayName", "userName", "username")
 AUTHOR_HANDLE_KEYS = ("handle", "userHandle", "user_handle", "username", "userName", "slug")
@@ -231,6 +235,42 @@ def load_source_metadata_cache() -> dict[str, Any]:
         return _read_metadata_cache_unlocked()
 
 
+def _publish_source_library_changed(source_key: str) -> None:
+    clean_source_key = str(source_key or "").strip()
+    with _SOURCE_LIBRARY_CHANGE_LOCK:
+        if _SOURCE_LIBRARY_CHANGE_BATCH_DEPTH:
+            if clean_source_key:
+                _SOURCE_LIBRARY_CHANGE_SOURCE_KEYS.add(clean_source_key)
+            return
+    publish_state_event(
+        "source_library",
+        "source_library.changed",
+        {"source_key": clean_source_key},
+    )
+
+
+@contextmanager
+def _source_library_change_batch():
+    global _SOURCE_LIBRARY_CHANGE_BATCH_DEPTH
+    source_keys: list[str] = []
+    with _SOURCE_LIBRARY_CHANGE_LOCK:
+        _SOURCE_LIBRARY_CHANGE_BATCH_DEPTH += 1
+    try:
+        yield
+    finally:
+        with _SOURCE_LIBRARY_CHANGE_LOCK:
+            _SOURCE_LIBRARY_CHANGE_BATCH_DEPTH -= 1
+            if _SOURCE_LIBRARY_CHANGE_BATCH_DEPTH == 0 and _SOURCE_LIBRARY_CHANGE_SOURCE_KEYS:
+                source_keys = sorted(_SOURCE_LIBRARY_CHANGE_SOURCE_KEYS)
+                _SOURCE_LIBRARY_CHANGE_SOURCE_KEYS.clear()
+        if source_keys:
+            publish_state_event(
+                "source_library",
+                "source_library.changed",
+                {"source_keys": source_keys},
+            )
+
+
 def _save_source_metadata_item(source_key: str, payload: dict[str, Any]) -> None:
     with _SOURCE_LIBRARY_LOCK:
         cache = _read_metadata_cache_unlocked()
@@ -243,11 +283,7 @@ def _save_source_metadata_item(source_key: str, payload: dict[str, Any]) -> None
         current["last_synced_at"] = _now_iso()
         items[source_key] = current
         _write_metadata_cache_unlocked({"items": items, "updated_at": _now_iso()})
-    publish_state_event(
-        "source_library",
-        "source_library.changed",
-        {"source_key": source_key},
-    )
+    _publish_source_library_changed(source_key)
 
 
 def _clone_groups(groups: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -637,11 +673,7 @@ def _save_source_snapshot_metadata(source_key: str, payload: dict[str, Any]) -> 
         current["preview_snapshot_updated_at"] = _now_iso()
         items[source_key] = current
         _write_metadata_cache_unlocked({"items": items, "updated_at": _now_iso()})
-    publish_state_event(
-        "source_library",
-        "source_library.changed",
-        {"source_key": source_key},
-    )
+    _publish_source_library_changed(source_key)
 
 
 def _iter_nodes(payload: Any):
@@ -1426,12 +1458,18 @@ def _organizer_light_projection(
     all_models, visible_models = _load_models(task_store=task_store)
     all_models_by_dir = {str(item.get("model_dir") or ""): item for item in all_models}
     visible_models_by_dir = {str(item.get("model_dir") or ""): item for item in visible_models}
+    def compact_group(group: dict[str, Any], models_by_dir: dict[str, dict]) -> dict[str, Any]:
+        finalized = _finalize_group(group, models_by_dir, metadata_cache.get(group["key"]) or {})
+        finalized["preview_models"] = list(finalized.get("preview_models") or [])[:SOURCE_LIBRARY_PREVIEW_LIMIT]
+        finalized.pop("model_dirs", None)
+        return finalized
+
     local_groups = [
-        _finalize_group(group, visible_models_by_dir, metadata_cache.get(group["key"]) or {})
+        compact_group(group, visible_models_by_dir)
         for group in _group_local_sources(visible_models)
     ]
     state_groups = [
-        _finalize_group(group, all_models_by_dir, metadata_cache.get(group["key"]) or {})
+        compact_group(group, all_models_by_dir)
         for group in _group_state_cards(all_models, visible_models)
     ]
     state_groups.sort(key=lambda item: DEFAULT_STATE_SORT_ORDER.get(str(item.get("key") or ""), 99))
@@ -1458,6 +1496,14 @@ def build_source_library_light_payload(q: str = "", store: Optional[JsonStore] =
     collections = [item for item in source_groups if item.get("kind") == "collection"]
     favorites = [item for item in source_groups if item.get("kind") == "favorite"]
     local_groups, state_groups, organize_tasks, visible_model_count = _organizer_light_projection(task_store, metadata_cache)
+    if normalized_query:
+        matches_query = lambda item: (
+            normalized_query in str(item.get("title") or "").lower()
+            or normalized_query in str(item.get("subtitle") or "").lower()
+            or normalized_query in str(item.get("description") or "").lower()
+        )
+        local_groups = [item for item in local_groups if matches_query(item)]
+        state_groups = [item for item in state_groups if matches_query(item)]
     sections = [
         {"key": "authors", "label": "作者", "count": len(authors), "items": _sort_source_groups(authors, "recent")},
         {"key": "collections", "label": "合集", "count": len(collections), "items": _sort_source_groups(collections, "recent")},
@@ -1879,52 +1925,53 @@ def backfill_default_favorites_avatar_metadata(
     total = 0
     updated = 0
     failed = 0
-    for platform in ("cn", "global"):
-        raw_cookie = cookie_map.get(platform) or ""
-        if not raw_cookie:
-            continue
-        try:
-            with temporary_proxy_env(config.proxy, "", platform=platform):
-                profile = discover_cookie_account_profile(platform, raw_cookie)
-        except Exception as exc:
-            failed += 1
-            append_business_log(
-                "source_library",
-                "default_favorite_avatar_backfill_failed",
-                "默认收藏夹头像补全失败。",
-                level="warning",
-                platform=platform,
-                error=_normalize_text(str(exc))[:240],
-            )
-            continue
+    with _source_library_change_batch():
+        for platform in ("cn", "global"):
+            raw_cookie = cookie_map.get(platform) or ""
+            if not raw_cookie:
+                continue
+            try:
+                with temporary_proxy_env(config.proxy, "", platform=platform):
+                    profile = discover_cookie_account_profile(platform, raw_cookie)
+            except Exception as exc:
+                failed += 1
+                append_business_log(
+                    "source_library",
+                    "default_favorite_avatar_backfill_failed",
+                    "默认收藏夹头像补全失败。",
+                    level="warning",
+                    platform=platform,
+                    error=_normalize_text(str(exc))[:240],
+                )
+                continue
 
-        source = default_favorites_subscription_source(platform, profile)
-        source_url = _default_favorites_identity_url(str(source.get("url") or ""))
-        avatar_url = str(source.get("avatar_url") or "").strip()
-        if not source_url or not avatar_url:
-            continue
-        site = "global" if platform == "global" else "cn"
-        for subscription in subscriptions:
-            if str(getattr(subscription, "mode", "") or "").strip() != "collection_models":
+            source = default_favorites_subscription_source(platform, profile)
+            source_url = _default_favorites_identity_url(str(source.get("url") or ""))
+            avatar_url = str(source.get("avatar_url") or "").strip()
+            if not source_url or not avatar_url:
                 continue
-            subscription_url = _default_favorites_identity_url(str(getattr(subscription, "url", "") or ""))
-            if subscription_url != source_url:
-                continue
-            source_key = source_identity_key(subscription_url, "collection_models")
-            if not source_key:
-                continue
-            total += 1
-            _save_source_metadata_item(
-                source_key,
-                {
-                    "kind": "favorite",
-                    "canonical_url": source_url,
-                    "site": site,
-                    "avatar_url": avatar_url,
-                    "error": "",
-                },
-            )
-            updated += 1
+            site = "global" if platform == "global" else "cn"
+            for subscription in subscriptions:
+                if str(getattr(subscription, "mode", "") or "").strip() != "collection_models":
+                    continue
+                subscription_url = _default_favorites_identity_url(str(getattr(subscription, "url", "") or ""))
+                if subscription_url != source_url:
+                    continue
+                source_key = source_identity_key(subscription_url, "collection_models")
+                if not source_key:
+                    continue
+                total += 1
+                _save_source_metadata_item(
+                    source_key,
+                    {
+                        "kind": "favorite",
+                        "canonical_url": source_url,
+                        "site": site,
+                        "avatar_url": avatar_url,
+                        "error": "",
+                    },
+                )
+                updated += 1
     if total:
         append_business_log(
             "source_library",
@@ -2017,48 +2064,49 @@ def refresh_source_preview_snapshots(
     generated = 0
     skipped = 0
     failed = 0
-    for group in candidates:
-        source_key = str(group.get("key") or "")
-        previews = list(group.get("preview_models") or [])[:SOURCE_LIBRARY_PREVIEW_LIMIT]
-        signature = _source_preview_snapshot_signature(group, previews)
-        filename = _source_preview_snapshot_filename(source_key, signature)
-        target_path = SOURCE_LIBRARY_SNAPSHOT_DIR / filename
-        cached = metadata_cache.get(source_key) or {}
-        if (
-            not force
-            and cached.get("preview_snapshot_signature") == signature
-            and cached.get("preview_snapshot_filename") == filename
-            and target_path.is_file()
-        ):
-            skipped += 1
-            continue
-        try:
-            had_image = _render_source_preview_snapshot(previews, target_path)
-            _prune_old_source_preview_snapshots(source_key, filename)
-            _save_source_snapshot_metadata(
-                source_key,
-                {
+    with _source_library_change_batch():
+        for group in candidates:
+            source_key = str(group.get("key") or "")
+            previews = list(group.get("preview_models") or [])[:SOURCE_LIBRARY_PREVIEW_LIMIT]
+            signature = _source_preview_snapshot_signature(group, previews)
+            filename = _source_preview_snapshot_filename(source_key, signature)
+            target_path = SOURCE_LIBRARY_SNAPSHOT_DIR / filename
+            cached = metadata_cache.get(source_key) or {}
+            if (
+                not force
+                and cached.get("preview_snapshot_signature") == signature
+                and cached.get("preview_snapshot_filename") == filename
+                and target_path.is_file()
+            ):
+                skipped += 1
+                continue
+            try:
+                had_image = _render_source_preview_snapshot(previews, target_path)
+                _prune_old_source_preview_snapshots(source_key, filename)
+                _save_source_snapshot_metadata(
+                    source_key,
+                    {
+                        "preview_snapshot_signature": signature,
+                        "preview_snapshot_filename": filename,
+                        "preview_snapshot_url": _snapshot_url(filename, signature),
+                        "preview_snapshot_had_image": had_image,
+                        "preview_snapshot_error": "",
+                    },
+                )
+                metadata_cache[source_key] = {
+                    **dict(metadata_cache.get(source_key) or {}),
                     "preview_snapshot_signature": signature,
                     "preview_snapshot_filename": filename,
-                    "preview_snapshot_url": _snapshot_url(filename, signature),
-                    "preview_snapshot_had_image": had_image,
-                    "preview_snapshot_error": "",
-                },
-            )
-            metadata_cache[source_key] = {
-                **dict(metadata_cache.get(source_key) or {}),
-                "preview_snapshot_signature": signature,
-                "preview_snapshot_filename": filename,
-            }
-            generated += 1
-        except Exception as exc:
-            failed += 1
-            _save_source_snapshot_metadata(
-                source_key,
-                {
-                    "preview_snapshot_error": _normalize_text(str(exc))[:240],
-                },
-            )
+                }
+                generated += 1
+            except Exception as exc:
+                failed += 1
+                _save_source_snapshot_metadata(
+                    source_key,
+                    {
+                        "preview_snapshot_error": _normalize_text(str(exc))[:240],
+                    },
+                )
     if total:
         append_business_log(
             "source_library",
@@ -2088,46 +2136,47 @@ def refresh_source_metadata(force: bool = False, store: Optional[JsonStore] = No
     total = 0
     refreshed = 0
     failed = 0
-    for group in groups.values():
-        if str(group.get("kind") or "") not in {"author", "collection", "favorite"}:
-            continue
-        source_key = str(group.get("key") or "")
-        canonical_url = str(group.get("canonical_url") or "")
-        if not source_key or not canonical_url:
-            continue
-        total += 1
-        cached = metadata_cache.get(source_key) or {}
-        if not _stale_metadata(cached, force=force):
-            continue
-        try:
-            if group.get("kind") == "author":
-                payload = _fetch_author_metadata(canonical_url, config)
-            else:
-                payload = _fetch_collection_metadata(canonical_url, config)
-            if not payload.get("title"):
-                payload["title"] = str(group.get("title") or "")
-            _save_source_metadata_item(
-                source_key,
-                {
-                    **payload,
-                    "kind": group.get("kind"),
-                    "canonical_url": canonical_url,
-                    "site": group.get("site"),
-                    "error": "",
-                },
-            )
-            refreshed += 1
-        except Exception as exc:
-            failed += 1
-            _save_source_metadata_item(
-                source_key,
-                {
-                    "kind": group.get("kind"),
-                    "canonical_url": canonical_url,
-                    "site": group.get("site"),
-                    "error": _normalize_text(str(exc))[:240],
-                },
-            )
+    with _source_library_change_batch():
+        for group in groups.values():
+            if str(group.get("kind") or "") not in {"author", "collection", "favorite"}:
+                continue
+            source_key = str(group.get("key") or "")
+            canonical_url = str(group.get("canonical_url") or "")
+            if not source_key or not canonical_url:
+                continue
+            total += 1
+            cached = metadata_cache.get(source_key) or {}
+            if not _stale_metadata(cached, force=force):
+                continue
+            try:
+                if group.get("kind") == "author":
+                    payload = _fetch_author_metadata(canonical_url, config)
+                else:
+                    payload = _fetch_collection_metadata(canonical_url, config)
+                if not payload.get("title"):
+                    payload["title"] = str(group.get("title") or "")
+                _save_source_metadata_item(
+                    source_key,
+                    {
+                        **payload,
+                        "kind": group.get("kind"),
+                        "canonical_url": canonical_url,
+                        "site": group.get("site"),
+                        "error": "",
+                    },
+                )
+                refreshed += 1
+            except Exception as exc:
+                failed += 1
+                _save_source_metadata_item(
+                    source_key,
+                    {
+                        "kind": group.get("kind"),
+                        "canonical_url": canonical_url,
+                        "site": group.get("site"),
+                        "error": _normalize_text(str(exc))[:240],
+                    },
+                )
     if total:
         append_business_log(
             "source_library",

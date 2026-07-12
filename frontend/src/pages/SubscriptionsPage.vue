@@ -323,12 +323,12 @@ function buildSubscriptionsQuery(page = 1, options = {}) {
 
 async function fetchSubscriptionsPage(page = 1, options = {}) {
   return normalizeSubscriptionsPayload(
-    await apiRequest("/api/subscriptions/light?" + buildSubscriptionsQuery(page, options).toString()),
+    await apiRequest("/api/subscriptions/light?" + buildSubscriptionsQuery(page, options).toString(), { signal: options.signal }),
   );
 }
 
 const subscriptionsResource = createHydratedResource({
-  load: ({ page, requestOptions }) => fetchSubscriptionsPage(page, requestOptions),
+  load: ({ page, requestOptions, signal }) => fetchSubscriptionsPage(page, { ...requestOptions, signal }),
 });
 
 function resetCreateForm() {
