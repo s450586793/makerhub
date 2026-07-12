@@ -9,6 +9,92 @@ from app.services import self_update
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
 
+class ReleaseGroupDockerFake:
+    def __init__(self, role_specs, *, failure_stage="", failed_role=""):
+        self.role_specs = tuple(role_specs)
+        self.failure_stage = failure_stage
+        self.failed_role = failed_role
+        self.names = {f"{role}-old": name for role, name in self.role_specs}
+        self.running = {container_id: True for container_id in self.names}
+        self.operations = []
+        self._failure_injected = False
+
+    def inspect_container(self, container_id):
+        if container_id in self.names.values():
+            container_id = next(
+                item_id for item_id, name in self.names.items() if name == container_id
+            )
+        role = str(container_id).split("-", 1)[0]
+        return {
+            "Id": container_id,
+            "Name": f"/{self.names[container_id]}",
+            "Image": "sha256:old-image",
+            "Config": {
+                "Image": f"ghcr.io/example/{role}:old",
+                "Env": [
+                    "MAKERHUB_DATABASE_URL=postgresql://makerhub:password@postgres:5432/makerhub",
+                ],
+            },
+            "HostConfig": {},
+            "NetworkSettings": {"Networks": {}},
+            "State": {
+                "Running": self.running[container_id],
+                "Status": "running" if self.running[container_id] else "exited",
+            },
+        }
+
+    def pull_image(self, image_ref):
+        self.operations.append(("pull", image_ref))
+
+    def stop_container(self, container_id, *, timeout_seconds=10):
+        self.operations.append(("stop", container_id))
+        self.running[container_id] = False
+
+    def rename_container(self, container_id, *, name):
+        self.operations.append(("rename", container_id, name))
+        role = str(container_id).split("-", 1)[0]
+        if (
+            self.failure_stage == "rename"
+            and role == self.failed_role
+            and not self._failure_injected
+        ):
+            self._failure_injected = True
+            raise RuntimeError("rename injected failure")
+        self.names[container_id] = name
+
+    def create_container(self, _body, *, name=""):
+        self.operations.append(("create", name))
+        role = next(role for role, canonical_name in self.role_specs if canonical_name == name)
+        if (
+            self.failure_stage == "create"
+            and role == self.failed_role
+            and not self._failure_injected
+        ):
+            self._failure_injected = True
+            raise RuntimeError("create injected failure")
+        candidate_id = f"{role}-candidate"
+        self.names[candidate_id] = name
+        self.running[candidate_id] = False
+        return candidate_id
+
+    def start_container(self, container_id):
+        self.operations.append(("start", container_id))
+        role = str(container_id).split("-", 1)[0]
+        if (
+            self.failure_stage == "start"
+            and container_id == f"{self.failed_role}-candidate"
+            and not self._failure_injected
+        ):
+            self._failure_injected = True
+            raise RuntimeError("start injected failure")
+        self.running[container_id] = True
+
+    def remove_container(self, container_id, *, force=False):
+        self.operations.append(("remove", container_id))
+        self.names.pop(container_id, None)
+        self.running.pop(container_id, None)
+
+
 class SelfUpdateSplitDeploymentTest(unittest.TestCase):
     def setUp(self):
         self.state = {}
@@ -1147,6 +1233,158 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                     self.assertFalse(any(item.endswith("-old") for item in removed))
                     if failure_stage != "prepare":
                         self.assertTrue(pulled)
+
+    def test_release_group_restarts_stopped_old_roles_after_rename_create_or_start_failure(self):
+        role_specs = (
+            ("web", "makerhub-web"),
+            ("app", "makerhub-app"),
+            ("worker", "makerhub-worker"),
+        )
+
+        for failure_stage in ("rename", "create", "start"):
+            for failed_role, _failed_name in role_specs:
+                with self.subTest(stage=failure_stage, role=failed_role):
+                    client = ReleaseGroupDockerFake(
+                        role_specs,
+                        failure_stage=failure_stage,
+                        failed_role=failed_role,
+                    )
+
+                    with self.assertRaisesRegex(RuntimeError, "injected failure"):
+                        self_update.run_release_group_transaction(
+                            client,
+                            request_id="release-group-rollback",
+                            roles=[
+                                {
+                                    "role": role,
+                                    "container_ref": container_name,
+                                    "image_ref": f"ghcr.io/example/{role}:new",
+                                }
+                                for role, container_name in role_specs
+                            ],
+                        )
+
+                    self.assertEqual(
+                        client.names,
+                        {f"{role}-old": container_name for role, container_name in role_specs},
+                    )
+                    self.assertEqual(
+                        client.running,
+                        {f"{role}-old": True for role, _container_name in role_specs},
+                    )
+
+    def test_replacement_wait_honors_healthcheck_start_period_before_declaring_timeout(self):
+        class FakeDockerSocketClient:
+            def __init__(self):
+                self.inspect_calls = 0
+
+            def inspect_container(self, _container_id):
+                self.inspect_calls += 1
+                health_status = "starting" if self.inspect_calls <= 20 else "healthy"
+                return {
+                    "Id": "app-candidate",
+                    "Name": "/makerhub-app",
+                    "Config": {
+                        "Healthcheck": {
+                            "Test": ["CMD", "true"],
+                            "StartPeriod": 20_000_000_000,
+                            "Interval": 10_000_000_000,
+                            "Timeout": 5_000_000_000,
+                            "Retries": 10,
+                        }
+                    },
+                    "State": {
+                        "Running": True,
+                        "Status": "running",
+                        "Health": {"Status": health_status},
+                    },
+                }
+
+            def get_container_logs(self, _container_id, *, tail=120):
+                return ""
+
+        client = FakeDockerSocketClient()
+        monotonic_values = iter(range(200))
+        with patch.object(self_update.time, "monotonic", side_effect=lambda: next(monotonic_values)), \
+                patch.object(self_update.time, "sleep"):
+            inspect = self_update._wait_for_replacement_container(
+                client,
+                "app-candidate",
+                stable_polls=1,
+            )
+
+        self.assertEqual(inspect["State"]["Health"]["Status"], "healthy")
+        self.assertGreater(client.inspect_calls, self_update.STARTUP_WAIT_TIMEOUT_SECONDS)
+
+    def test_update_helper_succeeds_when_post_commit_backup_cleanup_fails(self):
+        names = {"app-old": "makerhub-app"}
+        running = {"app-old": True}
+
+        class FakeDockerSocketClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def inspect_container(self, container_id):
+                if container_id in names.values():
+                    container_id = next(
+                        item_id for item_id, name in names.items() if name == container_id
+                    )
+                return {
+                    "Id": container_id,
+                    "Name": f"/{names[container_id]}",
+                    "Image": "sha256:old-image",
+                    "Config": {
+                        "Image": "ghcr.io/example/makerhub:latest",
+                        "Env": [
+                            "MAKERHUB_DATABASE_URL=postgresql://makerhub:password@postgres:5432/makerhub",
+                        ],
+                    },
+                    "HostConfig": {},
+                    "NetworkSettings": {"Networks": {}},
+                    "State": {"Running": running[container_id], "Status": "running"},
+                }
+
+            def pull_image(self, _image_ref):
+                return None
+
+            def stop_container(self, container_id, *, timeout_seconds=10):
+                running[container_id] = False
+
+            def rename_container(self, container_id, *, name):
+                names[container_id] = name
+
+            def create_container(self, _body, *, name=""):
+                names["app-candidate"] = name
+                running["app-candidate"] = False
+                return "app-candidate"
+
+            def start_container(self, container_id):
+                running[container_id] = True
+
+            def remove_container(self, container_id, *, force=False):
+                if container_id == "app-old":
+                    raise RuntimeError("backup remove injected failure")
+                names.pop(container_id, None)
+                running.pop(container_id, None)
+
+        with patch.object(self_update, "DockerSocketClient", FakeDockerSocketClient), \
+                patch.object(self_update, "_verify_release_role"), \
+                patch.object(self_update, "append_business_log") as append_log, \
+                patch.object(self_update, "_schedule_old_update_image_cleanup"):
+            result = self_update.run_update_helper(
+                request_id="post-commit-cleanup",
+                container_id="app-old",
+                image_ref="ghcr.io/example/makerhub:new",
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(self_update._read_update_state()["status"], "succeeded")
+        self.assertEqual(names["app-old"], "makerhub-app-backup-post-com")
+        self.assertEqual(names["app-candidate"], "makerhub-app")
+        self.assertTrue(running["app-candidate"])
+        self.assertTrue(
+            any(call.args[1] == "self_update_cleanup_warning" for call in append_log.call_args_list)
+        )
 
     def test_delayed_cleanup_removes_old_image_after_success(self):
         with tempfile.TemporaryDirectory() as temp_dir:

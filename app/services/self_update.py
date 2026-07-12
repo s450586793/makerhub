@@ -42,6 +42,7 @@ _CONTAINER_ID_PATTERN = re.compile(r"[0-9a-f]{12,64}")
 STARTUP_WAIT_TIMEOUT_SECONDS = 20
 STARTUP_WAIT_INTERVAL_SECONDS = 1.0
 STARTUP_WAIT_STABLE_POLLS = 3
+_NANOSECONDS_PER_SECOND = 1_000_000_000
 IMAGE_CLEANUP_INITIAL_DELAY_SECONDS = 45
 IMAGE_CLEANUP_RETRY_DELAY_SECONDS = 60
 IMAGE_CLEANUP_MAX_ATTEMPTS = 5
@@ -87,6 +88,7 @@ POSTGRES_COMPOSE_MIGRATION_EXAMPLE = """services:
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 20s
     restart: unless-stopped
 
   makerhub-worker:
@@ -113,6 +115,7 @@ POSTGRES_COMPOSE_MIGRATION_EXAMPLE = """services:
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 20s
     restart: unless-stopped
 
   makerhub-postgres:
@@ -1584,12 +1587,16 @@ def _wait_for_replacement_container(
     interval_seconds: float = STARTUP_WAIT_INTERVAL_SECONDS,
     stable_polls: int = STARTUP_WAIT_STABLE_POLLS,
 ) -> dict[str, Any]:
-    deadline = time.monotonic() + max(int(timeout_seconds or 0), 1)
+    initial_inspect = client.inspect_container(container_id)
+    deadline = time.monotonic() + _replacement_startup_timeout_seconds(
+        initial_inspect,
+        fallback_timeout_seconds=timeout_seconds,
+    )
     stable_count = 0
     last_inspect: dict[str, Any] = {}
+    inspect = initial_inspect
 
     while time.monotonic() < deadline:
-        inspect = client.inspect_container(container_id)
         last_inspect = inspect
         state = inspect.get("State") or {}
         status = str(state.get("Status") or "").strip().lower()
@@ -1620,12 +1627,46 @@ def _wait_for_replacement_container(
                 )
 
         time.sleep(max(float(interval_seconds or 0), 0.2))
+        inspect = client.inspect_container(container_id)
 
     logs = _container_startup_logs(client, container_id) if last_inspect else "（未读取到容器状态）"
     raise RuntimeError(
         f"等待新容器恢复超时（{_container_state_summary(last_inspect) if last_inspect else 'no-state'}）。"
         f" 启动日志：{logs}"
     )
+
+
+def _replacement_startup_timeout_seconds(
+    container_inspect: dict[str, Any],
+    *,
+    fallback_timeout_seconds: int,
+) -> int:
+    fallback = max(int(fallback_timeout_seconds or 0), 1)
+    healthcheck = (container_inspect.get("Config") or {}).get("Healthcheck") or {}
+    test = healthcheck.get("Test") or []
+    if not healthcheck or (test and str(test[0] or "").upper() == "NONE"):
+        return fallback
+
+    def duration(value: Any, default_seconds: int) -> int:
+        try:
+            value_ns = int(value)
+        except (TypeError, ValueError):
+            value_ns = 0
+        if value_ns <= 0:
+            return default_seconds * _NANOSECONDS_PER_SECOND
+        return value_ns
+
+    try:
+        retries = max(int(healthcheck.get("Retries") or 0), 1)
+    except (TypeError, ValueError):
+        retries = 1
+    total_ns = (
+        duration(healthcheck.get("StartPeriod"), 0)
+        + retries * duration(healthcheck.get("Interval"), 30)
+        + duration(healthcheck.get("Timeout"), 30)
+    )
+    healthcheck_timeout = (total_ns + _NANOSECONDS_PER_SECOND - 1) // _NANOSECONDS_PER_SECOND
+    return max(fallback, healthcheck_timeout)
 
 
 def _replace_related_container(
@@ -1803,6 +1844,7 @@ def prepare_release_group(
                     "worker_start_token": worker_start_token,
                     "candidate_container_id": "",
                     "backup_renamed": False,
+                    "old_stopped": False,
                     "candidate_created": False,
                     "candidate_started": False,
                 }
@@ -1828,6 +1870,7 @@ def activate_release_group(client: DockerSocketClient, group: dict[str, Any]) ->
         role_name = str(role.get("role") or "")
         try:
             client.stop_container(str(role.get("old_container_id") or ""), timeout_seconds=10)
+            role["old_stopped"] = True
             client.rename_container(
                 str(role.get("old_container_id") or ""),
                 name=str(role.get("backup_container_name") or ""),
@@ -1938,14 +1981,17 @@ def rollback_release_group(client: DockerSocketClient, group: dict[str, Any]) ->
                 client.remove_container(candidate_id, force=True)
             except Exception as exc:  # noqa: BLE001
                 rollback_errors.append(f"remove-{role_name}-candidate:{_friendly_error_message(exc)}")
-        if not role.get("backup_renamed"):
-            continue
         old_container_id = str(role.get("old_container_id") or "")
-        try:
-            client.rename_container(old_container_id, name=str(role.get("container_name") or ""))
-            client.start_container(old_container_id)
-        except Exception as exc:  # noqa: BLE001
-            rollback_errors.append(f"restore-{role_name}:{_friendly_error_message(exc)}")
+        if role.get("backup_renamed"):
+            try:
+                client.rename_container(old_container_id, name=str(role.get("container_name") or ""))
+            except Exception as exc:  # noqa: BLE001
+                rollback_errors.append(f"rename-{role_name}-old:{_friendly_error_message(exc)}")
+        if role.get("old_stopped"):
+            try:
+                client.start_container(old_container_id)
+            except Exception as exc:  # noqa: BLE001
+                rollback_errors.append(f"start-{role_name}-old:{_friendly_error_message(exc)}")
     return rollback_errors
 
 
