@@ -386,6 +386,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
 
     def test_models_light_payload_does_not_build_decorated_models(self):
         with patch.object(catalog, "get_decorated_models", side_effect=AssertionError("full model decoration should not run")), \
+                patch.object(catalog, "query_archive_model_index", return_value=None, create=True), \
                 patch.object(catalog, "load_archive_model_index_unchecked", return_value=[
                     {
                         "model_dir": "MW_1",
@@ -409,6 +410,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
 
     def test_models_light_payload_uses_unchecked_index_snapshot(self):
         with patch.object(catalog, "get_decorated_models", side_effect=AssertionError("full model decoration should not run")), \
+                patch.object(catalog, "query_archive_model_index", return_value=None, create=True), \
                 patch.object(catalog, "load_archive_model_index", side_effect=AssertionError("stale checked index should not run")), \
                 patch.object(catalog, "load_archive_model_index_unchecked", return_value=[
                     {
@@ -429,6 +431,60 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
 
         self.assertEqual(payload["count"], 1)
         self.assertEqual(payload["items"][0]["model_dir"], "MW_1")
+        self.assertTrue(payload["light"])
+
+    def test_models_light_payload_uses_sql_page_and_cached_facets(self):
+        sql_page = {
+            "items": [
+                {
+                    "model_dir": "MW_2",
+                    "title": "模型 B",
+                    "source": "global",
+                    "author": {"name": "作者 B"},
+                    "tags": ["tool"],
+                    "stats": {"downloads": 8, "likes": 5, "prints": 3},
+                    "collect_ts": 20,
+                    "publish_ts": 18,
+                    "local_flags": {"favorite": True, "printed": False, "deleted": False},
+                }
+            ],
+            "count": 1,
+            "filtered_total": 4,
+            "page": 2,
+            "page_size": 1,
+            "has_more": True,
+            "revision": 7,
+        }
+        facets = {
+            "total": 12,
+            "tags": ["art", "tool"],
+            "source_counts": {"all": 12, "cn": 5, "global": 4, "local": 3},
+        }
+
+        with patch.object(catalog, "query_archive_model_index", return_value=sql_page, create=True) as query_index, \
+                patch.object(catalog, "load_archive_model_facets", return_value=facets, create=True) as load_facets, \
+                patch.object(catalog, "database_json_state_signature", return_value=("flags-v1", "flags-hash")), \
+                patch.object(catalog, "load_archive_model_index_unchecked", side_effect=AssertionError("SQL page must not load the full index")), \
+                patch.object(catalog, "get_decorated_models", side_effect=AssertionError("SQL page must not build decorated models")), \
+                patch.object(catalog, "_apply_subscription_flags", side_effect=lambda items: items) as decorate_page:
+            payload = catalog.build_models_light_payload(
+                q="tool",
+                source="global",
+                tag="tool",
+                sort_key="downloads",
+                page=2,
+                page_size=1,
+            )
+
+        query_index.assert_called_once_with("tool", "global", "tool", "downloads", 2, 1, 0)
+        load_facets.assert_called_once_with(7, ("flags-v1", "flags-hash"))
+        decorate_page.assert_called_once()
+        self.assertEqual(payload["items"][0]["model_dir"], "MW_2")
+        self.assertEqual(payload["filtered_total"], 4)
+        self.assertEqual(payload["total"], 12)
+        self.assertEqual(payload["tags"], ["art", "tool"])
+        self.assertEqual(payload["source_counts"]["global"], 4)
+        self.assertEqual(payload["filters"], {"q": "tool", "source": "global", "tag": "tool", "sort": "downloads"})
         self.assertTrue(payload["light"])
 
     def test_build_runtime_diagnostics_returns_database_aggregates(self):

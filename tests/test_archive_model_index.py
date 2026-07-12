@@ -31,16 +31,24 @@ class FakeConnection:
     def __init__(self):
         self.rows = {}
         self.metadata = {}
+        self.executed = []
 
     def execute(self, sql, params=None):
         normalized = " ".join(str(sql).split()).upper()
+        self.executed.append((normalized, params))
         if normalized.startswith("INSERT INTO ARCHIVE_MODEL_INDEX"):
             payload = params or {}
             self.rows[payload["model_dir"]] = {
                 "short_key": str(payload.get("short_key") or ""),
                 "model": dict(_unwrap_jsonb(payload["model_json"])),
+                "model_id": str(payload.get("model_id") or ""),
+                "origin_url": str(payload.get("origin_url") or ""),
                 "meta_mtime_ns": int(payload.get("meta_mtime_ns") or 0),
                 "meta_size": int(payload.get("meta_size") or 0),
+                "tags": list(payload.get("tags") or []),
+                "downloads": int(payload.get("downloads") or 0),
+                "likes": int(payload.get("likes") or 0),
+                "prints": int(payload.get("prints") or 0),
             }
             return FakeCursor(rowcount=1)
         if normalized.startswith("SELECT SHORT_KEY FROM ARCHIVE_MODEL_INDEX WHERE MODEL_DIR"):
@@ -93,6 +101,12 @@ class FakeConnection:
             value = self.metadata.get(key)
             return FakeCursor(row={"value": value} if value is not None else None)
         if normalized.startswith("INSERT INTO MAKERHUB_METADATA"):
+            if "JSONB_BUILD_OBJECT('REVISION'" in normalized:
+                key = params[0] if params else ""
+                current = self.metadata.get(key) or {}
+                revision = int(current.get("revision") or 0) + 1
+                self.metadata[key] = {"revision": revision}
+                return FakeCursor(rowcount=1, row={"revision": revision})
             key, value = params
             self.metadata[key] = _unwrap_jsonb(value)
             return FakeCursor(rowcount=1)
@@ -106,6 +120,52 @@ class FakeConnection:
 
     def close(self):
         return None
+
+
+class RecordingQueryConnection:
+    def __init__(self, *, filtered_total=0, revision=1, page_rows=None, facet_row=None):
+        self.filtered_total = filtered_total
+        self.revision = revision
+        self.page_rows = list(page_rows or [])
+        self.facet_row = facet_row or {
+            "total": 0,
+            "cn_count": 0,
+            "global_count": 0,
+            "local_count": 0,
+            "tags": [],
+        }
+        self.executed = []
+
+    def execute(self, sql, params=None):
+        normalized = " ".join(str(sql).split())
+        self.executed.append((normalized, params))
+        upper = normalized.upper()
+        if "AS FILTERED_TOTAL" in upper:
+            result_rows = [
+                {
+                    **row,
+                    "filtered_total": self.filtered_total,
+                    "revision": self.revision,
+                }
+                for row in self.page_rows
+            ]
+            if not result_rows:
+                result_rows.append(
+                    {
+                        "model_json": None,
+                        "favorite": False,
+                        "printed": False,
+                        "deleted": False,
+                        "filtered_total": self.filtered_total,
+                        "revision": self.revision,
+                    }
+                )
+            return FakeCursor(rows=result_rows)
+        if "AS CN_COUNT" in upper:
+            return FakeCursor(row=dict(self.facet_row))
+        if "SELECT MODEL_JSON" in upper:
+            return FakeCursor(rows=self.page_rows)
+        return FakeCursor()
 
 
 class FakeDatabaseContext:
@@ -157,6 +217,274 @@ class ArchiveModelIndexTest(unittest.TestCase):
     def tearDown(self):
         for item in reversed(self.patches):
             item.stop()
+
+    def _query_with_recording_connection(self, connection, **kwargs):
+        self.connection = connection
+        with patch.object(archive_model_index, "ensure_archive_model_index_schema", return_value=True), \
+                patch.object(archive_model_index, "archive_model_index_is_bootstrapped", return_value=True):
+            return archive_model_index.query_archive_model_index(**kwargs)
+
+    def test_query_archive_model_index_filters_and_pages_in_sql(self):
+        connection = RecordingQueryConnection(
+            filtered_total=5,
+            revision=9,
+            page_rows=[
+                {
+                    "model_json": {"model_dir": "m-3", "title": "Gear 3"},
+                    "favorite": True,
+                    "printed": False,
+                    "deleted": False,
+                },
+                {
+                    "model_json": {"model_dir": "m-4", "title": "Gear 4"},
+                    "favorite": False,
+                    "printed": True,
+                    "deleted": False,
+                },
+            ],
+        )
+
+        payload = self._query_with_recording_connection(
+            connection,
+            q=" Gear ",
+            source="CN",
+            tag="Mechanical",
+            sort_key="collectDate",
+            page=2,
+            page_size=2,
+            limit=0,
+        )
+
+        self.assertEqual([item["model_dir"] for item in payload["items"]], ["m-3", "m-4"])
+        self.assertEqual(payload["items"][0]["local_flags"], {"favorite": True, "printed": False, "deleted": False})
+        self.assertEqual(payload["filtered_total"], 5)
+        self.assertEqual(payload["count"], 2)
+        self.assertTrue(payload["has_more"])
+        self.assertEqual(payload["revision"], 9)
+
+        count_sql, count_params = next(item for item in connection.executed if "AS filtered_total" in item[0])
+        page_sql, page_params = next(item for item in connection.executed if "SELECT model_json" in item[0])
+        self.assertIn("title ILIKE %s", count_sql)
+        self.assertIn("author_name ILIKE %s", count_sql)
+        self.assertIn("unnest(tags)", count_sql)
+        self.assertIn("source = %s", count_sql)
+        self.assertIn("NOT deleted", count_sql)
+        self.assertIn("LIMIT %s OFFSET %s", page_sql)
+        self.assertIn("ORDER BY collect_ts DESC, model_dir ASC", page_sql)
+        self.assertEqual(count_params[-4:-2], ("cn", "mechanical"))
+        self.assertEqual(page_params[-2:], (2, 2))
+        query_statements = [sql for sql, _ in connection.executed if "filtered_models AS" in sql]
+        self.assertEqual(len(query_statements), 1)
+        self.assertIn("favorite_models AS", page_sql)
+        self.assertIn("LEFT JOIN favorite_models", page_sql)
+
+    def test_query_archive_model_index_escapes_search_wildcards(self):
+        connection = RecordingQueryConnection()
+
+        self._query_with_recording_connection(
+            connection,
+            q=r"50%_off\\",
+            source="all",
+            tag="",
+            sort_key="collectDate",
+            page=1,
+            page_size=8,
+            limit=0,
+        )
+
+        count_sql, count_params = next(item for item in connection.executed if "AS filtered_total" in item[0])
+        self.assertIn("ESCAPE E'\\\\'", count_sql)
+        self.assertEqual(count_params[0], r"%50\%\_off\\\\%")
+        self.assertEqual(count_params[:3], (count_params[0], count_params[0], count_params[0]))
+
+    def test_query_archive_model_index_supports_special_tags(self):
+        expected_fragments = {
+            "__favorite__": "favorite",
+            "__printed__": "printed",
+            "__local_deleted__": "deleted",
+            "__source_deleted__": "source_deleted",
+        }
+        for tag, expected_fragment in expected_fragments.items():
+            with self.subTest(tag=tag):
+                connection = RecordingQueryConnection()
+                self._query_with_recording_connection(
+                    connection,
+                    q="",
+                    source="all",
+                    tag=tag,
+                    sort_key="collectDate",
+                    page=1,
+                    page_size=8,
+                    limit=0,
+                )
+                count_sql, _ = next(item for item in connection.executed if "AS filtered_total" in item[0])
+                filter_sql = count_sql.split("SELECT * FROM indexed_models WHERE", 1)[1].split(
+                    "), filtered_summary AS", 1
+                )[0]
+                self.assertIn(expected_fragment, filter_sql)
+                if tag == "__local_deleted__":
+                    self.assertNotIn("NOT deleted", filter_sql)
+                elif tag != "__source_deleted__":
+                    self.assertIn("NOT deleted", filter_sql)
+
+    def test_query_archive_model_index_uses_stable_sort_tie_breaks(self):
+        sort_columns = {
+            "collectDate": "collect_ts",
+            "publishDate": "publish_ts",
+            "downloads": "downloads",
+            "likes": "likes",
+            "prints": "prints",
+            "unknown": "collect_ts",
+        }
+        for sort_key, column in sort_columns.items():
+            with self.subTest(sort_key=sort_key):
+                connection = RecordingQueryConnection()
+                self._query_with_recording_connection(
+                    connection,
+                    q="",
+                    source="all",
+                    tag="",
+                    sort_key=sort_key,
+                    page=1,
+                    page_size=8,
+                    limit=0,
+                )
+                page_sql, _ = next(item for item in connection.executed if "SELECT model_json" in item[0])
+                self.assertIn(f"ORDER BY {column} DESC, model_dir ASC", page_sql)
+
+    def test_query_archive_model_index_supports_deep_limit_mode(self):
+        connection = RecordingQueryConnection(
+            filtered_total=2501,
+            page_rows=[{"model_json": {"model_dir": "m-1"}, "favorite": False, "printed": False, "deleted": False}],
+        )
+
+        payload = self._query_with_recording_connection(
+            connection,
+            q="",
+            source="all",
+            tag="",
+            sort_key="collectDate",
+            page=4,
+            page_size=20,
+            limit=5000,
+        )
+
+        page_sql, page_params = next(item for item in connection.executed if "SELECT model_json" in item[0])
+        self.assertIn("LIMIT %s OFFSET %s", page_sql)
+        self.assertEqual(page_params[-2:], (2000, 0))
+        self.assertEqual(payload["page"], 4)
+        self.assertEqual(payload["count"], 1)
+        self.assertTrue(payload["has_more"])
+
+    def test_query_archive_model_index_returns_empty_out_of_range_page(self):
+        connection = RecordingQueryConnection(filtered_total=3, page_rows=[])
+
+        payload = self._query_with_recording_connection(
+            connection,
+            q="",
+            source="all",
+            tag="",
+            sort_key="collectDate",
+            page=5,
+            page_size=2,
+            limit=0,
+        )
+
+        self.assertEqual(payload["items"], [])
+        self.assertEqual(payload["count"], 0)
+        self.assertEqual(payload["filtered_total"], 3)
+        self.assertFalse(payload["has_more"])
+
+    def test_query_archive_model_index_returns_none_when_not_bootstrapped(self):
+        connection = RecordingQueryConnection()
+        self.connection = connection
+
+        with patch.object(archive_model_index, "ensure_archive_model_index_schema", return_value=True), \
+                patch.object(archive_model_index, "archive_model_index_is_bootstrapped", return_value=False):
+            payload = archive_model_index.query_archive_model_index("", "all", "", "collectDate", 1, 8, 0)
+
+        self.assertIsNone(payload)
+        self.assertEqual(connection.executed, [])
+
+    def test_load_archive_model_facets_caches_by_revision_and_flags_signature(self):
+        connection = RecordingQueryConnection(
+            facet_row={
+                "total": 6,
+                "cn_count": 2,
+                "global_count": 3,
+                "local_count": 1,
+                "tags": ["art", "tool"],
+            }
+        )
+        self.connection = connection
+
+        with patch.object(archive_model_index, "ensure_archive_model_index_schema", return_value=True), \
+                patch.object(archive_model_index, "_ARCHIVE_MODEL_FACETS_CACHE", {}, create=True):
+            first = archive_model_index.load_archive_model_facets(4, ("v1", "hash-1"))
+            second = archive_model_index.load_archive_model_facets(4, ("v1", "hash-1"))
+            archive_model_index.load_archive_model_facets(5, ("v1", "hash-1"))
+            archive_model_index.load_archive_model_facets(5, ("v2", "hash-2"))
+
+        self.assertEqual(first, second)
+        self.assertEqual(first["total"], 6)
+        self.assertEqual(first["source_counts"], {"all": 6, "cn": 2, "global": 3, "local": 1})
+        self.assertEqual(first["tags"], ["art", "tool"])
+        facet_queries = [sql for sql, _ in connection.executed if "AS cn_count" in sql]
+        self.assertEqual(len(facet_queries), 3)
+
+    def test_schema_and_upsert_persist_relational_query_projection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_root = Path(tmp).resolve()
+            _write_meta(archive_root, "LOCAL_Demo", "Demo")
+            meta_path = archive_root / "LOCAL_Demo" / "meta.json"
+            with patch.object(catalog, "ARCHIVE_DIR", archive_root), patch.object(archive_model_index, "ARCHIVE_DIR", archive_root):
+                model = catalog._normalize_model(meta_path, include_detail=False)
+                model["id"] = " 42 "
+                model["origin_url"] = "/zh/models/42"
+                model["tags"] = [" Art ", "art", "TOOL"]
+                model["stats"] = {"downloads": "12", "likes": 7, "prints": 3}
+                self.assertTrue(archive_model_index.upsert_archive_model_index("LOCAL_Demo", model=model, meta_path=meta_path))
+
+        schema_sql = " ".join(sql for sql, _ in self.connection.executed)
+        self.assertIn("ADD COLUMN IF NOT EXISTS TAGS TEXT[]", schema_sql)
+        self.assertIn("archive_model_index_tags_idx", schema_sql.lower())
+        self.assertIn("archive_model_index_downloads_idx", schema_sql.lower())
+        indexed = self.connection.rows["LOCAL_Demo"]
+        self.assertEqual(indexed["model_id"], "42")
+        self.assertEqual(indexed["origin_url"], "https://makerworld.com.cn/zh/models/42")
+        self.assertEqual(indexed["tags"], ["art", "tool"])
+        self.assertEqual(indexed["downloads"], 12)
+        self.assertEqual(indexed["likes"], 7)
+        self.assertEqual(indexed["prints"], 3)
+        revision = self.connection.metadata[archive_model_index.ARCHIVE_MODEL_INDEX_REVISION_KEY]["revision"]
+        self.assertGreaterEqual(revision, 1)
+
+    def test_delete_archive_model_index_bumps_revision_after_mutation(self):
+        self.connection.rows["m-1"] = {
+            "short_key": "",
+            "model": {"model_dir": "m-1"},
+            "meta_mtime_ns": 0,
+            "meta_size": 0,
+        }
+
+        deleted = archive_model_index.delete_archive_model_index(["m-1"])
+
+        self.assertEqual(deleted, 1)
+        revision = self.connection.metadata[archive_model_index.ARCHIVE_MODEL_INDEX_REVISION_KEY]["revision"]
+        self.assertEqual(revision, 1)
+
+    def test_mark_bootstrapped_bumps_revision_for_empty_rebuild(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_root = Path(tmp).resolve()
+
+            marked = archive_model_index.mark_archive_model_index_bootstrapped(
+                archive_root=archive_root,
+                processed_count=0,
+            )
+
+        self.assertTrue(marked)
+        revision = self.connection.metadata[archive_model_index.ARCHIVE_MODEL_INDEX_REVISION_KEY]["revision"]
+        self.assertEqual(revision, 1)
 
     def test_database_index_is_used_after_bootstrap_marker(self):
         with tempfile.TemporaryDirectory() as tmp:

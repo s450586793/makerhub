@@ -25,8 +25,10 @@ from app.services.batch_discovery import extract_model_id, normalize_source_url
 from app.services.archive_model_index import (
     archive_model_index_row_count,
     delete_archive_model_index,
+    load_archive_model_facets,
     load_archive_model_index,
     load_archive_model_index_unchecked,
+    query_archive_model_index,
     upsert_archive_model_index,
 )
 from app.services.model_attachments import (
@@ -2879,6 +2881,44 @@ def build_models_light_payload(
     page_size: int = 8,
     limit: int = 0,
 ) -> dict:
+    indexed_page = query_archive_model_index(q, source, tag, sort_key, page, page_size, limit)
+    if indexed_page is not None:
+        try:
+            flags_signature = database_json_state_signature(
+                "model_flags",
+                {"favorites": [], "printed": [], "deleted": []},
+            )
+        except Exception:
+            flags_signature = ("", "")
+        facets = load_archive_model_facets(indexed_page.get("revision", 0), flags_signature)
+        if facets.get("available", True):
+            page_items = [
+                _normalize_light_model_item(item)
+                for item in indexed_page.get("items") or []
+                if isinstance(item, dict)
+            ]
+            if page_items:
+                _apply_subscription_flags(page_items)
+            normalized_source = str(indexed_page.get("source") or source or "all").strip().lower() or "all"
+            return {
+                "items": page_items,
+                "count": len(page_items),
+                "filtered_total": _safe_int_value(indexed_page.get("filtered_total")),
+                "total": _safe_int_value(facets.get("total")),
+                "page": max(1, _safe_int_value(indexed_page.get("page")) or 1),
+                "page_size": max(1, _safe_int_value(indexed_page.get("page_size")) or 8),
+                "has_more": bool(indexed_page.get("has_more")),
+                "tags": [str(item) for item in facets.get("tags") or []],
+                "source_counts": dict(facets.get("source_counts") or {}),
+                "filters": {
+                    "q": q,
+                    "source": normalized_source,
+                    "tag": tag,
+                    "sort": sort_key,
+                },
+                "light": True,
+            }
+
     indexed_models = load_archive_model_index_unchecked()
     if indexed_models is None:
         all_models, visible_models = get_decorated_models()

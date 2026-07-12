@@ -18,17 +18,21 @@ from app.core.database import (
 from app.core.database_json_state import load_database_json_state, save_database_json_state
 from app.core.settings import ARCHIVE_DIR
 from app.core.timezone import now_iso as china_now_iso
+from app.services.batch_discovery import normalize_source_url
 from app.services.business_logs import append_business_log
 from app.services.state_events import publish_state_event
 
 
-MODEL_INDEX_SCHEMA_VERSION = 2
+MODEL_INDEX_SCHEMA_VERSION = 3
 BOOTSTRAP_METADATA_KEY = "archive_model_index_bootstrap"
+ARCHIVE_MODEL_INDEX_REVISION_KEY = "archive_model_index_revision"
 ARCHIVE_MODEL_INDEX_REBUILD_STATUS_KEY = "archive_model_index_rebuild_status"
 LOCAL_SHORT_KEY_START = 100001
 LOCAL_SHORT_KEY_PREFIX = "local"
 _SCHEMA_LOCK = threading.Lock()
 _SCHEMA_READY = False
+_ARCHIVE_MODEL_FACETS_LOCK = threading.Lock()
+_ARCHIVE_MODEL_FACETS_CACHE: dict[str, Any] = {}
 _LAST_WARNING_AT = 0.0
 _DB_RETRY_AFTER = 0.0
 _WARNING_INTERVAL_SECONDS = 300
@@ -148,6 +152,10 @@ def ensure_archive_model_index_schema() -> bool:
                         cover_remote_url TEXT NOT NULL DEFAULT '',
                         collect_ts BIGINT NOT NULL DEFAULT 0,
                         publish_ts BIGINT NOT NULL DEFAULT 0,
+                        tags TEXT[] NOT NULL DEFAULT '{}'::text[],
+                        downloads BIGINT NOT NULL DEFAULT 0,
+                        likes BIGINT NOT NULL DEFAULT 0,
+                        prints BIGINT NOT NULL DEFAULT 0,
                         meta_path TEXT NOT NULL DEFAULT '',
                         meta_mtime_ns BIGINT NOT NULL DEFAULT 0,
                         meta_size BIGINT NOT NULL DEFAULT 0,
@@ -160,6 +168,18 @@ def ensure_archive_model_index_schema() -> bool:
                 )
                 connection.execute(
                     "ALTER TABLE archive_model_index ADD COLUMN IF NOT EXISTS short_key TEXT NOT NULL DEFAULT ''"
+                )
+                connection.execute(
+                    "ALTER TABLE archive_model_index ADD COLUMN IF NOT EXISTS tags TEXT[] NOT NULL DEFAULT '{}'::text[]"
+                )
+                connection.execute(
+                    "ALTER TABLE archive_model_index ADD COLUMN IF NOT EXISTS downloads BIGINT NOT NULL DEFAULT 0"
+                )
+                connection.execute(
+                    "ALTER TABLE archive_model_index ADD COLUMN IF NOT EXISTS likes BIGINT NOT NULL DEFAULT 0"
+                )
+                connection.execute(
+                    "ALTER TABLE archive_model_index ADD COLUMN IF NOT EXISTS prints BIGINT NOT NULL DEFAULT 0"
                 )
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS archive_model_index_source_idx ON archive_model_index (source)"
@@ -178,6 +198,24 @@ def ensure_archive_model_index_schema() -> bool:
                 )
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS archive_model_index_updated_at_idx ON archive_model_index (updated_at DESC)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS archive_model_index_tags_idx ON archive_model_index USING GIN (tags)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS archive_model_index_collect_sort_idx ON archive_model_index (collect_ts DESC, model_dir ASC)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS archive_model_index_publish_idx ON archive_model_index (publish_ts DESC, model_dir ASC)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS archive_model_index_downloads_idx ON archive_model_index (downloads DESC, model_dir ASC)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS archive_model_index_likes_idx ON archive_model_index (likes DESC, model_dir ASC)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS archive_model_index_prints_idx ON archive_model_index (prints DESC, model_dir ASC)"
                 )
         except Exception:
             _mark_database_unavailable()
@@ -289,6 +327,49 @@ def _model_with_short_detail_path(model: dict[str, Any], short_key: str) -> dict
     return payload
 
 
+def _normalized_index_tags(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return sorted({str(item or "").strip().lower() for item in value if str(item or "").strip()})
+
+
+def _index_stat_value(value: Any) -> int:
+    try:
+        return max(0, int(float(value or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _clear_archive_model_facets_cache() -> None:
+    with _ARCHIVE_MODEL_FACETS_LOCK:
+        _ARCHIVE_MODEL_FACETS_CACHE.clear()
+
+
+def _bump_archive_model_index_revision(connection: Any) -> int:
+    row = connection.execute(
+        """
+        INSERT INTO makerhub_metadata (key, value, updated_at)
+        VALUES (%s, jsonb_build_object('revision', 1), now())
+        ON CONFLICT (key) DO UPDATE SET
+            value = jsonb_build_object(
+                'revision',
+                CASE
+                    WHEN COALESCE(makerhub_metadata.value ->> 'revision', '') ~ '^[0-9]+$'
+                        THEN (makerhub_metadata.value ->> 'revision')::bigint + 1
+                    ELSE 1
+                END
+            ),
+            updated_at = now()
+        RETURNING (value ->> 'revision')::bigint AS revision
+        """,
+        (ARCHIVE_MODEL_INDEX_REVISION_KEY,),
+    ).fetchone()
+    _clear_archive_model_facets_cache()
+    if not isinstance(row, dict):
+        return 0
+    return _index_stat_value(row.get("revision"))
+
+
 def is_model_short_key(value: str) -> bool:
     clean_value = str(value or "").strip().strip("/").lower()
     if not clean_value:
@@ -347,6 +428,7 @@ def upsert_archive_model_index(
         meta_payload = meta if isinstance(meta, dict) else _read_json(meta_path)
         meta_mtime_ns, meta_size = _meta_signature(meta_path)
         author = model.get("author") if isinstance(model.get("author"), dict) else {}
+        stats = model.get("stats") if isinstance(model.get("stats"), dict) else {}
         with database_connection() as connection:
             short_key = _assign_short_key(connection, model_dir=clean_model_dir, model=model)
             indexed_model = _model_with_short_detail_path(model, short_key)
@@ -371,6 +453,10 @@ def upsert_archive_model_index(
                     cover_remote_url,
                     collect_ts,
                     publish_ts,
+                    tags,
+                    downloads,
+                    likes,
+                    prints,
                     meta_path,
                     meta_mtime_ns,
                     meta_size,
@@ -392,6 +478,10 @@ def upsert_archive_model_index(
                     %(cover_remote_url)s,
                     %(collect_ts)s,
                     %(publish_ts)s,
+                    %(tags)s,
+                    %(downloads)s,
+                    %(likes)s,
+                    %(prints)s,
                     %(meta_path)s,
                     %(meta_mtime_ns)s,
                     %(meta_size)s,
@@ -415,6 +505,10 @@ def upsert_archive_model_index(
                     cover_remote_url = EXCLUDED.cover_remote_url,
                     collect_ts = EXCLUDED.collect_ts,
                     publish_ts = EXCLUDED.publish_ts,
+                    tags = EXCLUDED.tags,
+                    downloads = EXCLUDED.downloads,
+                    likes = EXCLUDED.likes,
+                    prints = EXCLUDED.prints,
                     meta_path = EXCLUDED.meta_path,
                     meta_mtime_ns = EXCLUDED.meta_mtime_ns,
                     meta_size = EXCLUDED.meta_size,
@@ -425,16 +519,20 @@ def upsert_archive_model_index(
                 {
                     "model_dir": clean_model_dir,
                     "short_key": short_key,
-                    "model_id": str(indexed_model.get("id") or ""),
+                    "model_id": str(indexed_model.get("id") or "").strip(),
                     "title": str(indexed_model.get("title") or ""),
                     "source": str(indexed_model.get("source") or ""),
-                    "origin_url": str(indexed_model.get("origin_url") or ""),
+                    "origin_url": normalize_source_url(str(indexed_model.get("origin_url") or "")),
                     "author_name": str(author.get("name") or ""),
                     "author_url": str(author.get("url") or ""),
                     "cover_url": str(indexed_model.get("cover_url") or ""),
                     "cover_remote_url": str(indexed_model.get("cover_remote_url") or ""),
                     "collect_ts": int(indexed_model.get("collect_ts") or 0),
                     "publish_ts": int(indexed_model.get("publish_ts") or 0),
+                    "tags": _normalized_index_tags(indexed_model.get("tags")),
+                    "downloads": _index_stat_value(stats.get("downloads")),
+                    "likes": _index_stat_value(stats.get("likes")),
+                    "prints": _index_stat_value(stats.get("prints")),
                     "meta_path": meta_path.as_posix(),
                     "meta_mtime_ns": meta_mtime_ns,
                     "meta_size": meta_size,
@@ -442,6 +540,7 @@ def upsert_archive_model_index(
                     "meta_json": jsonb_value(meta_payload),
                 },
             )
+            _bump_archive_model_index_revision(connection)
         return True
     except Exception as exc:
         _warn_once(
@@ -468,7 +567,10 @@ def delete_archive_model_index(model_dirs: list[str]) -> int:
                 "DELETE FROM archive_model_index WHERE model_dir = ANY(%s)",
                 (clean_dirs,),
             )
-            return int(cursor.rowcount or 0)
+            deleted_count = int(cursor.rowcount or 0)
+            if deleted_count > 0:
+                _bump_archive_model_index_revision(connection)
+            return deleted_count
     except Exception as exc:
         _warn_once(
             "archive_model_index_delete_failed",
@@ -487,6 +589,7 @@ def truncate_archive_model_index() -> bool:
             return False
         with database_connection() as connection:
             connection.execute("TRUNCATE TABLE archive_model_index")
+            _bump_archive_model_index_revision(connection)
         return True
     except Exception as exc:
         _warn_once(
@@ -562,7 +665,11 @@ def mark_archive_model_index_bootstrapped(
         "completed_at": china_now_iso(),
     }
     try:
-        return _set_metadata_value(BOOTSTRAP_METADATA_KEY, marker)
+        if not _set_metadata_value(BOOTSTRAP_METADATA_KEY, marker):
+            return False
+        with database_connection() as connection:
+            _bump_archive_model_index_revision(connection)
+        return True
     except Exception as exc:
         _warn_once(
             "archive_model_index_marker_failed",
@@ -664,6 +771,387 @@ def load_archive_model_index_unchecked(archive_root: Path = ARCHIVE_DIR) -> Opti
         if isinstance(payload, dict):
             models.append(dict(payload))
     return models
+
+
+def _archive_model_query_cte() -> str:
+    return """
+        WITH state_values AS (
+            SELECT
+                COALESCE(
+                    (SELECT value FROM makerhub_json_state WHERE key = 'model_flags'),
+                    '{}'::jsonb
+                ) AS model_flags,
+                COALESCE(
+                    (SELECT value FROM makerhub_json_state WHERE key = 'app_config'),
+                    '{}'::jsonb
+                ) AS app_config,
+                COALESCE(
+                    (SELECT value FROM makerhub_json_state WHERE key = 'subscriptions_state'),
+                    '{}'::jsonb
+                ) AS subscriptions_state
+        ),
+        favorite_models AS (
+            SELECT DISTINCT favorite_flag.model_dir
+            FROM state_values
+            CROSS JOIN LATERAL jsonb_array_elements_text(
+                CASE
+                    WHEN jsonb_typeof(state_values.model_flags -> 'favorites') = 'array'
+                        THEN state_values.model_flags -> 'favorites'
+                    ELSE '[]'::jsonb
+                END
+            ) AS favorite_flag(model_dir)
+        ),
+        printed_models AS (
+            SELECT DISTINCT printed_flag.model_dir
+            FROM state_values
+            CROSS JOIN LATERAL jsonb_array_elements_text(
+                CASE
+                    WHEN jsonb_typeof(state_values.model_flags -> 'printed') = 'array'
+                        THEN state_values.model_flags -> 'printed'
+                    ELSE '[]'::jsonb
+                END
+            ) AS printed_flag(model_dir)
+        ),
+        deleted_models AS (
+            SELECT DISTINCT deleted_flag.model_dir
+            FROM state_values
+            CROSS JOIN LATERAL jsonb_array_elements_text(
+                CASE
+                    WHEN jsonb_typeof(state_values.model_flags -> 'deleted') = 'array'
+                        THEN state_values.model_flags -> 'deleted'
+                    ELSE '[]'::jsonb
+                END
+            ) AS deleted_flag(model_dir)
+        ),
+        source_deleted_keys AS (
+            SELECT DISTINCT btrim(tracked_item.value ->> 'task_key') AS task_key
+            FROM state_values
+            CROSS JOIN LATERAL jsonb_array_elements(
+                CASE
+                    WHEN jsonb_typeof(state_values.subscriptions_state -> 'items') = 'array'
+                        THEN state_values.subscriptions_state -> 'items'
+                    ELSE '[]'::jsonb
+                END
+            ) AS state_item(value)
+            CROSS JOIN LATERAL jsonb_array_elements(
+                CASE
+                    WHEN jsonb_typeof(state_values.app_config -> 'subscriptions') = 'array'
+                        THEN state_values.app_config -> 'subscriptions'
+                    ELSE '[]'::jsonb
+                END
+            ) AS subscription(value)
+            CROSS JOIN LATERAL jsonb_array_elements(
+                CASE
+                    WHEN jsonb_typeof(state_item.value -> 'tracked_items') = 'array'
+                        THEN state_item.value -> 'tracked_items'
+                    ELSE '[]'::jsonb
+                END
+            ) AS tracked_item(value)
+            WHERE btrim(subscription.value ->> 'id') = btrim(state_item.value ->> 'id')
+              AND lower(btrim(subscription.value ->> 'mode')) = 'author_upload'
+              AND btrim(tracked_item.value ->> 'task_key') <> ''
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM jsonb_array_elements(
+                      CASE
+                          WHEN jsonb_typeof(state_item.value -> 'current_items') = 'array'
+                              THEN state_item.value -> 'current_items'
+                          ELSE '[]'::jsonb
+                      END
+                  ) AS current_item(value)
+                  WHERE btrim(current_item.value ->> 'task_key') = btrim(tracked_item.value ->> 'task_key')
+              )
+        ),
+        indexed_models AS (
+            SELECT
+                model_index.*,
+                favorite_models.model_dir IS NOT NULL AS favorite,
+                printed_models.model_dir IS NOT NULL AS printed,
+                deleted_models.model_dir IS NOT NULL AS deleted,
+                (
+                    lower(COALESCE(model_index.model_json #>> '{remote_sync,source_deleted}', ''))
+                        IN ('true', '1', 'yes', 'on')
+                    OR EXISTS (
+                        SELECT 1
+                        FROM source_deleted_keys
+                        WHERE source_deleted_keys.task_key = 'model:' || model_index.model_id
+                           OR source_deleted_keys.task_key = model_index.origin_url
+                    )
+                ) AS source_deleted
+            FROM archive_model_index AS model_index
+            LEFT JOIN favorite_models ON favorite_models.model_dir = model_index.model_dir
+            LEFT JOIN printed_models ON printed_models.model_dir = model_index.model_dir
+            LEFT JOIN deleted_models ON deleted_models.model_dir = model_index.model_dir
+        )
+    """
+
+
+def _escaped_ilike_pattern(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _archive_model_query_filters(q: str, source: str, tag: str) -> tuple[str, tuple[Any, ...], str]:
+    normalized_query = str(q or "").strip().lower()
+    normalized_source = str(source or "").strip().lower() or "all"
+    normalized_tag = str(tag or "").strip().lower()
+    conditions: list[str] = []
+    params: list[Any] = []
+
+    if normalized_tag == "__local_deleted__":
+        conditions.append("deleted")
+    elif normalized_tag == "__source_deleted__":
+        conditions.append("source_deleted")
+    else:
+        conditions.append("NOT deleted")
+
+    if normalized_query:
+        search_pattern = _escaped_ilike_pattern(normalized_query)
+        conditions.append(
+            """(
+                title ILIKE %s ESCAPE E'\\\\'
+                OR author_name ILIKE %s ESCAPE E'\\\\'
+                OR EXISTS (
+                    SELECT 1
+                    FROM unnest(tags) AS tag_value
+                    WHERE tag_value ILIKE %s ESCAPE E'\\\\'
+                )
+            )"""
+        )
+        params.extend((search_pattern, search_pattern, search_pattern))
+
+    if normalized_source != "all":
+        conditions.append("source = %s")
+        params.append(normalized_source)
+
+    if normalized_tag == "__favorite__":
+        conditions.append("favorite")
+    elif normalized_tag == "__printed__":
+        conditions.append("printed")
+    elif normalized_tag not in {"", "__local_deleted__", "__source_deleted__"}:
+        conditions.append(
+            "EXISTS (SELECT 1 FROM unnest(tags) AS tag_value WHERE lower(tag_value) = %s)"
+        )
+        params.append(normalized_tag)
+
+    return " AND ".join(conditions), tuple(params), normalized_source
+
+
+def query_archive_model_index(
+    q: str = "",
+    source: str = "all",
+    tag: str = "",
+    sort_key: str = "collectDate",
+    page: int = 1,
+    page_size: int = 8,
+    limit: int = 0,
+) -> Optional[dict[str, Any]]:
+    if not archive_model_index_configured() or _database_temporarily_unavailable():
+        return None
+    try:
+        if not ensure_archive_model_index_schema():
+            return None
+        if not archive_model_index_is_bootstrapped(archive_root=ARCHIVE_DIR):
+            return None
+
+        safe_page = max(1, int(page or 1))
+        safe_page_size = max(1, min(int(page_size or 8), 120))
+        safe_limit = max(0, min(int(limit or 0), 2000))
+        if safe_limit > 0:
+            row_limit = safe_limit
+            offset = 0
+        else:
+            row_limit = safe_page_size
+            offset = (safe_page - 1) * safe_page_size
+
+        where_clause, filter_params, normalized_source = _archive_model_query_filters(q, source, tag)
+        sort_columns = {
+            "publishDate": "publish_ts",
+            "downloads": "downloads",
+            "likes": "likes",
+            "prints": "prints",
+        }
+        sort_column = sort_columns.get(str(sort_key or ""), "collect_ts")
+        query_cte = _archive_model_query_cte()
+
+        with database_connection() as connection:
+            rows = connection.execute(
+                f"""
+                {query_cte},
+                filtered_models AS (
+                    SELECT * FROM indexed_models WHERE {where_clause}
+                ),
+                filtered_summary AS (
+                    SELECT
+                        count(*) AS filtered_total,
+                        COALESCE(
+                            (
+                                SELECT CASE
+                                    WHEN COALESCE(value ->> 'revision', '') ~ '^[0-9]+$'
+                                        THEN (value ->> 'revision')::bigint
+                                    ELSE 0
+                                END
+                                FROM makerhub_metadata
+                                WHERE key = '{ARCHIVE_MODEL_INDEX_REVISION_KEY}'
+                            ),
+                            0
+                        ) AS revision
+                    FROM filtered_models
+                ),
+                page_models AS (
+                    SELECT model_json, favorite, printed, deleted, {sort_column} AS sort_value, model_dir
+                    FROM filtered_models
+                    ORDER BY {sort_column} DESC, model_dir ASC
+                    LIMIT %s OFFSET %s
+                )
+                SELECT
+                    page_models.model_json,
+                    page_models.favorite,
+                    page_models.printed,
+                    page_models.deleted,
+                    filtered_summary.filtered_total,
+                    filtered_summary.revision
+                FROM filtered_summary
+                LEFT JOIN page_models ON TRUE
+                ORDER BY page_models.sort_value DESC NULLS LAST, page_models.model_dir ASC
+                """,
+                (*filter_params, row_limit, offset),
+            ).fetchall()
+    except Exception as exc:
+        if not isinstance(exc, DatabaseUnavailable):
+            _warn_once(
+                "archive_model_index_query_failed",
+                "归档模型数据库索引查询失败，将回退到 Python 模型筛选。",
+                error=str(exc),
+            )
+        return None
+
+    count_row = rows[0] if rows and isinstance(rows[0], dict) else {}
+    items: list[dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict) or not isinstance(row.get("model_json"), dict):
+            continue
+        item = dict(row["model_json"])
+        item["local_flags"] = {
+            "favorite": bool(row.get("favorite")),
+            "printed": bool(row.get("printed")),
+            "deleted": bool(row.get("deleted")),
+        }
+        items.append(item)
+
+    filtered_total = _index_stat_value(count_row.get("filtered_total")) if isinstance(count_row, dict) else 0
+    revision = _index_stat_value(count_row.get("revision")) if isinstance(count_row, dict) else 0
+    return {
+        "items": items,
+        "count": len(items),
+        "filtered_total": filtered_total,
+        "page": safe_page,
+        "page_size": safe_page_size,
+        "has_more": offset + row_limit < filtered_total,
+        "revision": revision,
+        "source": normalized_source,
+    }
+
+
+def _copy_archive_model_facets(value: dict[str, Any]) -> dict[str, Any]:
+    source_counts = value.get("source_counts") if isinstance(value.get("source_counts"), dict) else {}
+    return {
+        "available": bool(value.get("available", True)),
+        "total": _index_stat_value(value.get("total")),
+        "tags": [str(item) for item in value.get("tags") or []],
+        "source_counts": {
+            "all": _index_stat_value(source_counts.get("all")),
+            "cn": _index_stat_value(source_counts.get("cn")),
+            "global": _index_stat_value(source_counts.get("global")),
+            "local": _index_stat_value(source_counts.get("local")),
+        },
+    }
+
+
+def load_archive_model_facets(revision: Any, flags_signature: Any) -> dict[str, Any]:
+    cache_key = (str(revision), repr(flags_signature))
+    with _ARCHIVE_MODEL_FACETS_LOCK:
+        if _ARCHIVE_MODEL_FACETS_CACHE.get("key") == cache_key:
+            cached = _ARCHIVE_MODEL_FACETS_CACHE.get("value")
+            if isinstance(cached, dict):
+                return _copy_archive_model_facets(cached)
+
+    unavailable = {
+        "available": False,
+        "total": 0,
+        "tags": [],
+        "source_counts": {"all": 0, "cn": 0, "global": 0, "local": 0},
+    }
+    try:
+        if not ensure_archive_model_index_schema():
+            return unavailable
+        with database_connection() as connection:
+            row = connection.execute(
+                """
+                WITH model_flags AS (
+                    SELECT COALESCE(
+                        (SELECT value FROM makerhub_json_state WHERE key = 'model_flags'),
+                        '{}'::jsonb
+                    ) AS value
+                ),
+                deleted_models AS (
+                    SELECT flag_model_dir AS model_dir
+                    FROM model_flags
+                    CROSS JOIN LATERAL jsonb_array_elements_text(
+                        CASE
+                            WHEN jsonb_typeof(model_flags.value -> 'deleted') = 'array'
+                                THEN model_flags.value -> 'deleted'
+                            ELSE '[]'::jsonb
+                        END
+                    ) AS flag_model_dir
+                ),
+                visible_models AS (
+                    SELECT model_index.source, model_index.tags
+                    FROM archive_model_index AS model_index
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM deleted_models
+                        WHERE deleted_models.model_dir = model_index.model_dir
+                    )
+                )
+                SELECT
+                    count(*) AS total,
+                    count(*) FILTER (WHERE source = 'cn') AS cn_count,
+                    count(*) FILTER (WHERE source = 'global') AS global_count,
+                    count(*) FILTER (WHERE source = 'local') AS local_count,
+                    COALESCE(
+                        ARRAY(
+                            SELECT DISTINCT lower(trim(tag_value))
+                            FROM visible_models
+                            CROSS JOIN LATERAL unnest(tags) AS tag_value
+                            WHERE trim(tag_value) <> ''
+                            ORDER BY lower(trim(tag_value))
+                        ),
+                        ARRAY[]::text[]
+                    ) AS tags
+                FROM visible_models
+                """
+            ).fetchone()
+    except Exception:
+        return unavailable
+
+    if not isinstance(row, dict):
+        return unavailable
+    facets = {
+        "available": True,
+        "total": _index_stat_value(row.get("total")),
+        "tags": sorted({str(item or "").strip().lower() for item in row.get("tags") or [] if str(item or "").strip()}),
+        "source_counts": {
+            "all": _index_stat_value(row.get("total")),
+            "cn": _index_stat_value(row.get("cn_count")),
+            "global": _index_stat_value(row.get("global_count")),
+            "local": _index_stat_value(row.get("local_count")),
+        },
+    }
+    with _ARCHIVE_MODEL_FACETS_LOCK:
+        _ARCHIVE_MODEL_FACETS_CACHE["key"] = cache_key
+        _ARCHIVE_MODEL_FACETS_CACHE["value"] = _copy_archive_model_facets(facets)
+    return _copy_archive_model_facets(facets)
 
 
 def archive_model_index_row_count() -> int:
