@@ -10,6 +10,7 @@ from datetime import datetime
 from unittest.mock import patch
 
 from app.core.store import JsonStore
+from app.api import remote_refresh_routes
 from app.services import remote_refresh
 from app.services.remote_refresh import RemoteRefreshManager
 import app.services.task_state as task_state_module
@@ -630,7 +631,7 @@ class RemoteRefreshManagerTest(unittest.TestCase):
             remote_refresh._asset_url_signature(changed_meta),
         )
 
-    def test_refresh_one_downloads_page_and_comment_assets(self):
+    def test_refresh_one_fetches_changed_page_and_comment_assets_once(self):
         config = self.store.load()
         config.cookies[0].cookie = "session=ok"
         self.store.save(config)
@@ -697,6 +698,133 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         remote_refresh.invalidate_archive_snapshot = lambda *_args, **_kwargs: None
         remote_refresh.invalidate_model_detail_cache = lambda *_args, **_kwargs: None
         try:
+            with patch.object(
+                remote_refresh,
+                "_finalize_refreshed_meta",
+                wraps=remote_refresh._finalize_refreshed_meta,
+            ) as finalize:
+                result = self.manager._refresh_one(
+                    {
+                        "model_dir": "m1",
+                        "title": "模型 1",
+                        "origin_url": "https://makerworld.com.cn/zh/models/1",
+                        "meta_path": str(meta_path),
+                    },
+                    index=1,
+                    total=1,
+                    config=config,
+                )
+        finally:
+            remote_refresh.run_source_refresh_model_job = original_job
+            remote_refresh.upsert_archive_snapshot_model = original_upsert
+            remote_refresh.invalidate_archive_snapshot = original_invalidate_snapshot
+            remote_refresh.invalidate_model_detail_cache = original_invalidate_detail
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(calls), 1)
+        self.assertIs(calls[0]["download_assets"], True)
+        self.assertIs(calls[0]["download_comment_assets"], True)
+        self.assertEqual(calls[0]["existing_model_dir"], "m1")
+        finalize.assert_called_once()
+        self.assertEqual(result["metrics"]["download_tasks"], 2)
+        self.assertEqual(result["record"]["status"], "success")
+        self.assertEqual(result["record"]["id"], "m1")
+
+    def test_refresh_one_repairs_missing_asset_with_one_job_and_one_finalize(self):
+        config = self.store.load()
+        config.cookies[0].cookie = "session=ok"
+        self.store.save(config)
+        model_root = self.temp_path / "m1"
+        images_dir = model_root / "images"
+        images_dir.mkdir(parents=True)
+        meta_path = model_root / "meta.json"
+        existing_meta = {
+            "id": "1",
+            "title": "模型 1",
+            "url": "https://makerworld.com.cn/zh/models/1",
+            "designImages": [{
+                "index": 1,
+                "originalUrl": "https://cdn.example.com/design.jpg",
+                "relPath": "images/design_01.jpg",
+                "fileName": "design_01.jpg",
+            }],
+            "comments": [],
+            "instances": [],
+            "attachments": [],
+        }
+        meta_path.write_text(json.dumps(existing_meta, ensure_ascii=False), encoding="utf-8")
+        calls = []
+
+        def fake_job(**kwargs):
+            calls.append(dict(kwargs))
+            if kwargs["download_assets"]:
+                (images_dir / "design_01.jpg").write_bytes(b"downloaded")
+            meta_path.write_text(json.dumps(existing_meta, ensure_ascii=False), encoding="utf-8")
+            return {"stats": {"comments": {}}, "missing_3mf": []}
+
+        item = {
+            "model_dir": "m1",
+            "title": "模型 1",
+            "origin_url": "https://makerworld.com.cn/zh/models/1",
+            "meta_path": str(meta_path),
+        }
+        with patch.object(remote_refresh, "run_source_refresh_model_job", side_effect=fake_job), \
+                patch.object(remote_refresh, "upsert_archive_snapshot_model", return_value=True), \
+                patch.object(remote_refresh, "invalidate_model_detail_cache"), \
+                patch.object(
+                    remote_refresh,
+                    "_finalize_refreshed_meta",
+                    wraps=remote_refresh._finalize_refreshed_meta,
+                ) as finalize:
+            result = self.manager._refresh_one(item, index=1, total=1, config=config)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0]["download_assets"])
+        self.assertTrue((images_dir / "design_01.jpg").is_file())
+        finalize.assert_called_once()
+        self.assertIn("缺失资源补齐", result["record"]["meta"]["change_labels"])
+
+    def test_refresh_one_checks_unchanged_assets_once_without_requesting_a_second_download(self):
+        config = self.store.load()
+        config.cookies[0].cookie = "session=ok"
+        self.store.save(config)
+        model_root = self.temp_path / "m1"
+        images_dir = model_root / "images"
+        images_dir.mkdir(parents=True)
+        existing_file = images_dir / "design_01.jpg"
+        existing_file.write_bytes(b"existing")
+        meta_path = model_root / "meta.json"
+        existing_meta = {
+            "id": "1",
+            "title": "模型 1",
+            "url": "https://makerworld.com.cn/zh/models/1",
+            "designImages": [{
+                "index": 1,
+                "originalUrl": "https://cdn.example.com/design.jpg",
+                "relPath": "images/design_01.jpg",
+                "fileName": "design_01.jpg",
+            }],
+            "comments": [],
+            "instances": [],
+            "attachments": [],
+        }
+        meta_path.write_text(json.dumps(existing_meta, ensure_ascii=False), encoding="utf-8")
+        calls = []
+
+        def fake_job(**kwargs):
+            calls.append(dict(kwargs))
+            meta_path.write_text(json.dumps(existing_meta, ensure_ascii=False), encoding="utf-8")
+            return {"stats": {"comments": {"download_tasks": 0}}, "missing_3mf": []}
+
+        with patch.object(remote_refresh, "run_source_refresh_model_job", side_effect=fake_job), \
+                patch.object(remote_refresh, "upsert_archive_snapshot_model", return_value=True), \
+                patch.object(remote_refresh, "invalidate_model_detail_cache"), \
+                patch.object(
+                    remote_refresh,
+                    "_finalize_refreshed_meta",
+                    wraps=remote_refresh._finalize_refreshed_meta,
+                ) as finalize:
             result = self.manager._refresh_one(
                 {
                     "model_dir": "m1",
@@ -708,21 +836,84 @@ class RemoteRefreshManagerTest(unittest.TestCase):
                 total=1,
                 config=config,
             )
-        finally:
-            remote_refresh.run_source_refresh_model_job = original_job
-            remote_refresh.upsert_archive_snapshot_model = original_upsert
-            remote_refresh.invalidate_archive_snapshot = original_invalidate_snapshot
-            remote_refresh.invalidate_model_detail_cache = original_invalidate_detail
 
         self.assertTrue(result["ok"])
-        self.assertEqual(len(calls), 2)
-        self.assertIs(calls[0]["download_assets"], False)
-        self.assertIs(calls[0]["download_comment_assets"], False)
-        self.assertIs(calls[1]["download_assets"], True)
-        self.assertIs(calls[1]["download_comment_assets"], True)
-        self.assertEqual(result["metrics"]["download_tasks"], 2)
-        self.assertEqual(result["record"]["status"], "success")
-        self.assertEqual(result["record"]["id"], "m1")
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0]["download_assets"])
+        self.assertEqual(existing_file.read_bytes(), b"existing")
+        self.assertEqual(result["metrics"]["download_tasks"], 0)
+        self.assertEqual(result["record"]["meta"]["change_labels"], ["已检查，无远端变化"])
+        finalize.assert_called_once()
+
+    def test_refresh_one_restores_existing_metadata_when_single_job_fails(self):
+        config = self.store.load()
+        config.cookies[0].cookie = "session=ok"
+        self.store.save(config)
+        model_root = self.temp_path / "m1"
+        model_root.mkdir()
+        meta_path = model_root / "meta.json"
+        existing_meta = {
+            "id": "1",
+            "title": "原始标题",
+            "comments": [{"id": "c1", "content": "保留评论"}],
+            "instances": [],
+            "attachments": [],
+        }
+        meta_path.write_text(json.dumps(existing_meta, ensure_ascii=False), encoding="utf-8")
+        calls = []
+
+        def failing_job(**kwargs):
+            calls.append(dict(kwargs))
+            meta_path.write_text(json.dumps({"id": "1", "title": "半成品"}, ensure_ascii=False), encoding="utf-8")
+            raise RuntimeError("fetch failed")
+
+        with patch.object(remote_refresh, "run_source_refresh_model_job", side_effect=failing_job), \
+                patch.object(remote_refresh, "run_source_deleted_check_job", return_value=False), \
+                patch.object(remote_refresh, "upsert_archive_snapshot_model", return_value=True), \
+                patch.object(remote_refresh, "invalidate_model_detail_cache"):
+            result = self.manager._refresh_one(
+                {
+                    "model_dir": "m1",
+                    "title": "模型 1",
+                    "origin_url": "https://makerworld.com.cn/zh/models/1",
+                    "meta_path": str(meta_path),
+                },
+                index=1,
+                total=1,
+                config=config,
+            )
+
+        saved = json.loads(meta_path.read_text(encoding="utf-8"))
+        self.assertFalse(result["ok"])
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0]["download_assets"])
+        self.assertEqual(saved["title"], "原始标题")
+        self.assertEqual(saved["comments"], existing_meta["comments"])
+        self.assertEqual(saved["remoteSync"]["lastStatus"], "error")
+
+    def test_source_refresh_payload_excludes_full_queue_and_run_projections(self):
+        config = self.store.load()
+        state = {"status": "idle", "recent_items": [{"id": "recent-1"}]}
+        runtime = {"active_runs": [], "recent_runs": []}
+        with patch.object(remote_refresh_routes.store, "load", return_value=config), \
+                patch.object(remote_refresh_routes.remote_refresh_manager, "state_payload", return_value=state), \
+                patch.object(remote_refresh_routes, "_runtime_snapshot", return_value=runtime), \
+                patch.object(
+                    remote_refresh_routes.task_state_store,
+                    "load_source_refresh_queue",
+                    side_effect=AssertionError("compact payload must not load the full queue"),
+                ), \
+                patch.object(
+                    remote_refresh_routes.task_state_store,
+                    "load_source_refresh_runs",
+                    side_effect=AssertionError("compact payload must not load full runs"),
+                ):
+            payload = remote_refresh_routes._source_refresh_payload()
+
+        self.assertEqual(set(payload), {"config", "state", "runtime"})
+        self.assertEqual(payload["state"], state)
+        self.assertEqual(payload["runtime"], {"source_refresh": runtime})
+        self.assertNotIn("source_refresh", payload)
 
     def test_refresh_one_returns_record_without_model_level_logs_or_history(self):
         config = self.store.load()

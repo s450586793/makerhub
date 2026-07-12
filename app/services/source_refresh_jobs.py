@@ -17,6 +17,7 @@ def run_source_refresh_model_job(
     three_mf_skip_state: str = "pending_download",
     download_assets: bool = False,
     download_comment_assets: bool = False,
+    existing_model_dir: str = "",
     proxy_config: Any = None,
 ) -> dict[str, Any]:
     return run_archive_model_job(
@@ -33,6 +34,6 @@ def run_source_refresh_model_job(
         download_comment_assets=bool(download_comment_assets),
         rebuild_archive=False,
         record_missing_3mf_log=False,
+        existing_model_dir=existing_model_dir,
         proxy_config=proxy_config,
     )
-

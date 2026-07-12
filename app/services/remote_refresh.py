@@ -2405,6 +2405,7 @@ class RemoteRefreshManager:
                 return next_guard
 
             archive_started_perf = time.perf_counter()
+            missing_assets_before_refresh = _has_missing_asset_refs(meta_path.parent, existing_meta)
             archive_result = run_source_refresh_model_job(
                 url=origin_url,
                 cookie=cookie,
@@ -2414,8 +2415,9 @@ class RemoteRefreshManager:
                 progress_callback=progress_callback,
                 three_mf_skip_message=skip_three_mf_message,
                 three_mf_skip_state="download_limited" if daily_limit_active else "pending_download",
-                download_assets=False,
-                download_comment_assets=False,
+                download_assets=True,
+                download_comment_assets=True,
+                existing_model_dir=model_dir,
                 proxy_config=config.proxy,
             )
             archive_duration_ms = round((time.perf_counter() - archive_started_perf) * 1000, 1)
@@ -2427,31 +2429,7 @@ class RemoteRefreshManager:
                 finalized = _finalize_refreshed_meta(meta_path, existing_meta)
             finalize_duration_ms += round((time.perf_counter() - finalize_started_perf) * 1000, 1)
 
-            asset_sync_performed = bool(finalized.get("asset_sync_needed"))
-            if asset_sync_performed:
-                progress_state["progress"] = 78
-                progress_state["message"] = "检测到远端资源变化，正在同步图片、头像和附件资源"
-                asset_archive_started_perf = time.perf_counter()
-                archive_result = run_source_refresh_model_job(
-                    url=origin_url,
-                    cookie=cookie,
-                    download_dir=str(ARCHIVE_DIR),
-                    logs_dir=str(LOGS_DIR),
-                    existing_root=str(ARCHIVE_DIR),
-                    progress_callback=progress_callback,
-                    three_mf_skip_message=skip_three_mf_message,
-                    three_mf_skip_state="download_limited" if daily_limit_active else "pending_download",
-                    download_assets=True,
-                    download_comment_assets=True,
-                    proxy_config=config.proxy,
-                )
-                archive_duration_ms += round((time.perf_counter() - asset_archive_started_perf) * 1000, 1)
-                limit_guard_state = update_limit_guard_from_result(archive_result, limit_guard_state)
-                finalize_started_perf = time.perf_counter()
-                with resource_slot("disk_io", detail=model_dir) as waited_ms:
-                    disk_wait_ms += round(float(waited_ms or 0), 1)
-                    finalized = _finalize_refreshed_meta(meta_path, existing_meta)
-                finalize_duration_ms += round((time.perf_counter() - finalize_started_perf) * 1000, 1)
+            asset_sync_performed = bool(finalized.get("assets_changed") or missing_assets_before_refresh)
 
             finalize_started_perf = time.perf_counter()
             with resource_slot("disk_io", detail=model_dir) as waited_ms:
@@ -2557,6 +2535,8 @@ class RemoteRefreshManager:
             if deleted_on_source and meta_path.exists():
                 message = "源端模型已删除，本地保留现有归档。"
                 with resource_slot("disk_io", detail=model_dir):
+                    if existing_meta:
+                        _write_json(meta_path, existing_meta)
                     _update_meta_refresh_error(meta_path, message, source_deleted=True)
                     upsert_archive_snapshot_model(
                         model_dir,
@@ -2589,6 +2569,8 @@ class RemoteRefreshManager:
             message = _sanitize_remote_refresh_message(exc, exc.__class__.__name__)
             if meta_path.exists():
                 with resource_slot("disk_io", detail=model_dir):
+                    if existing_meta:
+                        _write_json(meta_path, existing_meta)
                     _update_meta_refresh_error(meta_path, message, source_deleted=False)
                     upsert_archive_snapshot_model(
                         model_dir,

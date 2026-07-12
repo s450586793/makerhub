@@ -454,16 +454,18 @@ class SourceRefreshTaskManagerTest(unittest.TestCase):
                 progress_callback=lambda _payload: None,
                 three_mf_skip_message="源端刷新仅检测新增 3MF",
                 three_mf_skip_state="pending_download",
-                download_assets=False,
-                download_comment_assets=False,
+                download_assets=True,
+                download_comment_assets=True,
+                existing_model_dir="MW_1_Test",
                 proxy_config={},
             )
 
         self.assertEqual(result["ok"], True)
         self.assertEqual(len(calls), 1)
         self.assertTrue(calls[0]["skip_three_mf_fetch"])
-        self.assertFalse(calls[0]["download_assets"])
-        self.assertFalse(calls[0]["download_comment_assets"])
+        self.assertTrue(calls[0]["download_assets"])
+        self.assertTrue(calls[0]["download_comment_assets"])
+        self.assertEqual(calls[0]["existing_model_dir"], "MW_1_Test")
         self.assertFalse(calls[0]["rebuild_archive"])
         self.assertFalse(calls[0]["record_missing_3mf_log"])
 

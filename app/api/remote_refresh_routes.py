@@ -47,10 +47,6 @@ def _source_refresh_payload() -> dict:
     return {
         "config": config.remote_refresh.model_dump(),
         "state": remote_refresh_manager.state_payload(),
-        "source_refresh": {
-            "queue": task_state_store.load_source_refresh_queue(),
-            "runs": task_state_store.load_source_refresh_runs(),
-        },
         "runtime": {"source_refresh": runtime_source_refresh} if runtime_source_refresh else {},
     }
 
