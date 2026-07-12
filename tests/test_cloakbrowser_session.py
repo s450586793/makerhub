@@ -8,11 +8,77 @@ from app.services import cloakbrowser_session
 
 
 class CloakBrowserSessionTest(unittest.TestCase):
-    def test_cloakbrowser_configured_requires_internal_url(self):
+    def test_cloakbrowser_configured_requires_internal_url_and_auth_token(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertFalse(cloakbrowser_session.cloakbrowser_configured())
         with patch.dict(os.environ, {"MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080"}, clear=True):
+            self.assertFalse(cloakbrowser_session.cloakbrowser_configured())
+        with patch.dict(os.environ, {"MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token"}, clear=True):
+            self.assertFalse(cloakbrowser_session.cloakbrowser_configured())
+        with patch.dict(
+            os.environ,
+            {
+                "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+            },
+            clear=True,
+        ):
             self.assertTrue(cloakbrowser_session.cloakbrowser_configured())
+
+    def test_request_rejects_missing_auth_token_before_network_io(self):
+        with patch.dict(
+            os.environ,
+            {"MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080"},
+            clear=True,
+        ), patch.object(cloakbrowser_session.requests, "request") as request_mock:
+            with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserUnavailable, "AUTH_TOKEN"):
+                cloakbrowser_session._request("GET", "/api/profiles")
+
+        request_mock.assert_not_called()
+
+    def test_request_sends_bearer_auth(self):
+        response = Mock(status_code=200, content=b"{}")
+        response.json.return_value = {}
+        with patch.dict(
+            os.environ,
+            {
+                "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+            },
+            clear=True,
+        ), patch.object(cloakbrowser_session.requests, "request", return_value=response) as request_mock:
+            cloakbrowser_session._request("GET", "/api/profiles")
+
+        self.assertEqual(
+            request_mock.call_args.kwargs["headers"],
+            {"Authorization": "Bearer secret-token"},
+        )
+
+    def test_bridge_payload_requires_auth_token_before_subprocess_io(self):
+        with patch.dict(
+            os.environ,
+            {"MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080"},
+            clear=True,
+        ), patch.object(cloakbrowser_session.subprocess, "run") as run_mock:
+            with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserUnavailable, "AUTH_TOKEN"):
+                cloakbrowser_session._bridge_payload("profile-cn", action="snapshot")
+
+        run_mock.assert_not_called()
+
+    def test_run_bridge_rejects_missing_auth_token_before_subprocess_io(self):
+        with patch.object(cloakbrowser_session.subprocess, "run") as run_mock:
+            with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserUnavailable, "AUTH_TOKEN"):
+                cloakbrowser_session._run_bridge({"action": "snapshot"})
+
+        run_mock.assert_not_called()
+
+    def test_bridge_uses_bearer_auth_for_discovery_and_websocket(self):
+        source = cloakbrowser_session.BRIDGE_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('if (!token) throw new Error("auth_token is required")', source)
+        self.assertIn("return { Authorization: `Bearer ${token}` }", source)
+        self.assertRegex(source, r"fetch\([^;]+\{ headers \}\)")
+        self.assertRegex(source, r"puppeteer\.connect\(\{[\s\S]+?headers,")
 
     def test_ensure_profile_reuses_saved_profile_id(self):
         with patch.object(
@@ -148,7 +214,14 @@ class CloakBrowserSessionTest(unittest.TestCase):
                 patch.object(cloakbrowser_session, "makerworld_ticket_url", return_value="https://makerworld.com.cn/ticket"), \
                 patch.object(cloakbrowser_session, "_run_bridge", return_value=snapshot) as bridge_mock, \
                 patch.object(cloakbrowser_session, "stop_profile") as stop_mock, \
-                patch.dict(os.environ, {"MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080"}, clear=False):
+                patch.dict(
+                    os.environ,
+                    {
+                        "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                        "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+                    },
+                    clear=False,
+                ):
             result = cloakbrowser_session.synchronize_browser_session(
                 "cn",
                 "token=api-token",
@@ -177,7 +250,14 @@ class CloakBrowserSessionTest(unittest.TestCase):
                     },
                 ), \
                 patch.object(cloakbrowser_session, "stop_profile") as stop_mock, \
-                patch.dict(os.environ, {"MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080"}, clear=False):
+                patch.dict(
+                    os.environ,
+                    {
+                        "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                        "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+                    },
+                    clear=False,
+                ):
             with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserError, "ticket"):
                 cloakbrowser_session.synchronize_browser_session("cn", "token=api-token")
 
@@ -191,7 +271,14 @@ class CloakBrowserSessionTest(unittest.TestCase):
                 patch.object(cloakbrowser_session, "makerworld_ticket_url", return_value=""), \
                 patch.object(cloakbrowser_session, "_run_bridge", return_value={"ok": True, "cookies": [], "storage": []}), \
                 patch.object(cloakbrowser_session, "stop_profile") as stop_mock, \
-                patch.dict(os.environ, {"MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080"}, clear=False):
+                patch.dict(
+                    os.environ,
+                    {
+                        "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                        "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+                    },
+                    clear=False,
+                ):
             result = cloakbrowser_session.prepare_browser_login("cn")
 
         self.assertEqual(result.profile_id, "profile-cn")

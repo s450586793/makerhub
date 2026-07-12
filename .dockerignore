@@ -1,0 +1,53 @@
+# Secrets and local configuration
+.env
+.env.*
+*.key
+*.pem
+
+# Runtime state and user data
+config
+data
+logs
+state
+archive
+local
+*.db
+*.sqlite*
+
+# Version-control metadata
+.git
+.github
+.gitignore
+.gitmodules
+
+# Python environments and caches
+.venv
+venv
+env
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+*.py[cod]
+.coverage
+htmlcov
+
+# Installed dependencies and build output
+**/node_modules
+frontend/dist
+dist
+build
+coverage
+
+# Workflow scratch and worktrees
+.workflow
+.superpowers
+.worktrees
+worktrees
+
+# Development-only content
+docs
+tests
+README.md
+AGENTS.md
+videos/**/output

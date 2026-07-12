@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -58,6 +59,38 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("正在同步", saved.browser_message)
             self.assertEqual(payload["cookies"][0]["browser_status"], "syncing")
             self.assertEqual(seed_mock.call_args.kwargs["cookie_items"][0]["name"], "device")
+
+    async def test_login_marks_browser_unavailable_without_auth_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            login_result = {
+                "platform": "cn",
+                "username": "13800138000",
+                "cookie": "token=new",
+                "status": "checking",
+                "message": "账号已保存。",
+                "cookie_items": [],
+            }
+
+            with patch.dict(
+                os.environ,
+                {"MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080"},
+                clear=True,
+            ), patch.object(config_api, "store", store), \
+                    patch.object(config_api, "_run_online_account_login", return_value=login_result), \
+                    patch.object(config_api, "_schedule_cloakbrowser_seed"), \
+                    patch.object(config_api, "_schedule_online_account_cookie_test"), \
+                    patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms", return_value={}), \
+                    patch.object(config_api.subscription_manager, "request_cookie_source_sync", return_value={}), \
+                    patch.object(config_api, "_get_github_version_status", return_value={}), \
+                    patch.object(config_api, "_public_config_payload", side_effect=_public_payload), \
+                    patch.object(config_api, "append_business_log"):
+                payload = await config_api.login_config_online_account(
+                    OnlineAccountLoginRequest(platform="cn", username="13800138000", verification_code="123456"),
+                    _request(),
+                )
+
+            self.assertEqual(payload["cookies"][0]["browser_status"], "not_configured")
 
     async def test_store_browser_session_updates_cookie_and_queues_follow_up(self):
         with tempfile.TemporaryDirectory() as tmp:

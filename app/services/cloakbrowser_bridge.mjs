@@ -18,7 +18,8 @@ async function readInput() {
 }
 
 function authHeaders(token) {
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  if (!token) throw new Error("auth_token is required");
+  return { Authorization: `Bearer ${token}` };
 }
 
 async function resolveWebSocketEndpoint(cdpUrl, headers) {

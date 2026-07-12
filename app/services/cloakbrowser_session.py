@@ -88,7 +88,9 @@ def _hostname_matches_domains(hostname: str, domains: tuple[str, ...]) -> bool:
 
 
 def cloakbrowser_configured() -> bool:
-    return bool(str(os.getenv("MAKERHUB_CLOAKBROWSER_URL") or "").strip())
+    url = str(os.getenv("MAKERHUB_CLOAKBROWSER_URL") or "").strip()
+    token = str(os.getenv("MAKERHUB_CLOAKBROWSER_AUTH_TOKEN") or "").strip()
+    return bool(url and token)
 
 
 def cloakbrowser_public_url() -> str:
@@ -115,12 +117,14 @@ def _timeout_seconds() -> int:
 
 
 def _auth_token() -> str:
-    return str(os.getenv("MAKERHUB_CLOAKBROWSER_AUTH_TOKEN") or "").strip()
+    token = str(os.getenv("MAKERHUB_CLOAKBROWSER_AUTH_TOKEN") or "").strip()
+    if not token:
+        raise CloakBrowserUnavailable("MAKERHUB_CLOAKBROWSER_AUTH_TOKEN 未配置。")
+    return token
 
 
 def _request_headers() -> dict[str, str]:
-    token = _auth_token()
-    return {"Authorization": f"Bearer {token}"} if token else {}
+    return {"Authorization": f"Bearer {_auth_token()}"}
 
 
 def _request(method: str, path: str, *, json_payload: dict[str, Any] | None = None) -> Any:
@@ -264,6 +268,8 @@ def _safe_bridge_env() -> dict[str, str]:
 
 
 def _run_bridge(payload: dict[str, Any], *, timeout_seconds: int | None = None) -> dict[str, Any]:
+    if not str(payload.get("auth_token") or "").strip():
+        raise CloakBrowserUnavailable("MAKERHUB_CLOAKBROWSER_AUTH_TOKEN 未配置。")
     if not BRIDGE_SCRIPT.is_file():
         raise CloakBrowserBridgeError("指纹浏览器 CDP bridge 脚本不存在。")
     try:

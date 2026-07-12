@@ -1,0 +1,214 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+import yaml
+
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+WORKFLOW_PATH = ROOT_DIR / ".github" / "workflows" / "docker.yml"
+VERSION_SCRIPT = ROOT_DIR / "scripts" / "check_release_version.py"
+
+
+def _load_workflow() -> dict:
+    payload = yaml.load(WORKFLOW_PATH.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    if not isinstance(payload, dict):
+        raise AssertionError("docker workflow must be a mapping")
+    return payload
+
+
+def _step(job: dict, name: str) -> dict:
+    for item in job.get("steps", []):
+        if item.get("name") == name:
+            return item
+    raise AssertionError(f"workflow step not found: {name}")
+
+
+class ReleaseWorkflowContractTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.workflow = _load_workflow()
+        cls.jobs = cls.workflow["jobs"]
+
+    def test_pull_requests_main_and_version_tags_run_verification(self):
+        triggers = self.workflow["on"]
+
+        self.assertIn("pull_request", triggers)
+        self.assertIn("main", triggers["push"]["branches"])
+        self.assertIn("v*", triggers["push"]["tags"])
+        self.assertIn("verify", self.jobs)
+        self.assertNotIn("if", self.jobs["verify"])
+
+    def test_verify_job_runs_all_quality_gates_in_order(self):
+        verify = self.jobs["verify"]
+        step_names = [item.get("name") for item in verify["steps"]]
+        expected_order = [
+            "Checkout",
+            "Set up Python",
+            "Install backend dependencies",
+            "Run backend tests",
+            "Set up Node.js",
+            "Install frontend dependencies",
+            "Run frontend tests",
+            "Build frontend",
+            "Validate Compose files",
+            "Check release version",
+            "Set up Docker Buildx",
+            "Build image",
+        ]
+
+        self.assertEqual(step_names, expected_order)
+        self.assertIn("python -m pytest", _step(verify, "Run backend tests")["run"])
+        self.assertEqual(_step(verify, "Install frontend dependencies")["run"], "npm ci")
+        self.assertEqual(_step(verify, "Run frontend tests")["run"], "npm test")
+        self.assertEqual(_step(verify, "Build frontend")["run"], "npm run build")
+        compose_run = _step(verify, "Validate Compose files")["run"]
+        self.assertIn("compose.yaml", compose_run)
+        self.assertIn("compose.external-flaresolverr.yaml", compose_run)
+        self.assertIn("scripts/check_release_version.py", _step(verify, "Check release version")["run"])
+        self.assertEqual(_step(verify, "Build image")["with"]["push"], "false")
+
+    def test_release_only_runs_for_version_tags_after_verification(self):
+        release = self.jobs["release"]
+
+        self.assertEqual(release["needs"], "verify")
+        self.assertIn("refs/tags/v", release["if"])
+        self.assertEqual(_step(release, "Build and push image")["with"]["push"], "true")
+        self.assertEqual(release["permissions"]["packages"], "write")
+
+    def test_release_publishes_only_prefixed_version_sha_and_latest_tags(self):
+        release = self.jobs["release"]
+        metadata_tags = _step(release, "Extract image metadata")["with"]["tags"]
+
+        self.assertIn("type=raw,value=${{ github.ref_name }}", metadata_tags)
+        self.assertIn("type=sha", metadata_tags)
+        self.assertIn("type=raw,value=latest", metadata_tags)
+        self.assertNotIn("pattern={{version}}", metadata_tags)
+        self.assertNotRegex(metadata_tags, r"value=\$\{\{\s*steps\.[^.]+\.outputs\.version\s*\}\}")
+
+
+class FrontendTestContractTest(unittest.TestCase):
+    def test_npm_test_runs_all_node_test_modules(self):
+        package = json.loads((ROOT_DIR / "frontend" / "package.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(package["scripts"]["test"], "node --test src/lib/*.test.mjs")
+
+
+class DockerIgnoreContractTest(unittest.TestCase):
+    def test_dockerignore_excludes_non_build_content(self):
+        path = ROOT_DIR / ".dockerignore"
+        self.assertTrue(path.is_file())
+        patterns = {
+            line.strip().rstrip("/")
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+
+        expected = {
+            ".env",
+            ".env.*",
+            ".git",
+            ".venv",
+            "venv",
+            "**/node_modules",
+            "frontend/dist",
+            ".workflow",
+            ".superpowers",
+            ".worktrees",
+            "worktrees",
+            "config",
+            "data",
+            "logs",
+            "state",
+            "archive",
+            "local",
+            "docs",
+            "tests",
+            "videos/**/output",
+        }
+        self.assertTrue(expected.issubset(patterns), expected - patterns)
+
+    def test_dockerignore_retains_docker_build_inputs(self):
+        patterns = {
+            line.strip().rstrip("/")
+            for line in (ROOT_DIR / ".dockerignore").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+
+        required_inputs = {
+            "Dockerfile",
+            "requirements.txt",
+            "VERSION",
+            "app",
+            "docker",
+            "frontend",
+            "frontend/package.json",
+            "frontend/package-lock.json",
+            "frontend/src",
+        }
+        self.assertTrue(required_inputs.isdisjoint(patterns), required_inputs & patterns)
+
+
+class ReleaseVersionContractTest(unittest.TestCase):
+    def _write_version_fixture(self, root: Path, *, version: str, package_version: str | None = None) -> None:
+        frontend = root / "frontend"
+        frontend.mkdir(parents=True)
+        package_version = package_version or version
+        (root / "VERSION").write_text(f"{version}\n", encoding="utf-8")
+        (frontend / "package.json").write_text(
+            json.dumps({"version": package_version}),
+            encoding="utf-8",
+        )
+        (frontend / "package-lock.json").write_text(
+            json.dumps(
+                {
+                    "version": version,
+                    "packages": {"": {"version": version}},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def _run_checker(self, root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, VERSION_SCRIPT.as_posix(), "--root", root.as_posix(), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_repository_versions_and_release_tag_are_consistent(self):
+        version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
+
+        result = self._run_checker(ROOT_DIR, "--tag", f"v{version}")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_version_checker_rejects_file_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_version_fixture(root, version="1.2.3", package_version="1.2.4")
+
+            result = self._run_checker(root)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("frontend/package.json", result.stderr)
+
+    def test_version_checker_rejects_non_matching_release_tag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_version_fixture(root, version="1.2.3")
+
+            result = self._run_checker(root, "--tag", "v1.2.4")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("v1.2.3", result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()

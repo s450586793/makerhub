@@ -60,6 +60,20 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
         self.assertIn("/volume4/docker/docker/makerhub:/app/config", compose_text)
         self.assertIn("/app/data", compose_text)
 
+    def test_compose_requires_cloakbrowser_token_and_binds_manager_locally(self):
+        required_token = (
+            "${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:"
+            "?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}"
+        )
+        local_bind = "${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:9050:8080"
+
+        for filename in ("compose.yaml", "compose.external-flaresolverr.yaml"):
+            with self.subTest(filename=filename):
+                compose_text = (ROOT_DIR / filename).read_text(encoding="utf-8")
+                self.assertGreaterEqual(compose_text.count(required_token), 3)
+                self.assertIn(local_bind, compose_text)
+                self.assertNotIn("${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:-}", compose_text)
+
     def test_web_update_target_uses_current_image_when_web_image_is_not_set(self):
         original_name = self_update.os.environ.get(self_update.WEB_CONTAINER_NAME_ENV)
         original_image = self_update.os.environ.get(self_update.WEB_IMAGE_REF_ENV)

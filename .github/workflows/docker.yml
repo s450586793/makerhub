@@ -1,30 +1,98 @@
 name: Docker
 
 on:
+  pull_request:
   push:
     branches:
       - main
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
-  build:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install backend dependencies
+        run: python -m pip install -r requirements.txt pytest PyYAML
+
+      - name: Run backend tests
+        run: python -m pytest -q
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Validate Compose files
+        env:
+          MAKERHUB_POSTGRES_PASSWORD: ci-postgres-password
+          MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ci-cloakbrowser-token
+          MAKERHUB_FLARESOLVERR_URL: http://flaresolverr.example.test:8191/v1
+        run: |
+          docker compose -f compose.yaml config --quiet
+          docker compose -f compose.external-flaresolverr.yaml config --quiet
+
+      - name: Check release version
+        run: python scripts/check_release_version.py
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Read version
-        id: version
-        run: |
-          VERSION="$(tr -d '[:space:]' < VERSION)"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: makerhub:verify
+
+  release:
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check release tag
+        run: python scripts/check_release_version.py --tag "${GITHUB_REF_NAME}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -33,18 +101,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
+      - name: Extract image metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/makerhub
+          flavor: latest=false
           tags: |
-            type=raw,value=latest
-            type=raw,value=${{ steps.version.outputs.version }}
-            type=raw,value=v${{ steps.version.outputs.version }}
+            type=raw,value=${{ github.ref_name }}
             type=sha
+            type=raw,value=latest
 
-      - name: Build and push
+      - name: Build and push image
         uses: docker/build-push-action@v6
         with:
           context: .
