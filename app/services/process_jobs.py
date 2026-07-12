@@ -14,7 +14,11 @@ from app.services.batch_discovery import discover_batch_model_urls, normalize_so
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.legacy_archiver import archive_model as legacy_archive_model
 from app.services.proxy_policy import temporary_proxy_env
-from app.services.resource_limiter import resource_slot
+from app.services.resource_limiter import (
+    configure_resource_limits,
+    resource_limits_payload,
+    resource_slot,
+)
 
 
 JOB_CONTEXT = get_context("spawn")
@@ -280,6 +284,11 @@ def _run_source_deleted_entry(queue, payload: dict[str, Any]) -> None:
         )
 
 
+def _run_spawned_job_entry(target: Callable[..., None], queue, payload: dict[str, Any]) -> None:
+    configure_resource_limits(payload.get("__resource_limits") or {})
+    target(queue, payload)
+
+
 def _run_process_job(
     target: Callable[..., None],
     payload: dict[str, Any],
@@ -298,7 +307,12 @@ def _run_process_job(
         pass
     process_payload = dict(payload)
     process_payload["__job_result_path"] = str(result_path)
-    process = JOB_CONTEXT.Process(target=target, args=(queue, process_payload), daemon=True)
+    process_payload["__resource_limits"] = resource_limits_payload()
+    process = JOB_CONTEXT.Process(
+        target=_run_spawned_job_entry,
+        args=(target, queue, process_payload),
+        daemon=True,
+    )
     process.start()
     result: Any = None
     error_payload: Optional[dict[str, Any]] = None

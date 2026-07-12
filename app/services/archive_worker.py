@@ -1480,24 +1480,33 @@ class ArchiveTaskManager:
         mode: str = "",
         meta: Optional[dict] = None,
     ) -> tuple[str, dict]:
-        task_id = uuid.uuid4().hex
-        queue = self.task_store.enqueue_archive_task(
-            {
-                "id": task_id,
-                "url": url,
-                "title": url,
-                "mode": mode,
-                "meta": meta or {},
-                "status": "queued",
-                "progress": 0,
-                "message": message,
-                "updated_at": china_now().isoformat(),
-            }
-        )
+        task = self._new_archive_queue_item(url, message=message, mode=mode, meta=meta)
+        task_id = str(task["id"])
+        queue = self.task_store.enqueue_archive_task(task)
         queue = queue if isinstance(queue, dict) else {}
         if queue.get("enqueued") is False and str(queue.get("existing_task_id") or "").strip():
             return str(queue.get("existing_task_id") or "").strip(), queue
         return task_id, queue
+
+    @staticmethod
+    def _new_archive_queue_item(
+        url: str,
+        *,
+        message: str = "等待归档",
+        mode: str = "",
+        meta: Optional[dict] = None,
+    ) -> dict[str, Any]:
+        return {
+            "id": uuid.uuid4().hex,
+            "url": url,
+            "title": url,
+            "mode": mode,
+            "meta": meta or {},
+            "status": "queued",
+            "progress": 0,
+            "message": message,
+            "updated_at": china_now().isoformat(),
+        }
 
     def _enqueue_single_task(self, url: str, message: str = "等待归档", mode: str = "", meta: Optional[dict] = None) -> str:
         task_id, _queue = self._enqueue_single_task_with_queue(url, message=message, mode=mode, meta=meta)
@@ -2861,6 +2870,8 @@ class ArchiveTaskManager:
 
         child_queue_message_prefix = str(meta.get("child_queue_message_prefix") or "").strip() or f"来自批量归档：{url}"
         progress_step = max(total_items // 10, 1) if total_items else 1
+        child_tasks: list[dict[str, Any]] = []
+        child_contexts: list[dict[str, str]] = []
 
         for index, model_url in enumerate(discovered_items, start=1):
             key = _task_key(model_url)
@@ -2869,7 +2880,7 @@ class ArchiveTaskManager:
             elif key in archived_keys:
                 skipped_archived += 1
             else:
-                child_task_id = self._enqueue_single_task(
+                child_task = self._new_archive_queue_item(
                     model_url,
                     message=child_queue_message_prefix,
                     mode="single_model",
@@ -2878,18 +2889,8 @@ class ArchiveTaskManager:
                         "batch_source_url": url,
                     },
                 )
-                expected_items.append(
-                    {
-                        "url": model_url,
-                        "task_key": key,
-                        "model_id": extract_model_id(model_url),
-                        "attempts": 1,
-                        "status": "queued",
-                        "last_task_id": child_task_id,
-                    }
-                )
-                pending_keys.add(key)
-                queued_count += 1
+                child_tasks.append(child_task)
+                child_contexts.append({"url": model_url, "task_key": key})
 
             if total_items and (index == total_items or index % progress_step == 0):
                 progress = 55 + int((index / total_items) * 40)
@@ -2898,6 +2899,27 @@ class ArchiveTaskManager:
                     progress=min(progress, 95),
                     message=f"正在加入归档队列：{index}/{total_items}",
                 )
+
+        bulk_result = self.task_store.enqueue_archive_tasks(child_tasks) if child_tasks else {"items": []}
+        bulk_items = bulk_result.get("items") if isinstance(bulk_result, dict) else []
+        bulk_items = bulk_items if isinstance(bulk_items, list) else []
+        for context, result_item in zip(child_contexts, bulk_items):
+            result_item = result_item if isinstance(result_item, dict) else {}
+            if not result_item.get("enqueued"):
+                skipped_pending += 1
+                continue
+            model_url = context["url"]
+            expected_items.append(
+                {
+                    "url": model_url,
+                    "task_key": context["task_key"],
+                    "model_id": extract_model_id(model_url),
+                    "attempts": 1,
+                    "status": "queued",
+                    "last_task_id": str(result_item.get("task_id") or ""),
+                }
+            )
+        queued_count = len(expected_items)
 
         expected_total = discovered.get("expected_total")
         total_hint = ""

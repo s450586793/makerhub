@@ -2,7 +2,7 @@ import unittest
 import time
 from unittest.mock import patch
 
-from app.services import process_jobs
+from app.services import process_jobs, resource_limiter
 
 
 def _write_result_file_only(_queue, payload):
@@ -24,7 +24,56 @@ def _emit_final_progress_then_result(queue, payload):
     process_jobs._emit_finished(queue, payload, "result", {"ok": True})
 
 
+def _report_spawn_resource_limits(queue, payload):
+    process_jobs._emit_finished(
+        queue,
+        payload,
+        "result",
+        {
+            "payload": payload.get("__resource_limits"),
+            "configured": {
+                "makerworld_page_api": resource_limiter.RESOURCE_LIMITS["makerworld_page_api"],
+                "comment_assets": resource_limiter.RESOURCE_LIMITS["comment_assets"],
+                "three_mf_download": resource_limiter.RESOURCE_LIMITS["three_mf_download"],
+                "disk_io": resource_limiter.RESOURCE_LIMITS["disk_io"],
+            },
+        },
+    )
+
+
 class ProcessJobsTest(unittest.TestCase):
+    def test_run_process_job_passes_and_applies_current_resource_limits(self):
+        original_limits = dict(resource_limiter.RESOURCE_LIMITS)
+        expected_payload = {
+            "makerworld_request_limit": 8,
+            "comment_asset_download_limit": 16,
+            "three_mf_download_limit": 4,
+            "disk_io_limit": 4,
+        }
+        try:
+            resource_limiter.configure_resource_limits(expected_payload)
+            result = process_jobs._run_process_job(_report_spawn_resource_limits, {})
+        finally:
+            resource_limiter.configure_resource_limits(
+                {
+                    "makerworld_request_limit": original_limits["makerworld_page_api"],
+                    "comment_asset_download_limit": original_limits["comment_assets"],
+                    "three_mf_download_limit": original_limits["three_mf_download"],
+                    "disk_io_limit": original_limits["disk_io"],
+                }
+            )
+
+        self.assertEqual(result["payload"], expected_payload)
+        self.assertEqual(
+            result["configured"],
+            {
+                "makerworld_page_api": 8,
+                "comment_assets": 16,
+                "three_mf_download": 4,
+                "disk_io": 4,
+            },
+        )
+
     def test_run_process_job_reads_result_file_when_queue_event_is_missing(self):
         result = process_jobs._run_process_job(_write_result_file_only, {})
 

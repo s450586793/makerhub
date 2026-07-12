@@ -247,16 +247,6 @@ def _archive_task_identity_key(item: Any, *, failure: bool = False) -> str:
     return f"title:{title}" if title else ""
 
 
-def _archive_existing_identity_map(items: list[dict], default_status: str) -> dict[str, dict]:
-    by_key: dict[str, dict] = {}
-    for item in items:
-        normalized = _normalize_archive_runtime_item(item, default_status)
-        key = _archive_task_identity_key(normalized)
-        if key and key not in by_key:
-            by_key[key] = normalized
-    return by_key
-
-
 def _dedupe_archive_items(items: list[dict], default_status: str, *, failure: bool = False) -> tuple[list[dict], int]:
     kept: list[dict] = []
     seen: dict[str, dict] = {}
@@ -1858,49 +1848,85 @@ class TaskStateStore:
             flags["deleted"] = [item for item in flags.get("deleted") or [] if item not in clean_model_dirs]
             return self.save_model_flags(flags)
 
-    def enqueue_archive_task(self, item: dict) -> dict:
-        enqueued = False
-        merged = False
-        existing_task_id = ""
-        duplicate_key = ""
+    def enqueue_archive_tasks(self, items: list[dict]) -> dict:
+        source_items = list(items or []) if isinstance(items, (list, tuple)) else []
+        item_results: list[dict[str, Any]] = []
+        enqueued_count = 0
+        merged_count = 0
+        duplicate_count = 0
 
         def _mutate(payload: dict) -> dict:
-            nonlocal enqueued, merged, existing_task_id, duplicate_key
+            nonlocal enqueued_count, merged_count, duplicate_count
             active = [_normalize_archive_runtime_item(item, "running") for item in (payload.get("active") or [])]
             queued = [_normalize_archive_runtime_item(item, "queued") for item in (payload.get("queued") or [])]
-            target = _normalize_archive_runtime_item(item, "queued")
-            target_key = _archive_task_identity_key(target)
-            duplicate_key = target_key
-            if target_key:
-                existing = _archive_existing_identity_map(active + queued, "queued").get(target_key)
-                if existing is not None:
-                    existing_task_id = str(existing.get("id") or "")
-                    merged = _merge_archive_task_instance_scope(existing, target)
-                    if merged:
-                        existing["updated_at"] = china_now_iso()
-                        existing["message"] = str(existing.get("message") or target.get("message") or "")
-                        for collection in (active, queued):
-                            for index, candidate in enumerate(collection):
-                                if str(candidate.get("id") or "") == existing_task_id:
-                                    collection[index] = existing
-                                    break
-                    payload["active"] = active
-                    payload["queued"] = queued
-                    return payload
+            existing_by_key: dict[str, dict] = {}
+            for existing in active + queued:
+                existing_key = _archive_task_identity_key(existing)
+                if existing_key and existing_key not in existing_by_key:
+                    existing_by_key[existing_key] = existing
 
-            queued.append(target)
-            enqueued = True
+            for source_item in source_items:
+                target = _normalize_archive_runtime_item(source_item, "queued")
+                target_key = _archive_task_identity_key(target)
+                existing = existing_by_key.get(target_key) if target_key else None
+                if existing is None:
+                    queued.append(target)
+                    if target_key:
+                        existing_by_key[target_key] = target
+                    enqueued_count += 1
+                    item_results.append(
+                        {
+                            "task_id": str(target.get("id") or ""),
+                            "existing_task_id": "",
+                            "task_identity_key": target_key,
+                            "enqueued": True,
+                            "merged": False,
+                            "duplicate": False,
+                        }
+                    )
+                    continue
+
+                existing_task_id = str(existing.get("id") or "")
+                merged = _merge_archive_task_instance_scope(existing, target)
+                if merged:
+                    existing["updated_at"] = china_now_iso()
+                    existing["message"] = str(existing.get("message") or target.get("message") or "")
+                    merged_count += 1
+                else:
+                    duplicate_count += 1
+                item_results.append(
+                    {
+                        "task_id": existing_task_id,
+                        "existing_task_id": existing_task_id,
+                        "task_identity_key": target_key,
+                        "enqueued": False,
+                        "merged": merged,
+                        "duplicate": not merged,
+                    }
+                )
+
             payload["active"] = active
             payload["queued"] = queued
             return payload
 
-        queue = self._update_archive_queue(_mutate)
-        queue["enqueued"] = enqueued
-        queue["merged"] = merged
-        if existing_task_id:
-            queue["existing_task_id"] = existing_task_id
-        if duplicate_key:
-            queue["task_identity_key"] = duplicate_key
+        self._update_archive_queue(_mutate)
+        return {
+            "items": item_results,
+            "enqueued_count": enqueued_count,
+            "merged_count": merged_count,
+            "duplicate_count": duplicate_count,
+        }
+
+    def enqueue_archive_task(self, item: dict) -> dict:
+        result = self.enqueue_archive_tasks([item])
+        item_result = result["items"][0]
+        queue = self.load_archive_queue()
+        queue["enqueued"] = item_result["enqueued"]
+        queue["merged"] = item_result["merged"]
+        if item_result["existing_task_id"]:
+            queue["existing_task_id"] = item_result["existing_task_id"]
+        if item_result["task_identity_key"]:
+            queue["task_identity_key"] = item_result["task_identity_key"]
         return queue
 
     def start_archive_task(self, task_id: str) -> dict:

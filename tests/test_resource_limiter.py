@@ -1,22 +1,229 @@
+import os
 import threading
 import time
 import unittest
+from multiprocessing import get_context
+from pathlib import Path
+from queue import Empty
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from app.schemas.models import AdvancedRuntimeConfig
 from app.services import resource_limiter
 
 
+SPAWN_CONTEXT = get_context("spawn")
+
+
+def _configure_process_resource(name, capacity, state_dir):
+    resource_limiter.STATE_DIR = Path(state_dir)
+    resource_limiter.RESOURCE_LIMITS[name] = capacity
+    resource_limiter._GATES.clear()
+
+
+def _counted_resource_worker(state_dir, name, capacity, ready_queue, start_event, active, max_active, counter_lock):
+    _configure_process_resource(name, capacity, state_dir)
+    ready_queue.put(os.getpid())
+    start_event.wait(timeout=5)
+    with resource_limiter.resource_slot(name):
+        with counter_lock:
+            active.value += 1
+            max_active.value = max(max_active.value, active.value)
+        time.sleep(0.3)
+        with counter_lock:
+            active.value -= 1
+
+
+def _holding_resource_worker(state_dir, name, capacity, entered_queue, release_event):
+    _configure_process_resource(name, capacity, state_dir)
+    with resource_limiter.resource_slot(name):
+        entered_queue.put(os.getpid())
+        release_event.wait(timeout=10)
+
+
+def _sleeping_resource_worker(state_dir, name, capacity, entered_queue):
+    _configure_process_resource(name, capacity, state_dir)
+    with resource_limiter.resource_slot(name):
+        entered_queue.put(os.getpid())
+        time.sleep(30)
+
+
+def _single_resource_worker(state_dir, name, capacity, entered_queue, ready_queue=None):
+    _configure_process_resource(name, capacity, state_dir)
+    if ready_queue is not None:
+        ready_queue.put(os.getpid())
+    with resource_limiter.resource_slot(name):
+        entered_queue.put(os.getpid())
+
+
 class ResourceLimiterConfigTest(unittest.TestCase):
     def setUp(self):
         self.original_limits = dict(resource_limiter.RESOURCE_LIMITS)
         self.original_gates = dict(resource_limiter._GATES)
+        self.original_state_dir = resource_limiter.STATE_DIR
+        self.temp_dir = TemporaryDirectory()
+        resource_limiter._GATES.clear()
+        resource_limiter.STATE_DIR = Path(self.temp_dir.name)
 
     def tearDown(self):
         resource_limiter.RESOURCE_LIMITS.clear()
         resource_limiter.RESOURCE_LIMITS.update(self.original_limits)
         resource_limiter._GATES.clear()
         resource_limiter._GATES.update(self.original_gates)
+        resource_limiter.STATE_DIR = self.original_state_dir
+        self.temp_dir.cleanup()
+
+    @staticmethod
+    def _stop_processes(processes):
+        for process in processes:
+            if process.is_alive():
+                process.kill()
+            process.join(timeout=5)
+
+    def test_resource_slots_limit_total_concurrency_across_spawned_processes(self):
+        ready_queue = SPAWN_CONTEXT.Queue()
+        start_event = SPAWN_CONTEXT.Event()
+        active = SPAWN_CONTEXT.Value("i", 0)
+        max_active = SPAWN_CONTEXT.Value("i", 0)
+        counter_lock = SPAWN_CONTEXT.Lock()
+        processes = [
+            SPAWN_CONTEXT.Process(
+                target=_counted_resource_worker,
+                args=(self.temp_dir.name, "spawn_total", 2, ready_queue, start_event, active, max_active, counter_lock),
+            )
+            for _index in range(6)
+        ]
+
+        try:
+            for process in processes:
+                process.start()
+            for _process in processes:
+                ready_queue.get(timeout=5)
+            start_event.set()
+            for process in processes:
+                process.join(timeout=8)
+
+            self.assertTrue(all(not process.is_alive() for process in processes))
+            self.assertTrue(all(process.exitcode == 0 for process in processes))
+            self.assertGreaterEqual(max_active.value, 2)
+            self.assertLessEqual(max_active.value, 2)
+        finally:
+            self._stop_processes(processes)
+
+    def test_killing_holder_releases_global_resource_slot(self):
+        holder_entered = SPAWN_CONTEXT.Queue()
+        waiter_entered = SPAWN_CONTEXT.Queue()
+        waiter_ready = SPAWN_CONTEXT.Queue()
+        holder = SPAWN_CONTEXT.Process(
+            target=_sleeping_resource_worker,
+            args=(self.temp_dir.name, "kill_release", 1, holder_entered),
+        )
+        waiter = SPAWN_CONTEXT.Process(
+            target=_single_resource_worker,
+            args=(self.temp_dir.name, "kill_release", 1, waiter_entered, waiter_ready),
+        )
+        processes = [holder, waiter]
+
+        try:
+            holder.start()
+            holder_entered.get(timeout=5)
+            waiter.start()
+            waiter_ready.get(timeout=5)
+            try:
+                acquired_before_kill = waiter_entered.get(timeout=0.3)
+            except Empty:
+                acquired_before_kill = None
+
+            holder.kill()
+            holder.join(timeout=5)
+            acquired_after_kill = acquired_before_kill or waiter_entered.get(timeout=5)
+            waiter.join(timeout=5)
+
+            self.assertIsNone(acquired_before_kill)
+            self.assertTrue(acquired_after_kill)
+            self.assertEqual(waiter.exitcode, 0)
+        finally:
+            self._stop_processes(processes)
+
+    def test_resource_slot_shrink_drains_existing_holders_before_new_entry(self):
+        holders_entered = SPAWN_CONTEXT.Queue()
+        contender_entered = SPAWN_CONTEXT.Queue()
+        contender_ready = SPAWN_CONTEXT.Queue()
+        release_holders = [SPAWN_CONTEXT.Event() for _index in range(3)]
+        holders = [
+            SPAWN_CONTEXT.Process(
+                target=_holding_resource_worker,
+                args=(self.temp_dir.name, "shrink_drain", 3, holders_entered, release_holders[index]),
+            )
+            for index in range(3)
+        ]
+        contender = SPAWN_CONTEXT.Process(
+            target=_single_resource_worker,
+            args=(self.temp_dir.name, "shrink_drain", 1, contender_entered, contender_ready),
+        )
+        processes = [*holders, contender]
+
+        try:
+            for holder in holders:
+                holder.start()
+                holders_entered.get(timeout=5)
+
+            contender.start()
+            contender_ready.get(timeout=5)
+            try:
+                acquired_before_drain = contender_entered.get(timeout=0.3)
+            except Empty:
+                acquired_before_drain = None
+
+            release_holders[0].set()
+            try:
+                acquired_before_high_slots_drained = contender_entered.get(timeout=0.3)
+            except Empty:
+                acquired_before_high_slots_drained = None
+
+            for release_holder in release_holders[1:]:
+                release_holder.set()
+            acquired_after_drain = (
+                acquired_before_drain
+                or acquired_before_high_slots_drained
+                or contender_entered.get(timeout=5)
+            )
+            for process in processes:
+                process.join(timeout=5)
+
+            self.assertIsNone(acquired_before_drain)
+            self.assertIsNone(acquired_before_high_slots_drained)
+            self.assertTrue(acquired_after_drain)
+            self.assertTrue(all(process.exitcode == 0 for process in processes))
+        finally:
+            for release_holder in release_holders:
+                release_holder.set()
+            self._stop_processes(processes)
+
+    def test_global_resource_slots_are_isolated_by_resource_name(self):
+        holder_entered = SPAWN_CONTEXT.Queue()
+        other_entered = SPAWN_CONTEXT.Queue()
+        release_holder = SPAWN_CONTEXT.Event()
+        holder = SPAWN_CONTEXT.Process(
+            target=_holding_resource_worker,
+            args=(self.temp_dir.name, "isolated_a", 1, holder_entered, release_holder),
+        )
+        other = SPAWN_CONTEXT.Process(
+            target=_single_resource_worker,
+            args=(self.temp_dir.name, "isolated_b", 1, other_entered),
+        )
+        processes = [holder, other]
+
+        try:
+            holder.start()
+            holder_entered.get(timeout=5)
+            other.start()
+            self.assertTrue(other_entered.get(timeout=5))
+            other.join(timeout=5)
+            self.assertEqual(other.exitcode, 0)
+        finally:
+            release_holder.set()
+            self._stop_processes(processes)
 
     def test_configure_resource_limits_updates_existing_gates(self):
         resource_limiter.configure_resource_limits({

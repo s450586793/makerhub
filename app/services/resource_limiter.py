@@ -1,9 +1,18 @@
+import errno
 import os
+import re
 import threading
 import time
 from collections import deque
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
+
+from app.core.settings import STATE_DIR
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback for local dev only.
+    fcntl = None
 
 
 def _env_int(name: str, default: int, minimum: int = 1, maximum: int = 64) -> int:
@@ -32,6 +41,7 @@ _CONFIG_FIELD_MAP = {
     "three_mf_download_limit": "three_mf_download",
     "disk_io_limit": "disk_io",
 }
+_GLOBAL_SLOT_POLL_SECONDS = 0.05
 
 
 def _clamp_limit(name: str, value: Any) -> int:
@@ -61,6 +71,15 @@ class _ResourceGate:
             self.capacity = _clamp_limit(self.name, capacity)
             self._condition.notify_all()
 
+    def is_owned_by_current_thread(self) -> bool:
+        owner_id = threading.get_ident()
+        with self._condition:
+            return self._owners.get(owner_id, 0) > 0
+
+    def current_capacity(self) -> int:
+        with self._condition:
+            return self.capacity
+
     def acquire(self) -> float:
         started_at = time.perf_counter()
         owner_id = threading.get_ident()
@@ -87,13 +106,14 @@ class _ResourceGate:
                     pass
                 self._condition.notify_all()
                 raise
-        wait_ms = (time.perf_counter() - started_at) * 1000
+        return (time.perf_counter() - started_at) * 1000
+
+    def record_wait(self, wait_ms: float) -> None:
         with self._condition:
             if wait_ms >= 1:
                 self.wait_count += 1
                 self.total_wait_ms += wait_ms
                 self.max_wait_ms = max(self.max_wait_ms, wait_ms)
-        return wait_ms
 
     def release(self) -> None:
         owner_id = threading.get_ident()
@@ -121,6 +141,74 @@ class _ResourceGate:
 
 _GATES: dict[str, _ResourceGate] = {}
 _GATES_LOCK = threading.Lock()
+
+
+def _resource_slot_directory(name: str):
+    clean_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(name or "").strip()).strip("._") or "default"
+    return STATE_DIR / "resource_slots" / clean_name
+
+
+def _retired_global_slots_are_draining(slot_dir, capacity: int) -> bool:
+    for slot_path in slot_dir.glob("*.lock"):
+        try:
+            slot_number = int(slot_path.stem)
+        except ValueError:
+            continue
+        if slot_number < capacity:
+            continue
+        handle = slot_path.open("a+", encoding="utf-8")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            handle.close()
+            if exc.errno in (errno.EACCES, errno.EAGAIN):
+                return True
+            raise
+        _release_global_slot(handle)
+    return False
+
+
+def _try_acquire_global_slot(name: str, capacity: int):
+    if fcntl is None:
+        return None
+    slot_dir = _resource_slot_directory(name)
+    slot_dir.mkdir(parents=True, exist_ok=True)
+    clean_capacity = max(int(capacity or 1), 1)
+    # Shrink keeps existing high-numbered holders alive, but drains all of
+    # them before assigning a slot from the reduced range.
+    if _retired_global_slots_are_draining(slot_dir, clean_capacity):
+        return None
+    for slot_number in range(clean_capacity):
+        handle = (slot_dir / f"{slot_number}.lock").open("a+", encoding="utf-8")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            handle.close()
+            if exc.errno in (errno.EACCES, errno.EAGAIN):
+                continue
+            raise
+        return handle
+    return None
+
+
+def _acquire_global_slot(name: str, gate: _ResourceGate):
+    if fcntl is None:
+        return None
+    while True:
+        handle = _try_acquire_global_slot(name, gate.current_capacity())
+        if handle is not None:
+            return handle
+        time.sleep(_GLOBAL_SLOT_POLL_SECONDS)
+
+
+def _release_global_slot(handle) -> None:
+    if handle is None:
+        return
+    try:
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
 
 
 def _gate_for(name: str) -> _ResourceGate:
@@ -151,6 +239,14 @@ def configure_resource_limits(config: Any) -> dict[str, int]:
     return changed
 
 
+def resource_limits_payload() -> dict[str, int]:
+    with _GATES_LOCK:
+        return {
+            config_key: int(RESOURCE_LIMITS.get(resource_name) or _RESOURCE_LIMIT_BOUNDS[resource_name][0])
+            for config_key, resource_name in _CONFIG_FIELD_MAP.items()
+        }
+
+
 @contextmanager
 def resource_slot(
     name: str,
@@ -160,21 +256,29 @@ def resource_slot(
     warn_after_ms: float = 250.0,
 ):
     gate = _gate_for(name)
-    wait_ms = gate.acquire()
-    if wait_ms >= warn_after_ms and callable(log_wait):
-        try:
-            log_wait(
-                "resource_waited",
-                resource=name,
-                detail=detail,
-                wait_ms=round(wait_ms, 1),
-                capacity=gate.capacity,
-            )
-        except Exception:
-            pass
+    started_at = time.perf_counter()
+    reentrant = gate.is_owned_by_current_thread()
+    gate.acquire()
+    global_handle = None
     try:
+        if not reentrant:
+            global_handle = _acquire_global_slot(name, gate)
+        wait_ms = (time.perf_counter() - started_at) * 1000
+        gate.record_wait(wait_ms)
+        if wait_ms >= warn_after_ms and callable(log_wait):
+            try:
+                log_wait(
+                    "resource_waited",
+                    resource=name,
+                    detail=detail,
+                    wait_ms=round(wait_ms, 1),
+                    capacity=gate.current_capacity(),
+                )
+            except Exception:
+                pass
         yield wait_ms
     finally:
+        _release_global_slot(global_handle)
         gate.release()
 
 

@@ -3,13 +3,68 @@ import time
 import unittest
 from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from app.services import archive_worker as archive_worker_module
 from app.services.archive_worker import ArchiveTaskManager
 
 
 class ArchiveWorkerSpeedupTest(unittest.TestCase):
+    def test_run_batch_task_submits_discovered_children_in_one_bulk_enqueue(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[], proxy=None))
+        bulk_enqueue = Mock(
+            return_value={
+                "items": [
+                    {"task_id": "child-1", "enqueued": True, "merged": False, "duplicate": False},
+                    {"task_id": "existing-2", "existing_task_id": "existing-2", "enqueued": False, "merged": False, "duplicate": True},
+                    {"task_id": "child-3", "enqueued": True, "merged": False, "duplicate": False},
+                ],
+                "enqueued_count": 2,
+                "merged_count": 0,
+                "duplicate_count": 1,
+            }
+        )
+        updates = []
+        manager.task_store = SimpleNamespace(
+            enqueue_archive_tasks=bulk_enqueue,
+            update_active_task=lambda task_id, **kwargs: updates.append((task_id, kwargs)),
+            complete_archive_task=lambda *_args, **_kwargs: None,
+        )
+        discovered = {
+            "items": [
+                {"url": "https://makerworld.com.cn/zh/models/1"},
+                {"url": "https://makerworld.com.cn/zh/models/2"},
+                {"url": "https://makerworld.com.cn/zh/models/3"},
+            ]
+        }
+
+        with patch.object(archive_worker_module, "_select_cookie", return_value="cookie"), \
+                patch.object(archive_worker_module, "run_discover_batch_urls_job", return_value=discovered), \
+                patch.object(manager, "_queued_task_keys", return_value=set()), \
+                patch.object(manager, "_archived_task_keys", return_value=set()), \
+                patch.object(manager, "_enqueue_single_task") as single_enqueue, \
+                patch.object(archive_worker_module, "_append_batch_queue_log"), \
+                patch.object(archive_worker_module, "_log_archive"):
+            manager._run_batch_task(
+                "batch-1",
+                "https://makerworld.com.cn/zh/@demo/upload",
+                "author_upload",
+            )
+
+        self.assertEqual(bulk_enqueue.call_count, 1)
+        submitted = bulk_enqueue.call_args.args[0]
+        self.assertEqual(len(submitted), 3)
+        self.assertEqual([item["url"] for item in submitted], [item["url"] for item in discovered["items"]])
+        single_enqueue.assert_not_called()
+        final_meta = updates[-1][1]["meta"]
+        self.assertEqual(final_meta["batch_summary"]["queued"], 2)
+        self.assertEqual(final_meta["batch_summary"]["skipped_pending"], 1)
+        self.assertEqual(
+            [item["last_task_id"] for item in final_meta["batch_expected_items"]],
+            ["child-1", "child-3"],
+        )
+
     def test_three_mf_gate_for_url_uses_platform_snapshot(self):
         with patch.object(
             archive_worker_module,

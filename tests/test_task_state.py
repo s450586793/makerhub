@@ -583,6 +583,169 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(queue["existing_task_id"], "retry-profile-1")
         self.assertEqual([item["id"] for item in queue["queued"]], ["retry-profile-1"])
 
+    def test_enqueue_archive_tasks_deduplicates_within_batch_and_preserves_first_id(self):
+        state = {}
+        store = TaskStateStore()
+        items = [
+            {
+                "id": "first-model",
+                "url": "https://makerworld.com.cn/zh/models/123",
+                "mode": "single_model",
+                "status": "queued",
+            },
+            {
+                "id": "duplicate-model",
+                "url": "https://makerworld.com.cn/zh/models/123?from=batch",
+                "mode": "single_model",
+                "status": "queued",
+            },
+        ]
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
+            result = store.enqueue_archive_tasks(items)
+
+        self.assertEqual(result["enqueued_count"], 1)
+        self.assertEqual(result["merged_count"], 0)
+        self.assertEqual(result["duplicate_count"], 1)
+        self.assertEqual([item["task_id"] for item in result["items"]], ["first-model", "first-model"])
+        self.assertTrue(result["items"][0]["enqueued"])
+        self.assertTrue(result["items"][1]["duplicate"])
+        self.assertEqual([item["id"] for item in state["archive_queue"]["queued"]], ["first-model"])
+
+    def test_enqueue_archive_tasks_deduplicates_against_active_and_queued_tasks(self):
+        state = {
+            "archive_queue": {
+                "active": [
+                    {
+                        "id": "active-model",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "mode": "single_model",
+                        "status": "running",
+                    }
+                ],
+                "queued": [
+                    {
+                        "id": "queued-model",
+                        "url": "https://makerworld.com.cn/zh/models/456",
+                        "mode": "single_model",
+                        "status": "queued",
+                    }
+                ],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
+            result = store.enqueue_archive_tasks(
+                [
+                    {
+                        "id": "active-copy",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "mode": "single_model",
+                    },
+                    {
+                        "id": "queued-copy",
+                        "url": "https://makerworld.com.cn/zh/models/456",
+                        "mode": "single_model",
+                    },
+                ]
+            )
+
+        self.assertEqual(result["enqueued_count"], 0)
+        self.assertEqual(result["merged_count"], 0)
+        self.assertEqual(result["duplicate_count"], 2)
+        self.assertEqual([item["task_id"] for item in result["items"]], ["active-model", "queued-model"])
+        self.assertEqual([item["existing_task_id"] for item in result["items"]], ["active-model", "queued-model"])
+
+    def test_enqueue_archive_tasks_merges_three_mf_instances_once(self):
+        state = {
+            "archive_queue": {
+                "active": [],
+                "queued": [
+                    {
+                        "id": "retry-profile-1",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "mode": "single_model",
+                        "status": "queued",
+                        "meta": {
+                            "missing_3mf_retry": True,
+                            "model_id": "123",
+                            "instance_ids": ["profile-1"],
+                        },
+                    }
+                ],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value):
+            result = store.enqueue_archive_tasks(
+                [
+                    {
+                        "id": "retry-profile-2",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "mode": "single_model",
+                        "meta": {
+                            "missing_3mf_retry": True,
+                            "model_id": "123",
+                            "instance_id": "profile-2",
+                        },
+                    },
+                    {
+                        "id": "retry-profile-2-copy",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "mode": "single_model",
+                        "meta": {
+                            "missing_3mf_retry": True,
+                            "model_id": "123",
+                            "instance_id": "profile-2",
+                        },
+                    },
+                ]
+            )
+
+        self.assertEqual(result["enqueued_count"], 0)
+        self.assertEqual(result["merged_count"], 1)
+        self.assertEqual(result["duplicate_count"], 1)
+        self.assertEqual([item["task_id"] for item in result["items"]], ["retry-profile-1", "retry-profile-1"])
+        self.assertTrue(result["items"][0]["merged"])
+        self.assertTrue(result["items"][1]["duplicate"])
+        self.assertEqual(state["archive_queue"]["queued"][0]["meta"]["instance_ids"], ["profile-1", "profile-2"])
+
+    def test_enqueue_archive_tasks_saves_and_publishes_once_for_large_batch(self):
+        state = {}
+        store = TaskStateStore()
+        items = [
+            {
+                "id": f"task-{index}",
+                "url": f"https://makerworld.com.cn/zh/models/{index}",
+                "mode": "single_model",
+                "status": "queued",
+            }
+            for index in range(1, 1001)
+        ]
+
+        def save_state(key, value):
+            state[key] = value
+            return value
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=save_state) as save_mock, \
+                patch("app.services.task_state.publish_state_event") as event_mock:
+            result = store.enqueue_archive_tasks(items)
+
+        self.assertEqual(result["enqueued_count"], 1000)
+        self.assertEqual(result["merged_count"], 0)
+        self.assertEqual(result["duplicate_count"], 0)
+        self.assertEqual(len(result["items"]), 1000)
+        self.assertEqual(save_mock.call_count, 1)
+        self.assertEqual(event_mock.call_count, 1)
+
     def test_requeue_active_tasks_skips_duplicate_existing_queue_item(self):
         state = {
             "archive_queue": {
