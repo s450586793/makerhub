@@ -5,6 +5,9 @@ from app.services import business_logs
 
 
 class BusinessLogsTest(unittest.TestCase):
+    def tearDown(self):
+        business_logs.invalidate_log_facet_cache()
+
     def test_share_receive_sensitive_fields_are_masked(self):
         payload = business_logs._safe_value(
             {
@@ -225,6 +228,62 @@ class BusinessLogsTest(unittest.TestCase):
         self.assertTrue(payload["has_more"])
         self.assertEqual(payload["next_cursor"], "77")
         self.assertEqual(payload["filters"]["level"], "error")
+
+    def test_database_log_facets_are_cached_for_five_seconds(self):
+        calls = []
+
+        class FakeResult:
+            def fetchall(self):
+                return [{"value": "archive", "count": 2}]
+
+        class FakeConnection:
+            def execute(self, sql, params=None):
+                calls.append((sql, params))
+                return FakeResult()
+
+        class FakeContext:
+            def __enter__(self):
+                return FakeConnection()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        with patch.object(business_logs, "_database_logs_enabled", return_value=True), \
+                patch.object(business_logs, "_ensure_database_logs_ready", return_value=True), \
+                patch.object(business_logs, "database_connection", return_value=FakeContext()), \
+                patch.object(business_logs.time, "monotonic", side_effect=[100.0, 102.0, 106.0]):
+            first = business_logs._read_database_log_facets("business.log")
+            cached = business_logs._read_database_log_facets("business.log")
+            refreshed = business_logs._read_database_log_facets("business.log")
+
+        self.assertEqual(first, cached)
+        self.assertEqual(first, refreshed)
+        self.assertEqual(len(calls), 6)
+
+    def test_successful_log_insert_invalidates_facet_cache(self):
+        class FakeConnection:
+            def execute(self, sql, params=None):
+                return self
+
+        class FakeContext:
+            def __enter__(self):
+                return FakeConnection()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        with patch.object(business_logs, "_database_logs_enabled", return_value=True), \
+                patch.object(business_logs, "_ensure_database_logs_ready", return_value=True), \
+                patch.object(business_logs, "database_connection", return_value=FakeContext()), \
+                patch.object(business_logs, "invalidate_log_facet_cache") as invalidate:
+            self.assertTrue(
+                business_logs.append_database_log_entry(
+                    "business.log",
+                    {"event": "saved", "message": "ok"},
+                )
+            )
+
+        invalidate.assert_called_once_with()
 
 
 if __name__ == "__main__":

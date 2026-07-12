@@ -228,6 +228,9 @@ def _initialize_database_schema() -> None:
             "CREATE INDEX IF NOT EXISTS makerhub_logs_file_created_idx ON makerhub_logs (file_name, created_at DESC, id DESC)"
         )
         connection.execute(
+            "CREATE INDEX IF NOT EXISTS makerhub_logs_created_idx ON makerhub_logs (created_at, id)"
+        )
+        connection.execute(
             "CREATE INDEX IF NOT EXISTS makerhub_logs_level_idx ON makerhub_logs (level)"
         )
         connection.execute(

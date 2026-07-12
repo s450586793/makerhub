@@ -2,6 +2,7 @@ import hashlib
 import json
 import threading
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,9 @@ SENSITIVE_KEY_PARTS = (
 )
 _DB_LOGS_READY = False
 _DB_LOGS_LOCK = threading.Lock()
+_LOG_FACET_CACHE: dict[tuple[str, str, str], tuple[float, dict[str, list[dict[str, Any]]]]] = {}
+_LOG_FACET_CACHE_LOCK = threading.Lock()
+LOG_FACET_CACHE_SECONDS = 5.0
 DATABASE_LOG_MAX_ATTEMPTS = 3
 NOISY_INFO_EVENTS = {
     ("scrapling", "fetch_trace"),
@@ -99,6 +103,11 @@ def _ensure_database_logs_ready() -> bool:
 
 def _raw_hash(file_name: str, raw: str) -> str:
     return hashlib.sha1(f"{file_name}\0{raw}".encode("utf-8", errors="ignore")).hexdigest()
+
+
+def invalidate_log_facet_cache() -> None:
+    with _LOG_FACET_CACHE_LOCK:
+        _LOG_FACET_CACHE.clear()
 
 
 def _entry_for_db(entry: dict[str, Any], *, file_name: str, raw: str = "") -> dict[str, Any]:
@@ -172,6 +181,7 @@ def append_database_log_entry(file_name: str, entry: dict[str, Any], *, raw: str
                         "payload": jsonb_value(payload["payload"]),
                     },
                 )
+            invalidate_log_facet_cache()
             return True
         except Exception:
             if attempt >= DATABASE_LOG_MAX_ATTEMPTS:
@@ -442,6 +452,12 @@ def _read_database_log_facets(file_name: str, *, query: str = "", since: str = "
     if not _database_logs_enabled():
         return {"levels": [], "categories": [], "events": []}
     safe_file_name = _safe_log_name(file_name)
+    cache_key = (safe_file_name, str(query or "").strip(), str(since or "").strip())
+    now_value = time.monotonic()
+    with _LOG_FACET_CACHE_LOCK:
+        cached = _LOG_FACET_CACHE.get(cache_key)
+        if cached and cached[0] > now_value:
+            return deepcopy(cached[1])
     base_where, base_params = _build_log_where_clause(safe_file_name, query=query, since=since)
     facets = {
         "levels": ("level", 20),
@@ -472,11 +488,14 @@ def _read_database_log_facets(file_name: str, *, query: str = "", since: str = "
                 ]
     except Exception:
         return {"levels": [], "categories": [], "events": []}
-    return {
+    payload = {
         "levels": result.get("levels", []),
         "categories": result.get("categories", []),
         "events": result.get("events", []),
     }
+    with _LOG_FACET_CACHE_LOCK:
+        _LOG_FACET_CACHE[cache_key] = (now_value + LOG_FACET_CACHE_SECONDS, deepcopy(payload))
+    return payload
 
 
 def read_log_entries(

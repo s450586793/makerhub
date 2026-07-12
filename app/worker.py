@@ -15,6 +15,7 @@ from app.services.archive_model_index_rebuild import (
     should_auto_rebuild_database_index,
 )
 from app.services.business_logs import append_business_log
+from app.services.database_maintenance import run_database_maintenance_if_due
 from app.services.local_organizer import LocalOrganizerService
 from app.services.local_preview_worker import local_preview_queue_marker_mtime, run_local_preview_generation_once
 from app.services.source_refresh import SourceRefreshTaskManager
@@ -26,6 +27,25 @@ from app.services.task_state import TaskStateStore
 WORKER_POLL_SECONDS = 2.0
 LOCAL_PREVIEW_IDLE_POLL_SECONDS = 15 * 60
 ACCOUNT_COOKIE_MAINTENANCE_POLL_SECONDS = 10 * 60
+
+
+def _run_database_maintenance() -> dict:
+    result = run_database_maintenance_if_due()
+    if result.get("ran") and (
+        int(result.get("events_deleted") or 0)
+        or int(result.get("logs_deleted") or 0)
+        or result.get("errors")
+    ):
+        append_business_log(
+            "database",
+            "retention_cleanup_completed",
+            "数据库历史状态清理已完成。",
+            level="warning" if result.get("errors") else "info",
+            events_deleted=int(result.get("events_deleted") or 0),
+            logs_deleted=int(result.get("logs_deleted") or 0),
+            errors=result.get("errors") or {},
+        )
+    return result
 
 
 def _runtime_engine_enabled() -> bool:
@@ -105,6 +125,7 @@ def main() -> int:
         queued_count=int(queue.get("queued_count") or 0),
         recovered_active=int(queue.get("recovered_count") or 0),
     )
+    _run_database_maintenance()
     try:
         initial_rebuild_status = read_archive_model_index_rebuild_status()
         if (
@@ -138,6 +159,7 @@ def main() -> int:
     archive_model_index_rebuild_thread: threading.Thread | None = None
     try:
         while not stop_event.wait(WORKER_POLL_SECONDS):
+            _run_database_maintenance()
             if _runtime_engine_enabled():
                 try:
                     _execute_runtime_engine_once()
