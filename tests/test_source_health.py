@@ -407,31 +407,68 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(result["failure_kind"], "verification_required")
         self.assertIn("验证页面", result["error"])
 
-    def test_auth_probe_uses_flaresolverr_without_session_get(self):
-        class FailingSession:
+    def test_auth_probe_uses_direct_session_with_platform_proxy(self):
+        class RecordingSession:
+            def __init__(self):
+                self.calls = []
+                self.closed = False
+
+            def get(self, url, **kwargs):
+                self.calls.append((url, kwargs))
+                return SimpleNamespace(
+                    status_code=200,
+                    text='{"uid": 1, "name": "ok"}',
+                    headers={"content-type": "application/json"},
+                )
+
+            def close(self):
+                self.closed = True
+
+        proxy = SimpleNamespace(
+            enabled=True,
+            http_proxy="http://proxy.local:7890",
+            https_proxy="http://proxy.local:7891",
+        )
+        session = RecordingSession()
+        with patch.object(source_health, "_make_session", return_value=session), patch.object(
+            source_health,
+            "flaresolverr_get_text",
+            side_effect=AssertionError("auth API probes must not use FlareSolverr"),
+        ):
+            payload = source_health._probe_auth_endpoints("global", "token=abc", proxy)
+
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["used_proxy"])
+        self.assertEqual(len(session.calls), 2)
+        for _url, kwargs in session.calls:
+            self.assertEqual(
+                kwargs["proxies"],
+                {"http": "http://proxy.local:7890", "https": "http://proxy.local:7891"},
+            )
+            self.assertIn("Cookie", kwargs["headers"])
+        self.assertTrue(session.closed)
+
+    def test_auth_probe_preserves_upstream_unauthorized_status(self):
+        class UnauthorizedSession:
+            def get(self, _url, **_kwargs):
+                return SimpleNamespace(
+                    status_code=401,
+                    text='{"error": "unauthorized"}',
+                    headers={"content-type": "application/json"},
+                )
+
             def close(self):
                 return None
 
-            def get(self, *_args, **_kwargs):
-                raise AssertionError("source health auth probe must use FlareSolverr")
-
-        calls = []
-
-        def fake_flaresolverr(url, **kwargs):
-            calls.append((url, kwargs))
-            return '{"uid": 1, "name": "ok"}'
-
-        with patch.object(source_health, "_make_session", return_value=FailingSession()), patch.object(
+        with patch.object(source_health, "_make_session", return_value=UnauthorizedSession()), patch.object(
             source_health,
             "flaresolverr_get_text",
-            side_effect=fake_flaresolverr,
+            side_effect=AssertionError("auth API probes must not use FlareSolverr"),
         ):
-            payload = source_health._probe_auth_endpoints("cn", "token=abc", None)
+            payload = source_health._probe_auth_endpoints("global", "token=expired", None)
 
-        self.assertTrue(payload["ok"])
-        self.assertFalse(payload["used_proxy"])
-        self.assertTrue(calls)
-        self.assertIn("Cookie", calls[0][1]["headers"])
+        self.assertEqual(payload["state"], "auth_required")
+        self.assertEqual([item["status_code"] for item in payload["results"]], [401, 401])
 
     def test_web_probe_uses_flaresolverr_without_session_get(self):
         class FailingSession:

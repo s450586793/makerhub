@@ -346,6 +346,11 @@ def _probe_auth_endpoints(
         return _empty_cookie_auth_payload(platform, "http_error", "连接异常", "缺少认证探针配置。")
 
     session = _make_session()
+    proxies = _build_proxy_mapping(
+        proxy_config,
+        platform=platform,
+        allow_domestic_proxy=allow_domestic_proxy,
+    )
     headers = _build_request_headers(PLATFORM_ORIGINS.get(platform, ""), raw_cookie)
     states: list[str] = []
     results: list[dict[str, Any]] = []
@@ -353,21 +358,20 @@ def _probe_auth_endpoints(
         for name, url in probes:
             started = time.perf_counter()
             try:
-                text = flaresolverr_get_text(
+                response = session.get(
                     url,
                     headers=headers,
-                    raw_cookie=raw_cookie,
-                    session=session,
+                    proxies=proxies or None,
+                    timeout=(6, 12),
                 )
                 elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
                 result = _auth_probe_result_from_response(
                     name=name,
                     url=url,
-                    status_code=200,
-                    text=text or "",
-                    headers={},
+                    status_code=int(response.status_code),
+                    text=response.text or "",
+                    headers=response.headers,
                     elapsed_ms=elapsed_ms,
-                    engine="flaresolverr",
                 )
             except Exception as exc:
                 elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
@@ -431,7 +435,7 @@ def _probe_auth_endpoints(
             "results": results,
             "success_count": success_count,
             "target_count": len(results),
-            "used_proxy": False,
+            "used_proxy": bool(proxies),
         }
     )
     payload["message"] = _build_cookie_auth_message(platform, payload)
