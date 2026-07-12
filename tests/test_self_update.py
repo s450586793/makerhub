@@ -41,8 +41,12 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
         self.assertIn("makerhub-flaresolverr", compose_text)
         self.assertIn("# - /var/run/docker.sock:/var/run/docker.sock", compose_text)
         self.assertNotIn("      - /var/run/docker.sock:/var/run/docker.sock", compose_text)
-        self.assertNotIn("    depends_on:", compose_text)
-        self.assertNotIn("    healthcheck:", compose_text)
+        self.assertGreaterEqual(compose_text.count("    depends_on:"), 2)
+        self.assertIn("condition: service_healthy", compose_text)
+        self.assertGreaterEqual(compose_text.count("    healthcheck:"), 3)
+        self.assertIn("/api/public/health/ready", compose_text)
+        self.assertIn('"app.worker", "--healthcheck"', compose_text)
+        self.assertIn("pg_isready -U makerhub -d makerhub", compose_text)
         self.assertIn("/volume4/docker/docker/makerhub:/app/config", compose_text)
         self.assertIn("/app/data", compose_text)
         self.assertNotIn("/app/logs", compose_text)
@@ -278,8 +282,10 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             self.assertIn("makerhub-flaresolverr", status["compose_example"])
             self.assertIn("# - /var/run/docker.sock:/var/run/docker.sock", status["compose_example"])
             self.assertNotIn("      - /var/run/docker.sock:/var/run/docker.sock", status["compose_example"])
-            self.assertNotIn("    depends_on:", status["compose_example"])
-            self.assertNotIn("    healthcheck:", status["compose_example"])
+            self.assertGreaterEqual(status["compose_example"].count("    depends_on:"), 2)
+            self.assertGreaterEqual(status["compose_example"].count("    healthcheck:"), 3)
+            self.assertIn("/api/public/health/ready", status["compose_example"])
+            self.assertIn('"app.worker", "--healthcheck"', status["compose_example"])
             self.assertIn("/volume4/docker/docker/makerhub:/app/config", status["compose_example"])
             self.assertIn("/app/data", status["compose_example"])
             self.assertNotIn("/app/logs", status["compose_example"])
@@ -852,6 +858,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             original_update_state = self_update.UPDATE_STATE_PATH
             original_client = self_update.DockerSocketClient
             original_wait = self_update._wait_for_replacement_container
+            original_verify_role = self_update._verify_release_role
             try:
                 self_update.STATE_DIR = state_dir
                 self_update.UPDATE_STATE_PATH = state_dir / "system_update.json"
@@ -861,6 +868,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                     "Name": "/makerhub-app",
                     "State": {"Running": True},
                 }
+                self_update._verify_release_role = lambda *_args, **_kwargs: None
 
                 class FakeDockerSocketClient:
                     def __init__(self, *args, **kwargs):
@@ -919,6 +927,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                 self_update.UPDATE_STATE_PATH = original_update_state
                 self_update.DockerSocketClient = original_client
                 self_update._wait_for_replacement_container = original_wait
+                self_update._verify_release_role = original_verify_role
 
             self.assertEqual(result, 0)
             self.assertEqual(pulled, ["ghcr.io/example/makerhub:latest"])
@@ -1036,6 +1045,108 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                 ],
             )
             self.assertNotIn(("create", "", "makerhub-worker-replacement-skip-pul"), operations)
+
+    def test_release_group_rolls_back_every_role_when_prepare_start_readiness_or_commit_fails(self):
+        role_specs = (
+            ("web", "makerhub-web"),
+            ("app", "makerhub-app"),
+            ("worker", "makerhub-worker"),
+        )
+
+        for failure_stage in ("prepare", "start", "readiness", "commit"):
+            for failed_role, _failed_name in role_specs:
+                with self.subTest(stage=failure_stage, role=failed_role):
+                    names = {f"{role}-old": name for role, name in role_specs}
+                    started: list[str] = []
+                    removed: list[str] = []
+                    pulled: list[str] = []
+
+                    class FakeDockerSocketClient:
+                        def inspect_container(self, container_id):
+                            if container_id in names.values():
+                                container_id = next(
+                                    item_id
+                                    for item_id, name in names.items()
+                                    if name == container_id
+                                )
+                            role = str(container_id).split("-", 1)[0]
+                            return {
+                                "Id": container_id,
+                                "Name": f"/{names[container_id]}",
+                                "Image": "sha256:old-image",
+                                "Config": {
+                                    "Image": f"ghcr.io/example/{role}:old",
+                                    "Env": [
+                                        "MAKERHUB_DATABASE_URL=postgresql://makerhub:password@postgres:5432/makerhub",
+                                    ],
+                                },
+                                "HostConfig": {},
+                                "NetworkSettings": {"Networks": {}},
+                                "State": {"Running": True, "Status": "running"},
+                            }
+
+                        def pull_image(self, image_ref):
+                            pulled.append(image_ref)
+                            if failure_stage == "prepare" and image_ref.endswith(f"/{failed_role}:new"):
+                                raise RuntimeError("prepare injected failure")
+
+                        def stop_container(self, _container_id, *, timeout_seconds=10):
+                            return None
+
+                        def rename_container(self, container_id, *, name):
+                            names[container_id] = name
+
+                        def create_container(self, _body, *, name=""):
+                            role = next(role for role, canonical_name in role_specs if canonical_name == name)
+                            candidate_id = f"{role}-candidate"
+                            names[candidate_id] = name
+                            return candidate_id
+
+                        def start_container(self, container_id):
+                            started.append(container_id)
+                            if failure_stage == "start" and container_id == f"{failed_role}-candidate":
+                                raise RuntimeError("start injected failure")
+
+                        def remove_container(self, container_id, *, force=False):
+                            removed.append(container_id)
+                            names.pop(container_id, None)
+
+                    def verify_role(_client, role, **_kwargs):
+                        if failure_stage == "readiness" and role["role"] == failed_role:
+                            raise RuntimeError("readiness injected failure")
+
+                    original_commit = self_update.commit_release_group
+
+                    def commit_group(client, group):
+                        if failure_stage == "commit":
+                            raise RuntimeError(f"{failed_role} commit injected failure")
+                        return original_commit(client, group)
+
+                    with patch.object(self_update, "_verify_release_role", side_effect=verify_role), \
+                            patch.object(self_update, "commit_release_group", side_effect=commit_group):
+                        with self.assertRaisesRegex(RuntimeError, failed_role):
+                            self_update.run_release_group_transaction(
+                                FakeDockerSocketClient(),
+                                request_id="release-group-test",
+                                roles=[
+                                    {
+                                        "role": role,
+                                        "container_ref": canonical_name,
+                                        "image_ref": f"ghcr.io/example/{role}:new",
+                                    }
+                                    for role, canonical_name in role_specs
+                                ],
+                            )
+
+                    self.assertEqual(set(names), {f"{role}-old" for role, _name in role_specs})
+                    self.assertEqual(
+                        names,
+                        {f"{role}-old": canonical_name for role, canonical_name in role_specs},
+                    )
+                    self.assertEqual(removed, [item for item in removed if item.endswith("-candidate")])
+                    self.assertFalse(any(item.endswith("-old") for item in removed))
+                    if failure_stage != "prepare":
+                        self.assertTrue(pulled)
 
     def test_delayed_cleanup_removes_old_image_after_success(self):
         with tempfile.TemporaryDirectory() as temp_dir:

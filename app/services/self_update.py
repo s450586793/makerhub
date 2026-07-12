@@ -35,6 +35,9 @@ WORKER_CONTAINER_NAME_ENV = "MAKERHUB_WORKER_CONTAINER_NAME"
 WORKER_IMAGE_REF_ENV = "MAKERHUB_WORKER_IMAGE_REF"
 RUNTIME_CONFIG_ENV = "MAKERHUB_RUNTIME_CONFIG_JSON"
 DATABASE_URL_ENV = "MAKERHUB_DATABASE_URL"
+WORKER_HEARTBEAT_STATE_KEY = "worker_heartbeat"
+WORKER_HEARTBEAT_MAX_AGE_SECONDS = 30
+WORKER_START_TOKEN_ENV = "MAKERHUB_WORKER_START_TOKEN"
 _CONTAINER_ID_PATTERN = re.compile(r"[0-9a-f]{12,64}")
 STARTUP_WAIT_TIMEOUT_SECONDS = 20
 STARTUP_WAIT_INTERVAL_SECONDS = 1.0
@@ -76,10 +79,14 @@ POSTGRES_COMPOSE_MIGRATION_EXAMPLE = """services:
       - /volume2/entertainment/3D打印/makerhub:/app/data
       # 高风险可选：只有明确需要网页一键更新时再挂载 Docker socket。
       # - /var/run/docker.sock:/var/run/docker.sock
-    # 高级可选：如果希望 App 等 Postgres 健康后再启动，取消下面三行注释，并同时打开 Postgres 的 healthcheck。
-    # depends_on:
-    #   makerhub-postgres:
-    #     condition: service_healthy
+    depends_on:
+      makerhub-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8000/api/public/health/ready', timeout=3); raise SystemExit(0 if response.status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
   makerhub-worker:
@@ -98,10 +105,14 @@ POSTGRES_COMPOSE_MIGRATION_EXAMPLE = """services:
     volumes:
       - /volume4/docker/docker/makerhub:/app/config
       - /volume2/entertainment/3D打印/makerhub:/app/data
-    # 高级可选：如果希望 Worker 等 Postgres 健康后再启动，取消下面三行注释，并同时打开 Postgres 的 healthcheck。
-    # depends_on:
-    #   makerhub-postgres:
-    #     condition: service_healthy
+    depends_on:
+      makerhub-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.worker", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
   makerhub-postgres:
@@ -113,12 +124,11 @@ POSTGRES_COMPOSE_MIGRATION_EXAMPLE = """services:
       POSTGRES_PASSWORD: ${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}
     volumes:
       - /volume4/docker/docker/makerhub/postgres:/var/lib/postgresql/data
-    # 高级可选：需要配合上面的 depends_on 使用时再打开。
-    # healthcheck:
-    #   test: ["CMD-SHELL", "pg_isready -U makerhub -d makerhub"]
-    #   interval: 10s
-    #   timeout: 5s
-    #   retries: 10
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U makerhub -d makerhub"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
   flaresolverr:
@@ -137,6 +147,45 @@ POSTGRES_COMPOSE_MIGRATION_MESSAGE = (
 
 def _now_iso() -> str:
     return china_now_iso()
+
+
+def record_worker_heartbeat(
+    *,
+    start_token: str = "",
+    version: str = APP_VERSION,
+    now_epoch: float | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "start_token": str(start_token or ""),
+        "version": str(version or ""),
+        "updated_at": _now_iso(),
+        "updated_at_epoch": float(time.time() if now_epoch is None else now_epoch),
+    }
+    return save_database_json_state(WORKER_HEARTBEAT_STATE_KEY, payload)
+
+
+def worker_heartbeat_readiness(
+    *,
+    expected_start_token: str | None = None,
+    expected_version: str | None = None,
+    now_epoch: float | None = None,
+    max_age_seconds: int = WORKER_HEARTBEAT_MAX_AGE_SECONDS,
+) -> dict[str, Any]:
+    payload = load_database_json_state(WORKER_HEARTBEAT_STATE_KEY, {})
+    if not isinstance(payload, dict):
+        return {"ready": False, "reason": "missing"}
+    if expected_start_token is not None and str(payload.get("start_token") or "") != str(expected_start_token or ""):
+        return {"ready": False, "reason": "start_token_mismatch"}
+    if expected_version is not None and str(payload.get("version") or "") != str(expected_version or ""):
+        return {"ready": False, "reason": "version_mismatch"}
+    try:
+        updated_at_epoch = float(payload.get("updated_at_epoch"))
+    except (TypeError, ValueError):
+        return {"ready": False, "reason": "missing"}
+    current_epoch = time.time() if now_epoch is None else float(now_epoch)
+    if current_epoch - updated_at_epoch > max(int(max_age_seconds or 0), 1):
+        return {"ready": False, "reason": "stale"}
+    return {"ready": True, "reason": ""}
 
 
 def _default_update_state() -> dict[str, Any]:
@@ -593,6 +642,7 @@ def _apply_runtime_resource_config(
     runtime_config: dict[str, Any] | None,
     *,
     role: str,
+    worker_start_token: str = "",
 ) -> None:
     runtime = normalize_runtime_resource_config(runtime_config)
     normalized_role = str(role or "app").strip().lower()
@@ -603,6 +653,8 @@ def _apply_runtime_resource_config(
         env = _set_env_value(env, "MAKERHUB_PROCESS_ROLE", "worker")
         env = _set_env_value(env, "MAKERHUB_BACKGROUND_TASKS", "true")
         env = _set_env_value(env, "MAKERHUB_WORKER_CONCURRENCY", runtime.get("worker_concurrency") or 2)
+        if worker_start_token:
+            env = _set_env_value(env, WORKER_START_TOKEN_ENV, worker_start_token)
         body["Env"] = env
     elif normalized_role in {"app", "web"}:
         body["Cmd"] = ["app"]
@@ -619,6 +671,7 @@ def _build_replacement_container_body(
     *,
     runtime_config: dict[str, Any] | None = None,
     role: str = "app",
+    worker_start_token: str = "",
 ) -> dict[str, Any]:
     config = container_inspect.get("Config") or {}
     host_config_source = container_inspect.get("HostConfig") or {}
@@ -712,7 +765,12 @@ def _build_replacement_container_body(
     if endpoints_config:
         body["NetworkingConfig"] = {"EndpointsConfig": endpoints_config}
 
-    _apply_runtime_resource_config(body, runtime_config, role=role)
+    _apply_runtime_resource_config(
+        body,
+        runtime_config,
+        role=role,
+        worker_start_token=worker_start_token,
+    )
     return body
 
 
@@ -1701,6 +1759,243 @@ def _replace_related_container(
         raise RuntimeError(message) from exc
 
 
+def _release_role_label(role: str) -> str:
+    labels = {"app": "App", "web": "Web", "worker": "Worker"}
+    return labels.get(str(role or "").strip().lower(), str(role or "container"))
+
+
+def prepare_release_group(
+    client: DockerSocketClient,
+    *,
+    request_id: str,
+    roles: list[dict[str, str]],
+    runtime_config: dict[str, Any] | None = None,
+    target_version: str = "",
+) -> dict[str, Any]:
+    prepared_roles: list[dict[str, Any]] = []
+    pulled_images: set[str] = set()
+    for requested_role in roles:
+        role = str(requested_role.get("role") or "").strip().lower()
+        container_ref = str(requested_role.get("container_ref") or "").strip()
+        image_ref = str(requested_role.get("image_ref") or "").strip()
+        if role not in {"app", "web", "worker"} or not container_ref or not image_ref:
+            raise RuntimeError(f"{_release_role_label(role)} ({role}) 准备更新参数无效。")
+        try:
+            inspect = client.inspect_container(container_ref)
+            old_container_id = str(inspect.get("Id") or container_ref)
+            container_name = _container_display_name(inspect, container_ref)
+            worker_start_token = uuid.uuid4().hex if role == "worker" else ""
+            body = _build_replacement_container_body(
+                inspect,
+                image_ref,
+                runtime_config=runtime_config,
+                role=role,
+                worker_start_token=worker_start_token,
+            )
+            prepared_roles.append(
+                {
+                    "role": role,
+                    "container_name": container_name,
+                    "old_container_id": old_container_id,
+                    "backup_container_name": _backup_container_name(container_name, request_id),
+                    "replacement_body": body,
+                    "image_ref": image_ref,
+                    "worker_start_token": worker_start_token,
+                    "candidate_container_id": "",
+                    "backup_renamed": False,
+                    "candidate_created": False,
+                    "candidate_started": False,
+                }
+            )
+            if image_ref not in pulled_images:
+                client.pull_image(image_ref)
+                pulled_images.add(image_ref)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"{_release_role_label(role)} ({role}) 准备失败：{_friendly_error_message(exc)}"
+            ) from exc
+    return {
+        "request_id": str(request_id or ""),
+        "roles": prepared_roles,
+        "target_version": _normalize_version_label(target_version),
+        "committed": False,
+    }
+
+
+def activate_release_group(client: DockerSocketClient, group: dict[str, Any]) -> None:
+    roles = group.get("roles") if isinstance(group.get("roles"), list) else []
+    for role in roles:
+        role_name = str(role.get("role") or "")
+        try:
+            client.stop_container(str(role.get("old_container_id") or ""), timeout_seconds=10)
+            client.rename_container(
+                str(role.get("old_container_id") or ""),
+                name=str(role.get("backup_container_name") or ""),
+            )
+            role["backup_renamed"] = True
+            candidate_id = client.create_container(
+                role.get("replacement_body") or {},
+                name=str(role.get("container_name") or ""),
+            )
+            role["candidate_container_id"] = candidate_id
+            role["candidate_created"] = True
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"{_release_role_label(role_name)} ({role_name}) 切换失败：{_friendly_error_message(exc)}"
+            ) from exc
+    for role in roles:
+        role_name = str(role.get("role") or "")
+        try:
+            client.start_container(str(role.get("candidate_container_id") or ""))
+            role["candidate_started"] = True
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"{_release_role_label(role_name)} ({role_name}) 启动失败：{_friendly_error_message(exc)}"
+            ) from exc
+
+
+def _probe_http_readiness(
+    container_name: str,
+    *,
+    expected_version: str = "",
+    timeout_seconds: int = STARTUP_WAIT_TIMEOUT_SECONDS,
+) -> None:
+    deadline = time.monotonic() + max(int(timeout_seconds or 0), 1)
+    last_error = ""
+    while time.monotonic() < deadline:
+        connection = None
+        try:
+            connection = http.client.HTTPConnection(container_name, 8000, timeout=3)
+            connection.request("GET", "/api/public/health/ready")
+            response = connection.getresponse()
+            body = response.read().decode("utf-8", errors="replace")
+            payload = json.loads(body) if body else {}
+            if response.status != 200 or not isinstance(payload, dict) or not payload.get("ready"):
+                last_error = f"HTTP {response.status}"
+            elif str(payload.get("role") or "") != "app":
+                last_error = "role 不匹配"
+            elif expected_version and _normalize_version_label(payload.get("version")) != expected_version:
+                last_error = "version 不匹配"
+            else:
+                return
+        except Exception as exc:  # noqa: BLE001
+            last_error = _friendly_error_message(exc)
+        finally:
+            if connection is not None:
+                connection.close()
+        time.sleep(0.5)
+    raise RuntimeError(f"HTTP readiness 未通过：{last_error or '无响应'}")
+
+
+def _verify_release_role(
+    client: DockerSocketClient,
+    role: dict[str, Any],
+    *,
+    target_version: str = "",
+) -> None:
+    candidate_id = str(role.get("candidate_container_id") or "")
+    inspect = _wait_for_replacement_container(client, candidate_id)
+    _assert_container_name(inspect, str(role.get("container_name") or ""))
+    role_name = str(role.get("role") or "")
+    if role_name == "worker":
+        readiness = worker_heartbeat_readiness(
+            expected_start_token=str(role.get("worker_start_token") or ""),
+            expected_version=target_version or None,
+        )
+        if not readiness.get("ready"):
+            raise RuntimeError(f"Worker heartbeat 未就绪：{readiness.get('reason') or 'unknown'}")
+        return
+    _probe_http_readiness(
+        str(role.get("container_name") or ""),
+        expected_version=target_version,
+    )
+
+
+def verify_release_group(client: DockerSocketClient, group: dict[str, Any]) -> None:
+    target_version = str(group.get("target_version") or "")
+    for role in group.get("roles") or []:
+        role_name = str(role.get("role") or "")
+        try:
+            _verify_release_role(client, role, target_version=target_version)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"{_release_role_label(role_name)} ({role_name}) readiness 失败：{_friendly_error_message(exc)}"
+            ) from exc
+
+
+def commit_release_group(_client: DockerSocketClient, group: dict[str, Any]) -> dict[str, Any]:
+    group["committed"] = True
+    return group
+
+
+def rollback_release_group(client: DockerSocketClient, group: dict[str, Any]) -> list[str]:
+    rollback_errors: list[str] = []
+    for role in reversed(group.get("roles") or []):
+        role_name = str(role.get("role") or "")
+        candidate_id = str(role.get("candidate_container_id") or "")
+        if candidate_id:
+            try:
+                client.remove_container(candidate_id, force=True)
+            except Exception as exc:  # noqa: BLE001
+                rollback_errors.append(f"remove-{role_name}-candidate:{_friendly_error_message(exc)}")
+        if not role.get("backup_renamed"):
+            continue
+        old_container_id = str(role.get("old_container_id") or "")
+        try:
+            client.rename_container(old_container_id, name=str(role.get("container_name") or ""))
+            client.start_container(old_container_id)
+        except Exception as exc:  # noqa: BLE001
+            rollback_errors.append(f"restore-{role_name}:{_friendly_error_message(exc)}")
+    return rollback_errors
+
+
+def _cleanup_release_group_backups(client: DockerSocketClient, group: dict[str, Any]) -> None:
+    for role in group.get("roles") or []:
+        if not role.get("backup_renamed"):
+            continue
+        try:
+            client.remove_container(str(role.get("old_container_id") or ""), force=True)
+        except Exception as exc:  # noqa: BLE001
+            append_business_log(
+                "system",
+                "self_update_cleanup_warning",
+                f"{_release_role_label(str(role.get('role') or ''))} 新容器已就绪，但旧容器清理失败。",
+                level="warning",
+                request_id=str(group.get("request_id") or ""),
+                container_name=str(role.get("container_name") or ""),
+                backup_container_name=str(role.get("backup_container_name") or ""),
+                error=_friendly_error_message(exc),
+            )
+
+
+def run_release_group_transaction(
+    client: DockerSocketClient,
+    *,
+    request_id: str,
+    roles: list[dict[str, str]],
+    runtime_config: dict[str, Any] | None = None,
+    target_version: str = "",
+) -> dict[str, Any]:
+    group: dict[str, Any] = {"request_id": str(request_id or ""), "roles": [], "committed": False}
+    try:
+        group = prepare_release_group(
+            client,
+            request_id=request_id,
+            roles=roles,
+            runtime_config=runtime_config,
+            target_version=target_version,
+        )
+        activate_release_group(client, group)
+        verify_release_group(client, group)
+        return commit_release_group(client, group)
+    except Exception as exc:  # noqa: BLE001
+        rollback_errors = rollback_release_group(client, group)
+        message = _friendly_error_message(exc)
+        if rollback_errors:
+            message = f"{message}；整组回滚失败：{'；'.join(rollback_errors)}"
+        raise RuntimeError(message) from exc
+
+
 def run_update_helper(
     *,
     request_id: str,
@@ -1712,64 +2007,18 @@ def run_update_helper(
     worker_container_name: str = "",
     worker_image_ref: str = "",
 ) -> int:
-    current_phase = "pulling"
     client = DockerSocketClient(timeout=600)
-    replacement_container_id = ""
-    replacement_container_name = ""
-    backup_container_name = ""
-    old_container_renamed = False
-    replacement_container_renamed = False
     runtime_config = _runtime_config_from_env()
-
-    def _attempt_rollback() -> None:
-        rollback_errors: list[str] = []
-
-        if replacement_container_id:
-            try:
-                client.remove_container(replacement_container_id, force=True)
-            except Exception as exc:  # noqa: BLE001
-                rollback_errors.append(f"remove-new:{_friendly_error_message(exc)}")
-
-        if old_container_renamed:
-            try:
-                client.rename_container(container_id, name=container_name)
-            except Exception as exc:  # noqa: BLE001
-                rollback_errors.append(f"rename-old:{_friendly_error_message(exc)}")
-            else:
-                try:
-                    client.start_container(container_id)
-                except Exception as exc:  # noqa: BLE001
-                    rollback_errors.append(f"start-old:{_friendly_error_message(exc)}")
-        else:
-            try:
-                client.start_container(container_id)
-            except Exception as exc:  # noqa: BLE001
-                rollback_errors.append(f"restart-old:{_friendly_error_message(exc)}")
-
-        if rollback_errors:
-            append_business_log(
-                "system",
-                "self_update_rollback_failed",
-                "系统更新失败，且自动回滚未完全成功。",
-                level="error",
-                request_id=request_id,
-                errors=rollback_errors,
-                container_name=container_name,
-                backup_container_name=backup_container_name,
-                replacement_container_id=replacement_container_id,
-                replacement_container_name=replacement_container_name,
-                replacement_container_renamed=replacement_container_renamed,
-            )
-            raise RuntimeError("；".join(rollback_errors))
-
+    current_phase = "preparing"
+    group: dict[str, Any] | None = None
     try:
         container_inspect = client.inspect_container(container_id)
         container_name = _container_display_name(container_inspect, str(container_id or ""))
         _update_state_from_helper(
             request_id,
             status="running",
-            phase="pulling",
-            message="正在拉取最新镜像，服务稍后会短暂重启。",
+            phase="preparing",
+            message="正在准备整组发布镜像，服务稍后会短暂重启。",
             started_at=_now_iso(),
             finished_at="",
             container_name=container_name,
@@ -1795,140 +2044,71 @@ def run_update_helper(
             worker_image_ref=str(worker_image_ref or ""),
         )
 
-        client.pull_image(image_ref)
+        roles: list[dict[str, str]] = []
         if web_container_name:
-            current_phase = "updating_web"
-            _update_state_from_helper(
-                request_id,
-                status="running",
-                phase="updating_web",
-                message="API 镜像已拉取完成，正在更新 Web 前端容器。",
+            roles.append(
+                {
+                    "role": "web",
+                    "container_ref": web_container_name,
+                    "image_ref": web_image_ref or image_ref,
+                }
             )
-            web_result = _replace_related_container(
-                client,
-                request_id=request_id,
-                container_ref=web_container_name,
-                image_ref=web_image_ref or image_ref,
-                role="web",
-                runtime_config=runtime_config,
-                image_already_pulled=_same_image_ref(web_image_ref or image_ref, image_ref),
-            )
-            _update_state_from_helper(
-                request_id,
-                status="running",
-                phase="web_updated",
-                message="Web 前端容器已更新，正在替换 API 容器。",
-                web_container_name=str(web_result.get("container_name") or web_container_name),
-                web_replacement_container_id=str(web_result.get("replacement_container_id") or ""),
-            )
-            append_business_log(
-                "system",
-                "self_update_web_updated",
-                "Web 前端容器已更新。",
-                request_id=request_id,
-                container_name=str(web_result.get("container_name") or web_container_name),
-                image_ref=web_image_ref or image_ref,
-                replacement_container_id=str(web_result.get("replacement_container_id") or ""),
-            )
+        roles.append({"role": "app", "container_ref": container_id, "image_ref": image_ref})
         if worker_container_name:
-            current_phase = "updating_worker"
-            _update_state_from_helper(
-                request_id,
-                status="running",
-                phase="updating_worker",
-                message="正在更新后台 Worker 容器。",
+            roles.append(
+                {
+                    "role": "worker",
+                    "container_ref": worker_container_name,
+                    "image_ref": worker_image_ref or image_ref,
+                }
             )
-            worker_result = _replace_related_container(
-                client,
-                request_id=request_id,
-                container_ref=worker_container_name,
-                image_ref=worker_image_ref or image_ref,
-                role="worker",
-                runtime_config=runtime_config,
-                image_already_pulled=_same_image_ref(worker_image_ref or image_ref, image_ref),
-            )
-            _update_state_from_helper(
-                request_id,
-                status="running",
-                phase="worker_updated",
-                message="后台 Worker 容器已更新，正在替换 App 容器。",
-                worker_container_name=str(worker_result.get("container_name") or worker_container_name),
-                worker_replacement_container_id=str(worker_result.get("replacement_container_id") or ""),
-            )
-            append_business_log(
-                "system",
-                "self_update_worker_updated",
-                "后台 Worker 容器已更新。",
-                request_id=request_id,
-                container_name=str(worker_result.get("container_name") or worker_container_name),
-                image_ref=worker_image_ref or image_ref,
-                replacement_container_id=str(worker_result.get("replacement_container_id") or ""),
-            )
-        current_phase = "recreating"
-        _update_state_from_helper(
-            request_id,
-            status="running",
-            phase="recreating",
-            message="镜像已拉取完成，正在替换当前容器。",
-        )
-
-        replacement_body = _build_replacement_container_body(
-            container_inspect,
-            image_ref,
+        target_version = _normalize_version_label(_read_update_state().get("target_version"))
+        current_phase = "preparing"
+        group = prepare_release_group(
+            client,
+            request_id=request_id,
+            roles=roles,
             runtime_config=runtime_config,
-            role="app",
+            target_version=target_version,
         )
-        replacement_container_name = container_name
-        backup_container_name = _backup_container_name(container_name, request_id)
-
-        current_phase = "switching"
         _update_state_from_helper(
             request_id,
             status="running",
-            phase="switching",
-            message="新容器配置已准备，正在切换服务实例。",
+            phase="switching_group",
+            message="镜像已准备，正在切换整组服务实例。",
         )
-        client.stop_container(container_id, timeout_seconds=10)
-        client.rename_container(container_id, name=backup_container_name)
-        old_container_renamed = True
-        replacement_container_id = client.create_container(replacement_body, name=container_name)
-        replacement_container_renamed = True
-
-        current_phase = "starting"
+        current_phase = "switching_group"
+        activate_release_group(client, group)
+        replacement_by_role = {str(item.get("role") or ""): item for item in group.get("roles") or []}
         _update_state_from_helper(
             request_id,
-            status="pending_startup",
-            phase="starting",
-            message="新容器已创建，正在等待应用恢复。",
-            replacement_container_id=replacement_container_id,
+            status="running",
+            phase="verifying_group",
+            message="所有候选容器已启动，正在验证整组就绪状态。",
+            replacement_container_id=str((replacement_by_role.get("app") or {}).get("candidate_container_id") or ""),
+            web_replacement_container_id=str((replacement_by_role.get("web") or {}).get("candidate_container_id") or ""),
+            worker_replacement_container_id=str((replacement_by_role.get("worker") or {}).get("candidate_container_id") or ""),
         )
-        client.start_container(replacement_container_id)
-        started_inspect = _wait_for_replacement_container(client, replacement_container_id)
-        _assert_container_name(started_inspect, container_name)
-
-        try:
-            client.remove_container(container_id, force=True)
-        except Exception as exc:  # noqa: BLE001
-            append_business_log(
-                "system",
-                "self_update_cleanup_warning",
-                "新容器已启动，但旧容器清理失败。",
-                level="warning",
-                request_id=request_id,
-                container_name=container_name,
-                backup_container_name=backup_container_name,
-                error=_friendly_error_message(exc),
-            )
+        current_phase = "verifying_group"
+        verify_release_group(client, group)
+        current_phase = "committing_group"
+        commit_release_group(client, group)
+        _update_state_from_helper(
+            request_id,
+            status="succeeded",
+            phase="completed",
+            message="整组服务已通过就绪验证。",
+            finished_at=_now_iso(),
+            last_error="",
+        )
+        _cleanup_release_group_backups(client, group)
+        _schedule_old_update_image_cleanup(request_id)
         return 0
     except Exception as exc:  # noqa: BLE001
         error_message = _friendly_error_message(exc)
-        rollback_error = ""
-        if replacement_container_id or old_container_renamed:
-            try:
-                _attempt_rollback()
-            except Exception as rollback_exc:  # noqa: BLE001
-                rollback_error = _friendly_error_message(rollback_exc)
-                error_message = f"{error_message}；自动回滚失败：{rollback_error}"
+        rollback_errors = rollback_release_group(client, group) if group else []
+        if rollback_errors:
+            error_message = f"{error_message}；整组回滚失败：{'；'.join(rollback_errors)}"
         _update_state_from_helper(
             request_id,
             status="failed",
@@ -1946,10 +2126,8 @@ def run_update_helper(
             container_name=str(locals().get("container_name") or ""),
             image_ref=image_ref,
             phase=current_phase,
-            replacement_container_id=replacement_container_id,
-            replacement_container_name=replacement_container_name,
-            backup_container_name=backup_container_name,
-            rollback_error=rollback_error,
+            release_group_roles=[str(item.get("role") or "") for item in (group or {}).get("roles") or []],
+            rollback_errors=rollback_errors,
             deployment_mode=str(deployment_mode or ""),
             web_container_name=str(web_container_name or ""),
             web_image_ref=str(web_image_ref or ""),

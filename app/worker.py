@@ -1,6 +1,9 @@
+import os
 import signal
+import sys
 import threading
 import time
+import uuid
 
 from app.core.database import close_database_pool
 from app.core.settings import APP_VERSION, LOCAL_PREVIEW_POLL_SECONDS, PROCESS_ROLE, ensure_app_dirs
@@ -20,6 +23,11 @@ from app.services.local_preview_worker import local_preview_queue_marker_mtime, 
 from app.services.source_refresh import SourceRefreshTaskManager
 from app.services.source_library import SourceLibraryManager
 from app.services.subscriptions import SubscriptionManager
+from app.services.self_update import (
+    WORKER_START_TOKEN_ENV,
+    record_worker_heartbeat,
+    worker_heartbeat_readiness,
+)
 from app.services.task_state import TaskStateStore
 
 
@@ -73,6 +81,13 @@ def _run_archive_model_index_rebuild_worker(options: dict) -> None:
 
 
 def main() -> int:
+    if "--healthcheck" in sys.argv[1:]:
+        readiness = worker_heartbeat_readiness(
+            expected_start_token=os.getenv(WORKER_START_TOKEN_ENV) or None,
+            expected_version=APP_VERSION,
+        )
+        return 0 if readiness.get("ready") else 1
+
     ensure_app_dirs()
     stop_event = threading.Event()
 
@@ -104,6 +119,7 @@ def main() -> int:
     local_organizer.start()
     source_library_manager.start()
     remote_refresh_manager.start()
+    worker_start_token = os.getenv(WORKER_START_TOKEN_ENV) or uuid.uuid4().hex
 
     append_business_log(
         "system",
@@ -147,7 +163,9 @@ def main() -> int:
     last_account_cookie_poll = 0.0
     archive_model_index_rebuild_thread: threading.Thread | None = None
     try:
+        record_worker_heartbeat(start_token=worker_start_token)
         while not stop_event.wait(WORKER_POLL_SECONDS):
+            record_worker_heartbeat(start_token=worker_start_token)
             _run_database_maintenance()
             archive_manager.ensure_worker_for_pending()
             archive_model_index_rebuild_status = read_archive_model_index_rebuild_status()

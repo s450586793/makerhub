@@ -23,10 +23,15 @@ services:
       - /volume2/entertainment/3D打印/makerhub:/app/data
       # 高风险可选：只有明确需要网页一键更新时再挂载 Docker socket。
       # - /var/run/docker.sock:/var/run/docker.sock
-    # 高级可选：如果希望 App 等 Postgres 健康后再启动，取消下面三行注释，并同时打开 Postgres 的 healthcheck。
-    # depends_on:
-    #   makerhub-postgres:
-    #     condition: service_healthy
+    depends_on:
+      makerhub-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8000/api/public/health/ready', timeout=3); raise SystemExit(0 if response.status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
     restart: unless-stopped
 
   makerhub-worker:
@@ -49,10 +54,15 @@ services:
     volumes:
       - /volume4/docker/docker/makerhub:/app/config
       - /volume2/entertainment/3D打印/makerhub:/app/data
-    # 高级可选：如果希望 Worker 等 Postgres 健康后再启动，取消下面三行注释，并同时打开 Postgres 的 healthcheck。
-    # depends_on:
-    #   makerhub-postgres:
-    #     condition: service_healthy
+    depends_on:
+      makerhub-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.worker", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
     restart: unless-stopped
 
   makerhub-postgres:
@@ -64,12 +74,11 @@ services:
       POSTGRES_PASSWORD: ${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}
     volumes:
       - /volume4/docker/docker/makerhub/postgres:/var/lib/postgresql/data
-    # 高级可选：需要配合上面的 depends_on 使用时再打开。
-    # healthcheck:
-    #   test: ["CMD-SHELL", "pg_isready -U makerhub -d makerhub"]
-    #   interval: 10s
-    #   timeout: 5s
-    #   retries: 10
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U makerhub -d makerhub"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
   flaresolverr:

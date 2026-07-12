@@ -4,9 +4,11 @@ import json
 import os
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 
 from app.api import config as config_api
-from app.core.settings import APP_VERSION
+from app.core import database
+from app.core.settings import APP_VERSION, PROCESS_ROLE
 from app.schemas.models import SystemUpdateRequest
 from app.services.request_threads import run_ui_io
 from app.services.runtime_diagnostics import build_runtime_diagnostics
@@ -36,6 +38,23 @@ async def public_makerhub_ping():
         "makerhub": True,
         "app_version": APP_VERSION,
     }
+
+
+@router.get("/public/health/ready")
+async def public_health_ready():
+    status = database.database_status()
+    database_payload = {
+        "ready": bool(status.get("available")),
+        "schema_version": int(status.get("schema_version") or 0),
+        "expected_schema_version": int(status.get("expected_schema_version") or 0),
+    }
+    payload = {
+        "ready": bool(database_payload["ready"]),
+        "role": PROCESS_ROLE,
+        "version": APP_VERSION,
+        "database": database_payload,
+    }
+    return JSONResponse(payload, status_code=200 if payload["ready"] else 503)
 
 
 @router.get("/config")
