@@ -8,7 +8,7 @@ from typing import Any, Callable, Iterable, Iterator, Optional
 DATABASE_SCHEMA_VERSION = 3
 DATABASE_SCHEMA_METADATA_KEY = "database_schema_version"
 DATABASE_STATE_EVENT_CHANNEL = "makerhub_state_events"
-_DATABASE_INITIALIZED = False
+_DATABASE_INITIALIZED_KEY: tuple[int, str] | None = None
 _DATABASE_INITIALIZE_LOCK = threading.Lock()
 _DATABASE_POOL = None
 _DATABASE_POOL_KEY: tuple[int, str] | None = None
@@ -146,25 +146,24 @@ def _get_database_pool() -> Any:
 def database_connection() -> Iterator[Any]:
     pool = _get_database_pool()
     try:
-        checkout = pool.connection()
-        connection = checkout.__enter__()
+        connection = pool.getconn()
     except Exception:
         raise DatabaseUnavailable("Postgres 连接池暂时不可用。") from None
 
     try:
         yield connection
         connection.commit()
-    except BaseException as exc:
+    except BaseException:
         try:
             try:
                 connection.rollback()
             except Exception:
                 pass
         finally:
-            checkout.__exit__(type(exc), exc, exc.__traceback__)
+            pool.putconn(connection)
         raise
     else:
-        checkout.__exit__(None, None, None)
+        pool.putconn(connection)
 
 
 def _initialize_database_schema() -> None:
@@ -258,23 +257,24 @@ def _initialize_database_schema() -> None:
 
 
 def initialize_database() -> bool:
-    global _DATABASE_INITIALIZED
+    global _DATABASE_INITIALIZED_KEY
     if not database_configured():
         return False
-    if _DATABASE_INITIALIZED:
+    key = (os.getpid(), database_url())
+    if _DATABASE_INITIALIZED_KEY == key:
         return True
     with _DATABASE_INITIALIZE_LOCK:
-        if _DATABASE_INITIALIZED:
+        if _DATABASE_INITIALIZED_KEY == key:
             return True
         _initialize_database_schema()
-        _DATABASE_INITIALIZED = True
+        _DATABASE_INITIALIZED_KEY = key
     return True
 
 
 def _reset_database_initialization_for_tests() -> None:
-    global _DATABASE_INITIALIZED
+    global _DATABASE_INITIALIZED_KEY
     with _DATABASE_INITIALIZE_LOCK:
-        _DATABASE_INITIALIZED = False
+        _DATABASE_INITIALIZED_KEY = None
 
 
 def database_status() -> dict[str, Any]:

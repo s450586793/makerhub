@@ -35,6 +35,7 @@ class FakePool:
         self.kwargs = kwargs
         self.connection_value = FakeConnection()
         self.checkouts = 0
+        self.puts = 0
         self.open_calls = 0
         self.close_calls = 0
         self.__class__.instances.append(self)
@@ -42,9 +43,13 @@ class FakePool:
     def open(self, *, wait=False):
         self.open_calls += 1
 
-    def connection(self):
+    def getconn(self):
         self.checkouts += 1
-        return FakeCheckout(self.connection_value)
+        return self.connection_value
+
+    def putconn(self, connection):
+        assert connection is self.connection_value
+        self.puts += 1
 
     def close(self):
         self.close_calls += 1
@@ -72,6 +77,7 @@ def test_database_connection_reuses_one_pid_scoped_pool():
     assert len(FakePool.instances) == 1
     assert FakePool.instances[0].open_calls == 1
     assert FakePool.instances[0].checkouts == 2
+    assert FakePool.instances[0].puts == 2
     assert FakePool.instances[0].connection_value.commits == 2
 
 
@@ -88,6 +94,30 @@ def test_database_connection_rolls_back_before_returning_connection():
     connection = FakePool.instances[0].connection_value
     assert connection.commits == 0
     assert connection.rollbacks == 1
+
+
+def test_database_connection_returns_connection_when_commit_fails():
+    class CommitFailureConnection(FakeConnection):
+        def commit(self):
+            raise RuntimeError("commit failed")
+
+    class CommitFailurePool(FakePool):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.connection_value = CommitFailureConnection()
+
+    with (
+        patch.object(database, "ConnectionPool", CommitFailurePool),
+        patch.object(database, "database_url", return_value="postgresql://example/db"),
+        patch.object(database, "dict_row", object()),
+    ):
+        with pytest.raises(RuntimeError, match="commit failed"):
+            with database.database_connection():
+                pass
+
+    pool = CommitFailurePool.instances[0]
+    assert pool.connection_value.rollbacks == 1
+    assert pool.puts == 1
 
 
 def test_database_pool_rebuilds_after_pid_or_url_change():
@@ -135,7 +165,7 @@ def test_close_database_pool_is_idempotent():
 
 def test_pool_checkout_failure_does_not_expose_database_url():
     class BrokenPool(FakePool):
-        def connection(self):
+        def getconn(self):
             raise RuntimeError("password=secret host=database.internal")
 
     with (

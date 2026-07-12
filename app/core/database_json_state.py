@@ -105,11 +105,19 @@ def update_database_json_state(
     if not callable(mutator):
         raise TypeError("JSON 状态 mutator 必须可调用。")
     require_database_json_state()
+
+    def checked_mutator(current: dict[str, Any]) -> dict[str, Any]:
+        result = mutator(current)
+        payload = current if result is None else result
+        if not isinstance(payload, dict):
+            raise ValueError("JSON 状态 mutator 必须生成对象。")
+        return payload
+
     try:
         payload, revision = update_json_state(
             clean_key,
             dict(default),
-            mutator,
+            checked_mutator,
             expected_revision=expected_revision,
         )
     except DatabaseUnavailable:
@@ -117,8 +125,6 @@ def update_database_json_state(
     except Exception:
         # mutator 可能包含副作用，原子更新失败后不能自动重复执行。
         raise
-    if not isinstance(payload, dict):
-        raise ValueError("JSON 状态 mutator 必须生成对象。")
     return payload, int(revision or 0)
 
 

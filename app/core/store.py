@@ -173,10 +173,15 @@ class JsonStore:
                 current = self._load_database_payload() or {}
             else:
                 current = self._load_file_payload()
-            baseline = loaded[0] if loaded is not None else current
+            baseline = (
+                loaded[0]
+                if loaded is not None
+                else AppConfig.model_validate(current or {}).model_dump()
+            )
 
             def merge_latest(latest: dict[str, Any]) -> dict[str, Any]:
-                merged = _merge_config_changes(baseline, latest or {}, desired)
+                normalized_latest = AppConfig.model_validate(latest or {}).model_dump()
+                merged = _merge_config_changes(baseline, normalized_latest, desired)
                 return AppConfig.model_validate(merged).model_dump()
 
             revision: int | None = None

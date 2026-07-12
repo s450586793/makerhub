@@ -5,7 +5,9 @@ from unittest.mock import patch
 
 from app.core.security import hash_api_token
 from app.core import database
+from app.core import database_json_state
 from app.core.store import ConfigConflictError, JsonStore
+from app.core.database import JsonStateConflict
 from app.schemas.models import ApiTokenRecord, AppConfig, CookiePair
 from app.services import (
     archive_model_index_rebuild,
@@ -305,6 +307,22 @@ class DatabaseStatusTest(unittest.TestCase):
 
 
 class JsonStoreAtomicUpdateTest(unittest.TestCase):
+    def test_sparse_legacy_config_can_save_unrelated_field(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(
+                '{"user":{"username":"admin","display_name":"旧配置"}}',
+                encoding="utf-8",
+            )
+            store = JsonStore(path)
+            config = store.load()
+
+            config.proxy.enabled = True
+            saved = store.save(config)
+
+            self.assertEqual(saved.user.display_name, "旧配置")
+            self.assertTrue(saved.proxy.enabled)
+
     def test_stale_saves_preserve_changes_to_unrelated_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")
@@ -362,8 +380,86 @@ class JsonStoreAtomicUpdateTest(unittest.TestCase):
 
             self.assertEqual(store.path.read_text(encoding="utf-8"), before)
 
+    def test_database_update_forwards_expected_revision_before_mutator(self):
+        state = AppConfig().model_dump()
+        revision = 7
+        mutator_calls = []
+
+        def fake_update(_key, _default, mutator, *, expected_revision=None):
+            if expected_revision != revision:
+                raise JsonStateConflict("stale")
+            updated = mutator(dict(state))
+            return updated, revision + 1
+
+        with patch("app.core.store.database_configured", return_value=True), \
+                patch("app.core.store.update_database_json_state", side_effect=fake_update):
+            store = JsonStore()
+            with self.assertRaises(JsonStateConflict):
+                store.update(
+                    lambda config: mutator_calls.append(True) or config,
+                    expected_revision=revision - 1,
+                )
+            saved = store.update(
+                lambda config: mutator_calls.append(True) or config,
+                expected_revision=revision,
+            )
+
+        self.assertIsInstance(saved, AppConfig)
+        self.assertEqual(mutator_calls, [True])
+
+    def test_sparse_database_payload_uses_same_merge_rules_as_file(self):
+        state = {"app_config": {"user": {"username": "admin", "display_name": "旧数据库配置"}}}
+        with patch("app.core.store.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.core.store.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.core.store.database_configured", return_value=False):
+            store = JsonStore()
+            config = store.load()
+            config.proxy.enabled = True
+            saved = store.save(config)
+
+        self.assertEqual(saved.user.display_name, "旧数据库配置")
+        self.assertTrue(saved.proxy.enabled)
+
 
 class DatabaseAtomicJsonStateTest(unittest.TestCase):
+    def test_database_object_update_rejects_invalid_payload_before_sql_update(self):
+        calls = []
+
+        class FakeResult:
+            def __init__(self, row=None):
+                self.row = row
+
+            def fetchone(self):
+                return self.row
+
+        class FakeConnection:
+            def execute(self, sql, params=None):
+                calls.append((sql, params))
+                if "SELECT value, revision" in sql:
+                    return FakeResult({"value": {"count": 1}, "revision": 2})
+                if "UPDATE makerhub_json_state" in sql:
+                    raise AssertionError("invalid payload must fail before UPDATE")
+                return FakeResult()
+
+        class FakeContext:
+            def __enter__(self):
+                return FakeConnection()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        with patch.object(database_json_state, "require_database_json_state", return_value=None), \
+                patch.object(database, "initialize_database", return_value=True), \
+                patch.object(database, "database_connection", return_value=FakeContext()):
+            with self.assertRaises(ValueError):
+                database_json_state.update_database_json_state(
+                    "counter",
+                    {"count": 0},
+                    lambda _value: ["invalid"],
+                )
+
+        self.assertFalse(any("UPDATE makerhub_json_state" in sql for sql, _params in calls))
+
     def test_update_json_state_locks_row_and_increments_revision_once(self):
         calls = []
         state = {"value": {"count": 1}, "revision": 4}
@@ -445,6 +541,36 @@ class DatabaseAtomicJsonStateTest(unittest.TestCase):
 
 
 class DatabaseInitializationGuardTest(unittest.TestCase):
+    def test_initialization_guard_is_scoped_to_pid_and_database_url(self):
+        schema_connections = []
+        current_url = "postgresql://example/one"
+
+        class FakeContext:
+            def __enter__(self):
+                schema_connections.append(current_url)
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def execute(self, sql, params=None):
+                return self
+
+        database._reset_database_initialization_for_tests()
+        with patch.object(database, "database_configured", return_value=True), \
+                patch.object(database, "database_url", side_effect=lambda: current_url), \
+                patch.object(database.os, "getpid", return_value=123), \
+                patch.object(database, "database_connection", return_value=FakeContext()):
+            self.assertTrue(database.initialize_database())
+            self.assertTrue(database.initialize_database())
+            current_url = "postgresql://example/two"
+            self.assertTrue(database.initialize_database())
+
+        self.assertEqual(
+            schema_connections,
+            ["postgresql://example/one", "postgresql://example/two"],
+        )
+
     def test_repeated_json_state_operations_initialize_database_once(self):
         calls = []
 
