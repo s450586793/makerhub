@@ -74,12 +74,6 @@ export async function apiRequest(path, options = {}) {
     recordApiDuration(path, (typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt);
   }
 
-  if (response.status === 401 && redirectOn401) {
-    const next = encodeURIComponent(buildRedirectTarget());
-    window.location.assign(`/login?next=${next}`);
-    throw new Error("未登录。");
-  }
-
   if (response.status === 204) {
     return null;
   }
@@ -88,8 +82,15 @@ export async function apiRequest(path, options = {}) {
   const payload = contentType.includes("application/json")
     ? await response.json()
     : await response.text();
+  const hasHtmlPayload = typeof payload === "string" && looksLikeHtmlError(payload);
 
-  if (response.ok && String(path || "").startsWith("/api/") && typeof payload === "string" && looksLikeHtmlError(payload)) {
+  if (response.status === 401 && redirectOn401 && !hasHtmlPayload) {
+    const next = encodeURIComponent(buildRedirectTarget());
+    window.location.assign(`/login?next=${next}`);
+    throw new Error(withApiErrorContext("未登录。", path, response.status));
+  }
+
+  if (response.ok && String(path || "").startsWith("/api/") && hasHtmlPayload) {
     throw new Error(withApiErrorContext(sanitizeApiError(payload), path, response.status));
   }
 
@@ -98,7 +99,7 @@ export async function apiRequest(path, options = {}) {
       ? payload.detail || payload.message
       : payload;
     const message = sanitizeApiError(detail);
-    throw new Error(looksLikeHtmlError(detail) ? withApiErrorContext(message, path, response.status) : message);
+    throw new Error(withApiErrorContext(message, path, response.status));
   }
 
   return payload;
