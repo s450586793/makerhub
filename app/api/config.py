@@ -2775,7 +2775,7 @@ def _public_config_base_payload(config) -> dict:
             "default_password": default_password,
         },
         "api_tokens": [
-            auth_manager._token_view(item).model_dump()
+            auth_manager._token_view(item).model_dump(exclude={"token_value"})
             for item in sorted(config.api_tokens, key=lambda item: item.created_at, reverse=True)
         ],
         "subscriptions": [item.model_dump() for item in config.subscriptions],
@@ -2865,11 +2865,12 @@ def _require_mobile_import_token(request: Request) -> None:
 
 
 def _mark_mobile_import_used() -> None:
-    config = store.load()
-    mobile_import = config.mobile_import
-    mobile_import.last_used_at = china_now_iso()
-    config.mobile_import = mobile_import
-    store.save(config)
+    last_used_at = china_now_iso()
+
+    def mark_used(config):
+        config.mobile_import.last_used_at = last_used_at
+
+    store.update(mark_used)
 
 
 async def _run_mobile_import_upload(files: list[UploadFile], paths: list[str]) -> dict:
@@ -3813,26 +3814,29 @@ async def save_organizer(payload: OrganizeTask, request: Request):
 @router.post("/config/mobile-import/token")
 async def reset_mobile_import_token(payload: MobileImportTokenResetRequest, request: Request):
     _require_session_auth(request)
-    config = store.load()
     raw_token, token_view = auth_manager.create_api_token(
         "iOS 快捷指令",
         permissions=["mobile_import"],
         token_prefix="mhi",
     )
-    config.mobile_import = MobileImportConfig(
-        enabled=bool(payload.enabled),
-        token_prefix=raw_token[:12],
-        token_hash=hash_api_token(raw_token),
-        created_at=china_now_iso(),
-        last_used_at="",
-    )
-    saved = store.save(config)
+    created_at = china_now_iso()
+
+    def replace_mobile_import(config):
+        config.mobile_import = MobileImportConfig(
+            enabled=bool(payload.enabled),
+            token_prefix=raw_token[:12],
+            token_hash=hash_api_token(raw_token),
+            created_at=created_at,
+            last_used_at="",
+        )
+
+    saved = store.update(replace_mobile_import)
     append_business_log(
         "settings",
         "mobile_import_token_reset",
         "移动端导入 Token 已生成。",
-        enabled=config.mobile_import.enabled,
-        token_prefix=config.mobile_import.token_prefix,
+        enabled=saved.mobile_import.enabled,
+        token_prefix=saved.mobile_import.token_prefix,
         token_id=token_view.id,
     )
     return {
@@ -3845,14 +3849,17 @@ async def reset_mobile_import_token(payload: MobileImportTokenResetRequest, requ
 @router.post("/config/mobile-import/disable")
 async def disable_mobile_import(request: Request):
     _require_session_auth(request)
-    config = store.load()
-    config.mobile_import.enabled = False
-    token_hash = str(config.mobile_import.token_hash or "")
-    for item in config.api_tokens:
-        if token_hash and item.token_hash == token_hash:
-            item.disabled = True
-            item.revoked_at = item.revoked_at or china_now_iso()
-    saved = store.save(config)
+    revoked_at = china_now_iso()
+
+    def disable(config):
+        config.mobile_import.enabled = False
+        token_hash = str(config.mobile_import.token_hash or "")
+        for item in config.api_tokens:
+            if token_hash and item.token_hash == token_hash:
+                item.disabled = True
+                item.revoked_at = item.revoked_at or revoked_at
+
+    saved = store.update(disable)
     append_business_log("settings", "mobile_import_disabled", "移动端导入 Token 已停用。")
     return _with_version_status(_public_config_payload(saved), await _get_github_version_status(proxy_config=saved.proxy))
 

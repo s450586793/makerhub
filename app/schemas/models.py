@@ -1,9 +1,9 @@
 import os
 from typing import List, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-from app.core.security import default_admin_password_hash
+from app.core.security import hash_api_token
 from app.core.settings import ARCHIVE_DIR, CONFIG_DIR, LOCAL_DIR, LOGS_DIR, STATE_DIR
 
 
@@ -93,7 +93,7 @@ class UserProfile(BaseModel):
     display_name: str = "Admin"
     password_hint: str = "请改成强密码"
     theme_preference: Literal["light", "dark", "auto"] = "auto"
-    password_hash: str = Field(default_factory=default_admin_password_hash)
+    password_hash: str = ""
     password_updated_at: str = ""
 
 
@@ -126,11 +126,26 @@ class RuntimeResourceConfig(BaseModel):
 
 
 class ApiTokenRecord(BaseModel):
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_plaintext_token(cls, value):
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        had_legacy_token_value = "token_value" in payload
+        raw_token = str(payload.pop("token_value", "") or "").strip()
+        if raw_token and not str(payload.get("token_hash") or "").strip():
+            payload["token_hash"] = hash_api_token(raw_token)
+        payload["token_value"] = ""
+        payload["legacy_token_value_present"] = had_legacy_token_value
+        return payload
+
     id: str
     name: str
     token_prefix: str
-    token_hash: str
-    token_value: str = ""
+    token_hash: str = ""
+    token_value: str = Field(default="", exclude=True)
+    legacy_token_value_present: bool = Field(default=False, exclude=True, repr=False)
     created_at: str
     permissions: List[str] = Field(default_factory=lambda: ["archive_write"])
     expires_at: str = ""

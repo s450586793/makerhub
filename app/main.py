@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 
 from app.api.auth import router as auth_router
+from app.api.dependencies import store as global_store
 from app.api.config import crawler as config_crawler
 from app.api.config import local_organizer
 from app.api.config import remote_refresh_manager
@@ -36,7 +37,7 @@ from app.core.settings import (
 )
 from app.core.api_permissions import api_token_permission_for_request
 from app.core.database import close_database_pool
-from app.services.auth import AuthManager
+from app.services.auth import AuthManager, ensure_secure_admin_credential
 from app.services.business_logs import append_business_log
 from app.services.performance import log_api_request_if_needed
 from app.services.request_threads import run_web_io, shutdown_request_threads
@@ -47,7 +48,7 @@ from app.services.state_events import start_state_event_listener
 ensure_app_dirs()
 
 app = FastAPI(title="makerhub", version=APP_VERSION)
-auth_manager = AuthManager()
+auth_manager = AuthManager(store=global_store)
 LOGO_PATH = ROOT_DIR / "app" / "static" / "img" / "makerhub-logo.png"
 
 SPA_SHELL_PATHS = {
@@ -68,8 +69,7 @@ UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 def _request_origin(request: Request) -> str:
-    forwarded_proto = str(request.headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip().lower()
-    scheme = forwarded_proto if forwarded_proto in {"http", "https"} else str(request.url.scheme or "").lower()
+    scheme = str(request.url.scheme or "").lower()
     host = str(request.headers.get("host") or "").strip().lower()
     if not scheme or not host:
         return ""
@@ -132,6 +132,7 @@ async def favicon() -> Response:
 
 @app.on_event("startup")
 async def resume_archive_queue() -> None:
+    ensure_secure_admin_credential(global_store)
     mark_update_started_after_restart()
     start_state_event_listener()
     queue = {"recovered_count": 0, "queued_count": 0}

@@ -102,19 +102,17 @@ async def me(request: Request):
 
 
 def _secure_cookie_for_request(request: Request) -> bool:
-    forwarded_proto = str(request.headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip().lower()
-    if forwarded_proto == "https":
-        return True
-    forwarded_ssl = str(request.headers.get("X-Forwarded-Ssl") or "").strip().lower()
-    if forwarded_ssl == "on":
-        return True
     return str(request.url.scheme or "").lower() == "https"
+
+
+def _token_list_payload(items) -> list[dict]:
+    return [item.model_dump(exclude={"token_value"}) for item in items]
 
 
 @router.get("/tokens")
 async def list_tokens(request: Request):
     _require_session_auth(request)
-    return {"items": [item.model_dump() for item in auth_manager.list_api_tokens()]}
+    return {"items": _token_list_payload(auth_manager.list_api_tokens())}
 
 
 @router.post("/tokens")
@@ -130,7 +128,7 @@ async def create_token(payload: ApiTokenCreateRequest, request: Request):
         "success": True,
         "token": raw_token,
         "item": token_view.model_dump(),
-        "items": [item.model_dump() for item in auth_manager.list_api_tokens()],
+        "items": _token_list_payload(auth_manager.list_api_tokens()),
     }
 
 
@@ -141,7 +139,7 @@ async def revoke_token(token_id: str, request: Request):
     append_business_log("auth", "api_token_revoked", "API Token 已撤销。", token_id=token_id)
     return {
         "success": True,
-        "items": [item.model_dump() for item in items],
+        "items": _token_list_payload(items),
     }
 
 

@@ -65,3 +65,23 @@ export function buildSharingPayload(form = {}) {
     include_comments: form.include_comments !== false,
   };
 }
+
+export function normalizeTokenItems(items = []) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items
+    .filter((item) => item && typeof item === "object")
+    .map((item) => ({
+      id: String(item.id || ""),
+      name: String(item.name || ""),
+      token_prefix: String(item.token_prefix || ""),
+      permissions: Array.isArray(item.permissions) ? [...item.permissions] : [],
+      status: String(item.status || "active"),
+      created_at: String(item.created_at || ""),
+      expires_at: String(item.expires_at || ""),
+      last_used_at: String(item.last_used_at || ""),
+      disabled: Boolean(item.disabled),
+      revoked_at: String(item.revoked_at || ""),
+    }));
+}

@@ -1,6 +1,10 @@
+import os
+import secrets
 import threading
 import time
+from dataclasses import dataclass
 from datetime import timedelta
+from pathlib import Path
 from typing import Iterable, Optional
 
 from fastapi import Request
@@ -40,6 +44,49 @@ TOKEN_PERMISSION_LABELS = {
 }
 DEFAULT_API_TOKEN_PERMISSIONS = ["archive_write"]
 TOKEN_PERMISSION_ORDER = list(TOKEN_PERMISSION_LABELS.keys())
+MIN_ADMIN_PASSWORD_LENGTH = 12
+ADMIN_BOOTSTRAP_PASSWORD_FILENAME = "admin-bootstrap-password"
+
+
+@dataclass(frozen=True)
+class BootstrapCredentialResult:
+    rotated: bool
+    source: str
+    bootstrap_path: Path
+
+
+def _bootstrap_password_path() -> Path:
+    return STATE_DIR / ADMIN_BOOTSTRAP_PASSWORD_FILENAME
+
+
+def _write_bootstrap_password(path: Path, password: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(
+        f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+    )
+    descriptor = os.open(temporary_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            handle.write(f"{password}\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+        path.chmod(0o600)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary_path.unlink(missing_ok=True)
+
+
+def _remove_bootstrap_password() -> None:
+    _bootstrap_password_path().unlink(missing_ok=True)
+
+
+def _admin_credential_requires_rotation(password_hash: str) -> bool:
+    stored_hash = str(password_hash or "").strip()
+    return not stored_hash or verify_password("admin", stored_hash)
 
 
 def normalize_token_permissions(values: Optional[Iterable[str]]) -> list[str]:
@@ -151,11 +198,8 @@ class AuthManager:
         clean_username = str(username or "").strip().lower() or "-"
         client_host = ""
         if request is not None and request.client:
-            client_host = str(request.client.host or "").strip()
-        forwarded_for = ""
-        if request is not None:
-            forwarded_for = str(request.headers.get("X-Forwarded-For") or "").split(",", 1)[0].strip()
-        return f"{forwarded_for or client_host or '-'}:{clean_username}"
+            client_host = str(request.client.host or "").strip().lower()
+        return f"{client_host or '-'}:{clean_username}"
 
     def login_backoff_seconds(self, key: str) -> int:
         now = china_now().timestamp()
@@ -248,12 +292,12 @@ class AuthManager:
             self._cache_session(session_id, target)
         return target
 
-    def _token_view(self, item: ApiTokenRecord, *, now=None) -> ApiTokenView:
+    def _token_view(self, item: ApiTokenRecord, *, now=None, token_value: str = "") -> ApiTokenView:
         return ApiTokenView(
             id=item.id,
             name=item.name,
             token_prefix=item.token_prefix,
-            token_value=item.token_value,
+            token_value=token_value,
             created_at=item.created_at,
             permissions=normalize_token_permissions(item.permissions),
             expires_at=item.expires_at,
@@ -265,6 +309,8 @@ class AuthManager:
 
     def list_api_tokens(self) -> list[ApiTokenView]:
         config = self.store.load()
+        if any(item.legacy_token_value_present for item in config.api_tokens):
+            config = self.store.update(lambda current: current)
         items = sorted(config.api_tokens, key=lambda item: item.created_at, reverse=True)
         now = china_now()
         return [self._token_view(item, now=now) for item in items]
@@ -277,35 +323,42 @@ class AuthManager:
         expires_days: int = 0,
         token_prefix: str = "mht",
     ) -> tuple[str, ApiTokenView]:
-        config = self.store.load()
         raw_token = generate_api_token(prefix=token_prefix)
         now = china_now_iso()
-        display_name = str(name or "").strip() or f"Token {len(config.api_tokens) + 1}"
+        requested_name = str(name or "").strip()
         safe_expires_days = max(0, min(int(expires_days or 0), 3650))
         expires_at = (china_now() + timedelta(days=safe_expires_days)).isoformat() if safe_expires_days else ""
-        record = ApiTokenRecord(
-            id=generate_session_id(),
-            name=display_name,
-            token_prefix=raw_token[:12],
-            token_hash=hash_api_token(raw_token),
-            token_value=raw_token,
-            created_at=now,
-            permissions=normalize_token_permissions(permissions),
-            expires_at=expires_at,
-        )
-        config.api_tokens.insert(0, record)
-        self.store.save(config)
-        return raw_token, self._token_view(record)
+        token_id = generate_session_id()
+
+        def add_token(config):
+            config.api_tokens.insert(
+                0,
+                ApiTokenRecord(
+                    id=token_id,
+                    name=requested_name or f"Token {len(config.api_tokens) + 1}",
+                    token_prefix=raw_token[:12],
+                    token_hash=hash_api_token(raw_token),
+                    created_at=now,
+                    permissions=normalize_token_permissions(permissions),
+                    expires_at=expires_at,
+                ),
+            )
+
+        saved = self.store.update(add_token)
+        record = next(item for item in saved.api_tokens if item.id == token_id)
+        return raw_token, self._token_view(record, token_value=raw_token)
 
     def revoke_api_token(self, token_id: str) -> list[ApiTokenView]:
-        config = self.store.load()
         now = china_now_iso()
-        for item in config.api_tokens:
-            if item.id == token_id:
-                item.disabled = True
-                item.revoked_at = item.revoked_at or now
-                break
-        self.store.save(config)
+
+        def revoke(config):
+            for item in config.api_tokens:
+                if item.id == token_id:
+                    item.disabled = True
+                    item.revoked_at = item.revoked_at or now
+                    break
+
+        self.store.update(revoke)
         return self.list_api_tokens()
 
     def validate_api_token(self, raw_token: str, *, required_permission: str = "") -> Optional[ApiTokenView]:
@@ -314,39 +367,68 @@ class AuthManager:
             return None
 
         token_hash = hash_api_token(token)
-        config = self.store.load()
-        matched = None
         now = china_now()
+        config = self.store.load()
+        candidate_id = ""
+        clean_required = str(required_permission or "").strip().lower()
         for item in config.api_tokens:
             if token_status(item, now=now) != "active":
                 continue
             if item.token_hash == token_hash:
                 permissions = normalize_token_permissions(item.permissions)
-                clean_required = str(required_permission or "").strip().lower()
                 if clean_required and clean_required not in permissions:
                     return None
-                item.permissions = permissions
-                item.last_used_at = china_now_iso()
-                matched = item
+                candidate_id = item.id
                 break
 
-        if matched is None:
+        if not candidate_id:
             return None
 
-        self.store.save(config)
-        return self._token_view(matched)
+        last_used_at = china_now_iso()
+
+        def touch_token(latest):
+            for item in latest.api_tokens:
+                if item.id != candidate_id or item.token_hash != token_hash:
+                    continue
+                if token_status(item) != "active":
+                    break
+                permissions = normalize_token_permissions(item.permissions)
+                if clean_required and clean_required not in permissions:
+                    break
+                item.permissions = permissions
+                item.last_used_at = last_used_at
+                return
+
+        saved = self.store.update(touch_token)
+        matched = next(
+            (
+                item
+                for item in saved.api_tokens
+                if item.id == candidate_id
+                and item.token_hash == token_hash
+                and token_status(item) == "active"
+                and (not clean_required or clean_required in normalize_token_permissions(item.permissions))
+            ),
+            None,
+        )
+        return self._token_view(matched) if matched is not None else None
 
     def change_password(self, current_password: str, new_password: str) -> None:
-        config = self.store.load()
-        if not verify_password(current_password, config.user.password_hash):
-            raise ValueError("当前密码不正确。")
         new_secret = str(new_password or "")
-        if len(new_secret) < 4:
-            raise ValueError("新密码至少需要 4 个字符。")
-        config.user.password_hash = hash_password(new_secret)
-        config.user.password_updated_at = china_now_iso()
-        self.store.save(config)
-        self.clear_all_sessions()
+        if len(new_secret) < MIN_ADMIN_PASSWORD_LENGTH:
+            raise ValueError(f"新密码至少需要 {MIN_ADMIN_PASSWORD_LENGTH} 个字符。")
+
+        def change(config):
+            if not verify_password(current_password, config.user.password_hash):
+                raise ValueError("当前密码不正确。")
+            config.user.password_hash = hash_password(new_secret)
+            config.user.password_updated_at = china_now_iso()
+
+        self.store.update(change)
+        try:
+            self.clear_all_sessions()
+        finally:
+            _remove_bootstrap_password()
 
     def extract_api_token(self, request: Request) -> str:
         auth_header = str(request.headers.get("Authorization") or "").strip()
@@ -383,3 +465,52 @@ class AuthManager:
                     "token": token_view.model_dump(),
                 }
         return None
+
+
+def ensure_secure_admin_credential(store: JsonStore) -> BootstrapCredentialResult:
+    bootstrap_path = _bootstrap_password_path()
+    current = store.load()
+    needs_token_cleanup = any(item.legacy_token_value_present for item in current.api_tokens)
+    if not _admin_credential_requires_rotation(current.user.password_hash):
+        if needs_token_cleanup:
+            store.update(lambda config: config)
+        return BootstrapCredentialResult(
+            rotated=False,
+            source="existing",
+            bootstrap_path=bootstrap_path,
+        )
+
+    environment_password = str(os.getenv("MAKERHUB_ADMIN_PASSWORD") or "")
+    if len(environment_password) >= MIN_ADMIN_PASSWORD_LENGTH:
+        password = environment_password
+        source = "environment"
+    else:
+        password = secrets.token_urlsafe(24)
+        source = "generated"
+    rotation = {"applied": False}
+
+    def rotate(config):
+        if not _admin_credential_requires_rotation(config.user.password_hash):
+            return
+        config.user.password_hash = hash_password(password)
+        config.user.password_updated_at = ""
+        rotation["applied"] = True
+
+    store.update(rotate)
+    if not rotation["applied"]:
+        return BootstrapCredentialResult(
+            rotated=False,
+            source="existing",
+            bootstrap_path=bootstrap_path,
+        )
+
+    if source == "generated":
+        _write_bootstrap_password(bootstrap_path, password)
+    else:
+        bootstrap_path.unlink(missing_ok=True)
+    AuthManager(store=store).clear_all_sessions()
+    return BootstrapCredentialResult(
+        rotated=True,
+        source=source,
+        bootstrap_path=bootstrap_path,
+    )

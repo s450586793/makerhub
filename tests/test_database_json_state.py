@@ -55,7 +55,7 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
         for item in reversed(self.patches):
             item.stop()
 
-    def test_json_store_migrates_config_with_cookie_and_tokens(self):
+    def test_json_store_persists_cookie_and_token_hash_without_plaintext(self):
         raw_token = "mht_database_token"
         config = AppConfig()
         config.cookies = [CookiePair(platform="cn", cookie="token=makerworld")]
@@ -75,10 +75,10 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
         loaded = store.load()
 
         self.assertEqual(self.state["app_config"]["cookies"][0]["cookie"], "token=makerworld")
-        self.assertEqual(self.state["app_config"]["api_tokens"][0]["token_value"], raw_token)
+        self.assertNotIn("token_value", self.state["app_config"]["api_tokens"][0])
         self.assertEqual(self.state["app_config"]["api_tokens"][0]["token_hash"], hash_api_token(raw_token))
         self.assertEqual(loaded.cookies[0].cookie, "token=makerworld")
-        self.assertEqual(loaded.api_tokens[0].token_value, raw_token)
+        self.assertFalse(loaded.api_tokens[0].token_value)
         self.assertEqual(loaded.api_tokens[0].token_hash, hash_api_token(raw_token))
 
     def test_json_store_does_not_backfill_cookie_from_legacy_file_at_runtime(self):

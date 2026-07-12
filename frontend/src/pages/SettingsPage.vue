@@ -300,9 +300,6 @@
             <h2>访问凭证管理</h2>
           </div>
           <div class="settings-inline-actions">
-            <button class="button button-secondary button-small" type="button" @click="copyShortcutConfig">
-              复制快捷指令配置
-            </button>
             <button class="button button-primary button-small" type="button" @click="openTokenDialog">
               生成 Token
             </button>
@@ -316,7 +313,7 @@
                 <th>名称</th>
                 <th>过期时间</th>
                 <th>权限</th>
-                <th>Token 字符</th>
+                <th>Token 前缀</th>
                 <th>操作</th>
               </tr>
             </thead>
@@ -335,16 +332,10 @@
                   </div>
                 </td>
                 <td>
-                  <code class="token-table__value">{{ item.token_value || `${item.token_prefix}...` }}</code>
+                  <code class="token-table__value">{{ item.token_prefix ? `${item.token_prefix}...` : "-" }}</code>
                 </td>
                 <td>
                   <div class="token-table__actions">
-                    <button class="button button-secondary button-small" type="button" :disabled="!item.token_value" @click="copyTokenValue(item)">
-                      复制
-                    </button>
-                    <button class="button button-secondary button-small" type="button" :disabled="!item.token_value || !hasTokenPermission(item, 'mobile_import')" @click="copyShortcutConfig(item)">
-                      快捷指令
-                    </button>
                     <button class="button button-danger button-small" type="button" :disabled="item.status === 'revoked'" @click="revokeToken(item.id)">
                       撤销
                     </button>
@@ -379,8 +370,27 @@
         @click="closeTokenDialog"
       >
         <div class="submit-dialog__panel token-create-dialog__panel" @click.stop>
-          <h2 id="token-create-dialog-title">生成 Token</h2>
-          <form class="token-create-dialog__form" @submit.prevent="createToken">
+          <h2 id="token-create-dialog-title">{{ createdToken ? "新 Token" : "生成 Token" }}</h2>
+          <div v-if="createdToken" class="token-create-dialog__form">
+            <div class="field-card">
+              <span>Token（关闭后不再显示）</span>
+              <code class="token-table__value">{{ createdToken }}</code>
+            </div>
+            <div class="submit-dialog__actions">
+              <button class="button button-secondary" type="button" @click="copyCreatedToken">复制 Token</button>
+              <button
+                v-if="createdTokenPermissions.includes('mobile_import')"
+                class="button button-secondary"
+                type="button"
+                @click="copyCreatedShortcutConfig"
+              >
+                复制快捷指令配置
+              </button>
+              <button class="button button-primary" type="button" @click="closeTokenDialog">完成</button>
+            </div>
+            <span class="form-status">{{ statuses.tokens }}</span>
+          </div>
+          <form v-else class="token-create-dialog__form" @submit.prevent="createToken">
             <label class="field-card">
               <span>名称</span>
               <input v-model.trim="tokenForm.name" type="text" placeholder="例如：我的 iPhone / 自动化脚本">
@@ -408,6 +418,7 @@
               <button class="button button-secondary" type="button" @click="closeTokenDialog">取消</button>
               <button class="button button-primary" type="submit">生成 Token</button>
             </div>
+            <span class="form-status">{{ statuses.tokens }}</span>
           </form>
         </div>
       </div>
@@ -837,7 +848,7 @@
           </label>
           <label class="field-card">
             <span>新密码</span>
-            <input v-model="passwordForm.new_password" type="password" autocomplete="new-password" placeholder="至少 4 位">
+            <input v-model="passwordForm.new_password" type="password" autocomplete="new-password" placeholder="至少 12 位">
           </label>
           <label class="field-card">
             <span>确认新密码</span>
@@ -878,6 +889,7 @@ import {
   buildThreeMfLimitsPayload,
   normalizeBoundedInt,
   normalizeDailyThreeMfLimit,
+  normalizeTokenItems,
 } from "../lib/settingsPayloads";
 import { createPagePerformanceTracker } from "../lib/performance";
 import { systemUpdateProgressState } from "../lib/systemUpdateProgress";
@@ -902,8 +914,9 @@ const tabs = [
 const activeTab = ref("system");
 const themePreference = ref("auto");
 const tokenItems = ref([]);
-const mobileImportToken = ref("");
 const tokenDialogOpen = ref(false);
+const createdToken = ref("");
+const createdTokenPermissions = ref([]);
 const sharedShares = ref([]);
 const sharedSharesLoading = ref(false);
 const sharedShareCopyingId = ref("");
@@ -1154,9 +1167,6 @@ const changelogSummaryText = computed(() => {
   }
   return "会优先读取 GitHub 仓库 README 中的最新更新记录。";
 });
-const mobileImportTokenItem = computed(() => (
-  tokenItems.value.find((item) => hasTokenPermission(item, "mobile_import") && item.status === "active" && item.token_value) || null
-));
 function defaultSystemUpdateState() {
   return {
     status: "idle",
@@ -1210,10 +1220,6 @@ function applySystemUpdateStatus(payload) {
 
 function runtimePayload() {
   return buildRuntimePayload(runtimeForm);
-}
-
-function hasTokenPermission(item, permission) {
-  return Array.isArray(item?.permissions) && item.permissions.includes(permission);
 }
 
 function tokenPermissionLabels(permissions) {
@@ -1482,7 +1488,6 @@ function applyConfigToForms(payload) {
   organizerForm.source_dir = payload.organizer?.source_dir || "";
   organizerForm.target_dir = payload.organizer?.target_dir || "";
   organizerForm.move_files = payload.organizer?.move_files !== false;
-  mobileImportToken.value = "";
   sharingForm.public_base_url = payload.sharing?.public_base_url || "";
   sharingForm.default_expires_days = normalizeBoundedInt(payload.sharing?.default_expires_days, 7, 1, 90);
   sharingForm.include_images = payload.sharing?.include_images !== false;
@@ -1505,7 +1510,7 @@ function applyConfigToForms(payload) {
   userForm.display_name = payload.user?.display_name || "Admin";
   userForm.password_hint = payload.user?.password_hint || "";
   themePreference.value = payload.user?.theme_preference || "auto";
-  tokenItems.value = payload.api_tokens || [];
+  tokenItems.value = normalizeTokenItems(payload.api_tokens);
 }
 
 function setActiveTab(tab) {
@@ -1568,6 +1573,8 @@ async function loadSharedShares(options = {}) {
 }
 
 function clearTimers() {
+  createdToken.value = "";
+  createdTokenPermissions.value = [];
   clearAccountCodeTimer();
   if (settingsRefreshController) {
     settingsRefreshController.dispose();
@@ -1941,11 +1948,11 @@ async function saveOrganizer() {
   }
 }
 
-function buildShortcutConfigText() {
-  const tokenValue = mobileImportToken.value || mobileImportTokenItem.value?.token_value || "<在 MakerHub 设置里生成后粘贴>";
+function buildShortcutConfigText(tokenValue) {
+  const safeTokenValue = String(tokenValue || "").trim();
   const lines = [
     "MakerHub iOS 快捷指令配置",
-    `Token: ${tokenValue}`,
+    `Token: ${safeTokenValue}`,
     "MakerHub 地址: <在手机快捷指令里填写，例如 http://192.168.1.20:1111 或 https://你的公网地址>",
     "",
     "流程: 从共享表单接收文件；先 GET MakerHub 地址 /api/mobile-import/ping-ipv4，带请求头 Authorization: Bearer Token；可用后 POST 文件到 /api/mobile-import/raw-ipv4?filename=文件名，继续带 Authorization 请求头；上传成功提示 已上传。",
@@ -1971,19 +1978,13 @@ async function copyText(value) {
   return copied;
 }
 
-async function copyShortcutConfig(item = null) {
+async function copyCreatedShortcutConfig() {
   statuses.tokens = "";
-  const previousToken = mobileImportToken.value;
   try {
-    if (item?.token_value) {
-      mobileImportToken.value = item.token_value;
-    }
-    const copied = await copyText(buildShortcutConfigText());
+    const copied = await copyText(buildShortcutConfigText(createdToken.value));
     statuses.tokens = copied ? "快捷指令配置已复制。" : "浏览器阻止复制，请手动复制配置。";
   } catch (error) {
     statuses.tokens = error instanceof Error ? error.message : "复制失败。";
-  } finally {
-    mobileImportToken.value = previousToken;
   }
 }
 
@@ -2231,10 +2232,14 @@ function resetTokenDialogForm() {
 
 function openTokenDialog() {
   resetTokenDialogForm();
+  createdToken.value = "";
+  createdTokenPermissions.value = [];
   tokenDialogOpen.value = true;
 }
 
 function closeTokenDialog() {
+  createdToken.value = "";
+  createdTokenPermissions.value = [];
   tokenDialogOpen.value = false;
 }
 
@@ -2251,10 +2256,14 @@ async function createToken() {
         expires_days: Number(tokenForm.expires_days || 0),
       },
     });
-    mobileImportToken.value = permissions.includes("mobile_import") ? response.token || "" : "";
-    tokenItems.value = response.items || [];
-    tokenDialogOpen.value = false;
-    statuses.tokens = "Token 已生成。";
+    const tokenValue = String(response.token || response.item?.token_value || "").trim();
+    if (!tokenValue) {
+      throw new Error("Token 已生成，但响应中没有可显示的凭证。");
+    }
+    createdToken.value = tokenValue;
+    createdTokenPermissions.value = [...permissions];
+    tokenItems.value = normalizeTokenItems(response.items);
+    statuses.tokens = "Token 已生成，请立即保存。";
   } catch (error) {
     statuses.tokens = error instanceof Error ? error.message : "生成失败。";
   }
@@ -2268,20 +2277,16 @@ async function revokeToken(tokenId) {
     const response = await apiRequest(`/api/auth/tokens/${encodeURIComponent(tokenId)}`, {
       method: "DELETE",
     });
-    tokenItems.value = response.items || [];
+    tokenItems.value = normalizeTokenItems(response.items);
     statuses.tokens = "Token 已撤销。";
   } catch (error) {
     statuses.tokens = error instanceof Error ? error.message : "撤销失败。";
   }
 }
 
-async function copyTokenValue(item) {
-  if (!item?.token_value) {
-    statuses.tokens = "这个 Token 暂无可复制内容。";
-    return;
-  }
+async function copyCreatedToken() {
   try {
-    const copied = await copyText(item.token_value);
+    const copied = await copyText(createdToken.value);
     statuses.tokens = copied ? "Token 已复制。" : "浏览器阻止复制，请手动复制。";
   } catch (error) {
     statuses.tokens = error instanceof Error ? error.message : "复制失败。";

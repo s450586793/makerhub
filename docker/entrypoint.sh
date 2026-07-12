@@ -24,7 +24,16 @@ case "$mode" in
     elif [ "$workers" -gt 8 ]; then
       workers=8
     fi
-    exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers "$workers"
+    trusted_proxies="$(printf '%s' "${MAKERHUB_TRUSTED_PROXIES:-}" | tr -d '[:space:]')"
+    case "$trusted_proxies" in
+      ""|*\**)
+        exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers "$workers" --no-proxy-headers
+        ;;
+      *)
+        exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers "$workers" \
+          --proxy-headers --forwarded-allow-ips "$trusted_proxies"
+        ;;
+    esac
     ;;
   *)
     echo "Unknown MAKERHUB_ENTRYPOINT: $mode" >&2

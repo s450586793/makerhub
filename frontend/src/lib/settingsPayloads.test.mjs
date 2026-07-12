@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import * as settingsPayloads from "./settingsPayloads.js";
 
 import {
   buildAdvancedPayload,
@@ -69,4 +70,42 @@ test("proxy and sharing payloads copy mutable form data safely", () => {
   assert.equal(payload.default_expires_days, 90);
   assert.deepEqual(payload.model_file_types, ["3mf"]);
   assert.notEqual(payload.model_file_types, sharingForm.model_file_types);
+});
+
+test("token lists retain metadata but discard every plaintext and hash field", () => {
+  assert.equal(typeof settingsPayloads.normalizeTokenItems, "function");
+  const items = settingsPayloads.normalizeTokenItems([
+    {
+      id: "token-1",
+      name: "CI",
+      token_prefix: "mht_example",
+      token_value: "mht_example_plaintext",
+      token: "mht_other_plaintext",
+      token_hash: "secret-hash",
+      permissions: ["archive_write"],
+      status: "active",
+      created_at: "2026-07-12T10:00:00+08:00",
+      expires_at: "",
+      last_used_at: "",
+      disabled: false,
+      revoked_at: "",
+    },
+  ]);
+
+  assert.deepEqual(items, [
+    {
+      id: "token-1",
+      name: "CI",
+      token_prefix: "mht_example",
+      permissions: ["archive_write"],
+      status: "active",
+      created_at: "2026-07-12T10:00:00+08:00",
+      expires_at: "",
+      last_used_at: "",
+      disabled: false,
+      revoked_at: "",
+    },
+  ]);
+  assert.equal(JSON.stringify(items).includes("plaintext"), false);
+  assert.equal(JSON.stringify(items).includes("secret-hash"), false);
 });

@@ -1,3 +1,6 @@
+import json
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,11 +10,11 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from app.core.security import hash_api_token
-from app.core.security import verify_password
+from app.core.security import default_admin_password_hash, hash_api_token, hash_password
 from app.core.store import JsonStore
 from app.schemas.models import ApiTokenRecord, AppConfig
 from app.core.api_permissions import api_token_permission_for_request, is_public_api_route, is_session_only_api_route
+from app.services import auth as auth_service
 from app.services.auth import AuthManager
 from app import main as main_app
 from app.api import auth as auth_api
@@ -120,7 +123,7 @@ class AuthGuardTokenPermissionTest(unittest.TestCase):
                 )
             )
 
-    def test_api_token_plaintext_is_persisted_and_returned(self):
+    def test_api_token_plaintext_is_returned_once_but_never_persisted_or_listed(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")
             manager = AuthManager(store=store, sessions_path=Path(tmp) / "sessions.json")
@@ -131,8 +134,9 @@ class AuthGuardTokenPermissionTest(unittest.TestCase):
 
             self.assertTrue(raw_token.startswith("mht_"))
             self.assertEqual(created.token_value, raw_token)
-            self.assertEqual(saved.api_tokens[0].token_value, raw_token)
-            self.assertEqual(listed[0].token_value, raw_token)
+            self.assertFalse(saved.api_tokens[0].token_value)
+            self.assertFalse(listed[0].token_value)
+            self.assertNotIn(raw_token, store.path.read_text(encoding="utf-8"))
             self.assertIsNotNone(
                 manager.resolve_request_auth(
                     self._request(raw_token),
@@ -213,6 +217,121 @@ class AuthGuardTokenPermissionTest(unittest.TestCase):
             self.assertEqual(first["username"], "admin")
             self.assertIsNone(second)
 
+    def test_legacy_plaintext_token_is_hashed_and_removed_on_load(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            raw_token = "mht_legacy_plaintext_token"
+            path = Path(tmp) / "config.json"
+            payload = AppConfig().model_dump()
+            payload["api_tokens"] = [
+                {
+                    "id": "legacy-token",
+                    "name": "legacy",
+                    "token_prefix": raw_token[:12],
+                    "token_value": raw_token,
+                    "created_at": "2026-05-19T10:00:00+08:00",
+                    "permissions": ["archive_write"],
+                }
+            ]
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            store = JsonStore(path)
+            manager = AuthManager(store=store, sessions_path=Path(tmp) / "sessions.json")
+
+            listed = manager.list_api_tokens()
+            saved = store.load()
+
+            self.assertEqual(saved.api_tokens[0].token_hash, hash_api_token(raw_token))
+            self.assertFalse(saved.api_tokens[0].token_value)
+            self.assertFalse(listed[0].token_value)
+            self.assertNotIn(raw_token, path.read_text(encoding="utf-8"))
+            self.assertIsNotNone(manager.validate_api_token(raw_token))
+
+
+class AdminCredentialBootstrapTest(unittest.TestCase):
+    def _store(self, root: Path) -> JsonStore:
+        return JsonStore(root / "config.json")
+
+    def test_fresh_config_never_accepts_shared_admin_password(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = self._store(root)
+            config = store.load()
+            config.user.password_hash = ""
+            store.save(config)
+
+            with patch.object(auth_service, "STATE_DIR", root / "state"), \
+                    patch.dict(os.environ, {"MAKERHUB_ADMIN_PASSWORD": ""}), \
+                    patch.object(AuthManager, "clear_all_sessions") as clear_sessions:
+                result = auth_service.ensure_secure_admin_credential(store)
+
+            bootstrap_password = result.bootstrap_path.read_text(encoding="utf-8").strip()
+            self.assertGreaterEqual(len(bootstrap_password), 24)
+            self.assertEqual(result.bootstrap_path.stat().st_mode & 0o077, 0)
+            self.assertFalse(AuthManager(store).authenticate_credentials("admin", "admin"))
+            self.assertTrue(AuthManager(store).authenticate_credentials("admin", bootstrap_password))
+            self.assertNotIn(bootstrap_password, store.path.read_text(encoding="utf-8"))
+            clear_sessions.assert_called_once_with()
+
+    def test_valid_environment_password_bootstraps_without_plaintext_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = self._store(root)
+            config = store.load()
+            config.user.password_hash = default_admin_password_hash()
+            store.save(config)
+            env_password = "environment-password-123"
+
+            with patch.object(auth_service, "STATE_DIR", root / "state"), \
+                    patch.dict(os.environ, {"MAKERHUB_ADMIN_PASSWORD": env_password}), \
+                    patch.object(AuthManager, "clear_all_sessions") as clear_sessions:
+                result = auth_service.ensure_secure_admin_credential(store)
+
+            self.assertTrue(AuthManager(store).authenticate_credentials("admin", env_password))
+            self.assertFalse(AuthManager(store).authenticate_credentials("admin", "admin"))
+            self.assertFalse(result.bootstrap_path.exists())
+            self.assertNotIn(env_password, store.path.read_text(encoding="utf-8"))
+            clear_sessions.assert_called_once_with()
+
+    def test_existing_secure_password_is_not_replaced_by_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = self._store(root)
+            current_password = "existing-secure-password"
+            config = store.load()
+            config.user.password_hash = hash_password(current_password)
+            store.save(config)
+
+            with patch.object(auth_service, "STATE_DIR", root / "state"), \
+                    patch.dict(os.environ, {"MAKERHUB_ADMIN_PASSWORD": "different-environment-password"}), \
+                    patch.object(AuthManager, "clear_all_sessions") as clear_sessions:
+                result = auth_service.ensure_secure_admin_credential(store)
+
+            manager = AuthManager(store)
+            self.assertTrue(manager.authenticate_credentials("admin", current_password))
+            self.assertFalse(manager.authenticate_credentials("admin", "different-environment-password"))
+            self.assertFalse(result.rotated)
+            clear_sessions.assert_not_called()
+
+    def test_password_change_requires_twelve_characters_and_removes_bootstrap_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = self._store(root)
+            config = store.load()
+            config.user.password_hash = default_admin_password_hash()
+            store.save(config)
+
+            with patch.object(auth_service, "STATE_DIR", root / "state"), \
+                    patch.dict(os.environ, {"MAKERHUB_ADMIN_PASSWORD": ""}), \
+                    patch.object(AuthManager, "clear_all_sessions"):
+                result = auth_service.ensure_secure_admin_credential(store)
+                bootstrap_password = result.bootstrap_path.read_text(encoding="utf-8").strip()
+                manager = AuthManager(store)
+                with self.assertRaisesRegex(ValueError, "12"):
+                    manager.change_password(bootstrap_password, "too-short")
+                manager.change_password(bootstrap_password, "replacement-password")
+
+            self.assertFalse(result.bootstrap_path.exists())
+            self.assertTrue(AuthManager(store).authenticate_credentials("admin", "replacement-password"))
+
 
 class AuthLoginHardeningTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -238,6 +357,9 @@ class AuthLoginHardeningTest(unittest.IsolatedAsyncioTestCase):
     async def test_login_rate_limits_repeated_failures_and_clears_after_success(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            config.user.password_hash = hash_password("valid-admin-password")
+            store.save(config)
             manager = AuthManager(store=store, sessions_path=Path(tmp) / "sessions.json")
             with patch.object(auth_api, "store", store), \
                     patch.object(auth_api, "auth_manager", manager), \
@@ -253,51 +375,76 @@ class AuthLoginHardeningTest(unittest.IsolatedAsyncioTestCase):
                 self.assertGreater(manager.login_backoff_seconds(key), 0)
 
                 with self.assertRaises(HTTPException) as rate_limited:
-                    await auth_api.login(SimpleNamespace(username="admin", password="admin"), request)
+                    await auth_api.login(SimpleNamespace(username="admin", password="valid-admin-password"), request)
                 self.assertEqual(rate_limited.exception.status_code, 429)
 
                 manager.clear_login_failures(key)
-                response = await auth_api.login(SimpleNamespace(username="admin", password="admin"), request)
+                response = await auth_api.login(
+                    SimpleNamespace(username="admin", password="valid-admin-password"),
+                    request,
+                )
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(manager.login_backoff_seconds(key), 0)
 
-    async def test_default_admin_password_can_create_session_and_reports_warning_flag(self):
+    async def test_spoofed_forwarding_headers_do_not_change_failure_key_or_cookie_security(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            config.user.password_hash = hash_password("valid-admin-password")
+            store.save(config)
             manager = AuthManager(store=store, sessions_path=Path(tmp) / "sessions.json")
+            first_request = self._login_request(headers={"X-Forwarded-For": "198.51.100.1"})
+            second_request = self._login_request(headers={"X-Forwarded-For": "203.0.113.9"})
+            self.assertEqual(
+                manager.login_failure_key(first_request, "Admin"),
+                manager.login_failure_key(second_request, "admin"),
+            )
             with patch.object(auth_api, "store", store), \
                     patch.object(auth_api, "auth_manager", manager), \
                     patch.object(auth_api, "append_business_log"):
                 response = await auth_api.login(
-                    SimpleNamespace(username="admin", password="admin"),
-                    self._login_request(),
+                    SimpleNamespace(username="admin", password="valid-admin-password"),
+                    self._login_request(headers={"X-Forwarded-Proto": "https", "X-Forwarded-Ssl": "on"}),
                 )
 
             self.assertEqual(response.status_code, 200)
-            self.assertIn('"default_password":true', response.body.decode("utf-8"))
+            self.assertNotIn("Secure", response.headers.get("set-cookie", ""))
 
-    async def test_admin_password_environment_does_not_replace_default_login(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"MAKERHUB_ADMIN_PASSWORD": "custom-secret"}):
-            store = JsonStore(Path(tmp) / "config.json")
-            config = store.load()
-
-            self.assertTrue(verify_password("admin", config.user.password_hash))
-
-    async def test_login_sets_secure_cookie_behind_https_proxy_and_reports_default_password(self):
+    async def test_https_request_sets_secure_cookie(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            config.user.password_hash = hash_password("valid-admin-password")
+            store.save(config)
             manager = AuthManager(store=store, sessions_path=Path(tmp) / "sessions.json")
             with patch.object(auth_api, "store", store), \
                     patch.object(auth_api, "auth_manager", manager), \
                     patch.object(auth_api, "append_business_log"):
                 response = await auth_api.login(
-                    SimpleNamespace(username="admin", password="admin"),
-                    self._login_request(headers={"X-Forwarded-Proto": "https"}),
+                    SimpleNamespace(username="admin", password="valid-admin-password"),
+                    self._login_request(scheme="https"),
                 )
 
             cookie = response.headers.get("set-cookie", "")
             self.assertIn("Secure", cookie)
-            self.assertIn('"default_password":true', response.body.decode("utf-8"))
+
+    async def test_token_create_response_reveals_plaintext_once_but_list_does_not(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            manager = AuthManager(store=store, sessions_path=Path(tmp) / "sessions.json")
+            request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session"}))
+            payload = SimpleNamespace(name="CI", permissions=["archive_write"], expires_days=30)
+
+            with patch.object(auth_api, "store", store), \
+                    patch.object(auth_api, "auth_manager", manager), \
+                    patch.object(auth_api, "append_business_log"):
+                created = await auth_api.create_token(payload, request)
+                listed = await auth_api.list_tokens(request)
+
+            self.assertEqual(created["item"]["token_value"], created["token"])
+            self.assertTrue(created["token"].startswith("mht_"))
+            self.assertTrue(all(not item.get("token_value") for item in created["items"]))
+            self.assertTrue(all(not item.get("token_value") for item in listed["items"]))
 
 
 class CsrfOriginGuardTest(unittest.TestCase):
@@ -318,6 +465,89 @@ class CsrfOriginGuardTest(unittest.TestCase):
         self.assertFalse(main_app._csrf_origin_is_valid(self._request(origin="https://evil.example")))
         self.assertTrue(main_app._csrf_origin_is_valid(self._request(origin="https://maker.example")))
         self.assertTrue(main_app._csrf_origin_is_valid(self._request(referer="https://maker.example/settings")))
+
+    def test_forwarded_proto_does_not_override_socket_scheme(self):
+        request = self._request(origin="https://maker.example", scheme="http")
+        request.headers["X-Forwarded-Proto"] = "https"
+
+        self.assertFalse(main_app._csrf_origin_is_valid(request))
+
+
+class EntrypointProxyHeaderTest(unittest.TestCase):
+    def _entrypoint_args(self, root: Path, trusted_proxies: Optional[str] = None) -> list[str]:
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        capture_path = root / "uvicorn-args.txt"
+        uvicorn_path = bin_dir / "uvicorn"
+        uvicorn_path.write_text(
+            '#!/bin/sh\nprintf "%s\\n" "$@" > "$MAKERHUB_TEST_CAPTURE"\n',
+            encoding="utf-8",
+        )
+        uvicorn_path.chmod(0o755)
+        env = os.environ.copy()
+        env.update(
+            {
+                "PATH": f"{bin_dir}:{env.get('PATH', '')}",
+                "MAKERHUB_ENTRYPOINT": "app",
+                "MAKERHUB_TEST_CAPTURE": str(capture_path),
+            }
+        )
+        if trusted_proxies is None:
+            env.pop("MAKERHUB_TRUSTED_PROXIES", None)
+        else:
+            env["MAKERHUB_TRUSTED_PROXIES"] = trusted_proxies
+
+        subprocess.run(
+            [str(Path(__file__).resolve().parents[1] / "docker" / "entrypoint.sh")],
+            check=True,
+            cwd=Path(__file__).resolve().parents[1],
+            env=env,
+        )
+        return capture_path.read_text(encoding="utf-8").splitlines()
+
+    def test_proxy_headers_are_disabled_without_explicit_trusted_proxies(self):
+        for value in (None, "", "*", "127.0.0.1,*"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
+                args = self._entrypoint_args(Path(tmp), value)
+                self.assertIn("--no-proxy-headers", args)
+                self.assertNotIn("--proxy-headers", args)
+
+    def test_proxy_headers_are_enabled_only_for_explicit_trusted_proxies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trusted = "127.0.0.1,10.0.0.0/8"
+            args = self._entrypoint_args(Path(tmp), trusted)
+
+        self.assertIn("--proxy-headers", args)
+        self.assertIn("--forwarded-allow-ips", args)
+        self.assertEqual(args[args.index("--forwarded-allow-ips") + 1], trusted)
+
+
+class AppStartupCredentialTest(unittest.IsolatedAsyncioTestCase):
+    async def test_app_startup_secures_the_global_admin_credential_first(self):
+        calls = []
+        with patch.object(
+                main_app,
+                "ensure_secure_admin_credential",
+                side_effect=lambda _store: calls.append("credential"),
+        ) as ensure_credential, \
+                patch.object(
+                    main_app,
+                    "mark_update_started_after_restart",
+                    side_effect=lambda: calls.append("restart"),
+                ) as mark_restart, \
+                patch.object(
+                    main_app,
+                    "start_state_event_listener",
+                    side_effect=lambda: calls.append("listener"),
+                ) as start_listener, \
+                patch.object(main_app, "BACKGROUND_TASKS_ENABLED", False), \
+                patch.object(main_app, "append_business_log"):
+            await main_app.resume_archive_queue()
+
+        ensure_credential.assert_called_once_with(main_app.global_store)
+        mark_restart.assert_called_once_with()
+        start_listener.assert_called_once_with()
+        self.assertEqual(calls[:3], ["credential", "restart", "listener"])
 
 
 if __name__ == "__main__":
