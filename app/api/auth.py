@@ -22,27 +22,26 @@ def _require_session_auth(request: Request) -> dict:
 @router.post("/login")
 async def login(payload: LoginRequest, request: Request):
     failure_key = auth_manager.login_failure_key(request, payload.username)
-    backoff_seconds = auth_manager.login_backoff_seconds(failure_key)
-    if backoff_seconds > 0:
+    reservation = auth_manager.reserve_login_attempt(failure_key)
+    if not reservation.allowed:
         append_business_log(
             "auth",
             "login_rate_limited",
             "登录失败次数过多，暂时限制重试。",
             level="warning",
             username=payload.username,
-            retry_after_seconds=backoff_seconds,
+            retry_after_seconds=reservation.retry_after,
         )
-        raise HTTPException(status_code=429, detail=f"登录失败次数过多，请 {backoff_seconds} 秒后再试。")
+        raise HTTPException(status_code=429, detail=f"登录失败次数过多，请 {reservation.retry_after} 秒后再试。")
 
     if not auth_manager.authenticate_credentials(payload.username, payload.password):
-        retry_after = auth_manager.record_login_failure(failure_key)
         append_business_log(
             "auth",
             "login_failed",
             "登录失败：用户名或密码错误。",
             level="warning",
             username=payload.username,
-            rate_limited=retry_after > 0,
+            rate_limited=reservation.retry_after > 0,
         )
         raise HTTPException(status_code=401, detail="用户名或密码错误。")
 

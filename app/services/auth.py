@@ -59,6 +59,12 @@ class BootstrapCredentialResult:
     bootstrap_path: Path
 
 
+@dataclass(frozen=True)
+class LoginAttemptReservation:
+    allowed: bool
+    retry_after: int = 0
+
+
 def _bootstrap_password_path() -> Path:
     return STATE_DIR / ADMIN_BOOTSTRAP_PASSWORD_FILENAME
 
@@ -328,6 +334,35 @@ class AuthManager:
         with self._login_failure_lock:
             self._prune_login_failure_items(self._login_failures, now)
             return self._record_login_failure_item(self._login_failures, clean_key, now)
+
+    def reserve_login_attempt(self, key: str) -> LoginAttemptReservation:
+        now = china_now().timestamp()
+        clean_key = str(key or "")
+        result = {"reservation": LoginAttemptReservation(allowed=True)}
+
+        def reserve(items: dict) -> LoginAttemptReservation:
+            self._prune_login_failure_items(items, now)
+            retry_after = self._login_backoff_for_item(items.get(clean_key), now)
+            if retry_after > 0:
+                return LoginAttemptReservation(allowed=False, retry_after=retry_after)
+            retry_after = self._record_login_failure_item(items, clean_key, now)
+            return LoginAttemptReservation(allowed=True, retry_after=retry_after)
+
+        def update(payload):
+            items = payload.get("items") if isinstance(payload.get("items"), dict) else {}
+            result["reservation"] = reserve(items)
+            payload["items"] = items
+            return payload
+
+        try:
+            update_database_json_state(LOGIN_FAILURE_STATE_KEY, {"items": {}}, update)
+            with self._login_failure_lock:
+                self._login_failures.pop(clean_key, None)
+            return result["reservation"]
+        except DatabaseUnavailable:
+            pass
+        with self._login_failure_lock:
+            return reserve(self._login_failures)
 
     def clear_login_failures(self, key: str) -> None:
         clean_key = str(key or "")

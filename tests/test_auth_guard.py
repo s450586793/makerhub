@@ -1,9 +1,11 @@
+import asyncio
 import json
 import os
 import subprocess
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -554,6 +556,52 @@ class AuthLoginHardeningTest(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(manager.login_backoff_seconds(key), 0)
+
+    async def test_concurrent_login_failures_reserve_authentication_capacity_atomically(self):
+        worker_count = 24
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            manager = AuthManager(store=store, sessions_path=Path(tmp) / "sessions.json")
+            worker_start = threading.Barrier(worker_count)
+            legacy_precheck = threading.Barrier(worker_count)
+            authentication_calls = 0
+            authentication_lock = threading.Lock()
+
+            def legacy_backoff(_key):
+                legacy_precheck.wait(timeout=5)
+                return 0
+
+            def reject_credentials(_username, _password):
+                nonlocal authentication_calls
+                with authentication_lock:
+                    authentication_calls += 1
+                return False
+
+            def attempt_login():
+                worker_start.wait(timeout=5)
+                try:
+                    asyncio.run(
+                        auth_api.login(
+                            SimpleNamespace(username="admin", password="wrong"),
+                            self._login_request(),
+                        )
+                    )
+                except HTTPException as exc:
+                    return exc.status_code
+                return 200
+
+            with patch.object(auth_api, "auth_manager", manager), \
+                    patch.object(auth_api, "append_business_log"), \
+                    patch.object(manager, "login_backoff_seconds", side_effect=legacy_backoff), \
+                    patch.object(manager, "authenticate_credentials", side_effect=reject_credentials):
+                with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                    statuses = [future.result() for future in [
+                        executor.submit(attempt_login) for _ in range(worker_count)
+                    ]]
+
+            self.assertEqual(authentication_calls, auth_service.LOGIN_FAILURE_LIMIT)
+            self.assertEqual(statuses.count(401), auth_service.LOGIN_FAILURE_LIMIT)
+            self.assertEqual(statuses.count(429), worker_count - auth_service.LOGIN_FAILURE_LIMIT)
 
     async def test_spoofed_forwarding_headers_do_not_change_failure_key_or_cookie_security(self):
         with tempfile.TemporaryDirectory() as tmp:
