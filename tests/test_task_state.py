@@ -5,7 +5,8 @@ from tempfile import TemporaryDirectory
 from pathlib import Path
 from unittest.mock import patch
 
-from app.services import state_events
+from app.services import state_events, task_state
+from app.services.state_contracts import REMOTE_REFRESH_STATE_KEY
 from app.services.task_state import (
     TaskStateStore,
     _ORGANIZER_TERMINAL_LOG_CACHE,
@@ -15,6 +16,15 @@ from app.services.task_state import (
     _normalize_source_refresh_runs,
     compact_remote_refresh_state,
 )
+
+
+def test_runtime_state_key_follows_replaced_module_path():
+    original = task_state.REMOTE_REFRESH_STATE_PATH
+    try:
+        task_state.REMOTE_REFRESH_STATE_PATH = Path("/tmp/replaced-remote.json")
+        assert task_state._json_state_key_for_path(task_state.REMOTE_REFRESH_STATE_PATH) == REMOTE_REFRESH_STATE_KEY
+    finally:
+        task_state.REMOTE_REFRESH_STATE_PATH = original
 
 
 class OrganizeTaskStateTest(unittest.TestCase):

@@ -86,22 +86,29 @@ _ORGANIZER_TERMINAL_LOG_CACHE = {
     "events": [],
 }
 ORGANIZER_STATUS_LOG_LOOKBACK_BYTES = 2 * 1024 * 1024
-_JSON_STATE_KEYS = {
-    ARCHIVE_QUEUE_PATH.resolve(): ARCHIVE_QUEUE_STATE_KEY,
-    MISSING_3MF_PATH.resolve(): MISSING_3MF_STATE_KEY,
-    ORGANIZE_TASKS_PATH.resolve(): ORGANIZE_TASKS_STATE_KEY,
-    MODEL_FLAGS_PATH.resolve(): MODEL_FLAGS_STATE_KEY,
-    SUBSCRIPTIONS_STATE_PATH.resolve(): SUBSCRIPTIONS_STATE_KEY,
-    REMOTE_REFRESH_STATE_PATH.resolve(): REMOTE_REFRESH_STATE_KEY,
-    SOURCE_REFRESH_QUEUE_PATH.resolve(): SOURCE_REFRESH_QUEUE_STATE_KEY,
-    SOURCE_REFRESH_RUNS_PATH.resolve(): SOURCE_REFRESH_RUNS_STATE_KEY,
-    THREE_MF_LIMIT_GUARD_PATH.resolve(): THREE_MF_LIMIT_GUARD_STATE_KEY,
-}
+# 仅保留显式临时注册；九个模块路径始终在查询时解析。
+_JSON_STATE_KEYS: dict[Path, str] = {}
+
+
+def _json_state_keys() -> dict[Path, str]:
+    state_keys = {
+        ARCHIVE_QUEUE_PATH.resolve(): ARCHIVE_QUEUE_STATE_KEY,
+        MISSING_3MF_PATH.resolve(): MISSING_3MF_STATE_KEY,
+        ORGANIZE_TASKS_PATH.resolve(): ORGANIZE_TASKS_STATE_KEY,
+        MODEL_FLAGS_PATH.resolve(): MODEL_FLAGS_STATE_KEY,
+        SUBSCRIPTIONS_STATE_PATH.resolve(): SUBSCRIPTIONS_STATE_KEY,
+        REMOTE_REFRESH_STATE_PATH.resolve(): REMOTE_REFRESH_STATE_KEY,
+        SOURCE_REFRESH_QUEUE_PATH.resolve(): SOURCE_REFRESH_QUEUE_STATE_KEY,
+        SOURCE_REFRESH_RUNS_PATH.resolve(): SOURCE_REFRESH_RUNS_STATE_KEY,
+        THREE_MF_LIMIT_GUARD_PATH.resolve(): THREE_MF_LIMIT_GUARD_STATE_KEY,
+    }
+    state_keys.update(_JSON_STATE_KEYS)
+    return state_keys
 
 
 def _json_state_key_for_path(path: Path) -> str:
     try:
-        return _JSON_STATE_KEYS.get(path.resolve(), "")
+        return _json_state_keys().get(path.resolve(), "")
     except OSError:
         return ""
 
