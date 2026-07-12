@@ -180,6 +180,7 @@ class ResourceLimiterConfigTest(unittest.TestCase):
                 holder.start()
                 holders_entered.get(timeout=5)
 
+            resource_limiter._publish_global_capacity("shrink_drain", 1)
             contender.start()
             contender_ready.get(timeout=5)
             try:
@@ -265,6 +266,15 @@ class ResourceLimiterConfigTest(unittest.TestCase):
         second = resource_limiter._resource_slot_directory("a?b")
 
         self.assertNotEqual(first, second)
+
+    def test_stale_low_capacity_acquire_does_not_overwrite_authoritative_expansion(self):
+        resource_limiter._publish_global_capacity("expand_authority", 3)
+
+        handle = resource_limiter._try_acquire_global_slot("expand_authority", 1)
+        resource_limiter._release_global_slot(handle)
+
+        control_path = resource_limiter._resource_slot_directory("expand_authority") / "capacity.control"
+        self.assertEqual(control_path.read_text(encoding="utf-8").strip(), "3")
 
     def test_global_resource_slots_are_isolated_by_resource_name(self):
         holder_entered = SPAWN_CONTEXT.Queue()

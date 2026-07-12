@@ -217,7 +217,7 @@ def _try_acquire_global_slot(name: str, capacity: int):
     try:
         fcntl.flock(control.fileno(), fcntl.LOCK_EX)
         shared_capacity, valid = _read_control_capacity(control, requested_capacity)
-        if not valid or requested_capacity < shared_capacity:
+        if not valid:
             shared_capacity = requested_capacity
             _write_control_capacity(control, shared_capacity)
 
