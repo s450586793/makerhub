@@ -150,6 +150,44 @@ class AccountCookieMaintenanceTest(unittest.TestCase):
         )
         update_gate_mock.assert_not_called()
 
+    def test_cookie_check_preserves_cloakbrowser_session_fields(self):
+        config = self.store.load()
+        config.cookies = [
+            CookiePair(
+                platform="global",
+                cookie="token=ok",
+                username="ace@example.com",
+                browser_profile_id="profile-global",
+                browser_status="synced",
+                browser_message="指纹浏览器登录态已同步。",
+                browser_synced_at="2026-07-12T02:58:27+08:00",
+            )
+        ]
+        self.store.save(config)
+
+        with patch.object(account_cookie_maintenance, "china_now_iso", return_value="2026-07-12T10:56:33+08:00"), patch.object(
+            account_cookie_maintenance,
+            "online_account_metadata_from_cookie",
+            return_value={
+                "platform": "global",
+                "username": "ace@example.com",
+                "status": "http_error",
+                "message": "国际账号测试失败，暂时无法确认 Cookie 是否可用。",
+                "last_tested_at": "2026-07-12T10:52:54+08:00",
+                "updated_at": "2026-07-12T10:52:54+08:00",
+            },
+        ), patch.object(account_cookie_maintenance, "update_account_health"), patch.object(
+            account_cookie_maintenance,
+            "append_business_log",
+        ):
+            account_cookie_maintenance.run_account_cookie_maintenance_once(store=self.store, force=True)
+
+        saved = self.store.load().cookies[0]
+        self.assertEqual(saved.browser_profile_id, "profile-global")
+        self.assertEqual(saved.browser_status, "synced")
+        self.assertEqual(saved.browser_message, "指纹浏览器登录态已同步。")
+        self.assertEqual(saved.browser_synced_at, "2026-07-12T02:58:27+08:00")
+
 
 if __name__ == "__main__":
     unittest.main()

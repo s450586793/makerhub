@@ -109,6 +109,10 @@ def _merge_cookie_metadata(existing: CookiePair, metadata: dict[str, Any]) -> Co
         updated_at=field_value("updated_at"),
         last_login_at=field_value("last_login_at"),
         last_tested_at=field_value("last_tested_at"),
+        browser_profile_id=field_value("browser_profile_id"),
+        browser_status=field_value("browser_status"),
+        browser_message=field_value("browser_message"),
+        browser_synced_at=field_value("browser_synced_at"),
     )
 
 
