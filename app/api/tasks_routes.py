@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from multiprocessing import Process
 
@@ -27,20 +26,6 @@ from app.services.request_threads import TASK_API_EXECUTOR, run_task_api, run_ui
 router = APIRouter(prefix="/api")
 archive_repair_process: Process | None = None
 archive_repair_start_lock = asyncio.Lock()
-
-
-def _runtime_engine_enabled() -> bool:
-    return os.getenv("MAKERHUB_RUNTIME_ENGINE", "").strip().lower() in {"1", "true", "v2", "runtime"}
-
-
-def _submit_runtime_run(run_type: str, context: dict) -> dict:
-    from app.api.runtime_routes import runtime_engine
-    from app.services.runtime_engine.archive_adapter import ArchiveRuntimeAdapter
-    from app.services.runtime_engine.missing_3mf_adapter import Missing3mfRuntimeAdapter
-
-    runtime_engine.adapters.setdefault("archive", ArchiveRuntimeAdapter())
-    runtime_engine.adapters.setdefault("missing_3mf_retry", Missing3mfRuntimeAdapter())
-    return runtime_engine.submit_run(run_type, context)
 
 
 def _submit_background_task(func, *args, **kwargs) -> bool:
@@ -145,31 +130,6 @@ async def clear_organize_tasks(request: Request):
 @router.post("/tasks/missing-3mf/retry")
 async def retry_missing_3mf(payload: Missing3mfRetryRequest, request: Request):
     _require_session_auth(request)
-    if _runtime_engine_enabled():
-        result = await run_task_api(
-            _submit_runtime_run,
-            "missing_3mf_retry",
-            {
-                "model_url": payload.model_url,
-                "model_id": payload.model_id,
-                "source": payload.source,
-                "platform": payload.source,
-                "title": payload.title,
-                "instance_id": payload.instance_id,
-            },
-        )
-        append_business_log(
-            "missing_3mf",
-            "retry_requested",
-            result.get("message") or "缺失 3MF 重试已提交运行核心。",
-            accepted=bool(result.get("run_id")),
-            model_id=payload.model_id,
-            model_url=payload.model_url,
-            instance_id=payload.instance_id,
-            runtime_engine=True,
-        )
-        return result
-
     result = await run_task_api(
         crawler.retry_missing_3mf,
         model_url=payload.model_url,
@@ -193,17 +153,6 @@ async def retry_missing_3mf(payload: Missing3mfRetryRequest, request: Request):
 @router.post("/tasks/missing-3mf/retry-all")
 async def retry_all_missing_3mf(request: Request):
     _require_session_auth(request)
-    if _runtime_engine_enabled():
-        result = await run_task_api(_submit_runtime_run, "missing_3mf_retry", {})
-        append_business_log(
-            "missing_3mf",
-            "retry_all_requested",
-            result.get("message") or "缺失 3MF 全部重试已提交运行核心。",
-            accepted_count=result.get("total"),
-            runtime_engine=True,
-        )
-        return result
-
     result = await run_task_api(crawler.retry_all_missing_3mf)
     append_business_log(
         "missing_3mf",
@@ -225,34 +174,6 @@ async def retry_verified_missing_3mf(payload: Missing3mfVerificationRetryRequest
         source="manual_verification",
         detail=verification_detail,
     )
-    if _runtime_engine_enabled():
-        def _submit_verified_runtime_retry() -> dict:
-            result = _submit_runtime_run(
-                "missing_3mf_retry",
-                {
-                    "platform": payload.platform,
-                    "statuses": [
-                        "verification_required",
-                        "cloudflare",
-                        "auth_required",
-                        "cookie_invalid",
-                    ],
-                },
-            )
-            result["account_health"] = snapshot
-            return result
-
-        result = await run_task_api(_submit_verified_runtime_retry)
-        append_business_log(
-            "missing_3mf",
-            "verification_verified_retry_requested",
-            result.get("message") or "验证完成后已提交运行核心重试同平台 3MF 任务。",
-            platform=payload.platform,
-            total_count=result.get("total"),
-            runtime_engine=True,
-        )
-        return result
-
     submitted = _submit_background_task(
         crawler.manager.retry_verification_missing_3mf,
         platform=payload.platform,
@@ -304,9 +225,6 @@ async def cancel_missing_3mf(payload: Missing3mfCancelRequest, request: Request)
 
 @router.post("/archive")
 async def archive_model(payload: ArchiveRequest):
-    if _runtime_engine_enabled():
-        return await run_task_api(_submit_runtime_run, "archive", {"source_url": payload.url})
-
     def _archive_model_payload() -> dict:
         batch_preview = None
         archive_mode = detect_archive_mode(payload.url)

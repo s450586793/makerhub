@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.api.config import _get_github_version_status, _public_config_payload, _require_session_auth, _with_version_status
@@ -13,18 +11,6 @@ from app.services.request_threads import run_task_api, run_web_io
 
 
 router = APIRouter(prefix="/api")
-
-
-def _runtime_engine_enabled() -> bool:
-    return os.getenv("MAKERHUB_RUNTIME_ENGINE", "").strip().lower() in {"1", "true", "v2", "runtime"}
-
-
-def _submit_runtime_subscription_sync(subscription_id: str) -> dict:
-    from app.api.runtime_routes import runtime_engine
-    from app.services.runtime_engine.subscription_adapter import SubscriptionRuntimeAdapter
-
-    runtime_engine.adapters.setdefault("subscription_sync", SubscriptionRuntimeAdapter())
-    return runtime_engine.submit_run("subscription_sync", {"source_id": subscription_id})
 
 
 @router.post("/config/subscriptions")
@@ -160,17 +146,6 @@ async def delete_subscription(subscription_id: str, request: Request):
 async def sync_subscription(subscription_id: str, request: Request):
     _require_session_auth(request)
     try:
-        if _runtime_engine_enabled():
-            result = await run_task_api(_submit_runtime_subscription_sync, subscription_id)
-            append_business_log(
-                "subscription",
-                "sync_requested",
-                result.get("message") or "订阅同步已提交运行核心。",
-                subscription_id=subscription_id,
-                runtime_engine=True,
-            )
-            return result
-
         result = await run_task_api(subscription_manager.request_sync, subscription_id)
         append_business_log(
             "subscription",

@@ -1,5 +1,6 @@
 import unittest
 import asyncio
+import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -34,19 +35,21 @@ class SourceRefreshRuntimeAdapterTest(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(calls[0][0]["model_id"], "1")
 
-    def test_remote_refresh_route_uses_runtime_engine_when_enabled(self):
-        with patch.object(remote_refresh_routes, "_runtime_engine_enabled", return_value=True), \
+    def test_remote_refresh_route_uses_legacy_manager_when_runtime_env_is_truthy(self):
+        legacy_payload = {"accepted": True, "message": "legacy refresh"}
+        with patch.dict(os.environ, {"MAKERHUB_RUNTIME_ENGINE": "v2"}), \
+                patch.object(remote_refresh_routes, "run_task_api", side_effect=lambda func, *args: func(*args)), \
+                patch("app.api.runtime_routes.runtime_engine.submit_run") as submit, \
                 patch.object(
-                    remote_refresh_routes,
-                    "_submit_runtime_source_refresh",
-                    return_value={"run_id": "run-1", "type": "source_refresh"},
-                ) as submit, \
-                patch.object(remote_refresh_routes.remote_refresh_manager, "trigger_manual_refresh") as legacy_trigger:
+                    remote_refresh_routes.remote_refresh_manager,
+                    "trigger_manual_refresh",
+                    return_value=legacy_payload,
+                ) as legacy_trigger:
             payload = asyncio.run(remote_refresh_routes._trigger_source_refresh_run())
 
-        submit.assert_called_once()
-        legacy_trigger.assert_not_called()
-        self.assertEqual(payload["run_id"], "run-1")
+        submit.assert_not_called()
+        legacy_trigger.assert_called_once_with()
+        self.assertEqual(payload, legacy_payload)
 
 
 if __name__ == "__main__":

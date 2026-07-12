@@ -1,5 +1,6 @@
 import unittest
 import asyncio
+import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -32,18 +33,24 @@ class SubscriptionRuntimeAdapterTest(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["queued"], 3)
 
-    def test_subscription_sync_route_uses_runtime_engine_when_enabled(self):
+    def test_subscription_sync_route_uses_legacy_manager_when_runtime_env_is_truthy(self):
         request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
-        with patch.object(subscriptions_routes, "_runtime_engine_enabled", return_value=True), \
-                patch.object(subscriptions_routes, "_submit_runtime_subscription_sync", return_value={"run_id": "run-1"}) as submit, \
+        legacy_payload = {"accepted": True, "message": "legacy sync"}
+        with patch.dict(os.environ, {"MAKERHUB_RUNTIME_ENGINE": "true"}), \
+                patch.object(subscriptions_routes, "run_task_api", side_effect=lambda func, *args: func(*args)), \
+                patch("app.api.runtime_routes.runtime_engine.submit_run") as submit, \
                 patch.object(subscriptions_routes, "_require_session_auth"), \
                 patch.object(subscriptions_routes, "append_business_log"), \
-                patch.object(subscriptions_routes.subscription_manager, "request_sync") as legacy_request:
+                patch.object(
+                    subscriptions_routes.subscription_manager,
+                    "request_sync",
+                    return_value=legacy_payload,
+                ) as legacy_request:
             payload = asyncio.run(subscriptions_routes.sync_subscription("sub-1", request))
 
-        submit.assert_called_once_with("sub-1")
-        legacy_request.assert_not_called()
-        self.assertEqual(payload["run_id"], "run-1")
+        submit.assert_not_called()
+        legacy_request.assert_called_once_with("sub-1")
+        self.assertEqual(payload, legacy_payload)
 
 
 if __name__ == "__main__":

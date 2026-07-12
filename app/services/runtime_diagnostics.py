@@ -201,6 +201,11 @@ def build_runtime_diagnostics() -> dict[str, Any]:
     status = database_status()
     payload: dict[str, Any] = {
         "generated_at": china_now_iso(),
+        "runtime_engine": {
+            "enabled": False,
+            "writable": False,
+            "reason": "运行核心已冻结，本版本仅保留只读诊断。",
+        },
         "database": status,
         "account_health": _safe_account_health(),
         "tables": [],

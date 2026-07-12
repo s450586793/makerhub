@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 from fastapi import APIRouter, Request
 
 from app.api.config import _get_github_version_status, _public_config_payload, _require_session_auth, _with_version_status
@@ -13,18 +11,6 @@ from app.services.request_threads import run_task_api, run_ui_io
 
 
 router = APIRouter(prefix="/api")
-
-
-def _runtime_engine_enabled() -> bool:
-    return os.getenv("MAKERHUB_RUNTIME_ENGINE", "").strip().lower() in {"1", "true", "v2", "runtime"}
-
-
-def _submit_runtime_source_refresh() -> dict:
-    from app.api.runtime_routes import runtime_engine
-    from app.services.runtime_engine.source_refresh_adapter import SourceRefreshRuntimeAdapter
-
-    runtime_engine.adapters.setdefault("source_refresh", SourceRefreshRuntimeAdapter())
-    return runtime_engine.submit_run("source_refresh", {"manual": True})
 
 
 @router.post("/config/remote-refresh")
@@ -76,9 +62,6 @@ async def run_remote_refresh(request: Request):
 
 
 async def _trigger_source_refresh_run():
-    if _runtime_engine_enabled():
-        return await run_task_api(_submit_runtime_source_refresh)
-
     def _manual_trigger_payload() -> dict:
         return remote_refresh_manager.trigger_manual_refresh()
 

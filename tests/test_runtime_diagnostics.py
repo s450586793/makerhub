@@ -1,6 +1,7 @@
 import unittest
 import asyncio
 import json
+import os
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -531,6 +532,15 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         self.assertEqual(payload["tables"], [])
         self.assertEqual(payload["state_events_by_scope"], [])
 
+    def test_build_runtime_diagnostics_marks_runtime_engine_disabled_and_read_only(self):
+        with patch.dict(os.environ, {"MAKERHUB_RUNTIME_ENGINE": "runtime"}), \
+                patch.object(runtime_diagnostics, "database_status", return_value={"available": False}):
+            payload = runtime_diagnostics.build_runtime_diagnostics()
+
+        self.assertFalse(payload["runtime_engine"]["enabled"])
+        self.assertFalse(payload["runtime_engine"]["writable"])
+        self.assertIn("冻结", payload["runtime_engine"]["reason"])
+
     def test_build_runtime_diagnostics_always_includes_account_health_snapshot(self):
         account_health = {
             "cn": {
@@ -832,18 +842,13 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         self.assertEqual(payload["queued_count"], 0)
         self.assertEqual(payload["account_health"]["three_mf_gate"], "open")
 
-    def test_verified_missing_3mf_runtime_route_retries_cookie_invalid_items(self):
+    def test_verified_missing_3mf_route_uses_legacy_retry_when_runtime_env_is_truthy(self):
         request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
-        runtime_payload = {
-            "run_id": "run-verified",
-            "total": 2,
-            "message": "已提交运行核心。",
-        }
 
-        with patch.object(tasks_routes, "_require_session_auth") as require_auth, \
-                patch.object(tasks_routes, "_runtime_engine_enabled", return_value=True), \
-                patch.object(tasks_routes, "run_task_api", side_effect=lambda func, *args, **kwargs: func(*args, **kwargs)), \
-                patch.object(tasks_routes, "_submit_runtime_run", return_value=runtime_payload) as submit_runtime_run, \
+        with patch.dict(os.environ, {"MAKERHUB_RUNTIME_ENGINE": "1"}), \
+                patch.object(tasks_routes, "_require_session_auth") as require_auth, \
+                patch("app.api.runtime_routes.runtime_engine.submit_run") as submit_runtime_run, \
+                patch.object(tasks_routes, "_submit_background_task", return_value=True) as background_retry, \
                 patch.object(tasks_routes, "mark_account_ok", return_value={"status": "ok"}), \
                 patch.object(tasks_routes, "append_business_log"):
             payload = asyncio.run(
@@ -854,13 +859,12 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
             )
 
         require_auth.assert_called_once_with(request)
-        submit_runtime_run.assert_called_once()
-        run_type, context = submit_runtime_run.call_args.args
-        self.assertEqual(run_type, "missing_3mf_retry")
-        self.assertEqual(context["platform"], "cn")
-        self.assertIn("cookie_invalid", context["statuses"])
-        self.assertIn("verification_required", context["statuses"])
-        self.assertNotIn("status", context)
+        submit_runtime_run.assert_not_called()
+        background_retry.assert_called_once_with(
+            tasks_routes.crawler.manager.retry_verification_missing_3mf,
+            platform="cn",
+        )
+        self.assertTrue(payload["accepted"])
         self.assertEqual(payload["account_health"]["status"], "ok")
 
 
