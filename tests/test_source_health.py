@@ -471,6 +471,32 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(payload["state"], "auth_required")
         self.assertEqual([item["status_code"] for item in payload["results"]], [401, 401])
 
+    def test_auth_probe_rejects_redirect_status_as_http_error(self):
+        class RedirectSession:
+            def get(self, _url, **_kwargs):
+                return SimpleNamespace(
+                    status_code=302,
+                    text="",
+                    headers={
+                        "content-type": "text/plain",
+                        "location": "https://makerworld.com/login",
+                    },
+                )
+
+            def close(self):
+                return None
+
+        with patch.object(source_health, "_make_session", return_value=RedirectSession()), patch.object(
+            source_health,
+            "flaresolverr_get_text",
+            side_effect=AssertionError("auth API probes must not use FlareSolverr"),
+        ):
+            payload = source_health._probe_auth_endpoints("global", "", None)
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["state"], "http_error")
+        self.assertEqual([item["status_code"] for item in payload["results"]], [302, 302])
+
     def test_web_probe_uses_flaresolverr_without_session_get(self):
         class FailingSession:
             def close(self):

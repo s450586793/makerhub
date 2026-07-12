@@ -137,7 +137,7 @@ def _auth_probe_result_from_response(
     looks_like_html = _looks_like_html(preview)
     verification_marker = _contains_verification_markers(preview)
     status_value = int(status_code or 0)
-    ok = status_value > 0 and status_value < 400 and not looks_like_html
+    ok = 200 <= status_value < 300 and not looks_like_html
     result = {
         "target": name,
         "url": url,
