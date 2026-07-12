@@ -165,12 +165,12 @@ import { createAutoLoadObserver } from "../lib/autoLoadObserver";
 import { getPageCache, setPageCache } from "../lib/pageCache";
 import { createPagePerformanceTracker } from "../lib/performance";
 import { subscribeStateRefresh } from "../lib/stateEvents";
+import { createHydratedResource } from "../lib/useHydratedResource";
 import {
   DEFAULT_SUBSCRIPTION_SETTINGS,
   createEmptySubscriptionsPayload,
   mergeSubscriptionSourcesForLightRefresh,
   normalizeSubscriptionsPayload,
-  shouldDeferLightSubscriptionCards,
 } from "../lib/subscriptions";
 
 
@@ -196,7 +196,6 @@ const createDialog = reactive({
 });
 let unsubscribeStateRefresh = null;
 let requestToken = 0;
-let fullSubscriptionsHydrationTimer = null;
 
 const sourceSections = computed(() => (
   payload.value.sections.filter((section) => section?.key === "subscription_sources")
@@ -323,47 +322,14 @@ function buildSubscriptionsQuery(page = 1, options = {}) {
 }
 
 async function fetchSubscriptionsPage(page = 1, options = {}) {
-  if (options.light) {
-    return normalizeSubscriptionsPayload(
-      await apiRequest("/api/subscriptions/light?" + buildSubscriptionsQuery(page, options).toString()),
-    );
-  }
   return normalizeSubscriptionsPayload(
-    await apiRequest("/api/subscriptions?" + buildSubscriptionsQuery(page, options).toString()),
+    await apiRequest("/api/subscriptions/light?" + buildSubscriptionsQuery(page, options).toString()),
   );
 }
 
-function scheduleIdleCallback(callback, timeout = 2500) {
-  if (typeof window === "undefined") {
-    callback();
-    return null;
-  }
-  if (typeof window.requestIdleCallback === "function") {
-    return window.requestIdleCallback(callback, { timeout });
-  }
-  return window.setTimeout(callback, timeout);
-}
-
-function cancelIdleCallback(handle) {
-  if (!handle || typeof window === "undefined") {
-    return;
-  }
-  if (typeof window.cancelIdleCallback === "function") {
-    window.cancelIdleCallback(handle);
-    return;
-  }
-  window.clearTimeout(handle);
-}
-
-function scheduleFullSubscriptionsHydration(options = {}) {
-  if (fullSubscriptionsHydrationTimer) {
-    cancelIdleCallback(fullSubscriptionsHydrationTimer);
-  }
-  fullSubscriptionsHydrationTimer = scheduleIdleCallback(() => {
-    fullSubscriptionsHydrationTimer = null;
-    void refreshFullSubscriptions(options);
-  });
-}
+const subscriptionsResource = createHydratedResource({
+  load: ({ page, requestOptions }) => fetchSubscriptionsPage(page, requestOptions),
+});
 
 function resetCreateForm() {
   createDialog.url = "";
@@ -371,7 +337,7 @@ function resetCreateForm() {
   createDialog.cron = String(payload.value.settings?.default_cron || DEFAULT_SUBSCRIPTION_SETTINGS.default_cron);
 }
 
-async function load({ silent = false, pages = routePage(), hydrateFull = false } = {}) {
+async function load({ silent = false, pages = routePage() } = {}) {
   const currentToken = ++requestToken;
   disconnectObserver();
   loadingMore.value = false;
@@ -380,43 +346,33 @@ async function load({ silent = false, pages = routePage(), hydrateFull = false }
   }
   const pagesToLoad = Math.max(Number(pages) || 1, 1);
   let failed = false;
-  let shouldHydrateFull = false;
   try {
-    const response = await fetchSubscriptionsPage(pagesToLoad, {
+    const response = await subscriptionsResource.load({ page: pagesToLoad, requestOptions: {
       includeUntilPage: pagesToLoad > 1,
-      light: true,
-    });
+    } });
+    if (!response) {
+      return;
+    }
     if (currentToken !== requestToken) {
       return;
     }
     const section = subscriptionSourcesSection(response);
-    const currentSection = subscriptionSources.value;
-    const displaySection = mergeSubscriptionSourcesForLightRefresh(currentSection, section);
-    const shouldDeferLightCards = shouldDeferLightSubscriptionCards({
-      hydrateFull,
-      currentSection,
-      displaySection,
-    });
-    if (!shouldDeferLightCards) {
-      payload.value = replaceSubscriptionSourcesSection(
-        response,
-        displaySection?.items || [],
-        {
-          ...(displaySection || {}),
-          page: pagesToLoad,
-          page_size: PAGE_SIZE,
-          has_more: Boolean(displaySection?.has_more),
-          total: Number(displaySection?.total || displaySection?.items?.length || 0),
-        },
-      );
-      initialLoaded.value = true;
-      initialLoadFailed.value = false;
-      pruneSelectionsToLoadedCards();
-      rememberSubscriptionsPage();
-    }
-    if (hydrateFull) {
-      shouldHydrateFull = true;
-    }
+    const displaySection = mergeSubscriptionSourcesForLightRefresh(subscriptionSources.value, section);
+    payload.value = replaceSubscriptionSourcesSection(
+      response,
+      displaySection?.items || [],
+      {
+        ...(displaySection || {}),
+        page: pagesToLoad,
+        page_size: PAGE_SIZE,
+        has_more: Boolean(displaySection?.has_more),
+        total: Number(displaySection?.total || displaySection?.items?.length || 0),
+      },
+    );
+    initialLoaded.value = true;
+    initialLoadFailed.value = false;
+    pruneSelectionsToLoadedCards();
+    rememberSubscriptionsPage();
   } catch (error) {
     failed = true;
     if (!initialLoaded.value && currentToken === requestToken) {
@@ -429,56 +385,6 @@ async function load({ silent = false, pages = routePage(), hydrateFull = false }
     if (currentToken === requestToken && !failed) {
       await nextTick();
       ensureObserver();
-    }
-  }
-  if (shouldHydrateFull && currentToken === requestToken) {
-    if (initialLoaded.value) {
-      scheduleFullSubscriptionsHydration({ pages: pagesToLoad });
-    } else {
-      await refreshFullSubscriptions({ pages: pagesToLoad });
-    }
-  }
-}
-
-async function refreshFullSubscriptions({ pages = Number(subscriptionSources.value?.page || routePage()) } = {}) {
-  const currentToken = ++requestToken;
-  disconnectObserver();
-  loadingMore.value = false;
-  const pagesToLoad = Math.max(Number(pages) || 1, 1);
-  let failed = false;
-  try {
-    const response = await fetchSubscriptionsPage(pagesToLoad, { includeUntilPage: pagesToLoad > 1 });
-    if (currentToken !== requestToken) {
-      return;
-    }
-    const section = subscriptionSourcesSection(response);
-    payload.value = replaceSubscriptionSourcesSection(
-      response,
-      section?.items || [],
-      {
-        ...(section || {}),
-        page: pagesToLoad,
-        page_size: PAGE_SIZE,
-        has_more: Boolean(section?.has_more),
-        total: Number(section?.total || section?.items?.length || 0),
-      },
-    );
-    initialLoaded.value = true;
-    initialLoadFailed.value = false;
-    pruneSelectionsToLoadedCards();
-    rememberSubscriptionsPage();
-  } catch (error) {
-    failed = true;
-    if (!initialLoaded.value && currentToken === requestToken) {
-      initialLoadFailed.value = true;
-    }
-    status.value = error instanceof Error ? error.message : "刷新完整订阅库失败。";
-  } finally {
-    if (currentToken === requestToken) {
-      await nextTick();
-      if (!failed) {
-        ensureObserver();
-      }
     }
   }
 }
@@ -670,7 +576,7 @@ async function createSubscription() {
     closeCreateDialog(true);
     resetCreateForm();
     await updateRoutePage(1);
-    await load({ silent: true, pages: 1, hydrateFull: true });
+    await load({ silent: true, pages: 1 });
   } catch (error) {
     status.value = error instanceof Error ? error.message : "创建订阅失败。";
   } finally {
@@ -684,19 +590,23 @@ onMounted(async () => {
   unsubscribeStateRefresh = subscribeStateRefresh(
     ["subscriptions_state", "source_library", "archive_queue"],
     () => {
-      void load({ silent: true, pages: Number(subscriptionSources.value?.page || routePage()), hydrateFull: true });
+      void load({ silent: true, pages: Number(subscriptionSources.value?.page || routePage()) });
+    },
+    {
+      eventRules: [
+        { scopes: ["subscriptions_state"], types: ["state.changed"] },
+        { scopes: ["source_library"], types: ["source_library.changed"] },
+        { scopes: ["archive_queue"], types: ["archive.completed", "archive.failed"] },
+      ],
     },
   );
   hydrateSubscriptionsPageFromCache();
-  await load({ hydrateFull: true });
+  await load();
   void perf.finish();
 });
 
 onBeforeUnmount(() => {
-  if (fullSubscriptionsHydrationTimer) {
-    cancelIdleCallback(fullSubscriptionsHydrationTimer);
-    fullSubscriptionsHydrationTimer = null;
-  }
+  subscriptionsResource.cancel();
   disconnectObserver();
   if (typeof unsubscribeStateRefresh === "function") {
     unsubscribeStateRefresh();

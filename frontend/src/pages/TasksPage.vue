@@ -402,6 +402,7 @@ import { normalizeRuntimeStatusLabel, runtimeTaskAction } from "../lib/dashboard
 import { encodeModelPath } from "../lib/helpers";
 import { createPagePerformanceTracker } from "../lib/performance";
 import { runtimeFailureLabel, runtimeRunLabel, runtimeTaskShape } from "../lib/runtimeStatus";
+import { createHydratedResource } from "../lib/useHydratedResource";
 import { createPageRefreshController } from "../lib/usePageRefresh";
 
 
@@ -458,6 +459,17 @@ const archiveRepairStatus = ref("");
 let tasksRefreshController = null;
 let loadingTasks = false;
 let loadingFullTasks = false;
+
+const tasksResource = createHydratedResource({
+  load: () => apiRequest("/api/tasks/light"),
+  enrich: () => apiRequest("/api/tasks"),
+  onData: (response) => {
+    payload.value = response;
+    if (payload.value.archive_queue.recent_failures.length) {
+      recentFailureStatus.value = "";
+    }
+  },
+});
 const TASKS_PAGE_SIZE = 5;
 const activeVisibleLimit = ref(TASKS_PAGE_SIZE);
 const queuedVisibleLimit = ref(TASKS_PAGE_SIZE);
@@ -617,19 +629,13 @@ function openArchiveConfirmDialog(preview) {
   };
 }
 
-async function load({ hydrateFull = false } = {}) {
+async function load() {
   if (loadingTasks) {
     return;
   }
   loadingTasks = true;
   try {
-    payload.value = await apiRequest("/api/tasks/light");
-    if (payload.value.archive_queue.recent_failures.length) {
-      recentFailureStatus.value = "";
-    }
-    if (hydrateFull) {
-      void refreshFullTasks();
-    }
+    await tasksResource.load();
   } finally {
     loadingTasks = false;
   }
@@ -641,11 +647,7 @@ async function refreshFullTasks() {
   }
   loadingFullTasks = true;
   try {
-    const fullPayload = await apiRequest("/api/tasks");
-    payload.value = fullPayload;
-    if (payload.value.archive_queue.recent_failures.length) {
-      recentFailureStatus.value = "";
-    }
+    await tasksResource.enrich();
   } finally {
     loadingFullTasks = false;
   }
@@ -853,16 +855,17 @@ onMounted(async () => {
   const perf = createPagePerformanceTracker({ page: "tasks" });
   tasksRefreshController = createPageRefreshController({
     scopes: ["archive_queue", "missing_3mf", "organize_tasks"],
-    refresh: () => load({ hydrateFull: false }),
+    refresh: () => load(),
     delayMs: 1000,
     debounceMs: 0,
     resetExistingTimer: false,
   });
-  await load({ hydrateFull: true });
+  await load();
   void perf.finish();
 });
 
 onBeforeUnmount(() => {
+  tasksResource.cancel();
   stopTasksRefreshController();
 });
 </script>

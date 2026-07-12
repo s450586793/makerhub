@@ -337,6 +337,7 @@ import {
 import { formatServerDateTime } from "../lib/helpers";
 import { createPagePerformanceTracker } from "../lib/performance";
 import { subscribeStateRefresh } from "../lib/stateEvents";
+import { createHydratedResource } from "../lib/useHydratedResource";
 
 
 const defaultAutomationOverview = {
@@ -458,79 +459,26 @@ const hasActiveWork = computed(() => Boolean(
   || Number(automation.value?.organizer?.active_count || 0)
 ));
 
-let requestInFlight = false;
-let fullDashboardRequestInFlight = false;
 let unsubscribeStateRefresh = null;
 let refreshWhenVisible = false;
-let fullDashboardHydrationTimer = null;
 
-function scheduleIdleCallback(callback, timeout = 2500) {
-  if (typeof window === "undefined") {
-    callback();
-    return null;
-  }
-  if (typeof window.requestIdleCallback === "function") {
-    return window.requestIdleCallback(callback, { timeout });
-  }
-  return window.setTimeout(callback, timeout);
-}
+const dashboardResource = createHydratedResource({
+  load: () => apiRequest("/api/dashboard/light"),
+  onData: (response) => {
+    payload.value = response;
+  },
+});
 
-function cancelIdleCallback(handle) {
-  if (!handle || typeof window === "undefined") {
-    return;
-  }
-  if (typeof window.cancelIdleCallback === "function") {
-    window.cancelIdleCallback(handle);
-    return;
-  }
-  window.clearTimeout(handle);
-}
-
-function scheduleFullDashboardHydration() {
-  if (fullDashboardHydrationTimer) {
-    cancelIdleCallback(fullDashboardHydrationTimer);
-  }
-  fullDashboardHydrationTimer = scheduleIdleCallback(() => {
-    fullDashboardHydrationTimer = null;
-    void refreshFullDashboard();
-  });
-}
-
-async function load({ initial = false, hydrateFull = false } = {}) {
-  if (requestInFlight) {
-    return;
-  }
-  requestInFlight = true;
+async function load({ initial = false } = {}) {
   if (initial) {
     loading.value = true;
   }
   try {
-    payload.value = await apiRequest("/api/dashboard/light");
-    if (hydrateFull) {
-      scheduleFullDashboardHydration();
-    }
+    await dashboardResource.load();
   } catch (error) {
     console.error("首页数据刷新失败", error);
-    if (initial || hydrateFull) {
-      await refreshFullDashboard();
-    }
   } finally {
     loading.value = false;
-    requestInFlight = false;
-  }
-}
-
-async function refreshFullDashboard() {
-  if (fullDashboardRequestInFlight) {
-    return;
-  }
-  fullDashboardRequestInFlight = true;
-  try {
-    payload.value = await apiRequest("/api/dashboard");
-  } catch (error) {
-    console.error("首页完整数据刷新失败", error);
-  } finally {
-    fullDashboardRequestInFlight = false;
   }
 }
 
@@ -579,7 +527,7 @@ async function runStatusAction(item, action) {
       ...statusActionState.value,
       [key]: { busy: false, message: result?.message || "重试已提交。" },
     };
-    void load({ hydrateFull: false });
+    void load();
   } catch (error) {
     statusActionState.value = {
       ...statusActionState.value,
@@ -596,7 +544,7 @@ function handleArchiveCompleted() {
     refreshWhenVisible = true;
     return;
   }
-  void load({ hydrateFull: false });
+  void load();
 }
 
 function handleVisibilityChange() {
@@ -606,7 +554,7 @@ function handleVisibilityChange() {
   const shouldRefresh = refreshWhenVisible;
   refreshWhenVisible = false;
   if (shouldRefresh || hasActiveWork.value) {
-    void load({ hydrateFull: false });
+    void load();
   }
 }
 
@@ -629,7 +577,7 @@ function subscriptionStatusLabel(item) {
 
 onMounted(async () => {
   const perf = createPagePerformanceTracker({ page: "dashboard" });
-  await load({ initial: true, hydrateFull: true });
+  await load({ initial: true });
   void perf.finish();
   unsubscribeStateRefresh = subscribeStateRefresh(
     [
@@ -649,10 +597,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
-  if (fullDashboardHydrationTimer) {
-    cancelIdleCallback(fullDashboardHydrationTimer);
-    fullDashboardHydrationTimer = null;
-  }
+  dashboardResource.cancel();
   if (typeof unsubscribeStateRefresh === "function") {
     unsubscribeStateRefresh();
     unsubscribeStateRefresh = null;

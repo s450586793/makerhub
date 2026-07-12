@@ -199,9 +199,9 @@ import { useRouter } from "vue-router";
 
 import SourceLibraryCard from "../components/SourceLibraryCard.vue";
 import { apiRequest, apiUploadRequest } from "../lib/api";
-import { refreshConfig } from "../lib/appState";
 import { deletePageCache, deletePageCacheByPrefix, getPageCache, setPageCache } from "../lib/pageCache";
 import { createPagePerformanceTracker } from "../lib/performance";
+import { createHydratedResource } from "../lib/useHydratedResource";
 import { createPageRefreshController } from "../lib/usePageRefresh";
 
 
@@ -263,7 +263,6 @@ const organizerTasks = ref({
   detected_total: 0,
 });
 const loading = ref(false);
-const sourceLibraryLoading = ref(false);
 const initialLoaded = ref(false);
 const loadError = ref("");
 const importFileInput = ref(null);
@@ -296,40 +295,16 @@ const importUploadProgress = reactive({
 });
 const organizerProgressOpen = ref(false);
 let organizerRefreshController = null;
-let sourceLibraryRefreshDeferred = false;
-let fullSourceLibraryHydrationTimer = null;
 
-function scheduleIdleCallback(callback, timeout = 2500) {
-  if (typeof window === "undefined") {
-    callback();
-    return null;
-  }
-  if (typeof window.requestIdleCallback === "function") {
-    return window.requestIdleCallback(callback, { timeout });
-  }
-  return window.setTimeout(callback, timeout);
-}
-
-function cancelIdleCallback(handle) {
-  if (!handle || typeof window === "undefined") {
-    return;
-  }
-  if (typeof window.cancelIdleCallback === "function") {
-    window.cancelIdleCallback(handle);
-    return;
-  }
-  window.clearTimeout(handle);
-}
-
-function scheduleFullSourceLibraryHydration(options = {}) {
-  if (fullSourceLibraryHydrationTimer) {
-    cancelIdleCallback(fullSourceLibraryHydrationTimer);
-  }
-  fullSourceLibraryHydrationTimer = scheduleIdleCallback(() => {
-    fullSourceLibraryHydrationTimer = null;
-    void refreshFullSourceLibrary(options);
-  });
-}
+const organizerResource = createHydratedResource({
+  load: () => apiRequest("/api/source-library/light"),
+  onData: (response) => {
+    sourceLibraryPayload.value = {
+      sections: Array.isArray(response?.sections) ? response.sections : [],
+    };
+    organizerTasks.value = response?.organize_tasks || organizerTasks.value;
+  },
+});
 
 function rememberOrganizerPage() {
   setPageCache("organizer", {
@@ -348,10 +323,6 @@ function hydrateOrganizerPageFromCache() {
   loadError.value = "";
   initialLoaded.value = true;
   return true;
-}
-
-function hasSourceLibraryPayload() {
-  return Array.isArray(sourceLibraryPayload.value?.sections) && sourceLibraryPayload.value.sections.length > 0;
 }
 
 const localSourceSection = computed(() => (
@@ -1171,23 +1142,16 @@ function clearOrganizerRefresh() {
 }
 
 function refreshOrganizerTasks() {
-  return load({ silent: true, refreshLibrary: !hasActiveOrganizeTasks() || !hasSourceLibraryPayload() });
+  return load({ silent: true });
 }
 
-async function load({ silent = false, refreshLibrary = true } = {}) {
+async function load({ silent = false } = {}) {
   if (loading.value) {
-    if (refreshLibrary) {
-      sourceLibraryRefreshDeferred = true;
-    }
     return;
-  }
-  if (refreshLibrary || !hasSourceLibraryPayload()) {
-    sourceLibraryRefreshDeferred = true;
   }
   loading.value = true;
   try {
-    const tasksPayload = await apiRequest("/api/tasks/light");
-    organizerTasks.value = tasksPayload?.organize_tasks || organizerTasks.value;
+    await organizerResource.load();
     reconcileImportUploadProgress();
     loadError.value = "";
     initialLoaded.value = true;
@@ -1199,52 +1163,6 @@ async function load({ silent = false, refreshLibrary = true } = {}) {
     }
   } finally {
     loading.value = false;
-    if (sourceLibraryRefreshDeferred && !hasActiveOrganizeTasks() && typeof window !== "undefined" && !document.hidden) {
-      void refreshSourceLibrary({ silent: true });
-    }
-  }
-}
-
-async function refreshSourceLibrary({ silent = true } = {}) {
-  if (sourceLibraryLoading.value) {
-    sourceLibraryRefreshDeferred = true;
-    return;
-  }
-  sourceLibraryLoading.value = true;
-  try {
-    const [sourceLibraryPayloadResponse] = await Promise.all([
-      apiRequest("/api/source-library/light"),
-      refreshConfig(),
-    ]);
-    sourceLibraryPayload.value = {
-      sections: Array.isArray(sourceLibraryPayloadResponse?.sections) ? sourceLibraryPayloadResponse.sections : [],
-    };
-    sourceLibraryRefreshDeferred = false;
-    rememberOrganizerPage();
-    scheduleFullSourceLibraryHydration({ silent: true });
-  } catch (error) {
-    sourceLibraryRefreshDeferred = true;
-    if (!silent) {
-      console.error("本地库卡片刷新失败", error);
-    }
-  } finally {
-    sourceLibraryLoading.value = false;
-  }
-}
-
-async function refreshFullSourceLibrary({ silent = true } = {}) {
-  try {
-    const sourceLibraryPayloadResponse = await apiRequest("/api/source-library");
-    sourceLibraryPayload.value = {
-      sections: Array.isArray(sourceLibraryPayloadResponse?.sections) ? sourceLibraryPayloadResponse.sections : [],
-    };
-    sourceLibraryRefreshDeferred = false;
-    rememberOrganizerPage();
-  } catch (error) {
-    sourceLibraryRefreshDeferred = true;
-    if (!silent) {
-      console.error("本地库完整卡片刷新失败", error);
-    }
   }
 }
 
@@ -1643,7 +1561,7 @@ async function submitImportFiles() {
     resetImportDialogState();
     clearLibraryCachesAfterImport();
     clearOrganizerRefresh();
-    await load({ silent: true, refreshLibrary: true });
+    await load({ silent: true });
     if (resultSkipped || snapshotReady) {
       resetImportUploadProgress();
     }
@@ -1704,6 +1622,11 @@ onMounted(async () => {
   const perf = createPagePerformanceTracker({ page: "organizer" });
   organizerRefreshController = createPageRefreshController({
     scopes: ["organize_tasks", "archive_queue", "source_library"],
+    eventRules: [
+      { scopes: ["organize_tasks"], types: ["state.changed", "organize.completed"] },
+      { scopes: ["source_library"], types: ["source_library.changed"] },
+      { scopes: ["archive_queue"], types: ["archive.completed", "archive.failed"] },
+    ],
     refresh: refreshOrganizerTasks,
     delayMs: 300,
     refreshOnVisible: true,
@@ -1711,15 +1634,12 @@ onMounted(async () => {
   document.addEventListener("click", closeOrganizerProgressPopover);
   hydrateOrganizerPageFromCache();
   restoreImportUploadProgress();
-  await load({ refreshLibrary: !hasActiveOrganizeTasks() || !hasSourceLibraryPayload() });
+  await load();
   void perf.finish();
 });
 
 onBeforeUnmount(() => {
-  if (fullSourceLibraryHydrationTimer) {
-    cancelIdleCallback(fullSourceLibraryHydrationTimer);
-    fullSourceLibraryHydrationTimer = null;
-  }
+  organizerResource.cancel();
   stopOrganizerRefreshController();
   document.removeEventListener("click", closeOrganizerProgressPopover);
 });

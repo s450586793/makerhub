@@ -116,9 +116,9 @@ import ShareDialog from "../components/ShareDialog.vue";
 import { subscribeArchiveCompletion } from "../lib/archiveEvents";
 import { apiRequest } from "../lib/api";
 import { createAutoLoadObserver } from "../lib/autoLoadObserver";
-import { resolveHydratedLightPhase } from "../lib/hydratedPageLoader";
 import { getPageCache, setPageCache } from "../lib/pageCache";
 import { createPagePerformanceTracker } from "../lib/performance";
+import { createHydratedResource } from "../lib/useHydratedResource";
 
 
 const route = useRoute();
@@ -157,7 +157,6 @@ let deleteSettleToken = 0;
 let unsubscribeArchiveEvents = null;
 let refreshWhenVisible = false;
 let locallyHiddenDeletedModelDirs = new Set();
-let fullModelHydrationTimer = null;
 
 const selectedModelDirs = computed(() => Array.from(selectedModelDirSet.value));
 const selectedCount = computed(() => selectedModelDirs.value.length);
@@ -210,43 +209,12 @@ function buildRouteQuery(options = {}) {
 }
 
 async function fetchPage(page, options = {}) {
-  if (options.light) {
-    return apiRequest("/api/models/light?" + buildQuery(page, options).toString());
-  }
-  return apiRequest("/api/models?" + buildQuery(page, options).toString());
+  return apiRequest("/api/models/light?" + buildQuery(page, options).toString());
 }
 
-function scheduleIdleCallback(callback, timeout = 2500) {
-  if (typeof window === "undefined") {
-    callback();
-    return null;
-  }
-  if (typeof window.requestIdleCallback === "function") {
-    return window.requestIdleCallback(callback, { timeout });
-  }
-  return window.setTimeout(callback, timeout);
-}
-
-function cancelIdleCallback(handle) {
-  if (!handle || typeof window === "undefined") {
-    return;
-  }
-  if (typeof window.cancelIdleCallback === "function") {
-    window.cancelIdleCallback(handle);
-    return;
-  }
-  window.clearTimeout(handle);
-}
-
-function scheduleFullModelHydration(options = {}) {
-  if (fullModelHydrationTimer) {
-    cancelIdleCallback(fullModelHydrationTimer);
-  }
-  fullModelHydrationTimer = scheduleIdleCallback(() => {
-    fullModelHydrationTimer = null;
-    void refreshFullModelList(options);
-  });
-}
+const modelsResource = createHydratedResource({
+  load: ({ page, requestOptions }) => fetchPage(page, requestOptions),
+});
 
 function decrementCount(value, amount) {
   const number = Number(value);
@@ -380,13 +348,6 @@ function mergeUniqueModelItems(currentItems = [], incomingItems = []) {
   return mergedItems;
 }
 
-function hasStableModelListView(items = payload.value.items) {
-  return (Array.isArray(items) ? items : []).some((item) => (
-    String(item?.cover_url || "").trim()
-      || String(item?.author?.avatar_url || "").trim()
-  ));
-}
-
 function routePage() {
   const rawPage = Array.isArray(route.query.page) ? route.query.page[0] : route.query.page;
   const page = Number.parseInt(String(rawPage || ""), 10);
@@ -477,7 +438,7 @@ function buildModelReturnTo(modelDir) {
   }).fullPath;
 }
 
-async function load({ append = false, refresh = false, hydrateFull = false } = {}) {
+async function load({ append = false, refresh = false } = {}) {
   const currentToken = ++requestToken;
   if (!append) {
     loadMoreToken += 1;
@@ -487,21 +448,20 @@ async function load({ append = false, refresh = false, hydrateFull = false } = {
 
   const nextPage = append ? payload.value.page + 1 : routePage();
   const cacheKeyBase = refresh ? Date.now() : "";
-  const response = suppressLocallyDeletedItems(await fetchPage(nextPage, {
+  const requestOptions = {
     cacheKey: cacheKeyBase ? `${cacheKeyBase}-${nextPage}` : "",
     includeUntilPage: !append && nextPage > 1,
-    light: !append,
-  }));
+  };
+  const rawResponse = append
+    ? await fetchPage(nextPage, requestOptions)
+    : await modelsResource.load({ page: nextPage, requestOptions });
+  if (!rawResponse) {
+    return;
+  }
+  const response = suppressLocallyDeletedItems(rawResponse);
   if (currentToken !== requestToken) {
     return;
   }
-
-  const incomingItems = response.items || [];
-  const lightDecision = resolveHydratedLightPhase({
-    hydrateFull: !append && hydrateFull,
-    incomingItems,
-    hasStableView: hasStableModelListView(),
-  });
 
   if (append) {
     const mergedItems = mergeUniqueModelItems(payload.value.items, response.items || []);
@@ -510,34 +470,16 @@ async function load({ append = false, refresh = false, hydrateFull = false } = {
       items: mergedItems,
       count: mergedItems.length,
     };
-  } else if (lightDecision.renderLight) {
+  } else {
     await renderLightModelListResponse(response, nextPage);
   }
-  if (append || lightDecision.renderLight) {
-    if (append) {
-      loaded.value = true;
-      rememberModelList();
-      await nextTick();
-      ensureObserver();
-    }
-  }
-  if (!append) {
-    if (lightDecision.renderLight) {
-      await scrollToRouteAnchor();
-    }
-    if (lightDecision.hydrateImmediately) {
-      const hydrationToken = requestToken + 1;
-      try {
-        await refreshFullModelList({ refresh, throwOnError: true });
-      } catch {
-        if (!lightDecision.renderLight && requestToken === hydrationToken) {
-          await renderLightModelListResponse(response, nextPage);
-          await scrollToRouteAnchor();
-        }
-      }
-    } else if (lightDecision.hydrateFull) {
-      scheduleFullModelHydration({ refresh });
-    }
+  if (append) {
+    loaded.value = true;
+    rememberModelList();
+    await nextTick();
+    ensureObserver();
+  } else {
+    await scrollToRouteAnchor();
   }
 }
 
@@ -549,10 +491,14 @@ async function reloadVisiblePages({ refresh = false } = {}) {
   syncFiltersFromRoute();
   const cacheKeyBase = refresh ? Date.now() : "";
 
-  const response = suppressLocallyDeletedItems(await fetchPage(pagesToLoad, {
+  const rawResponse = await modelsResource.load({ page: pagesToLoad, requestOptions: {
     cacheKey: cacheKeyBase ? `${cacheKeyBase}-${pagesToLoad}` : "",
     includeUntilPage: pagesToLoad > 1,
-  }));
+  } });
+  if (!rawResponse) {
+    return;
+  }
+  const response = suppressLocallyDeletedItems(rawResponse);
 
   if (currentToken !== requestToken) {
     return;
@@ -567,41 +513,6 @@ async function reloadVisiblePages({ refresh = false } = {}) {
   rememberModelList();
   await nextTick();
   ensureObserver();
-}
-
-async function refreshFullModelList({ refresh = false, throwOnError = false } = {}) {
-  const pagesToLoad = Math.max(Number(payload.value.page) || routePage(), 1);
-  const currentToken = ++requestToken;
-  loadMoreToken += 1;
-  loadingMore.value = false;
-  syncFiltersFromRoute();
-  const cacheKeyBase = refresh ? Date.now() : "";
-
-  try {
-    const response = suppressLocallyDeletedItems(await fetchPage(pagesToLoad, {
-      cacheKey: cacheKeyBase ? `${cacheKeyBase}-${pagesToLoad}` : "",
-      includeUntilPage: pagesToLoad > 1,
-    }));
-
-    if (currentToken !== requestToken) {
-      return;
-    }
-
-    payload.value = {
-      ...response,
-      items: response.items || [],
-      count: (response.items || []).length,
-      page: pagesToLoad,
-    };
-    rememberModelList();
-    await nextTick();
-    ensureObserver();
-  } catch (error) {
-    status.value = error instanceof Error ? error.message : "刷新完整模型库失败。";
-    if (throwOnError) {
-      throw error;
-    }
-  }
 }
 
 function findModelCardElement(modelDir) {
@@ -982,7 +893,7 @@ async function restoreOne(modelDir) {
 watch(() => route.fullPath, () => {
   status.value = "";
   void hydrateModelListFromCache();
-  void load({ append: false, hydrateFull: true }).catch((error) => {
+  void load({ append: false }).catch((error) => {
     status.value = error instanceof Error ? error.message : "模型列表加载失败。";
     loaded.value = true;
   });
@@ -992,7 +903,7 @@ onMounted(async () => {
   const perf = createPagePerformanceTracker({ page: "models", route: () => route.fullPath });
   await hydrateModelListFromCache();
   try {
-    await load({ append: false, hydrateFull: true });
+    await load({ append: false });
   } catch (error) {
     status.value = error instanceof Error ? error.message : "模型列表加载失败。";
     loaded.value = true;
@@ -1003,10 +914,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
-  if (fullModelHydrationTimer) {
-    cancelIdleCallback(fullModelHydrationTimer);
-    fullModelHydrationTimer = null;
-  }
+  modelsResource.cancel();
   disconnectObserver();
   if (typeof unsubscribeArchiveEvents === "function") {
     unsubscribeArchiveEvents();

@@ -49,6 +49,7 @@ function ensureStateEventSource() {
   eventSource.addEventListener("archive.completed", dispatch);
   eventSource.addEventListener("archive.failed", dispatch);
   eventSource.addEventListener("organize.completed", dispatch);
+  eventSource.addEventListener("source_library.changed", dispatch);
   eventSource.addEventListener("archive_model_index_rebuild.changed", dispatch);
   eventSource.addEventListener("system_update.changed", dispatch);
 
@@ -94,6 +95,7 @@ export function subscribeStateRefresh(scopes, callback, options = {}) {
   const scheduler = createScopedRefreshScheduler({
     scopes,
     types: options.types,
+    eventRules: options.eventRules,
     callback,
     debounceMs: Number.isFinite(Number(options.debounceMs))
       ? Number(options.debounceMs)

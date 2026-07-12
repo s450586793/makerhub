@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   createScopedRefreshScheduler,
+  matchesStateEventRules,
   normalizeScopes,
   shouldHandleStateEvent,
 } from "./stateRefresh.js";
@@ -52,6 +53,43 @@ test("shouldHandleStateEvent allows wildcard scope", () => {
     shouldHandleStateEvent({ type: "state.changed", scope: "anything" }, ["*"]),
     true,
   );
+});
+
+test("event rules match scope and type as rule pairs", () => {
+  const eventRules = [
+    { scopes: ["subscriptions_state", "source_library"], types: ["state.changed", "source_library.changed"] },
+    { scopes: ["archive_queue"], types: ["archive.completed", "archive.failed"] },
+  ];
+
+  assert.equal(matchesStateEventRules({ type: "state.changed", scope: "subscriptions_state" }, eventRules), true);
+  assert.equal(matchesStateEventRules({ type: "archive.completed", scope: "archive_queue" }, eventRules), true);
+  assert.equal(matchesStateEventRules({ type: "state.changed", scope: "archive_queue" }, eventRules), false);
+  assert.equal(matchesStateEventRules({ type: "archive.completed", scope: "source_library" }, eventRules), false);
+});
+
+test("scoped refresh scheduler prefers event rules over broad filters", () => {
+  const received = [];
+  const scheduled = [];
+  const scheduler = createScopedRefreshScheduler({
+    scopes: ["archive_queue", "source_library"],
+    eventRules: [
+      { scopes: ["source_library"], types: ["source_library.changed"] },
+      { scopes: ["archive_queue"], types: ["archive.completed", "archive.failed"] },
+    ],
+    debounceMs: 0,
+    callback: (event) => received.push(event),
+    setTimeoutFn: (fn) => {
+      scheduled.push(fn);
+      return scheduled.length;
+    },
+    clearTimeoutFn: () => {},
+  });
+
+  scheduler.handleEvent({ type: "state.changed", scope: "archive_queue" });
+  scheduler.handleEvent({ type: "archive.completed", scope: "archive_queue" });
+  assert.equal(scheduled.length, 1);
+  scheduled[0]();
+  assert.deepEqual(received, [{ type: "archive.completed", scope: "archive_queue" }]);
 });
 
 test("createScopedRefreshScheduler debounces matching events", () => {

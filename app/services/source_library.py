@@ -38,6 +38,7 @@ from app.services.catalog import (
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.legacy_archiver import extract_next_data, fetch_html_with_flaresolverr, parse_cookies
 from app.services.proxy_policy import proxy_mapping, temporary_proxy_env
+from app.services.state_events import publish_state_event
 from app.services.task_state import TaskStateStore
 
 
@@ -242,6 +243,11 @@ def _save_source_metadata_item(source_key: str, payload: dict[str, Any]) -> None
         current["last_synced_at"] = _now_iso()
         items[source_key] = current
         _write_metadata_cache_unlocked({"items": items, "updated_at": _now_iso()})
+    publish_state_event(
+        "source_library",
+        "source_library.changed",
+        {"source_key": source_key},
+    )
 
 
 def _clone_groups(groups: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -631,6 +637,11 @@ def _save_source_snapshot_metadata(source_key: str, payload: dict[str, Any]) -> 
         current["preview_snapshot_updated_at"] = _now_iso()
         items[source_key] = current
         _write_metadata_cache_unlocked({"items": items, "updated_at": _now_iso()})
+    publish_state_event(
+        "source_library",
+        "source_library.changed",
+        {"source_key": source_key},
+    )
 
 
 def _iter_nodes(payload: Any):
@@ -1402,8 +1413,34 @@ def build_source_library_payload(q: str = "", store: Optional[JsonStore] = None,
     return _source_library_payload_from_cache_or_build(store=store, task_store=task_store)
 
 
+def _organizer_light_projection(
+    task_store: Optional[TaskStateStore],
+    metadata_cache: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], int]:
+    load_organize_tasks = getattr(task_store, "load_organize_tasks", None)
+    if not callable(load_organize_tasks):
+        return [], [], {}, 0
+
+    organize_tasks = load_organize_tasks()
+    organize_tasks = dict(organize_tasks) if isinstance(organize_tasks, dict) else {}
+    all_models, visible_models = _load_models(task_store=task_store)
+    all_models_by_dir = {str(item.get("model_dir") or ""): item for item in all_models}
+    visible_models_by_dir = {str(item.get("model_dir") or ""): item for item in visible_models}
+    local_groups = [
+        _finalize_group(group, visible_models_by_dir, metadata_cache.get(group["key"]) or {})
+        for group in _group_local_sources(visible_models)
+    ]
+    state_groups = [
+        _finalize_group(group, all_models_by_dir, metadata_cache.get(group["key"]) or {})
+        for group in _group_state_cards(all_models, visible_models)
+    ]
+    state_groups.sort(key=lambda item: DEFAULT_STATE_SORT_ORDER.get(str(item.get("key") or ""), 99))
+    return local_groups, state_groups, organize_tasks, len(visible_models)
+
+
 def build_source_library_light_payload(q: str = "", store: Optional[JsonStore] = None, task_store: Optional[TaskStateStore] = None) -> dict[str, Any]:
     store = store or JsonStore()
+    task_store = task_store or TaskStateStore()
     config = store.load()
     metadata_payload = load_source_metadata_cache()
     metadata_cache = dict(metadata_payload.get("items") or {})
@@ -1420,12 +1457,13 @@ def build_source_library_light_payload(q: str = "", store: Optional[JsonStore] =
     authors = [item for item in source_groups if item.get("kind") == "author"]
     collections = [item for item in source_groups if item.get("kind") == "collection"]
     favorites = [item for item in source_groups if item.get("kind") == "favorite"]
+    local_groups, state_groups, organize_tasks, visible_model_count = _organizer_light_projection(task_store, metadata_cache)
     sections = [
         {"key": "authors", "label": "作者", "count": len(authors), "items": _sort_source_groups(authors, "recent")},
         {"key": "collections", "label": "合集", "count": len(collections), "items": _sort_source_groups(collections, "recent")},
         {"key": "favorites", "label": "收藏夹", "count": len(favorites), "items": _sort_source_groups(favorites, "recent")},
-        {"key": "locals", "label": "本地库", "count": 0, "items": []},
-        {"key": "states", "label": "状态", "count": 0, "items": []},
+        {"key": "locals", "label": "本地库", "count": len(local_groups), "items": local_groups},
+        {"key": "states", "label": "状态", "count": len(state_groups), "items": state_groups},
     ]
     total_cards = sum(len(section["items"]) for section in sections)
     return {
@@ -1434,8 +1472,9 @@ def build_source_library_light_payload(q: str = "", store: Optional[JsonStore] =
         "filters": {"q": q},
         "summary": {
             "card_count": total_cards,
-            "model_count": 0,
+            "model_count": visible_model_count,
         },
+        "organize_tasks": organize_tasks,
         "cache": {
             "stale": True,
             "refreshing": bool(_SOURCE_LIBRARY_PAYLOAD_REFRESH_STATE.get("running")),

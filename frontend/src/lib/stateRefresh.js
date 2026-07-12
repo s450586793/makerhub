@@ -5,6 +5,11 @@ export function normalizeScopes(scopes) {
     .filter((scope) => typeof scope === "string" && scope.length > 0);
 }
 
+export function matchesStateEventRules(event, eventRules = []) {
+  const rules = Array.isArray(eventRules) ? eventRules : [];
+  return rules.some((rule) => shouldHandleStateEvent(event, rule?.scopes, rule?.types));
+}
+
 export function shouldHandleStateEvent(event, scopes = [], types = []) {
   const scopeSet = new Set(normalizeScopes(scopes));
   const typeSet = new Set(normalizeScopes(types));
@@ -23,6 +28,7 @@ export function shouldHandleStateEvent(event, scopes = [], types = []) {
 export function createScopedRefreshScheduler({
   scopes = [],
   types = [],
+  eventRules = [],
   callback,
   debounceMs = DEFAULT_STATE_REFRESH_DEBOUNCE_MS,
   isHidden = () => false,
@@ -55,7 +61,10 @@ export function createScopedRefreshScheduler({
   };
 
   const handleEvent = (event) => {
-    if (!shouldHandleStateEvent(event, scopes, types)) {
+    const matches = Array.isArray(eventRules) && eventRules.length
+      ? matchesStateEventRules(event, eventRules)
+      : shouldHandleStateEvent(event, scopes, types);
+    if (!matches) {
       return;
     }
     invoke(event);

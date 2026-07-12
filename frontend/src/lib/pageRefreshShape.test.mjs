@@ -84,11 +84,11 @@ test("DashboardPage shows separate source refresh completion fields", () => {
   assert.match(dashboardPageSource, /"source_refresh_runs"/);
 });
 
-test("DashboardPage renders a light snapshot before full dashboard hydration", () => {
+test("DashboardPage treats the light snapshot as its final initial projection", () => {
   assert.match(dashboardPageSource, /apiRequest\("\/api\/dashboard\/light"\)/);
-  assert.match(dashboardPageSource, /refreshFullDashboard/);
-  assert.match(dashboardPageSource, /scheduleFullDashboardHydration/);
-  assert.match(dashboardPageSource, /requestIdleCallback|setTimeout/);
+  assert.match(dashboardPageSource, /createHydratedResource/);
+  assert.doesNotMatch(dashboardPageSource, /scheduleFullDashboardHydration|requestIdleCallback/);
+  assert.doesNotMatch(dashboardPageSource, /load\(\{ initial: true, hydrateFull: true \}\)/);
 });
 
 test("RemoteRefreshPage explains active run progress from resumable batch state", () => {
@@ -104,17 +104,18 @@ test("OrganizerPage uses shared page refresh controller for organize task refres
   assert.match(organizerPageSource, /organizerRefreshController/);
 });
 
-test("OrganizerPage does not block first paint on source library payload", () => {
-  assert.match(organizerPageSource, /async function refreshSourceLibrary/);
-  assert.match(organizerPageSource, /void refreshSourceLibrary/);
-  assert.match(organizerPageSource, /apiRequest\("\/api\/tasks\/light"\)/);
-  assert.doesNotMatch(organizerPageSource, /Promise\.all\(requests\)/);
+test("OrganizerPage projects source cards and task state from one response", () => {
+  assert.match(organizerPageSource, /sourceLibraryPayload\.value = \{/);
+  assert.match(organizerPageSource, /organizerTasks\.value = response\?\.organize_tasks/);
+  assert.doesNotMatch(organizerPageSource, /Promise\.all\(|refreshSourceLibrary/);
 });
 
-test("TasksPage renders a light task snapshot before full task hydration", () => {
+test("TasksPage only enriches task details explicitly", () => {
   assert.match(tasksPageSource, /apiRequest\("\/api\/tasks\/light"\)/);
+  assert.match(tasksPageSource, /createHydratedResource/);
   assert.match(tasksPageSource, /refreshFullTasks/);
-  assert.match(tasksPageSource, /void refreshFullTasks/);
+  assert.match(tasksPageSource, /\.enrich\(/);
+  assert.doesNotMatch(tasksPageSource, /load\(\{ hydrateFull: true \}\)/);
 });
 
 test("TasksPage renders grouped archive queue display items", () => {
@@ -186,43 +187,35 @@ test("primary pages report slow first-load performance without UI changes", () =
   }
 });
 
-test("ModelsPage restores deep pages with a single include-until-page request", () => {
+test("ModelsPage restores deep pages with one final light request", () => {
   assert.match(modelsPageSource, /apiRequest\("\/api\/models\/light/);
-  assert.match(modelsPageSource, /refreshFullModelList/);
-  assert.match(modelsPageSource, /scheduleFullModelHydration/);
-  assert.match(modelsPageSource, /requestIdleCallback|setTimeout/);
+  assert.match(modelsPageSource, /createHydratedResource/);
+  assert.doesNotMatch(modelsPageSource, /scheduleFullModelHydration|requestIdleCallback/);
   assert.match(modelsPageSource, /includeUntilPage/);
   assert.match(modelsPageSource, /query\.set\("limit"/);
   assert.doesNotMatch(modelsPageSource, /for \(let page = append \? nextPage : 1; page <= nextPage;/);
 });
 
-test("ModelsPage uses the shared hydrated light-phase decision", () => {
-  assert.match(modelsPageSource, /resolveHydratedLightPhase/);
-  assert.match(modelsPageSource, /hasStableModelListView/);
-  assert.match(modelsPageSource, /refreshFullModelList/);
-});
-
-test("ModelsPage falls back to the light response when immediate full hydration fails", () => {
+test("ModelsPage renders its final light response without a full fallback", () => {
   assert.match(modelsPageSource, /function renderLightModelListResponse/);
-  assert.match(modelsPageSource, /await refreshFullModelList\(\{ refresh, throwOnError: true \}\)/);
   assert.match(modelsPageSource, /renderLightModelListResponse\(response, nextPage\)/);
+  assert.doesNotMatch(modelsPageSource, /resolveHydratedLightPhase|refreshFullModelList/);
 });
 
-test("SubscriptionsPage restores deep pages with a single include-until-page request", () => {
+test("SubscriptionsPage restores deep pages with one final light request", () => {
   assert.match(subscriptionsPageSource, /apiRequest\("\/api\/subscriptions\/light/);
-  assert.match(subscriptionsPageSource, /refreshFullSubscriptions/);
-  assert.match(subscriptionsPageSource, /scheduleFullSubscriptionsHydration/);
-  assert.match(subscriptionsPageSource, /requestIdleCallback|setTimeout/);
+  assert.match(subscriptionsPageSource, /createHydratedResource/);
+  assert.doesNotMatch(subscriptionsPageSource, /scheduleFullSubscriptionsHydration|requestIdleCallback/);
   assert.match(subscriptionsPageSource, /includeUntilPage/);
   assert.match(subscriptionsPageSource, /query\.set\("limit"/);
   assert.doesNotMatch(subscriptionsPageSource, /for \(let page = 1; page <= pagesToLoad;/);
 });
 
-test("OrganizerPage refreshes source cards through a light source-library snapshot", () => {
+test("OrganizerPage loads tasks and source cards from one light source-library request", () => {
   assert.match(organizerPageSource, /apiRequest\("\/api\/source-library\/light"\)/);
-  assert.match(organizerPageSource, /refreshFullSourceLibrary/);
-  assert.match(organizerPageSource, /scheduleFullSourceLibraryHydration/);
-  assert.match(organizerPageSource, /requestIdleCallback|setTimeout/);
+  assert.match(organizerPageSource, /createHydratedResource/);
+  assert.doesNotMatch(organizerPageSource, /apiRequest\("\/api\/tasks\/light"\)/);
+  assert.doesNotMatch(organizerPageSource, /refreshConfig|scheduleFullSourceLibraryHydration|requestIdleCallback/);
 });
 
 test("SettingsPage renders from light config before background diagnostics", () => {

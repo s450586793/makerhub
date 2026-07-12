@@ -4,6 +4,7 @@ import { subscribeStateRefresh } from "./stateEvents.js";
 export function createPageRefreshController({
   scopes = [],
   types = [],
+  eventRules = [],
   refresh,
   delayMs = 250,
   debounceMs,
@@ -28,9 +29,10 @@ export function createPageRefreshController({
     resetExistingTimer,
     isHidden,
   });
-  const unsubscribe = typeof subscribe === "function" && scopes.length
+  const unsubscribe = typeof subscribe === "function" && (scopes.length || eventRules.length)
     ? subscribe(scopes, (event) => scheduler.schedule(event?.type || "state-event"), {
         types,
+        eventRules,
         debounceMs: Number.isFinite(Number(debounceMs)) ? Number(debounceMs) : delayMs,
       })
     : null;

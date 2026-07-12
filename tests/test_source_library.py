@@ -139,6 +139,79 @@ class SourceLibraryTest(unittest.TestCase):
         self.assertTrue(payload["light"])
         self.assertEqual(payload["sections"][0]["items"][0]["subscription_id"], "sub-1")
 
+    def test_source_library_light_payload_includes_organizer_task_and_card_summaries(self):
+        local_model = _model("local-model", source="local")
+        local_model["local_flags"] = {"favorite": True, "printed": True, "deleted": False}
+        source_deleted_model = _model("source-deleted")
+        source_deleted_model["local_flags"] = {"favorite": False, "printed": False, "deleted": False}
+        source_deleted_model["subscription_flags"] = {"deleted_on_source": True}
+        locally_deleted_model = _model("locally-deleted", source="local")
+        task_store = type(
+            "TaskStoreStub",
+            (),
+            {
+                "load_organize_tasks": lambda self: {
+                    "items": [{"id": "organize-1", "status": "running"}],
+                    "running_count": 1,
+                    "queued_count": 0,
+                    "detected_total": 3,
+                },
+            },
+        )()
+        config = type("ConfigStub", (), {"subscriptions": []})()
+        store = type("StoreStub", (), {"load": lambda self: config})()
+
+        with patch(
+            "app.services.source_library._load_models",
+            return_value=([local_model, source_deleted_model, locally_deleted_model], [local_model, source_deleted_model]),
+        ), patch("app.services.source_library.load_source_metadata_cache", return_value={"items": {}}):
+            payload = build_source_library_light_payload(store=store, task_store=task_store)
+
+        sections = {item["key"]: item for item in payload["sections"]}
+        self.assertEqual(payload["organize_tasks"]["running_count"], 1)
+        self.assertEqual(payload["organize_tasks"]["detected_total"], 3)
+        self.assertEqual(payload["summary"]["model_count"], 2)
+        self.assertEqual(sections["locals"]["items"][0]["model_count"], 1)
+        self.assertEqual(
+            {item["key"]: item["model_count"] for item in sections["states"]["items"]},
+            {
+                "local_favorite": 1,
+                "printed": 1,
+                "source_deleted": 1,
+                "local_deleted": 1,
+            },
+        )
+
+    def test_saving_source_metadata_publishes_source_library_changed(self):
+        state = {}
+        with patch("app.services.source_library.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.source_library.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.source_library.publish_state_event", create=True) as publish_event:
+            from app.services import source_library
+
+            source_library._save_source_metadata_item("author-cn-demo", {"title": "Demo"})
+
+        publish_event.assert_called_once_with(
+            "source_library",
+            "source_library.changed",
+            {"source_key": "author-cn-demo"},
+        )
+
+    def test_saving_source_snapshot_metadata_publishes_source_library_changed(self):
+        state = {}
+        with patch("app.services.source_library.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.source_library.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.source_library.publish_state_event") as publish_event:
+            from app.services import source_library
+
+            source_library._save_source_snapshot_metadata("author-cn-demo", {"preview_snapshot_filename": "demo.webp"})
+
+        publish_event.assert_called_once_with(
+            "source_library",
+            "source_library.changed",
+            {"source_key": "author-cn-demo"},
+        )
+
     def test_subscription_flags_ignore_collection_missing_items(self):
         item = {
             "id": "2014963",
