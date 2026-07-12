@@ -1,4 +1,4 @@
-import { recordApiDuration } from "./performance.js";
+import { recordApiRequestMetrics } from "./performance.js";
 
 function buildRedirectTarget() {
   return `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -38,6 +38,18 @@ function withApiErrorContext(message, path, status) {
   return context ? `${context}: ${cleanMessage}` : cleanMessage;
 }
 
+function nowMs() {
+  return typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
+}
+
+function responseBytes(response) {
+  const value = response?.headers?.get?.("Content-Length") || "";
+  const bytes = Number.parseInt(value, 10);
+  return Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+}
+
 
 export async function apiRequest(path, options = {}) {
   const {
@@ -61,8 +73,10 @@ export async function apiRequest(path, options = {}) {
     requestHeaders.set("Accept", "application/json");
   }
 
-  const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+  const startedAt = nowMs();
   let response;
+  let headersAt = startedAt;
+  let bodyParsedAt = startedAt;
   try {
     response = await fetch(path, {
       method,
@@ -72,39 +86,53 @@ export async function apiRequest(path, options = {}) {
       cache,
       signal,
     });
+    headersAt = nowMs();
+    bodyParsedAt = headersAt;
+
+    if (response.status === 204) {
+      return null;
+    }
+
+    const contentType = response.headers.get("Content-Type") || "";
+    let payload;
+    try {
+      payload = contentType.includes("application/json")
+        ? await response.json()
+        : await response.text();
+    } finally {
+      bodyParsedAt = nowMs();
+    }
+    const hasHtmlPayload = typeof payload === "string" && looksLikeHtmlError(payload);
+
+    if (response.status === 401 && redirectOn401 && !hasHtmlPayload) {
+      const next = encodeURIComponent(buildRedirectTarget());
+      window.location.assign(`/login?next=${next}`);
+      throw new Error(withApiErrorContext("未登录。", path, response.status));
+    }
+
+    if (response.ok && String(path || "").startsWith("/api/") && hasHtmlPayload) {
+      throw new Error(withApiErrorContext(sanitizeApiError(payload), path, response.status));
+    }
+
+    if (!response.ok) {
+      const detail = typeof payload === "object" && payload !== null
+        ? payload.detail || payload.message
+        : payload;
+      const message = sanitizeApiError(detail);
+      throw new Error(withApiErrorContext(message, path, response.status));
+    }
+
+    return payload;
   } finally {
-    recordApiDuration(path, (typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt);
+    const finishedAt = nowMs();
+    recordApiRequestMetrics(path, {
+      ttfbMs: response ? headersAt - startedAt : 0,
+      bodyParseMs: response ? bodyParsedAt - headersAt : 0,
+      totalMs: finishedAt - startedAt,
+      responseBytes: responseBytes(response),
+      status: response?.status || 0,
+    });
   }
-
-  if (response.status === 204) {
-    return null;
-  }
-
-  const contentType = response.headers.get("Content-Type") || "";
-  const payload = contentType.includes("application/json")
-    ? await response.json()
-    : await response.text();
-  const hasHtmlPayload = typeof payload === "string" && looksLikeHtmlError(payload);
-
-  if (response.status === 401 && redirectOn401 && !hasHtmlPayload) {
-    const next = encodeURIComponent(buildRedirectTarget());
-    window.location.assign(`/login?next=${next}`);
-    throw new Error(withApiErrorContext("未登录。", path, response.status));
-  }
-
-  if (response.ok && String(path || "").startsWith("/api/") && hasHtmlPayload) {
-    throw new Error(withApiErrorContext(sanitizeApiError(payload), path, response.status));
-  }
-
-  if (!response.ok) {
-    const detail = typeof payload === "object" && payload !== null
-      ? payload.detail || payload.message
-      : payload;
-    const message = sanitizeApiError(detail);
-    throw new Error(withApiErrorContext(message, path, response.status));
-  }
-
-  return payload;
 }
 
 export function apiUploadRequest(path, options = {}) {

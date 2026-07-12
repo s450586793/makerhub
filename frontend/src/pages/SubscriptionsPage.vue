@@ -602,6 +602,7 @@ onMounted(async () => {
   );
   hydrateSubscriptionsPageFromCache();
   await load();
+  perf.markDataReady();
   void perf.finish();
 });
 

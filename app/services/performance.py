@@ -120,21 +120,34 @@ def log_frontend_page_event(payload: dict[str, Any]) -> dict[str, bool]:
         return {"success": True, "recorded": False}
 
     duration_ms = _safe_float(payload.get("duration_ms"))
-    if duration_ms < FRONTEND_SLOW_PAGE_THRESHOLD_MS:
+    data_ready_ms = _safe_float(payload.get("data_ready_ms"))
+    enrichment_ready_ms = _safe_float(payload.get("enrichment_ready_ms"))
+    max_ttfb_ms = _safe_float(payload.get("max_ttfb_ms"))
+    max_parse_ms = _safe_float(payload.get("max_parse_ms"))
+    max_total_ms = _safe_float(payload.get("max_total_ms"))
+    if max(duration_ms, data_ready_ms, enrichment_ready_ms) < FRONTEND_SLOW_PAGE_THRESHOLD_MS:
         return {"success": True, "recorded": False}
 
     page = str(payload.get("page") or "").strip()[:80] or "unknown"
+    is_enrichment = str(payload.get("event_kind") or "").strip().lower() == "enrichment"
+    event = "slow_page_enrichment" if is_enrichment else "slow_page_load"
+    message = "页面补全数据加载较慢。" if is_enrichment else "页面首屏加载较慢。"
     try:
         append_business_log(
             "performance",
-            "slow_page_load",
-            "页面首屏加载较慢。",
+            event,
+            message,
             page=page,
             route=_safe_route(payload.get("route")),
             duration_ms=duration_ms,
+            data_ready_ms=data_ready_ms,
+            enrichment_ready_ms=enrichment_ready_ms,
             api_count=_safe_int(payload.get("api_count"), maximum=500),
             slow_api_count=_safe_int(payload.get("slow_api_count"), maximum=500),
             max_api_duration_ms=_safe_float(payload.get("max_api_duration_ms")),
+            max_ttfb_ms=max_ttfb_ms,
+            max_parse_ms=max_parse_ms,
+            max_total_ms=max_total_ms,
         )
         return {"success": True, "recorded": True}
     except Exception:

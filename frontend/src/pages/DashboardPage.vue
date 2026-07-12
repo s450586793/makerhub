@@ -578,6 +578,7 @@ function subscriptionStatusLabel(item) {
 onMounted(async () => {
   const perf = createPagePerformanceTracker({ page: "dashboard" });
   await load({ initial: true });
+  perf.markDataReady();
   void perf.finish();
   unsubscribeStateRefresh = subscribeStateRefresh(
     [

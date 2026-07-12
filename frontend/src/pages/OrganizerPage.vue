@@ -1635,6 +1635,7 @@ onMounted(async () => {
   hydrateOrganizerPageFromCache();
   restoreImportUploadProgress();
   await load();
+  perf.markDataReady();
   void perf.finish();
 });
 

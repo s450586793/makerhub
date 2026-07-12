@@ -459,6 +459,7 @@ const archiveRepairStatus = ref("");
 let tasksRefreshController = null;
 let loadingTasks = false;
 let loadingFullTasks = false;
+let perf = null;
 
 const tasksResource = createHydratedResource({
   load: ({ signal }) => apiRequest("/api/tasks/light", { signal }),
@@ -646,8 +647,16 @@ async function refreshFullTasks() {
     return;
   }
   loadingFullTasks = true;
+  const enrichmentPerf = createPagePerformanceTracker({
+    page: "tasks",
+    eventKind: "enrichment",
+  });
   try {
-    await tasksResource.enrich();
+    const enriched = await tasksResource.enrich();
+    if (enriched !== undefined) {
+      enrichmentPerf.markEnrichmentReady();
+      void enrichmentPerf.finish();
+    }
   } finally {
     loadingFullTasks = false;
   }
@@ -852,7 +861,7 @@ async function cancelMissing(item) {
 }
 
 onMounted(async () => {
-  const perf = createPagePerformanceTracker({ page: "tasks" });
+  perf = createPagePerformanceTracker({ page: "tasks" });
   tasksRefreshController = createPageRefreshController({
     scopes: ["archive_queue", "missing_3mf", "organize_tasks"],
     refresh: () => load(),
@@ -861,11 +870,13 @@ onMounted(async () => {
     resetExistingTimer: false,
   });
   await load();
+  perf.markDataReady();
   void perf.finish();
 });
 
 onBeforeUnmount(() => {
   tasksResource.cancel();
   stopTasksRefreshController();
+  perf = null;
 });
 </script>

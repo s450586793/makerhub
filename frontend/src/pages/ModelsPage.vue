@@ -908,6 +908,7 @@ onMounted(async () => {
     status.value = error instanceof Error ? error.message : "模型列表加载失败。";
     loaded.value = true;
   }
+  perf.markDataReady();
   void perf.finish();
   unsubscribeArchiveEvents = subscribeArchiveCompletion(handleArchiveCompleted);
   document.addEventListener("visibilitychange", handleVisibilityChange);
