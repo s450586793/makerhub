@@ -1,3 +1,4 @@
+import threading
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -268,7 +269,7 @@ class SourceLibraryTest(unittest.TestCase):
         publish_event.assert_called_once_with(
             "source_library",
             "source_library.changed",
-            {"source_keys": ["author-cn-first", "author-cn-second"]},
+            {"changed_count": 2},
         )
 
     def test_default_favorites_backfill_publishes_one_change_event_for_a_batch(self):
@@ -295,7 +296,7 @@ class SourceLibraryTest(unittest.TestCase):
         publish_event.assert_called_once_with(
             "source_library",
             "source_library.changed",
-            {"source_keys": [source_library.source_identity_key(source_url, "collection_models")]},
+            {"changed_count": 1},
         )
 
     def test_refresh_source_preview_snapshots_publishes_one_change_event_for_a_batch(self):
@@ -328,7 +329,72 @@ class SourceLibraryTest(unittest.TestCase):
         publish_event.assert_called_once_with(
             "source_library",
             "source_library.changed",
-            {"source_keys": ["local-first", "local-second"]},
+            {"changed_count": 2},
+        )
+
+    def test_source_library_change_batches_are_independent_between_threads(self):
+        from app.services import source_library
+
+        published = []
+        first_entered = threading.Event()
+        allow_first_exit = threading.Event()
+        second_published = threading.Event()
+
+        def publish_event(*args):
+            published.append((threading.current_thread().name, args))
+            if threading.current_thread().name == "source-library-b":
+                second_published.set()
+
+        def first_batch():
+            with source_library._source_library_change_batch():
+                source_library._publish_source_library_changed("first")
+                first_entered.set()
+                allow_first_exit.wait(timeout=2)
+
+        def second_batch():
+            first_entered.wait(timeout=2)
+            with source_library._source_library_change_batch():
+                source_library._publish_source_library_changed("second")
+
+        first_thread = threading.Thread(target=first_batch, name="source-library-a")
+        second_thread = threading.Thread(target=second_batch, name="source-library-b")
+        with patch("app.services.source_library.publish_state_event", side_effect=publish_event):
+            first_thread.start()
+            second_thread.start()
+            try:
+                self.assertTrue(second_published.wait(timeout=1))
+            finally:
+                allow_first_exit.set()
+                first_thread.join(timeout=2)
+                second_thread.join(timeout=2)
+
+        self.assertFalse(first_thread.is_alive())
+        self.assertFalse(second_thread.is_alive())
+        self.assertEqual(
+            published,
+            [
+                ("source-library-b", ("source_library", "source_library.changed", {"changed_count": 1})),
+                ("source-library-a", ("source_library", "source_library.changed", {"changed_count": 1})),
+            ],
+        )
+
+    def test_source_library_change_batch_publishes_one_compact_event_after_nested_exception(self):
+        from app.services import source_library
+
+        with patch("app.services.source_library.publish_state_event") as publish_event:
+            with source_library._source_library_change_batch():
+                source_library._publish_source_library_changed("first")
+                try:
+                    with source_library._source_library_change_batch():
+                        source_library._publish_source_library_changed("second")
+                        raise RuntimeError("nested refresh failed")
+                except RuntimeError:
+                    pass
+
+        publish_event.assert_called_once_with(
+            "source_library",
+            "source_library.changed",
+            {"changed_count": 2},
         )
 
     def test_subscription_flags_ignore_collection_missing_items(self):

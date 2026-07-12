@@ -73,9 +73,7 @@ _SOURCE_LIBRARY_PAYLOAD_REFRESH_STATE: dict[str, Any] = {
     "running": False,
     "last_started": 0.0,
 }
-_SOURCE_LIBRARY_CHANGE_LOCK = threading.RLock()
-_SOURCE_LIBRARY_CHANGE_BATCH_DEPTH = 0
-_SOURCE_LIBRARY_CHANGE_SOURCE_KEYS: set[str] = set()
+_SOURCE_LIBRARY_CHANGE_STATE = threading.local()
 
 AUTHOR_NAME_KEYS = ("name", "nickname", "displayName", "userName", "username")
 AUTHOR_HANDLE_KEYS = ("handle", "userHandle", "user_handle", "username", "userName", "slug")
@@ -237,11 +235,11 @@ def load_source_metadata_cache() -> dict[str, Any]:
 
 def _publish_source_library_changed(source_key: str) -> None:
     clean_source_key = str(source_key or "").strip()
-    with _SOURCE_LIBRARY_CHANGE_LOCK:
-        if _SOURCE_LIBRARY_CHANGE_BATCH_DEPTH:
-            if clean_source_key:
-                _SOURCE_LIBRARY_CHANGE_SOURCE_KEYS.add(clean_source_key)
-            return
+    batch_state = getattr(_SOURCE_LIBRARY_CHANGE_STATE, "batch", None)
+    if batch_state and batch_state["depth"]:
+        if clean_source_key:
+            batch_state["source_keys"].add(clean_source_key)
+        return
     publish_state_event(
         "source_library",
         "source_library.changed",
@@ -251,24 +249,24 @@ def _publish_source_library_changed(source_key: str) -> None:
 
 @contextmanager
 def _source_library_change_batch():
-    global _SOURCE_LIBRARY_CHANGE_BATCH_DEPTH
-    source_keys: list[str] = []
-    with _SOURCE_LIBRARY_CHANGE_LOCK:
-        _SOURCE_LIBRARY_CHANGE_BATCH_DEPTH += 1
+    batch_state = getattr(_SOURCE_LIBRARY_CHANGE_STATE, "batch", None)
+    if batch_state is None:
+        batch_state = {"depth": 0, "source_keys": set()}
+        _SOURCE_LIBRARY_CHANGE_STATE.batch = batch_state
+    batch_state["depth"] += 1
     try:
         yield
     finally:
-        with _SOURCE_LIBRARY_CHANGE_LOCK:
-            _SOURCE_LIBRARY_CHANGE_BATCH_DEPTH -= 1
-            if _SOURCE_LIBRARY_CHANGE_BATCH_DEPTH == 0 and _SOURCE_LIBRARY_CHANGE_SOURCE_KEYS:
-                source_keys = sorted(_SOURCE_LIBRARY_CHANGE_SOURCE_KEYS)
-                _SOURCE_LIBRARY_CHANGE_SOURCE_KEYS.clear()
-        if source_keys:
-            publish_state_event(
-                "source_library",
-                "source_library.changed",
-                {"source_keys": source_keys},
-            )
+        batch_state["depth"] -= 1
+        if batch_state["depth"] == 0:
+            changed_count = len(batch_state["source_keys"])
+            delattr(_SOURCE_LIBRARY_CHANGE_STATE, "batch")
+            if changed_count:
+                publish_state_event(
+                    "source_library",
+                    "source_library.changed",
+                    {"changed_count": changed_count},
+                )
 
 
 def _save_source_metadata_item(source_key: str, payload: dict[str, Any]) -> None:
