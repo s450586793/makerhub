@@ -88,15 +88,18 @@ mkdir -p "/volume2/entertainment/3D打印/makerhub/local"
 
 ```env
 MAKERHUB_POSTGRES_PASSWORD=change-this-db-password
-# 可选：给 CloakBrowser 管理界面和 MakerHub 调用使用的访问令牌。
+# 必填：给 CloakBrowser 管理界面和 MakerHub 调用使用的访问令牌。
 MAKERHUB_CLOAKBROWSER_AUTH_TOKEN=change-this-cloakbrowser-token
-# 推荐：用户浏览器可访问的 CloakBrowser Manager 地址；留空时设置页按当前主机的 9050 端口推导。
-MAKERHUB_CLOAKBROWSER_PUBLIC_URL=http://你的服务器IP:9050
+# 远端管理才需要：显式绑定可信 LAN 地址，并配置用户浏览器可访问的 Manager 地址。
+# MAKERHUB_CLOAKBROWSER_BIND_ADDRESS=192.168.1.20
+# MAKERHUB_CLOAKBROWSER_PUBLIC_URL=http://192.168.1.20:9050
 # 可选：升级前验证新镜像后再覆盖默认固定 digest。
 # MAKERHUB_CLOAKBROWSER_IMAGE=cloakhq/cloakbrowser-manager:经过验证的版本
 ```
 
 `MAKERHUB_POSTGRES_PASSWORD` 会同时用于 App、Worker 和 Postgres，建议使用纯英文数字，避免 `@`、`:`、`/`、`#` 这类需要 URL 转义的字符。
+
+`MAKERHUB_CLOAKBROWSER_AUTH_TOKEN` 为必填项，App、Worker 和 CloakBrowser Manager 使用同一个强随机 token。端口 `9050` 默认只绑定 `127.0.0.1`，仅允许宿主机本地访问 Manager。若确需从局域网其他终端管理，显式设置 `MAKERHUB_CLOAKBROWSER_BIND_ADDRESS=<LAN IP>` 和对应的 `MAKERHUB_CLOAKBROWSER_PUBLIC_URL`；这会扩大攻击面，应通过防火墙仅允许可信 LAN 地址访问，禁止直接暴露到公网。
 
 仓库默认 `compose.yaml` 会新建 `makerhub-flaresolverr`。如果你已经有可用的 FlareSolverr，使用 `compose.external-flaresolverr.yaml`，并在 `.env` 里增加：
 
@@ -122,7 +125,7 @@ services:
       MAKERHUB_FLARESOLVERR_TIMEOUT: "90"
       MAKERHUB_FLARESOLVERR_MAX_CONCURRENCY: "1"
       MAKERHUB_CLOAKBROWSER_URL: http://cloakbrowser:8080
-      MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:-}
+      MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
       MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
       MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
     volumes:
@@ -150,7 +153,7 @@ services:
       MAKERHUB_FLARESOLVERR_TIMEOUT: "90"
       MAKERHUB_FLARESOLVERR_MAX_CONCURRENCY: "1"
       MAKERHUB_CLOAKBROWSER_URL: http://cloakbrowser:8080
-      MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:-}
+      MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
       MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
       MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
     volumes:
@@ -191,9 +194,9 @@ services:
     image: ${MAKERHUB_CLOAKBROWSER_IMAGE:-cloakhq/cloakbrowser-manager@sha256:44836e982192e8fedb28617f2d39192bdef91f8dd62cf36c522c96d7d8e15914}
     container_name: makerhub-cloakbrowser
     ports:
-      - "9050:8080"
+      - "${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:9050:8080"
     environment:
-      AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:-}
+      AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
     volumes:
       - /volume4/docker/docker/makerhub/cloakbrowser:/data
     restart: unless-stopped

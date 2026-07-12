@@ -60,6 +60,7 @@ class ReleaseWorkflowContractTest(unittest.TestCase):
             "Check release version",
             "Set up Docker Buildx",
             "Build image",
+            "Smoke test image",
         ]
 
         self.assertEqual(step_names, expected_order)
@@ -72,6 +73,20 @@ class ReleaseWorkflowContractTest(unittest.TestCase):
         self.assertIn("compose.external-flaresolverr.yaml", compose_run)
         self.assertIn("scripts/check_release_version.py", _step(verify, "Check release version")["run"])
         self.assertEqual(_step(verify, "Build image")["with"]["push"], "false")
+
+    def test_verify_build_loads_and_smoke_tests_the_runtime_image(self):
+        verify = self.jobs["verify"]
+        step_names = [item.get("name") for item in verify["steps"]]
+        build = _step(verify, "Build image")
+        smoke = _step(verify, "Smoke test image")
+
+        self.assertEqual(build["with"]["load"], "true")
+        self.assertEqual(step_names.index("Smoke test image"), step_names.index("Build image") + 1)
+        self.assertIn("docker run --rm makerhub:verify", smoke["run"])
+        self.assertNotIn("--entrypoint", smoke["run"])
+        self.assertIn("import app.main", smoke["run"])
+        self.assertIn("/app/VERSION", smoke["run"])
+        self.assertIn("version('fastapi')", smoke["run"])
 
     def test_release_only_runs_for_version_tags_after_verification(self):
         release = self.jobs["release"]
@@ -90,6 +105,40 @@ class ReleaseWorkflowContractTest(unittest.TestCase):
         self.assertIn("type=raw,value=latest", metadata_tags)
         self.assertNotIn("pattern={{version}}", metadata_tags)
         self.assertNotRegex(metadata_tags, r"value=\$\{\{\s*steps\.[^.]+\.outputs\.version\s*\}\}")
+
+    def test_release_refuses_existing_or_ambiguous_version_manifest(self):
+        release = self.jobs["release"]
+        step_names = [item.get("name") for item in release["steps"]]
+        guard = _step(release, "Refuse existing version tag")
+        guard_run = guard["run"]
+
+        self.assertLess(step_names.index("Log in to GHCR"), step_names.index("Refuse existing version tag"))
+        self.assertLess(step_names.index("Refuse existing version tag"), step_names.index("Build and push image"))
+        self.assertEqual(guard["env"]["GHCR_TOKEN"], "${{ secrets.GITHUB_TOKEN }}")
+        self.assertIn("https://ghcr.io/token", guard_run)
+        self.assertIn("Authorization: Bearer ${REGISTRY_TOKEN}", guard_run)
+        self.assertIn("/manifests/${GITHUB_REF_NAME}", guard_run)
+        self.assertIn("200)", guard_run)
+        self.assertIn("404)", guard_run)
+        self.assertGreaterEqual(guard_run.count("exit 1"), 2)
+
+
+class ReadmeCloakBrowserContractTest(unittest.TestCase):
+    def test_readme_requires_token_and_documents_safe_manager_binding(self):
+        readme = (ROOT_DIR / "README.md").read_text(encoding="utf-8")
+        required_token = (
+            "${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:"
+            "?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}"
+        )
+        local_bind = "${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:9050:8080"
+
+        self.assertGreaterEqual(readme.count(required_token), 3)
+        self.assertNotIn("${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:-}", readme)
+        self.assertIn(local_bind, readme)
+        self.assertRegex(readme, r"MAKERHUB_CLOAKBROWSER_AUTH_TOKEN.{0,40}必填")
+        self.assertIn("MAKERHUB_CLOAKBROWSER_BIND_ADDRESS=<LAN IP>", readme)
+        self.assertIn("127.0.0.1", readme)
+        self.assertIn("扩大攻击面", readme)
 
 
 class FrontendTestContractTest(unittest.TestCase):
