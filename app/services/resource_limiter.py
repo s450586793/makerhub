@@ -154,20 +154,29 @@ def _resource_slot_directory(name: str):
     return STATE_DIR / "resource_slots" / clean_name
 
 
-def _read_control_capacity(handle, fallback: int) -> tuple[int, bool]:
-    handle.seek(0)
-    raw = handle.read().strip()
+def _read_control_capacity(path, fallback: int) -> tuple[int, bool]:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        raw = ""
     try:
         return max(int(raw), 1), True
     except (TypeError, ValueError):
         return max(int(fallback or 1), 1), False
 
 
-def _write_control_capacity(handle, capacity: int) -> None:
-    handle.seek(0)
-    handle.truncate()
-    handle.write(str(max(int(capacity or 1), 1)))
-    handle.flush()
+def _write_control_capacity(path, capacity: int) -> None:
+    temp_path = path.with_name(
+        f"{path.name}.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}.tmp"
+    )
+    try:
+        with temp_path.open("x", encoding="utf-8") as handle:
+            handle.write(str(max(int(capacity or 1), 1)))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def _publish_global_capacity(name: str, capacity: int) -> None:
@@ -175,16 +184,17 @@ def _publish_global_capacity(name: str, capacity: int) -> None:
         return
     slot_dir = _resource_slot_directory(name)
     slot_dir.mkdir(parents=True, exist_ok=True)
-    control = (slot_dir / "capacity.control").open("a+", encoding="utf-8")
+    control_path = slot_dir / "capacity.control"
+    control_lock = (slot_dir / "capacity.lock").open("a+", encoding="utf-8")
     try:
-        fcntl.flock(control.fileno(), fcntl.LOCK_EX)
-        current, valid = _read_control_capacity(control, capacity)
+        fcntl.flock(control_lock.fileno(), fcntl.LOCK_EX)
+        current, valid = _read_control_capacity(control_path, capacity)
         clean_capacity = max(int(capacity or 1), 1)
         if not valid or current != clean_capacity:
-            _write_control_capacity(control, clean_capacity)
+            _write_control_capacity(control_path, clean_capacity)
     finally:
-        fcntl.flock(control.fileno(), fcntl.LOCK_UN)
-        control.close()
+        fcntl.flock(control_lock.fileno(), fcntl.LOCK_UN)
+        control_lock.close()
 
 
 def _retired_global_slots_are_draining(slot_dir, capacity: int) -> bool:
@@ -212,14 +222,13 @@ def _try_acquire_global_slot(name: str, capacity: int):
         return None
     slot_dir = _resource_slot_directory(name)
     slot_dir.mkdir(parents=True, exist_ok=True)
-    requested_capacity = max(int(capacity or 1), 1)
-    control = (slot_dir / "capacity.control").open("a+", encoding="utf-8")
+    control_path = slot_dir / "capacity.control"
+    control_lock = (slot_dir / "capacity.lock").open("a+", encoding="utf-8")
     try:
-        fcntl.flock(control.fileno(), fcntl.LOCK_EX)
-        shared_capacity, valid = _read_control_capacity(control, requested_capacity)
+        fcntl.flock(control_lock.fileno(), fcntl.LOCK_EX)
+        shared_capacity, valid = _read_control_capacity(control_path, 1)
         if not valid:
-            shared_capacity = requested_capacity
-            _write_control_capacity(control, shared_capacity)
+            shared_capacity = 1
 
         # 容量读取、退役槽扫描和新槽领取受同一个控制锁保护，避免缩容 TOCTOU。
         if _retired_global_slots_are_draining(slot_dir, shared_capacity):
@@ -236,8 +245,8 @@ def _try_acquire_global_slot(name: str, capacity: int):
             return handle
         return None
     finally:
-        fcntl.flock(control.fileno(), fcntl.LOCK_UN)
-        control.close()
+        fcntl.flock(control_lock.fileno(), fcntl.LOCK_UN)
+        control_lock.close()
 
 
 def _acquire_global_slot(name: str, gate: _ResourceGate):
@@ -285,7 +294,7 @@ def configure_resource_limits(config: Any, *, publish_global: bool = True) -> di
             gate = _GATES.get(resource_name)
             if gate is not None:
                 gate.set_capacity(next_limit)
-            if publish_global and _PUBLISHED_RESOURCE_LIMITS.get(resource_name) != next_limit:
+            if publish_global:
                 _publish_global_capacity(resource_name, next_limit)
                 _PUBLISHED_RESOURCE_LIMITS[resource_name] = next_limit
     return changed

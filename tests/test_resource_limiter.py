@@ -98,6 +98,7 @@ class ResourceLimiterConfigTest(unittest.TestCase):
         active = SPAWN_CONTEXT.Value("i", 0)
         max_active = SPAWN_CONTEXT.Value("i", 0)
         counter_lock = SPAWN_CONTEXT.Lock()
+        resource_limiter._publish_global_capacity("spawn_total", 2)
         processes = [
             SPAWN_CONTEXT.Process(
                 target=_counted_resource_worker,
@@ -162,6 +163,7 @@ class ResourceLimiterConfigTest(unittest.TestCase):
         contender_entered = SPAWN_CONTEXT.Queue()
         contender_ready = SPAWN_CONTEXT.Queue()
         release_holders = [SPAWN_CONTEXT.Event() for _index in range(3)]
+        resource_limiter._publish_global_capacity("shrink_drain", 3)
         holders = [
             SPAWN_CONTEXT.Process(
                 target=_holding_resource_worker,
@@ -275,6 +277,59 @@ class ResourceLimiterConfigTest(unittest.TestCase):
 
         control_path = resource_limiter._resource_slot_directory("expand_authority") / "capacity.control"
         self.assertEqual(control_path.read_text(encoding="utf-8").strip(), "3")
+
+    def test_child_fails_closed_when_capacity_control_is_corrupt(self):
+        slot_dir = resource_limiter._resource_slot_directory("corrupt_control")
+        slot_dir.mkdir(parents=True, exist_ok=True)
+        control_path = slot_dir / "capacity.control"
+        control_path.write_text("damaged", encoding="utf-8")
+
+        first_handle = resource_limiter._try_acquire_global_slot("corrupt_control", 3)
+        second_handle = resource_limiter._try_acquire_global_slot("corrupt_control", 3)
+        try:
+            self.assertIsNotNone(first_handle)
+            self.assertIsNone(second_handle)
+            self.assertEqual(control_path.read_text(encoding="utf-8"), "damaged")
+        finally:
+            resource_limiter._release_global_slot(first_handle)
+            resource_limiter._release_global_slot(second_handle)
+
+    def test_child_fails_closed_without_publishing_missing_capacity_control(self):
+        slot_dir = resource_limiter._resource_slot_directory("missing_control")
+        control_path = slot_dir / "capacity.control"
+
+        first_handle = resource_limiter._try_acquire_global_slot("missing_control", 3)
+        second_handle = resource_limiter._try_acquire_global_slot("missing_control", 3)
+        try:
+            self.assertIsNotNone(first_handle)
+            self.assertIsNone(second_handle)
+            self.assertFalse(control_path.exists())
+        finally:
+            resource_limiter._release_global_slot(first_handle)
+            resource_limiter._release_global_slot(second_handle)
+
+    def test_capacity_publish_failure_preserves_previous_control_file(self):
+        resource_limiter._publish_global_capacity("atomic_publish", 2)
+        control_path = resource_limiter._resource_slot_directory("atomic_publish") / "capacity.control"
+
+        with patch("app.services.resource_limiter.os.replace", side_effect=OSError("replace failed")):
+            with self.assertRaisesRegex(OSError, "replace failed"):
+                resource_limiter._publish_global_capacity("atomic_publish", 3)
+
+        self.assertEqual(control_path.read_text(encoding="utf-8"), "2")
+        self.assertEqual(list(control_path.parent.glob("capacity.control.*.tmp")), [])
+
+    def test_authoritative_config_refresh_repairs_corrupt_capacity_control(self):
+        config = {"makerworld_request_limit": 3}
+        resource_limiter.configure_resource_limits(config, publish_global=True)
+        control_path = (
+            resource_limiter._resource_slot_directory("makerworld_page_api") / "capacity.control"
+        )
+        control_path.write_text("damaged", encoding="utf-8")
+
+        resource_limiter.configure_resource_limits(config, publish_global=True)
+
+        self.assertEqual(control_path.read_text(encoding="utf-8"), "3")
 
     def test_global_resource_slots_are_isolated_by_resource_name(self):
         holder_entered = SPAWN_CONTEXT.Queue()
