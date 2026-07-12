@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from app.core.security import hash_api_token
 from app.core import database
-from app.core.store import JsonStore
+from app.core.store import ConfigConflictError, JsonStore
 from app.schemas.models import ApiTokenRecord, AppConfig, CookiePair
 from app.services import (
     archive_model_index_rebuild,
@@ -304,6 +304,146 @@ class DatabaseStatusTest(unittest.TestCase):
         self.assertEqual(status["expected_schema_version"], database.DATABASE_SCHEMA_VERSION)
 
 
+class JsonStoreAtomicUpdateTest(unittest.TestCase):
+    def test_stale_saves_preserve_changes_to_unrelated_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            user_update = store.load()
+            proxy_update = store.load()
+
+            user_update.user.display_name = "并发用户"
+            store.save(user_update)
+            proxy_update.proxy.enabled = True
+            proxy_update.proxy.http_proxy = "http://127.0.0.1:7890"
+            store.save(proxy_update)
+
+            saved = store.load()
+            self.assertEqual(saved.user.display_name, "并发用户")
+            self.assertTrue(saved.proxy.enabled)
+            self.assertEqual(saved.proxy.http_proxy, "http://127.0.0.1:7890")
+
+    def test_stale_save_detects_same_field_conflict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            first = store.load()
+            second = store.load()
+
+            first.user.display_name = "第一个值"
+            store.save(first)
+            second.user.display_name = "第二个值"
+
+            with self.assertRaises(ConfigConflictError):
+                store.save(second)
+
+            self.assertEqual(store.load().user.display_name, "第一个值")
+
+    def test_update_mutates_latest_config_and_returns_saved_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+
+            def mutate(config):
+                config.proxy.enabled = True
+
+            saved = store.update(mutate)
+
+            self.assertTrue(saved.proxy.enabled)
+            self.assertTrue(store.load().proxy.enabled)
+
+    def test_update_validation_failure_does_not_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            before = store.path.read_text(encoding="utf-8")
+
+            def mutate(_config):
+                return {"user": {"theme_preference": "invalid"}}
+
+            with self.assertRaises(ValueError):
+                store.update(mutate)
+
+            self.assertEqual(store.path.read_text(encoding="utf-8"), before)
+
+
+class DatabaseAtomicJsonStateTest(unittest.TestCase):
+    def test_update_json_state_locks_row_and_increments_revision_once(self):
+        calls = []
+        state = {"value": {"count": 1}, "revision": 4}
+        mutator_calls = []
+
+        class FakeResult:
+            def __init__(self, row=None):
+                self.row = row
+
+            def fetchone(self):
+                return self.row
+
+        class FakeConnection:
+            def execute(self, sql, params=None):
+                calls.append((sql, params))
+                if "SELECT value, revision" in sql:
+                    return FakeResult(dict(state))
+                if "UPDATE makerhub_json_state" in sql:
+                    state["value"] = params[0].obj if hasattr(params[0], "obj") else params[0]
+                    state["revision"] += 1
+                    return FakeResult({"revision": state["revision"]})
+                return FakeResult()
+
+        class FakeContext:
+            def __enter__(self):
+                return FakeConnection()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        def mutate(value):
+            mutator_calls.append(True)
+            value["count"] += 1
+            return value
+
+        with patch.object(database, "initialize_database", return_value=True), \
+                patch.object(database, "database_connection", return_value=FakeContext()):
+            updated, revision = database.update_json_state("counter", {"count": 0}, mutate, expected_revision=4)
+
+        self.assertEqual(updated, {"count": 2})
+        self.assertEqual(revision, 5)
+        self.assertEqual(len(mutator_calls), 1)
+        self.assertTrue(any("FOR UPDATE" in sql for sql, _params in calls))
+
+    def test_update_json_state_rejects_stale_revision_before_mutator(self):
+        mutator_calls = []
+
+        class FakeResult:
+            def __init__(self, row=None):
+                self.row = row
+
+            def fetchone(self):
+                return self.row
+
+        class FakeConnection:
+            def execute(self, sql, params=None):
+                if "SELECT value, revision" in sql:
+                    return FakeResult({"value": {"count": 1}, "revision": 5})
+                return FakeResult()
+
+        class FakeContext:
+            def __enter__(self):
+                return FakeConnection()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        with patch.object(database, "initialize_database", return_value=True), \
+                patch.object(database, "database_connection", return_value=FakeContext()):
+            with self.assertRaises(database.JsonStateConflict):
+                database.update_json_state(
+                    "counter",
+                    {"count": 0},
+                    lambda value: mutator_calls.append(True) or value,
+                    expected_revision=4,
+                )
+
+        self.assertEqual(mutator_calls, [])
+
+
 class DatabaseInitializationGuardTest(unittest.TestCase):
     def test_repeated_json_state_operations_initialize_database_once(self):
         calls = []
@@ -400,6 +540,41 @@ class DatabaseInitializationGuardTest(unittest.TestCase):
 
         self.assertEqual(summary, {"items": [{"model_id": "1"}], "count": 2000})
         self.assertTrue(any(params == ("items", 5, "missing_3mf") for _sql, params in calls))
+
+    def test_load_json_states_reads_multiple_keys_in_one_query(self):
+        calls = []
+
+        class FakeResult:
+            def fetchall(self):
+                return [
+                    {"key": "runtime_snapshots", "value": {"dashboard": {"active": 1}}},
+                    {"key": "account_health", "value": {"cn": {"status": "ok"}}},
+                ]
+
+        class FakeConnection:
+            def execute(self, sql, params=None):
+                calls.append((sql, params))
+                return FakeResult()
+
+        class FakeContext:
+            def __enter__(self):
+                return FakeConnection()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        with patch.object(database, "initialize_database", return_value=True), \
+                patch.object(database, "database_connection", return_value=FakeContext()):
+            payload = database.load_json_states(
+                ["runtime_snapshots", "account_health", "missing_key", "runtime_snapshots"]
+            )
+
+        self.assertEqual(payload["runtime_snapshots"]["dashboard"]["active"], 1)
+        self.assertEqual(payload["account_health"]["cn"]["status"], "ok")
+        self.assertIsNone(payload["missing_key"])
+        self.assertEqual(len(calls), 1)
+        self.assertIn("WHERE key = ANY", calls[0][0])
+        self.assertEqual(calls[0][1], (["runtime_snapshots", "account_health", "missing_key"],))
 
     def test_initialization_guard_retries_after_failure(self):
         attempts = []

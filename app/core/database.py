@@ -1,14 +1,18 @@
 import json
 import os
 import threading
+from copy import deepcopy
 from contextlib import contextmanager
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 
-DATABASE_SCHEMA_VERSION = 2
+DATABASE_SCHEMA_VERSION = 3
 DATABASE_SCHEMA_METADATA_KEY = "database_schema_version"
 DATABASE_STATE_EVENT_CHANNEL = "makerhub_state_events"
 _DATABASE_INITIALIZED = False
 _DATABASE_INITIALIZE_LOCK = threading.Lock()
+_DATABASE_POOL = None
+_DATABASE_POOL_KEY: tuple[int, str] | None = None
+_DATABASE_POOL_LOCK = threading.RLock()
 
 
 try:  # pragma: no cover - exercised in deployed images with the dependency installed.
@@ -20,8 +24,17 @@ except Exception:  # pragma: no cover - keeps local/dev file-mode runs working.
     dict_row = None
     Jsonb = None
 
+try:  # pragma: no cover - exercised in deployed images with the dependency installed.
+    from psycopg_pool import ConnectionPool
+except Exception:  # pragma: no cover - keeps local/dev file-mode runs working.
+    ConnectionPool = None
+
 
 class DatabaseUnavailable(RuntimeError):
+    pass
+
+
+class JsonStateConflict(RuntimeError):
     pass
 
 
@@ -34,7 +47,7 @@ def database_configured() -> bool:
 
 
 def database_driver_available() -> bool:
-    return psycopg is not None
+    return psycopg is not None and ConnectionPool is not None
 
 
 def jsonb_value(value: Any) -> Any:
@@ -52,27 +65,106 @@ def _connect_timeout() -> int:
     return max(1, min(value, 30))
 
 
-@contextmanager
-def database_connection() -> Iterator[Any]:
+def _pool_max_size() -> int:
+    raw = str(os.getenv("MAKERHUB_DATABASE_POOL_MAX", "") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 8
+    return max(1, min(value, 32))
+
+
+def _pool_timeout() -> int:
+    raw = str(os.getenv("MAKERHUB_DATABASE_POOL_TIMEOUT", "") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 5
+    return max(1, min(value, 30))
+
+
+def _close_pool_instance(pool: Any) -> None:
+    if pool is None:
+        return
+    try:
+        pool.close()
+    except Exception:
+        pass
+
+
+def close_database_pool() -> None:
+    global _DATABASE_POOL, _DATABASE_POOL_KEY
+    with _DATABASE_POOL_LOCK:
+        pool = _DATABASE_POOL
+        _DATABASE_POOL = None
+        _DATABASE_POOL_KEY = None
+    _close_pool_instance(pool)
+
+
+def _reset_database_pool_for_tests() -> None:
+    close_database_pool()
+
+
+def _get_database_pool() -> Any:
+    global _DATABASE_POOL, _DATABASE_POOL_KEY
     url = database_url()
     if not url:
         raise DatabaseUnavailable("Postgres 未配置。")
-    if psycopg is None or dict_row is None:
-        raise DatabaseUnavailable("Postgres 驱动未安装。")
+    if psycopg is None or dict_row is None or ConnectionPool is None:
+        raise DatabaseUnavailable("Postgres 连接池驱动未安装。")
 
-    connection = psycopg.connect(
-        url,
-        connect_timeout=_connect_timeout(),
-        row_factory=dict_row,
-    )
+    key = (os.getpid(), url)
+    with _DATABASE_POOL_LOCK:
+        if _DATABASE_POOL is not None and _DATABASE_POOL_KEY == key:
+            return _DATABASE_POOL
+        previous = _DATABASE_POOL
+        _DATABASE_POOL = None
+        _DATABASE_POOL_KEY = None
+        _close_pool_instance(previous)
+        try:
+            pool = ConnectionPool(
+                conninfo=url,
+                min_size=0,
+                max_size=_pool_max_size(),
+                timeout=_pool_timeout(),
+                kwargs={
+                    "connect_timeout": _connect_timeout(),
+                    "row_factory": dict_row,
+                },
+                open=False,
+            )
+            pool.open(wait=False)
+        except Exception:
+            _close_pool_instance(locals().get("pool"))
+            raise DatabaseUnavailable("Postgres 连接池初始化失败。") from None
+        _DATABASE_POOL = pool
+        _DATABASE_POOL_KEY = key
+        return pool
+
+
+@contextmanager
+def database_connection() -> Iterator[Any]:
+    pool = _get_database_pool()
+    try:
+        checkout = pool.connection()
+        connection = checkout.__enter__()
+    except Exception:
+        raise DatabaseUnavailable("Postgres 连接池暂时不可用。") from None
+
     try:
         yield connection
         connection.commit()
-    except Exception:
-        connection.rollback()
+    except BaseException as exc:
+        try:
+            try:
+                connection.rollback()
+            except Exception:
+                pass
+        finally:
+            checkout.__exit__(type(exc), exc, exc.__traceback__)
         raise
-    finally:
-        connection.close()
+    else:
+        checkout.__exit__(None, None, None)
 
 
 def _initialize_database_schema() -> None:
@@ -91,9 +183,13 @@ def _initialize_database_schema() -> None:
             CREATE TABLE IF NOT EXISTS makerhub_json_state (
                 key TEXT PRIMARY KEY,
                 value JSONB NOT NULL DEFAULT '{}'::jsonb,
+                revision BIGINT NOT NULL DEFAULT 0,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
             """
+        )
+        connection.execute(
+            "ALTER TABLE makerhub_json_state ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 0"
         )
         connection.execute(
             """
@@ -227,6 +323,42 @@ def load_json_state(key: str) -> Any:
     return None
 
 
+def load_json_state_with_revision(key: str) -> tuple[Any, int]:
+    clean_key = str(key or "").strip()
+    if not clean_key:
+        raise ValueError("JSON 状态 key 不能为空。")
+    initialize_database()
+    with database_connection() as connection:
+        row = connection.execute(
+            "SELECT value, revision FROM makerhub_json_state WHERE key = %s",
+            (clean_key,),
+        ).fetchone()
+    if not isinstance(row, dict):
+        return None, 0
+    return row.get("value"), int(row.get("revision") or 0)
+
+
+def load_json_states(keys: Iterable[str]) -> dict[str, Any]:
+    clean_keys = list(dict.fromkeys(str(key or "").strip() for key in keys))
+    clean_keys = [key for key in clean_keys if key]
+    if not clean_keys:
+        return {}
+    initialize_database()
+    with database_connection() as connection:
+        rows = connection.execute(
+            "SELECT key, value FROM makerhub_json_state WHERE key = ANY(%s)",
+            (clean_keys,),
+        ).fetchall()
+    values = {key: None for key in clean_keys}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("key") or "")
+        if key in values:
+            values[key] = row.get("value")
+    return values
+
+
 def load_json_state_array_summary(key: str, array_field: str, *, limit: int = 5) -> dict[str, Any]:
     clean_key = str(key or "").strip()
     clean_field = str(array_field or "").strip()
@@ -291,11 +423,60 @@ def save_json_state(key: str, value: Any) -> Any:
             VALUES (%s, %s, now())
             ON CONFLICT (key) DO UPDATE SET
                 value = EXCLUDED.value,
+                revision = makerhub_json_state.revision + 1,
                 updated_at = now()
             """,
             (clean_key, jsonb_value(value)),
         )
     return value
+
+
+def update_json_state(
+    key: str,
+    default: Any,
+    mutator: Callable[[Any], Any],
+    *,
+    expected_revision: int | None = None,
+) -> tuple[Any, int]:
+    clean_key = str(key or "").strip()
+    if not clean_key:
+        raise ValueError("JSON 状态 key 不能为空。")
+    if not callable(mutator):
+        raise TypeError("JSON 状态 mutator 必须可调用。")
+    initialize_database()
+    with database_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO makerhub_json_state (key, value, revision, updated_at)
+            VALUES (%s, %s, 0, now())
+            ON CONFLICT (key) DO NOTHING
+            """,
+            (clean_key, jsonb_value(default)),
+        )
+        row = connection.execute(
+            "SELECT value, revision FROM makerhub_json_state WHERE key = %s FOR UPDATE",
+            (clean_key,),
+        ).fetchone()
+        current = row.get("value") if isinstance(row, dict) else deepcopy(default)
+        revision = int((row or {}).get("revision") or 0) if isinstance(row, dict) else 0
+        if expected_revision is not None and revision != int(expected_revision):
+            raise JsonStateConflict(
+                f"JSON 状态 {clean_key} 已更新，请重新加载后再保存。"
+            )
+        working = deepcopy(current)
+        result = mutator(working)
+        updated = working if result is None else result
+        updated_row = connection.execute(
+            """
+            UPDATE makerhub_json_state
+            SET value = %s, revision = revision + 1, updated_at = now()
+            WHERE key = %s
+            RETURNING revision
+            """,
+            (jsonb_value(updated), clean_key),
+        ).fetchone()
+        updated_revision = int((updated_row or {}).get("revision") or (revision + 1))
+    return updated, updated_revision
 
 
 def delete_json_state(key: str) -> bool:

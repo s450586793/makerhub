@@ -11,7 +11,9 @@ from app.core.database import (
     database_driver_available,
     load_json_state,
     load_json_state_array_summary,
+    load_json_state_with_revision,
     save_json_state,
+    update_json_state,
 )
 
 JSON_STATE_MAX_ATTEMPTS = 3
@@ -77,6 +79,47 @@ def save_database_json_state(key: str, payload: dict[str, Any]) -> dict[str, Any
     require_database_json_state()
     _with_database_json_state_attempts(lambda: save_json_state(clean_key, payload))
     return payload
+
+
+def load_database_json_state_with_revision(key: str, default: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    clean_key = str(key or "").strip()
+    if not clean_key:
+        raise ValueError("JSON 状态 key 不能为空。")
+    require_database_json_state()
+    payload, revision = _with_database_json_state_attempts(
+        lambda: load_json_state_with_revision(clean_key)
+    )
+    return (payload if isinstance(payload, dict) else dict(default), int(revision or 0))
+
+
+def update_database_json_state(
+    key: str,
+    default: dict[str, Any],
+    mutator: Callable[[dict[str, Any]], dict[str, Any] | None],
+    *,
+    expected_revision: int | None = None,
+) -> tuple[dict[str, Any], int]:
+    clean_key = str(key or "").strip()
+    if not clean_key:
+        raise ValueError("JSON 状态 key 不能为空。")
+    if not callable(mutator):
+        raise TypeError("JSON 状态 mutator 必须可调用。")
+    require_database_json_state()
+    try:
+        payload, revision = update_json_state(
+            clean_key,
+            dict(default),
+            mutator,
+            expected_revision=expected_revision,
+        )
+    except DatabaseUnavailable:
+        raise
+    except Exception:
+        # mutator 可能包含副作用，原子更新失败后不能自动重复执行。
+        raise
+    if not isinstance(payload, dict):
+        raise ValueError("JSON 状态 mutator 必须生成对象。")
+    return payload, int(revision or 0)
 
 
 def load_database_json_state_version(key: str) -> str:

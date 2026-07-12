@@ -3,6 +3,7 @@ import os
 import threading
 import time
 
+from app.core.database import close_database_pool
 from app.core.settings import APP_VERSION, LOCAL_PREVIEW_POLL_SECONDS, PROCESS_ROLE, ensure_app_dirs
 from app.core.store import JsonStore
 from app.services.account_cookie_maintenance import run_account_cookie_maintenance_once
@@ -207,6 +208,7 @@ def main() -> int:
             app_version=APP_VERSION,
             process_role=PROCESS_ROLE,
         )
+        close_database_pool()
 
     return 0
 

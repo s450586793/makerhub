@@ -35,10 +35,11 @@ from app.core.settings import (
     ensure_app_dirs,
 )
 from app.core.api_permissions import api_token_permission_for_request
+from app.core.database import close_database_pool
 from app.services.auth import AuthManager
 from app.services.business_logs import append_business_log
 from app.services.performance import log_api_request_if_needed
-from app.services.request_threads import shutdown_request_threads
+from app.services.request_threads import run_web_io, shutdown_request_threads
 from app.services.self_update import mark_update_started_after_restart
 from app.services.state_events import start_state_event_listener
 
@@ -160,6 +161,7 @@ async def resume_archive_queue() -> None:
 async def shutdown_thread_pools() -> None:
     local_organizer.stop()
     shutdown_request_threads()
+    close_database_pool()
 
 
 @app.middleware("http")
@@ -202,7 +204,11 @@ async def auth_guard(request: Request, call_next):
         return finish(response)
 
     api_token_permission = api_token_permission_for_request(request.method, path)
-    identity = auth_manager.resolve_request_auth(request, api_token_permission=api_token_permission)
+    identity = await run_web_io(
+        auth_manager.resolve_request_auth,
+        request,
+        api_token_permission=api_token_permission,
+    )
     request.state.auth_identity = identity or {}
 
     if path == "/login":
