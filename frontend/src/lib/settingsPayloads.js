@@ -66,6 +66,19 @@ export function buildSharingPayload(form = {}) {
   };
 }
 
+export function createResponseGuard() {
+  let generation = 0;
+  return {
+    begin() {
+      const requestGeneration = ++generation;
+      return () => requestGeneration === generation;
+    },
+    invalidate() {
+      generation += 1;
+    },
+  };
+}
+
 export function normalizeTokenItems(items = []) {
   if (!Array.isArray(items)) {
     return [];

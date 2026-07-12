@@ -25,15 +25,33 @@ case "$mode" in
       workers=8
     fi
     trusted_proxies="$(printf '%s' "${MAKERHUB_TRUSTED_PROXIES:-}" | tr -d '[:space:]')"
-    case "$trusted_proxies" in
-      ""|*\**)
-        exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers "$workers" --no-proxy-headers
-        ;;
-      *)
-        exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers "$workers" \
-          --proxy-headers --forwarded-allow-ips "$trusted_proxies"
-        ;;
-    esac
+    trusted_proxies_valid=true
+    old_ifs="$IFS"
+    IFS=','
+    set -f
+    for trusted_proxy in $trusted_proxies; do
+      case "$trusted_proxy" in
+        ""|*[*]*) trusted_proxies_valid=false ;;
+        */*)
+          prefix_length="${trusted_proxy##*/}"
+          case "$prefix_length" in
+            ""|*[!0-9]*) ;;
+            *)
+              if [ "$prefix_length" -eq 0 ]; then
+                trusted_proxies_valid=false
+              fi
+              ;;
+          esac
+          ;;
+      esac
+    done
+    IFS="$old_ifs"
+    set +f
+    if [ -z "$trusted_proxies" ] || [ "$trusted_proxies_valid" != true ]; then
+      exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers "$workers" --no-proxy-headers
+    fi
+    exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers "$workers" \
+      --proxy-headers --forwarded-allow-ips "$trusted_proxies"
     ;;
   *)
     echo "Unknown MAKERHUB_ENTRYPOINT: $mode" >&2

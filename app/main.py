@@ -132,7 +132,9 @@ async def favicon() -> Response:
 
 @app.on_event("startup")
 async def resume_archive_queue() -> None:
-    ensure_secure_admin_credential(global_store)
+    credential_result = ensure_secure_admin_credential(global_store)
+    if credential_result.source == "generated" or credential_result.bootstrap_path.exists():
+        print(f"[makerhub] admin bootstrap password file: {credential_result.bootstrap_path}", flush=True)
     mark_update_started_after_restart()
     start_state_event_listener()
     queue = {"recovered_count": 0, "queued_count": 0}

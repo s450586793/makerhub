@@ -29,6 +29,13 @@ from app.services.task_state import TaskStateStore
 class JsonStateDatabaseRoutingTest(unittest.TestCase):
     def setUp(self):
         self.state = {}
+
+        def update_state(key, default, mutator, expected_revision=None):
+            current = dict(self.state.get(key) or default)
+            result = mutator(current)
+            updated = current if result is None else result
+            self.state[key] = updated
+            return updated, 1
         self.patches = [
             patch("app.core.store.load_database_json_state", side_effect=lambda key, default: dict(self.state.get(key) or default)),
             patch("app.core.store.save_database_json_state", side_effect=lambda key, value: self.state.__setitem__(key, value) or value),
@@ -47,6 +54,7 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
             patch("app.core.database_json_state.database_driver_available", return_value=True),
             patch("app.core.database_json_state.load_json_state", side_effect=lambda key: self.state.get(key)),
             patch("app.core.database_json_state.save_json_state", side_effect=lambda key, value: self.state.__setitem__(key, value) or value),
+            patch("app.core.database_json_state.update_json_state", side_effect=update_state),
         ]
         for item in self.patches:
             item.start()

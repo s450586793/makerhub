@@ -2,7 +2,9 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
@@ -10,6 +12,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
+from app.core.database import DatabaseUnavailable
 from app.core.security import default_admin_password_hash, hash_api_token, hash_password
 from app.core.store import JsonStore
 from app.schemas.models import ApiTokenRecord, AppConfig
@@ -18,6 +21,30 @@ from app.services import auth as auth_service
 from app.services.auth import AuthManager
 from app import main as main_app
 from app.api import auth as auth_api
+
+
+class _InMemoryJsonState:
+    def __init__(self):
+        self.values = {}
+        self.revisions = {}
+        self.lock = threading.RLock()
+
+    def load(self, key, default):
+        with self.lock:
+            return deepcopy(self.values.get(key, default))
+
+    def update(self, key, default, mutator, *, expected_revision=None):
+        with self.lock:
+            revision = self.revisions.get(key, 0)
+            if expected_revision is not None and expected_revision != revision:
+                raise RuntimeError("stale revision")
+            current = deepcopy(self.values.get(key, default))
+            result = mutator(current)
+            updated = current if result is None else result
+            revision += 1
+            self.values[key] = deepcopy(updated)
+            self.revisions[key] = revision
+            return deepcopy(updated), revision
 
 
 def _token_record(raw_token: str, permissions: list[str]) -> ApiTokenRecord:
@@ -34,10 +61,14 @@ def _token_record(raw_token: str, permissions: list[str]) -> ApiTokenRecord:
 
 class AuthGuardTokenPermissionTest(unittest.TestCase):
     def setUp(self):
-        self.sessions_state = {}
+        self.json_state = _InMemoryJsonState()
         self.auth_patches = [
-            patch("app.services.auth.load_database_json_state", side_effect=lambda _key, default: dict(self.sessions_state or default)),
-            patch("app.services.auth.save_database_json_state", side_effect=lambda _key, value: self.sessions_state.clear() or self.sessions_state.update(value) or value),
+            patch("app.services.auth.load_database_json_state", side_effect=self.json_state.load),
+            patch(
+                "app.services.auth.update_database_json_state",
+                side_effect=self.json_state.update,
+                create=True,
+            ),
         ]
         for item in self.auth_patches:
             item.start()
@@ -195,7 +226,7 @@ class AuthGuardTokenPermissionTest(unittest.TestCase):
             self.assertEqual(first["username"], "admin")
             self.assertEqual(second["username"], "admin")
             self.assertIsNone(third)
-            self.assertEqual(reads_before_delete, 1)
+            self.assertEqual(reads_before_delete, 2)
             self.assertEqual(read_calls, 3)
 
     def test_session_cache_invalidation_is_shared_across_auth_manager_instances(self):
@@ -211,11 +242,47 @@ class AuthGuardTokenPermissionTest(unittest.TestCase):
             )
 
             first = resolver.resolve_request_auth(request)
-            deleter.delete_session(session["id"])
+            with patch.object(deleter, "_clear_session_cache"):
+                deleter.delete_session(session["id"])
             second = resolver.resolve_request_auth(request)
 
             self.assertEqual(first["username"], "admin")
             self.assertIsNone(second)
+
+    def test_create_session_persists_exactly_one_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            manager = AuthManager(store=store, sessions_path=Path(tmp) / "sessions.json")
+
+            session = manager.create_session("admin")
+
+        stored = self.json_state.values[auth_service.SESSIONS_STATE_KEY]
+        self.assertEqual(stored["items"], [session])
+        self.assertEqual(stored["generation"], 1)
+
+    def test_concurrent_session_clear_cannot_be_overwritten_by_stale_get_touch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            resolver = AuthManager(store=store, sessions_path=Path(tmp) / "sessions.json")
+            clearer = AuthManager(store=store, sessions_path=Path(tmp) / "sessions.json")
+            session = resolver.create_session("admin")
+            stale_payload = deepcopy(self.json_state.values[auth_service.SESSIONS_STATE_KEY])
+            stale_payload["items"][0]["last_seen_at"] = ""
+
+            with patch.object(clearer, "_clear_session_cache"):
+                clearer.clear_all_sessions()
+            cleared_generation = int(
+                self.json_state.values[auth_service.SESSIONS_STATE_KEY].get("generation", 0)
+            )
+            with patch.object(resolver, "_read_sessions", return_value=stale_payload):
+                resolved = resolver.get_session(session["id"])
+
+            self.assertIsNone(resolved)
+            self.assertEqual(self.json_state.values[auth_service.SESSIONS_STATE_KEY]["items"], [])
+            self.assertGreaterEqual(
+                int(self.json_state.values[auth_service.SESSIONS_STATE_KEY].get("generation", 0)),
+                cleared_generation,
+            )
 
     def test_legacy_plaintext_token_is_hashed_and_removed_on_load(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -291,6 +358,52 @@ class AdminCredentialBootstrapTest(unittest.TestCase):
             self.assertNotIn(env_password, store.path.read_text(encoding="utf-8"))
             clear_sessions.assert_called_once_with()
 
+    def test_generated_bootstrap_write_failure_keeps_existing_credential(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = self._store(root)
+            config = store.load()
+            config.user.password_hash = default_admin_password_hash()
+            store.save(config)
+            original_hash = store.load().user.password_hash
+
+            with patch.object(auth_service, "STATE_DIR", root / "state"), \
+                    patch.dict(os.environ, {"MAKERHUB_ADMIN_PASSWORD": ""}), \
+                    patch.object(auth_service, "_write_bootstrap_password", side_effect=OSError("disk full")), \
+                    patch.object(AuthManager, "clear_all_sessions") as clear_sessions:
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    auth_service.ensure_secure_admin_credential(store)
+
+            self.assertEqual(store.load().user.password_hash, original_hash)
+            self.assertTrue(AuthManager(store).authenticate_credentials("admin", "admin"))
+            clear_sessions.assert_not_called()
+
+    def test_generated_bootstrap_survives_config_update_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = self._store(root)
+            config = store.load()
+            config.user.password_hash = default_admin_password_hash()
+            store.save(config)
+
+            with patch.object(auth_service, "STATE_DIR", root / "state"), \
+                    patch.dict(os.environ, {"MAKERHUB_ADMIN_PASSWORD": ""}), \
+                    patch.object(store, "update", side_effect=OSError("database offline")):
+                with self.assertRaisesRegex(OSError, "database offline"):
+                    auth_service.ensure_secure_admin_credential(store)
+
+            bootstrap_path = root / "state" / auth_service.ADMIN_BOOTSTRAP_PASSWORD_FILENAME
+            bootstrap_password = bootstrap_path.read_text(encoding="utf-8").strip()
+            self.assertTrue(AuthManager(store).authenticate_credentials("admin", "admin"))
+
+            with patch.object(auth_service, "STATE_DIR", root / "state"), \
+                    patch.dict(os.environ, {"MAKERHUB_ADMIN_PASSWORD": ""}), \
+                    patch.object(AuthManager, "clear_all_sessions"):
+                auth_service.ensure_secure_admin_credential(store)
+
+            self.assertTrue(AuthManager(store).authenticate_credentials("admin", bootstrap_password))
+
+
     def test_existing_secure_password_is_not_replaced_by_environment(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -335,10 +448,14 @@ class AdminCredentialBootstrapTest(unittest.TestCase):
 
 class AuthLoginHardeningTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.sessions_state = {}
+        self.json_state = _InMemoryJsonState()
         self.auth_patches = [
-            patch("app.services.auth.load_database_json_state", side_effect=lambda _key, default: dict(self.sessions_state or default)),
-            patch("app.services.auth.save_database_json_state", side_effect=lambda _key, value: self.sessions_state.clear() or self.sessions_state.update(value) or value),
+            patch("app.services.auth.load_database_json_state", side_effect=self.json_state.load),
+            patch(
+                "app.services.auth.update_database_json_state",
+                side_effect=self.json_state.update,
+                create=True,
+            ),
         ]
         for item in self.auth_patches:
             item.start()
@@ -353,6 +470,58 @@ class AuthLoginHardeningTest(unittest.IsolatedAsyncioTestCase):
             client=SimpleNamespace(host=host),
             url=SimpleNamespace(scheme=scheme),
         )
+
+    def test_login_failure_count_is_shared_across_auth_manager_instances(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            first = AuthManager(store=store, sessions_path=Path(tmp) / "sessions-1.json")
+            second = AuthManager(store=store, sessions_path=Path(tmp) / "sessions-2.json")
+            key = "127.0.0.1:admin"
+
+            for _ in range(auth_service.LOGIN_FAILURE_LIMIT - 1):
+                self.assertEqual(first.record_login_failure(key), 0)
+            self.assertGreater(second.record_login_failure(key), 0)
+            self.assertGreater(first.login_backoff_seconds(key), 0)
+            second.clear_login_failures(key)
+            self.assertEqual(first.login_backoff_seconds(key), 0)
+
+    def test_login_failure_memory_fallback_prunes_expired_and_caps_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            manager = AuthManager(store=store, sessions_path=Path(tmp) / "sessions.json")
+            now = auth_service.china_now().timestamp()
+            manager._login_failures["expired"] = {
+                "first_seen": now - 60,
+                "last_seen": now - 60,
+                "count": 1,
+                "locked_until": 0,
+            }
+
+            with patch.object(
+                    auth_service,
+                    "update_database_json_state",
+                    side_effect=DatabaseUnavailable("offline"),
+            ), patch.object(
+                auth_service,
+                "load_database_json_state",
+                side_effect=DatabaseUnavailable("offline"),
+            ), patch.object(
+                auth_service,
+                "LOGIN_FAILURE_FALLBACK_TTL_SECONDS",
+                10,
+                create=True,
+            ), patch.object(
+                auth_service,
+                "LOGIN_FAILURE_MAX_KEYS",
+                2,
+                create=True,
+            ):
+                manager.record_login_failure("key-1")
+                manager.record_login_failure("key-2")
+                manager.record_login_failure("key-3")
+
+            self.assertNotIn("expired", manager._login_failures)
+            self.assertLessEqual(len(manager._login_failures), 2)
 
     async def test_login_rate_limits_repeated_failures_and_clears_after_success(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -506,7 +675,17 @@ class EntrypointProxyHeaderTest(unittest.TestCase):
         return capture_path.read_text(encoding="utf-8").splitlines()
 
     def test_proxy_headers_are_disabled_without_explicit_trusted_proxies(self):
-        for value in (None, "", "*", "127.0.0.1,*"):
+        for value in (
+            None,
+            "",
+            "*",
+            "127.0.0.1,*",
+            "*/8",
+            "0.0.0.0/0",
+            "::/0",
+            "10.1.2.3/0",
+            "127.0.0.1,0.0.0.0/00",
+        ):
             with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
                 args = self._entrypoint_args(Path(tmp), value)
                 self.assertIn("--no-proxy-headers", args)
@@ -528,7 +707,7 @@ class AppStartupCredentialTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(
                 main_app,
                 "ensure_secure_admin_credential",
-                side_effect=lambda _store: calls.append("credential"),
+                side_effect=lambda _store: calls.append("credential") or auth_service.BootstrapCredentialResult(False, "existing", Path("/missing")),
         ) as ensure_credential, \
                 patch.object(
                     main_app,
@@ -549,6 +728,25 @@ class AppStartupCredentialTest(unittest.IsolatedAsyncioTestCase):
         start_listener.assert_called_once_with()
         self.assertEqual(calls[:3], ["credential", "restart", "listener"])
 
+
+    async def test_app_startup_prints_bootstrap_password_path(self):
+        bootstrap_path = Path("/state/admin-bootstrap-password")
+        result = auth_service.BootstrapCredentialResult(
+            rotated=True,
+            source="generated",
+            bootstrap_path=bootstrap_path,
+        )
+        with patch.object(main_app, "ensure_secure_admin_credential", return_value=result), \
+                patch.object(main_app, "mark_update_started_after_restart"), \
+                patch.object(main_app, "start_state_event_listener"), \
+                patch.object(main_app, "BACKGROUND_TASKS_ENABLED", False), \
+                patch.object(main_app, "append_business_log"), \
+                patch("builtins.print") as print_mock:
+            await main_app.resume_archive_queue()
+
+        self.assertTrue(
+            any(str(bootstrap_path) in " ".join(str(part) for part in call.args) for call in print_mock.call_args_list)
+        )
 
 if __name__ == "__main__":
     unittest.main()

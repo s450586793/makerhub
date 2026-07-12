@@ -7,9 +7,21 @@ import {
   buildProxyPayload,
   buildRuntimePayload,
   buildSharingPayload,
+  createResponseGuard,
   normalizeBoundedInt,
   normalizeDailyThreeMfLimit,
 } from "./settingsPayloads.js";
+
+test("token response guard rejects a response after the dialog closes", async () => {
+  assert.equal(typeof createResponseGuard, "function");
+  const guard = createResponseGuard();
+  const isCurrent = guard.begin();
+  guard.invalidate();
+
+  await Promise.resolve();
+
+  assert.equal(isCurrent(), false);
+});
 
 test("normalize bounded integers clamps invalid and out-of-range values", () => {
   assert.equal(normalizeBoundedInt("bad", 2, 1, 4), 2);

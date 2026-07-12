@@ -887,6 +887,7 @@ import {
   buildRuntimePayload,
   buildSharingPayload,
   buildThreeMfLimitsPayload,
+  createResponseGuard,
   normalizeBoundedInt,
   normalizeDailyThreeMfLimit,
   normalizeTokenItems,
@@ -917,6 +918,7 @@ const tokenItems = ref([]);
 const tokenDialogOpen = ref(false);
 const createdToken = ref("");
 const createdTokenPermissions = ref([]);
+const tokenResponseGuard = createResponseGuard();
 const sharedShares = ref([]);
 const sharedSharesLoading = ref(false);
 const sharedShareCopyingId = ref("");
@@ -2231,6 +2233,7 @@ function resetTokenDialogForm() {
 }
 
 function openTokenDialog() {
+  tokenResponseGuard.invalidate();
   resetTokenDialogForm();
   createdToken.value = "";
   createdTokenPermissions.value = [];
@@ -2238,12 +2241,14 @@ function openTokenDialog() {
 }
 
 function closeTokenDialog() {
+  tokenResponseGuard.invalidate();
   createdToken.value = "";
   createdTokenPermissions.value = [];
   tokenDialogOpen.value = false;
 }
 
 async function createToken() {
+  const isCurrentResponse = tokenResponseGuard.begin();
   try {
     const permissions = Array.isArray(tokenForm.permissions) && tokenForm.permissions.length
       ? [...tokenForm.permissions]
@@ -2256,15 +2261,21 @@ async function createToken() {
         expires_days: Number(tokenForm.expires_days || 0),
       },
     });
+    const safeTokenItems = normalizeTokenItems(response.items);
+    if (!isCurrentResponse() || !tokenDialogOpen.value) {
+      tokenItems.value = safeTokenItems;
+      return;
+    }
     const tokenValue = String(response.token || response.item?.token_value || "").trim();
     if (!tokenValue) {
       throw new Error("Token 已生成，但响应中没有可显示的凭证。");
     }
     createdToken.value = tokenValue;
     createdTokenPermissions.value = [...permissions];
-    tokenItems.value = normalizeTokenItems(response.items);
+    tokenItems.value = safeTokenItems;
     statuses.tokens = "Token 已生成，请立即保存。";
   } catch (error) {
+    if (!isCurrentResponse()) return;
     statuses.tokens = error instanceof Error ? error.message : "生成失败。";
   }
 }
