@@ -44,6 +44,12 @@ class ReleaseWorkflowContractTest(unittest.TestCase):
         self.assertIn("verify", self.jobs)
         self.assertNotIn("if", self.jobs["verify"])
 
+    def test_same_ref_workflow_runs_are_serialized_without_cancellation(self):
+        concurrency = self.workflow["concurrency"]
+
+        self.assertIn("${{ github.ref }}", concurrency["group"])
+        self.assertEqual(concurrency["cancel-in-progress"], "false")
+
     def test_verify_job_runs_all_quality_gates_in_order(self):
         verify = self.jobs["verify"]
         step_names = [item.get("name") for item in verify["steps"]]
