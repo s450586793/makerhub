@@ -3,7 +3,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from tempfile import TemporaryDirectory
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from app.services import state_events, task_state
 from app.services.state_contracts import REMOTE_REFRESH_STATE_KEY
@@ -25,6 +25,19 @@ def test_runtime_state_key_follows_replaced_module_path():
         assert task_state._json_state_key_for_path(task_state.REMOTE_REFRESH_STATE_PATH) == REMOTE_REFRESH_STATE_KEY
     finally:
         task_state.REMOTE_REFRESH_STATE_PATH = original
+
+
+class JsonStatePathKeyTest(unittest.TestCase):
+    def test_runtime_state_key_propagates_unrelated_mapping_resolution_error(self):
+        resolution_error = OSError("archive queue path resolution failed")
+        broken_path = Mock()
+        broken_path.resolve.side_effect = resolution_error
+
+        with patch.object(task_state, "ARCHIVE_QUEUE_PATH", broken_path):
+            with self.assertRaises(OSError) as raised:
+                task_state._json_state_key_for_path(task_state.REMOTE_REFRESH_STATE_PATH)
+
+        self.assertIs(raised.exception, resolution_error)
 
 
 class OrganizeTaskStateTest(unittest.TestCase):

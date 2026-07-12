@@ -108,9 +108,10 @@ def _json_state_keys() -> dict[Path, str]:
 
 def _json_state_key_for_path(path: Path) -> str:
     try:
-        return _json_state_keys().get(path.resolve(), "")
+        resolved_path = path.resolve()
     except OSError:
         return ""
+    return _json_state_keys().get(resolved_path, "")
 
 
 def _looks_like_html_message(text: str) -> bool:
