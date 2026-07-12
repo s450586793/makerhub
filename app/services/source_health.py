@@ -363,6 +363,7 @@ def _probe_auth_endpoints(
                     headers=headers,
                     proxies=proxies or None,
                     timeout=(6, 12),
+                    allow_redirects=False,
                 )
                 elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
                 result = _auth_probe_result_from_response(

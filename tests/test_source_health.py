@@ -445,6 +445,7 @@ class SourceHealthCardsTest(unittest.TestCase):
                 kwargs["proxies"],
                 {"http": "http://proxy.local:7890", "https": "http://proxy.local:7891"},
             )
+            self.assertIs(kwargs.get("allow_redirects"), False)
             self.assertIn("Cookie", kwargs["headers"])
         self.assertTrue(session.closed)
 
