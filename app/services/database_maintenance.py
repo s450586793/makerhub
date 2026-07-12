@@ -18,6 +18,7 @@ DEFAULT_BUSINESS_LOG_RETENTION_DAYS = 90
 DEFAULT_BATCH_SIZE = 1000
 DEFAULT_MAX_BATCHES = 10
 DEFAULT_INTERVAL_SECONDS = 24 * 60 * 60
+LOG_RETENTION_INDEX_ADVISORY_LOCK_ID = 0x4D48524C4F474944
 _ALLOWED_TABLES = {"makerhub_state_events", "makerhub_logs"}
 _MAINTENANCE_LOCK = threading.Lock()
 _LAST_MAINTENANCE_AT: float | None = None
@@ -106,28 +107,38 @@ def _ensure_log_retention_index() -> None:
         if _RETENTION_INDEX_READY_KEY == key:
             return
         with database_autocommit_connection() as connection:
-            row = connection.execute(
-                """
-                SELECT
-                    to_regclass('public.makerhub_logs_created_idx') IS NOT NULL AS exists,
-                    COALESCE(
-                        (
-                            SELECT indisvalid
-                            FROM pg_index
-                            WHERE indexrelid = to_regclass('public.makerhub_logs_created_idx')
-                        ),
-                        false
-                    ) AS valid
-                """
-            ).fetchone()
-            exists = bool((row or {}).get("exists")) if isinstance(row, dict) else False
-            valid = bool((row or {}).get("valid")) if isinstance(row, dict) else False
-            if exists and not valid:
-                connection.execute("DROP INDEX CONCURRENTLY IF EXISTS makerhub_logs_created_idx")
-                exists = False
-            if not exists:
+            connection.execute(
+                "SELECT pg_advisory_lock(%s)",
+                (LOG_RETENTION_INDEX_ADVISORY_LOCK_ID,),
+            )
+            try:
+                row = connection.execute(
+                    """
+                    SELECT
+                        to_regclass('public.makerhub_logs_created_idx') IS NOT NULL AS exists,
+                        COALESCE(
+                            (
+                                SELECT indisvalid
+                                FROM pg_index
+                                WHERE indexrelid = to_regclass('public.makerhub_logs_created_idx')
+                            ),
+                            false
+                        ) AS valid
+                    """
+                ).fetchone()
+                exists = bool((row or {}).get("exists")) if isinstance(row, dict) else False
+                valid = bool((row or {}).get("valid")) if isinstance(row, dict) else False
+                if exists and not valid:
+                    connection.execute("DROP INDEX CONCURRENTLY IF EXISTS makerhub_logs_created_idx")
+                    exists = False
+                if not exists:
+                    connection.execute(
+                        "CREATE INDEX CONCURRENTLY makerhub_logs_created_idx ON makerhub_logs (created_at, id)"
+                    )
+            finally:
                 connection.execute(
-                    "CREATE INDEX CONCURRENTLY makerhub_logs_created_idx ON makerhub_logs (created_at, id)"
+                    "SELECT pg_advisory_unlock(%s)",
+                    (LOG_RETENTION_INDEX_ADVISORY_LOCK_ID,),
                 )
         _RETENTION_INDEX_READY_KEY = key
 

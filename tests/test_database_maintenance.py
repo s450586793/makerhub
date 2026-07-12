@@ -163,6 +163,49 @@ def test_log_retention_index_is_created_concurrently_outside_schema_transaction(
     sql_text = "\n".join(sql for sql, _params in calls)
     assert "CREATE INDEX CONCURRENTLY" in sql_text
     assert "CREATE INDEX IF NOT EXISTS makerhub_logs_created_idx" not in sql_text
+    assert "pg_advisory_lock" in calls[0][0]
+    assert "pg_advisory_unlock" in calls[-1][0]
+
+
+def test_invalid_log_retention_index_is_dropped_and_rebuilt_under_advisory_lock():
+    calls = []
+
+    class FakeResult:
+        def __init__(self, row=None):
+            self.row = row
+
+        def fetchone(self):
+            return self.row
+
+    class FakeConnection:
+        autocommit = True
+
+        def execute(self, sql, params=None):
+            calls.append((sql, params))
+            if "to_regclass" in sql:
+                return FakeResult({"exists": True, "valid": False})
+            return FakeResult()
+
+    class FakeContext:
+        def __enter__(self):
+            return FakeConnection()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    database_maintenance._reset_database_maintenance_for_tests()
+    with patch.object(
+        database_maintenance,
+        "database_autocommit_connection",
+        return_value=FakeContext(),
+    ):
+        database_maintenance._ensure_log_retention_index()
+
+    statements = [sql for sql, _params in calls]
+    assert "pg_advisory_lock" in statements[0]
+    assert any("DROP INDEX CONCURRENTLY" in sql for sql in statements)
+    assert any("CREATE INDEX CONCURRENTLY" in sql for sql in statements)
+    assert "pg_advisory_unlock" in statements[-1]
 
 
 def test_maintenance_scheduler_runs_once_per_interval():
