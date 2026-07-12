@@ -47,7 +47,7 @@ class ReleaseWorkflowContractTest(unittest.TestCase):
     def test_same_ref_workflow_runs_are_serialized_without_cancellation(self):
         concurrency = self.workflow["concurrency"]
 
-        self.assertIn("${{ github.ref }}", concurrency["group"])
+        self.assertEqual(concurrency["group"], "docker-${{ github.ref }}")
         self.assertEqual(concurrency["cancel-in-progress"], "false")
 
     def test_verify_job_runs_all_quality_gates_in_order(self):
