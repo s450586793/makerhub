@@ -27,7 +27,7 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.requests import ClientDisconnect
 
-from app.core.database import DATABASE_STATE_EVENT_CHANNEL, database_status
+from app.core.database import DATABASE_STATE_EVENT_CHANNEL, DatabaseUnavailable, database_status
 from app.core.database_json_state import load_database_json_state, save_database_json_state
 from app.core.security import default_admin_password_hash, hash_api_token, verify_password
 from app.core.settings import APP_VERSION, ARCHIVE_DIR, BACKGROUND_TASKS_ENABLED, MAX_LOCAL_IMPORT_UPLOAD_BYTES, STATE_DIR
@@ -114,7 +114,12 @@ from app.services.archive_model_index import resolve_model_dir_from_short_key
 from app.services.batch_discovery import extract_model_id, normalize_source_url
 from app.services.subscriptions import cookie_source_inventory_payload, cookie_source_sync_state_payload
 from app.services.source_health import probe_cookie_auth_status
-from app.services.account_health import mark_account_ok, update_three_mf_gate
+from app.services.account_health import (
+    load_account_health,
+    mark_account_ok,
+    operational_status_payload,
+    update_three_mf_gate,
+)
 from app.services.state_events import (
     StateEventWaiter,
     current_state_event_id,
@@ -2791,8 +2796,16 @@ def _public_config_base_payload(config) -> dict:
 
 
 def _public_config_payload(config) -> dict:
+    try:
+        account_health = load_account_health()
+    except DatabaseUnavailable:
+        account_health = {}
     return {
         **_public_config_base_payload(config),
+        "account_health": {
+            platform: operational_status_payload(platform, account_health.get(platform, {}))
+            for platform in ("cn", "global")
+        },
         "cookie_source_inventory": cookie_source_inventory_payload(),
         "cookie_source_sync_state": cookie_source_sync_state_payload(),
         "database": database_status(),

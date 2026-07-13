@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.api import config as config_api
+from app.core.database import DatabaseUnavailable
 from app.core.security import hash_api_token
 from app.core.store import JsonStore
 from app.schemas.models import ApiTokenRecord, AppConfig
@@ -14,6 +15,7 @@ from app.services.auth import AuthManager
 def test_public_config_light_payload_excludes_heavy_runtime_sections():
     with (
         patch.object(config_api, "database_status", side_effect=AssertionError("light payload must not check database")),
+        patch.object(config_api, "load_account_health", side_effect=AssertionError("light payload must not load account health")),
         patch.object(config_api, "cookie_source_inventory_payload", side_effect=AssertionError("light payload must not load cookie inventory")),
         patch.object(config_api, "cookie_source_sync_state_payload", side_effect=AssertionError("light payload must not load cookie sync state")),
         patch.object(config_api.task_state_store, "load_remote_refresh_state", side_effect=AssertionError("light payload must not load remote refresh state")),
@@ -29,6 +31,40 @@ def test_public_config_light_payload_excludes_heavy_runtime_sections():
     assert "remote_refresh_state" not in payload
     assert "cookie_source_inventory" not in payload
     assert "cookie_source_sync_state" not in payload
+    assert "account_health" not in payload
+
+
+def test_public_config_payload_exposes_operational_account_health_only_in_full_payload():
+    health = {
+        "cn": {"status": "ok", "three_mf_gate": "cookie_invalid"},
+        "global": {"status": "ok", "three_mf_gate": "open"},
+    }
+    with (
+        patch.object(config_api, "load_account_health", return_value=health),
+        patch.object(config_api, "cookie_source_inventory_payload", return_value={"platforms": {}}),
+        patch.object(config_api, "cookie_source_sync_state_payload", return_value={}),
+        patch.object(config_api, "database_status", return_value={"available": True}),
+        patch.object(config_api.task_state_store, "load_remote_refresh_state", return_value={}),
+    ):
+        payload = config_api._public_config_payload(AppConfig())
+
+    assert payload["account_health"]["cn"]["label"] == "需要重新登录"
+    assert payload["account_health"]["cn"]["action"] == "login"
+    assert payload["account_health"]["global"]["label"] == "可归档"
+
+
+def test_public_config_payload_degrades_account_health_when_database_is_unavailable():
+    with (
+        patch.object(config_api, "load_account_health", side_effect=DatabaseUnavailable("offline")),
+        patch.object(config_api, "cookie_source_inventory_payload", return_value={"platforms": {}}),
+        patch.object(config_api, "cookie_source_sync_state_payload", return_value={}),
+        patch.object(config_api, "database_status", return_value={"available": False}),
+        patch.object(config_api.task_state_store, "load_remote_refresh_state", return_value={}),
+    ):
+        payload = config_api._public_config_payload(AppConfig())
+
+    assert payload["account_health"]["cn"]["label"] == "状态待确认"
+    assert payload["account_health"]["global"]["action"] == "test"
 
 
 def test_mobile_import_token_reset_uses_atomic_updates_without_stale_snapshot_save():
