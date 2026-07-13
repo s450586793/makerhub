@@ -112,68 +112,26 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Refuse existing version tag
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          IMAGE_PATH="${GITHUB_REPOSITORY_OWNER,,}/makerhub"
-          TOKEN_RESPONSE_FILE="$(mktemp)"
-          trap 'rm -f "${TOKEN_RESPONSE_FILE}"' EXIT
-
+          IMAGE_REF="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/makerhub:${GITHUB_REF_NAME}"
+          INSPECT_OUTPUT="$(mktemp)"
+          trap 'rm -f "${INSPECT_OUTPUT}"' EXIT
           set +e
-          TOKEN_HTTP_STATUS="$(
-            curl --silent --show-error \
-              --output "${TOKEN_RESPONSE_FILE}" \
-              --write-out '%{http_code}' \
-              --user "${GITHUB_ACTOR}:${GHCR_TOKEN}" \
-              "https://ghcr.io/token?service=ghcr.io&scope=repository:${IMAGE_PATH}:pull"
-          )"
-          TOKEN_CURL_STATUS=$?
+          docker buildx imagetools inspect "${IMAGE_REF}" >"${INSPECT_OUTPUT}" 2>&1
+          INSPECT_STATUS=$?
           set -e
-          if [ "${TOKEN_CURL_STATUS}" -ne 0 ] || [ "${TOKEN_HTTP_STATUS}" != "200" ]; then
-            echo "::error::Unable to authenticate the GHCR manifest check."
+          if [ "${INSPECT_STATUS}" -eq 0 ]; then
+            echo "::error::Version tag ${GITHUB_REF_NAME} already exists and is immutable."
             exit 1
           fi
-
-          REGISTRY_TOKEN="$(
-            python -c 'import json, sys; payload = json.load(sys.stdin); print(payload.get("token") or payload.get("access_token") or "")' \
-              < "${TOKEN_RESPONSE_FILE}"
-          )"
-          if [ -z "${REGISTRY_TOKEN}" ]; then
-            echo "::error::GHCR did not return a registry token."
-            exit 1
+          if rg -qi 'manifest unknown|no such manifest|not found' "${INSPECT_OUTPUT}"; then
+            echo "Version tag ${GITHUB_REF_NAME} is available."
+            exit 0
           fi
-
-          set +e
-          MANIFEST_STATUS="$(
-            curl --silent --show-error \
-              --output /dev/null \
-              --write-out '%{http_code}' \
-              --request HEAD \
-              --header "Authorization: Bearer ${REGISTRY_TOKEN}" \
-              --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
-              "https://ghcr.io/v2/${IMAGE_PATH}/manifests/${GITHUB_REF_NAME}"
-          )"
-          MANIFEST_CURL_STATUS=$?
-          set -e
-          if [ "${MANIFEST_CURL_STATUS}" -ne 0 ]; then
-            echo "::error::Unable to query the GHCR version manifest."
-            exit 1
-          fi
-
-          case "${MANIFEST_STATUS}" in
-            404)
-              echo "Version tag ${GITHUB_REF_NAME} is available."
-              ;;
-            200)
-              echo "::error::Version tag ${GITHUB_REF_NAME} already exists and is immutable."
-              exit 1
-              ;;
-            *)
-              echo "::error::Unable to determine whether ${GITHUB_REF_NAME} exists (HTTP ${MANIFEST_STATUS})."
-              exit 1
-              ;;
-          esac
+          cat "${INSPECT_OUTPUT}" >&2
+          echo "::error::Unable to determine whether the GHCR version manifest exists."
+          exit 1
 
       - name: Extract image metadata
         id: meta

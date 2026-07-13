@@ -116,7 +116,7 @@ class ReleaseWorkflowContractTest(unittest.TestCase):
         self.assertNotIn("pattern={{version}}", metadata_tags)
         self.assertNotRegex(metadata_tags, r"value=\$\{\{\s*steps\.[^.]+\.outputs\.version\s*\}\}")
 
-    def test_release_refuses_existing_or_ambiguous_version_manifest(self):
+    def test_release_refuses_existing_or_ambiguous_version_manifest_with_docker_credentials(self):
         release = self.jobs["release"]
         step_names = [item.get("name") for item in release["steps"]]
         guard = _step(release, "Refuse existing version tag")
@@ -124,12 +124,11 @@ class ReleaseWorkflowContractTest(unittest.TestCase):
 
         self.assertLess(step_names.index("Log in to GHCR"), step_names.index("Refuse existing version tag"))
         self.assertLess(step_names.index("Refuse existing version tag"), step_names.index("Build and push image"))
-        self.assertEqual(guard["env"]["GHCR_TOKEN"], "${{ secrets.GITHUB_TOKEN }}")
-        self.assertIn("https://ghcr.io/token", guard_run)
-        self.assertIn("Authorization: Bearer ${REGISTRY_TOKEN}", guard_run)
-        self.assertIn("/manifests/${GITHUB_REF_NAME}", guard_run)
-        self.assertIn("200)", guard_run)
-        self.assertIn("404)", guard_run)
+        self.assertNotIn("env", guard)
+        self.assertIn("docker buildx imagetools inspect", guard_run)
+        self.assertIn("ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/makerhub:${GITHUB_REF_NAME}", guard_run)
+        self.assertIn("manifest unknown", guard_run)
+        self.assertIn("no such manifest", guard_run)
         self.assertGreaterEqual(guard_run.count("exit 1"), 2)
 
 
@@ -206,7 +205,7 @@ class DeploymentComposeContractTest(unittest.TestCase):
 
 
 class ReleaseDocumentationContractTest(unittest.TestCase):
-    def test_release_metadata_and_visible_readme_history_match_0_11_2(self):
+    def test_release_metadata_and_visible_readme_history_match_0_11_3(self):
         version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
         package = json.loads((ROOT_DIR / "frontend" / "package.json").read_text(encoding="utf-8"))
         package_lock = json.loads(
@@ -216,15 +215,15 @@ class ReleaseDocumentationContractTest(unittest.TestCase):
         changelog = (ROOT_DIR / "CHANGELOG.md").read_text(encoding="utf-8")
         visible_history = readme.split("<details>", 1)[0]
 
-        self.assertEqual(version, "0.11.2")
+        self.assertEqual(version, "0.11.3")
         self.assertEqual(package["version"], version)
         self.assertEqual(package_lock["version"], version)
         self.assertEqual(package_lock["packages"][""]["version"], version)
-        self.assertIn("> 当前版本：`v0.11.2`", readme)
-        self.assertIn("## 2026-07-13 · v0.11.2", changelog)
+        self.assertIn("> 当前版本：`v0.11.3`", readme)
+        self.assertIn("## 2026-07-13 · v0.11.3", changelog)
         self.assertEqual(
             [line.rsplit("v", 1)[-1] for line in visible_history.splitlines() if line.startswith("### 20")],
-            ["0.11.2", "0.11.1", "0.11.0"],
+            ["0.11.3", "0.11.2", "0.11.1"],
         )
 
     def test_operations_docs_cover_the_release_safety_contract(self):
