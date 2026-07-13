@@ -111,7 +111,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Refuse existing version tag
+      - name: Check version tag availability
         run: |
           set -euo pipefail
           IMAGE_REF="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/makerhub:${GITHUB_REF_NAME}"
@@ -125,13 +125,8 @@ jobs:
             echo "::error::Version tag ${GITHUB_REF_NAME} already exists and is immutable."
             exit 1
           fi
-          if rg -qi 'manifest unknown|no such manifest|not found' "${INSPECT_OUTPUT}"; then
-            echo "Version tag ${GITHUB_REF_NAME} is available."
-            exit 0
-          fi
           cat "${INSPECT_OUTPUT}" >&2
-          echo "::error::Unable to determine whether the GHCR version manifest exists."
-          exit 1
+          echo "::warning::GHCR manifest precheck was unavailable; continuing to the image push."
 
       - name: Extract image metadata
         id: meta

@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.11.3`
+> 当前版本：`v0.11.4`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -190,6 +190,10 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-13 · v0.11.4
+
+- GHCR 版本 tag 预检查无法确定结果时不再中止发布；仅确认 tag 已存在才拒绝，随后由正式镜像推送完成鉴权和发布。
+
 ### 2026-07-13 · v0.11.3
 
 - 修复 GHCR 版本 manifest 预检查认证链路，发布工作流改用已登录 Docker 凭据检查不可变版本 tag，恢复新镜像与 `latest` 推广。
@@ -198,13 +202,13 @@ uvicorn app.main:app --reload
 
 - 重新发布线上账号探针修复镜像，使用新的不可变版本 tag 推广 GHCR `latest`，避免已有镜像 tag 无法覆盖时网页更新继续拉取旧镜像。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-13 · v0.11.1
 
 - 线上账号认证探针改为直接使用对应站点代理，并保留真实 HTTP 状态；登录跳转不会再被误判为 Cookie 可用。
 - Cookie 后台维护保留 CloakBrowser profile 与同步状态，避免账号检测覆盖浏览器关联信息。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-13 · v0.11.0
 
