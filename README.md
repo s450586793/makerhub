@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.11.0`
+> 当前版本：`v0.11.1`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -190,6 +190,11 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-13 · v0.11.1
+
+- 线上账号认证探针改为直接使用对应站点代理，并保留真实 HTTP 状态；登录跳转不会再被误判为 Cookie 可用。
+- Cookie 后台维护保留 CloakBrowser profile 与同步状态，避免账号检测覆盖浏览器关联信息。
+
 ### 2026-07-13 · v0.11.0
 
 - 部署定义收敛为唯一的 `compose.yaml`；外部 FlareSolverr 通过最小 override 合并，镜像内置 canonical compose 供旧部署迁移诊断展示。
@@ -202,13 +207,13 @@ uvicorn app.main:app --reload
 - 任务轻量接口改为仅读取有限队列摘要，并对归档进度写入、SSE 通知和任务页刷新降载，降低大队列下的数据库与 API 压力。
 - 验证暂停任务仅在对应 `3MF` gate 已恢复时重新入队，避免仍受 Cookie 或人工验证限制的队列被错误唤醒。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-11 · v0.10.2
 
 - 网页一键更新仍优先使用 Docker `AutoRemove` 删除临时 helper；新 App 启动后会延迟清理 DSM 遗留的已停止 `makerhub-self-update-*` 容器。
 - 兜底清理同时校验 helper 标签、标准名称和停止状态，并跳过仍在运行的更新容器。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-11 · v0.10.1
 
