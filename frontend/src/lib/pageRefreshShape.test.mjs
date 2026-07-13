@@ -160,7 +160,9 @@ test("SettingsPage derives synced online account source counts from current subs
   assert.match(settingsPageSource, /const sourceInventory = inventoryByPlatform\[item\.platform\]/);
   assert.match(settingsPageSource, /const sourceSync = syncStateByPlatform\[item\.platform\]/);
   assert.match(settingsPageSource, /accountSourceStats\(\s*sourceInventory,\s*sourceSync,\s*subscriptionItems,\s*item\.platform,/);
-  assert.match(settingsPageSource, /accountStatusLabel\(mergedItem,\s*statusContext\)/);
+  assert.match(settingsPageSource, /const accountHealthByPlatform = config\.value\?\.account_health \|\| \{\}/);
+  assert.match(settingsPageSource, /accountOperationalView\(operational\)/);
+  assert.match(settingsPageSource, /shouldShowBrowserSession\(mergedItem, operational\)/);
 });
 
 test("AppShell refreshes GitHub version status after navigation is visible", () => {

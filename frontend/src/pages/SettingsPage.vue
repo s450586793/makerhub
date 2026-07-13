@@ -64,7 +64,7 @@
               </div>
               <p>{{ item.message }}</p>
               <p v-if="item.sourceSyncText" class="online-account-item__sync-note">{{ item.sourceSyncText }}</p>
-              <div class="online-account-item__browser-state">
+              <div v-if="item.showBrowserSession" class="online-account-item__browser-state">
                 <span :class="['shared-list-item__status', item.browserStatusClass]">{{ item.browserStatusLabel }}</span>
                 <span>{{ item.browserMessage }}</span>
               </div>
@@ -86,11 +86,16 @@
               >
                 {{ testing[`sync_${item.platform}`] ? "同步中..." : "同步" }}
               </button>
-              <button class="button button-secondary button-small" type="button" @click="openAccountDialog(item.platform)">
+              <button
+                :class="['button', item.primaryAction === 'login' ? 'button-primary' : 'button-secondary', 'button-small']"
+                type="button"
+                @click="openAccountDialog(item.platform)"
+              >
                 重新登录
               </button>
               <button
-                class="button button-secondary button-small"
+                v-if="item.showBrowserSession"
+                :class="['button', item.primaryAction === 'browser' ? 'button-primary' : 'button-secondary', 'button-small']"
                 type="button"
                 :disabled="item.browserBusy || item.browser_status === 'not_configured' || testing[`browser_open_${item.platform}`]"
                 @click="openSavedAccountBrowser(item)"
@@ -98,6 +103,7 @@
                 {{ testing[`browser_open_${item.platform}`] ? "启动中..." : "打开浏览器" }}
               </button>
               <button
+                v-if="item.showBrowserSession"
                 class="button button-secondary button-small"
                 type="button"
                 :disabled="item.browserBusy || !item.browser_profile_id || testing[`browser_sync_${item.platform}`]"
@@ -872,7 +878,7 @@ import { RouterLink, useRoute, useRouter } from "vue-router";
 import ThemeSegment from "../components/ThemeSegment.vue";
 import { appState, applyConfigPayload, refreshConfig, refreshLightConfig, saveThemePreference } from "../lib/appState";
 import { accountSourceOverview, accountSyncedSourceCounts } from "../lib/accountSourceStats";
-import { accountMessageText, accountStatusClass, accountStatusLabel } from "../lib/accountStatus";
+import { accountOperationalView } from "../lib/accountStatus";
 import { apiRequest } from "../lib/api";
 import {
   browserSessionBusy,
@@ -880,6 +886,7 @@ import {
   browserSessionStatusClass,
   browserSessionStatusLabel,
   resolveCloakBrowserPublicUrl,
+  shouldShowBrowserSession,
 } from "../lib/browserSession";
 import {
   buildAdvancedPayload,
@@ -1073,6 +1080,7 @@ const onlineAccountItems = computed(() => {
   const subscriptionItems = Array.isArray(config.value?.subscriptions) ? config.value.subscriptions : [];
   const inventoryByPlatform = config.value?.cookie_source_inventory?.platforms || {};
   const syncStateByPlatform = config.value?.cookie_source_sync_state || {};
+  const accountHealthByPlatform = config.value?.account_health || {};
   return cookies
     .filter((item) => ["cn", "global"].includes(item.platform) && hasAccountCookie(item))
     .map((item) => {
@@ -1088,7 +1096,8 @@ const onlineAccountItems = computed(() => {
       const displayName = accountDisplayName(mergedItem);
       const sourceInventory = inventoryByPlatform[item.platform];
       const sourceSync = syncStateByPlatform[item.platform];
-      const statusContext = { sourceInventory, sourceSync };
+      const operational = accountHealthByPlatform[item.platform] || {};
+      const operationalView = accountOperationalView(operational);
       const sourceStats = accountSourceStats(
         sourceInventory,
         sourceSync,
@@ -1100,14 +1109,16 @@ const onlineAccountItems = computed(() => {
         displayName,
         avatarFallback: accountAvatarFallback(mergedItem, displayName),
         platformLabel: accountPlatformLabel(item.platform),
-        statusLabel: accountStatusLabel(mergedItem, statusContext),
-        statusClass: accountStatusClass(mergedItem, statusContext),
+        statusLabel: operationalView.label,
+        statusClass: operationalView.statusClass,
         updatedText: formatAccountDate(item.updated_at || item.last_login_at || item.last_tested_at),
-        message: accountMessageText(mergedItem, statusContext),
+        message: operationalView.message,
+        primaryAction: operationalView.action,
         browserStatusLabel: browserSessionStatusLabel(mergedItem),
         browserStatusClass: browserSessionStatusClass(mergedItem),
         browserMessage: browserSessionMessage(mergedItem),
         browserBusy: browserSessionBusy(mergedItem),
+        showBrowserSession: shouldShowBrowserSession(mergedItem, operational),
         ...sourceStats,
       };
     });

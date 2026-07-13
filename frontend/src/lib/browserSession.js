@@ -30,6 +30,13 @@ export function browserSessionBusy(item = {}) {
   return ["syncing", "launching"].includes(String(item?.browser_status || "").trim());
 }
 
+export function shouldShowBrowserSession(item = {}, operational = {}) {
+  const action = String(operational?.action || "").trim();
+  const status = String(item?.browser_status || "").trim();
+  return action === "browser"
+    || ["syncing", "launching", "waiting", "action_required", "account_mismatch"].includes(status);
+}
+
 export function resolveCloakBrowserPublicUrl(configuredUrl = "", locationLike = {}) {
   const cleanUrl = String(configuredUrl || "").trim();
   if (cleanUrl) return cleanUrl;
