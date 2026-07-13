@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.11.1`
+> 当前版本：`v0.11.2`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -190,6 +190,10 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-13 · v0.11.2
+
+- 重新发布线上账号探针修复镜像，使用新的不可变版本 tag 推广 GHCR `latest`，避免已有镜像 tag 无法覆盖时网页更新继续拉取旧镜像。
+
 ### 2026-07-13 · v0.11.1
 
 - 线上账号认证探针改为直接使用对应站点代理，并保留真实 HTTP 状态；登录跳转不会再被误判为 Cookie 可用。
@@ -201,14 +205,14 @@ uvicorn app.main:app --reload
 - Compose 默认启用 App / Worker / Postgres readiness 检查，CloakBrowser token 与本地绑定保持强制安全边界；反向代理仅在显式可信地址列表下启用。
 - 网页更新改为同一发布组验证与整组回滚，Token 仅保留哈希，运行核心保持冻结，数据库事件默认保留 14 天、业务日志默认保留 90 天。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-12 · v0.10.3
 
 - 修复归档 Worker 遗忘存活线程后重复扩容，以及任务先租约、后等待资源的问题；归档与源端刷新通过 FIFO 公平共享 MakerWorld 资源槽，避免并发超配和任务长期停在低进度。
 - 任务轻量接口改为仅读取有限队列摘要，并对归档进度写入、SSE 通知和任务页刷新降载，降低大队列下的数据库与 API 压力。
 - 验证暂停任务仅在对应 `3MF` gate 已恢复时重新入队，避免仍受 Cookie 或人工验证限制的队列被错误唤醒。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-11 · v0.10.2
 
