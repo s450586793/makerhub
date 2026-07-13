@@ -1,5 +1,11 @@
 # 更新说明
 
+## 2026-07-13 · v0.11.0
+
+- 将 `compose.yaml` 固定为唯一完整部署定义；外部 FlareSolverr 改为最小 override，镜像内置 canonical compose 用于旧部署迁移诊断。
+- Compose 为 App / Worker / Postgres 提供就绪检查，CloakBrowser 默认本地绑定且 token 必填；反向代理仅在显式 `MAKERHUB_TRUSTED_PROXIES` 配置时信任转发头。
+- 网页更新按同一发布组拉取、启动和验证，任一候选失败会整组回滚；API Token 仅存储哈希，Runtime Engine 继续冻结。
+
 ## 2026-07-12 · v0.10.3
 
 - 修复归档 Worker 遗忘存活线程后重复扩容，以及任务先租约、后等待资源的问题；归档与源端刷新通过 FIFO 公平共享 MakerWorld 资源槽。

@@ -15,7 +15,7 @@ from typing import Any
 from urllib.parse import quote
 
 from app.core.database_json_state import load_database_json_state, save_database_json_state
-from app.core.settings import APP_VERSION, ARCHIVE_DIR, LOCAL_DIR, LOGS_DIR, STATE_DIR
+from app.core.settings import APP_VERSION, ARCHIVE_DIR, LOCAL_DIR, LOGS_DIR, ROOT_DIR, STATE_DIR
 from app.core.timezone import now_iso as china_now_iso
 from app.services.business_logs import append_business_log
 from app.services.state_events import publish_state_event
@@ -59,93 +59,19 @@ try:
 except ImportError:  # pragma: no cover - Windows fallback for local dev only.
     fcntl = None
 
-POSTGRES_COMPOSE_MIGRATION_EXAMPLE = """services:
-  makerhub-app:
-    image: ghcr.io/s450586793/makerhub:latest
-    container_name: makerhub-app
-    ports:
-      - "9042:8000"
-    environment:
-      MAKERHUB_ENTRYPOINT: app
-      MAKERHUB_PROCESS_ROLE: app
-      MAKERHUB_BACKGROUND_TASKS: "false"
-      MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
-      MAKERHUB_WEB_WORKERS: "1"
-      MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
-      MAKERHUB_FLARESOLVERR_URL: http://flaresolverr:8191/v1
-      MAKERHUB_FLARESOLVERR_TIMEOUT: "90"
-      MAKERHUB_FLARESOLVERR_MAX_CONCURRENCY: "1"
-    volumes:
-      - /volume4/docker/docker/makerhub:/app/config
-      - /volume2/entertainment/3D打印/makerhub:/app/data
-      # 高风险可选：只有明确需要网页一键更新时再挂载 Docker socket。
-      # - /var/run/docker.sock:/var/run/docker.sock
-    depends_on:
-      makerhub-postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8000/api/public/health/ready', timeout=3); raise SystemExit(0 if response.status == 200 else 1)"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
-    restart: unless-stopped
-
-  makerhub-worker:
-    image: ghcr.io/s450586793/makerhub:latest
-    container_name: makerhub-worker
-    environment:
-      MAKERHUB_ENTRYPOINT: worker
-      MAKERHUB_PROCESS_ROLE: worker
-      MAKERHUB_BACKGROUND_TASKS: "true"
-      MAKERHUB_WORKER_CONCURRENCY: "2"
-      MAKERHUB_HEAVY_JOB_NICE: "10"
-      MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
-      MAKERHUB_FLARESOLVERR_URL: http://flaresolverr:8191/v1
-      MAKERHUB_FLARESOLVERR_TIMEOUT: "90"
-      MAKERHUB_FLARESOLVERR_MAX_CONCURRENCY: "1"
-    volumes:
-      - /volume4/docker/docker/makerhub:/app/config
-      - /volume2/entertainment/3D打印/makerhub:/app/data
-    depends_on:
-      makerhub-postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-m", "app.worker", "--healthcheck"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
-    restart: unless-stopped
-
-  makerhub-postgres:
-    image: postgres:16-alpine
-    container_name: makerhub-postgres
-    environment:
-      POSTGRES_DB: makerhub
-      POSTGRES_USER: makerhub
-      POSTGRES_PASSWORD: ${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}
-    volumes:
-      - /volume4/docker/docker/makerhub/postgres:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U makerhub -d makerhub"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
-
-  flaresolverr:
-    image: ghcr.io/flaresolverr/flaresolverr:latest
-    container_name: makerhub-flaresolverr
-    environment:
-      LOG_LEVEL: info
-      TZ: Asia/Shanghai
-    restart: unless-stopped"""
+PACKAGED_CANONICAL_COMPOSE_PATH = ROOT_DIR / "compose.yaml"
 POSTGRES_COMPOSE_MIGRATION_MESSAGE = (
     "当前版本将归档模型索引迁移到 Postgres。检测到当前容器仍是旧 compose，"
     "缺少 MAKERHUB_DATABASE_URL / makerhub-postgres 服务，或仍使用旧的 /app/state、/app/archive、/app/local 分散挂载；"
     "请先按示例 compose 改成 App + Worker + Postgres + FlareSolverr 部署，并使用 /app/config + /app/data 新目录布局后，再执行网页更新。"
 )
+
+
+def packaged_canonical_compose() -> str:
+    try:
+        return PACKAGED_CANONICAL_COMPOSE_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return "无法读取镜像内置的 compose.yaml，请从发布包重新获取 compose.yaml 后再升级。"
 
 
 def _now_iso() -> str:
@@ -880,7 +806,7 @@ def _compose_migration_payload() -> dict[str, Any]:
     return {
         "compose_migration_required": True,
         "compose_migration_reason": POSTGRES_COMPOSE_MIGRATION_MESSAGE,
-        "compose_example": POSTGRES_COMPOSE_MIGRATION_EXAMPLE,
+        "compose_example": packaged_canonical_compose(),
     }
 
 
@@ -1292,7 +1218,7 @@ def request_system_update(*, requested_by: str = "", target_version: str = "", f
     metadata = _resolve_self_container(client)
     if _compose_migration_required(metadata.get("inspect") or {}):
         raise RuntimeError(
-            f"{POSTGRES_COMPOSE_MIGRATION_MESSAGE}\n\n示例 compose:\n{POSTGRES_COMPOSE_MIGRATION_EXAMPLE}"
+            f"{POSTGRES_COMPOSE_MIGRATION_MESSAGE}\n\n示例 compose:\n{packaged_canonical_compose()}"
         )
 
     request_id = uuid.uuid4().hex

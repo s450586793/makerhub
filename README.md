@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.10.3`
+> 当前版本：`v0.11.0`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -88,11 +88,15 @@ mkdir -p "/volume2/entertainment/3D打印/makerhub/local"
 
 ```env
 MAKERHUB_POSTGRES_PASSWORD=change-this-db-password
+# 建议显式设置至少 24 位管理员密码；未设置时会生成一次性密码到 /app/config/state/admin-bootstrap-password。
+MAKERHUB_ADMIN_PASSWORD=change-this-admin-password
 # 必填：给 CloakBrowser 管理界面和 MakerHub 调用使用的访问令牌。
 MAKERHUB_CLOAKBROWSER_AUTH_TOKEN=change-this-cloakbrowser-token
 # 远端管理才需要：显式绑定可信 LAN 地址，并配置用户浏览器可访问的 Manager 地址。
 # MAKERHUB_CLOAKBROWSER_BIND_ADDRESS=192.168.1.20
 # MAKERHUB_CLOAKBROWSER_PUBLIC_URL=http://192.168.1.20:9050
+# 只有反向代理地址明确可控时才设置；未设置时不信任 X-Forwarded-* 请求头。
+# MAKERHUB_TRUSTED_PROXIES=127.0.0.1,10.0.0.0/8
 # 可选：升级前验证新镜像后再覆盖默认固定 digest。
 # MAKERHUB_CLOAKBROWSER_IMAGE=cloakhq/cloakbrowser-manager:经过验证的版本
 ```
@@ -107,99 +111,10 @@ MAKERHUB_CLOAKBROWSER_AUTH_TOKEN=change-this-cloakbrowser-token
 MAKERHUB_FLARESOLVERR_URL=http://你的FlareSolverr地址:端口/v1
 ```
 
-```yaml
-services:
-  makerhub-app:
-    image: ghcr.io/s450586793/makerhub:latest
-    container_name: makerhub-app
-    ports:
-      - "9042:8000"
-    environment:
-      MAKERHUB_ENTRYPOINT: app
-      MAKERHUB_PROCESS_ROLE: app
-      MAKERHUB_BACKGROUND_TASKS: "false"
-      MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
-      MAKERHUB_WEB_WORKERS: "1"
-      MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
-      MAKERHUB_FLARESOLVERR_URL: http://flaresolverr:8191/v1
-      MAKERHUB_FLARESOLVERR_TIMEOUT: "90"
-      MAKERHUB_FLARESOLVERR_MAX_CONCURRENCY: "1"
-      MAKERHUB_CLOAKBROWSER_URL: http://cloakbrowser:8080
-      MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
-      MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
-      MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
-    volumes:
-      - /volume4/docker/docker/makerhub:/app/config
-      - /volume2/entertainment/3D打印/makerhub:/app/data
-      # 高风险可选：只有明确需要网页一键更新时再挂载 Docker socket。
-      # - /var/run/docker.sock:/var/run/docker.sock
-    # 高级可选：如果希望 App 等 Postgres 健康后再启动，取消下面三行注释，并同时打开 Postgres 的 healthcheck。
-    # depends_on:
-    #   makerhub-postgres:
-    #     condition: service_healthy
-    restart: unless-stopped
+`compose.yaml` 是唯一完整部署定义，不要从 README 复制或另存服务片段。需要外部 FlareSolverr 时，`compose.external-flaresolverr.yaml` 只覆盖 App / Worker 的地址并禁用内置服务：
 
-  makerhub-worker:
-    image: ghcr.io/s450586793/makerhub:latest
-    container_name: makerhub-worker
-    environment:
-      MAKERHUB_ENTRYPOINT: worker
-      MAKERHUB_PROCESS_ROLE: worker
-      MAKERHUB_BACKGROUND_TASKS: "true"
-      MAKERHUB_WORKER_CONCURRENCY: "2"
-      MAKERHUB_HEAVY_JOB_NICE: "10"
-      MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
-      MAKERHUB_FLARESOLVERR_URL: http://flaresolverr:8191/v1
-      MAKERHUB_FLARESOLVERR_TIMEOUT: "90"
-      MAKERHUB_FLARESOLVERR_MAX_CONCURRENCY: "1"
-      MAKERHUB_CLOAKBROWSER_URL: http://cloakbrowser:8080
-      MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
-      MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
-      MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
-    volumes:
-      - /volume4/docker/docker/makerhub:/app/config
-      - /volume2/entertainment/3D打印/makerhub:/app/data
-    # 高级可选：如果希望 Worker 等 Postgres 健康后再启动，取消下面三行注释，并同时打开 Postgres 的 healthcheck。
-    # depends_on:
-    #   makerhub-postgres:
-    #     condition: service_healthy
-    restart: unless-stopped
-
-  makerhub-postgres:
-    image: postgres:16-alpine
-    container_name: makerhub-postgres
-    environment:
-      POSTGRES_DB: makerhub
-      POSTGRES_USER: makerhub
-      POSTGRES_PASSWORD: ${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}
-    volumes:
-      - /volume4/docker/docker/makerhub/postgres:/var/lib/postgresql/data
-    # 高级可选：需要配合上面的 depends_on 使用时再打开。
-    # healthcheck:
-    #   test: ["CMD-SHELL", "pg_isready -U makerhub -d makerhub"]
-    #   interval: 10s
-    #   timeout: 5s
-    #   retries: 10
-    restart: unless-stopped
-
-  flaresolverr:
-    image: ghcr.io/flaresolverr/flaresolverr:latest
-    container_name: makerhub-flaresolverr
-    environment:
-      LOG_LEVEL: info
-      TZ: Asia/Shanghai
-    restart: unless-stopped
-
-  cloakbrowser:
-    image: ${MAKERHUB_CLOAKBROWSER_IMAGE:-cloakhq/cloakbrowser-manager@sha256:44836e982192e8fedb28617f2d39192bdef91f8dd62cf36c522c96d7d8e15914}
-    container_name: makerhub-cloakbrowser
-    ports:
-      - "${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:9050:8080"
-    environment:
-      AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
-    volumes:
-      - /volume4/docker/docker/makerhub/cloakbrowser:/data
-    restart: unless-stopped
+```bash
+docker compose -f compose.yaml -f compose.external-flaresolverr.yaml up -d
 ```
 
 ### 3. 启动
@@ -214,7 +129,11 @@ docker compose up -d
 http://你的服务器IP:9042
 ```
 
-默认登录账号密码为 `admin/admin`。首次登录后建议到设置页修改密码，再添加 MakerWorld 国内或国际账号。
+默认登录账号为 `admin`。首次登录后使用安全管理员密码登录，再添加 MakerWorld 国内或国际账号。
+
+管理员密码必须安全保存：优先在 `.env` 设置至少 24 位的 `MAKERHUB_ADMIN_PASSWORD`。未设置时，MakerHub 会生成随机一次性密码并写入 `/app/config/state/admin-bootstrap-password`（权限为 owner-only）；读取后立即修改密码，文件会在改密后删除。API Token 和移动端导入 Token 只在创建响应中显示一次，数据库仅保存哈希，后续列表不会返回明文。
+
+默认不会信任反向代理转发头。只有代理地址由你控制时，才设置 `MAKERHUB_TRUSTED_PROXIES`；不要使用 `*`、`0.0.0.0/0` 或公网网段。CloakBrowser 仍默认绑定 `127.0.0.1:9050`；需要 LAN 管理时显式配置绑定地址、公共 URL 和防火墙规则。
 
 首次启动数据库版本后，Worker 会自动遍历已有归档目录，重建模型卡片数据库索引。配置、Cookie / Token、订阅、任务状态、来源库 metadata、分享记录、更新状态和业务日志都以 Postgres 中的运行数据为准。
 
@@ -236,6 +155,8 @@ docker compose up -d
 ```
 
 如果设置页提示“需改 compose”，说明当前容器缺少 `MAKERHUB_DATABASE_URL`、`makerhub-postgres`，或仍使用旧 `/app/archive`、`/app/local` 分散挂载。请先升级 compose，再使用网页一键更新。
+
+首次网页更新不能代替这次 compose 迁移：旧镜像没有内置 canonical `compose.yaml`，先替换为本版本的 `compose.yaml` 并用命令行启动 App / Worker / Postgres；之后才可在可信内网、显式挂载 Docker socket 的前提下使用设置页更新。网页更新会拉取同一发布组的镜像，依次校验 App HTTP 就绪和 Worker 心跳；任一候选失败会执行整组回滚，保留旧容器。
 
 旧部署如果原来把模型直接放在宿主机 `/volume2/entertainment/3D打印/makerhub` 根目录下，不需要移动历史模型目录。继续把这个目录映射到容器 `/app/data` 即可；本地导入入口保留在宿主机 `/volume2/entertainment/3D打印/makerhub/local/`，容器内就是 `/app/data/local`。
 
@@ -269,6 +190,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-13 · v0.11.0
+
+- 部署定义收敛为唯一的 `compose.yaml`；外部 FlareSolverr 通过最小 override 合并，镜像内置 canonical compose 供旧部署迁移诊断展示。
+- Compose 默认启用 App / Worker / Postgres readiness 检查，CloakBrowser token 与本地绑定保持强制安全边界；反向代理仅在显式可信地址列表下启用。
+- 网页更新改为同一发布组验证与整组回滚，Token 仅保留哈希，运行核心保持冻结，数据库事件默认保留 14 天、业务日志默认保留 90 天。
+
 ### 2026-07-12 · v0.10.3
 
 - 修复归档 Worker 遗忘存活线程后重复扩容，以及任务先租约、后等待资源的问题；归档与源端刷新通过 FIFO 公平共享 MakerWorld 资源槽，避免并发超配和任务长期停在低进度。
@@ -280,13 +207,13 @@ uvicorn app.main:app --reload
 - 网页一键更新仍优先使用 Docker `AutoRemove` 删除临时 helper；新 App 启动后会延迟清理 DSM 遗留的已停止 `makerhub-self-update-*` 容器。
 - 兜底清理同时校验 helper 标签、标准名称和停止状态，并跳过仍在运行的更新容器。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-11 · v0.10.1
 
 - 修复指纹浏览器回收 Cookie 后等待 FlareSolverr 账号探针，导致设置页长期停在“浏览器同步中”的问题。
 - 浏览器与 MakerHub 的认证 token 一致时会直接保存 profile 和最终 Cookie，账号健康检测仍由后台任务继续执行。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-11 · v0.10.0
 

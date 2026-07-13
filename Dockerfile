@@ -63,6 +63,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN mkdir -p /app/config/config /app/config/logs /app/config/state /app/data /app/data/local
 
 COPY app ./app
+COPY compose.yaml ./compose.yaml
 COPY VERSION ./VERSION
 COPY docker/entrypoint.sh ./docker/entrypoint.sh
 COPY frontend/package.json ./frontend/package.json

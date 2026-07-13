@@ -77,6 +77,10 @@ class ReleaseWorkflowContractTest(unittest.TestCase):
         compose_run = _step(verify, "Validate Compose files")["run"]
         self.assertIn("compose.yaml", compose_run)
         self.assertIn("compose.external-flaresolverr.yaml", compose_run)
+        self.assertIn(
+            "docker compose -f compose.yaml -f compose.external-flaresolverr.yaml config --quiet",
+            compose_run,
+        )
         self.assertIn("scripts/check_release_version.py", _step(verify, "Check release version")["run"])
         self.assertEqual(_step(verify, "Build image")["with"]["push"], "false")
 
@@ -132,19 +136,123 @@ class ReleaseWorkflowContractTest(unittest.TestCase):
 class ReadmeCloakBrowserContractTest(unittest.TestCase):
     def test_readme_requires_token_and_documents_safe_manager_binding(self):
         readme = (ROOT_DIR / "README.md").read_text(encoding="utf-8")
+        compose = (ROOT_DIR / "compose.yaml").read_text(encoding="utf-8")
         required_token = (
             "${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:"
             "?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}"
         )
         local_bind = "${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:9050:8080"
 
-        self.assertGreaterEqual(readme.count(required_token), 3)
-        self.assertNotIn("${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:-}", readme)
-        self.assertIn(local_bind, readme)
+        self.assertGreaterEqual(compose.count(required_token), 3)
+        self.assertNotIn("${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:-}", compose)
+        self.assertIn(local_bind, compose)
         self.assertRegex(readme, r"MAKERHUB_CLOAKBROWSER_AUTH_TOKEN.{0,40}必填")
         self.assertIn("MAKERHUB_CLOAKBROWSER_BIND_ADDRESS=<LAN IP>", readme)
         self.assertIn("127.0.0.1", readme)
         self.assertIn("扩大攻击面", readme)
+
+
+class DeploymentComposeContractTest(unittest.TestCase):
+    def test_external_flaresolverr_file_is_a_minimal_override(self):
+        payload = yaml.safe_load(
+            (ROOT_DIR / "compose.external-flaresolverr.yaml").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(set(payload), {"services"})
+        services = payload["services"]
+        self.assertEqual(set(services), {"makerhub-app", "makerhub-worker", "flaresolverr"})
+        expected_url = "${MAKERHUB_FLARESOLVERR_URL:?set MAKERHUB_FLARESOLVERR_URL in .env}"
+        self.assertEqual(
+            services["makerhub-app"],
+            {"environment": {"MAKERHUB_FLARESOLVERR_URL": expected_url}},
+        )
+        self.assertEqual(
+            services["makerhub-worker"],
+            {"environment": {"MAKERHUB_FLARESOLVERR_URL": expected_url}},
+        )
+        self.assertEqual(services["flaresolverr"], {"profiles": ["bundled-flaresolverr"]})
+
+    def test_canonical_compose_keeps_security_and_readiness_contracts(self):
+        compose = yaml.safe_load((ROOT_DIR / "compose.yaml").read_text(encoding="utf-8"))
+        services = compose["services"]
+        required_token = (
+            "${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:"
+            "?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}"
+        )
+
+        for name in ("makerhub-app", "makerhub-worker", "makerhub-postgres"):
+            self.assertIn("healthcheck", services[name])
+        for name in ("makerhub-app", "makerhub-worker"):
+            self.assertEqual(
+                services[name]["depends_on"]["makerhub-postgres"]["condition"],
+                "service_healthy",
+            )
+            self.assertEqual(
+                services[name]["environment"]["MAKERHUB_CLOAKBROWSER_AUTH_TOKEN"],
+                required_token,
+            )
+        app_environment = services["makerhub-app"]["environment"]
+        self.assertIn("MAKERHUB_TRUSTED_PROXIES", app_environment)
+        self.assertEqual(app_environment["MAKERHUB_TRUSTED_PROXIES"], "${MAKERHUB_TRUSTED_PROXIES:-}")
+        self.assertEqual(
+            services["cloakbrowser"]["ports"],
+            ["${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:9050:8080"],
+        )
+
+    def test_dockerfile_packages_the_canonical_compose_for_update_diagnostics(self):
+        dockerfile = (ROOT_DIR / "Dockerfile").read_text(encoding="utf-8")
+
+        self.assertIn("COPY compose.yaml ./compose.yaml", dockerfile)
+
+
+class ReleaseDocumentationContractTest(unittest.TestCase):
+    def test_release_metadata_and_visible_readme_history_match_0_11_0(self):
+        version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
+        package = json.loads((ROOT_DIR / "frontend" / "package.json").read_text(encoding="utf-8"))
+        package_lock = json.loads(
+            (ROOT_DIR / "frontend" / "package-lock.json").read_text(encoding="utf-8")
+        )
+        readme = (ROOT_DIR / "README.md").read_text(encoding="utf-8")
+        changelog = (ROOT_DIR / "CHANGELOG.md").read_text(encoding="utf-8")
+        visible_history = readme.split("<details>", 1)[0]
+
+        self.assertEqual(version, "0.11.0")
+        self.assertEqual(package["version"], version)
+        self.assertEqual(package_lock["version"], version)
+        self.assertEqual(package_lock["packages"][""]["version"], version)
+        self.assertIn("> 当前版本：`v0.11.0`", readme)
+        self.assertIn("## 2026-07-13 · v0.11.0", changelog)
+        self.assertEqual(
+            [line.rsplit("v", 1)[-1] for line in visible_history.splitlines() if line.startswith("### 20")],
+            ["0.11.0", "0.10.3", "0.10.2"],
+        )
+
+    def test_operations_docs_cover_the_release_safety_contract(self):
+        documentation = "\n".join(
+            (ROOT_DIR / path).read_text(encoding="utf-8")
+            for path in (
+                "README.md",
+                "docs/modules/deployment_update.md",
+                "docs/modules/core.md",
+                "docs/modules/archive.md",
+            )
+        )
+
+        for expected in (
+            "MAKERHUB_ADMIN_PASSWORD",
+            "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN",
+            "MAKERHUB_POSTGRES_PASSWORD",
+            "MAKERHUB_TRUSTED_PROXIES",
+            "哈希",
+            "Runtime Engine",
+            "冻结",
+            "14 天",
+            "90 天",
+            "整组回滚",
+            "首次网页更新",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, documentation)
 
 
 class FrontendTestContractTest(unittest.TestCase):

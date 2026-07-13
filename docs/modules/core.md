@@ -92,6 +92,13 @@ Runtime diagnostics include database table summaries, state-event counts, recent
   - `/app/config/state`
   - `/app/config/logs`
 
+## 安全与保留
+
+- 管理员密码优先由 `MAKERHUB_ADMIN_PASSWORD` 提供；未配置时生成随机一次性密码到 owner-only bootstrap 文件，改密后删除。
+- API Token 和移动端 Token 只在创建时返回明文，运行期和 Postgres 只保留哈希；日志不得记录 token、Cookie 或密码。
+- 默认不信任代理转发头，只有 `MAKERHUB_TRUSTED_PROXIES` 显式列出受控代理地址时才开启。
+- 状态事件默认保留 14 天，业务日志默认保留 90 天；设置对应 retention 环境变量为 `0` 可关闭自动清理。
+
 ## 常用测试命令
 
 ```bash

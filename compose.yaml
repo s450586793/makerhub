@@ -18,6 +18,7 @@ services:
       MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
       MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
       MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
+      MAKERHUB_TRUSTED_PROXIES: ${MAKERHUB_TRUSTED_PROXIES:-}
     volumes:
       - /volume4/docker/docker/makerhub:/app/config
       - /volume2/entertainment/3D打印/makerhub:/app/data

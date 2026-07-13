@@ -146,9 +146,9 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
         self.assertIn("MAKERHUB_FLARESOLVERR_URL: ${MAKERHUB_FLARESOLVERR_URL", compose_text)
         self.assertNotIn("makerhub-flaresolverr", compose_text)
         self.assertNotIn("ghcr.io/flaresolverr/flaresolverr", compose_text)
-        self.assertIn("makerhub-postgres", compose_text)
-        self.assertIn("/volume4/docker/docker/makerhub:/app/config", compose_text)
-        self.assertIn("/app/data", compose_text)
+        self.assertNotIn("makerhub-postgres", compose_text)
+        self.assertNotIn("/volume4/docker/docker/makerhub:/app/config", compose_text)
+        self.assertNotIn("/app/data", compose_text)
 
     def test_compose_requires_cloakbrowser_token_and_binds_manager_locally(self):
         required_token = (
@@ -157,12 +157,21 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
         )
         local_bind = "${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:9050:8080"
 
-        for filename in ("compose.yaml", "compose.external-flaresolverr.yaml"):
-            with self.subTest(filename=filename):
-                compose_text = (ROOT_DIR / filename).read_text(encoding="utf-8")
-                self.assertGreaterEqual(compose_text.count(required_token), 3)
-                self.assertIn(local_bind, compose_text)
-                self.assertNotIn("${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:-}", compose_text)
+        compose_text = (ROOT_DIR / "compose.yaml").read_text(encoding="utf-8")
+        self.assertGreaterEqual(compose_text.count(required_token), 3)
+        self.assertIn(local_bind, compose_text)
+        self.assertNotIn("${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:-}", compose_text)
+
+    def test_compose_migration_example_reads_packaged_canonical_compose(self):
+        canonical = (ROOT_DIR / "compose.yaml").read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            packaged_path = Path(temp_dir) / "compose.yaml"
+            packaged_path.write_text(canonical, encoding="utf-8")
+            loader = getattr(self_update, "packaged_canonical_compose", None)
+            if not callable(loader):
+                self.fail("self_update must expose packaged_canonical_compose()")
+            with patch.object(self_update, "PACKAGED_CANONICAL_COMPOSE_PATH", packaged_path):
+                self.assertEqual(loader(), canonical)
 
     def test_web_update_target_uses_current_image_when_web_image_is_not_set(self):
         original_name = self_update.os.environ.get(self_update.WEB_CONTAINER_NAME_ENV)

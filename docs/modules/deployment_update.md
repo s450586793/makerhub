@@ -45,10 +45,13 @@
   - 更新状态存于 `makerhub_json_state:system_update`。
   - 数据库索引状态由 Core/归档索引模块维护。
 - Docker:
+  - `compose.yaml` 是唯一完整部署定义；`compose.external-flaresolverr.yaml` 只能与它合并使用，并且只覆盖外部 FlareSolverr 地址和禁用内置服务的 profile。
   - 默认 compose 不挂载 `/var/run/docker.sock`；只有用户显式 opt-in 后，设置页才可直接网页更新。
-  - `depends_on` 与 Postgres `healthcheck` 作为高级可选注释保留，默认不启用。
+  - App / Worker 依赖 Postgres 的 `service_healthy`，App、Worker、Postgres 都必须保留 healthcheck。
   - 默认目录布局为 `/app/config/{config,logs,state}` 与 `/app/data`，compose 只映射 `/app/config`、`/app/data` 和 Postgres 数据目录。
   - `makerhub-app` 和 `makerhub-worker` 应使用同一镜像版本。
+  - CloakBrowser token 必填且 Manager 默认绑定 `127.0.0.1`；仅在可信 LAN 下显式设置绑定地址和公共 URL。
+  - 只有明确设置 `MAKERHUB_TRUSTED_PROXIES` 时才信任反向代理头，拒绝宽泛公网网段。
 
 ## 常用测试命令
 
@@ -66,6 +69,8 @@ git diff --check
 
 - 旧单容器、缺少 Postgres 或仍使用旧分散目录挂载的部署不能被网页更新直接推到不可启动状态；必须提示需要改 compose。
 - 一键更新应先处理 worker，再处理 app，保证页面尽量可恢复。
+- 一键更新必须把 App / Worker 视为同一发布组：拉取、启动、HTTP/心跳验证任一环节失败时执行整组回滚，旧容器保留到成功提交后才删除。
+- 首次网页更新不能替代旧 compose 迁移：旧镜像没有内置 canonical compose，先手工替换 `compose.yaml` 并启动完整服务，再考虑网页更新。
 - 删除旧镜像必须异步/延迟，不能阻塞实例更新。
 - Docker socket 未挂载时要显示不可用原因，而不是按钮假装可用。
 - App/Worker 资源配置应通过少量清晰环境变量控制，不要制造过多难填配置。

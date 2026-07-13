@@ -1,84 +1,12 @@
 services:
   makerhub-app:
-    image: ghcr.io/s450586793/makerhub:latest
-    container_name: makerhub-app
-    ports:
-      - "9042:8000"
     environment:
-      MAKERHUB_ENTRYPOINT: app
-      MAKERHUB_PROCESS_ROLE: app
-      MAKERHUB_BACKGROUND_TASKS: "false"
-      MAKERHUB_WORKER_CONTAINER_NAME: makerhub-worker
-      MAKERHUB_WEB_WORKERS: "1"
-      MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
       MAKERHUB_FLARESOLVERR_URL: ${MAKERHUB_FLARESOLVERR_URL:?set MAKERHUB_FLARESOLVERR_URL in .env}
-      MAKERHUB_FLARESOLVERR_TIMEOUT: "90"
-      MAKERHUB_FLARESOLVERR_MAX_CONCURRENCY: "1"
-      MAKERHUB_CLOAKBROWSER_URL: http://cloakbrowser:8080
-      MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
-      MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
-      MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
-    volumes:
-      - /volume4/docker/docker/makerhub:/app/config
-      - /volume2/entertainment/3D打印/makerhub:/app/data
-      # 高风险可选：只有明确需要网页一键更新时再挂载 Docker socket。
-      # - /var/run/docker.sock:/var/run/docker.sock
-    # 高级可选：如果希望 App 等 Postgres 健康后再启动，取消下面三行注释，并同时打开 Postgres 的 healthcheck。
-    # depends_on:
-    #   makerhub-postgres:
-    #     condition: service_healthy
-    restart: unless-stopped
 
   makerhub-worker:
-    image: ghcr.io/s450586793/makerhub:latest
-    container_name: makerhub-worker
     environment:
-      MAKERHUB_ENTRYPOINT: worker
-      MAKERHUB_PROCESS_ROLE: worker
-      MAKERHUB_BACKGROUND_TASKS: "true"
-      MAKERHUB_WORKER_CONCURRENCY: "2"
-      MAKERHUB_HEAVY_JOB_NICE: "10"
-      MAKERHUB_DATABASE_URL: postgresql://makerhub:${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}@makerhub-postgres:5432/makerhub
       MAKERHUB_FLARESOLVERR_URL: ${MAKERHUB_FLARESOLVERR_URL:?set MAKERHUB_FLARESOLVERR_URL in .env}
-      MAKERHUB_FLARESOLVERR_TIMEOUT: "90"
-      MAKERHUB_FLARESOLVERR_MAX_CONCURRENCY: "1"
-      MAKERHUB_CLOAKBROWSER_URL: http://cloakbrowser:8080
-      MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
-      MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
-      MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
-    volumes:
-      - /volume4/docker/docker/makerhub:/app/config
-      - /volume2/entertainment/3D打印/makerhub:/app/data
-    # 高级可选：如果希望 Worker 等 Postgres 健康后再启动，取消下面三行注释，并同时打开 Postgres 的 healthcheck。
-    # depends_on:
-    #   makerhub-postgres:
-    #     condition: service_healthy
-    restart: unless-stopped
 
-  makerhub-postgres:
-    image: postgres:16-alpine
-    container_name: makerhub-postgres
-    environment:
-      POSTGRES_DB: makerhub
-      POSTGRES_USER: makerhub
-      POSTGRES_PASSWORD: ${MAKERHUB_POSTGRES_PASSWORD:?set MAKERHUB_POSTGRES_PASSWORD in .env}
-    volumes:
-      - /volume4/docker/docker/makerhub/postgres:/var/lib/postgresql/data
-    # 高级可选：需要配合上面的 depends_on 使用时再打开。
-    # healthcheck:
-    #   test: ["CMD-SHELL", "pg_isready -U makerhub -d makerhub"]
-    #   interval: 10s
-    #   timeout: 5s
-    #   retries: 10
-    restart: unless-stopped
-
-  cloakbrowser:
-    image: ${MAKERHUB_CLOAKBROWSER_IMAGE:-cloakhq/cloakbrowser-manager@sha256:44836e982192e8fedb28617f2d39192bdef91f8dd62cf36c522c96d7d8e15914}
-    container_name: makerhub-cloakbrowser
-    ports:
-      - "${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:9050:8080"
-    environment:
-      AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
-    volumes:
-      - /volume4/docker/docker/makerhub/cloakbrowser:/data
-    restart: unless-stopped
+  flaresolverr:
+    profiles:
+      - bundled-flaresolverr
