@@ -115,6 +115,44 @@ class AccountHealthServiceTest(unittest.TestCase):
         self.assertEqual(snapshot["instance_id"], "inst-ok")
         self.assertEqual(snapshot["updated_at"], "2026-06-12T10:00:00+08:00")
 
+    def test_operational_status_prefers_three_mf_gate_over_account_probe(self):
+        payload = account_health.operational_status_payload(
+            "cn",
+            {"status": "ok", "three_mf_gate": "cookie_invalid"},
+        )
+
+        self.assertEqual(
+            payload,
+            {
+                "state": "cookie_invalid",
+                "label": "需要重新登录",
+                "tone": "danger",
+                "message": "国内站 3MF 下载需要重新登录。",
+                "action": "login",
+            },
+        )
+
+    def test_operational_status_maps_recovery_actions(self):
+        cases = [
+            ("verification_required", "需要浏览器确认", "warning", "browser"),
+            ("daily_limit", "今日下载受限", "warning", "none"),
+            ("network_error", "状态待确认", "warning", "test"),
+            ("unknown", "状态待确认", "neutral", "test"),
+            ("ok", "可归档", "ok", "none"),
+        ]
+
+        for status, label, tone, action in cases:
+            with self.subTest(status=status):
+                payload = account_health.operational_status_payload(
+                    "global",
+                    {"status": status, "three_mf_gate": "open"},
+                )
+
+                self.assertEqual(payload["state"], status)
+                self.assertEqual(payload["label"], label)
+                self.assertEqual(payload["tone"], tone)
+                self.assertEqual(payload["action"], action)
+
     def test_snapshot_to_source_card_returns_ok_card(self):
         card = account_health.snapshot_to_source_card(
             "cn",
@@ -127,7 +165,7 @@ class AccountHealthServiceTest(unittest.TestCase):
         )
 
         self.assertEqual(card["state"], "ok")
-        self.assertEqual(card["status"], "正常")
+        self.assertEqual(card["status"], "可归档")
         self.assertEqual(card["tone"], "ok")
         self.assertEqual(card["action_label"], "打开官网")
         self.assertEqual(card["url"], "https://makerworld.com.cn")
@@ -147,18 +185,18 @@ class AccountHealthServiceTest(unittest.TestCase):
         )
 
         self.assertEqual(card["state"], "verification_required")
-        self.assertEqual(card["status"], "需要验证")
-        self.assertEqual(card["detail"], "国际站需要完成 Cloudflare 验证。")
+        self.assertEqual(card["status"], "需要浏览器确认")
+        self.assertEqual(card["detail"], "国际站需要在浏览器完成验证后继续归档。")
         self.assertEqual(card["action_label"], "打开官网")
         self.assertEqual(card["url"], "https://makerworld.com")
         self.assertNotIn("actions", card)
 
     def test_snapshot_to_source_card_uses_planned_status_copy(self):
         cases = [
-            ("daily_limit", "到达每日上限", "warning"),
-            ("cookie_invalid", "Cookie 异常", "danger"),
-            ("network_error", "网络异常", "warning"),
-            ("unknown", "未检测", "neutral"),
+            ("daily_limit", "今日下载受限", "warning"),
+            ("cookie_invalid", "需要重新登录", "danger"),
+            ("network_error", "状态待确认", "warning"),
+            ("unknown", "状态待确认", "neutral"),
         ]
 
         for status, label, tone in cases:
@@ -198,7 +236,7 @@ class AccountHealthServiceTest(unittest.TestCase):
 
         card = account_health.snapshot_to_source_card("cn", snapshot)
         self.assertEqual(card["state"], "cookie_invalid")
-        self.assertEqual(card["status"], "Cookie 异常")
+        self.assertEqual(card["status"], "需要重新登录")
         self.assertEqual(card["three_mf_gate"], "cookie_invalid")
         self.assertEqual(card["account_status"], "ok")
 

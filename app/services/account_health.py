@@ -41,21 +41,13 @@ ACCOUNT_HEALTH_STATUS_ALIASES = {
     "missing_cookie": "cookie_invalid",
     "http_error": "network_error",
 }
-ACCOUNT_HEALTH_CARD_META = {
-    "ok": {"state": "ok", "status": "正常", "tone": "ok"},
-    "verification_required": {"state": "verification_required", "status": "需要验证", "tone": "danger"},
-    "daily_limit": {"state": "daily_limit", "status": "到达每日上限", "tone": "warning"},
-    "cookie_invalid": {"state": "cookie_invalid", "status": "Cookie 异常", "tone": "danger"},
-    "network_error": {"state": "network_error", "status": "网络异常", "tone": "warning"},
-    "unknown": {"state": "unknown", "status": "未检测", "tone": "neutral"},
-}
-THREE_MF_GATE_CARD_META = {
-    "open": ACCOUNT_HEALTH_CARD_META["ok"],
-    "daily_limit": ACCOUNT_HEALTH_CARD_META["daily_limit"],
-    "verification_required": ACCOUNT_HEALTH_CARD_META["verification_required"],
-    "cookie_invalid": ACCOUNT_HEALTH_CARD_META["cookie_invalid"],
-    "network_error": ACCOUNT_HEALTH_CARD_META["network_error"],
-    "unknown": ACCOUNT_HEALTH_CARD_META["unknown"],
+OPERATIONAL_STATUS_META = {
+    "ok": {"label": "可归档", "tone": "ok", "action": "none"},
+    "verification_required": {"label": "需要浏览器确认", "tone": "warning", "action": "browser"},
+    "daily_limit": {"label": "今日下载受限", "tone": "warning", "action": "none"},
+    "cookie_invalid": {"label": "需要重新登录", "tone": "danger", "action": "login"},
+    "network_error": {"label": "状态待确认", "tone": "warning", "action": "test"},
+    "unknown": {"label": "状态待确认", "tone": "neutral", "action": "test"},
 }
 
 
@@ -278,20 +270,40 @@ def mark_account_ok(
     return dict(payload[normalized_platform])
 
 
+def operational_status_payload(platform: Any, snapshot: dict[str, Any] | None = None) -> dict[str, str]:
+    normalized_platform = normalize_account_platform(platform)
+    source = snapshot if snapshot is not None else get_account_health(normalized_platform)
+    current = _normalize_snapshot(normalized_platform, source)
+    state = current["three_mf_gate"] if current["three_mf_gate"] != "open" else current["status"]
+    meta = OPERATIONAL_STATUS_META.get(state, OPERATIONAL_STATUS_META["unknown"])
+    title = PLATFORM_TITLES[normalized_platform]
+    messages = {
+        "ok": f"{title} 3MF 下载可用。",
+        "cookie_invalid": f"{title} 3MF 下载需要重新登录。",
+        "verification_required": f"{title}需要在浏览器完成验证后继续归档。",
+        "daily_limit": f"{title}今日下载受限。",
+    }
+    return {
+        "state": state,
+        "label": str(meta["label"]),
+        "tone": str(meta["tone"]),
+        "message": messages.get(state, f"{title}下载状态待确认，请测试。"),
+        "action": str(meta["action"]),
+    }
+
+
 def snapshot_to_source_card(platform: Any, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
     normalized_platform = normalize_account_platform(platform)
     current = _normalize_snapshot(normalized_platform, snapshot or get_account_health(normalized_platform))
-    gate = current["three_mf_gate"]
-    card_state = gate if gate != "open" else current["status"]
-    meta = THREE_MF_GATE_CARD_META.get(card_state, ACCOUNT_HEALTH_CARD_META.get(current["status"], ACCOUNT_HEALTH_CARD_META["unknown"]))
+    operational = operational_status_payload(normalized_platform, current)
     platform_url = PLATFORM_URLS.get(normalized_platform, "")
     card = {
         "key": normalized_platform,
         "title": PLATFORM_TITLES.get(normalized_platform, normalized_platform),
-        "status": meta["status"],
-        "detail": current["three_mf_detail"] or current["detail"],
-        "tone": meta["tone"],
-        "state": meta["state"],
+        "status": operational["label"],
+        "detail": operational["message"],
+        "tone": operational["tone"],
+        "state": operational["state"],
         "account_status": current["status"],
         "three_mf_gate": current["three_mf_gate"],
         "three_mf_reason": current["three_mf_reason"],
