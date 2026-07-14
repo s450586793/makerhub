@@ -1325,6 +1325,45 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
         self.assertEqual(inspect["State"]["Health"]["Status"], "healthy")
         self.assertGreater(client.inspect_calls, self_update.STARTUP_WAIT_TIMEOUT_SECONDS)
 
+    def test_worker_readiness_waits_for_candidate_heartbeat_after_container_is_running(self):
+        role = {
+            "role": "worker",
+            "container_name": "makerhub-worker",
+            "candidate_container_id": "worker-candidate",
+            "worker_start_token": "candidate-token",
+        }
+        heartbeat_results = [
+            {"ready": False, "reason": "start_token_mismatch"},
+            {"ready": False, "reason": "start_token_mismatch"},
+            {"ready": True, "reason": ""},
+        ]
+
+        with patch.object(
+            self_update,
+            "_wait_for_replacement_container",
+            return_value={
+                "Id": "worker-candidate",
+                "Name": "/makerhub-worker",
+                "Config": {},
+                "State": {"Running": True, "Status": "running"},
+            },
+        ), patch.object(
+            self_update,
+            "worker_heartbeat_readiness",
+            side_effect=heartbeat_results,
+        ) as readiness, patch.object(self_update.time, "sleep"):
+            self_update._verify_release_role(
+                object(),
+                role,
+                target_version="0.11.5",
+            )
+
+        self.assertEqual(readiness.call_count, 3)
+        readiness.assert_called_with(
+            expected_start_token="candidate-token",
+            expected_version="0.11.5",
+        )
+
     def test_update_helper_succeeds_when_post_commit_backup_cleanup_fails(self):
         names = {"app-old": "makerhub-app"}
         running = {"app-old": True}

@@ -1856,6 +1856,26 @@ def _probe_http_readiness(
     raise RuntimeError(f"HTTP readiness 未通过：{last_error or '无响应'}")
 
 
+def _probe_worker_readiness(
+    *,
+    expected_start_token: str,
+    expected_version: str = "",
+    timeout_seconds: int = STARTUP_WAIT_TIMEOUT_SECONDS,
+) -> None:
+    deadline = time.monotonic() + max(int(timeout_seconds or 0), 1)
+    last_reason = "unknown"
+    while time.monotonic() < deadline:
+        readiness = worker_heartbeat_readiness(
+            expected_start_token=expected_start_token,
+            expected_version=expected_version or None,
+        )
+        if readiness.get("ready"):
+            return
+        last_reason = str(readiness.get("reason") or "unknown")
+        time.sleep(0.5)
+    raise RuntimeError(f"Worker heartbeat 未就绪：{last_reason}")
+
+
 def _verify_release_role(
     client: DockerSocketClient,
     role: dict[str, Any],
@@ -1867,12 +1887,14 @@ def _verify_release_role(
     _assert_container_name(inspect, str(role.get("container_name") or ""))
     role_name = str(role.get("role") or "")
     if role_name == "worker":
-        readiness = worker_heartbeat_readiness(
+        _probe_worker_readiness(
             expected_start_token=str(role.get("worker_start_token") or ""),
-            expected_version=target_version or None,
+            expected_version=target_version,
+            timeout_seconds=_replacement_startup_timeout_seconds(
+                inspect,
+                fallback_timeout_seconds=STARTUP_WAIT_TIMEOUT_SECONDS,
+            ),
         )
-        if not readiness.get("ready"):
-            raise RuntimeError(f"Worker heartbeat 未就绪：{readiness.get('reason') or 'unknown'}")
         return
     _probe_http_readiness(
         str(role.get("container_name") or ""),
