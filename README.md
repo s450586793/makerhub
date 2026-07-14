@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.11.6`
+> 当前版本：`v0.11.7`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -190,6 +190,10 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-15 · v0.11.7
+
+- 修复重新登录与指纹浏览器 Cookie 回写并发时，最新账号补测被去重丢弃、旧“需要重新登录”状态长期残留的问题。
+
 ### 2026-07-15 · v0.11.6
 
 - 网页更新会等待候选 Worker 写入匹配的启动 heartbeat，不再因初始化期间短暂读到旧 token 而错误回滚。
@@ -199,12 +203,12 @@ uvicorn app.main:app --reload
 - 线上账号和首页统一按 `3MF` 归档可用性显示状态；Cookie 失效明确提示重新登录，验证拦截提示浏览器确认，不再被来源同步成功覆盖。
 - 可归档账号不再显示“浏览器未关联”，浏览器恢复入口只在需要验证或浏览器会话处理中出现。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-13 · v0.11.4
 
 - GHCR 版本 tag 预检查无法确定结果时不再中止发布；仅确认 tag 已存在才拒绝，随后由正式镜像推送完成鉴权和发布。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-13 · v0.11.3
 

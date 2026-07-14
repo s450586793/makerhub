@@ -658,12 +658,92 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
                     patch.object(config_api.task_state_store, "load_remote_refresh_state", return_value={}), \
                     patch.object(config_api, "append_business_log"):
                 config_api.ONLINE_ACCOUNT_TEST_RUNNING.clear()
+                config_api.ONLINE_ACCOUNT_TEST_PENDING.clear()
+                config_api.ONLINE_ACCOUNT_TEST_ACTIVE_COOKIE.clear()
                 await config_api.test_config_online_account("cn", request)
                 await config_api.test_config_online_account("cn", request)
                 config_api.ONLINE_ACCOUNT_TEST_RUNNING.clear()
+                config_api.ONLINE_ACCOUNT_TEST_PENDING.clear()
+                config_api.ONLINE_ACCOUNT_TEST_ACTIVE_COOKIE.clear()
 
             self.assertEqual(thread_mock.call_count, 1)
             thread_mock.return_value.start.assert_called_once()
+
+    async def test_online_account_test_rechecks_latest_cookie_after_running_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            old_target = CookiePair(platform="cn", cookie="token=old", username="13800138000")
+            new_target = CookiePair(platform="cn", cookie="token=new", username="13800138000")
+            deferred_threads = []
+
+            class DeferredThread:
+                def __init__(self, *, target, **_kwargs):
+                    self.target = target
+
+                def start(self):
+                    return None
+
+            def create_thread(*_args, **kwargs):
+                thread = DeferredThread(**kwargs)
+                deferred_threads.append(thread)
+                return thread
+
+            with patch.object(config_api.threading, "Thread", side_effect=create_thread), \
+                    patch.object(config_api, "_run_and_store_online_account_cookie_test", return_value={}) as run_test, \
+                    patch.object(config_api, "publish_state_event"):
+                config_api.ONLINE_ACCOUNT_TEST_RUNNING.clear()
+                config_api.ONLINE_ACCOUNT_TEST_PENDING.clear()
+                config_api.ONLINE_ACCOUNT_TEST_ACTIVE_COOKIE.clear()
+                config_api._schedule_online_account_cookie_test("cn", old_target, config.proxy)
+                config_api._schedule_online_account_cookie_test("cn", new_target, config.proxy)
+
+                self.assertEqual(len(deferred_threads), 1)
+                deferred_threads[0].target()
+                config_api.ONLINE_ACCOUNT_TEST_RUNNING.clear()
+                config_api.ONLINE_ACCOUNT_TEST_PENDING.clear()
+                config_api.ONLINE_ACCOUNT_TEST_ACTIVE_COOKIE.clear()
+
+            self.assertEqual(
+                [call.args[1].cookie for call in run_test.call_args_list],
+                ["token=old", "token=new"],
+            )
+
+    async def test_online_account_test_does_not_recheck_unchanged_cookie(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            target = CookiePair(platform="cn", cookie="token=same", username="13800138000")
+            deferred_threads = []
+
+            class DeferredThread:
+                def __init__(self, *, target, **_kwargs):
+                    self.target = target
+
+                def start(self):
+                    return None
+
+            def create_thread(*_args, **kwargs):
+                thread = DeferredThread(**kwargs)
+                deferred_threads.append(thread)
+                return thread
+
+            with patch.object(config_api.threading, "Thread", side_effect=create_thread), \
+                    patch.object(config_api, "_run_and_store_online_account_cookie_test", return_value={}) as run_test, \
+                    patch.object(config_api, "publish_state_event"):
+                config_api.ONLINE_ACCOUNT_TEST_RUNNING.clear()
+                config_api.ONLINE_ACCOUNT_TEST_PENDING.clear()
+                config_api.ONLINE_ACCOUNT_TEST_ACTIVE_COOKIE.clear()
+                config_api._schedule_online_account_cookie_test("cn", target, config.proxy)
+                config_api._schedule_online_account_cookie_test("cn", target, config.proxy)
+
+                self.assertEqual(len(deferred_threads), 1)
+                deferred_threads[0].target()
+                config_api.ONLINE_ACCOUNT_TEST_RUNNING.clear()
+                config_api.ONLINE_ACCOUNT_TEST_PENDING.clear()
+                config_api.ONLINE_ACCOUNT_TEST_ACTIVE_COOKIE.clear()
+
+            self.assertEqual(run_test.call_count, 1)
 
 class OnlineAccountServiceTest(unittest.TestCase):
     def _response(self, status_code=200, payload=None, text=None, headers=None):

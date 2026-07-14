@@ -142,6 +142,8 @@ from app.services.legacy_archiver import sanitize_filename
 router = APIRouter(prefix="/api")
 ONLINE_ACCOUNT_TEST_LOCK = threading.Lock()
 ONLINE_ACCOUNT_TEST_RUNNING: set[str] = set()
+ONLINE_ACCOUNT_TEST_PENDING: dict[str, tuple[CookiePair, ProxyConfig]] = {}
+ONLINE_ACCOUNT_TEST_ACTIVE_COOKIE: dict[str, str] = {}
 CLOAKBROWSER_SYNC_LOCK = threading.Lock()
 CLOAKBROWSER_SYNC_RUNNING: set[str] = set()
 CLOAKBROWSER_MONITOR_LOCK = threading.Lock()
@@ -2330,28 +2332,49 @@ def _run_and_store_online_account_cookie_test(platform: str, target: CookiePair,
 
 
 def _schedule_online_account_cookie_test(platform: str, target: CookiePair, proxy_config: ProxyConfig) -> None:
-    with ONLINE_ACCOUNT_TEST_LOCK:
-        if platform in ONLINE_ACCOUNT_TEST_RUNNING:
-            return
-        ONLINE_ACCOUNT_TEST_RUNNING.add(platform)
     snapshot = target.model_copy(deep=True)
     proxy_snapshot = proxy_config.model_copy(deep=True) if hasattr(proxy_config, "model_copy") else copy.deepcopy(proxy_config)
+    cookie_snapshot = sanitize_cookie_header(snapshot.cookie)
+    with ONLINE_ACCOUNT_TEST_LOCK:
+        if platform in ONLINE_ACCOUNT_TEST_RUNNING:
+            pending = ONLINE_ACCOUNT_TEST_PENDING.get(platform)
+            pending_cookie = sanitize_cookie_header(pending[0].cookie) if pending else ""
+            active_cookie = str(ONLINE_ACCOUNT_TEST_ACTIVE_COOKIE.get(platform) or "")
+            if cookie_snapshot == (pending_cookie or active_cookie):
+                return
+            ONLINE_ACCOUNT_TEST_PENDING[platform] = (snapshot, proxy_snapshot)
+            return
+        ONLINE_ACCOUNT_TEST_RUNNING.add(platform)
+        ONLINE_ACCOUNT_TEST_PENDING.pop(platform, None)
+        ONLINE_ACCOUNT_TEST_ACTIVE_COOKIE[platform] = cookie_snapshot
 
     def _worker() -> None:
-        try:
-            _run_and_store_online_account_cookie_test(platform, snapshot, proxy_snapshot)
-            publish_state_event("dashboard", "state.changed", {"reason": "online_account_test_completed", "platform": platform})
-        except Exception as exc:
-            append_business_log(
-                "settings",
-                "online_account_test_failed",
-                f"线上账号后台测试失败：{exc}",
-                level="warning",
-                platform=platform,
-            )
-        finally:
+        current_target = snapshot
+        current_proxy = proxy_snapshot
+        while True:
+            try:
+                _run_and_store_online_account_cookie_test(platform, current_target, current_proxy)
+                publish_state_event(
+                    "dashboard",
+                    "state.changed",
+                    {"reason": "online_account_test_completed", "platform": platform},
+                )
+            except Exception as exc:
+                append_business_log(
+                    "settings",
+                    "online_account_test_failed",
+                    f"线上账号后台测试失败：{exc}",
+                    level="warning",
+                    platform=platform,
+                )
             with ONLINE_ACCOUNT_TEST_LOCK:
-                ONLINE_ACCOUNT_TEST_RUNNING.discard(platform)
+                pending = ONLINE_ACCOUNT_TEST_PENDING.pop(platform, None)
+                if pending is None:
+                    ONLINE_ACCOUNT_TEST_RUNNING.discard(platform)
+                    ONLINE_ACCOUNT_TEST_ACTIVE_COOKIE.pop(platform, None)
+                    return
+                current_target, current_proxy = pending
+                ONLINE_ACCOUNT_TEST_ACTIVE_COOKIE[platform] = sanitize_cookie_header(current_target.cookie)
 
     thread = threading.Thread(
         target=_worker,
