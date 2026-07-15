@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.11.9`
+> 当前版本：`v0.11.10`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -190,6 +190,10 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-15 · v0.11.10
+
+- `3MF` 下载同时遇到登录态失效和网页验证时，优先提示“需要浏览器确认”，不再一律误导为重新登录；完成网站验证后可继续归档。
+
 ### 2026-07-15 · v0.11.9
 
 - 修复新启动的 App / Worker 在系统 monotonic 时钟不足 10 分钟时，错误跳过首次归档队列维护的问题；验证暂停任务、重复任务修复和运行中任务心跳都会正常执行。
@@ -200,12 +204,12 @@ uvicorn app.main:app --reload
 - Worker 改为轻量轮询大归档队列，并对被账号 gate 阻塞的队列退避，避免反复拉起空任务线程占满 CPU 和内存。
 - 停用源端刷新后不再恢复旧批次；Worker 健康检查不再加载完整归档模块，心跳状态更稳定。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-15 · v0.11.7
 
 - 修复重新登录与指纹浏览器 Cookie 回写并发时，最新账号补测被去重丢弃、旧“需要重新登录”状态长期残留的问题。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-15 · v0.11.6
 

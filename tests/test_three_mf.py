@@ -8,7 +8,7 @@ from app.services.three_mf import (
 
 
 class ThreeMfFailureTest(unittest.TestCase):
-    def test_auth_required_wins_over_generic_verification_when_merging_failures(self):
+    def test_verification_required_wins_over_auth_required_when_merging_failures(self):
         merged = merge_three_mf_failure(
             {
                 "state": "auth_required",
@@ -20,7 +20,7 @@ class ThreeMfFailureTest(unittest.TestCase):
             },
         )
 
-        self.assertEqual(merged["state"], "auth_required")
+        self.assertEqual(merged["state"], "verification_required")
 
     def test_auth_required_message_is_not_reclassified_as_verification(self):
         message = describe_three_mf_failure("auth_required", source="global")

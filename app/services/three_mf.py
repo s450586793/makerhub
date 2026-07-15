@@ -17,10 +17,10 @@ _HASH_CHUNK_SIZE_BYTES = 512 * 1024
 _HASH_PAUSE_EVERY_BYTES = 4 * 1024 * 1024
 _THREE_MF_FAILURE_PRIORITY = {
     "download_limited": 60,
-    "cookie_invalid": 55,
-    "auth_required": 55,
-    "verification_required": 50,
-    "cloudflare": 45,
+    "verification_required": 55,
+    "cloudflare": 55,
+    "cookie_invalid": 50,
+    "auth_required": 50,
     "http_error": 30,
     "not_found": 20,
     "missing": 10,
