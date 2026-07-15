@@ -357,6 +357,21 @@ def snapshot_to_source_card(platform: Any, snapshot: dict[str, Any] | None = Non
         "reason": current["reason"],
         "source": current["source"],
     }
+    if operational["state"] == "verification_required":
+        card["actions"] = [
+            {
+                "kind": "external",
+                "label": "打开官网",
+                "href": platform_url,
+            },
+            {
+                "kind": "api",
+                "label": "已验证",
+                "endpoint": "/api/tasks/missing-3mf/verification-verified",
+                "method": "POST",
+                "body": {"platform": normalized_platform},
+            },
+        ]
     return card
 
 

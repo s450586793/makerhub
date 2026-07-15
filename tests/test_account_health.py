@@ -193,7 +193,7 @@ class AccountHealthServiceTest(unittest.TestCase):
         self.assertEqual(card["url"], "https://makerworld.com.cn")
         self.assertNotIn("actions", card)
 
-    def test_snapshot_to_source_card_keeps_verification_status_without_manual_actions(self):
+    def test_snapshot_to_source_card_exposes_verified_retry_actions(self):
         card = account_health.snapshot_to_source_card(
             "global",
             {
@@ -211,7 +211,29 @@ class AccountHealthServiceTest(unittest.TestCase):
         self.assertEqual(card["detail"], "国际站需要在浏览器完成验证后继续归档。")
         self.assertEqual(card["action_label"], "打开官网")
         self.assertEqual(card["url"], "https://makerworld.com")
-        self.assertNotIn("actions", card)
+        self.assertEqual(card["actions"], [
+            {
+                "kind": "external",
+                "label": "打开官网",
+                "href": "https://makerworld.com",
+            },
+            {
+                "kind": "api",
+                "label": "已验证",
+                "endpoint": "/api/tasks/missing-3mf/verification-verified",
+                "method": "POST",
+                "body": {"platform": "global"},
+            },
+        ])
+
+    def test_snapshot_to_source_card_uses_cn_platform_for_verified_retry(self):
+        card = account_health.snapshot_to_source_card(
+            "cn",
+            {"platform": "cn", "status": "verification_required"},
+        )
+
+        self.assertEqual(card["actions"][0]["href"], "https://makerworld.com.cn")
+        self.assertEqual(card["actions"][1]["body"], {"platform": "cn"})
 
     def test_snapshot_to_source_card_uses_planned_status_copy(self):
         cases = [
@@ -238,6 +260,21 @@ class AccountHealthServiceTest(unittest.TestCase):
                 self.assertEqual(card["status"], label)
                 self.assertEqual(card["tone"], tone)
                 self.assertEqual(card["url"], "https://makerworld.com")
+                self.assertNotIn("actions", card)
+
+    def test_snapshot_to_source_card_does_not_expose_actions_while_checking(self):
+        card = account_health.snapshot_to_source_card(
+            "global",
+            {
+                "platform": "global",
+                "status": "ok",
+                "three_mf_gate": "unknown",
+                "three_mf_reason": "cookie_updated",
+            },
+        )
+
+        self.assertEqual(card["state"], "checking")
+        self.assertNotIn("actions", card)
 
     def test_update_three_mf_gate_preserves_account_status_and_updates_card(self):
         with patch.object(account_health, "china_now_iso", return_value="2026-06-23T16:40:00+08:00"):
