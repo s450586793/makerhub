@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.11.12`
+> 当前版本：`v0.11.13`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -190,6 +190,10 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-16 · v0.11.13
+
+- 首页在“需要浏览器确认”时提供“已验证”操作；完成官网验证后可立即恢复同平台受验证阻塞的 `3MF` 归档任务。
+
 ### 2026-07-16 · v0.11.12
 
 - 网页更新失败后，未启动完成的 `makerhub-self-update-*` helper 容器也会自动回收，不再长期残留为 `Created` 状态。
@@ -198,12 +202,12 @@ uvicorn app.main:app --reload
 
 - 重新登录、指纹浏览器回写或手动保存新 Cookie 后，旧的 `3MF` 阻断状态会立即变为“检测中”，并保证最终 Cookie 继续接受后台检测，不再沿用旧的“需要重新登录”。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-15 · v0.11.10
 
 - `3MF` 下载同时遇到登录态失效和网页验证时，优先提示“需要浏览器确认”，不再一律误导为重新登录；完成网站验证后可继续归档。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-15 · v0.11.9
 
