@@ -120,6 +120,7 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
                     patch.object(config_api.subscription_manager, "request_cookie_source_sync") as source_mock, \
                     patch.object(config_api, "_retry_verification_missing_3mf_for_platforms") as three_mf_mock, \
                     patch.object(config_api, "_schedule_online_account_cookie_test") as test_mock, \
+                    patch.object(config_api, "_mark_online_account_checking") as checking_mock, \
                     patch.object(config_api, "append_business_log"), \
                     patch.object(config_api, "publish_state_event"):
                 saved, applied = config_api._store_browser_session_result("cn", target, result, config.proxy)
@@ -133,6 +134,7 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             source_mock.assert_called_once_with({"cn"}, reason="cloakbrowser_sync")
             three_mf_mock.assert_called_once_with({"cn"})
             test_mock.assert_called_once()
+            checking_mock.assert_called_once_with("cn", source="cloakbrowser_sync")
 
     async def test_store_browser_session_skips_network_identity_probe_when_auth_token_is_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -270,10 +270,53 @@ def mark_account_ok(
     return dict(payload[normalized_platform])
 
 
+def mark_account_checking(
+    platform: Any,
+    *,
+    source: Any = "cookie_updated",
+    detail: Any = "登录态已更新，正在检测 3MF 下载权限。",
+    updated_at: Any = "",
+) -> dict[str, Any]:
+    normalized_platform = normalize_account_platform(platform)
+    payload = load_account_health()
+    current = dict(payload.get(normalized_platform) or _empty_snapshot(normalized_platform))
+    current.update(
+        {
+            "platform": normalized_platform,
+            "status": "unknown",
+            "reason": "cookie_updated",
+            "source": source,
+            "detail": detail,
+            "model_url": "",
+            "model_id": "",
+            "instance_id": "",
+            "three_mf_gate": "unknown",
+            "three_mf_reason": "cookie_updated",
+            "three_mf_detail": detail,
+            "updated_at": updated_at,
+        }
+    )
+    payload[normalized_platform] = _normalize_snapshot(
+        normalized_platform,
+        current,
+        fill_updated_at=True,
+    )
+    save_account_health(payload)
+    return dict(payload[normalized_platform])
+
+
 def operational_status_payload(platform: Any, snapshot: dict[str, Any] | None = None) -> dict[str, str]:
     normalized_platform = normalize_account_platform(platform)
     source = snapshot if snapshot is not None else get_account_health(normalized_platform)
     current = _normalize_snapshot(normalized_platform, source)
+    if current["three_mf_gate"] == "unknown" and current["three_mf_reason"] == "cookie_updated":
+        return {
+            "state": "checking",
+            "label": "检测中",
+            "tone": "warning",
+            "message": current["three_mf_detail"] or "登录态已更新，正在检测 3MF 下载权限。",
+            "action": "none",
+        }
     state = current["three_mf_gate"] if current["three_mf_gate"] != "open" else current["status"]
     meta = OPERATIONAL_STATUS_META.get(state, OPERATIONAL_STATUS_META["unknown"])
     title = PLATFORM_TITLES[normalized_platform]

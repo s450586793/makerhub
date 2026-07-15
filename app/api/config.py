@@ -116,6 +116,7 @@ from app.services.subscriptions import cookie_source_inventory_payload, cookie_s
 from app.services.source_health import probe_cookie_auth_status
 from app.services.account_health import (
     load_account_health,
+    mark_account_checking,
     mark_account_ok,
     operational_status_payload,
     update_three_mf_gate,
@@ -2280,6 +2281,13 @@ def _checking_online_account_test_result(platform: str) -> dict:
     }
 
 
+def _mark_online_account_checking(platform: str, *, source: str) -> None:
+    try:
+        mark_account_checking(platform, source=source)
+    except DatabaseUnavailable:
+        return
+
+
 def _run_and_store_online_account_cookie_test(platform: str, target: CookiePair, proxy_config: ProxyConfig) -> dict:
     result = _run_online_account_cookie_test(
         CookieTestRequest(platform=platform, cookie=target.cookie, proxy=proxy_config)
@@ -2302,6 +2310,7 @@ def _run_and_store_online_account_cookie_test(platform: str, target: CookiePair,
             "线上账号后台测试结果已过期，跳过写回。",
             platform=platform,
         )
+        _schedule_online_account_cookie_test(platform, current_target, config.proxy)
         return {
             "test_result": result,
             "stale": True,
@@ -2547,6 +2556,7 @@ def _store_browser_session_result(
     saved = store.save(config)
 
     if changed:
+        _mark_online_account_checking(platform, source="cloakbrowser_sync")
         subscription_manager.retry_error_subscriptions_for_platforms({platform})
         subscription_manager.request_cookie_source_sync({platform}, reason="cloakbrowser_sync")
         _retry_verification_missing_3mf_for_platforms({platform})
@@ -3413,6 +3423,12 @@ async def save_cookies(payload: list[CookiePair], request: Request):
         platforms=[item.platform for item in payload],
     )
     saved = store.save(config)
+    for platform in retry_platforms:
+        current = next((item for item in saved.cookies if item.platform == platform), None)
+        previous = existing_by_platform.get(platform)
+        if current is not None and sanitize_cookie_header(getattr(previous, "cookie", "")) != sanitize_cookie_header(current.cookie):
+            _mark_online_account_checking(platform, source="cookie_save")
+            _schedule_online_account_cookie_test(platform, current, saved.proxy)
     retry_result = subscription_manager.retry_error_subscriptions_for_platforms(retry_platforms)
     cookie_sources_result = subscription_manager.request_cookie_source_sync(
         retry_platforms,
@@ -3523,6 +3539,7 @@ async def login_config_online_account(payload: OnlineAccountLoginRequest, reques
         status=pair.status,
     )
     saved = store.save(config)
+    _mark_online_account_checking(platform, source="online_account_login")
     retry_result = subscription_manager.retry_error_subscriptions_for_platforms({platform})
     cookie_sources_result = subscription_manager.request_cookie_source_sync({platform}, reason="online_account_login")
     _schedule_online_account_cookie_test(platform, pair, saved.proxy)
@@ -3785,6 +3802,7 @@ async def sync_config_online_account_browser(platform: str, request: Request):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     current = next((item for item in saved.cookies if item.platform == clean_platform), target)
+    _mark_online_account_checking(clean_platform, source="cloakbrowser_manual_sync")
     _schedule_online_account_cookie_test(clean_platform, current, saved.proxy)
     response = _public_config_payload(saved)
     response["browser_session"] = {

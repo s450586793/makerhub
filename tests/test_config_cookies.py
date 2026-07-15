@@ -73,6 +73,8 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
                     patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms", return_value=retry_result) as retry_mock, \
                     patch.object(config_api.subscription_manager, "request_cookie_source_sync", return_value=queued_result) as queue_mock, \
                     patch.object(config_api.subscription_manager, "sync_cookie_sources") as sync_mock, \
+                    patch.object(config_api, "_mark_online_account_checking") as checking_mock, \
+                    patch.object(config_api, "_schedule_online_account_cookie_test") as schedule_mock, \
                     patch.object(config_api, "_get_github_version_status", return_value={}), \
                     patch.object(config_api, "cookie_source_inventory_payload", return_value={"platforms": {}}), \
                     patch.object(config_api, "cookie_source_sync_state_payload", return_value={}), \
@@ -90,6 +92,8 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
             retry_mock.assert_called_once_with({"cn"})
             queue_mock.assert_called_once_with({"cn"}, reason="cookie_save")
             sync_mock.assert_not_called()
+            checking_mock.assert_called_once_with("cn", source="cookie_save")
+            schedule_mock.assert_called_once_with("cn", store.load().cookies[0], store.load().proxy)
             self.assertEqual(payload["subscription_retry"], retry_result)
             self.assertEqual(payload["cookie_source_sync"], queued_result)
             self.assertEqual(store.load().cookies[0].cookie, "token=ok")
@@ -193,6 +197,7 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
                     patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms", return_value=retry_result) as retry_mock, \
                     patch.object(config_api.subscription_manager, "request_cookie_source_sync", return_value=queued_result) as queue_mock, \
                     patch.object(config_api, "_schedule_online_account_cookie_test") as schedule_mock, \
+                    patch.object(config_api, "_mark_online_account_checking") as checking_mock, \
                     patch.object(config_api, "_get_github_version_status", return_value={}), \
                     patch.object(config_api, "cookie_source_inventory_payload", return_value={"platforms": {}}), \
                     patch.object(config_api, "cookie_source_sync_state_payload", return_value={}), \
@@ -210,6 +215,7 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
             retry_mock.assert_called_once_with({"cn"})
             queue_mock.assert_called_once_with({"cn"}, reason="online_account_login")
             schedule_mock.assert_called_once()
+            checking_mock.assert_called_once_with("cn", source="online_account_login")
             saved_cookie = store.load().cookies[0]
             self.assertEqual(saved_cookie.cookie, "token=new")
             self.assertEqual(saved_cookie.display_name, "艾斯")
@@ -629,6 +635,7 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
             with patch.object(config_api, "store", store), \
                     patch.object(config_api, "_run_online_account_cookie_test", return_value=test_result), \
                     patch.object(config_api, "online_account_metadata_from_cookie", return_value={"status": "ok"}), \
+                    patch.object(config_api, "_schedule_online_account_cookie_test") as schedule_mock, \
                     patch.object(config_api, "mark_account_ok") as mark_account_ok_mock, \
                     patch.object(config_api, "update_three_mf_gate") as update_gate_mock, \
                     patch.object(config_api, "append_business_log"):
@@ -640,6 +647,7 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(payload["stale"])
             mark_account_ok_mock.assert_not_called()
             update_gate_mock.assert_not_called()
+            schedule_mock.assert_called_once_with("cn", saved_cookie, config.proxy)
 
     async def test_online_account_test_deduplicates_running_background_probe(self):
         with tempfile.TemporaryDirectory() as tmp:

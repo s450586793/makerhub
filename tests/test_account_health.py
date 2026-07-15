@@ -132,6 +132,28 @@ class AccountHealthServiceTest(unittest.TestCase):
             },
         )
 
+    def test_operational_status_reports_updated_cookie_as_checking(self):
+        payload = account_health.operational_status_payload(
+            "cn",
+            {
+                "status": "unknown",
+                "three_mf_gate": "unknown",
+                "three_mf_reason": "cookie_updated",
+                "three_mf_detail": "登录态已更新，正在检测 3MF 下载权限。",
+            },
+        )
+
+        self.assertEqual(
+            payload,
+            {
+                "state": "checking",
+                "label": "检测中",
+                "tone": "warning",
+                "message": "登录态已更新，正在检测 3MF 下载权限。",
+                "action": "none",
+            },
+        )
+
     def test_operational_status_maps_recovery_actions(self):
         cases = [
             ("verification_required", "需要浏览器确认", "warning", "browser"),
