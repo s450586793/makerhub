@@ -50,10 +50,26 @@ def database_driver_available() -> bool:
     return psycopg is not None and ConnectionPool is not None
 
 
+def _sanitize_jsonb_value(value: Any) -> Any:
+    """PostgreSQL JSONB 不接受字符串或键中的 NUL 字符。"""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {
+            key.replace("\x00", "") if isinstance(key, str) else key: _sanitize_jsonb_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_jsonb_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_jsonb_value(item) for item in value)
+    return value
+
+
 def jsonb_value(value: Any) -> Any:
     if Jsonb is None:
         return value
-    return Jsonb(value)
+    return Jsonb(_sanitize_jsonb_value(value))
 
 
 def _connect_timeout() -> int:

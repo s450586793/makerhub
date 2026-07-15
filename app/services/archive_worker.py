@@ -697,6 +697,8 @@ class ArchiveTaskManager:
         self._preview_lock = threading.Lock()
         self._batch_refresh_lock = threading.Lock()
         self._batch_previews: dict[str, dict] = {}
+        self._last_pending_maintenance_at = 0.0
+        self._blocked_queue_retry_at = 0.0
 
     def submit(self, url: str, force: bool = False, preview_token: str = "", meta: Optional[dict] = None) -> dict:
         clean_url = normalize_source_url(url)
@@ -1483,6 +1485,7 @@ class ArchiveTaskManager:
         task = self._new_archive_queue_item(url, message=message, mode=mode, meta=meta)
         task_id = str(task["id"])
         queue = self.task_store.enqueue_archive_task(task)
+        self._blocked_queue_retry_at = 0.0
         queue = queue if isinstance(queue, dict) else {}
         if queue.get("enqueued") is False and str(queue.get("existing_task_id") or "").strip():
             return str(queue.get("existing_task_id") or "").strip(), queue
@@ -2020,6 +2023,7 @@ class ArchiveTaskManager:
 
     def retry_verification_missing_3mf(self, *, platform: str, primary: Optional[dict] = None) -> dict:
         normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
+        self._blocked_queue_retry_at = 0.0
         primary_item = primary if isinstance(primary, dict) else {}
         verification_states = {"verification_required", "cloudflare", "auth_required", "cookie_invalid"}
         missing_payload = self.task_store.load_missing_3mf()
@@ -2520,6 +2524,8 @@ class ArchiveTaskManager:
     def _ensure_worker(self) -> None:
         if not self.background_enabled:
             return
+        if time.monotonic() < self._blocked_queue_retry_at:
+            return
         with self._lock:
             self._workers = [worker for worker in self._workers if worker.is_alive()]
             try:
@@ -2540,6 +2546,13 @@ class ArchiveTaskManager:
             self._worker = self._workers[0] if self._workers else None
 
     def ensure_worker_for_pending(self) -> dict:
+        if self._pending_maintenance_is_recent():
+            queue = self._load_pending_queue_compact()
+            if int(queue.get("queued_count") or 0) > 0:
+                self._ensure_worker()
+            return queue
+
+        self._last_pending_maintenance_at = time.monotonic()
         queue = self._repair_queue_before_worker_start(repair_active=False)
         if hasattr(self.task_store, "resume_verification_paused_archive_tasks"):
             gate_open_by_platform = self._verification_resume_gate_snapshot(queue)
@@ -2559,6 +2572,18 @@ class ArchiveTaskManager:
         if int(queue.get("queued_count") or 0) > 0:
             self._ensure_worker()
         return queue
+
+    def _pending_maintenance_is_recent(self) -> bool:
+        return time.monotonic() - self._last_pending_maintenance_at < 10 * 60
+
+    def _load_pending_queue_compact(self) -> dict:
+        loader = getattr(self.task_store, "load_archive_queue_compact", None)
+        if callable(loader):
+            try:
+                return loader(item_limit=0)
+            except Exception:
+                pass
+        return self.task_store.load_archive_queue()
 
     def _repair_queue_before_worker_start(self, *, repair_active: bool = False) -> dict:
         queue = self.task_store.load_archive_queue()
@@ -2596,6 +2621,7 @@ class ArchiveTaskManager:
             queue = self._repair_queue_before_worker_start(repair_active=True)
         if (queue.get("queued_count") or 0) > 0:
             self._ensure_worker()
+        self._last_pending_maintenance_at = time.monotonic()
         return queue
 
     def _next_executable_task(self, queue: dict) -> Optional[dict]:
@@ -2687,8 +2713,10 @@ class ArchiveTaskManager:
                 if has_active_batch:
                     time.sleep(ACTIVE_BATCH_IDLE_POLL_SECONDS)
                     continue
+                self._blocked_queue_retry_at = time.monotonic() + 10 * 60
                 return
 
+            self._blocked_queue_retry_at = 0.0
             candidate_url = normalize_source_url(str(candidate.get("url") or ""))
             with resource_slot("makerworld_page_api", detail=candidate_url):
                 if self._retire_current_worker_if_surplus():

@@ -81,6 +81,30 @@ class SourceRefreshTaskManagerTest(unittest.TestCase):
         self.assertEqual(source_runs["active_run"]["status"], "running")
         self.assertTrue(source_runs["active_run"]["run_id"])
 
+    def test_disabled_scheduler_does_not_resume_an_interrupted_batch(self):
+        config = self.store.load()
+        config.remote_refresh.enabled = False
+        self.store.save(config)
+        self.task_store.patch_remote_refresh_state(
+            status="running",
+            running=True,
+            active_run={
+                "batch_id": "interrupted-batch",
+                "status": "running",
+                "manifest_path": "remote_refresh_batches/interrupted.manifest.json",
+                "result_path": "remote_refresh_batches/interrupted.ndjson",
+            },
+        )
+        resume_calls = []
+        self.manager._resume_active_run_if_possible = lambda active_config: resume_calls.append(active_config) or True
+
+        self.manager._tick()
+
+        state = self.task_store.load_remote_refresh_state()
+        self.assertEqual(resume_calls, [])
+        self.assertEqual(state["status"], "disabled")
+        self.assertFalse(state["running"])
+
     def test_run_batch_writes_source_refresh_queue_and_completed_run(self):
         original_workers = remote_refresh._remote_refresh_model_workers
         remote_refresh._remote_refresh_model_workers = lambda _config=None: 1

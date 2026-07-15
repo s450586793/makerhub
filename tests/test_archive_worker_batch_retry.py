@@ -179,6 +179,39 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
         self.assertIsNotNone(calls[0])
         self.assertEqual(queue["queued_count"], 1)
 
+    def test_ensure_worker_for_pending_uses_compact_queue_between_maintenance_runs(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager._last_pending_maintenance_at = time.monotonic()
+        maintenance_calls = []
+        manager._repair_queue_before_worker_start = lambda **_kwargs: maintenance_calls.append(True) or {}
+        manager.task_store = SimpleNamespace(
+            load_archive_queue_compact=lambda item_limit=5: {
+                "active": [],
+                "queued": [],
+                "recent_failures": [],
+                "running_count": 0,
+                "queued_count": 173,
+                "failed_count": 0,
+                "active_truncated": False,
+                "queued_truncated": True,
+            },
+        )
+
+        queue = manager.ensure_worker_for_pending()
+
+        self.assertEqual(maintenance_calls, [])
+        self.assertEqual(queue["queued_count"], 173)
+        self.assertTrue(queue["queued_truncated"])
+
+    def test_ensure_worker_does_not_respawn_for_a_recently_blocked_queue(self):
+        manager = ArchiveTaskManager(background_enabled=True)
+        manager._blocked_queue_retry_at = time.monotonic() + 60
+
+        with patch("app.services.archive_worker.threading.Thread") as worker_thread:
+            manager._ensure_worker()
+
+        worker_thread.assert_not_called()
+
     def test_ensure_worker_for_pending_keeps_verification_queue_paused_while_gate_closed(self):
         manager = ArchiveTaskManager(background_enabled=False)
         paused_item = {

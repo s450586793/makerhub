@@ -1846,8 +1846,6 @@ class RemoteRefreshManager:
         normalized_cron = _validate_cron(refresh_config.cron)
         state = self._ensure_state()
         manual_requested = bool(str(state.get("manual_requested_at") or "").strip())
-        if self._resume_active_run_if_possible(config):
-            return
         if not refresh_config.enabled and not manual_requested:
             self.task_store.patch_remote_refresh_state(
                 status="disabled",
@@ -1857,6 +1855,8 @@ class RemoteRefreshManager:
                 last_message="源端刷新已停用。",
                 current_item={},
             )
+            return
+        if self._resume_active_run_if_possible(config):
             return
 
         next_run_at = _parse_iso(state.get("next_run_at"))

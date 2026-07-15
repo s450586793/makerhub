@@ -5,30 +5,36 @@ import threading
 import time
 import uuid
 
-from app.core.database import close_database_pool
-from app.core.settings import APP_VERSION, LOCAL_PREVIEW_POLL_SECONDS, PROCESS_ROLE, ensure_app_dirs
-from app.core.store import JsonStore
-from app.services.account_cookie_maintenance import run_account_cookie_maintenance_once
-from app.services.archive_worker import ArchiveTaskManager
-from app.services.archive_model_index_rebuild import (
-    read_archive_model_index_rebuild_status,
-    request_archive_model_index_rebuild,
-    run_archive_model_index_rebuild,
-    should_auto_rebuild_database_index,
-)
-from app.services.business_logs import append_business_log
-from app.services.database_maintenance import run_database_maintenance_if_due
-from app.services.local_organizer import LocalOrganizerService
-from app.services.local_preview_worker import local_preview_queue_marker_mtime, run_local_preview_generation_once
-from app.services.source_refresh import SourceRefreshTaskManager
-from app.services.source_library import SourceLibraryManager
-from app.services.subscriptions import SubscriptionManager
+from app.core.settings import APP_VERSION
 from app.services.self_update import (
     WORKER_START_TOKEN_ENV,
     record_worker_heartbeat,
     worker_heartbeat_readiness,
 )
-from app.services.task_state import TaskStateStore
+
+
+WORKER_HEALTHCHECK_MODE = "--healthcheck" in sys.argv[1:]
+
+if not WORKER_HEALTHCHECK_MODE:
+    from app.core.database import close_database_pool
+    from app.core.settings import LOCAL_PREVIEW_POLL_SECONDS, PROCESS_ROLE, ensure_app_dirs
+    from app.core.store import JsonStore
+    from app.services.account_cookie_maintenance import run_account_cookie_maintenance_once
+    from app.services.archive_worker import ArchiveTaskManager
+    from app.services.archive_model_index_rebuild import (
+        read_archive_model_index_rebuild_status,
+        request_archive_model_index_rebuild,
+        run_archive_model_index_rebuild,
+        should_auto_rebuild_database_index,
+    )
+    from app.services.business_logs import append_business_log
+    from app.services.database_maintenance import run_database_maintenance_if_due
+    from app.services.local_organizer import LocalOrganizerService
+    from app.services.local_preview_worker import local_preview_queue_marker_mtime, run_local_preview_generation_once
+    from app.services.source_refresh import SourceRefreshTaskManager
+    from app.services.source_library import SourceLibraryManager
+    from app.services.subscriptions import SubscriptionManager
+    from app.services.task_state import TaskStateStore
 
 
 WORKER_POLL_SECONDS = 2.0
@@ -81,7 +87,7 @@ def _run_archive_model_index_rebuild_worker(options: dict) -> None:
 
 
 def main() -> int:
-    if "--healthcheck" in sys.argv[1:]:
+    if WORKER_HEALTHCHECK_MODE:
         readiness = worker_heartbeat_readiness(
             expected_start_token=os.getenv(WORKER_START_TOKEN_ENV) or None,
             expected_version=APP_VERSION,

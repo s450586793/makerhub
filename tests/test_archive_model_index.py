@@ -695,6 +695,20 @@ class ArchiveModelIndexTest(unittest.TestCase):
             self.assertTrue(result["skipped"])
             self.assertEqual(result["reason"], "数据库索引已完成。")
 
+    def test_auto_rebuild_does_not_repeat_after_completed_rebuild_with_failed_rows(self):
+        with patch.object(archive_model_index_rebuild, "archive_model_index_configured", return_value=True), \
+                patch.object(archive_model_index_rebuild, "archive_model_index_is_bootstrapped", return_value=False), \
+                patch.object(
+                    archive_model_index_rebuild,
+                    "read_archive_model_index_rebuild_status",
+                    return_value={
+                        "running": False,
+                        "phase": "completed",
+                        "last_result": {"database_index": {"processed": 4140, "failed": 1}},
+                    },
+                ):
+            self.assertFalse(archive_model_index_rebuild.should_auto_rebuild_database_index())
+
     def test_run_archive_model_index_rebuild_updates_database_index_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             archive_root = Path(tmp).resolve()

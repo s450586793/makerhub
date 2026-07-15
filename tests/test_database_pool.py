@@ -194,3 +194,22 @@ def test_pool_checkout_failure_does_not_expose_database_url():
     message = str(exc_info.value)
     assert "secret" not in message
     assert "database.internal" not in message
+
+
+def test_jsonb_value_removes_nul_characters_from_nested_payloads():
+    class FakeJsonb:
+        def __init__(self, value):
+            self.value = value
+
+    payload = {
+        "key\x00": "value\x00",
+        "nested": ["item\x00", {"inner\x00": "text\x00"}],
+    }
+
+    with patch.object(database, "Jsonb", FakeJsonb):
+        adapted = database.jsonb_value(payload)
+
+    assert adapted.value == {
+        "key": "value",
+        "nested": ["item", {"inner": "text"}],
+    }

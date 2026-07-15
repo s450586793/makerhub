@@ -237,7 +237,20 @@ def rebuild_archive_model_database_index(
 def should_auto_rebuild_database_index(archive_root: Path = ARCHIVE_DIR) -> bool:
     if not archive_model_index_configured():
         return False
-    return not archive_model_index_is_bootstrapped(archive_root=archive_root)
+    if archive_model_index_is_bootstrapped(archive_root=archive_root):
+        return False
+
+    # 历史 meta 文件损坏时，不能在每次 worker 重启后重复整库重建。
+    try:
+        status = read_archive_model_index_rebuild_status()
+    except Exception:
+        return True
+    database_result = status.get("last_result", {}).get("database_index", {})
+    try:
+        failed_count = int(database_result.get("failed") or 0)
+    except (AttributeError, TypeError, ValueError):
+        failed_count = 0
+    return not (str(status.get("phase") or "") == "completed" and failed_count > 0)
 
 
 def request_archive_model_index_rebuild(
