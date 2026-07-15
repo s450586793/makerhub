@@ -1556,7 +1556,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             self.assertTrue(result["image_cleanup_done"])
             self.assertEqual(result["image_cleanup_removed"], ["sha256:old-image"])
 
-    def test_cleanup_stopped_update_helpers_removes_only_labeled_stopped_helpers(self):
+    def test_cleanup_stopped_update_helpers_removes_only_labeled_stale_helpers(self):
         removed: list[str] = []
 
         class FakeDockerSocketClient:
@@ -1568,6 +1568,12 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
                         "Names": ["/makerhub-self-update-finished"],
                         "Labels": {self_update.HELPER_LABEL_KEY: self_update.HELPER_LABEL_VALUE},
                         "State": "exited",
+                    },
+                    {
+                        "Id": "created-helper",
+                        "Names": ["/makerhub-self-update-not-started"],
+                        "Labels": {self_update.HELPER_LABEL_KEY: self_update.HELPER_LABEL_VALUE},
+                        "State": "created",
                     },
                     {
                         "Id": "running-helper",
@@ -1595,8 +1601,8 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
         client = FakeDockerSocketClient()
         result = self_update._cleanup_stopped_update_helpers(client)
 
-        self.assertEqual(removed, ["stopped-helper"])
-        self.assertEqual(result["removed"], ["stopped-helper"])
+        self.assertEqual(removed, ["stopped-helper", "created-helper"])
+        self.assertEqual(result["removed"], ["stopped-helper", "created-helper"])
         self.assertEqual(result["active"], ["running-helper"])
         self.assertEqual(result["errors"], [])
         self.assertEqual(

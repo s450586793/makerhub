@@ -839,7 +839,7 @@ def _cleanup_stopped_update_helpers(client: DockerSocketClient) -> dict[str, lis
             ):
                 continue
             state = str(item.get("State") or "").strip().lower()
-            if state not in {"exited", "dead"}:
+            if state not in {"created", "exited", "dead"}:
                 active.append(container_id)
                 continue
             try:
