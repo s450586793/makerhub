@@ -92,7 +92,7 @@ test("cn verification status card does not infer verified retry action", () => {
   ]);
 });
 
-test("dashboard status card uses explicit backend actions before inferred recovery actions", () => {
+test("verification status card keeps explicit verified retry action from backend", () => {
   const card = {
     key: "global",
     action_label: "打开官网",
@@ -106,10 +106,10 @@ test("dashboard status card uses explicit backend actions before inferred recove
       },
       {
         kind: "api",
-        label: "重新检测",
-        endpoint: "/api/config/online-accounts/global/test",
+        label: "已验证",
+        endpoint: "/api/tasks/missing-3mf/verification-verified",
         method: "POST",
-        body: {},
+        body: { platform: "global" },
       },
     ],
   };
@@ -122,10 +122,10 @@ test("dashboard status card uses explicit backend actions before inferred recove
     },
     {
       kind: "api",
-      label: "重新检测",
-      endpoint: "/api/config/online-accounts/global/test",
+      label: "已验证",
+      endpoint: "/api/tasks/missing-3mf/verification-verified",
       method: "POST",
-      body: {},
+      body: { platform: "global" },
     },
   ]);
 });
