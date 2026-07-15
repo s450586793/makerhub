@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.11.7`
+> 当前版本：`v0.11.8`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -190,6 +190,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-15 · v0.11.8
+
+- 修复历史 `meta.json` 中的 NUL 字符导致 PostgreSQL 索引写入失败、Worker 每次重启都重复全库索引重建的问题。
+- Worker 改为轻量轮询大归档队列，并对被账号 gate 阻塞的队列退避，避免反复拉起空任务线程占满 CPU 和内存。
+- 停用源端刷新后不再恢复旧批次；Worker 健康检查不再加载完整归档模块，心跳状态更稳定。
+
 ### 2026-07-15 · v0.11.7
 
 - 修复重新登录与指纹浏览器 Cookie 回写并发时，最新账号补测被去重丢弃、旧“需要重新登录”状态长期残留的问题。
@@ -198,13 +204,13 @@ uvicorn app.main:app --reload
 
 - 网页更新会等待候选 Worker 写入匹配的启动 heartbeat，不再因初始化期间短暂读到旧 token 而错误回滚。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-14 · v0.11.5
 
 - 线上账号和首页统一按 `3MF` 归档可用性显示状态；Cookie 失效明确提示重新登录，验证拦截提示浏览器确认，不再被来源同步成功覆盖。
 - 可归档账号不再显示“浏览器未关联”，浏览器恢复入口只在需要验证或浏览器会话处理中出现。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-13 · v0.11.4
 
