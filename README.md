@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.11.8`
+> 当前版本：`v0.11.9`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -190,6 +190,10 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-15 · v0.11.9
+
+- 修复新启动的 App / Worker 在系统 monotonic 时钟不足 10 分钟时，错误跳过首次归档队列维护的问题；验证暂停任务、重复任务修复和运行中任务心跳都会正常执行。
+
 ### 2026-07-15 · v0.11.8
 
 - 修复历史 `meta.json` 中的 NUL 字符导致 PostgreSQL 索引写入失败、Worker 每次重启都重复全库索引重建的问题。
@@ -200,12 +204,12 @@ uvicorn app.main:app --reload
 
 - 修复重新登录与指纹浏览器 Cookie 回写并发时，最新账号补测被去重丢弃、旧“需要重新登录”状态长期残留的问题。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-15 · v0.11.6
 
 - 网页更新会等待候选 Worker 写入匹配的启动 heartbeat，不再因初始化期间短暂读到旧 token 而错误回滚。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-14 · v0.11.5
 

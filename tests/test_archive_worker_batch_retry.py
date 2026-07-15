@@ -203,6 +203,26 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
         self.assertEqual(queue["queued_count"], 173)
         self.assertTrue(queue["queued_truncated"])
 
+    def test_ensure_worker_for_pending_runs_first_maintenance_when_monotonic_is_low(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        queue = {
+            "active": [],
+            "queued": [],
+            "recent_failures": [],
+            "running_count": 0,
+            "queued_count": 0,
+        }
+        manager.task_store = SimpleNamespace(
+            load_archive_queue_compact=lambda item_limit=0: queue,
+        )
+
+        with patch("app.services.archive_worker.time.monotonic", return_value=1.0), \
+                patch.object(manager, "_repair_queue_before_worker_start", return_value=queue) as repair_queue:
+            result = manager.ensure_worker_for_pending()
+
+        repair_queue.assert_called_once_with(repair_active=False)
+        self.assertEqual(result, queue)
+
     def test_ensure_worker_does_not_respawn_for_a_recently_blocked_queue(self):
         manager = ArchiveTaskManager(background_enabled=True)
         manager._blocked_queue_retry_at = time.monotonic() + 60

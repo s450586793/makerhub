@@ -2574,7 +2574,10 @@ class ArchiveTaskManager:
         return queue
 
     def _pending_maintenance_is_recent(self) -> bool:
-        return time.monotonic() - self._last_pending_maintenance_at < 10 * 60
+        return (
+            self._last_pending_maintenance_at > 0
+            and time.monotonic() - self._last_pending_maintenance_at < 10 * 60
+        )
 
     def _load_pending_queue_compact(self) -> dict:
         loader = getattr(self.task_store, "load_archive_queue_compact", None)
