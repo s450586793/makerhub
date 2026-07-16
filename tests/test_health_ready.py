@@ -65,7 +65,7 @@ def test_worker_heartbeat_records_version_token_and_rejects_stale_or_wrong_token
     assert heartbeat["start_token"] == "candidate-token"
     assert heartbeat["version"] == "0.11.0"
     assert heartbeat["updated_at_epoch"] == 100.0
-    with patch.object(self_update, "load_database_json_state", return_value=heartbeat):
+    with patch.object(self_update, "load_database_json_state_without_initialization", return_value=heartbeat):
         stale = self_update.worker_heartbeat_readiness(
             expected_start_token="candidate-token",
             expected_version="0.11.0",
@@ -81,3 +81,31 @@ def test_worker_heartbeat_records_version_token_and_rejects_stale_or_wrong_token
 
     assert stale == {"ready": False, "reason": "stale"}
     assert wrong_token == {"ready": False, "reason": "start_token_mismatch"}
+
+
+def test_worker_heartbeat_readiness_does_not_bootstrap_database_schema():
+    heartbeat = {
+        "start_token": "worker-token",
+        "version": "0.11.14",
+        "updated_at_epoch": 100.0,
+    }
+    with (
+        patch.object(
+            self_update,
+            "load_database_json_state",
+            side_effect=AssertionError("worker healthcheck must not initialize the database schema"),
+        ),
+        patch.object(
+            self_update,
+            "load_database_json_state_without_initialization",
+            return_value=heartbeat,
+        ) as load_heartbeat,
+    ):
+        readiness = self_update.worker_heartbeat_readiness(
+            expected_start_token="worker-token",
+            expected_version="0.11.14",
+            now_epoch=110.0,
+        )
+
+    assert readiness == {"ready": True, "reason": ""}
+    load_heartbeat.assert_called_once_with(self_update.WORKER_HEARTBEAT_STATE_KEY, {})

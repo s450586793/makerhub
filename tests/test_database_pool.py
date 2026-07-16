@@ -81,6 +81,33 @@ def test_database_connection_reuses_one_pid_scoped_pool():
     assert FakePool.instances[0].connection_value.commits == 2
 
 
+def test_existing_json_state_reader_uses_connection_without_schema_bootstrap():
+    class Result:
+        def fetchone(self):
+            return {"value": {"updated_at_epoch": 100.0}}
+
+    class QueryConnection(FakeConnection):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def execute(self, sql, params):
+            self.calls.append((sql, params))
+            return Result()
+
+    connection = QueryConnection()
+    with (
+        patch.object(database, "initialize_database", side_effect=AssertionError("must not initialize schema")),
+        patch.object(database, "database_connection", return_value=FakeCheckout(connection)),
+    ):
+        payload = database.load_json_state_without_initialization("worker_heartbeat")
+
+    assert payload == {"updated_at_epoch": 100.0}
+    assert connection.calls == [
+        ("SELECT value FROM makerhub_json_state WHERE key = %s", ("worker_heartbeat",)),
+    ]
+
+
 def test_database_connection_rolls_back_before_returning_connection():
     with (
         patch.object(database, "ConnectionPool", FakePool),

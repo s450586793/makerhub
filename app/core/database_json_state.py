@@ -10,6 +10,7 @@ from app.core.database import (
     database_configured,
     database_driver_available,
     load_json_state,
+    load_json_state_without_initialization,
     load_json_state_array_summary,
     load_json_state_with_revision,
     save_json_state,
@@ -47,6 +48,15 @@ def load_database_json_state(key: str, default: dict[str, Any]) -> dict[str, Any
         raise ValueError("JSON 状态 key 不能为空。")
     require_database_json_state()
     payload = _with_database_json_state_attempts(lambda: load_json_state(clean_key))
+    return payload if isinstance(payload, dict) else dict(default)
+
+
+def load_database_json_state_without_initialization(key: str, default: dict[str, Any]) -> dict[str, Any]:
+    clean_key = str(key or "").strip()
+    if not clean_key:
+        raise ValueError("JSON 状态 key 不能为空。")
+    require_database_json_state()
+    payload = _with_database_json_state_attempts(lambda: load_json_state_without_initialization(clean_key))
     return payload if isinstance(payload, dict) else dict(default)
 
 

@@ -357,6 +357,21 @@ def load_json_state(key: str) -> Any:
     return None
 
 
+def load_json_state_without_initialization(key: str) -> Any:
+    """读取已存在的状态，供短生命周期健康检查避免触发 DDL。"""
+    clean_key = str(key or "").strip()
+    if not clean_key:
+        raise ValueError("JSON 状态 key 不能为空。")
+    with database_connection() as connection:
+        row = connection.execute(
+            "SELECT value FROM makerhub_json_state WHERE key = %s",
+            (clean_key,),
+        ).fetchone()
+    if isinstance(row, dict):
+        return row.get("value")
+    return None
+
+
 def load_json_state_with_revision(key: str) -> tuple[Any, int]:
     clean_key = str(key or "").strip()
     if not clean_key:

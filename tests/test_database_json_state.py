@@ -53,6 +53,10 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
             patch("app.core.database_json_state.database_configured", return_value=True),
             patch("app.core.database_json_state.database_driver_available", return_value=True),
             patch("app.core.database_json_state.load_json_state", side_effect=lambda key: self.state.get(key)),
+            patch(
+                "app.core.database_json_state.load_json_state_without_initialization",
+                side_effect=lambda key: self.state.get(key),
+            ),
             patch("app.core.database_json_state.save_json_state", side_effect=lambda key, value: self.state.__setitem__(key, value) or value),
             patch("app.core.database_json_state.update_json_state", side_effect=update_state),
         ]
@@ -62,6 +66,21 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
     def tearDown(self):
         for item in reversed(self.patches):
             item.stop()
+
+    def test_existing_json_state_read_skips_schema_initialization(self):
+        self.state["worker_heartbeat"] = {"updated_at_epoch": 100.0}
+
+        with patch.object(
+            database_json_state,
+            "load_json_state",
+            side_effect=AssertionError("schema-initializing reader must not be used"),
+        ):
+            payload = database_json_state.load_database_json_state_without_initialization(
+                "worker_heartbeat",
+                {},
+            )
+
+        self.assertEqual(payload, {"updated_at_epoch": 100.0})
 
     def test_json_store_persists_cookie_and_token_hash_without_plaintext(self):
         raw_token = "mht_database_token"

@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from app.core.database_json_state import load_database_json_state, save_database_json_state
+from app.core.database_json_state import (
+    load_database_json_state,
+    load_database_json_state_without_initialization,
+    save_database_json_state,
+)
 from app.core.settings import APP_VERSION, ARCHIVE_DIR, LOCAL_DIR, LOGS_DIR, ROOT_DIR, STATE_DIR
 from app.core.timezone import now_iso as china_now_iso
 from app.services.business_logs import append_business_log
@@ -100,7 +104,7 @@ def worker_heartbeat_readiness(
     now_epoch: float | None = None,
     max_age_seconds: int = WORKER_HEARTBEAT_MAX_AGE_SECONDS,
 ) -> dict[str, Any]:
-    payload = load_database_json_state(WORKER_HEARTBEAT_STATE_KEY, {})
+    payload = load_database_json_state_without_initialization(WORKER_HEARTBEAT_STATE_KEY, {})
     if not isinstance(payload, dict):
         return {"ready": False, "reason": "missing"}
     if expected_start_token is not None and str(payload.get("start_token") or "") != str(expected_start_token or ""):
