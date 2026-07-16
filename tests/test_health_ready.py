@@ -1,9 +1,13 @@
 import asyncio
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 from app.api import system
 from app.services import self_update
+
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
 
 
 def test_public_readiness_returns_sanitized_503_when_database_is_unavailable():
@@ -109,3 +113,11 @@ def test_worker_heartbeat_readiness_does_not_bootstrap_database_schema():
 
     assert readiness == {"ready": True, "reason": ""}
     load_heartbeat.assert_called_once_with(self_update.WORKER_HEARTBEAT_STATE_KEY, {})
+
+
+def test_worker_records_heartbeat_before_resuming_pending_tasks():
+    source = (ROOT_DIR / "app" / "worker.py").read_text(encoding="utf-8")
+
+    assert source.index("record_worker_heartbeat(start_token=worker_start_token)") < source.index(
+        "archive_manager.resume_pending_tasks()"
+    )

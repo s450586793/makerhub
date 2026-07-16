@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.11.15`
+> 当前版本：`v0.11.16`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -190,6 +190,10 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-16 · v0.11.16
+
+- Worker 在恢复归档队列、订阅和索引前立即写入 heartbeat，避免耗时启动期间被健康检查误判为不可用。
+
 ### 2026-07-16 · v0.11.15
 
 - Worker 健康检查改为直接读取既有 heartbeat，不再触发数据库 schema 初始化，避免慢模型查询时堆积 `ALTER TABLE` 并阻塞网页访问。
@@ -198,12 +202,12 @@ uvicorn app.main:app --reload
 
 - 修复发布自动验证：首页验证完成重试动作与版本更新记录的测试契约已同步，GitHub 发布流程可继续执行。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-16 · v0.11.13
 
 - 首页在“需要浏览器确认”时提供“已验证”操作；完成官网验证后可立即恢复同平台受验证阻塞的 `3MF` 归档任务。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-16 · v0.11.12
 

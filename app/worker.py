@@ -103,6 +103,9 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
+    worker_start_token = os.getenv(WORKER_START_TOKEN_ENV) or uuid.uuid4().hex
+    record_worker_heartbeat(start_token=worker_start_token)
+
     store = JsonStore()
     task_store = TaskStateStore()
     archive_manager = ArchiveTaskManager(background_enabled=True)
@@ -125,7 +128,6 @@ def main() -> int:
     local_organizer.start()
     source_library_manager.start()
     remote_refresh_manager.start()
-    worker_start_token = os.getenv(WORKER_START_TOKEN_ENV) or uuid.uuid4().hex
 
     append_business_log(
         "system",
@@ -169,7 +171,6 @@ def main() -> int:
     last_account_cookie_poll = 0.0
     archive_model_index_rebuild_thread: threading.Thread | None = None
     try:
-        record_worker_heartbeat(start_token=worker_start_token)
         while not stop_event.wait(WORKER_POLL_SECONDS):
             record_worker_heartbeat(start_token=worker_start_token)
             _run_database_maintenance()
