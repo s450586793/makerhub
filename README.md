@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.11.17`
+> 当前版本：`v0.11.18`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -190,6 +190,12 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-16 · v0.11.18
+
+- 修复模型库分页查询：普通列表不再展开订阅状态，避免大归档库查询超时和反向代理 `504`。
+- `3MF` 下载授权遇到验证、Cookie 失效、Cloudflare 或日限额时立即暂停同一模型后续请求，避免无效授权调用。
+- 仅在真实新增 `3MF` 全部落盘后记录下载完成；仍有缺失文件会明确记录为未完成。
+
 ### 2026-07-16 · v0.11.17
 
 - Worker 独立 heartbeat 线程会在初始化和归档任务运行期间持续刷新存活状态，不再因启动耗时被误判为不可用。
@@ -198,12 +204,12 @@ uvicorn app.main:app --reload
 
 - Worker 在恢复归档队列、订阅和索引前立即写入 heartbeat，避免耗时启动期间被健康检查误判为不可用。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-16 · v0.11.15
 
 - Worker 健康检查改为直接读取既有 heartbeat，不再触发数据库 schema 初始化，避免慢模型查询时堆积 `ALTER TABLE` 并阻塞网页访问。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-16 · v0.11.14
 

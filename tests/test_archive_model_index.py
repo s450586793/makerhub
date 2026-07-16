@@ -278,6 +278,44 @@ class ArchiveModelIndexTest(unittest.TestCase):
         self.assertIn("favorite_models AS", page_sql)
         self.assertIn("LEFT JOIN favorite_models", page_sql)
 
+    def test_query_archive_model_index_regular_page_skips_subscription_deleted_state(self):
+        connection = RecordingQueryConnection()
+
+        self._query_with_recording_connection(
+            connection,
+            q="",
+            source="all",
+            tag="",
+            sort_key="collectDate",
+            page=1,
+            page_size=12,
+            limit=0,
+        )
+
+        page_sql, _ = next(item for item in connection.executed if "SELECT model_json" in item[0])
+        self.assertIn("filtered_models AS NOT MATERIALIZED", page_sql)
+        self.assertNotIn("subscriptions_state", page_sql)
+        self.assertNotIn("source_deleted_keys", page_sql)
+
+    def test_query_archive_model_index_source_deleted_filter_materializes_lookup_once(self):
+        connection = RecordingQueryConnection()
+
+        self._query_with_recording_connection(
+            connection,
+            q="",
+            source="all",
+            tag="__source_deleted__",
+            sort_key="collectDate",
+            page=1,
+            page_size=12,
+            limit=0,
+        )
+
+        page_sql, _ = next(item for item in connection.executed if "SELECT model_json" in item[0])
+        self.assertIn("source_subscription_states AS MATERIALIZED", page_sql)
+        self.assertIn("source_current_keys AS MATERIALIZED", page_sql)
+        self.assertIn("source_deleted_keys AS MATERIALIZED", page_sql)
+
     def test_query_archive_model_index_escapes_search_wildcards(self):
         connection = RecordingQueryConnection()
 

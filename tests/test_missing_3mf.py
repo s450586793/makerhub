@@ -14,6 +14,7 @@ from app.services.legacy_archiver import (
     _build_instance_api_candidates,
     _missing_3mf_instances,
     _missing_3mf_failure_for_skipped_fetch,
+    _should_pause_three_mf_fetch,
     download_file,
     fetch_instance_3mf,
     rebuild_once,
@@ -24,6 +25,13 @@ from app.services.task_state import _normalize_missing_3mf
 
 
 class Missing3mfTest(unittest.TestCase):
+    def test_auth_and_limit_failures_pause_following_instance_fetches(self):
+        for state in ("verification_required", "cloudflare", "auth_required", "cookie_invalid", "download_limited"):
+            with self.subTest(state=state):
+                self.assertTrue(_should_pause_three_mf_fetch({"state": state, "message": "blocked"}))
+
+        self.assertFalse(_should_pause_three_mf_fetch({"state": "missing", "message": "no download address"}))
+
     def test_skipped_refresh_does_not_reuse_stale_download_limited_state(self):
         failure = _missing_3mf_failure_for_skipped_fetch(
             skip_state="pending_download",
@@ -1090,7 +1098,7 @@ class Missing3mfTest(unittest.TestCase):
             candidates,
         )
 
-    def test_fetch_instance_3mf_continues_after_auth_required_candidate(self):
+    def test_fetch_instance_3mf_stops_after_auth_required_candidate(self):
         original_wait = legacy_archiver_module._wait_before_three_mf_download
         try:
             legacy_archiver_module._wait_before_three_mf_download = lambda *_args, **_kwargs: 0
@@ -1114,11 +1122,11 @@ class Missing3mfTest(unittest.TestCase):
         finally:
             legacy_archiver_module._wait_before_three_mf_download = original_wait
 
-        self.assertEqual(name, "ok.3mf")
-        self.assertEqual(url, "https://example.test/ok.3mf")
-        self.assertEqual(failure["state"], "available")
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(used_api_url, calls[-1])
+        self.assertEqual(name, "")
+        self.assertEqual(url, "")
+        self.assertEqual(failure["state"], "auth_required")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(used_api_url, calls[0])
 
     def test_fetch_instance_3mf_uses_flaresolverr_download_payload(self):
         original_wait = legacy_archiver_module._wait_before_three_mf_download

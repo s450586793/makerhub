@@ -364,6 +364,12 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
         self.assertTrue(throttle.should_persist(percent=14, stage="media"))
         self.assertTrue(throttle.should_persist(percent=100, stage="finalize"))
 
+    def test_three_mf_completion_requires_no_missing_files(self):
+        event, message = archive_worker_module._three_mf_task_completion("Demo", [{"id": "profile-1"}])
+
+        self.assertEqual(event, "three_mf_download_incomplete")
+        self.assertIn("仍缺 1 个 3MF", message)
+
     def test_run_single_task_uses_progress_throttle(self):
         manager = ArchiveTaskManager(background_enabled=False)
         manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[], proxy=None, three_mf_limits=None))

@@ -773,14 +773,16 @@ def load_archive_model_index_unchecked(archive_root: Path = ARCHIVE_DIR) -> Opti
     return models
 
 
-def _archive_model_query_cte() -> str:
-    return """
-        WITH state_values AS (
+def _archive_model_query_cte(*, include_source_deleted: bool = False) -> str:
+    source_deleted_ctes = ""
+    source_deleted_expression = """
+        lower(COALESCE(model_index.model_json #>> '{remote_sync,source_deleted}', ''))
+            IN ('true', '1', 'yes', 'on')
+    """
+    if include_source_deleted:
+        source_deleted_ctes = """
+        , source_state_values AS (
             SELECT
-                COALESCE(
-                    (SELECT value FROM makerhub_json_state WHERE key = 'model_flags'),
-                    '{}'::jsonb
-                ) AS model_flags,
                 COALESCE(
                     (SELECT value FROM makerhub_json_state WHERE key = 'app_config'),
                     '{}'::jsonb
@@ -790,8 +792,85 @@ def _archive_model_query_cte() -> str:
                     '{}'::jsonb
                 ) AS subscriptions_state
         ),
-        favorite_models AS (
-            SELECT DISTINCT favorite_flag.model_dir
+        source_subscription_states AS MATERIALIZED (
+            SELECT
+                btrim(state_item.value ->> 'id') AS subscription_id,
+                state_item.value AS state_value
+            FROM source_state_values
+            CROSS JOIN LATERAL jsonb_array_elements(
+                CASE
+                    WHEN jsonb_typeof(source_state_values.subscriptions_state -> 'items') = 'array'
+                        THEN source_state_values.subscriptions_state -> 'items'
+                    ELSE '[]'::jsonb
+                END
+            ) AS state_item(value)
+            WHERE EXISTS (
+                SELECT 1
+                FROM jsonb_array_elements(
+                    CASE
+                        WHEN jsonb_typeof(source_state_values.app_config -> 'subscriptions') = 'array'
+                            THEN source_state_values.app_config -> 'subscriptions'
+                        ELSE '[]'::jsonb
+                    END
+                ) AS subscription(value)
+                WHERE btrim(subscription.value ->> 'id') = btrim(state_item.value ->> 'id')
+                  AND lower(btrim(subscription.value ->> 'mode')) = 'author_upload'
+            )
+        ),
+        source_current_keys AS MATERIALIZED (
+            SELECT DISTINCT
+                source_subscription_states.subscription_id,
+                btrim(current_item.value ->> 'task_key') AS task_key
+            FROM source_subscription_states
+            CROSS JOIN LATERAL jsonb_array_elements(
+                CASE
+                    WHEN jsonb_typeof(source_subscription_states.state_value -> 'current_items') = 'array'
+                        THEN source_subscription_states.state_value -> 'current_items'
+                    ELSE '[]'::jsonb
+                END
+            ) AS current_item(value)
+            WHERE btrim(current_item.value ->> 'task_key') <> ''
+        ),
+        source_deleted_keys AS MATERIALIZED (
+            SELECT DISTINCT btrim(tracked_item.value ->> 'task_key') AS task_key
+            FROM source_subscription_states
+            CROSS JOIN LATERAL jsonb_array_elements(
+                CASE
+                    WHEN jsonb_typeof(source_subscription_states.state_value -> 'tracked_items') = 'array'
+                        THEN source_subscription_states.state_value -> 'tracked_items'
+                    ELSE '[]'::jsonb
+                END
+            ) AS tracked_item(value)
+            WHERE btrim(tracked_item.value ->> 'task_key') <> ''
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM source_current_keys
+                  WHERE source_current_keys.subscription_id = source_subscription_states.subscription_id
+                    AND source_current_keys.task_key = btrim(tracked_item.value ->> 'task_key')
+              )
+        )
+        """
+        source_deleted_expression = """
+            lower(COALESCE(model_index.model_json #>> '{remote_sync,source_deleted}', ''))
+                IN ('true', '1', 'yes', 'on')
+            OR EXISTS (
+                SELECT 1
+                FROM source_deleted_keys
+                WHERE source_deleted_keys.task_key = 'model:' || model_index.model_id
+                   OR source_deleted_keys.task_key = model_index.origin_url
+            )
+        """
+
+    return """
+        WITH state_values AS (
+            SELECT
+                COALESCE(
+                    (SELECT value FROM makerhub_json_state WHERE key = 'model_flags'),
+                    '{}'::jsonb
+                ) AS model_flags
+            ),
+            favorite_models AS (
+                SELECT DISTINCT favorite_flag.model_dir
             FROM state_values
             CROSS JOIN LATERAL jsonb_array_elements_text(
                 CASE
@@ -821,69 +900,25 @@ def _archive_model_query_cte() -> str:
                         THEN state_values.model_flags -> 'deleted'
                     ELSE '[]'::jsonb
                 END
-            ) AS deleted_flag(model_dir)
-        ),
-        source_deleted_keys AS (
-            SELECT DISTINCT btrim(tracked_item.value ->> 'task_key') AS task_key
-            FROM state_values
-            CROSS JOIN LATERAL jsonb_array_elements(
-                CASE
-                    WHEN jsonb_typeof(state_values.subscriptions_state -> 'items') = 'array'
-                        THEN state_values.subscriptions_state -> 'items'
-                    ELSE '[]'::jsonb
-                END
-            ) AS state_item(value)
-            CROSS JOIN LATERAL jsonb_array_elements(
-                CASE
-                    WHEN jsonb_typeof(state_values.app_config -> 'subscriptions') = 'array'
-                        THEN state_values.app_config -> 'subscriptions'
-                    ELSE '[]'::jsonb
-                END
-            ) AS subscription(value)
-            CROSS JOIN LATERAL jsonb_array_elements(
-                CASE
-                    WHEN jsonb_typeof(state_item.value -> 'tracked_items') = 'array'
-                        THEN state_item.value -> 'tracked_items'
-                    ELSE '[]'::jsonb
-                END
-            ) AS tracked_item(value)
-            WHERE btrim(subscription.value ->> 'id') = btrim(state_item.value ->> 'id')
-              AND lower(btrim(subscription.value ->> 'mode')) = 'author_upload'
-              AND btrim(tracked_item.value ->> 'task_key') <> ''
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM jsonb_array_elements(
-                      CASE
-                          WHEN jsonb_typeof(state_item.value -> 'current_items') = 'array'
-                              THEN state_item.value -> 'current_items'
-                          ELSE '[]'::jsonb
-                      END
-                  ) AS current_item(value)
-                  WHERE btrim(current_item.value ->> 'task_key') = btrim(tracked_item.value ->> 'task_key')
-              )
-        ),
-        indexed_models AS (
-            SELECT
-                model_index.*,
-                favorite_models.model_dir IS NOT NULL AS favorite,
-                printed_models.model_dir IS NOT NULL AS printed,
-                deleted_models.model_dir IS NOT NULL AS deleted,
-                (
-                    lower(COALESCE(model_index.model_json #>> '{remote_sync,source_deleted}', ''))
-                        IN ('true', '1', 'yes', 'on')
-                    OR EXISTS (
-                        SELECT 1
-                        FROM source_deleted_keys
-                        WHERE source_deleted_keys.task_key = 'model:' || model_index.model_id
-                           OR source_deleted_keys.task_key = model_index.origin_url
-                    )
-                ) AS source_deleted
-            FROM archive_model_index AS model_index
-            LEFT JOIN favorite_models ON favorite_models.model_dir = model_index.model_dir
+                ) AS deleted_flag(model_dir)
+            )
+            %(source_deleted_ctes)s,
+            indexed_models AS (
+                SELECT
+                    model_index.*,
+                    favorite_models.model_dir IS NOT NULL AS favorite,
+                    printed_models.model_dir IS NOT NULL AS printed,
+                    deleted_models.model_dir IS NOT NULL AS deleted,
+                    (%(source_deleted_expression)s) AS source_deleted
+                FROM archive_model_index AS model_index
+                LEFT JOIN favorite_models ON favorite_models.model_dir = model_index.model_dir
             LEFT JOIN printed_models ON printed_models.model_dir = model_index.model_dir
             LEFT JOIN deleted_models ON deleted_models.model_dir = model_index.model_dir
         )
-    """
+    """ % {
+        "source_deleted_ctes": source_deleted_ctes,
+        "source_deleted_expression": source_deleted_expression,
+    }
 
 
 def _escaped_ilike_pattern(value: str) -> str:
@@ -972,13 +1007,13 @@ def query_archive_model_index(
             "prints": "prints",
         }
         sort_column = sort_columns.get(str(sort_key or ""), "collect_ts")
-        query_cte = _archive_model_query_cte()
+        query_cte = _archive_model_query_cte(include_source_deleted=str(tag or "").strip().lower() == "__source_deleted__")
 
         with database_connection() as connection:
             rows = connection.execute(
                 f"""
                 {query_cte},
-                filtered_models AS (
+                filtered_models AS NOT MATERIALIZED (
                     SELECT * FROM indexed_models WHERE {where_clause}
                 ),
                 filtered_summary AS (

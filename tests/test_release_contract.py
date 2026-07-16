@@ -205,7 +205,7 @@ class DeploymentComposeContractTest(unittest.TestCase):
 
 
 class ReleaseDocumentationContractTest(unittest.TestCase):
-    def test_release_metadata_and_visible_readme_history_match_0_11_17(self):
+    def test_release_metadata_and_visible_readme_history_match_0_11_18(self):
         version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
         package = json.loads((ROOT_DIR / "frontend" / "package.json").read_text(encoding="utf-8"))
         package_lock = json.loads(
@@ -215,15 +215,15 @@ class ReleaseDocumentationContractTest(unittest.TestCase):
         changelog = (ROOT_DIR / "CHANGELOG.md").read_text(encoding="utf-8")
         visible_history = readme.split("<details>", 1)[0]
 
-        self.assertEqual(version, "0.11.17")
+        self.assertEqual(version, "0.11.18")
         self.assertEqual(package["version"], version)
         self.assertEqual(package_lock["version"], version)
         self.assertEqual(package_lock["packages"][""]["version"], version)
-        self.assertIn("> 当前版本：`v0.11.17`", readme)
-        self.assertIn("## 2026-07-16 · v0.11.17", changelog)
+        self.assertIn("> 当前版本：`v0.11.18`", readme)
+        self.assertIn("## 2026-07-16 · v0.11.18", changelog)
         self.assertEqual(
             [line.rsplit("v", 1)[-1] for line in visible_history.splitlines() if line.startswith("### 20")],
-            ["0.11.17", "0.11.16", "0.11.15"],
+            ["0.11.18", "0.11.17", "0.11.16"],
         )
 
     def test_operations_docs_cover_the_release_safety_contract(self):

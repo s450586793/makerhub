@@ -390,6 +390,18 @@ def _wait_before_three_mf_download(reason: str = "", logger=None) -> float:
     return wait_seconds
 
 
+def _should_pause_three_mf_fetch(failure_info: Any) -> bool:
+    if not isinstance(failure_info, dict):
+        return False
+    return str(failure_info.get("state") or "").strip().lower() in {
+        "verification_required",
+        "cloudflare",
+        "auth_required",
+        "cookie_invalid",
+        "download_limited",
+    }
+
+
 def fake_three_mf_downloads_enabled() -> bool:
     return str(os.getenv(FAKE_THREE_MF_DOWNLOAD_ENV, "")).strip().lower() in {
         "1",
@@ -4025,7 +4037,7 @@ def _classify_3mf_fetch_failure(
 
 
 def _should_stop_three_mf_fetch(failure: Optional[dict]) -> bool:
-    return str((failure or {}).get("state") or "").strip() == "download_limited"
+    return _should_pause_three_mf_fetch(failure)
 
 
 def _summarize_three_mf_fetch_attempts(attempts: list[dict]) -> str:
@@ -6661,6 +6673,10 @@ def archive_model(
             )
             if url3mf:
                 fetched_hint_hits += 1
+            elif _should_pause_three_mf_fetch(failure_info):
+                three_mf_fetch_paused = True
+                normalized_three_mf_skip_state = str(failure_info.get("state") or "").strip()
+                three_mf_skip_message = str(failure_info.get("message") or three_mf_skip_message or "")
         elif three_mf_fetch_paused and url3mf and not existing_file_available:
             url3mf = ""
             skipped_due_limit += 1
@@ -6714,9 +6730,11 @@ def archive_model(
                 )
                 if url3mf:
                     fetched_hint_hits += 1
-                elif str((failure_info or {}).get("state") or "").strip() == "download_limited":
+                elif _should_pause_three_mf_fetch(failure_info):
                     three_mf_fetch_paused = True
                     normalized_three_mf_skip_state = "download_limited"
+                    if str(failure_info.get("state") or "").strip() != "download_limited":
+                        normalized_three_mf_skip_state = str(failure_info.get("state") or "").strip()
                     three_mf_skip_message = str((failure_info or {}).get("message") or three_mf_skip_message or "")
         failure_state = str((failure_info or {}).get("state") or "").strip()
         failure_message = str((failure_info or {}).get("message") or "").strip()

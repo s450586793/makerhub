@@ -258,6 +258,15 @@ def _log_archive(event: str, message: str = "", level: str = "info", **payload: 
     append_business_log("archive", event, message, level=level, **payload)
 
 
+def _three_mf_task_completion(result_name: str, missing_items: list[dict[str, Any]]) -> tuple[str, str]:
+    if missing_items:
+        return (
+            "three_mf_download_incomplete",
+            f"新增 3MF 下载未完成：{result_name}，仍缺 {len(missing_items)} 个 3MF。",
+        )
+    return "three_mf_download_completed", f"新增 3MF 下载完成：{result_name}"
+
+
 def _is_not_found_archive_error(message: Any, url: str = "") -> bool:
     return normalize_three_mf_failure_state("", message, url=url) == "not_found"
 
@@ -3234,8 +3243,7 @@ class ArchiveTaskManager:
 
         result_name = result.get("base_name") or result.get("work_dir") or ""
         if three_mf_download_task:
-            completion_event = "three_mf_download_completed"
-            completion_message = f"新增 3MF 下载完成：{result_name}"
+            completion_event, completion_message = _three_mf_task_completion(result_name, missing_items)
         else:
             completion_event = "single_completed"
             completion_message = f"归档完成：{result_name}"
