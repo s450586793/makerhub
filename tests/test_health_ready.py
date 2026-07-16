@@ -121,3 +121,9 @@ def test_worker_records_heartbeat_before_resuming_pending_tasks():
     assert source.index("record_worker_heartbeat(start_token=worker_start_token)") < source.index(
         "archive_manager.resume_pending_tasks()"
     )
+
+
+def test_worker_starts_heartbeat_loop_before_resuming_pending_tasks():
+    source = (ROOT_DIR / "app" / "worker.py").read_text(encoding="utf-8")
+
+    assert source.index("heartbeat_thread.start()") < source.index("archive_manager.resume_pending_tasks()")

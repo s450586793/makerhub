@@ -61,6 +61,14 @@ def _run_database_maintenance() -> dict:
     return result
 
 
+def _run_worker_heartbeat_loop(stop_event: threading.Event, start_token: str) -> None:
+    while not stop_event.wait(WORKER_POLL_SECONDS):
+        try:
+            record_worker_heartbeat(start_token=start_token)
+        except Exception:
+            pass
+
+
 def _start_archive_model_index_rebuild_worker(status: dict) -> threading.Thread:
     options = {"force": bool(status.get("force"))}
     thread = threading.Thread(
@@ -105,6 +113,13 @@ def main() -> int:
 
     worker_start_token = os.getenv(WORKER_START_TOKEN_ENV) or uuid.uuid4().hex
     record_worker_heartbeat(start_token=worker_start_token)
+    heartbeat_thread = threading.Thread(
+        target=_run_worker_heartbeat_loop,
+        args=(stop_event, worker_start_token),
+        name="makerhub-worker-heartbeat",
+        daemon=True,
+    )
+    heartbeat_thread.start()
 
     store = JsonStore()
     task_store = TaskStateStore()
@@ -172,7 +187,6 @@ def main() -> int:
     archive_model_index_rebuild_thread: threading.Thread | None = None
     try:
         while not stop_event.wait(WORKER_POLL_SECONDS):
-            record_worker_heartbeat(start_token=worker_start_token)
             _run_database_maintenance()
             archive_manager.ensure_worker_for_pending()
             archive_model_index_rebuild_status = read_archive_model_index_rebuild_status()
@@ -225,6 +239,8 @@ def main() -> int:
                         error=str(exc),
                     )
     finally:
+        stop_event.set()
+        heartbeat_thread.join(timeout=WORKER_POLL_SECONDS + 1)
         local_organizer.stop()
         append_business_log(
             "system",
