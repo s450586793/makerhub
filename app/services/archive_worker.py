@@ -1,3 +1,4 @@
+import hmac
 import os
 import re
 import threading
@@ -13,7 +14,8 @@ from app.core.database_json_state import load_database_json_state, save_database
 from app.core.settings import ARCHIVE_DIR, BACKGROUND_TASKS_ENABLED, LOGS_DIR, STATE_DIR, ensure_app_dirs
 from app.core.store import JsonStore
 from app.core.timezone import now as china_now, parse_datetime
-from app.services.cookie_utils import sanitize_cookie_header
+from app.services.cloakbrowser_session import CloakBrowserError, cloakbrowser_configured, collect_browser_session
+from app.services.cookie_utils import extract_auth_token, sanitize_cookie_header
 from app.services.batch_discovery import (
     extract_model_id,
     normalize_model_url,
@@ -32,6 +34,7 @@ from app.services.process_jobs import run_archive_model_job, run_discover_batch_
 from app.services.proxy_policy import temporary_proxy_env
 from app.services.resource_limiter import resource_slot
 from app.services.task_state import TaskStateStore
+from app.services.state_events import publish_state_event
 from app.services.three_mf import (
     describe_three_mf_failure,
     normalize_makerworld_source,
@@ -62,6 +65,11 @@ BATCH_CHILD_TRANSIENT_FAILURE_TOKENS = (
     "temporarily unavailable",
     "timed out",
 )
+CLOAKBROWSER_AUTO_RECOVERY_COOLDOWN_SECONDS = 10 * 60
+CLOAKBROWSER_BROWSER_CONFIRMATION_MESSAGE = (
+    "指纹浏览器登录态已同步，但 MakerWorld 仍拒绝 3MF 下载；请在官网完成验证后再继续归档。"
+)
+CLOAKBROWSER_SESSION_REFRESHED_MESSAGE = "指纹浏览器登录态已更新，正在重试当前受阻的 3MF 下载。"
 
 
 def _archive_worker_concurrency(config: Any = None) -> int:
@@ -708,6 +716,219 @@ class ArchiveTaskManager:
         self._batch_previews: dict[str, dict] = {}
         self._last_pending_maintenance_at = 0.0
         self._blocked_queue_retry_at = 0.0
+        self._cloakbrowser_recovery_lock = threading.Lock()
+        self._cloakbrowser_recovery_attempted_at: dict[str, float] = {}
+
+    def _persist_browser_recovery_session(
+        self,
+        platform: str,
+        *,
+        expected_cookie: str,
+        cookie: str,
+        profile_id: str,
+        status: str,
+        message: str,
+    ) -> object | None:
+        try:
+            config = self.store.load()
+            current = next((item for item in config.cookies if item.platform == platform), None)
+        except Exception as exc:
+            _log_archive(
+                "cloakbrowser_auto_sync_config_read_failed",
+                "读取账号配置失败，未写入指纹浏览器登录态。",
+                level="warning",
+                platform=platform,
+                error=str(exc)[:240],
+            )
+            return None
+        if current is None:
+            return None
+
+        current_cookie = sanitize_cookie_header(current.cookie)
+        if current_cookie != sanitize_cookie_header(expected_cookie):
+            return None
+
+        next_cookie = sanitize_cookie_header(cookie) or current_cookie
+        changed = next_cookie != current_cookie
+        timestamp = china_now().isoformat()
+        next_pair = current.model_copy(
+            update={
+                "cookie": next_cookie,
+                "browser_profile_id": str(profile_id or current.browser_profile_id),
+                "browser_status": str(status or "").strip(),
+                "browser_message": str(message or "").strip()[:400],
+                "browser_synced_at": timestamp,
+                "updated_at": timestamp,
+                "last_login_at": timestamp if changed else current.last_login_at,
+            }
+        )
+        config.cookies = [next_pair if item.platform == platform else item for item in config.cookies]
+        try:
+            saved = self.store.save(config)
+        except Exception as exc:
+            _log_archive(
+                "cloakbrowser_auto_sync_config_save_failed",
+                "保存指纹浏览器登录态失败。",
+                level="warning",
+                platform=platform,
+                error=str(exc)[:240],
+            )
+            return None
+        publish_state_event(
+            "online_accounts",
+            "state.changed",
+            {"platform": platform, "status": next_pair.browser_status},
+        )
+        return next((item for item in saved.cookies if item.platform == platform), next_pair)
+
+    def _recover_browser_session_for_three_mf_gate(self, platform: str, *, primary: Optional[dict] = None) -> dict[str, str]:
+        normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
+        if normalized_platform not in {"cn", "global"}:
+            return {"outcome": "skipped", "message": "未识别 MakerWorld 平台。"}
+        if not cloakbrowser_configured():
+            return {"outcome": "skipped", "message": "指纹浏览器未配置。"}
+
+        try:
+            config = self.store.load()
+            current = next((item for item in config.cookies if item.platform == normalized_platform), None)
+        except Exception as exc:
+            return {"outcome": "error", "message": str(exc)[:240]}
+        if current is None or not sanitize_cookie_header(current.cookie):
+            return {"outcome": "skipped", "message": "当前平台没有可检查的 Cookie。"}
+        if not current.browser_profile_id:
+            return {"outcome": "skipped", "message": "当前平台未关联指纹浏览器 profile。"}
+
+        expected_cookie = sanitize_cookie_header(current.cookie)
+        try:
+            browser_result = collect_browser_session(normalized_platform, current.browser_profile_id)
+        except CloakBrowserError as exc:
+            self._persist_browser_recovery_session(
+                normalized_platform,
+                expected_cookie=expected_cookie,
+                cookie=expected_cookie,
+                profile_id=current.browser_profile_id,
+                status="action_required",
+                message=f"自动读取指纹浏览器登录态失败：{str(exc)[:240]}",
+            )
+            return {"outcome": "error", "message": str(exc)[:240]}
+
+        browser_cookie = sanitize_cookie_header(browser_result.cookie)
+        browser_token = extract_auth_token(browser_cookie)
+        current_token = extract_auth_token(expected_cookie)
+        if not browser_token:
+            self._persist_browser_recovery_session(
+                normalized_platform,
+                expected_cookie=expected_cookie,
+                cookie=expected_cookie,
+                profile_id=browser_result.profile_id,
+                status="action_required",
+                message="指纹浏览器尚未登录 MakerWorld，已保留 MakerHub 当前登录态。",
+            )
+            return {"outcome": "not_logged_in", "message": "指纹浏览器未发现 MakerWorld 登录 token。"}
+        if not current_token or not hmac.compare_digest(current_token, browser_token):
+            self._persist_browser_recovery_session(
+                normalized_platform,
+                expected_cookie=expected_cookie,
+                cookie=expected_cookie,
+                profile_id=browser_result.profile_id,
+                status="account_mismatch",
+                message="指纹浏览器登录态与 MakerHub 当前账号不一致，已阻止自动覆盖。",
+            )
+            return {"outcome": "account_mismatch", "message": "浏览器 token 与当前账号不一致。"}
+
+        if browser_cookie == expected_cookie:
+            self._persist_browser_recovery_session(
+                normalized_platform,
+                expected_cookie=expected_cookie,
+                cookie=expected_cookie,
+                profile_id=browser_result.profile_id,
+                status="synced",
+                message="指纹浏览器登录态已同步，但 3MF 下载仍被拒绝。",
+            )
+            update_three_mf_gate(
+                normalized_platform,
+                gate="verification_required",
+                reason="browser_session_unchanged",
+                source="cloakbrowser_auto_sync",
+                detail=CLOAKBROWSER_BROWSER_CONFIRMATION_MESSAGE,
+            )
+            append_business_log(
+                "settings",
+                "cloakbrowser_auto_sync_unchanged",
+                "指纹浏览器登录态与 MakerHub 一致，3MF 授权仍被拒绝。",
+                level="warning",
+                platform=normalized_platform,
+                profile_id=browser_result.profile_id,
+            )
+            return {"outcome": "unchanged", "message": CLOAKBROWSER_BROWSER_CONFIRMATION_MESSAGE}
+
+        saved = self._persist_browser_recovery_session(
+            normalized_platform,
+            expected_cookie=expected_cookie,
+            cookie=browser_cookie,
+            profile_id=browser_result.profile_id,
+            status="synced",
+            message="指纹浏览器登录态已自动同步。",
+        )
+        if saved is None:
+            return {"outcome": "stale", "message": "MakerHub 登录态已变化，跳过浏览器同步结果。"}
+
+        primary_item = primary if isinstance(primary, dict) else {}
+        primary_url = normalize_source_url(str(primary_item.get("model_url") or ""))
+        if primary_url:
+            self.retry_missing_3mf(
+                model_url=primary_url,
+                model_id=str(primary_item.get("model_id") or extract_model_id(primary_url) or ""),
+                source=normalized_platform,
+                title=str(primary_item.get("title") or ""),
+                instance_id=str(primary_item.get("instance_id") or ""),
+                browser_session_recovery=True,
+            )
+        append_business_log(
+            "settings",
+            "cloakbrowser_auto_sync_updated",
+            "指纹浏览器登录态已更新，已安排当前受阻 3MF 重试。",
+            platform=normalized_platform,
+            profile_id=browser_result.profile_id,
+            retried=bool(primary_url),
+        )
+        return {"outcome": "updated", "message": CLOAKBROWSER_SESSION_REFRESHED_MESSAGE}
+
+    def _schedule_browser_session_recovery_for_three_mf_gate(
+        self,
+        platform: str,
+        *,
+        primary: Optional[dict] = None,
+    ) -> bool:
+        normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
+        if normalized_platform not in {"cn", "global"} or not self.background_enabled:
+            return False
+        now = time.monotonic()
+        with self._cloakbrowser_recovery_lock:
+            previous = self._cloakbrowser_recovery_attempted_at.get(normalized_platform, 0.0)
+            if now - previous < CLOAKBROWSER_AUTO_RECOVERY_COOLDOWN_SECONDS:
+                return False
+            self._cloakbrowser_recovery_attempted_at[normalized_platform] = now
+        snapshot = dict(primary) if isinstance(primary, dict) else {}
+
+        def _worker() -> None:
+            try:
+                self._recover_browser_session_for_three_mf_gate(normalized_platform, primary=snapshot)
+            except Exception as exc:
+                _log_archive(
+                    "cloakbrowser_auto_sync_failed",
+                    "自动读取指纹浏览器登录态失败。",
+                    level="warning",
+                    platform=normalized_platform,
+                    error=str(exc)[:240],
+                )
+
+        threading.Thread(
+            target=_worker,
+            name=f"makerhub-cloakbrowser-recovery-{normalized_platform}",
+            daemon=True,
+        ).start()
+        return True
 
     def submit(self, url: str, force: bool = False, preview_token: str = "", meta: Optional[dict] = None) -> dict:
         clean_url = normalize_source_url(url)
@@ -1908,6 +2129,7 @@ class ArchiveTaskManager:
         source: str = "",
         title: str = "",
         instance_id: str = "",
+        browser_session_recovery: bool = False,
     ) -> dict:
         clean_url = normalize_source_url(model_url)
         clean_model_id = str(model_id or "").strip()
@@ -1974,6 +2196,7 @@ class ArchiveTaskManager:
                 "source": clean_source,
                 "title": title,
                 "instance_id": instance_id,
+                "browser_session_recovery": bool(browser_session_recovery),
             },
         )
         if result.get("accepted"):
@@ -2661,6 +2884,8 @@ class ArchiveTaskManager:
         if not _is_three_mf_only_task(item):
             return False
         meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        if bool(meta.get("browser_session_recovery")):
+            return False
         url = normalize_source_url(str(meta.get("model_url") or item.get("url") or item.get("title") or ""))
         gate = three_mf_gate_for_url(url, meta)
         return not bool(gate.get("open"))
@@ -3049,6 +3274,7 @@ class ArchiveTaskManager:
         meta = meta if isinstance(meta, dict) else {}
         missing_3mf_retry = bool(meta.get("missing_3mf_retry"))
         three_mf_download_task = bool(meta.get("three_mf_download"))
+        browser_session_recovery = bool(meta.get("browser_session_recovery"))
         instance_ids = _clean_instance_ids(meta.get("instance_ids"))
         archive_instance_ids = instance_ids if three_mf_download_task else []
         asset_lightweight_task = missing_3mf_retry or three_mf_download_task
@@ -3070,7 +3296,7 @@ class ArchiveTaskManager:
         limit_guard = _read_three_mf_limit_guard()
         daily_limit_active = _is_three_mf_limit_guard_active_for_url(url, limit_guard)
         platform_gate = three_mf_gate_for_url(url, meta)
-        platform_gate_active = not bool(platform_gate.get("open"))
+        platform_gate_active = not bool(platform_gate.get("open")) and not browser_session_recovery
         platform_gate_skip_state = _three_mf_skip_state_from_gate(platform_gate.get("state"))
         defer_three_mf_download = not (
             missing_3mf_retry
@@ -3223,6 +3449,27 @@ class ArchiveTaskManager:
                 state=account_gate_failure.get("status") or "",
                 message=account_gate_failure.get("detail") or "",
             )
+            gate_state = str(account_gate_failure.get("status") or "").strip().lower()
+            if gate_state in {"auth_required", "cookie_invalid", "verification_required", "cloudflare"}:
+                blocked_instance_id = str(account_gate_failure.get("instance_id") or account_instance_id).strip()
+                blocked_item = next(
+                    (
+                        item
+                        for item in missing_items
+                        if str(item.get("instance_id") or "").strip() == blocked_instance_id
+                    ),
+                    missing_items[0] if missing_items else {},
+                )
+                self._schedule_browser_session_recovery_for_three_mf_gate(
+                    account_platform,
+                    primary={
+                        "model_url": account_model_url,
+                        "model_id": resolved_model_id,
+                        "title": str(blocked_item.get("title") or ""),
+                        "instance_id": str(blocked_item.get("instance_id") or blocked_instance_id),
+                        "source": account_platform,
+                    },
+                )
         if limit_guard_state is not None:
             self._pause_missing_3mf_retry_tasks_for_limit(limit_guard_state)
         self.task_store.remove_recent_failures_for_model(
