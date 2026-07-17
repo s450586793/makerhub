@@ -2787,9 +2787,10 @@ class ArchiveTaskManager:
         self._last_pending_maintenance_at = time.monotonic()
         queue = self._repair_queue_before_worker_start(repair_active=False)
         if hasattr(self.task_store, "resume_verification_paused_archive_tasks"):
-            gate_open_by_platform = self._verification_resume_gate_snapshot(queue)
+            gate_by_platform = self._verification_resume_gate_snapshot(queue)
+            self._schedule_browser_recovery_for_legacy_cookie_invalid_gates(queue, gate_by_platform)
             resumed_queue = self.task_store.resume_verification_paused_archive_tasks(
-                selector=lambda item: self._verification_resume_allowed(item, gate_open_by_platform),
+                selector=lambda item: self._verification_resume_allowed(item, gate_by_platform),
             )
             queue = resumed_queue
             if int(resumed_queue.get("resumed_count") or 0) > 0:
@@ -2897,20 +2898,50 @@ class ArchiveTaskManager:
         platform = normalize_makerworld_source(meta.get("source"), url)
         return platform, url, meta
 
-    def _verification_resume_gate_snapshot(self, queue: dict) -> dict[str, bool]:
-        gate_open_by_platform: dict[str, bool] = {}
+    def _verification_resume_gate_snapshot(self, queue: dict) -> dict[str, dict[str, Any]]:
+        gate_by_platform: dict[str, dict[str, Any]] = {}
         for item in queue.get("queued") or []:
             if str(item.get("status") or "").strip().lower() != "paused":
                 continue
             platform, url, meta = self._task_platform_and_url(item)
-            if platform in gate_open_by_platform:
+            if platform in gate_by_platform:
                 continue
-            gate_open_by_platform[platform] = bool(three_mf_gate_for_url(url, meta).get("open"))
-        return gate_open_by_platform
+            gate_by_platform[platform] = dict(three_mf_gate_for_url(url, meta) or {})
+        return gate_by_platform
 
-    def _verification_resume_allowed(self, item: dict, gate_open_by_platform: dict[str, bool]) -> bool:
+    def _verification_resume_allowed(self, item: dict, gate_by_platform: dict[str, dict[str, Any]]) -> bool:
         platform, _url, _meta = self._task_platform_and_url(item)
-        return bool(gate_open_by_platform.get(platform, False))
+        return bool((gate_by_platform.get(platform) or {}).get("open"))
+
+    def _schedule_browser_recovery_for_legacy_cookie_invalid_gates(
+        self,
+        queue: dict,
+        gate_by_platform: dict[str, dict[str, Any]],
+    ) -> None:
+        scheduled_platforms: set[str] = set()
+        for item in queue.get("queued") or []:
+            if str(item.get("status") or "").strip().lower() != "paused":
+                continue
+            if not _is_three_mf_only_task(item):
+                continue
+            platform, url, meta = self._task_platform_and_url(item)
+            if platform in scheduled_platforms:
+                continue
+            gate = gate_by_platform.get(platform) or {}
+            gate_state = str(gate.get("state") or "").strip().lower()
+            if bool(gate.get("open")) or gate_state != "cookie_invalid":
+                continue
+            self._schedule_browser_session_recovery_for_three_mf_gate(
+                platform,
+                primary={
+                    "model_url": url,
+                    "model_id": str(meta.get("model_id") or extract_model_id(url) or ""),
+                    "title": str(meta.get("title") or item.get("title") or ""),
+                    "instance_id": str(meta.get("instance_id") or ""),
+                    "source": platform,
+                },
+            )
+            scheduled_platforms.add(platform)
 
     def _retire_current_worker_if_surplus(self) -> bool:
         current_worker = threading.current_thread()

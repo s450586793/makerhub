@@ -195,6 +195,103 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
         thread_mock.assert_called_once()
         thread.start.assert_called_once()
 
+    def test_ensure_worker_for_pending_recovers_legacy_cookie_invalid_queue(self):
+        manager = ArchiveTaskManager(background_enabled=True)
+        paused_item = {
+            "id": "paused-cn",
+            "status": "paused",
+            "blocked_reason": "needs_verification",
+            "url": "https://makerworld.com.cn/zh/models/123",
+            "meta": {
+                "missing_3mf_retry": True,
+                "source": "cn",
+                "title": "CN model",
+                "instance_id": "profile-1",
+            },
+        }
+
+        def resume_paused(selector=None):
+            item = dict(paused_item)
+            return {
+                "active": [],
+                "queued": [item],
+                "recent_failures": [],
+                "running_count": 0,
+                "queued_count": 1,
+                "resumed_count": int(bool(selector and selector(item))),
+            }
+
+        manager.task_store = SimpleNamespace(
+            resume_verification_paused_archive_tasks=resume_paused,
+        )
+        queue = {
+            "active": [],
+            "queued": [paused_item],
+            "recent_failures": [],
+            "running_count": 0,
+            "queued_count": 1,
+        }
+
+        with patch.object(manager, "_repair_queue_before_worker_start", return_value=queue), \
+                patch.object(manager, "_ensure_worker"), \
+                patch.object(
+                    archive_worker_module,
+                    "three_mf_gate_for_url",
+                    return_value={"open": False, "state": "cookie_invalid", "platform": "cn"},
+                ), \
+                patch.object(manager, "_schedule_browser_session_recovery_for_three_mf_gate") as schedule_mock:
+            manager.ensure_worker_for_pending()
+
+        schedule_mock.assert_called_once_with(
+            "cn",
+            primary={
+                "model_url": "https://makerworld.com.cn/zh/models/123",
+                "model_id": "123",
+                "title": "CN model",
+                "instance_id": "profile-1",
+                "source": "cn",
+            },
+        )
+
+    def test_ensure_worker_for_pending_does_not_recover_browser_after_confirmation_required(self):
+        manager = ArchiveTaskManager(background_enabled=True)
+        paused_item = {
+            "id": "paused-cn",
+            "status": "paused",
+            "blocked_reason": "needs_verification",
+            "url": "https://makerworld.com.cn/zh/models/123",
+            "meta": {"missing_3mf_retry": True, "source": "cn"},
+        }
+        manager.task_store = SimpleNamespace(
+            resume_verification_paused_archive_tasks=lambda selector=None: {
+                "active": [],
+                "queued": [paused_item],
+                "recent_failures": [],
+                "running_count": 0,
+                "queued_count": 1,
+                "resumed_count": 0,
+            },
+        )
+        queue = {
+            "active": [],
+            "queued": [paused_item],
+            "recent_failures": [],
+            "running_count": 0,
+            "queued_count": 1,
+        }
+
+        with patch.object(manager, "_repair_queue_before_worker_start", return_value=queue), \
+                patch.object(manager, "_ensure_worker"), \
+                patch.object(
+                    archive_worker_module,
+                    "three_mf_gate_for_url",
+                    return_value={"open": False, "state": "verification_required", "platform": "cn"},
+                ), \
+                patch.object(manager, "_schedule_browser_session_recovery_for_three_mf_gate") as schedule_mock:
+            manager.ensure_worker_for_pending()
+
+        schedule_mock.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
