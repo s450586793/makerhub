@@ -231,6 +231,42 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("无法确认", current.browser_message)
             retry_mock.assert_not_called()
 
+    async def test_store_browser_session_rejects_profile_without_auth_token_without_identity_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            target = CookiePair(
+                platform="cn",
+                cookie="token=old",
+                account_id="account-a",
+                browser_profile_id="profile-cn",
+            )
+            config.cookies = [target]
+            store.save(config)
+            result = CloakBrowserSessionResult(
+                profile_id="profile-cn",
+                cookie="cf_clearance=browser-clearance; lang=zh",
+            )
+
+            with patch.object(config_api, "store", store), \
+                    patch.object(
+                        config_api,
+                        "online_account_metadata_from_cookie",
+                        side_effect=AssertionError("未登录 profile 不应发起身份探针"),
+                    ) as metadata_mock, \
+                    patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms") as retry_mock, \
+                    patch.object(config_api, "append_business_log"), \
+                    patch.object(config_api, "publish_state_event"):
+                saved, applied = config_api._store_browser_session_result("cn", target, result, config.proxy)
+
+            current = saved.cookies[0]
+            self.assertFalse(applied)
+            self.assertEqual(current.cookie, "token=old")
+            self.assertEqual(current.browser_status, "action_required")
+            self.assertIn("尚未登录", current.browser_message)
+            metadata_mock.assert_not_called()
+            retry_mock.assert_not_called()
+
     async def test_store_browser_session_ignores_stale_cookie_result(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")

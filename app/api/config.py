@@ -2478,60 +2478,77 @@ def _store_browser_session_result(
         and candidate_token
         and hmac.compare_digest(current_token, candidate_token)
     )
+    blocked_browser_writeback = False
+    browser_status = ""
+    browser_message = ""
+    browser_event = ""
+    browser_log_message = ""
+    if changed and not candidate_token:
+        blocked_browser_writeback = True
+        browser_status = "action_required"
+        browser_message = "指纹浏览器尚未登录 MakerWorld，请在浏览器内完成登录后再同步。"
+        browser_event = "cloakbrowser_login_missing"
+        browser_log_message = "指纹浏览器未发现 MakerWorld 登录 token，已保留当前 MakerHub 登录态。"
     if changed and not same_auth_identity:
-        try:
-            account_metadata = online_account_metadata_from_cookie(
-                platform=platform,
-                username=current.username,
-                cookie=candidate_cookie,
-                proxy_config=proxy_config,
-            )
-        except Exception:
-            account_metadata = {}
-        candidate_account_id = str(account_metadata.get("account_id") or "").strip()
-        current_account_id = str(current.account_id or "").strip()
-        if current_account_id and candidate_account_id != current_account_id:
-            identity_verified = bool(candidate_account_id)
-            browser_status = "account_mismatch" if identity_verified else "action_required"
-            browser_message = (
-                "指纹浏览器登录了另一个账号，已阻止覆盖当前 MakerHub 账号。"
-                if identity_verified
-                else "无法确认指纹浏览器中的账号身份，已保留当前 MakerHub 登录态。"
-            )
-            metadata = _browser_status_metadata(
-                profile_id=result.profile_id,
-                status=browser_status,
-                message=browser_message,
-                synced_at=current.browser_synced_at,
-            )
-            config.cookies = _upsert_cookie_pair(
-                config.cookies,
-                _cookie_pair_from_existing(
-                    current,
+        if not blocked_browser_writeback:
+            try:
+                account_metadata = online_account_metadata_from_cookie(
                     platform=platform,
-                    cookie=current.cookie,
-                    metadata=metadata,
-                ),
-            )
-            saved = store.save(config)
-            publish_state_event(
-                "online_accounts",
-                "state.changed",
-                {"platform": platform, "status": browser_status},
-            )
-            append_business_log(
-                "settings",
-                "cloakbrowser_account_mismatch" if identity_verified else "cloakbrowser_account_unverified",
-                (
+                    username=current.username,
+                    cookie=candidate_cookie,
+                    proxy_config=proxy_config,
+                )
+            except Exception:
+                account_metadata = {}
+            candidate_account_id = str(account_metadata.get("account_id") or "").strip()
+            current_account_id = str(current.account_id or "").strip()
+            if current_account_id and candidate_account_id != current_account_id:
+                identity_verified = bool(candidate_account_id)
+                blocked_browser_writeback = True
+                browser_status = "account_mismatch" if identity_verified else "action_required"
+                browser_message = (
+                    "指纹浏览器登录了另一个账号，已阻止覆盖当前 MakerHub 账号。"
+                    if identity_verified
+                    else "无法确认指纹浏览器中的账号身份，已保留当前 MakerHub 登录态。"
+                )
+                browser_event = "cloakbrowser_account_mismatch" if identity_verified else "cloakbrowser_account_unverified"
+                browser_log_message = (
                     "指纹浏览器账号与 MakerHub 当前账号不一致，已阻止 Cookie 写回。"
                     if identity_verified
                     else "无法确认指纹浏览器账号身份，已阻止 Cookie 写回。"
-                ),
-                level="warning",
+                )
+
+    if blocked_browser_writeback:
+        metadata = _browser_status_metadata(
+            profile_id=result.profile_id,
+            status=browser_status,
+            message=browser_message,
+            synced_at=current.browser_synced_at,
+        )
+        config.cookies = _upsert_cookie_pair(
+            config.cookies,
+            _cookie_pair_from_existing(
+                current,
                 platform=platform,
-                profile_id=result.profile_id,
-            )
-            return saved, False
+                cookie=current.cookie,
+                metadata=metadata,
+            ),
+        )
+        saved = store.save(config)
+        publish_state_event(
+            "online_accounts",
+            "state.changed",
+            {"platform": platform, "status": browser_status},
+        )
+        append_business_log(
+            "settings",
+            browser_event,
+            browser_log_message,
+            level="warning",
+            platform=platform,
+            profile_id=result.profile_id,
+        )
+        return saved, False
 
     metadata = _preserve_account_profile_metadata(account_metadata, current)
     timestamp = _now_iso()

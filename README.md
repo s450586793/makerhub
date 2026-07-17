@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.11.18`
+> 当前版本：`v0.11.19`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -190,6 +190,11 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-17 · v0.11.19
+
+- 修复空白指纹浏览器 profile 无法读取 MakerWorld 登录态的问题；同步时会进入对应站点首页读取 Cookie 和本地会话。
+- 同步不会打断正在进行的浏览器登录；未发现认证 token 时明确提示“指纹浏览器尚未登录”，并保留 MakerHub 已有登录态。
+
 ### 2026-07-16 · v0.11.18
 
 - 修复模型库分页查询：普通列表不再展开订阅状态，避免大归档库查询超时和反向代理 `504`。
@@ -200,12 +205,12 @@ uvicorn app.main:app --reload
 
 - Worker 独立 heartbeat 线程会在初始化和归档任务运行期间持续刷新存活状态，不再因启动耗时被误判为不可用。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-16 · v0.11.16
 
 - Worker 在恢复归档队列、订阅和索引前立即写入 heartbeat，避免耗时启动期间被健康检查误判为不可用。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-16 · v0.11.15
 

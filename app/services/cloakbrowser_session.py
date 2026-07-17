@@ -556,7 +556,13 @@ def collect_browser_session(platform: str, profile_id: str) -> CloakBrowserSessi
     with _operation_lock(clean_platform):
         profile = ensure_profile(clean_platform, profile_id)
         running, launched_here = launch_profile(profile)
-        snapshot = _run_bridge(_bridge_payload(running.id, action="snapshot"))
+        snapshot = _run_bridge(
+            _bridge_payload(
+                running.id,
+                action="snapshot",
+                target_url=f"{PLATFORM_ORIGINS[clean_platform]}/zh",
+            )
+        )
         return CloakBrowserSessionResult(
             profile_id=running.id,
             cookie=_cookie_header_from_snapshot(snapshot, clean_platform),

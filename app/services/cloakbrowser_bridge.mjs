@@ -102,7 +102,11 @@ async function main() {
     }
     const pages = await context.pages();
     const page = pages[0] || await context.newPage();
-    if (input.target_url) {
+    const currentUrl = page.url();
+    const shouldNavigate = input.target_url && (
+      input.action === "seed" || !/^https?:\/\//i.test(currentUrl)
+    );
+    if (shouldNavigate) {
       try {
         await page.goto(String(input.target_url), {
           waitUntil: "domcontentloaded",

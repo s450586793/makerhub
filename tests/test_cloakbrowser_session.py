@@ -284,6 +284,34 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertEqual(result.profile_id, "profile-cn")
         stop_mock.assert_not_called()
 
+    def test_collect_browser_session_navigates_blank_profile_to_platform_home(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(id="profile-cn", name="MakerHub CN")
+        running = cloakbrowser_session.CloakBrowserProfile(id="profile-cn", name="MakerHub CN", status="running")
+        snapshot = {
+            "ok": True,
+            "current_url": "https://makerworld.com.cn/zh",
+            "cookies": [{"name": "token", "value": "browser-token", "domain": ".makerworld.com.cn"}],
+            "storage": [],
+        }
+
+        with patch.object(cloakbrowser_session, "ensure_profile", return_value=profile), \
+                patch.object(cloakbrowser_session, "launch_profile", return_value=(running, False)), \
+                patch.object(cloakbrowser_session, "_run_bridge", return_value=snapshot) as bridge_mock, \
+                patch.dict(
+                    os.environ,
+                    {
+                        "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                        "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+                    },
+                    clear=False,
+                ):
+            result = cloakbrowser_session.collect_browser_session("cn", "profile-cn")
+
+        self.assertEqual(result.cookie, "token=browser-token")
+        bridge_payload = bridge_mock.call_args.args[0]
+        self.assertEqual(bridge_payload["action"], "snapshot")
+        self.assertEqual(bridge_payload["target_url"], "https://makerworld.com.cn/zh")
+
 
 if __name__ == "__main__":
     unittest.main()
