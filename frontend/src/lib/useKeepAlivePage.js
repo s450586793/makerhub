@@ -28,8 +28,12 @@ export function useKeepAlivePage({ onActivate, onDeactivate } = {}) {
     onDeactivate?.();
   }
 
+  function handleActivationError(error) {
+    console.error("页面激活失败", error);
+  }
+
   onActivated(() => {
-    void activate();
+    void activate().catch(handleActivationError);
   });
   onDeactivated(deactivate);
   onBeforeUnmount(deactivate);

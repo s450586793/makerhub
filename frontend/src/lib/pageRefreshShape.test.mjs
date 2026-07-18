@@ -246,6 +246,8 @@ test("keep-alive lifecycle helper pauses cached pages without duplicate cleanup"
   assert.match(keepAlivePageSource, /const active = ref\(false\)/);
   assert.match(keepAlivePageSource, /onActivate/);
   assert.match(keepAlivePageSource, /onDeactivate/);
+  assert.match(keepAlivePageSource, /void activate\(\)\.catch\(handleActivationError\)/);
+  assert.match(keepAlivePageSource, /function handleActivationError\(error\)/);
 });
 
 test("cached work pages cancel their live work while deactivated", () => {
@@ -273,4 +275,13 @@ test("state refresh controllers are gated by their cached page activity", () => 
   for (const source of [organizerPageSource, remoteRefreshPageSource, tasksPageSource]) {
     assert.match(source, /isActive: \(\) => pageActive\.value/);
   }
+});
+
+test("TasksPage handles light task refresh errors before lifecycle scheduling", () => {
+  const loadStart = tasksPageSource.indexOf("async function load()");
+  const loadEnd = tasksPageSource.indexOf("async function refreshFullTasks()", loadStart);
+
+  assert.notEqual(loadStart, -1);
+  assert.notEqual(loadEnd, -1);
+  assert.match(tasksPageSource.slice(loadStart, loadEnd), /catch \(error\)[\s\S]*?archiveStatus\.value/);
 });

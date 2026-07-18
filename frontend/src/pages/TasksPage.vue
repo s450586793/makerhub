@@ -642,6 +642,8 @@ async function load() {
   loadingTasks = true;
   try {
     await tasksResource.load();
+  } catch (error) {
+    archiveStatus.value = error instanceof Error ? error.message : "任务数据加载失败。";
   } finally {
     loadingTasks = false;
   }

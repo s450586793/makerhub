@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.12.0`
+> 当前版本：`v0.12.1`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -190,6 +190,10 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-18 · v0.12.1
+
+- 修复缓存工作页激活失败时的异步异常处理；任务轻量接口失败会显示提示，不再产生未处理 Promise rejection。
+
 ### 2026-07-18 · v0.12.0
 
 - 模型库、订阅库、本地库、源端刷新和归档任务会保留已加载内容；返回页面时立即可用，并在后台静默刷新轻量数据。
@@ -200,13 +204,13 @@ uvicorn app.main:app --reload
 - Worker 恢复旧的暂停 `3MF` 队列时，会对历史 `cookie_invalid` gate 自动读取一次关联的指纹浏览器登录态。
 - 浏览器会话未变化且下载仍受拒时，状态立即收敛为“需要浏览器确认”；已是该状态的队列不会重复读取浏览器。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-17 · v0.11.20
 
 - 国区 / 国际区 `3MF` 授权失败时，Worker 会自动读取一次关联的指纹浏览器登录态；同平台 10 分钟内不会重复读取。
 - 浏览器 Cookie 实际变化且认证 token 一致时，自动写回并只重试当前受阻的 `3MF`；浏览器会话未变化仍被拒绝时，明确提示到官网完成验证，不再误导为重新登录。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-17 · v0.11.19
 
