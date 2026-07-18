@@ -285,7 +285,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, reactive, ref } from "vue";
 import { RouterLink } from "vue-router";
 
 import CronField from "../components/CronField.vue";
@@ -293,6 +293,8 @@ import { applyConfigPayload } from "../lib/appState";
 import { apiRequest } from "../lib/api";
 import { encodeModelPath, formatServerDateTime } from "../lib/helpers";
 import { createPagePerformanceTracker } from "../lib/performance";
+import { createHydratedResource } from "../lib/useHydratedResource";
+import { useKeepAlivePage } from "../lib/useKeepAlivePage";
 import { createPageRefreshController } from "../lib/usePageRefresh";
 
 
@@ -318,6 +320,13 @@ const historyFilterOptions = [
 ];
 let remoteRefreshController = null;
 let lastRefreshAt = 0;
+const remoteRefreshResource = createHydratedResource({
+  load: ({ signal }) => apiRequest("/api/source-refresh", { signal }),
+});
+const { active: pageActive } = useKeepAlivePage({
+  onActivate: activatePage,
+  onDeactivate: deactivatePage,
+});
 
 const recentHistory = computed(() => {
   const items = remoteRefreshState.value?.recent_items;
@@ -552,6 +561,20 @@ function applyHistoryFilter(value) {
   historyVisibleLimit.value = HISTORY_PAGE_SIZE;
 }
 
+function startRemoteRefreshController() {
+  if (remoteRefreshController) {
+    return;
+  }
+  remoteRefreshController = createPageRefreshController({
+    scopes: ["source_refresh_queue", "source_refresh_runs", "remote_refresh_state"],
+    refresh: () => load({ silent: true }),
+    delayMs: activeRefreshDelayMs,
+    resetExistingTimer: false,
+    refreshOnVisible: true,
+    isActive: () => pageActive.value,
+  });
+}
+
 function stopRemoteRefreshController() {
   if (remoteRefreshController) {
     remoteRefreshController.dispose();
@@ -573,7 +596,10 @@ async function load({ silent = false } = {}) {
     loading.value = true;
   }
   try {
-    const payload = await apiRequest("/api/source-refresh");
+    const payload = await remoteRefreshResource.load();
+    if (!payload) {
+      return false;
+    }
     applyPayload(payload);
   } catch (error) {
     ok = false;
@@ -651,20 +677,17 @@ async function repairArchiveQueue() {
   }
 }
 
-onMounted(async () => {
-  const perf = createPagePerformanceTracker({ page: "remote_refresh" });
-  remoteRefreshController = createPageRefreshController({
-    scopes: ["source_refresh_queue", "source_refresh_runs", "remote_refresh_state"],
-    refresh: () => load({ silent: true }),
-    delayMs: activeRefreshDelayMs,
-    resetExistingTimer: false,
-    refreshOnVisible: true,
-  });
-  await load();
-  void perf.finish();
-});
-
-onBeforeUnmount(() => {
+function deactivatePage() {
+  remoteRefreshResource.cancel();
   stopRemoteRefreshController();
-});
+}
+
+async function activatePage({ initial, isCurrent }) {
+  const perf = initial ? createPagePerformanceTracker({ page: "remote_refresh" }) : null;
+  startRemoteRefreshController();
+  await load({ silent: !initial });
+  if (isCurrent() && perf) {
+    void perf.finish();
+  }
+}
 </script>

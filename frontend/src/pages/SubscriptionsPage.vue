@@ -154,7 +154,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, reactive, ref } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 
 import CronField from "../components/CronField.vue";
@@ -166,6 +166,7 @@ import { getPageCache, setPageCache } from "../lib/pageCache";
 import { createPagePerformanceTracker } from "../lib/performance";
 import { subscribeStateRefresh } from "../lib/stateEvents";
 import { createHydratedResource } from "../lib/useHydratedResource";
+import { useKeepAlivePage } from "../lib/useKeepAlivePage";
 import {
   DEFAULT_SUBSCRIPTION_SETTINGS,
   createEmptySubscriptionsPayload,
@@ -196,6 +197,7 @@ const createDialog = reactive({
 });
 let unsubscribeStateRefresh = null;
 let requestToken = 0;
+let loadMoreAbortController = null;
 
 const sourceSections = computed(() => (
   payload.value.sections.filter((section) => section?.key === "subscription_sources")
@@ -213,6 +215,10 @@ const loadMoreObserver = createAutoLoadObserver({
   isLoading: () => Boolean(loadingMore.value),
   load: loadMoreSubscriptionSources,
   nextTick,
+});
+const { active: pageActive } = useKeepAlivePage({
+  onActivate: activatePage,
+  onDeactivate: deactivatePage,
 });
 const shareableCards = computed(() => (
   sourceSections.value
@@ -403,16 +409,19 @@ async function updateRoutePage(page) {
 }
 
 async function loadMoreSubscriptionSources() {
-  if (loadingMore.value || !hasMoreSubscriptionSources.value) {
+  if (!pageActive.value || loadingMore.value || !hasMoreSubscriptionSources.value) {
     return false;
   }
   const currentToken = ++requestToken;
   const nextPage = Math.max(Number(subscriptionSources.value?.page || 1), 1) + 1;
+  const abortController = new AbortController();
+  loadMoreAbortController?.abort();
+  loadMoreAbortController = abortController;
   let failed = false;
   disconnectObserver();
   loadingMore.value = true;
   try {
-    const response = await fetchSubscriptionsPage(nextPage);
+    const response = await fetchSubscriptionsPage(nextPage, { signal: abortController.signal });
     if (currentToken !== requestToken) {
       return false;
     }
@@ -435,10 +444,16 @@ async function loadMoreSubscriptionSources() {
     await updateRoutePage(nextPage);
     return true;
   } catch (error) {
+    if (error?.name === "AbortError") {
+      return false;
+    }
     failed = true;
     status.value = error instanceof Error ? error.message : "加载更多订阅来源失败。";
     return false;
   } finally {
+    if (loadMoreAbortController === abortController) {
+      loadMoreAbortController = null;
+    }
     if (currentToken === requestToken) {
       loadingMore.value = false;
       await nextTick();
@@ -454,6 +469,9 @@ function disconnectObserver() {
 }
 
 function ensureObserver() {
+  if (!pageActive.value) {
+    return;
+  }
   loadMoreObserver.ensure();
 }
 
@@ -584,12 +602,16 @@ async function createSubscription() {
   }
 }
 
-onMounted(async () => {
-  const perf = createPagePerformanceTracker({ page: "subscriptions", route: () => route.fullPath });
-  subscriptionsAutoLoadSupported.value = typeof window !== "undefined" && "IntersectionObserver" in window;
+function startSubscriptionsStateRefresh() {
+  if (typeof unsubscribeStateRefresh === "function") {
+    return;
+  }
   unsubscribeStateRefresh = subscribeStateRefresh(
     ["subscriptions_state", "source_library", "archive_queue"],
     () => {
+      if (!pageActive.value) {
+        return;
+      }
       void load({ silent: true, pages: Number(subscriptionSources.value?.page || routePage()) });
     },
     {
@@ -600,18 +622,38 @@ onMounted(async () => {
       ],
     },
   );
-  hydrateSubscriptionsPageFromCache();
-  await load();
-  perf.markDataReady();
-  void perf.finish();
-});
+}
 
-onBeforeUnmount(() => {
+function deactivatePage() {
   subscriptionsResource.cancel();
+  requestToken += 1;
+  loadMoreAbortController?.abort();
+  loadMoreAbortController = null;
   disconnectObserver();
+  loadingMore.value = false;
   if (typeof unsubscribeStateRefresh === "function") {
     unsubscribeStateRefresh();
     unsubscribeStateRefresh = null;
   }
-});
+}
+
+async function activatePage({ initial, isCurrent }) {
+  const perf = initial ? createPagePerformanceTracker({ page: "subscriptions", route: () => route.fullPath }) : null;
+  subscriptionsAutoLoadSupported.value = typeof window !== "undefined" && "IntersectionObserver" in window;
+  startSubscriptionsStateRefresh();
+  if (initial) {
+    hydrateSubscriptionsPageFromCache();
+  }
+  await load({
+    silent: !initial,
+    pages: Number(subscriptionSources.value?.page || routePage()),
+  });
+  if (!isCurrent()) {
+    return;
+  }
+  perf?.markDataReady();
+  if (perf) {
+    void perf.finish();
+  }
+}
 </script>

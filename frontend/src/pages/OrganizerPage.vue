@@ -194,7 +194,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import SourceLibraryCard from "../components/SourceLibraryCard.vue";
@@ -202,6 +202,7 @@ import { apiRequest, apiUploadRequest } from "../lib/api";
 import { deletePageCache, deletePageCacheByPrefix, getPageCache, setPageCache } from "../lib/pageCache";
 import { createPagePerformanceTracker } from "../lib/performance";
 import { createHydratedResource } from "../lib/useHydratedResource";
+import { useKeepAlivePage } from "../lib/useKeepAlivePage";
 import { createPageRefreshController } from "../lib/usePageRefresh";
 
 
@@ -304,6 +305,10 @@ const organizerResource = createHydratedResource({
     };
     organizerTasks.value = response?.organize_tasks || organizerTasks.value;
   },
+});
+const { active: pageActive } = useKeepAlivePage({
+  onActivate: activatePage,
+  onDeactivate: deactivatePage,
 });
 
 function rememberOrganizerPage() {
@@ -1126,6 +1131,24 @@ function hasActiveOrganizeTasks() {
   return importUploadProgressIsActive() || activeOrganizeCount.value > 0 || hasRecentImportWork();
 }
 
+function startOrganizerRefreshController() {
+  if (organizerRefreshController) {
+    return;
+  }
+  organizerRefreshController = createPageRefreshController({
+    scopes: ["organize_tasks", "archive_queue", "source_library"],
+    eventRules: [
+      { scopes: ["organize_tasks"], types: ["state.changed", "organize.completed"] },
+      { scopes: ["source_library"], types: ["source_library.changed"] },
+      { scopes: ["archive_queue"], types: ["archive.completed", "archive.failed"] },
+    ],
+    refresh: refreshOrganizerTasks,
+    delayMs: 300,
+    refreshOnVisible: true,
+    isActive: () => pageActive.value,
+  });
+}
+
 function stopOrganizerRefreshController() {
   if (organizerRefreshController) {
     organizerRefreshController.dispose();
@@ -1618,30 +1641,28 @@ function closeOrganizerProgressPopover() {
   organizerProgressOpen.value = false;
 }
 
-onMounted(async () => {
-  const perf = createPagePerformanceTracker({ page: "organizer" });
-  organizerRefreshController = createPageRefreshController({
-    scopes: ["organize_tasks", "archive_queue", "source_library"],
-    eventRules: [
-      { scopes: ["organize_tasks"], types: ["state.changed", "organize.completed"] },
-      { scopes: ["source_library"], types: ["source_library.changed"] },
-      { scopes: ["archive_queue"], types: ["archive.completed", "archive.failed"] },
-    ],
-    refresh: refreshOrganizerTasks,
-    delayMs: 300,
-    refreshOnVisible: true,
-  });
-  document.addEventListener("click", closeOrganizerProgressPopover);
-  hydrateOrganizerPageFromCache();
-  restoreImportUploadProgress();
-  await load();
-  perf.markDataReady();
-  void perf.finish();
-});
-
-onBeforeUnmount(() => {
+function deactivatePage() {
   organizerResource.cancel();
+  loading.value = false;
   stopOrganizerRefreshController();
   document.removeEventListener("click", closeOrganizerProgressPopover);
-});
+}
+
+async function activatePage({ initial, isCurrent }) {
+  const perf = initial ? createPagePerformanceTracker({ page: "organizer" }) : null;
+  startOrganizerRefreshController();
+  document.addEventListener("click", closeOrganizerProgressPopover);
+  if (initial) {
+    hydrateOrganizerPageFromCache();
+    restoreImportUploadProgress();
+  }
+  await load({ silent: !initial });
+  if (!isCurrent()) {
+    return;
+  }
+  perf?.markDataReady();
+  if (perf) {
+    void perf.finish();
+  }
+}
 </script>

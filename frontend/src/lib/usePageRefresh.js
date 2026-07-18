@@ -10,6 +10,7 @@ export function createPageRefreshController({
   debounceMs,
   resetExistingTimer = true,
   refreshOnVisible = false,
+  isActive = () => true,
   subscribe = subscribeStateRefresh,
   isHidden = () => typeof document !== "undefined" && document.hidden,
   addVisibilityListener = (handler) => {
@@ -27,6 +28,7 @@ export function createPageRefreshController({
     refresh,
     delayMs,
     resetExistingTimer,
+    isActive,
     isHidden,
   });
   const unsubscribe = typeof subscribe === "function" && (scopes.length || eventRules.length)

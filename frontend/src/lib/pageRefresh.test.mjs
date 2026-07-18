@@ -41,6 +41,32 @@ test("createPageRefreshScheduler schedules a visible refresh", () => {
   assert.deepEqual(calls, ["state-event"]);
 });
 
+test("createPageRefreshScheduler skips work while its page is inactive", async () => {
+  const timers = createTimerHarness();
+  const calls = [];
+  let active = false;
+  const scheduler = createPageRefreshScheduler({
+    refresh: (reason) => calls.push(reason),
+    delayMs: 100,
+    isActive: () => active,
+    isHidden: () => false,
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn,
+  });
+
+  scheduler.schedule("state-event");
+  await scheduler.refreshNow("manual-refresh");
+
+  assert.equal(timers.scheduled.length, 0);
+  assert.deepEqual(calls, []);
+
+  active = true;
+  scheduler.schedule("activated");
+  timers.scheduled[0].fn();
+
+  assert.deepEqual(calls, ["activated"]);
+});
+
 test("createPageRefreshScheduler coalesces repeated schedules", () => {
   const timers = createTimerHarness();
   const calls = [];

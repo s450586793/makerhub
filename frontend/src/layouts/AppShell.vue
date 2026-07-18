@@ -76,7 +76,19 @@
       >
         显示
       </button>
-      <RouterView />
+      <RouterView v-slot="{ Component, route: currentRoute }">
+        <KeepAlive :max="5">
+          <component
+            :is="Component"
+            v-if="currentRoute.meta.keepAlive"
+            :key="String(currentRoute.name || currentRoute.path)"
+          />
+        </KeepAlive>
+        <component
+          :is="Component"
+          v-if="!currentRoute.meta.keepAlive"
+        />
+      </RouterView>
     </main>
   </div>
 </template>

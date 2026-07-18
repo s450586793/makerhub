@@ -108,7 +108,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import ModelCard from "../components/ModelCard.vue";
@@ -119,6 +119,7 @@ import { createAutoLoadObserver } from "../lib/autoLoadObserver";
 import { getPageCache, setPageCache } from "../lib/pageCache";
 import { createPagePerformanceTracker } from "../lib/performance";
 import { createHydratedResource } from "../lib/useHydratedResource";
+import { useKeepAlivePage } from "../lib/useKeepAlivePage";
 
 
 const route = useRoute();
@@ -154,6 +155,7 @@ const shareDialogVisible = ref(false);
 let requestToken = 0;
 let loadMoreToken = 0;
 let deleteSettleToken = 0;
+let loadMoreAbortController = null;
 let unsubscribeArchiveEvents = null;
 let refreshWhenVisible = false;
 let locallyHiddenDeletedModelDirs = new Set();
@@ -166,6 +168,10 @@ const loadMoreObserver = createAutoLoadObserver({
   isLoading: () => Boolean(loadingMore.value),
   load: loadMore,
   nextTick,
+});
+const { active: pageActive } = useKeepAlivePage({
+  onActivate: activatePage,
+  onDeactivate: deactivatePage,
 });
 
 function syncFiltersFromRoute() {
@@ -606,18 +612,24 @@ async function refreshCurrentModelLibrary(anchor = null, options = {}) {
 }
 
 async function loadMore() {
-  if (loadingMore.value || !payload.value.has_more) {
+  if (!pageActive.value || loadingMore.value || !payload.value.has_more) {
     return false;
   }
   const currentToken = ++loadMoreToken;
   const routeAtLoad = route.fullPath;
   const nextPage = Math.max(Number(payload.value.page) || 1, 1) + 1;
+  const abortController = new AbortController();
+  loadMoreAbortController?.abort();
+  loadMoreAbortController = abortController;
   let failed = false;
   disconnectObserver();
   loadingMore.value = true;
   try {
     syncFiltersFromRoute();
-    const response = suppressLocallyDeletedItems(await fetchPage(nextPage, { cacheKey: `${Date.now()}-${nextPage}` }));
+    const response = suppressLocallyDeletedItems(await fetchPage(nextPage, {
+      cacheKey: `${Date.now()}-${nextPage}`,
+      signal: abortController.signal,
+    }));
     if (currentToken !== loadMoreToken || route.fullPath !== routeAtLoad) {
       return false;
     }
@@ -632,10 +644,16 @@ async function loadMore() {
     rememberModelList();
     return true;
   } catch (error) {
+    if (error?.name === "AbortError") {
+      return false;
+    }
     failed = true;
     status.value = error instanceof Error ? error.message : "加载更多模型失败。";
     return false;
   } finally {
+    if (loadMoreAbortController === abortController) {
+      loadMoreAbortController = null;
+    }
     if (currentToken === loadMoreToken) {
       loadingMore.value = false;
       await nextTick();
@@ -651,6 +669,9 @@ function disconnectObserver() {
 }
 
 function ensureObserver() {
+  if (!pageActive.value) {
+    return;
+  }
   loadMoreObserver.ensure();
 }
 
@@ -756,6 +777,9 @@ function patchLocalFlag(modelDir, key, value) {
 }
 
 function handleArchiveCompleted() {
+  if (!pageActive.value) {
+    return;
+  }
   if (document.hidden) {
     refreshWhenVisible = true;
     return;
@@ -764,6 +788,9 @@ function handleArchiveCompleted() {
 }
 
 function handleVisibilityChange() {
+  if (!pageActive.value) {
+    return;
+  }
   if (document.hidden) {
     return;
   }
@@ -824,6 +851,8 @@ async function deleteOne(modelDir) {
   const cleanModelDir = String(modelDir || "").trim();
   requestToken += 1;
   loadMoreToken += 1;
+  loadMoreAbortController?.abort();
+  loadMoreAbortController = null;
   const currentDeleteSettleToken = ++deleteSettleToken;
   disconnectObserver();
   loadingMore.value = false;
@@ -891,6 +920,9 @@ async function restoreOne(modelDir) {
 }
 
 watch(() => route.fullPath, () => {
+  if (!pageActive.value) {
+    return;
+  }
   status.value = "";
   void hydrateModelListFromCache();
   void load({ append: false }).catch((error) => {
@@ -899,28 +931,56 @@ watch(() => route.fullPath, () => {
   });
 });
 
-onMounted(async () => {
-  const perf = createPagePerformanceTracker({ page: "models", route: () => route.fullPath });
-  await hydrateModelListFromCache();
-  try {
-    await load({ append: false });
-  } catch (error) {
-    status.value = error instanceof Error ? error.message : "模型列表加载失败。";
-    loaded.value = true;
+function startModelPageListeners() {
+  if (typeof unsubscribeArchiveEvents !== "function") {
+    unsubscribeArchiveEvents = subscribeArchiveCompletion(handleArchiveCompleted);
   }
-  perf.markDataReady();
-  void perf.finish();
-  unsubscribeArchiveEvents = subscribeArchiveCompletion(handleArchiveCompleted);
   document.addEventListener("visibilitychange", handleVisibilityChange);
-});
+}
 
-onBeforeUnmount(() => {
+function deactivatePage() {
   modelsResource.cancel();
+  requestToken += 1;
+  loadMoreToken += 1;
+  loadMoreAbortController?.abort();
+  loadMoreAbortController = null;
   disconnectObserver();
+  loadingMore.value = false;
+  refreshWhenVisible = false;
   if (typeof unsubscribeArchiveEvents === "function") {
     unsubscribeArchiveEvents();
     unsubscribeArchiveEvents = null;
   }
   document.removeEventListener("visibilitychange", handleVisibilityChange);
-});
+}
+
+async function activatePage({ initial, isCurrent }) {
+  const perf = initial ? createPagePerformanceTracker({ page: "models", route: () => route.fullPath }) : null;
+  if (initial) {
+    await hydrateModelListFromCache();
+  }
+  if (!isCurrent()) {
+    return;
+  }
+  try {
+    if (initial) {
+      await load({ append: false });
+    } else {
+      await reloadVisiblePages({ refresh: true });
+    }
+  } catch (error) {
+    if (isCurrent()) {
+      status.value = error instanceof Error ? error.message : "模型列表加载失败。";
+      loaded.value = true;
+    }
+  }
+  if (!isCurrent()) {
+    return;
+  }
+  perf?.markDataReady();
+  if (perf) {
+    void perf.finish();
+  }
+  startModelPageListeners();
+}
 </script>

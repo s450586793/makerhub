@@ -394,7 +394,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, ref } from "vue";
 import { RouterLink } from "vue-router";
 
 import { apiRequest } from "../lib/api";
@@ -403,6 +403,7 @@ import { encodeModelPath } from "../lib/helpers";
 import { createPagePerformanceTracker } from "../lib/performance";
 import { runtimeFailureLabel, runtimeRunLabel, runtimeTaskShape } from "../lib/runtimeStatus";
 import { createHydratedResource } from "../lib/useHydratedResource";
+import { useKeepAlivePage } from "../lib/useKeepAlivePage";
 import { createPageRefreshController } from "../lib/usePageRefresh";
 
 
@@ -470,6 +471,10 @@ const tasksResource = createHydratedResource({
       recentFailureStatus.value = "";
     }
   },
+});
+const { active: pageActive } = useKeepAlivePage({
+  onActivate: activatePage,
+  onDeactivate: deactivatePage,
 });
 const TASKS_PAGE_SIZE = 5;
 const activeVisibleLimit = ref(TASKS_PAGE_SIZE);
@@ -660,6 +665,20 @@ async function refreshFullTasks() {
   } finally {
     loadingFullTasks = false;
   }
+}
+
+function startTasksRefreshController() {
+  if (tasksRefreshController) {
+    return;
+  }
+  tasksRefreshController = createPageRefreshController({
+    scopes: ["archive_queue", "missing_3mf", "organize_tasks"],
+    refresh: () => load(),
+    delayMs: 1000,
+    debounceMs: 0,
+    resetExistingTimer: false,
+    isActive: () => pageActive.value,
+  });
 }
 
 function stopTasksRefreshController() {
@@ -860,23 +879,24 @@ async function cancelMissing(item) {
   }
 }
 
-onMounted(async () => {
-  perf = createPagePerformanceTracker({ page: "tasks" });
-  tasksRefreshController = createPageRefreshController({
-    scopes: ["archive_queue", "missing_3mf", "organize_tasks"],
-    refresh: () => load(),
-    delayMs: 1000,
-    debounceMs: 0,
-    resetExistingTimer: false,
-  });
-  await load();
-  perf.markDataReady();
-  void perf.finish();
-});
-
-onBeforeUnmount(() => {
+function deactivatePage() {
   tasksResource.cancel();
+  loadingTasks = false;
+  loadingFullTasks = false;
   stopTasksRefreshController();
   perf = null;
-});
+}
+
+async function activatePage({ initial, isCurrent }) {
+  if (initial) {
+    perf = createPagePerformanceTracker({ page: "tasks" });
+  }
+  startTasksRefreshController();
+  await load();
+  if (!isCurrent() || !perf) {
+    return;
+  }
+  perf.markDataReady();
+  void perf.finish();
+}
 </script>

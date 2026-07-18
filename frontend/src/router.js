@@ -48,6 +48,7 @@ const routes = [
         component: ModelsPage,
         meta: {
           title: "模型库 | makerhub",
+          keepAlive: true,
         },
       },
       {
@@ -81,6 +82,7 @@ const routes = [
         component: SubscriptionsPage,
         meta: {
           title: "订阅库 | makerhub",
+          keepAlive: true,
         },
       },
       {
@@ -105,6 +107,7 @@ const routes = [
         component: OrganizerPage,
         meta: {
           title: "本地库 | makerhub",
+          keepAlive: true,
         },
       },
       {
@@ -113,6 +116,7 @@ const routes = [
         component: RemoteRefreshPage,
         meta: {
           title: "源端刷新 | makerhub",
+          keepAlive: true,
         },
       },
       {
@@ -121,6 +125,7 @@ const routes = [
         component: TasksPage,
         meta: {
           title: "任务 | makerhub",
+          keepAlive: true,
         },
       },
       {

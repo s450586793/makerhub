@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.11.21`
+> 当前版本：`v0.12.0`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -190,6 +190,11 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-18 · v0.12.0
+
+- 模型库、订阅库、本地库、源端刷新和归档任务会保留已加载内容；返回页面时立即可用，并在后台静默刷新轻量数据。
+- 离开上述工作页会中止未完成的列表请求、断开状态订阅和自动加载观察器，避免隐藏页面继续请求和重绘。
+
 ### 2026-07-17 · v0.11.21
 
 - Worker 恢复旧的暂停 `3MF` 队列时，会对历史 `cookie_invalid` gate 自动读取一次关联的指纹浏览器登录态。
@@ -200,13 +205,13 @@ uvicorn app.main:app --reload
 - 国区 / 国际区 `3MF` 授权失败时，Worker 会自动读取一次关联的指纹浏览器登录态；同平台 10 分钟内不会重复读取。
 - 浏览器 Cookie 实际变化且认证 token 一致时，自动写回并只重试当前受阻的 `3MF`；浏览器会话未变化仍被拒绝时，明确提示到官网完成验证，不再误导为重新登录。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-17 · v0.11.19
 
 - 修复空白指纹浏览器 profile 无法读取 MakerWorld 登录态的问题；同步时会进入对应站点首页读取 Cookie 和本地会话。
 - 同步不会打断正在进行的浏览器登录；未发现认证 token 时明确提示“指纹浏览器尚未登录”，并保留 MakerHub 已有登录态。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-16 · v0.11.18
 

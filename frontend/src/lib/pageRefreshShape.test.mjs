@@ -13,6 +13,7 @@ const modelGroupPageSource = readFileSync(new URL("../pages/ModelLibraryGroupPag
 const subscriptionsPageSource = readFileSync(new URL("../pages/SubscriptionsPage.vue", import.meta.url), "utf8");
 const appShellSource = readFileSync(new URL("../layouts/AppShell.vue", import.meta.url), "utf8");
 const appStateSource = readFileSync(new URL("./appState.js", import.meta.url), "utf8");
+const keepAlivePageSource = readFileSync(new URL("./useKeepAlivePage.js", import.meta.url), "utf8");
 
 test("LogsPage uses shared page refresh controller for auto tracking", () => {
   assert.match(logsPageSource, /createPageRefreshController/);
@@ -53,7 +54,7 @@ test("RemoteRefreshPage uses shared page refresh controller for throttled refres
   assert.match(remoteRefreshPageSource, /createPageRefreshController/);
   assert.doesNotMatch(remoteRefreshPageSource, /function scheduleRefresh/);
   assert.match(remoteRefreshPageSource, /remoteRefreshController/);
-  assert.match(remoteRefreshPageSource, /apiRequest\("\/api\/source-refresh"\)/);
+  assert.match(remoteRefreshPageSource, /apiRequest\("\/api\/source-refresh"/);
   assert.match(remoteRefreshPageSource, /apiRequest\("\/api\/source-refresh\/run"/);
   assert.doesNotMatch(remoteRefreshPageSource, /apiRequest\("\/api\/remote-refresh"\)/);
   assert.doesNotMatch(remoteRefreshPageSource, /apiRequest\("\/api\/remote-refresh\/run"/);
@@ -100,6 +101,7 @@ test("final light resource loaders forward cancellation signals to apiRequest", 
   assert.match(subscriptionsPageSource, /load: \(\{ page, requestOptions, signal \}\) => fetchSubscriptionsPage\(page, \{ \.\.\.requestOptions, signal \}\)/);
   assert.match(tasksPageSource, /load: \(\{ signal \}\) => apiRequest\("\/api\/tasks\/light", \{ signal \}\)/);
   assert.match(tasksPageSource, /enrich: \(_current, \{ signal \}\) => apiRequest\("\/api\/tasks", \{ signal \}\)/);
+  assert.match(remoteRefreshPageSource, /load: \(\{ signal \}\) => apiRequest\("\/api\/source-refresh", \{ signal \}\)/);
 });
 
 test("RemoteRefreshPage explains active run progress from resumable batch state", () => {
@@ -235,4 +237,40 @@ test("SettingsPage renders from light config before background diagnostics", () 
   assert.match(settingsPageSource, /refreshLightConfig/);
   assert.match(settingsPageSource, /refreshSettingsDiagnostics/);
   assert.match(settingsPageSource, /void refreshSettingsDiagnostics\(\)/);
+});
+
+test("keep-alive lifecycle helper pauses cached pages without duplicate cleanup", () => {
+  assert.match(keepAlivePageSource, /onActivated/);
+  assert.match(keepAlivePageSource, /onDeactivated/);
+  assert.match(keepAlivePageSource, /onBeforeUnmount/);
+  assert.match(keepAlivePageSource, /const active = ref\(false\)/);
+  assert.match(keepAlivePageSource, /onActivate/);
+  assert.match(keepAlivePageSource, /onDeactivate/);
+});
+
+test("cached work pages cancel their live work while deactivated", () => {
+  for (const source of [
+    modelsPageSource,
+    subscriptionsPageSource,
+    organizerPageSource,
+    remoteRefreshPageSource,
+    tasksPageSource,
+  ]) {
+    assert.match(source, /useKeepAlivePage/);
+    assert.match(source, /onDeactivate: deactivatePage/);
+  }
+
+  assert.match(modelsPageSource, /function deactivatePage\(\)[\s\S]*?modelsResource\.cancel\(\)[\s\S]*?disconnectObserver\(\)/);
+  assert.match(subscriptionsPageSource, /function deactivatePage\(\)[\s\S]*?subscriptionsResource\.cancel\(\)[\s\S]*?disconnectObserver\(\)/);
+  assert.match(modelsPageSource, /loadMoreAbortController\?\.abort\(\)/);
+  assert.match(subscriptionsPageSource, /loadMoreAbortController\?\.abort\(\)/);
+  assert.match(organizerPageSource, /function deactivatePage\(\)[\s\S]*?organizerResource\.cancel\(\)[\s\S]*?stopOrganizerRefreshController\(\)/);
+  assert.match(remoteRefreshPageSource, /function deactivatePage\(\)[\s\S]*?remoteRefreshResource\.cancel\(\)[\s\S]*?stopRemoteRefreshController\(\)/);
+  assert.match(tasksPageSource, /function deactivatePage\(\)[\s\S]*?tasksResource\.cancel\(\)[\s\S]*?stopTasksRefreshController\(\)/);
+});
+
+test("state refresh controllers are gated by their cached page activity", () => {
+  for (const source of [organizerPageSource, remoteRefreshPageSource, tasksPageSource]) {
+    assert.match(source, /isActive: \(\) => pageActive\.value/);
+  }
 });
