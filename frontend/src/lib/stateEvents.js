@@ -12,6 +12,29 @@ let subscriberId = 0;
 let lastEventId = 0;
 const subscribers = new Map();
 
+function normalizeScopes(scopes) {
+  const values = Array.isArray(scopes) ? scopes : [scopes];
+  return [...new Set(values.map((scope) => String(scope || "").trim()).filter(Boolean))].sort();
+}
+
+function subscribedScopes() {
+  const scopes = new Set();
+  for (const subscriber of subscribers.values()) {
+    for (const scope of subscriber.scopes) {
+      scopes.add(scope);
+    }
+  }
+  return scopes.has("*") ? [] : [...scopes].sort();
+}
+
+function rebuildStateEventSource() {
+  if (!eventSource) {
+    return;
+  }
+  closeStateEventSource();
+  ensureStateEventSource();
+}
+
 function ensureStateEventSource() {
   if (typeof window === "undefined" || typeof EventSource === "undefined") {
     return;
@@ -20,9 +43,14 @@ function ensureStateEventSource() {
     return;
   }
 
-  const eventUrl = lastEventId > 0
-    ? `${EVENT_SOURCE_URL}?last_event_id=${encodeURIComponent(String(lastEventId))}`
-    : EVENT_SOURCE_URL;
+  const query = new URLSearchParams();
+  if (lastEventId > 0) {
+    query.set("last_event_id", String(lastEventId));
+  }
+  for (const scope of subscribedScopes()) {
+    query.append("scope", scope);
+  }
+  const eventUrl = query.size ? `${EVENT_SOURCE_URL}?${query.toString()}` : EVENT_SOURCE_URL;
   eventSource = new EventSource(eventUrl);
   const dispatch = (event) => {
     let payload = {};
@@ -41,7 +69,7 @@ function ensureStateEventSource() {
       type: payload.type || event.type || "state.changed",
     };
     for (const subscriber of subscribers.values()) {
-      subscriber(eventPayload);
+      subscriber.handler(eventPayload);
     }
   };
 
@@ -71,16 +99,18 @@ function closeStateEventSource() {
   }
 }
 
-export function subscribeStateEvents(handler) {
+export function subscribeStateEvents(handler, scopes = []) {
   if (typeof handler !== "function") {
     return () => {};
   }
   subscriberId += 1;
-  subscribers.set(subscriberId, handler);
+  subscribers.set(subscriberId, { handler, scopes: normalizeScopes(scopes) });
+  rebuildStateEventSource();
   ensureStateEventSource();
 
   return () => {
     subscribers.delete(subscriberId);
+    rebuildStateEventSource();
     if (!subscribers.size) {
       closeStateEventSource();
       if (reconnectTimer) {
@@ -110,7 +140,7 @@ export function subscribeStateRefresh(scopes, callback, options = {}) {
     document.addEventListener("visibilitychange", onVisibilityChange);
   }
 
-  const unsubscribe = subscribeStateEvents((event) => scheduler.handleEvent(event));
+  const unsubscribe = subscribeStateEvents((event) => scheduler.handleEvent(event), scopes);
 
   return () => {
     unsubscribe();

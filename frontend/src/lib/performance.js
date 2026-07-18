@@ -3,11 +3,13 @@ const PAGE_SLOW_THRESHOLD_MS = 1200;
 const MAX_DURATION_MS = 600000;
 const MAX_RESPONSE_BYTES = 50 * 1024 * 1024;
 const MAX_STATUS = 999;
+const MAX_API_METRIC_HISTORY = 300;
 
 let apiCount = 0;
 let slowApiCount = 0;
 let maxApiDurationMs = 0;
 let apiMetrics = [];
+let apiMetricSequence = 0;
 
 function nowMs() {
   return typeof performance !== "undefined" && typeof performance.now === "function"
@@ -41,7 +43,7 @@ function currentSnapshot() {
     apiCount,
     slowApiCount,
     maxApiDurationMs,
-    apiIndex: apiMetrics.length,
+    apiMetricSequence,
   };
 }
 
@@ -50,6 +52,7 @@ export function resetPerformanceStateForTests() {
   slowApiCount = 0;
   maxApiDurationMs = 0;
   apiMetrics = [];
+  apiMetricSequence = 0;
 }
 
 export function recordApiDuration(path, durationMs) {
@@ -68,6 +71,7 @@ export function recordApiRequestMetrics(path, metrics = {}) {
 
   const totalMs = boundedNumber(metrics.totalMs);
   const metric = {
+    sequence: ++apiMetricSequence,
     ttfb_ms: boundedNumber(metrics.ttfbMs),
     body_parse_ms: boundedNumber(metrics.bodyParseMs),
     total_ms: totalMs,
@@ -80,10 +84,13 @@ export function recordApiRequestMetrics(path, metrics = {}) {
   }
   maxApiDurationMs = Math.max(maxApiDurationMs, totalMs);
   apiMetrics.push(metric);
+  if (apiMetrics.length > MAX_API_METRIC_HISTORY) {
+    apiMetrics.splice(0, apiMetrics.length - MAX_API_METRIC_HISTORY);
+  }
 }
 
 export function getApiPerformanceMetricsForTests() {
-  return apiMetrics.map((metric) => ({ ...metric }));
+  return apiMetrics.map(({ sequence, ...metric }) => ({ ...metric }));
 }
 
 export function normalizePagePerformancePayload({
@@ -95,11 +102,13 @@ export function normalizePagePerformancePayload({
   eventKind = "page",
   since = null,
 }) {
-  const base = since || { apiCount: 0, slowApiCount: 0, apiIndex: 0 };
+  const base = since || { apiCount: 0, slowApiCount: 0, apiMetricSequence: 0 };
   const count = Math.max(0, apiCount - safeNumber(base.apiCount));
   const slowCount = Math.max(0, slowApiCount - safeNumber(base.slowApiCount));
-  const startIndex = Math.max(0, Math.min(apiMetrics.length, Math.floor(safeNumber(base.apiIndex))));
-  const scopedMetrics = since ? apiMetrics.slice(startIndex) : apiMetrics;
+  const startSequence = Math.max(0, Math.floor(safeNumber(base.apiMetricSequence)));
+  const scopedMetrics = since
+    ? apiMetrics.filter((metric) => safeNumber(metric.sequence) > startSequence)
+    : apiMetrics;
   const maxDuration = since ? maxMetric(scopedMetrics, "total_ms") : maxApiDurationMs;
   return {
     page: String(page || "unknown").slice(0, 80),

@@ -19,6 +19,8 @@ async def get_logs_data(
     event: str = Query("", description="日志事件，多个值用逗号分隔"),
     since: str = Query("", description="起始时间 ISO 字符串"),
     cursor: str = Query("", description="分页游标"),
+    include_facets: bool = Query(True, description="是否计算筛选聚合"),
+    include_files: bool = Query(True, description="是否读取日志文件聚合"),
 ):
     return await run_web_io(
         read_log_entries,
@@ -30,4 +32,6 @@ async def get_logs_data(
         event=event,
         since=since,
         cursor=cursor,
+        include_facets=include_facets,
+        include_files=include_files,
     )

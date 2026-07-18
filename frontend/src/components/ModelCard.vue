@@ -47,7 +47,7 @@
     </div>
 
     <div class="model-card__body gallery-card__body">
-      <h2 ref="titleRef" :class="['gallery-card__title', isTitleCompact && 'is-title-compact']">{{ titleText }}</h2>
+      <h2 class="gallery-card__title">{{ titleText }}</h2>
 
       <div class="card-meta gallery-card__meta">
         <div class="model-author gallery-card__author">
@@ -114,7 +114,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import { buildModelDetailRoute, storeModelReturnState } from "../lib/modelNavigation";
@@ -166,8 +166,6 @@ const DETAIL_CACHE_PREFIX = "model-detail:";
 
 const coverSrc = ref(props.model.cover_url || "");
 const authorAvatarSrc = ref(props.model.author?.avatar_url || "");
-const titleRef = ref(null);
-const isTitleCompact = ref(false);
 
 const titleText = computed(() => String(props.model.title || "未命名模型").trim() || "未命名模型");
 const titleInitial = computed(() => titleText.value.slice(0, 1) || "M");
@@ -276,82 +274,6 @@ function onAuthorAvatarError() {
     authorAvatarSrc.value = props.model.author.avatar_remote_url;
   }
 }
-
-let titleResizeObserver = null;
-let titleMeasureFrame = 0;
-
-function scheduleTitleMeasure() {
-  if (typeof window === "undefined") return;
-  if (titleMeasureFrame) {
-    window.cancelAnimationFrame(titleMeasureFrame);
-  }
-  titleMeasureFrame = window.requestAnimationFrame(() => {
-    titleMeasureFrame = 0;
-    measureTitleWrap();
-  });
-}
-
-function measureTitleWrap() {
-  const element = titleRef.value;
-  if (!element || typeof window === "undefined" || typeof document === "undefined") return;
-  const width = element.clientWidth;
-  if (!width) return;
-
-  const elementStyles = window.getComputedStyle(element);
-  const rootStyles = window.getComputedStyle(document.documentElement);
-  const normalTitleSize = rootStyles.getPropertyValue("--text-sm").trim() || "14px";
-  const probe = document.createElement("div");
-  probe.textContent = titleText.value;
-  probe.style.position = "fixed";
-  probe.style.left = "-9999px";
-  probe.style.top = "-9999px";
-  probe.style.visibility = "hidden";
-  probe.style.pointerEvents = "none";
-  probe.style.width = `${width}px`;
-  probe.style.margin = "0";
-  probe.style.padding = "0";
-  probe.style.border = "0";
-  probe.style.boxSizing = "border-box";
-  probe.style.whiteSpace = "normal";
-  probe.style.overflowWrap = elementStyles.overflowWrap;
-  probe.style.wordBreak = elementStyles.wordBreak;
-  probe.style.fontFamily = elementStyles.fontFamily;
-  probe.style.fontWeight = elementStyles.fontWeight;
-  probe.style.fontSize = normalTitleSize;
-  probe.style.lineHeight = "1.25";
-  probe.style.letterSpacing = "0";
-
-  document.body.appendChild(probe);
-  const probeLineHeight = Number.parseFloat(window.getComputedStyle(probe).lineHeight) || 18;
-  const wrapsAtNormalSize = probe.scrollHeight > probeLineHeight * 1.35;
-  document.body.removeChild(probe);
-  isTitleCompact.value = wrapsAtNormalSize;
-}
-
-onMounted(() => {
-  nextTick(() => {
-    scheduleTitleMeasure();
-    if (typeof ResizeObserver !== "undefined" && titleRef.value) {
-      titleResizeObserver = new ResizeObserver(scheduleTitleMeasure);
-      titleResizeObserver.observe(titleRef.value);
-    }
-  });
-});
-
-onBeforeUnmount(() => {
-  if (titleResizeObserver) {
-    titleResizeObserver.disconnect();
-    titleResizeObserver = null;
-  }
-  if (titleMeasureFrame && typeof window !== "undefined") {
-    window.cancelAnimationFrame(titleMeasureFrame);
-    titleMeasureFrame = 0;
-  }
-});
-
-watch(titleText, () => {
-  nextTick(scheduleTitleMeasure);
-});
 
 function formatCompactStat(value) {
   const numeric = Number(value || 0);

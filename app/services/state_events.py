@@ -30,7 +30,7 @@ from app.services.state_contracts import (
 STATE_EVENT_FALLBACK_WAIT_SECONDS = 15.0
 STATE_CHANGED_COALESCE_SECONDS = 1.5
 _SUBSCRIBER_LOCK = threading.Lock()
-_SUBSCRIBER_CALLBACKS: set[Callable[[], None]] = set()
+_SUBSCRIBER_CALLBACKS: dict[Callable[[], None], frozenset[str]] = {}
 _LISTENER_LOCK = threading.Lock()
 _LISTENER_THREAD: threading.Thread | None = None
 _STATE_EVENT_COALESCE_LOCK = threading.Lock()
@@ -54,21 +54,33 @@ STATE_EVENT_SCOPES = {
 }
 
 
-def register_state_event_callback(callback: Callable[[], None]) -> Callable[[], None]:
+def _normalize_scopes(scopes: list[str] | tuple[str, ...] | set[str] | None) -> frozenset[str]:
+    return frozenset(str(scope or "").strip() for scope in (scopes or []) if str(scope or "").strip())
+
+
+def register_state_event_callback(
+    callback: Callable[[], None],
+    *,
+    scopes: list[str] | tuple[str, ...] | set[str] | None = None,
+) -> Callable[[], None]:
+    clean_scopes = _normalize_scopes(scopes)
     with _SUBSCRIBER_LOCK:
-        _SUBSCRIBER_CALLBACKS.add(callback)
+        _SUBSCRIBER_CALLBACKS[callback] = clean_scopes
 
     def _unregister() -> None:
         with _SUBSCRIBER_LOCK:
-            _SUBSCRIBER_CALLBACKS.discard(callback)
+            _SUBSCRIBER_CALLBACKS.pop(callback, None)
 
     return _unregister
 
 
-def wake_state_event_subscribers() -> None:
+def wake_state_event_subscribers(scope: str = "") -> None:
+    clean_scope = str(scope or "").strip()
     with _SUBSCRIBER_LOCK:
-        callbacks = list(_SUBSCRIBER_CALLBACKS)
-    for callback in callbacks:
+        callbacks = list(_SUBSCRIBER_CALLBACKS.items())
+    for callback, scopes in callbacks:
+        if clean_scope and scopes and clean_scope not in scopes and "*" not in scopes:
+            continue
         try:
             callback()
         except Exception:
@@ -90,12 +102,16 @@ def _listen_for_database_notifications() -> None:
                 connection.execute(f"LISTEN {DATABASE_STATE_EVENT_CHANNEL}")
                 while True:
                     received = False
-                    for _notify in connection.notifies(
+                    for notify in connection.notifies(
                         timeout=STATE_EVENT_FALLBACK_WAIT_SECONDS,
                         stop_after=1,
                     ):
                         received = True
-                        wake_state_event_subscribers()
+                        try:
+                            payload = json.loads(str(getattr(notify, "payload", "") or ""))
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            payload = {}
+                        wake_state_event_subscribers(str(payload.get("scope") or ""))
                     if not received:
                         wake_state_event_subscribers()
             finally:
@@ -118,10 +134,10 @@ def start_state_event_listener() -> None:
 
 
 class StateEventWaiter:
-    def __init__(self) -> None:
+    def __init__(self, *, scopes: list[str] | tuple[str, ...] | set[str] | None = None) -> None:
         self._loop = asyncio.get_running_loop()
         self._event = asyncio.Event()
-        self._unregister = register_state_event_callback(self.wake)
+        self._unregister = register_state_event_callback(self.wake, scopes=scopes)
 
     def wake(self) -> None:
         self._loop.call_soon_threadsafe(self._event.set)
@@ -219,11 +235,11 @@ def publish_state_event(scope: str, event_type: str = "state.changed", payload: 
     event_payload.setdefault("scope", clean_scope)
     event_payload.setdefault("published_at", china_now_iso())
     if not _should_persist_state_event(clean_scope, event_type, event_payload):
-        wake_state_event_subscribers()
+        wake_state_event_subscribers(clean_scope)
         return None
     try:
         event = normalize_state_event(append_state_event(event_type, clean_scope, event_payload))
-        wake_state_event_subscribers()
+        wake_state_event_subscribers(clean_scope)
         return event
     except (DatabaseUnavailable, ValueError, RuntimeError, OSError):
         return None

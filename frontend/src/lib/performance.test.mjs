@@ -23,6 +23,15 @@ test("recordApiDuration tracks API count, slow count, and max duration", () => {
   assert.equal(payload.max_api_duration_ms, 900);
 });
 
+test("performance metrics retain a bounded recent history", () => {
+  resetPerformanceStateForTests();
+  for (let index = 0; index < 320; index += 1) {
+    performanceMetrics.recordApiDuration(`/api/models?page=${index}`, index);
+  }
+
+  assert.equal(performanceMetrics.getApiPerformanceMetricsForTests().length, 300);
+});
+
 test("createPagePerformanceTracker reports only slow page loads", async () => {
   resetPerformanceStateForTests();
   const calls = [];

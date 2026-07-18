@@ -38,7 +38,7 @@ from app.core.settings import (
 from app.core.api_permissions import api_token_permission_for_request
 from app.core.database import close_database_pool
 from app.services.auth import AuthManager, ensure_secure_admin_credential
-from app.services.business_logs import append_business_log
+from app.services.business_logs import append_business_log, shutdown_business_log_writer
 from app.services.performance import log_api_request_if_needed
 from app.services.request_threads import run_web_io, shutdown_request_threads
 from app.services.self_update import mark_update_started_after_restart
@@ -163,6 +163,7 @@ async def resume_archive_queue() -> None:
 @app.on_event("shutdown")
 async def shutdown_thread_pools() -> None:
     local_organizer.stop()
+    shutdown_business_log_writer()
     shutdown_request_threads()
     close_database_pool()
 

@@ -258,6 +258,7 @@ const mergeDialog = reactive({
 
 let intersectionObserver = null;
 let requestToken = 0;
+let groupListAbortController = null;
 let unsubscribeArchiveEvents = null;
 let refreshWhenVisible = false;
 
@@ -336,12 +337,8 @@ function syncFiltersFromRoute() {
 
 function buildQuery(page = 1, options = {}) {
   const query = new URLSearchParams();
-  const includeUntilPage = Boolean(options.includeUntilPage);
-  query.set("page", includeUntilPage ? "1" : String(page));
+  query.set("page", String(page));
   query.set("page_size", String(PAGE_SIZE));
-  if (includeUntilPage && page > 1) {
-    query.set("limit", String(Math.max(1, Math.floor(page)) * PAGE_SIZE));
-  }
   if (filters.q) query.set("q", filters.q);
   if (filters.source && filters.source !== "all") query.set("source", filters.source);
   if (filters.tag) query.set("tag", filters.tag);
@@ -389,7 +386,7 @@ async function fetchPage(page, options = {}) {
       page,
     };
   }
-  return apiRequest(`${endpoint}?${buildQuery(page, options).toString()}`);
+  return apiRequest(`${endpoint}?${buildQuery(page, options).toString()}`, { signal: options.signal });
 }
 
 function mergeUniqueModelItems(currentItems = [], incomingItems = []) {
@@ -500,10 +497,15 @@ function buildModelReturnTo(modelDir) {
 async function load({ append = false } = {}) {
   const currentToken = ++requestToken;
   syncFiltersFromRoute();
+  if (!append) {
+    groupListAbortController?.abort();
+    groupListAbortController = new AbortController();
+  }
+  const abortController = append ? null : groupListAbortController;
 
   const nextPage = append ? payload.value.page + 1 : routePage();
-  const response = await fetchPage(nextPage, { includeUntilPage: !append && nextPage > 1 });
-  if (currentToken !== requestToken) {
+  const response = await fetchPage(nextPage, { signal: abortController?.signal });
+  if (currentToken !== requestToken || (abortController && abortController !== groupListAbortController)) {
     return;
   }
   view.value = response.view || view.value;
@@ -527,6 +529,9 @@ async function load({ append = false } = {}) {
   ensureObserver();
   if (!append) {
     await scrollToRouteAnchor();
+    if (groupListAbortController === abortController) {
+      groupListAbortController = null;
+    }
   }
 }
 
@@ -535,7 +540,7 @@ async function reloadVisiblePages() {
   const currentToken = ++requestToken;
   syncFiltersFromRoute();
 
-  const response = await fetchPage(pagesToLoad, { includeUntilPage: pagesToLoad > 1 });
+  const response = await fetchPage(pagesToLoad);
 
   if (currentToken !== requestToken) {
     return;
@@ -957,6 +962,9 @@ function formatCompact(value) {
 }
 
 watch(() => route.fullPath, () => {
+  if (!["model-library-state", "model-library-source"].includes(String(route.name || ""))) {
+    return;
+  }
   status.value = "";
   clearSelection();
   void hydrateGroupListFromCache();
@@ -981,6 +989,8 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  groupListAbortController?.abort();
+  groupListAbortController = null;
   disconnectObserver();
   if (typeof unsubscribeArchiveEvents === "function") {
     unsubscribeArchiveEvents();

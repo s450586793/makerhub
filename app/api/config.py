@@ -110,6 +110,7 @@ from app.services.local_model_edit import (
 from app.services.local_model_merge import merge_local_models
 from app.services.model_attachments import create_manual_attachment, delete_manual_attachment
 from app.services.request_threads import run_task_api, run_ui_io, run_web_io
+from app.services.release_status import read_latest_release_version
 from app.services.archive_model_index import resolve_model_dir_from_short_key
 from app.services.batch_discovery import extract_model_id, normalize_source_url
 from app.services.subscriptions import cookie_source_inventory_payload, cookie_source_sync_state_payload
@@ -123,6 +124,7 @@ from app.services.account_health import (
 )
 from app.services.state_events import (
     StateEventWaiter,
+    STATE_EVENT_SCOPES,
     current_state_event_id,
     fetch_state_events_after,
     publish_state_event,
@@ -153,9 +155,6 @@ CLOAKBROWSER_MONITOR_TIMEOUT_SECONDS = 10 * 60
 CLOAKBROWSER_MONITOR_INTERVAL_SECONDS = 5
 github_version_refresh_task: asyncio.Task | None = None
 github_version_refresh_lock = asyncio.Lock()
-GITHUB_VERSION_URL = "https://raw.githubusercontent.com/s450586793/makerhub/main/VERSION"
-GITHUB_VERSION_CDN_URL = "https://cdn.jsdelivr.net/gh/s450586793/makerhub@main/VERSION"
-GITHUB_VERSION_API_URL = "https://api.github.com/repos/s450586793/makerhub/contents/VERSION?ref=main"
 GITHUB_README_URL = "https://raw.githubusercontent.com/s450586793/makerhub/main/README.md"
 GITHUB_README_CDN_URL = "https://cdn.jsdelivr.net/gh/s450586793/makerhub@main/README.md"
 GITHUB_README_API_URL = "https://api.github.com/repos/s450586793/makerhub/contents/README.md?ref=main"
@@ -1714,43 +1713,13 @@ def _parse_github_changelog(markdown: str, *, limit: int = 3) -> list[dict]:
 
 def _read_latest_github_version(proxy_config: ProxyConfig | None = None) -> dict[str, str]:
     proxies = _build_proxy_mapping(proxy_config) if proxy_config and bool(proxy_config.enabled) else {}
-    targets = [
-        ("raw", GITHUB_VERSION_URL),
-        ("cdn", GITHUB_VERSION_CDN_URL),
-        ("api", GITHUB_VERSION_API_URL),
-    ]
-    errors: list[str] = []
     session = _make_github_version_session()
     try:
-        for source_kind, url in targets:
-            headers = dict(session.headers)
-            if source_kind == "api":
-                headers["Accept"] = "application/vnd.github+json"
-            started = time.perf_counter()
-            try:
-                response = session.get(
-                    url,
-                    headers=headers,
-                    proxies=proxies or None,
-                    timeout=(6, 15),
-                    allow_redirects=True,
-                )
-                response.raise_for_status()
-                version = _extract_version_from_response(response, source_kind)
-                if not version:
-                    raise ValueError("VERSION 为空")
-                return {
-                    "version": version,
-                    "source": source_kind,
-                    "elapsed_ms": str(round((time.perf_counter() - started) * 1000, 1)),
-                    "used_proxy": "true" if bool(proxies) else "false",
-                }
-            except Exception as exc:
-                errors.append(f"{source_kind}:{_safe_error_message(exc)}")
+        return read_latest_release_version(session, proxies=proxies)
+    except Exception as exc:
+        raise RuntimeError(_safe_error_message(exc)) from exc
     finally:
         session.close()
-
-    raise RuntimeError(" | ".join(errors) or "GitHub 版本读取失败")
 
 
 def _read_latest_github_changelog(proxy_config: ProxyConfig | None = None) -> dict:
@@ -4873,7 +4842,7 @@ async def stream_archive_events(request: Request):
             last_id = current_state_event_id()
         yield "event: ready\ndata: {}\n\n"
 
-        waiter = StateEventWaiter()
+        waiter = StateEventWaiter(scopes=["archive_queue", "organize_tasks"])
         try:
             while True:
                 if await request.is_disconnected():
@@ -4923,8 +4892,21 @@ def _last_event_id(request: Request) -> int:
         return 0
 
 
+def _state_event_scopes(request: Request) -> list[str]:
+    raw_scopes = request.query_params.getlist("scope")
+    clean_scopes: list[str] = []
+    for raw_scope in raw_scopes:
+        for scope in str(raw_scope or "").split(","):
+            clean_scope = scope.strip()
+            if clean_scope in STATE_EVENT_SCOPES and clean_scope not in clean_scopes:
+                clean_scopes.append(clean_scope)
+    return clean_scopes
+
+
 @router.get("/events/state")
 async def stream_state_events(request: Request):
+    subscribed_scopes = _state_event_scopes(request)
+
     async def event_stream():
         last_id = _last_event_id(request)
         if last_id <= 0:
@@ -4934,7 +4916,7 @@ async def stream_state_events(request: Request):
             f"data: {json.dumps({'last_event_id': last_id, 'channel': DATABASE_STATE_EVENT_CHANNEL}, ensure_ascii=False)}\n\n"
         )
 
-        waiter = StateEventWaiter()
+        waiter = StateEventWaiter(scopes=subscribed_scopes)
         heartbeat_tick = 0
         try:
             while True:
@@ -4944,6 +4926,8 @@ async def stream_state_events(request: Request):
                 events = await run_ui_io(fetch_state_events_after, last_id, limit=100)
                 for event in events:
                     last_id = max(last_id, int(event.get("id") or 0))
+                    if subscribed_scopes and str(event.get("scope") or "") not in subscribed_scopes:
+                        continue
                     yield (
                         f"id: {event.get('id') or last_id}\n"
                         f"event: {event.get('type') or 'state.changed'}\n"

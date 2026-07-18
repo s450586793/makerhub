@@ -7,6 +7,7 @@ import uuid
 
 from app.core.settings import APP_VERSION
 from app.services.self_update import (
+    WORKER_HEARTBEAT_MAX_AGE_SECONDS,
     WORKER_START_TOKEN_ENV,
     record_worker_heartbeat,
     worker_heartbeat_readiness,
@@ -38,6 +39,8 @@ if not WORKER_HEALTHCHECK_MODE:
 
 
 WORKER_POLL_SECONDS = 2.0
+WORKER_IDLE_POLL_SECONDS = 15.0
+WORKER_HEARTBEAT_INTERVAL_SECONDS = 10.0
 LOCAL_PREVIEW_IDLE_POLL_SECONDS = 15 * 60
 ACCOUNT_COOKIE_MAINTENANCE_POLL_SECONDS = 10 * 60
 
@@ -62,11 +65,19 @@ def _run_database_maintenance() -> dict:
 
 
 def _run_worker_heartbeat_loop(stop_event: threading.Event, start_token: str) -> None:
-    while not stop_event.wait(WORKER_POLL_SECONDS):
+    while not stop_event.wait(WORKER_HEARTBEAT_INTERVAL_SECONDS):
         try:
             record_worker_heartbeat(start_token=start_token)
         except Exception:
             pass
+
+
+def worker_poll_seconds(queue: dict, *, rebuild_running: bool) -> float:
+    queued_count = int((queue or {}).get("queued_count") or 0)
+    running_count = int((queue or {}).get("running_count") or 0)
+    if queued_count > 0 or running_count > 0 or rebuild_running:
+        return WORKER_POLL_SECONDS
+    return WORKER_IDLE_POLL_SECONDS
 
 
 def _start_archive_model_index_rebuild_worker(status: dict) -> threading.Thread:
@@ -185,15 +196,20 @@ def main() -> int:
     local_preview_active = False
     last_account_cookie_poll = 0.0
     archive_model_index_rebuild_thread: threading.Thread | None = None
+    next_poll_seconds = WORKER_POLL_SECONDS
     try:
-        while not stop_event.wait(WORKER_POLL_SECONDS):
+        while not stop_event.wait(next_poll_seconds):
             _run_database_maintenance()
-            archive_manager.ensure_worker_for_pending()
+            archive_queue = archive_manager.ensure_worker_for_pending()
             archive_model_index_rebuild_status = read_archive_model_index_rebuild_status()
             if archive_model_index_rebuild_thread is not None and not archive_model_index_rebuild_thread.is_alive():
                 archive_model_index_rebuild_thread = None
             if archive_model_index_rebuild_status.get("running") and archive_model_index_rebuild_thread is None:
                 archive_model_index_rebuild_thread = _start_archive_model_index_rebuild_worker(archive_model_index_rebuild_status)
+            next_poll_seconds = worker_poll_seconds(
+                archive_queue,
+                rebuild_running=bool(archive_model_index_rebuild_status.get("running")),
+            )
             now = time.monotonic()
             if now - last_account_cookie_poll >= ACCOUNT_COOKIE_MAINTENANCE_POLL_SECONDS:
                 last_account_cookie_poll = now
@@ -240,7 +256,7 @@ def main() -> int:
                     )
     finally:
         stop_event.set()
-        heartbeat_thread.join(timeout=WORKER_POLL_SECONDS + 1)
+        heartbeat_thread.join(timeout=WORKER_HEARTBEAT_INTERVAL_SECONDS + 1)
         local_organizer.stop()
         append_business_log(
             "system",

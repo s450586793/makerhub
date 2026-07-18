@@ -43,6 +43,7 @@ WORKER_HEARTBEAT_STATE_KEY = "worker_heartbeat"
 WORKER_HEARTBEAT_MAX_AGE_SECONDS = 30
 WORKER_START_TOKEN_ENV = "MAKERHUB_WORKER_START_TOKEN"
 _CONTAINER_ID_PATTERN = re.compile(r"[0-9a-f]{12,64}")
+_RELEASE_VERSION_PATTERN = re.compile(r"^\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$")
 STARTUP_WAIT_TIMEOUT_SECONDS = 20
 STARTUP_WAIT_INTERVAL_SECONDS = 1.0
 STARTUP_WAIT_STABLE_POLLS = 3
@@ -299,6 +300,20 @@ def _friendly_error_message(error: Exception | str) -> str:
 
 def _normalize_version_label(value: Any) -> str:
     return str(value or "").strip().lstrip("vV")
+
+
+def _versioned_image_ref(image_ref: str, target_version: str) -> str:
+    """Replace a floating image tag or digest with the immutable release tag."""
+    base_ref = str(image_ref or "").strip().split("@", 1)[0]
+    version = _normalize_version_label(target_version)
+    if not base_ref:
+        raise RuntimeError("当前容器缺少镜像引用，无法确定要拉取的目标镜像。")
+    if not _RELEASE_VERSION_PATTERN.fullmatch(version):
+        raise RuntimeError("目标版本格式无效，无法构造发布镜像标签。")
+    image_name, separator, possible_tag = base_ref.rpartition(":")
+    if separator and "/" not in possible_tag:
+        base_ref = image_name
+    return f"{base_ref}:v{version}"
 
 
 def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
@@ -1228,16 +1243,19 @@ def request_system_update(*, requested_by: str = "", target_version: str = "", f
     request_id = uuid.uuid4().hex
     helper_name = _helper_container_name(request_id)
     requested_at = _now_iso()
-    target_image = str(metadata.get("image_ref") or "")
+    requested_version = _normalize_version_label(target_version) or _normalize_version_label(APP_VERSION)
+    target_image = _versioned_image_ref(str(metadata.get("image_ref") or ""), requested_version)
     helper_image = str(metadata.get("container_image_id") or target_image)
     deployment_mode = _deployment_mode()
-    web_target = _web_update_target(target_image)
-    worker_target = _worker_update_target(target_image)
+    web_target = _web_update_target(str(metadata.get("image_ref") or ""))
+    worker_target = _worker_update_target(str(metadata.get("image_ref") or ""))
+    if web_target.get("container_name"):
+        web_target["image_ref"] = _versioned_image_ref(str(web_target.get("image_ref") or ""), requested_version)
+    if worker_target.get("container_name"):
+        worker_target["image_ref"] = _versioned_image_ref(str(worker_target.get("image_ref") or ""), requested_version)
     runtime_config = _runtime_config_from_env()
     old_image_ids: list[str] = []
     _append_unique_image_id(old_image_ids, str(metadata.get("container_image_id") or ""))
-    if not target_image:
-        raise RuntimeError("当前容器缺少镜像引用，无法确定要拉取的目标镜像。")
     if not helper_image:
         raise RuntimeError("当前容器缺少本地镜像 ID，无法启动更新 helper。")
     if web_target.get("container_name"):
@@ -1342,7 +1360,7 @@ def request_system_update(*, requested_by: str = "", target_version: str = "", f
             "image_cleanup_at": "",
             "image_cleanup_removed": [],
             "image_cleanup_errors": [],
-            "target_version": str(target_version or ""),
+            "target_version": requested_version,
             "last_error": "",
         }
     )
@@ -1396,7 +1414,7 @@ def request_system_update(*, requested_by: str = "", target_version: str = "", f
         web_image_ref=str(web_target.get("image_ref") or ""),
         worker_container_name=str(worker_target.get("container_name") or ""),
         worker_image_ref=str(worker_target.get("image_ref") or ""),
-        target_version=str(target_version or ""),
+        target_version=requested_version,
         force=bool(force),
     )
     return get_update_status()

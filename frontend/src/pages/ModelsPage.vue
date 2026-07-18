@@ -186,9 +186,6 @@ function buildQuery(page = 1, options = {}) {
   const safePage = Math.max(Number(page) || 1, 1);
   query.set("page", String(safePage));
   query.set("page_size", String(PAGE_SIZE));
-  if (options.includeUntilPage) {
-    query.set("limit", String(Math.max(1, Math.floor(safePage)) * PAGE_SIZE));
-  }
   if (options.cacheKey) query.set("_", String(options.cacheKey));
   if (filters.q) query.set("q", filters.q);
   if (filters.source && filters.source !== "all") query.set("source", filters.source);
@@ -456,7 +453,6 @@ async function load({ append = false, refresh = false } = {}) {
   const cacheKeyBase = refresh ? Date.now() : "";
   const requestOptions = {
     cacheKey: cacheKeyBase ? `${cacheKeyBase}-${nextPage}` : "",
-    includeUntilPage: !append && nextPage > 1,
   };
   const rawResponse = append
     ? await fetchPage(nextPage, requestOptions)
@@ -499,7 +495,6 @@ async function reloadVisiblePages({ refresh = false } = {}) {
 
   const rawResponse = await modelsResource.load({ page: pagesToLoad, requestOptions: {
     cacheKey: cacheKeyBase ? `${cacheKeyBase}-${pagesToLoad}` : "",
-    includeUntilPage: pagesToLoad > 1,
   } });
   if (!rawResponse) {
     return;

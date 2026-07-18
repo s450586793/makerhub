@@ -321,9 +321,6 @@ function buildSubscriptionsQuery(page = 1, options = {}) {
   const safePage = Math.max(Number(page) || 1, 1);
   query.set("page", String(safePage));
   query.set("page_size", String(PAGE_SIZE));
-  if (options.includeUntilPage) {
-    query.set("limit", String(Math.max(1, Math.floor(safePage)) * PAGE_SIZE));
-  }
   return query;
 }
 
@@ -353,9 +350,7 @@ async function load({ silent = false, pages = routePage() } = {}) {
   const pagesToLoad = Math.max(Number(pages) || 1, 1);
   let failed = false;
   try {
-    const response = await subscriptionsResource.load({ page: pagesToLoad, requestOptions: {
-      includeUntilPage: pagesToLoad > 1,
-    } });
+    const response = await subscriptionsResource.load({ page: pagesToLoad, requestOptions: {} });
     if (!response) {
       return;
     }

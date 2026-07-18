@@ -27,6 +27,13 @@ def test_runtime_state_key_follows_replaced_module_path():
         task_state.REMOTE_REFRESH_STATE_PATH = original
 
 
+def test_state_locks_are_scoped_to_independent_state_files():
+    resolver = getattr(task_state, "_state_lock_for_path", None)
+    assert callable(resolver), "task_state must expose scoped state locks"
+    assert resolver(task_state.ARCHIVE_QUEUE_PATH) is not resolver(task_state.SUBSCRIPTIONS_STATE_PATH)
+    assert resolver(task_state.ARCHIVE_QUEUE_PATH) is resolver(task_state.ARCHIVE_QUEUE_PATH)
+
+
 class JsonStatePathKeyTest(unittest.TestCase):
     def test_runtime_state_key_propagates_unrelated_mapping_resolution_error(self):
         resolution_error = OSError("archive queue path resolution failed")
@@ -1696,7 +1703,7 @@ class ArchiveQueueStateTest(unittest.TestCase):
         with patch.object(state_events, "_LAST_STATE_CHANGED_EVENT_AT", {}), \
                 patch.object(state_events, "_LAST_STATE_CHANGED_EVENT_SIGNATURE", {}), \
                 patch.object(state_events, "append_state_event", side_effect=append_event), \
-                patch.object(state_events, "wake_state_event_subscribers", side_effect=lambda: wakes.append(True)), \
+                patch.object(state_events, "wake_state_event_subscribers", side_effect=lambda *_args: wakes.append(True)), \
                 patch.object(state_events.time, "monotonic", side_effect=[100.0, 100.2, 101.9]):
             state_events.publish_state_event("archive_queue", "state.changed", {"queued_count": 1})
             state_events.publish_state_event("archive_queue", "state.changed", {"queued_count": 1})

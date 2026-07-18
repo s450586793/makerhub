@@ -106,15 +106,24 @@ class ReleaseWorkflowContractTest(unittest.TestCase):
         self.assertEqual(_step(release, "Build and push image")["with"]["push"], "true")
         self.assertEqual(release["permissions"]["packages"], "write")
 
-    def test_release_publishes_only_prefixed_version_sha_and_latest_tags(self):
+    def test_release_publishes_immutable_tags_before_promoting_latest(self):
         release = self.jobs["release"]
         metadata_tags = _step(release, "Extract image metadata")["with"]["tags"]
+        steps = [item.get("name") for item in release["steps"]]
 
         self.assertIn("type=raw,value=${{ github.ref_name }}", metadata_tags)
         self.assertIn("type=sha", metadata_tags)
-        self.assertIn("type=raw,value=latest", metadata_tags)
+        self.assertNotIn("type=raw,value=latest", metadata_tags)
         self.assertNotIn("pattern={{version}}", metadata_tags)
         self.assertNotRegex(metadata_tags, r"value=\$\{\{\s*steps\.[^.]+\.outputs\.version\s*\}\}")
+        self.assertEqual(release["concurrency"]["group"], "makerhub-release-promotion")
+        self.assertEqual(release["permissions"]["contents"], "write")
+        self.assertLess(steps.index("Build and push image"), steps.index("Publish GitHub Release"))
+        self.assertLess(steps.index("Publish GitHub Release"), steps.index("Promote verified release as latest"))
+        self.assertIn(
+            '"${IMAGE}:${GITHUB_REF_NAME}"',
+            _step(release, "Promote verified release as latest")["run"],
+        )
 
     def test_release_refuses_existing_version_tag_but_allows_an_ambiguous_precheck(self):
         release = self.jobs["release"]
@@ -205,7 +214,7 @@ class DeploymentComposeContractTest(unittest.TestCase):
 
 
 class ReleaseDocumentationContractTest(unittest.TestCase):
-    def test_release_metadata_and_visible_readme_history_match_0_12_1(self):
+    def test_release_metadata_and_visible_readme_history_match_current_version(self):
         version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
         package = json.loads((ROOT_DIR / "frontend" / "package.json").read_text(encoding="utf-8"))
         package_lock = json.loads(
@@ -215,16 +224,19 @@ class ReleaseDocumentationContractTest(unittest.TestCase):
         changelog = (ROOT_DIR / "CHANGELOG.md").read_text(encoding="utf-8")
         visible_history = readme.split("<details>", 1)[0]
 
-        self.assertEqual(version, "0.12.1")
         self.assertEqual(package["version"], version)
         self.assertEqual(package_lock["version"], version)
         self.assertEqual(package_lock["packages"][""]["version"], version)
-        self.assertIn("> 当前版本：`v0.12.1`", readme)
-        self.assertIn("## 2026-07-18 · v0.12.1", changelog)
-        self.assertEqual(
-            [line.rsplit("v", 1)[-1] for line in visible_history.splitlines() if line.startswith("### 20")],
-            ["0.12.1", "0.12.0", "0.11.21"],
+        self.assertIn(f"> 当前版本：`v{version}`", readme)
+        self.assertTrue(
+            any(
+                line.startswith("## ") and line.endswith(f" · v{version}")
+                for line in changelog.splitlines()
+            )
         )
+        visible_versions = [line.rsplit("v", 1)[-1] for line in visible_history.splitlines() if line.startswith("### 20")]
+        self.assertEqual(visible_versions[0], version)
+        self.assertEqual(len(visible_versions), 3)
 
     def test_operations_docs_cover_the_release_safety_contract(self):
         documentation = "\n".join(

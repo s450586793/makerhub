@@ -372,7 +372,7 @@ function syncFiltersFromRoute() {
   applyingRouteQuery = false;
 }
 
-function buildQuery(cursor = "") {
+function buildQuery(cursor = "", includeFacets = true) {
   const query = new URLSearchParams();
   query.set("file", filters.file || DEFAULT_FILE);
   query.set("limit", String(filters.limit || DEFAULT_LIMIT));
@@ -382,6 +382,10 @@ function buildQuery(cursor = "") {
   if (filters.event) query.set("event", filters.event);
   if (filters.since && filters.since !== ALL_TIME_VALUE) query.set("since", resolveSinceValue(filters.since));
   if (cursor) query.set("cursor", cursor);
+  if (!includeFacets) {
+    query.set("include_facets", "false");
+    query.set("include_files", "false");
+  }
   return query;
 }
 
@@ -397,7 +401,7 @@ function buildRouteQuery() {
   return query;
 }
 
-async function load({ append = false, cursor = "" } = {}) {
+async function load({ append = false, cursor = "", includeFacets = !append } = {}) {
   const token = append ? ++loadMoreToken : ++requestToken;
   const routeAtLoad = route.fullPath;
   if (!append) {
@@ -411,7 +415,7 @@ async function load({ append = false, cursor = "" } = {}) {
   }
 
   try {
-    const nextPayload = await apiRequest(`/api/logs?${buildQuery(cursor).toString()}`);
+    const nextPayload = await apiRequest(`/api/logs?${buildQuery(cursor, includeFacets).toString()}`);
     if (
       route.fullPath !== routeAtLoad
       || (append && token !== loadMoreToken)
@@ -514,7 +518,7 @@ function toggleAutoRefresh() {
 }
 
 async function loadAndScheduleNextAutoRefresh() {
-  await load();
+  await load({ includeFacets: false });
   if (autoRefresh.value && logRefreshController) {
     logRefreshController.schedule("auto-refresh-next");
   }

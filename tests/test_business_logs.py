@@ -73,6 +73,34 @@ class BusinessLogsTest(unittest.TestCase):
         self.assertEqual(captured[0][1]["level"], "warning")
         self.assertEqual(captured[0][1]["event"], "fetch_trace")
 
+    def test_async_info_business_log_is_persisted_by_background_writer(self):
+        writer = getattr(business_logs, "append_business_log_async", None)
+        flush = getattr(business_logs, "flush_business_log_writer", None)
+        if not callable(writer) or not callable(flush):
+            self.fail("business_logs must expose async writer helpers")
+        captured = []
+
+        with patch.object(
+            business_logs,
+            "append_database_log_entries",
+            side_effect=lambda entries: captured.extend(entries) or True,
+        ), patch("builtins.print"):
+            writer("performance", "slow_api_request", "slow", path="/api/models")
+            self.assertTrue(flush(timeout_seconds=1))
+
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0][1]["event"], "slow_api_request")
+
+    def test_async_warning_business_log_stays_synchronous(self):
+        writer = getattr(business_logs, "append_business_log_async", None)
+        if not callable(writer):
+            self.fail("business_logs must expose append_business_log_async()")
+
+        with patch.object(business_logs, "append_business_log") as append:
+            writer("performance", "api_error_request", "failed", level="warning")
+
+        append.assert_called_once()
+
     def test_noisy_structured_success_log_can_be_skipped(self):
         captured = []
 
@@ -260,7 +288,22 @@ class BusinessLogsTest(unittest.TestCase):
         self.assertEqual(first, refreshed)
         self.assertEqual(len(calls), 6)
 
-    def test_successful_log_insert_invalidates_facet_cache(self):
+    def test_read_log_entries_can_skip_expensive_facets_for_live_refresh(self):
+        with patch.object(business_logs, "_database_log_file_items") as files, \
+                patch.object(business_logs, "_read_database_log_entries", return_value=([], False, "")), \
+                patch.object(business_logs, "_read_database_log_facets") as facets:
+            payload = business_logs.read_log_entries(
+                "business.log",
+                include_facets=False,
+                include_files=False,
+            )
+
+        files.assert_not_called()
+        facets.assert_not_called()
+        self.assertEqual(payload["files"], [])
+        self.assertEqual(payload["facets"], {"levels": [], "categories": [], "events": []})
+
+    def test_successful_log_insert_keeps_short_lived_facet_cache(self):
         class FakeConnection:
             def execute(self, sql, params=None):
                 return self
@@ -283,7 +326,7 @@ class BusinessLogsTest(unittest.TestCase):
                 )
             )
 
-        invalidate.assert_called_once_with()
+        invalidate.assert_not_called()
 
     def test_facet_cache_is_bounded_and_drops_expired_keys(self):
         class FakeResult:

@@ -215,6 +215,20 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             else:
                 self_update.os.environ[self_update.WORKER_IMAGE_REF_ENV] = original_image
 
+    def test_versioned_image_ref_replaces_floating_tag_with_requested_release_tag(self):
+        resolver = getattr(self_update, "_versioned_image_ref", None)
+        if not callable(resolver):
+            self.fail("self_update must expose _versioned_image_ref()")
+
+        self.assertEqual(
+            resolver("ghcr.io/example/makerhub:latest", "v0.13.0"),
+            "ghcr.io/example/makerhub:v0.13.0",
+        )
+        self.assertEqual(
+            resolver("ghcr.io/example/makerhub@sha256:deadbeef", "0.13.0"),
+            "ghcr.io/example/makerhub:v0.13.0",
+        )
+
     def test_update_status_includes_runtime_role_diagnostics(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_dir = Path(temp_dir) / "state"
@@ -815,7 +829,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             self.assertIn("--web-container", command)
             self.assertIn("makerhub-web", command)
             self.assertIn("--web-image-ref", command)
-            self.assertIn("ghcr.io/example/makerhub:latest", command)
+            self.assertIn("ghcr.io/example/makerhub:v0.6.0", command)
             self.assertIn(
                 "MAKERHUB_DATABASE_URL=postgresql://makerhub:makerhub@makerhub-postgres:5432/makerhub",
                 created[0]["body"]["Env"],
@@ -936,7 +950,7 @@ class SelfUpdateSplitDeploymentTest(unittest.TestCase):
             self.assertIn("--worker-container", command)
             self.assertIn("makerhub-worker", command)
             self.assertIn("--worker-image-ref", command)
-            self.assertIn("ghcr.io/example/makerhub:latest", command)
+            self.assertIn("ghcr.io/example/makerhub:v0.6.2", command)
             self.assertIn(f"MAKERHUB_LOGS_DIR={state_dir.parent / 'logs'}", created[0]["body"]["Env"])
             self.assertIn(f"{state_dir.parent / 'logs'}:{state_dir.parent / 'logs'}", created[0]["body"]["HostConfig"]["Binds"])
             self.assertEqual(started, [created[0]["name"] + "-id"])

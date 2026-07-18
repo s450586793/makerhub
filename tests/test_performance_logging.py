@@ -12,7 +12,7 @@ def test_slow_get_request_is_logged_without_query_values():
     )
     response = SimpleNamespace(status_code=200, headers={"content-length": "1234"})
 
-    with patch.object(performance, "append_business_log") as log:
+    with patch.object(performance, "append_business_log_async") as log:
         performance.log_api_request_if_needed(request, response, duration_ms=901)
 
     log.assert_called_once()
@@ -34,7 +34,7 @@ def test_fast_successful_request_is_not_logged():
     )
     response = SimpleNamespace(status_code=200, headers={})
 
-    with patch.object(performance, "append_business_log") as log:
+    with patch.object(performance, "append_business_log_async") as log:
         performance.log_api_request_if_needed(request, response, duration_ms=120)
 
     log.assert_not_called()
@@ -70,7 +70,7 @@ def test_frontend_slow_page_event_is_sanitized_and_logged():
         "extra": "ignored",
     }
 
-    with patch.object(performance, "append_business_log") as log:
+    with patch.object(performance, "append_business_log_async") as log:
         result = performance.log_frontend_page_event(payload)
 
     assert result == {"success": True, "recorded": True}
@@ -97,7 +97,7 @@ def test_frontend_page_milestones_are_whitelisted_clamped_and_keep_duration_comp
         "query": "token=secret",
     }
 
-    with patch.object(performance, "append_business_log") as log:
+    with patch.object(performance, "append_business_log_async") as log:
         result = performance.log_frontend_page_event(payload)
 
     assert result == {"success": True, "recorded": True}
@@ -121,7 +121,7 @@ def test_frontend_enrichment_event_is_logged_separately_from_slow_page_load():
         "enrichment_ready_ms": 1600,
     }
 
-    with patch.object(performance, "append_business_log") as log:
+    with patch.object(performance, "append_business_log_async") as log:
         result = performance.log_frontend_page_event(payload)
 
     assert result == {"success": True, "recorded": True}

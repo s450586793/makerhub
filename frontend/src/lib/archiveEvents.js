@@ -23,5 +23,5 @@ export function subscribeArchiveCompletion(onComplete) {
       ],
       event,
     });
-  });
+  }, ["archive_queue", "organize_tasks"]);
 }

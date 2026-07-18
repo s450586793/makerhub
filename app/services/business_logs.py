@@ -5,6 +5,7 @@ import time
 from collections import OrderedDict
 from copy import deepcopy
 from pathlib import Path
+from queue import Empty, Full, Queue
 from typing import Any
 
 from app.core.database import (
@@ -43,12 +44,20 @@ _LOG_FACET_CACHE_GENERATION = 0
 LOG_FACET_CACHE_SECONDS = 5.0
 LOG_FACET_CACHE_MAX_ITEMS = 128
 DATABASE_LOG_MAX_ATTEMPTS = 3
+ASYNC_LOG_QUEUE_MAX_ITEMS = 1000
+ASYNC_LOG_BATCH_SIZE = 100
+ASYNC_LOG_BATCH_WAIT_SECONDS = 0.25
 NOISY_INFO_EVENTS = {
     ("scrapling", "fetch_trace"),
     ("subscription", "metadata_refreshed"),
     ("subscription", "preview_snapshots_refreshed"),
     ("source_library", "preview_snapshots_refreshed"),
 }
+_ASYNC_LOG_QUEUE: Queue[tuple[str, dict[str, Any], str]] = Queue(maxsize=ASYNC_LOG_QUEUE_MAX_ITEMS)
+_ASYNC_LOG_WRITER_LOCK = threading.Lock()
+_ASYNC_LOG_WRITER: threading.Thread | None = None
+_ASYNC_LOG_STOP_EVENT = threading.Event()
+_ASYNC_LOG_DROPPED = 0
 
 
 def _now_iso() -> str:
@@ -189,13 +198,108 @@ def append_database_log_entry(file_name: str, entry: dict[str, Any], *, raw: str
                         "payload": jsonb_value(payload["payload"]),
                     },
                 )
-            invalidate_log_facet_cache()
             return True
         except Exception:
             if attempt >= DATABASE_LOG_MAX_ATTEMPTS:
                 return False
             time.sleep(0.05 * attempt)
     return False
+
+
+def append_database_log_entries(entries: list[tuple[str, dict[str, Any], str]]) -> bool:
+    """Persist a batch on one connection so telemetry never occupies request threads."""
+    if not entries or not _database_logs_enabled():
+        return False
+    payloads = [
+        _entry_for_db(entry, file_name=file_name, raw=raw)
+        for file_name, entry, raw in entries
+        if isinstance(entry, dict)
+    ]
+    if not payloads:
+        return False
+    for attempt in range(1, DATABASE_LOG_MAX_ATTEMPTS + 1):
+        try:
+            if not _ensure_database_logs_ready():
+                return False
+            with database_connection() as connection:
+                for payload in payloads:
+                    connection.execute(
+                        """
+                        INSERT INTO makerhub_logs (
+                            file_name, time_text, level, category, event, message,
+                            payload, raw, raw_hash, created_at
+                        )
+                        VALUES (
+                            %(file_name)s, %(time_text)s, %(level)s, %(category)s, %(event)s, %(message)s,
+                            %(payload)s, %(raw)s, %(raw_hash)s, now()
+                        )
+                        ON CONFLICT (file_name, raw_hash) DO NOTHING
+                        """,
+                        {**payload, "payload": jsonb_value(payload["payload"])},
+                    )
+            return True
+        except Exception:
+            if attempt >= DATABASE_LOG_MAX_ATTEMPTS:
+                return False
+            time.sleep(0.05 * attempt)
+    return False
+
+
+def _run_async_log_writer() -> None:
+    while True:
+        try:
+            first = _ASYNC_LOG_QUEUE.get(timeout=ASYNC_LOG_BATCH_WAIT_SECONDS)
+        except Empty:
+            if _ASYNC_LOG_STOP_EVENT.is_set():
+                return
+            continue
+        batch = [first]
+        while len(batch) < ASYNC_LOG_BATCH_SIZE:
+            try:
+                batch.append(_ASYNC_LOG_QUEUE.get_nowait())
+            except Empty:
+                break
+        try:
+            append_database_log_entries(batch)
+        finally:
+            for _entry in batch:
+                _ASYNC_LOG_QUEUE.task_done()
+        if _ASYNC_LOG_STOP_EVENT.is_set() and _ASYNC_LOG_QUEUE.empty():
+            return
+
+
+def _ensure_async_log_writer() -> None:
+    global _ASYNC_LOG_WRITER
+    with _ASYNC_LOG_WRITER_LOCK:
+        if _ASYNC_LOG_WRITER and _ASYNC_LOG_WRITER.is_alive():
+            return
+        _ASYNC_LOG_STOP_EVENT.clear()
+        _ASYNC_LOG_WRITER = threading.Thread(
+            target=_run_async_log_writer,
+            name="makerhub-business-log-writer",
+            daemon=True,
+        )
+        _ASYNC_LOG_WRITER.start()
+
+
+def flush_business_log_writer(*, timeout_seconds: float = 5.0) -> bool:
+    deadline = time.monotonic() + max(float(timeout_seconds or 0), 0)
+    while _ASYNC_LOG_QUEUE.unfinished_tasks:
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
+    return True
+
+
+def shutdown_business_log_writer(*, timeout_seconds: float = 5.0) -> bool:
+    global _ASYNC_LOG_WRITER
+    flushed = flush_business_log_writer(timeout_seconds=timeout_seconds)
+    _ASYNC_LOG_STOP_EVENT.set()
+    with _ASYNC_LOG_WRITER_LOCK:
+        writer = _ASYNC_LOG_WRITER
+    if writer and writer.is_alive():
+        writer.join(timeout=max(float(timeout_seconds or 0), 0))
+    return flushed and not bool(writer and writer.is_alive())
 
 
 def append_structured_log(
@@ -249,6 +353,44 @@ def append_business_log(
         )
     except Exception:
         return
+
+
+def append_business_log_async(
+    category: str,
+    event: str,
+    message: str = "",
+    *,
+    level: str = "info",
+    **fields: Any,
+) -> None:
+    """Queue best-effort info telemetry while preserving synchronous failures."""
+    clean_level = str(level or "info").lower()
+    if clean_level not in {"info", "debug"}:
+        append_business_log(category, event, message, level=clean_level, **fields)
+        return
+    entry = {
+        "time": _now_iso(),
+        "level": clean_level,
+        "category": str(category or "system").strip() or "system",
+        "event": str(event or "event").strip() or "event",
+        "message": str(message or "").strip(),
+        **{str(key): _safe_value(value, key=str(key)) for key, value in fields.items()},
+    }
+    if not _should_persist_log_entry(entry):
+        return
+    line = json.dumps(entry, ensure_ascii=False)
+    global _ASYNC_LOG_DROPPED
+    try:
+        _ASYNC_LOG_QUEUE.put_nowait((BUSINESS_LOG_NAME, entry, line))
+    except Full:
+        with _ASYNC_LOG_WRITER_LOCK:
+            _ASYNC_LOG_DROPPED += 1
+        return
+    _ensure_async_log_writer()
+    print(
+        f"[makerhub][{entry['level']}][{entry['category']}] {entry['event']} {entry['message']}".strip(),
+        flush=True,
+    )
 
 
 def list_log_files() -> list[dict[str, Any]]:
@@ -525,10 +667,12 @@ def read_log_entries(
     event: str | list[str] | tuple[str, ...] | None = "",
     since: str = "",
     cursor: str | int | None = "",
+    include_facets: bool = True,
+    include_files: bool = True,
 ) -> dict[str, Any]:
     safe_limit = min(max(int(limit or 300), 1), 2000)
     safe_file_name = _safe_log_name(file_name)
-    database_files = _database_log_file_items()
+    database_files = _database_log_file_items() if include_files else {}
     database_entries, has_more, next_cursor = _read_database_log_entries(
         safe_file_name,
         limit=safe_limit,
@@ -539,7 +683,11 @@ def read_log_entries(
         since=since,
         cursor=cursor,
     )
-    facets = _read_database_log_facets(safe_file_name, query=query, since=since)
+    facets = (
+        _read_database_log_facets(safe_file_name, query=query, since=since)
+        if include_facets
+        else {"levels": [], "categories": [], "events": []}
+    )
     return {
         "file": safe_file_name,
         "entries": database_entries,

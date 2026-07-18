@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from app.services.business_logs import append_business_log
+from app.services.business_logs import append_business_log, append_business_log_async
 
 
 GET_SLOW_THRESHOLD_MS = 800
@@ -73,7 +73,8 @@ def log_api_request_if_needed(request: Any, response: Any, *, duration_ms: float
     event = "api_error_request" if failed else "slow_api_request"
     message = "API 请求失败。" if failed else "API 请求耗时较高。"
     try:
-        append_business_log(
+        log_writer = append_business_log if failed else append_business_log_async
+        log_writer(
             "performance",
             event,
             message,
@@ -133,7 +134,7 @@ def log_frontend_page_event(payload: dict[str, Any]) -> dict[str, bool]:
     event = "slow_page_enrichment" if is_enrichment else "slow_page_load"
     message = "页面补全数据加载较慢。" if is_enrichment else "页面首屏加载较慢。"
     try:
-        append_business_log(
+        append_business_log_async(
             "performance",
             event,
             message,

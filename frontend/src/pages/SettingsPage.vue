@@ -766,7 +766,7 @@
             <pre class="system-update-code system-update-code--pre">{{ systemUpdate.compose_example }}</pre>
           </template>
           <p v-if="systemUpdate.supported">
-            更新会复用当前容器名称、挂载、端口和重启策略。App + Worker 部署下会先更新后台 Worker，再更新 App 容器；页面短暂报错通常只是容器正在重启。
+            更新会复用当前容器名称、挂载、端口和重启策略。App + Worker 部署按同一发布组切换并统一验证；页面短暂报错通常只是容器正在重启。
           </p>
           <p v-else-if="!systemUpdate.compose_migration_required">
             默认部署不会挂载 Docker socket。只有明确接受网页更新会获得宿主机 Docker 控制权限时，才在 compose 里启用 <code>/var/run/docker.sock:/var/run/docker.sock</code>；不启用时请使用手动更新命令。

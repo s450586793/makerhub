@@ -202,12 +202,12 @@ test("primary pages report slow first-load performance without UI changes", () =
   }
 });
 
-test("ModelsPage restores deep pages with one final light request", () => {
+test("ModelsPage refreshes only the current light page instead of rebuilding deep history", () => {
   assert.match(modelsPageSource, /apiRequest\("\/api\/models\/light/);
   assert.match(modelsPageSource, /createHydratedResource/);
   assert.doesNotMatch(modelsPageSource, /scheduleFullModelHydration|requestIdleCallback/);
-  assert.match(modelsPageSource, /includeUntilPage/);
-  assert.match(modelsPageSource, /query\.set\("limit"/);
+  assert.doesNotMatch(modelsPageSource, /includeUntilPage/);
+  assert.doesNotMatch(modelsPageSource, /query\.set\("limit"/);
   assert.doesNotMatch(modelsPageSource, /for \(let page = append \? nextPage : 1; page <= nextPage;/);
 });
 
@@ -217,12 +217,12 @@ test("ModelsPage renders its final light response without a full fallback", () =
   assert.doesNotMatch(modelsPageSource, /resolveHydratedLightPhase|refreshFullModelList/);
 });
 
-test("SubscriptionsPage restores deep pages with one final light request", () => {
+test("SubscriptionsPage refreshes only the current light page instead of rebuilding deep history", () => {
   assert.match(subscriptionsPageSource, /apiRequest\("\/api\/subscriptions\/light/);
   assert.match(subscriptionsPageSource, /createHydratedResource/);
   assert.doesNotMatch(subscriptionsPageSource, /scheduleFullSubscriptionsHydration|requestIdleCallback/);
-  assert.match(subscriptionsPageSource, /includeUntilPage/);
-  assert.match(subscriptionsPageSource, /query\.set\("limit"/);
+  assert.doesNotMatch(subscriptionsPageSource, /includeUntilPage/);
+  assert.doesNotMatch(subscriptionsPageSource, /query\.set\("limit"/);
   assert.doesNotMatch(subscriptionsPageSource, /for \(let page = 1; page <= pagesToLoad;/);
 });
 
