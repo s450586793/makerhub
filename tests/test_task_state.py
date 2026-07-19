@@ -1466,6 +1466,48 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertEqual(queue["queued"][2]["blocked_reason"], "manual")
         self.assertEqual(selected_ids, ["paused-cn", "paused-global"])
 
+    def test_resume_browser_session_recovery_only_resumes_matching_task_and_moves_it_to_front(self):
+        state = {
+            "archive_queue": {
+                "active": [],
+                "queued": [
+                    {
+                        "id": "other-paused",
+                        "url": "https://makerworld.com.cn/zh/models/456",
+                        "status": "paused",
+                        "blocked_reason": "needs_verification",
+                        "meta": {"source": "cn", "model_id": "456", "missing_3mf_retry": True},
+                    },
+                    {
+                        "id": "target-paused",
+                        "url": "https://makerworld.com.cn/zh/models/123",
+                        "status": "paused",
+                        "blocked_reason": "needs_verification",
+                        "meta": {"source": "cn", "model_id": "123", "missing_3mf_retry": True},
+                    },
+                ],
+                "recent_failures": [],
+            }
+        }
+        store = TaskStateStore()
+
+        with patch("app.services.task_state.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
+                patch("app.services.task_state.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.task_state.china_now_iso", return_value="2026-07-19T17:00:00+08:00"):
+            queue = store.resume_browser_session_recovery_task(
+                model_id="123",
+                model_url="https://makerworld.com.cn/zh/models/123",
+                platform="cn",
+            )
+
+        self.assertEqual(queue["resumed_count"], 1)
+        self.assertEqual(queue["queued"][0]["id"], "target-paused")
+        self.assertEqual(queue["queued"][0]["status"], "queued")
+        self.assertTrue(queue["queued"][0]["meta"]["browser_session_recovery"])
+        self.assertNotIn("blocked_reason", queue["queued"][0])
+        self.assertEqual(queue["queued"][1]["id"], "other-paused")
+        self.assertEqual(queue["queued"][1]["status"], "paused")
+
     def test_load_archive_queue_compact_reads_limited_items_and_full_counts(self):
         summaries = {
             "active": {

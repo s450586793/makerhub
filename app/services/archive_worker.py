@@ -22,7 +22,13 @@ from app.services.batch_discovery import (
     normalize_source_url,
     resolve_batch_source_name,
 )
-from app.services.account_health import get_account_health, mark_account_ok, open_three_mf_gate, update_three_mf_gate
+from app.services.account_health import (
+    get_account_health,
+    mark_account_checking,
+    mark_account_ok,
+    open_three_mf_gate,
+    update_three_mf_gate,
+)
 from app.services.business_logs import append_business_log, append_structured_log
 from app.services.catalog import (
     get_archive_snapshot,
@@ -565,8 +571,19 @@ def _sync_account_health_for_archive_result(
     instance_id: str,
     missing_items: list[dict[str, Any]],
     missing_3mf_retry: bool,
+    browser_session_recovery: bool = False,
 ) -> Optional[dict[str, str]]:
     classified_failure = _account_health_failure_from_missing_items(missing_items)
+    if (
+        classified_failure is not None
+        and browser_session_recovery
+        and classified_failure["status"] in {"auth_required", "cookie_invalid"}
+    ):
+        classified_failure = {
+            **classified_failure,
+            "status": "verification_required",
+            "detail": CLOAKBROWSER_BROWSER_CONFIRMATION_MESSAGE,
+        }
     try:
         if classified_failure is not None:
             update_three_mf_gate(
@@ -873,9 +890,33 @@ class ArchiveTaskManager:
         if saved is None:
             return {"outcome": "stale", "message": "MakerHub 登录态已变化，跳过浏览器同步结果。"}
 
+        try:
+            mark_account_checking(
+                normalized_platform,
+                source="cloakbrowser_auto_sync",
+                detail=CLOAKBROWSER_SESSION_REFRESHED_MESSAGE,
+            )
+        except Exception as exc:
+            _log_archive(
+                "cloakbrowser_auto_sync_health_update_failed",
+                "指纹浏览器登录态已更新，但账号检测状态写入失败。",
+                level="warning",
+                platform=normalized_platform,
+                error=str(exc)[:240],
+            )
+
         primary_item = primary if isinstance(primary, dict) else {}
         primary_url = normalize_source_url(str(primary_item.get("model_url") or ""))
+        resumed = False
         if primary_url:
+            resumed = self._resume_browser_session_recovery_task(
+                model_url=primary_url,
+                model_id=str(primary_item.get("model_id") or extract_model_id(primary_url) or ""),
+                source=normalized_platform,
+                title=str(primary_item.get("title") or ""),
+                instance_id=str(primary_item.get("instance_id") or ""),
+            )
+        if primary_url and not resumed:
             self.retry_missing_3mf(
                 model_url=primary_url,
                 model_id=str(primary_item.get("model_id") or extract_model_id(primary_url) or ""),
@@ -893,6 +934,38 @@ class ArchiveTaskManager:
             retried=bool(primary_url),
         )
         return {"outcome": "updated", "message": CLOAKBROWSER_SESSION_REFRESHED_MESSAGE}
+
+    def _resume_browser_session_recovery_task(
+        self,
+        *,
+        model_url: str,
+        model_id: str,
+        source: str,
+        title: str,
+        instance_id: str,
+    ) -> bool:
+        resume_task = getattr(self.task_store, "resume_browser_session_recovery_task", None)
+        if not callable(resume_task):
+            return False
+        result = resume_task(
+            model_id=str(model_id or "").strip(),
+            model_url=normalize_source_url(model_url),
+            platform=normalize_makerworld_source(source, model_url),
+        )
+        if int(result.get("resumed_count") or 0) <= 0:
+            return False
+        update_status = getattr(self.task_store, "update_missing_3mf_status", None)
+        if callable(update_status):
+            update_status(
+                model_id=str(model_id or "").strip(),
+                title=title,
+                instance_id=instance_id,
+                model_url=normalize_source_url(model_url),
+                status="queued",
+                message="正在使用最新浏览器登录态验证 3MF 下载权限",
+            )
+        self._ensure_worker()
+        return True
 
     def _schedule_browser_session_recovery_for_three_mf_gate(
         self,
@@ -2253,7 +2326,13 @@ class ArchiveTaskManager:
             )
         return result
 
-    def retry_verification_missing_3mf(self, *, platform: str, primary: Optional[dict] = None) -> dict:
+    def retry_verification_missing_3mf(
+        self,
+        *,
+        platform: str,
+        primary: Optional[dict] = None,
+        retry_all: bool = True,
+    ) -> dict:
         normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
         self._blocked_queue_retry_at = 0.0
         primary_item = primary if isinstance(primary, dict) else {}
@@ -2269,7 +2348,10 @@ class ArchiveTaskManager:
                 normalize_makerworld_source(item.get("source"), item.get("model_url")),
             )
 
-        for raw_item in [primary_item, *(missing_payload.get("items") or [])]:
+        source_items = [primary_item] if primary_item else []
+        if retry_all:
+            source_items.extend(missing_payload.get("items") or [])
+        for raw_item in source_items:
             if not isinstance(raw_item, dict):
                 continue
             item_url = normalize_source_url(str(raw_item.get("model_url") or ""))
@@ -2323,7 +2405,7 @@ class ArchiveTaskManager:
             else:
                 failed += 1
 
-        resumed = self._resume_paused_missing_3mf_retry_tasks_for_platform(normalized_platform)
+        resumed = self._resume_paused_missing_3mf_retry_tasks_for_platform(normalized_platform) if retry_all else 0
         append_business_log(
             "missing_3mf",
             "verification_retry_completed",
@@ -2789,17 +2871,6 @@ class ArchiveTaskManager:
         if hasattr(self.task_store, "resume_verification_paused_archive_tasks"):
             gate_by_platform = self._verification_resume_gate_snapshot(queue)
             self._schedule_browser_recovery_for_legacy_cookie_invalid_gates(queue, gate_by_platform)
-            resumed_queue = self.task_store.resume_verification_paused_archive_tasks(
-                selector=lambda item: self._verification_resume_allowed(item, gate_by_platform),
-            )
-            queue = resumed_queue
-            if int(resumed_queue.get("resumed_count") or 0) > 0:
-                _log_archive(
-                    "verification_paused_queue_resumed",
-                    "检测到验证已恢复，已重新排队旧的 MakerWorld 验证暂停任务。",
-                    resumed_count=int(resumed_queue.get("resumed_count") or 0),
-                    queued_count=int(resumed_queue.get("queued_count") or 0),
-                )
         if int(queue.get("running_count") or 0) > 0:
             queue = self.task_store.refresh_recent_active_archive_leases()
         if int(queue.get("queued_count") or 0) > 0:

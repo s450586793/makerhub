@@ -131,8 +131,8 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
                     request,
                 )
 
-            retry_verification_mock.assert_any_call(platform="cn")
-            retry_verification_mock.assert_any_call(platform="global")
+            retry_verification_mock.assert_any_call(platform="cn", retry_all=False)
+            retry_verification_mock.assert_any_call(platform="global", retry_all=False)
             self.assertEqual(retry_verification_mock.call_count, 2)
             self.assertEqual(payload["missing_3mf_verification_retry"]["cn"], verification_retry)
             self.assertEqual(payload["missing_3mf_verification_retry"]["global"], verification_retry)
@@ -480,7 +480,7 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
             with patch.object(config_api, "store", store), \
                     patch.object(config_api, "_run_online_account_cookie_test", return_value=test_result), \
                     patch.object(config_api, "online_account_metadata_from_cookie", return_value=metadata), \
-                    patch.object(config_api, "mark_account_ok") as mark_account_ok_mock, \
+                    patch.object(config_api, "update_account_health") as update_health_mock, \
                     patch.object(config_api, "update_three_mf_gate") as update_gate_mock, \
                     patch.object(config_api, "cookie_source_inventory_payload", return_value={"platforms": {}}), \
                     patch.object(config_api, "cookie_source_sync_state_payload", return_value={}), \
@@ -497,8 +497,10 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(saved_cookie.avatar_url, "https://example.com/avatar.jpg")
             self.assertEqual(saved_cookie.message, "国内账号可用，Cookie 已保存。")
             self.assertEqual(payload["test_result"], test_result)
-            mark_account_ok_mock.assert_called_once_with(
+            update_health_mock.assert_called_once_with(
                 "cn",
+                status="ok",
+                reason="",
                 source="online_account_test",
                 detail="国内账号可用，Cookie 已保存。",
             )
@@ -531,7 +533,7 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
             with patch.object(config_api, "store", store), \
                     patch.object(config_api, "_run_online_account_cookie_test", return_value=test_result), \
                     patch.object(config_api, "online_account_metadata_from_cookie", return_value=metadata), \
-                    patch.object(config_api, "mark_account_ok") as mark_account_ok_mock, \
+                    patch.object(config_api, "update_account_health") as update_health_mock, \
                     patch.object(config_api, "update_three_mf_gate") as update_gate_mock, \
                     patch.object(config_api, "cookie_source_inventory_payload", return_value={"platforms": {}}), \
                     patch.object(config_api, "cookie_source_sync_state_payload", return_value={}), \
@@ -542,7 +544,7 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
                 payload = config_api._run_and_store_online_account_cookie_test("global", target, config.proxy)
 
             self.assertEqual(payload["test_result"], test_result)
-            mark_account_ok_mock.assert_not_called()
+            update_health_mock.assert_not_called()
             update_gate_mock.assert_called_once_with(
                 "global",
                 gate="verification_required",
@@ -592,7 +594,7 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
             with patch.object(config_api, "store", store), \
                     patch.object(config_api, "_run_online_account_cookie_test", return_value=test_result), \
                     patch.object(config_api, "online_account_metadata_from_cookie", return_value=metadata), \
-                    patch.object(config_api, "mark_account_ok") as mark_account_ok_mock, \
+                    patch.object(config_api, "update_account_health") as update_health_mock, \
                     patch.object(config_api, "update_three_mf_gate") as update_gate_mock, \
                     patch.object(config_api, "cookie_source_inventory_payload", return_value={"platforms": {}}), \
                     patch.object(config_api, "cookie_source_sync_state_payload", return_value={
@@ -609,8 +611,10 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
                 payload = config_api._run_and_store_online_account_cookie_test("global", target, config.proxy)
 
             self.assertEqual(payload["test_result"], test_result)
-            mark_account_ok_mock.assert_called_once_with(
+            update_health_mock.assert_called_once_with(
                 "global",
+                status="ok",
+                reason="",
                 source="online_account_test",
                 detail="国际账号已保存，账号资料或来源同步可读取。",
             )
@@ -636,7 +640,7 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
                     patch.object(config_api, "_run_online_account_cookie_test", return_value=test_result), \
                     patch.object(config_api, "online_account_metadata_from_cookie", return_value={"status": "ok"}), \
                     patch.object(config_api, "_schedule_online_account_cookie_test") as schedule_mock, \
-                    patch.object(config_api, "mark_account_ok") as mark_account_ok_mock, \
+                    patch.object(config_api, "update_account_health") as update_health_mock, \
                     patch.object(config_api, "update_three_mf_gate") as update_gate_mock, \
                     patch.object(config_api, "append_business_log"):
                 payload = config_api._run_and_store_online_account_cookie_test("cn", stale_target, config.proxy)
@@ -645,7 +649,7 @@ class ConfigCookieApiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(saved_cookie.cookie, "token=new")
             self.assertEqual(saved_cookie.message, "新状态")
             self.assertTrue(payload["stale"])
-            mark_account_ok_mock.assert_not_called()
+            update_health_mock.assert_not_called()
             update_gate_mock.assert_not_called()
             schedule_mock.assert_called_once_with("cn", saved_cookie, config.proxy)
 

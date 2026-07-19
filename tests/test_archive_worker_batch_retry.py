@@ -119,7 +119,7 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
         self.assertEqual(queue["queued"][0]["id"], "retry-profile-1")
         self.assertEqual(queue["queued"][0]["meta"]["instance_ids"], ["profile-1", "profile-2"])
 
-    def test_ensure_worker_for_pending_resumes_verification_paused_queue(self):
+    def test_ensure_worker_for_pending_does_not_resume_verification_paused_queue_from_account_probe(self):
         manager = ArchiveTaskManager(background_enabled=False)
         calls = []
 
@@ -175,8 +175,7 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
         with patch("app.services.archive_worker.three_mf_gate_for_url", return_value={"open": True}):
             queue = manager.ensure_worker_for_pending()
 
-        self.assertEqual(len(calls), 1)
-        self.assertIsNotNone(calls[0])
+        self.assertEqual(calls, [])
         self.assertEqual(queue["queued_count"], 1)
 
     def test_ensure_worker_for_pending_uses_compact_queue_between_maintenance_runs(self):
@@ -279,7 +278,7 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
         ):
             queue = manager.ensure_worker_for_pending()
 
-        self.assertEqual(queue["resumed_count"], 0)
+        self.assertEqual(queue.get("resumed_count", 0), 0)
         self.assertEqual(queue["queued"][0]["status"], "paused")
         self.assertEqual(queue["queued"][0]["blocked_reason"], "needs_verification")
 
@@ -401,7 +400,7 @@ class ArchiveWorkerBatchRetryTest(unittest.TestCase):
         ):
             queue = manager.ensure_worker_for_pending()
 
-        self.assertEqual(queue["resumed_count"], 0)
+        self.assertEqual(queue.get("resumed_count", 0), 0)
         self.assertEqual(queue["queued"][0]["status"], "paused")
         self.assertEqual(queue["queued"][0]["blocked_reason"], "needs_verification")
 

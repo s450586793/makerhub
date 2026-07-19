@@ -118,8 +118,8 @@ from app.services.source_health import probe_cookie_auth_status
 from app.services.account_health import (
     load_account_health,
     mark_account_checking,
-    mark_account_ok,
     operational_status_payload,
+    update_account_health,
     update_three_mf_gate,
 )
 from app.services.state_events import (
@@ -2214,14 +2214,18 @@ def _sync_account_health_from_online_account_test(platform: str, result: dict, m
     metadata_status = str((metadata or {}).get("status") or "").strip().lower()
     if status == "network_error" and {state, metadata_status} & {"http_error", "html_response"}:
         if _has_online_account_source_evidence(platform, metadata):
-            return mark_account_ok(
+            return update_account_health(
                 platform,
+                status="ok",
+                reason="",
                 source="online_account_test",
                 detail=f"{_account_platform_short_label(platform)}账号已保存，账号资料或来源同步可读取。",
             )
     if status == "ok":
-        return mark_account_ok(
+        return update_account_health(
             platform,
+            status="ok",
+            reason="",
             source="online_account_test",
             detail=detail,
         )
@@ -2713,7 +2717,7 @@ def _retry_verification_missing_3mf_for_platforms(platforms: set[str]) -> dict[s
         if platform not in {"cn", "global"}:
             continue
         try:
-            result = retry_func(platform=platform)
+            result = retry_func(platform=platform, retry_all=False)
         except Exception as exc:
             result = {
                 "accepted": False,

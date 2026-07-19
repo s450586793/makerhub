@@ -2425,6 +2425,67 @@ class TaskStateStore:
         queue["resumed_count"] = resumed_count
         return queue
 
+    def resume_browser_session_recovery_task(
+        self,
+        *,
+        model_id: str = "",
+        model_url: str = "",
+        platform: str = "",
+        message: str = "正在使用最新浏览器登录态验证 3MF 下载权限",
+    ) -> dict:
+        clean_model_id = str(model_id or "").strip()
+        clean_model_url = _normalize_archive_identity_url(model_url)
+        clean_platform = normalize_makerworld_source(platform, clean_model_url)
+        if not clean_model_id and not clean_model_url:
+            queue = self.load_archive_queue()
+            queue["resumed_count"] = 0
+            return queue
+
+        resumed_count = 0
+        resumed_task_id = ""
+
+        def _matches(item: dict) -> bool:
+            meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+            if not meta.get("missing_3mf_retry"):
+                return False
+            item_url = _normalize_archive_identity_url(meta.get("model_url") or item.get("url") or "")
+            item_platform = normalize_makerworld_source(meta.get("source"), item_url)
+            if clean_platform and item_platform != clean_platform:
+                return False
+            item_model_id = str(meta.get("model_id") or "").strip() or _archive_model_id_from_url(item_url)
+            if clean_model_id and item_model_id != clean_model_id:
+                return False
+            if clean_model_url and item_url != clean_model_url:
+                return False
+            return str(item.get("status") or "").strip().lower() in {"paused", "queued", "pending"}
+
+        def _mutate(payload: dict) -> dict:
+            nonlocal resumed_count, resumed_task_id
+            target = None
+            remaining = []
+            now = china_now_iso()
+            for raw_item in payload.get("queued") or []:
+                item = _normalize_archive_runtime_item(raw_item, "queued")
+                if target is None and _matches(item):
+                    meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+                    item["meta"] = {**meta, "browser_session_recovery": True}
+                    item["status"] = "queued"
+                    item["message"] = str(message or "正在使用最新浏览器登录态验证 3MF 下载权限")
+                    item["updated_at"] = now
+                    item.pop("blocked_reason", None)
+                    target = item
+                    resumed_count = 1
+                    resumed_task_id = str(item.get("id") or "")
+                    continue
+                remaining.append(item)
+            payload["queued"] = [target, *remaining] if target is not None else remaining
+            return payload
+
+        queue = self._update_archive_queue(_mutate)
+        queue["resumed_count"] = resumed_count
+        queue["resumed_task_id"] = resumed_task_id
+        return queue
+
     def remove_recent_failures_for_model(self, model_id: str, url: str = "") -> dict:
         model_key = str(model_id or "").strip()
         url_key = str(url or "").strip()

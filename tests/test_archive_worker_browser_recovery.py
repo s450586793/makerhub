@@ -67,7 +67,7 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
         )
         retry_mock.assert_not_called()
 
-    def test_changed_same_account_browser_session_updates_cookie_and_retries_primary_only(self):
+    def test_changed_same_account_browser_session_resumes_matching_paused_retry_before_submitting_new_one(self):
         manager, store = self._manager_with_cookie("token=same; refreshToken=old")
         browser_result = CloakBrowserSessionResult(
             profile_id="profile-cn",
@@ -86,6 +86,7 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
         with patch.object(archive_worker_module, "cloakbrowser_configured", return_value=True), \
                 patch.object(archive_worker_module, "collect_browser_session", return_value=browser_result), \
                 patch.object(archive_worker_module, "open_three_mf_gate") as open_gate_mock, \
+                patch.object(manager, "_resume_browser_session_recovery_task", return_value=True) as resume_mock, \
                 patch.object(manager, "retry_missing_3mf", return_value={"accepted": True}) as retry_mock:
             result = manager._recover_browser_session_for_three_mf_gate("cn", primary=primary)
 
@@ -94,6 +95,36 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
         self.assertEqual(saved.cookie, browser_result.cookie)
         self.assertEqual(saved.browser_status, "synced")
         open_gate_mock.assert_not_called()
+        resume_mock.assert_called_once_with(
+            model_url="https://makerworld.com.cn/zh/models/123",
+            model_id="123",
+            source="cn",
+            title="model",
+            instance_id="instance-1",
+        )
+        retry_mock.assert_not_called()
+
+    def test_changed_browser_session_submits_one_retry_when_no_paused_task_matches(self):
+        manager, _store = self._manager_with_cookie("token=same; refreshToken=old")
+        browser_result = CloakBrowserSessionResult(
+            profile_id="profile-cn",
+            cookie="token=same; refreshToken=fresh; cf_clearance=clear",
+            current_url="https://makerworld.com.cn/zh",
+        )
+        primary = {
+            "model_url": "https://makerworld.com.cn/zh/models/123",
+            "model_id": "123",
+            "title": "model",
+            "instance_id": "instance-1",
+            "source": "cn",
+        }
+
+        with patch.object(archive_worker_module, "cloakbrowser_configured", return_value=True), \
+                patch.object(archive_worker_module, "collect_browser_session", return_value=browser_result), \
+                patch.object(manager, "_resume_browser_session_recovery_task", return_value=False), \
+                patch.object(manager, "retry_missing_3mf", return_value={"accepted": True}) as retry_mock:
+            manager._recover_browser_session_for_three_mf_gate("cn", primary=primary)
+
         retry_mock.assert_called_once_with(
             model_url="https://makerworld.com.cn/zh/models/123",
             model_id="123",
@@ -122,6 +153,29 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
             blocked = manager._is_three_mf_only_task_blocked_by_gate(item)
 
         self.assertFalse(blocked)
+
+    def test_browser_recovery_auth_failure_requires_browser_confirmation_not_relogin(self):
+        missing_items = [
+            {
+                "status": "auth_required",
+                "message": "国区下载 3MF 需要有效登录态；请更新国内站 Cookie / token。",
+                "instance_id": "instance-1",
+            }
+        ]
+
+        with patch.object(archive_worker_module, "update_three_mf_gate") as update_gate_mock:
+            failure = archive_worker_module._sync_account_health_for_archive_result(
+                platform="cn",
+                model_url="https://makerworld.com.cn/zh/models/123",
+                model_id="123",
+                instance_id="instance-1",
+                missing_items=missing_items,
+                missing_3mf_retry=True,
+                browser_session_recovery=True,
+            )
+
+        self.assertEqual(failure["status"], "verification_required")
+        self.assertEqual(update_gate_mock.call_args.kwargs["gate"], "verification_required")
 
     def test_auth_required_archive_failure_schedules_browser_recovery_for_current_instance(self):
         manager = ArchiveTaskManager(background_enabled=False)
@@ -221,8 +275,9 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
                 "resumed_count": int(bool(selector and selector(item))),
             }
 
+        resume_mock = Mock(side_effect=resume_paused)
         manager.task_store = SimpleNamespace(
-            resume_verification_paused_archive_tasks=resume_paused,
+            resume_verification_paused_archive_tasks=resume_mock,
         )
         queue = {
             "active": [],
@@ -252,6 +307,7 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
                 "source": "cn",
             },
         )
+        resume_mock.assert_not_called()
 
     def test_ensure_worker_for_pending_does_not_recover_browser_after_confirmation_required(self):
         manager = ArchiveTaskManager(background_enabled=True)
