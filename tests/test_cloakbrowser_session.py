@@ -312,6 +312,55 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertEqual(bridge_payload["action"], "snapshot")
         self.assertEqual(bridge_payload["target_url"], "https://makerworld.com.cn/zh")
 
+    def test_browser_3mf_authorization_uses_profile_context_without_cookie_payload(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(id="profile-cn", name="MakerHub CN")
+        running = cloakbrowser_session.CloakBrowserProfile(
+            id="profile-cn",
+            name="MakerHub CN",
+            status="running",
+        )
+        bridge_result = {
+            "ok": True,
+            "status_code": 200,
+            "payload": {"name": "part.3mf", "url": "https://download.example.test/part.3mf"},
+        }
+
+        with patch.object(cloakbrowser_session, "ensure_profile", return_value=profile), \
+                patch.object(cloakbrowser_session, "launch_profile", return_value=(running, False)), \
+                patch.object(cloakbrowser_session, "_run_bridge", return_value=bridge_result) as bridge_mock, \
+                patch.dict(
+                    os.environ,
+                    {
+                        "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                        "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+                    },
+                    clear=False,
+                ):
+            result = cloakbrowser_session.browser_authorize_3mf_download(
+                "cn",
+                "https://api.bambulab.cn/v1/design-service/instance/123/f3mf?type=download&fileType=3mf",
+                profile_id="profile-cn",
+            )
+
+        self.assertEqual(result["status_code"], 200)
+        self.assertEqual(result["payload"]["name"], "part.3mf")
+        bridge_payload = bridge_mock.call_args.args[0]
+        self.assertEqual(bridge_payload["action"], "fetch")
+        self.assertEqual(bridge_payload["platform"], "cn")
+        self.assertEqual(bridge_payload["cookies"], [])
+        self.assertNotIn("raw_cookie", bridge_payload)
+
+    def test_browser_3mf_authorization_rejects_non_makerworld_endpoint_before_bridge(self):
+        with patch.object(cloakbrowser_session, "_run_bridge") as bridge_mock:
+            with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserError, "授权地址"):
+                cloakbrowser_session.browser_authorize_3mf_download(
+                    "cn",
+                    "https://example.test/v1/design-service/instance/123/f3mf",
+                    profile_id="profile-cn",
+                )
+
+        bridge_mock.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

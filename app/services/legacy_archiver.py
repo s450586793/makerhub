@@ -4060,6 +4060,34 @@ def _summarize_three_mf_fetch_attempts(attempts: list[dict]) -> str:
     return f"attempts={len(attempts)} statuses={_compact(status_counts)} states={_compact(state_counts)} hosts={_compact(host_counts)}"
 
 
+def _browser_three_mf_authorization_failure(
+    *,
+    status_code: int = 0,
+    text: str = "",
+    payload: Optional[dict] = None,
+    source: str = "",
+) -> dict:
+    failure = _classify_3mf_fetch_failure(
+        status_code=status_code,
+        text=text,
+        payload=payload,
+        source=source,
+    )
+    if str(failure.get("state") or "") in {"auth_required", "cookie_invalid", "cloudflare", "verification_required"}:
+        return {
+            "state": "verification_required",
+            "message": "指纹浏览器未取得 3MF 授权，请在官网完成验证后点击“已验证”继续归档。",
+        }
+    return failure
+
+
+def browser_authorize_3mf_download(platform: str, api_url: str, *, profile_id: str) -> dict:
+    # Import lazily because cloakbrowser_session reaches legacy_archiver through account discovery.
+    from app.services.cloakbrowser_session import browser_authorize_3mf_download as authorize
+
+    return authorize(platform, api_url, profile_id=profile_id)
+
+
 def fetch_instance_3mf(
     session: requests.Session,
     inst_id: int,
@@ -4068,6 +4096,8 @@ def fetch_instance_3mf(
     api_host_hint: Optional[str] = None,
     origin: Optional[str] = None,
     captcha_result_header: str = "",
+    browser_authorization: bool = False,
+    browser_profile_id: str = "",
 ):
     """
     获取实例的 3MF 下载地址，允许外部传入 api_url，并自动回退不同 API Host。
@@ -4092,6 +4122,36 @@ def fetch_instance_3mf(
     )
     if candidates:
         _wait_before_three_mf_download(f"获取下载地址 {inst_id}")
+    if browser_authorization:
+        candidate = candidates[0] if candidates else api_url or ""
+        if not candidate:
+            return "", "", "", {"state": "missing", "message": "未获取到 3MF 下载地址。"}
+        try:
+            browser_result = browser_authorize_3mf_download(
+                source_hint or normalize_makerworld_source(url=candidate),
+                candidate,
+                profile_id=browser_profile_id,
+            )
+        except Exception as exc:
+            from app.services.cloakbrowser_session import CloakBrowserError
+
+            if not isinstance(exc, CloakBrowserError):
+                raise
+            return "", "", candidate, {
+                "state": "verification_required",
+                "message": "无法通过指纹浏览器取得 3MF 授权，请在官网完成验证后点击“已验证”继续归档。",
+            }
+        browser_payload = browser_result.get("payload") if isinstance(browser_result.get("payload"), dict) else {}
+        name, url = _extract_instance_download(browser_payload)
+        if url:
+            return name, url, candidate, {"state": "available", "message": ""}
+        failure = _browser_three_mf_authorization_failure(
+            status_code=int(browser_result.get("status_code") or 0),
+            text=str(browser_result.get("text") or ""),
+            payload=browser_payload,
+            source=source_hint or candidate,
+        )
+        return "", "", candidate, failure
     for candidate in candidates:
         candidate_source = source_hint or normalize_makerworld_source(url=candidate)
         cookie_header = effective_cookie
@@ -6275,6 +6335,8 @@ def archive_model(
     three_mf_daily_limit_global: int = 100,
     existing_model_dir: str = "",
     three_mf_captcha_result_header: str = "",
+    browser_three_mf_authorization: bool = False,
+    browser_profile_id: str = "",
     instance_ids: Optional[list[str]] = None,
 ):
     """
@@ -6670,6 +6732,8 @@ def archive_model(
                 api_host_hint=api_host_hint,
                 origin=origin,
                 captcha_result_header=three_mf_captcha_result_header,
+                browser_authorization=browser_three_mf_authorization,
+                browser_profile_id=browser_profile_id,
             )
             if url3mf:
                 fetched_hint_hits += 1
@@ -6727,6 +6791,9 @@ def archive_model(
                     api_url,
                     api_host_hint=api_host_hint,
                     origin=origin,
+                    captcha_result_header=three_mf_captcha_result_header,
+                    browser_authorization=browser_three_mf_authorization,
+                    browser_profile_id=browser_profile_id,
                 )
                 if url3mf:
                     fetched_hint_hits += 1

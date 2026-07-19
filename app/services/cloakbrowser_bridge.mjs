@@ -80,6 +80,127 @@ async function storageSnapshot(page) {
   }
 }
 
+function isMakerWorldPage(page, platform) {
+  try {
+    const hostname = new URL(page.url()).hostname.toLowerCase();
+    const domain = platform === "global" ? "makerworld.com" : "makerworld.com.cn";
+    return hostname === domain || hostname.endsWith(`.${domain}`);
+  } catch {
+    return false;
+  }
+}
+
+function isThreeMfAuthorizationUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    const allowedHosts = new Set([
+      "api.bambulab.com",
+      "api.bambulab.cn",
+      "makerworld.com",
+      "makerworld.com.cn",
+    ]);
+    return (
+      parsed.protocol === "https:"
+      && allowedHosts.has(parsed.hostname.toLowerCase())
+      && /^\/(?:api\/)?v1\/design-service\/instance\/\d+\/f3mf\/?$/.test(parsed.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function pageForAuthorization(context, platform, navigationTimeoutMs) {
+  const pages = await context.pages();
+  const existing = pages.find((page) => isMakerWorldPage(page, platform));
+  if (existing) return existing;
+  const page = pages[0] || await context.newPage();
+  const domain = platform === "global" ? "makerworld.com" : "makerworld.com.cn";
+  await page.goto(`https://${domain}/zh`, {
+    waitUntil: "domcontentloaded",
+    timeout: Math.max(Number(navigationTimeoutMs || 30000), 15000),
+  });
+  return page;
+}
+
+async function browserAuthorizationToken(page) {
+  try {
+    return await page.evaluate(() => {
+      const tokenNames = new Set(["token", "accesstoken", "access_token"]);
+      for (const storage of [window.localStorage, window.sessionStorage]) {
+        for (let index = 0; index < storage.length; index += 1) {
+          const key = storage.key(index);
+          if (!key || !tokenNames.has(key.toLowerCase())) continue;
+          const value = storage.getItem(key);
+          if (typeof value === "string" && value) return value;
+        }
+      }
+      return "";
+    });
+  } catch {
+    return "";
+  }
+}
+
+function sanitizedAuthorizationPayload(payload, text) {
+  const body = payload && typeof payload === "object" ? payload : {};
+  const data = body.data && typeof body.data === "object"
+    ? body.data
+    : body.result && typeof body.result === "object"
+      ? body.result
+      : body;
+  const name = String(data.name || data.fileName || data.filename || data.file_name || "").trim();
+  const url = String(data.url || data.downloadUrl || data.download_url || data.downloadURL || "").trim();
+  if (url) return { name, url };
+  return {
+    message: String(body.message || body.error || body.msg || text || "").slice(0, 1024),
+    code: String(body.code || "").slice(0, 80),
+    captchaId: String(body.captchaId || body.captcha_id || "").slice(0, 160),
+  };
+}
+
+async function fetchAuthorization(page, targetUrl) {
+  if (!isThreeMfAuthorizationUrl(targetUrl)) {
+    throw new Error("invalid 3MF authorization URL");
+  }
+  const authToken = await browserAuthorizationToken(page);
+  const response = await page.evaluate(async ({ url, token }) => {
+    const headers = { Accept: "application/json, text/plain, */*" };
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+      headers.token = token;
+      headers["X-Token"] = token;
+      headers["X-Access-Token"] = token;
+    }
+    try {
+      const response = await fetch(url, {
+        credentials: "include",
+        headers,
+        cache: "no-store",
+      });
+      return {
+        status_code: response.status,
+        text: (await response.text()).slice(0, 16384),
+      };
+    } catch {
+      return {
+        status_code: 0,
+        text: "",
+      };
+    }
+  }, { url: targetUrl, token: authToken });
+  let payload = null;
+  try {
+    payload = response.text ? JSON.parse(response.text) : null;
+  } catch {
+    payload = null;
+  }
+  return {
+    status_code: Number(response.status_code || 0),
+    payload: sanitizedAuthorizationPayload(payload, response.text),
+    text: payload ? "" : String(response.text || "").slice(0, 1024),
+  };
+}
+
 async function main() {
   const input = await readInput();
   const cdpUrl = String(input.cdp_url || "").trim();
@@ -96,6 +217,12 @@ async function main() {
   try {
     const contexts = browser.browserContexts();
     const context = contexts[0] || browser.defaultBrowserContext();
+    if (input.action === "fetch") {
+      const page = await pageForAuthorization(context, String(input.platform || "cn"), input.navigation_timeout_ms);
+      const authorization = await fetchAuthorization(page, String(input.target_url || ""));
+      process.stdout.write(JSON.stringify({ ok: true, ...authorization }));
+      return;
+    }
     if (input.action === "seed") {
       const cookies = (Array.isArray(input.cookies) ? input.cookies : []).map(cleanCookie).filter(Boolean);
       if (cookies.length) await context.setCookie(...cookies);

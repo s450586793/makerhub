@@ -134,6 +134,76 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
             browser_session_recovery=True,
         )
 
+    def test_browser_recovery_task_passes_saved_profile_to_3mf_authorization(self):
+        manager, _store = self._manager_with_cookie("token=same; refreshToken=fresh")
+        manager.task_store = SimpleNamespace(
+            update_missing_3mf_status=lambda **_payload: None,
+            replace_missing_3mf_for_model=lambda *_args, **_kwargs: None,
+            remove_recent_failures_for_model=lambda *_args, **_kwargs: None,
+            update_active_task=lambda *_args, **_kwargs: None,
+            complete_archive_task=lambda *_args, **_kwargs: None,
+        )
+
+        with patch.object(archive_worker_module, "cloakbrowser_configured", return_value=True), \
+                patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
+                patch.object(archive_worker_module, "_is_three_mf_limit_guard_active_for_url", return_value=False), \
+                patch.object(archive_worker_module, "three_mf_gate_for_url", return_value={"open": False, "state": "verification_required"}), \
+                patch.object(archive_worker_module, "_temporary_proxy_env", side_effect=lambda *_args, **_kwargs: nullcontext()), \
+                patch.object(
+                    archive_worker_module,
+                    "run_archive_model_job",
+                    return_value={"model_id": "123", "base_name": "Demo", "work_dir": "", "missing_3mf": []},
+                ) as run_mock, \
+                patch.object(archive_worker_module, "mark_account_ok"), \
+                patch.object(manager, "_resume_paused_missing_3mf_retry_tasks_for_platform", return_value=3) as resume_mock, \
+                patch.object(archive_worker_module, "invalidate_model_detail_cache"), \
+                patch.object(archive_worker_module, "upsert_archive_snapshot_model", return_value=True), \
+                patch.object(archive_worker_module, "invalidate_archive_snapshot"), \
+                patch.object(archive_worker_module, "_log_archive"):
+            manager._run_single_task(
+                "task-browser",
+                "https://makerworld.com.cn/zh/models/123",
+                {"missing_3mf_retry": True, "browser_session_recovery": True, "source": "cn"},
+            )
+
+        self.assertTrue(run_mock.call_args.kwargs["browser_three_mf_authorization"])
+        self.assertEqual(run_mock.call_args.kwargs["browser_profile_id"], "profile-cn")
+        resume_mock.assert_called_once_with("cn")
+
+    def test_3mf_retry_prefers_saved_browser_profile_before_direct_authorization(self):
+        manager, _store = self._manager_with_cookie("token=same; refreshToken=fresh")
+        manager.task_store = SimpleNamespace(
+            update_missing_3mf_status=lambda **_payload: None,
+            replace_missing_3mf_for_model=lambda *_args, **_kwargs: None,
+            remove_recent_failures_for_model=lambda *_args, **_kwargs: None,
+            update_active_task=lambda *_args, **_kwargs: None,
+            complete_archive_task=lambda *_args, **_kwargs: None,
+        )
+
+        with patch.object(archive_worker_module, "cloakbrowser_configured", return_value=True), \
+                patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}), \
+                patch.object(archive_worker_module, "_is_three_mf_limit_guard_active_for_url", return_value=False), \
+                patch.object(archive_worker_module, "three_mf_gate_for_url", return_value={"open": True, "state": "open"}), \
+                patch.object(archive_worker_module, "_temporary_proxy_env", side_effect=lambda *_args, **_kwargs: nullcontext()), \
+                patch.object(
+                    archive_worker_module,
+                    "run_archive_model_job",
+                    return_value={"model_id": "123", "base_name": "Demo", "work_dir": "", "missing_3mf": []},
+                ) as run_mock, \
+                patch.object(archive_worker_module, "mark_account_ok"), \
+                patch.object(archive_worker_module, "invalidate_model_detail_cache"), \
+                patch.object(archive_worker_module, "upsert_archive_snapshot_model", return_value=True), \
+                patch.object(archive_worker_module, "invalidate_archive_snapshot"), \
+                patch.object(archive_worker_module, "_log_archive"):
+            manager._run_single_task(
+                "task-browser-preferred",
+                "https://makerworld.com.cn/zh/models/123",
+                {"missing_3mf_retry": True, "source": "cn"},
+            )
+
+        self.assertTrue(run_mock.call_args.kwargs["browser_three_mf_authorization"])
+        self.assertEqual(run_mock.call_args.kwargs["browser_profile_id"], "profile-cn")
+
     def test_browser_recovery_task_bypasses_closed_gate_without_reopening_platform(self):
         manager = ArchiveTaskManager(background_enabled=False)
         item = {
@@ -175,6 +245,36 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
             )
 
         self.assertEqual(failure["status"], "verification_required")
+        self.assertEqual(update_gate_mock.call_args.kwargs["gate"], "verification_required")
+
+    def test_unchanged_browser_confirmation_gate_is_not_overwritten_by_parallel_auth_failure(self):
+        missing_items = [
+            {
+                "status": "auth_required",
+                "message": "国区下载 3MF 需要有效登录态；请更新国内站 Cookie / token。",
+                "instance_id": "instance-1",
+            }
+        ]
+
+        with patch.object(
+            archive_worker_module,
+            "get_account_health",
+            return_value={
+                "three_mf_gate": "verification_required",
+                "three_mf_reason": "browser_session_unchanged",
+            },
+        ), patch.object(archive_worker_module, "update_three_mf_gate") as update_gate_mock:
+            failure = archive_worker_module._sync_account_health_for_archive_result(
+                platform="cn",
+                model_url="https://makerworld.com.cn/zh/models/123",
+                model_id="123",
+                instance_id="instance-1",
+                missing_items=missing_items,
+                missing_3mf_retry=False,
+            )
+
+        self.assertEqual(failure["status"], "verification_required")
+        self.assertEqual(failure["detail"], archive_worker_module.CLOAKBROWSER_BROWSER_CONFIRMATION_MESSAGE)
         self.assertEqual(update_gate_mock.call_args.kwargs["gate"], "verification_required")
 
     def test_auth_required_archive_failure_schedules_browser_recovery_for_current_instance(self):

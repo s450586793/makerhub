@@ -177,6 +177,8 @@ class ProcessJobsTest(unittest.TestCase):
                     cookie="token=ok",
                     download_dir="/tmp/archive",
                     logs_dir="/tmp/logs",
+                    browser_three_mf_authorization=True,
+                    browser_profile_id="profile-cn",
                     instance_ids=["profile-1", "profile-2"],
                 )
         finally:
@@ -184,6 +186,8 @@ class ProcessJobsTest(unittest.TestCase):
 
         self.assertEqual(result, {"ok": True})
         self.assertEqual(calls[0]["instance_ids"], ["profile-1", "profile-2"])
+        self.assertTrue(calls[0]["browser_three_mf_authorization"])
+        self.assertEqual(calls[0]["browser_profile_id"], "profile-cn")
 
     def test_run_archive_model_job_passes_comment_collection_flag_to_inline_archiver(self):
         calls = []

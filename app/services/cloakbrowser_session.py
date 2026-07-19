@@ -465,14 +465,81 @@ def _cookie_header_from_snapshot(snapshot: dict[str, Any], platform: str) -> str
     return sanitize_cookie_header("; ".join(f"{key}={value}" for key, value in values.items()))
 
 
-def _bridge_payload(profile_id: str, *, action: str, cookies: list[dict[str, Any]] | None = None, target_url: str = "") -> dict[str, Any]:
+def _bridge_payload(
+    profile_id: str,
+    *,
+    action: str,
+    cookies: list[dict[str, Any]] | None = None,
+    target_url: str = "",
+    platform: str = "",
+) -> dict[str, Any]:
     return {
         "action": action,
         "cdp_url": f"{_configured_url()}/api/profiles/{profile_id}/cdp",
         "auth_token": _auth_token(),
         "cookies": cookies or [],
         "target_url": str(target_url or "").strip(),
+        "platform": normalize_platform(platform) if platform else "",
         "navigation_timeout_ms": max(_timeout_seconds() * 1000, 15000),
+    }
+
+
+def _is_browser_three_mf_authorization_url(url: str, platform: str) -> bool:
+    clean_platform = normalize_platform(platform)
+    try:
+        parsed = urlparse(str(url or "").strip())
+    except ValueError:
+        return False
+    hostname = (parsed.hostname or "").lower()
+    path = parsed.path.rstrip("/")
+    return (
+        parsed.scheme == "https"
+        and _hostname_matches_domains(hostname, PLATFORM_DOMAINS[clean_platform])
+        and path.startswith(("/v1/design-service/instance/", "/api/v1/design-service/instance/"))
+        and path.endswith("/f3mf")
+    )
+
+
+def browser_authorize_3mf_download(
+    platform: str,
+    api_url: str,
+    *,
+    profile_id: str,
+) -> dict[str, Any]:
+    """Request one 3MF authorization URL inside the saved browser profile.
+
+    The bridge only returns a sanitized download payload. Browser cookies and tokens
+    remain inside the profile and are never passed back to the archive request.
+    """
+    clean_platform = normalize_platform(platform)
+    clean_profile_id = str(profile_id or "").strip()
+    clean_api_url = str(api_url or "").strip()
+    if not clean_profile_id:
+        raise CloakBrowserUnavailable("当前平台未关联指纹浏览器 profile。")
+    if not _is_browser_three_mf_authorization_url(clean_api_url, clean_platform):
+        raise CloakBrowserError("3MF 浏览器授权地址无效。")
+
+    with _operation_lock(clean_platform):
+        profile = ensure_profile(clean_platform, clean_profile_id)
+        running, _launched_here = launch_profile(profile)
+        result = _run_bridge(
+            _bridge_payload(
+                running.id,
+                action="fetch",
+                target_url=clean_api_url,
+                platform=clean_platform,
+            )
+        )
+
+    try:
+        status_code = int(result.get("status_code") or 0)
+    except (TypeError, ValueError):
+        status_code = 0
+    payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+    return {
+        "status_code": max(status_code, 0),
+        "payload": payload,
+        "text": str(result.get("text") or "")[:4096],
     }
 
 

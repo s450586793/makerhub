@@ -17,7 +17,7 @@ from app.schemas.models import (
 )
 from app.services.archive_repair import read_archive_repair_status, run_archive_repair_job, write_archive_repair_status
 from app.services.archive_worker import BATCH_TASK_MODES, detect_archive_mode
-from app.services.account_health import get_account_health, mark_account_ok
+from app.services.account_health import get_account_health, mark_account_checking
 from app.services.business_logs import append_business_log
 from app.services.catalog import build_tasks_light_payload, build_tasks_payload
 from app.services.request_threads import TASK_API_EXECUTOR, run_task_api, run_ui_io, run_web_io
@@ -181,8 +181,8 @@ async def retry_verified_missing_3mf(payload: Missing3mfVerificationRetryRequest
             "status": str(previous_health.get("three_mf_gate") or "verification_required"),
             "message": str(previous_health.get("three_mf_detail") or previous_health.get("detail") or ""),
         }
-    verification_detail = "用户已在 MakerWorld 完成验证，已重新启动当前受阻 3MF 重试。"
-    snapshot = mark_account_ok(
+    verification_detail = "正在通过指纹浏览器验证 3MF 下载权限。"
+    snapshot = mark_account_checking(
         payload.platform,
         source="manual_verification",
         detail=verification_detail,
@@ -200,7 +200,7 @@ async def retry_verified_missing_3mf(payload: Missing3mfVerificationRetryRequest
         "failed_count": 0,
         "total_count": 0,
         "account_health": snapshot,
-        "message": "已确认验证完成，正在后台重试当前受阻 3MF 任务。",
+        "message": "正在通过指纹浏览器验证当前受阻的 3MF 任务。",
     }
     append_business_log(
         "missing_3mf",

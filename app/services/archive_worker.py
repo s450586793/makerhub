@@ -563,6 +563,31 @@ def _account_health_failure_from_missing_items(
     return None
 
 
+def _preserve_browser_confirmation_gate(
+    platform: str,
+    classified_failure: Optional[dict[str, str]],
+) -> Optional[dict[str, str]]:
+    if (
+        classified_failure is None
+        or classified_failure.get("status") not in {"auth_required", "cookie_invalid"}
+    ):
+        return classified_failure
+    try:
+        current = get_account_health(platform)
+    except Exception:
+        return classified_failure
+    if (
+        str(current.get("three_mf_gate") or "").strip().lower() != "verification_required"
+        or str(current.get("three_mf_reason") or "").strip() != "browser_session_unchanged"
+    ):
+        return classified_failure
+    return {
+        **classified_failure,
+        "status": "verification_required",
+        "detail": CLOAKBROWSER_BROWSER_CONFIRMATION_MESSAGE,
+    }
+
+
 def _sync_account_health_for_archive_result(
     *,
     platform: str,
@@ -584,6 +609,7 @@ def _sync_account_health_for_archive_result(
             "status": "verification_required",
             "detail": CLOAKBROWSER_BROWSER_CONFIRMATION_MESSAGE,
         }
+    classified_failure = _preserve_browser_confirmation_gate(platform, classified_failure)
     try:
         if classified_failure is not None:
             update_three_mf_gate(
@@ -634,6 +660,13 @@ def _sync_account_health_for_archive_exception(
         return
 
     platform = normalize_makerworld_source(task_meta.get("source"), model_url)
+    normalized_failure = _preserve_browser_confirmation_gate(
+        platform,
+        {"status": state, "detail": detail, "instance_id": str(task_meta.get("instance_id") or "").strip()},
+    )
+    if normalized_failure is not None:
+        state = normalized_failure["status"]
+        detail = normalized_failure["detail"]
     try:
         update_three_mf_gate(
             platform,
@@ -2206,7 +2239,7 @@ class ArchiveTaskManager:
             status = str(item.get("status") or "queued").strip().lower()
             if status not in {"", "queued", "pending"}:
                 continue
-            if not self._is_missing_3mf_retry_task(item):
+            if not _is_three_mf_only_task(item):
                 continue
 
             meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
@@ -2444,6 +2477,7 @@ class ArchiveTaskManager:
                 source=normalize_makerworld_source(item.get("source"), item.get("model_url")),
                 title=item["title"],
                 instance_id=item["instance_id"],
+                browser_session_recovery=True,
             )
             last_message = str(result.get("message") or "")
             if result.get("accepted"):
@@ -2508,7 +2542,7 @@ class ArchiveTaskManager:
         for item in queued_items:
             if str(item.get("status") or "").strip().lower() != "paused":
                 continue
-            if not self._is_missing_3mf_retry_task(item):
+            if not _is_three_mf_only_task(item):
                 continue
             meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
             item_url = normalize_source_url(str(meta.get("model_url") or item.get("url") or ""))
@@ -2519,6 +2553,7 @@ class ArchiveTaskManager:
             item["status"] = "queued"
             item["message"] = "验证已完成，等待重新下载 3MF"
             item["updated_at"] = now
+            item["meta"] = {**meta, "browser_session_recovery": True}
             item.pop("blocked_reason", None)
             resumed += 1
 
@@ -3437,6 +3472,18 @@ class ArchiveTaskManager:
         missing_3mf_retry = bool(meta.get("missing_3mf_retry"))
         three_mf_download_task = bool(meta.get("three_mf_download"))
         browser_session_recovery = bool(meta.get("browser_session_recovery"))
+        browser_platform = normalize_makerworld_source(meta.get("source"), url)
+        browser_profile_id = next(
+            (
+                str(getattr(item, "browser_profile_id", "") or "").strip()
+                for item in getattr(config, "cookies", []) or []
+                if str(getattr(item, "platform", "") or "").strip() == browser_platform
+            ),
+            "",
+        )
+        browser_three_mf_authorization = bool(
+            browser_profile_id and cloakbrowser_configured()
+        )
         instance_ids = _clean_instance_ids(meta.get("instance_ids"))
         archive_instance_ids = instance_ids if three_mf_download_task else []
         asset_lightweight_task = missing_3mf_retry or three_mf_download_task
@@ -3529,6 +3576,8 @@ class ArchiveTaskManager:
                     three_mf_daily_limit_global=global_daily_limit,
                     proxy_config=config.proxy,
                     three_mf_captcha_result_header=three_mf_captcha_result_header,
+                    browser_three_mf_authorization=browser_three_mf_authorization,
+                    browser_profile_id=browser_profile_id,
                     instance_ids=archive_instance_ids,
                 )
 
@@ -3604,6 +3653,7 @@ class ArchiveTaskManager:
                 instance_id=account_instance_id,
                 missing_items=missing_items,
                 missing_3mf_retry=missing_3mf_retry,
+                browser_session_recovery=browser_session_recovery,
             )
         if isinstance(account_gate_failure, dict):
             self._pause_three_mf_retry_tasks_for_gate(
@@ -3631,6 +3681,15 @@ class ArchiveTaskManager:
                         "instance_id": str(blocked_item.get("instance_id") or blocked_instance_id),
                         "source": account_platform,
                     },
+                )
+        elif browser_three_mf_authorization and missing_3mf_retry and not missing_items:
+            resumed_count = self._resume_paused_missing_3mf_retry_tasks_for_platform(account_platform)
+            if resumed_count:
+                _log_archive(
+                    "browser_3mf_authorization_verified",
+                    "指纹浏览器已取得 3MF 授权，已恢复同平台暂停任务。",
+                    platform=account_platform,
+                    resumed_count=resumed_count,
                 )
         if limit_guard_state is not None:
             self._pause_missing_3mf_retry_tasks_for_limit(limit_guard_state)

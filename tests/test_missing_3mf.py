@@ -678,12 +678,45 @@ class Missing3mfTest(unittest.TestCase):
         self.assertEqual(result["resumed_count"], 1)
         self.assertEqual(saved[0]["queued"][0]["status"], "queued")
         self.assertEqual(saved[0]["queued"][0]["message"], "验证已完成，等待重新下载 3MF")
+        self.assertTrue(saved[0]["queued"][0]["meta"]["browser_session_recovery"])
         self.assertNotIn("blocked_reason", saved[0]["queued"][0])
         self.assertEqual(saved[0]["queued"][1]["status"], "paused")
         self.assertEqual(ensured, [True])
         self.assertEqual(marked_platform_status, [
             (("cn",), {"status": "queued", "message": "验证已完成，等待重新下载 3MF"})
         ])
+
+    def test_verified_browser_authorization_resumes_paused_three_mf_stage(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        queue = {
+            "queued": [
+                {
+                    "id": "task-stage-cn",
+                    "status": "paused",
+                    "url": "https://makerworld.com.cn/zh/models/1590150",
+                    "blocked_reason": "needs_verification",
+                    "meta": {
+                        "three_mf_download": True,
+                        "model_url": "https://makerworld.com.cn/zh/models/1590150",
+                        "source": "cn",
+                    },
+                }
+            ],
+            "active": [],
+            "recent_failures": [],
+        }
+        saved = []
+        manager.task_store = SimpleNamespace(
+            load_archive_queue=lambda: queue,
+            save_archive_queue=lambda payload: saved.append(payload) or payload,
+        )
+
+        with patch.object(archive_worker_module, "append_business_log"):
+            resumed = manager._resume_paused_missing_3mf_retry_tasks_for_platform("cn")
+
+        self.assertEqual(resumed, 1)
+        self.assertEqual(saved[0]["queued"][0]["status"], "queued")
+        self.assertTrue(saved[0]["queued"][0]["meta"]["browser_session_recovery"])
 
     def test_targeted_verification_retry_only_resumes_the_current_model(self):
         manager = ArchiveTaskManager(background_enabled=False)
@@ -1164,6 +1197,65 @@ class Missing3mfTest(unittest.TestCase):
         self.assertEqual(failure["state"], "auth_required")
         self.assertEqual(len(calls), 1)
         self.assertEqual(used_api_url, calls[0])
+
+    def test_fetch_instance_3mf_uses_browser_authorization_without_direct_retry(self):
+        session = SimpleNamespace(headers={"User-Agent": "test-agent"}, get=lambda *_args, **_kwargs: None)
+        original_wait = legacy_archiver_module._wait_before_three_mf_download
+        legacy_archiver_module._wait_before_three_mf_download = lambda *_args, **_kwargs: 0
+        try:
+            with patch.object(
+                legacy_archiver_module,
+                "browser_authorize_3mf_download",
+                return_value={
+                    "status_code": 200,
+                    "payload": {"name": "browser.3mf", "url": "https://download.example.test/browser.3mf"},
+                    "text": "",
+                },
+            ) as browser_mock, patch.object(legacy_archiver_module, "flaresolverr_get_json") as direct_mock:
+                name, url, used_api_url, failure = fetch_instance_3mf(
+                    session,
+                    2864062,
+                    "token=abc",
+                    api_url="https://makerworld.com.cn/api/v1/design-service/instance/2864062/f3mf?type=download&fileType=",
+                    origin="https://makerworld.com.cn",
+                    browser_authorization=True,
+                    browser_profile_id="profile-cn",
+                )
+        finally:
+            legacy_archiver_module._wait_before_three_mf_download = original_wait
+
+        self.assertEqual(name, "browser.3mf")
+        self.assertEqual(url, "https://download.example.test/browser.3mf")
+        self.assertIn("api.bambulab.cn", used_api_url)
+        self.assertEqual(failure["state"], "available")
+        browser_mock.assert_called_once()
+        direct_mock.assert_not_called()
+
+    def test_fetch_instance_3mf_keeps_browser_confirmation_when_browser_authorization_is_rejected(self):
+        session = SimpleNamespace(headers={"User-Agent": "test-agent"}, get=lambda *_args, **_kwargs: None)
+        original_wait = legacy_archiver_module._wait_before_three_mf_download
+        legacy_archiver_module._wait_before_three_mf_download = lambda *_args, **_kwargs: 0
+        try:
+            with patch.object(
+                legacy_archiver_module,
+                "browser_authorize_3mf_download",
+                return_value={"status_code": 401, "payload": {"message": "Please log in to download models."}, "text": ""},
+            ), patch.object(legacy_archiver_module, "flaresolverr_get_json") as direct_mock:
+                _name, _url, _used_api_url, failure = fetch_instance_3mf(
+                    session,
+                    2864062,
+                    "token=abc",
+                    api_url="https://makerworld.com.cn/api/v1/design-service/instance/2864062/f3mf?type=download&fileType=",
+                    origin="https://makerworld.com.cn",
+                    browser_authorization=True,
+                    browser_profile_id="profile-cn",
+                )
+        finally:
+            legacy_archiver_module._wait_before_three_mf_download = original_wait
+
+        self.assertEqual(failure["state"], "verification_required")
+        self.assertIn("浏览器", failure["message"])
+        direct_mock.assert_not_called()
 
     def test_fetch_instance_3mf_uses_flaresolverr_download_payload(self):
         original_wait = legacy_archiver_module._wait_before_three_mf_download
