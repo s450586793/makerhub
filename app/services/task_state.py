@@ -2220,6 +2220,7 @@ class TaskStateStore:
                 return payload
 
             recovered = []
+            tracking_batches = []
             finalized_items = []
             queued_keys = {
                 key
@@ -2236,6 +2237,15 @@ class TaskStateStore:
             for item in active_items:
                 if _is_completed_archive_running_snapshot(item):
                     finalized_items.append(item)
+                    continue
+                meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+                if (
+                    normalize_runtime_status(item.get("status"), "running") == "waiting_children"
+                    and meta.get("batch_expected_items")
+                ):
+                    item["message"] = "服务重启后恢复批量子任务状态跟踪。"
+                    item["updated_at"] = now
+                    tracking_batches.append(item)
                     continue
                 key = _archive_task_identity_key(item)
                 if key and key in queued_keys:
@@ -2254,7 +2264,7 @@ class TaskStateStore:
                     queued_by_key[key] = item
 
             recovered_count = len(recovered)
-            payload["active"] = []
+            payload["active"] = tracking_batches
             payload["queued"] = recovered + queued_items
             return payload
 

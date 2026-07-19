@@ -1387,6 +1387,42 @@ class ArchiveTaskManager:
         )
         return changed
 
+    def _restore_queued_batch_parents(self) -> int:
+        restored_count = 0
+
+        def _mutate(payload: dict) -> dict:
+            nonlocal restored_count
+            active_items = [dict(item) for item in (payload.get("active") or []) if isinstance(item, dict)]
+            active_ids = {str(item.get("id") or "").strip() for item in active_items}
+            queued_items = []
+            now_text = china_now().isoformat()
+
+            for raw_item in payload.get("queued") or []:
+                if not isinstance(raw_item, dict):
+                    continue
+                item = dict(raw_item)
+                meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+                task_id = str(item.get("id") or "").strip()
+                mode = str(item.get("mode") or "").strip()
+                expected_items = self._normalize_batch_expected_items(meta.get("batch_expected_items"))
+                if task_id in active_ids or mode not in BATCH_TASK_MODES or not expected_items:
+                    queued_items.append(item)
+                    continue
+
+                item["status"] = "waiting_children"
+                item["message"] = "服务启动后恢复批量子任务状态跟踪。"
+                item["updated_at"] = now_text
+                active_items.append(item)
+                active_ids.add(task_id)
+                restored_count += 1
+
+            payload["active"] = active_items
+            payload["queued"] = queued_items
+            return payload
+
+        self.task_store._update_archive_queue(_mutate)
+        return restored_count
+
     def _restore_orphaned_batch_parents(self) -> int:
         restored_count = 0
 
@@ -1526,6 +1562,7 @@ class ArchiveTaskManager:
             return self._refresh_batch_tasks_locked()
 
     def _refresh_batch_tasks_locked(self) -> bool:
+        queued_parent_count = self._restore_queued_batch_parents()
         restored_count = self._restore_orphaned_batch_parents()
         merged_count = self._merge_duplicate_batch_parents()
         snapshot = self._queue_state_snapshot()
@@ -1537,16 +1574,26 @@ class ArchiveTaskManager:
             and self._normalize_batch_expected_items((item.get("meta") or {}).get("batch_expected_items"))
         ]
         if not batch_tasks:
-            return restored_count > 0 or merged_count > 0
+            return queued_parent_count > 0 or restored_count > 0 or merged_count > 0
 
         active_batch_ids = {str(item.get("id") or "") for item in batch_tasks}
         active_child_by_key = {
             _queue_item_key(item): item
             for item in active_items
-            if str(item.get("id") or "") not in active_batch_ids and _queue_item_key(item)
+            if str(item.get("id") or "") not in active_batch_ids
+            and not _is_three_mf_only_task(item)
+            and _queue_item_key(item)
         }
-        queued_by_key = dict(snapshot["queued_by_key"])
-        failed_by_key = dict(snapshot["failed_by_key"])
+        queued_by_key = {
+            _queue_item_key(item): item
+            for item in snapshot["queued"]
+            if not _is_three_mf_only_task(item) and _queue_item_key(item)
+        }
+        failed_by_key = {
+            _queue_item_key(item): item
+            for item in snapshot["recent_failures"]
+            if not _is_three_mf_only_task(item) and _queue_item_key(item)
+        }
         archived_keys = self._archived_task_keys()
 
         for batch_task in batch_tasks:
