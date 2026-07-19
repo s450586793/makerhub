@@ -243,12 +243,17 @@ def _run_archive_model_entry(queue, payload: dict[str, Any]) -> None:
 def _run_discover_batch_entry(queue, payload: dict[str, Any]) -> None:
     _apply_heavy_job_niceness()
     url = str(payload.get("url") or "")
+    try:
+        max_pages = max(int(payload.get("max_pages") or 12), 1)
+    except (TypeError, ValueError):
+        max_pages = 12
 
     try:
         with temporary_proxy_env(payload.get("proxy_config") or {}, url):
             result = discover_batch_model_urls(
                 url,
                 str(payload.get("cookie") or ""),
+                max_pages=max_pages,
             )
         _emit_finished(queue, payload, "result", result)
     except Exception as exc:
@@ -512,18 +517,29 @@ def run_archive_model_job(
         )
 
 
-def run_discover_batch_urls_job(url: str, cookie: str, proxy_config: Any = None) -> dict[str, Any]:
+def run_discover_batch_urls_job(
+    url: str,
+    cookie: str,
+    proxy_config: Any = None,
+    *,
+    max_pages: int = 12,
+) -> dict[str, Any]:
+    try:
+        safe_max_pages = max(int(max_pages or 12), 1)
+    except (TypeError, ValueError):
+        safe_max_pages = 12
     with resource_slot("makerworld_page_api", detail=normalize_source_url(url)):
         proxy_payload = _proxy_config_payload(proxy_config)
         if not _use_subprocess():
             with temporary_proxy_env(proxy_payload, url):
-                return discover_batch_model_urls(url, cookie)
+                return discover_batch_model_urls(url, cookie, max_pages=safe_max_pages)
         return _run_process_job(
             _run_discover_batch_entry,
             {
                 "url": url,
                 "cookie": cookie,
                 "proxy_config": proxy_payload,
+                "max_pages": safe_max_pages,
             },
         )
 

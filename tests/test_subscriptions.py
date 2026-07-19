@@ -462,6 +462,151 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertEqual(len(state["tracked_items"]), 8)
         self.assertEqual(self.archive_manager.submitted_batches, [])
 
+    def test_author_sync_uses_incremental_probe_when_known_frontier_is_unchanged(self):
+        config = self.store.load()
+        config.subscriptions = [
+            SubscriptionRecord(
+                id="sub-author",
+                name="作者订阅",
+                url="https://makerworld.com.cn/zh/@ace/upload",
+                mode="author_upload",
+                cron="0 * * * *",
+                enabled=True,
+            )
+        ]
+        config.cookies = [CookiePair(platform="cn", cookie="token=ok")]
+        self.store.save(config)
+        known_items = [
+            {
+                "task_key": f"model:{index}",
+                "model_id": str(index),
+                "url": f"https://makerworld.com.cn/zh/models/{index}",
+            }
+            for index in (1002, 1001)
+        ]
+        self.task_store.patch_subscription_state(
+            "sub-author",
+            status="success",
+            running=False,
+            current_items=known_items,
+            tracked_items=known_items,
+            last_discovered_count=2,
+            last_full_reconcile_at=subscriptions._now_iso(),
+        )
+        head_result = {
+            "items": known_items,
+            "expected_total": 2,
+            "expected_total_source": "author_upload_api_total",
+            "strict_expected_total": True,
+            "pages_scanned": 1,
+        }
+
+        with patch.object(subscriptions, "run_discover_batch_urls_job", return_value=head_result) as discover_job:
+            self.manager._discover_subscription_items = lambda _subscription: (_ for _ in ()).throw(
+                AssertionError("unchanged author frontier must not trigger a full scan")
+            )
+            self.manager._sync_subscription("sub-author")
+
+        self.assertEqual(discover_job.call_args.kwargs["max_pages"], subscriptions.SUBSCRIPTION_INCREMENTAL_PROBE_MAX_PAGES)
+        state_items = self.task_store.load_subscriptions_state().get("items") or []
+        state = next(item for item in state_items if item["id"] == "sub-author")
+        self.assertEqual(state["last_scan_mode"], "incremental")
+        self.assertEqual(state["last_discovered_count"], 2)
+        self.assertEqual(self.archive_manager.submitted_batches, [])
+
+    def test_author_sync_falls_back_to_full_scan_when_probe_detects_new_models(self):
+        config = self.store.load()
+        config.subscriptions = [
+            SubscriptionRecord(
+                id="sub-author",
+                name="作者订阅",
+                url="https://makerworld.com.cn/zh/@ace/upload",
+                mode="author_upload",
+                cron="0 * * * *",
+                enabled=True,
+            )
+        ]
+        config.cookies = [CookiePair(platform="cn", cookie="token=ok")]
+        self.store.save(config)
+        known_items = [
+            {
+                "task_key": f"model:{index}",
+                "model_id": str(index),
+                "url": f"https://makerworld.com.cn/zh/models/{index}",
+            }
+            for index in (1002, 1001)
+        ]
+        new_item = {
+            "task_key": "model:1003",
+            "model_id": "1003",
+            "url": "https://makerworld.com.cn/zh/models/1003",
+        }
+        self.task_store.patch_subscription_state(
+            "sub-author",
+            status="success",
+            running=False,
+            current_items=known_items,
+            tracked_items=known_items,
+            last_discovered_count=2,
+            last_full_reconcile_at=subscriptions._now_iso(),
+        )
+        head_result = {
+            "items": [new_item, *known_items],
+            "expected_total": 3,
+            "expected_total_source": "author_upload_api_total",
+            "strict_expected_total": True,
+            "pages_scanned": 1,
+        }
+        full_result = {
+            "items": [new_item, *known_items],
+            "expected_total": 3,
+            "expected_total_source": "author_upload_api_total",
+            "strict_expected_total": True,
+            "pages_scanned": 2,
+        }
+
+        with patch.object(subscriptions, "run_discover_batch_urls_job", return_value=head_result) as discover_job:
+            self.manager._discover_subscription_items = lambda _subscription: full_result
+            self.manager._sync_subscription("sub-author")
+
+        self.assertEqual(discover_job.call_args.kwargs["max_pages"], subscriptions.SUBSCRIPTION_INCREMENTAL_PROBE_MAX_PAGES)
+        state_items = self.task_store.load_subscriptions_state().get("items") or []
+        state = next(item for item in state_items if item["id"] == "sub-author")
+        self.assertEqual(state["last_scan_mode"], "full")
+        self.assertTrue(state["last_full_reconcile_at"])
+        self.assertEqual(state["last_new_count"], 1)
+
+    def test_author_frontier_probe_requires_recent_full_reconciliation(self):
+        subscription = SubscriptionRecord(
+            id="sub-author",
+            name="作者订阅",
+            url="https://makerworld.com.cn/zh/@ace/upload",
+            mode="author_upload",
+            cron="0 * * * *",
+            enabled=True,
+        )
+        previous_state = {
+            "current_items": [
+                {
+                    "task_key": "model:1001",
+                    "model_id": "1001",
+                    "url": "https://makerworld.com.cn/zh/models/1001",
+                }
+            ],
+            "last_full_reconcile_at": (
+                subscriptions._now() - subscriptions.SUBSCRIPTION_FULL_RECONCILE_INTERVAL
+            ).isoformat(),
+        }
+
+        should_probe = subscriptions._should_probe_author_frontier(
+            subscription,
+            previous_state,
+            manual_requested_at="",
+            now=subscriptions._now(),
+        )
+
+        self.assertFalse(should_probe)
+
     def test_sync_cookie_sources_imports_default_favorites_followed_authors_and_collections(self):
         config = self.store.load()
         config.cookies = [CookiePair(platform="cn", cookie="token=ok")]

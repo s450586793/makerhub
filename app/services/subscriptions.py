@@ -53,6 +53,8 @@ COOKIE_SOURCE_INVENTORY_PATH = STATE_DIR / "cookie_source_inventory.json"
 COOKIE_SOURCE_INVENTORY_KEY = "cookie_source_inventory"
 SUBSCRIPTION_POLL_SECONDS = 20
 SUBSCRIPTION_RUNNING_STALE_AFTER = timedelta(hours=6)
+SUBSCRIPTION_INCREMENTAL_PROBE_MAX_PAGES = 1
+SUBSCRIPTION_FULL_RECONCILE_INTERVAL = timedelta(days=1)
 COOKIE_SOURCE_SYNC_INTERVAL = timedelta(hours=6)
 COLLECTION_PARTIAL_SCAN_MIN_TRACKED = 20
 COLLECTION_PARTIAL_SCAN_RATIO = 0.5
@@ -527,6 +529,33 @@ def _merge_source_items(*groups: list[dict]) -> list[dict]:
 def _deleted_source_items(current_items: list[dict], tracked_items: list[dict]) -> list[dict]:
     current_keys = {item["task_key"] for item in _normalize_source_items(current_items)}
     return [item for item in _normalize_source_items(tracked_items) if item["task_key"] not in current_keys]
+
+
+def _should_probe_author_frontier(
+    subscription: SubscriptionRecord,
+    previous_state: dict,
+    *,
+    manual_requested_at: str,
+    now: datetime,
+) -> bool:
+    if subscription.mode != "author_upload" or manual_requested_at:
+        return False
+    if not _normalize_source_items(previous_state.get("current_items") or []):
+        return False
+    last_full_reconcile_at = _parse_iso(str(previous_state.get("last_full_reconcile_at") or ""))
+    if last_full_reconcile_at is None:
+        return False
+    return now - last_full_reconcile_at < SUBSCRIPTION_FULL_RECONCILE_INTERVAL
+
+
+def _incremental_probe_matches_known_frontier(probe: dict, previous_state: dict) -> bool:
+    expected_total = _strict_expected_total(probe)
+    previous_items = _normalize_source_items(previous_state.get("current_items") or [])
+    probe_items = _normalize_source_items(probe.get("items") or [])
+    if expected_total is None or expected_total != len(previous_items) or not probe_items:
+        return False
+    previous_keys = {item["task_key"] for item in previous_items}
+    return all(item["task_key"] in previous_keys for item in probe_items)
 
 
 def _source_item_lookup_keys(items: list[Any]) -> set[str]:
@@ -1996,7 +2025,14 @@ class SubscriptionManager:
         _append_subscription_log("sync_start", subscription_id=subscription.id, url=subscription.url, mode=subscription.mode)
 
         try:
-            discovered = self._discover_subscription_items(subscription)
+            discovered = self._discover_subscription_for_sync(
+                subscription,
+                previous_state,
+                manual_requested_at=manual_requested_at,
+                started_at=started_at,
+            )
+            scan_mode = str(discovered.get("scan_mode") or "full")
+            full_reconciliation = bool(discovered.get("full_reconciliation"))
             current_items = _normalize_source_items(discovered.get("items") or [])
             partial_context = _subscription_partial_scan_context(subscription, current_items, previous_state, discovered)
             if partial_context is not None:
@@ -2074,26 +2110,33 @@ class SubscriptionManager:
             if not subscription.enabled:
                 next_run_at = ""
             enqueued_count = int(enqueue_result.get("queued_count") or 0)
+            scan_label = "增量扫描" if scan_mode == "incremental" else "全量扫描"
             message = (
-                f"同步完成：扫描 {len(current_items)} 个，新增 {len(new_items)} 个，入队 {enqueued_count} 个，"
+                f"{scan_label}完成：扫描 {len(current_items)} 个，新增 {len(new_items)} 个，入队 {enqueued_count} 个，"
                 f"源端删除标记 {len(deleted_items)} 个。"
             )
             if not enqueue_result.get("accepted", True) and str(enqueue_result.get("message") or "").strip():
                 message = f"{message} {enqueue_result.get('message')}"
 
+            state_changes = {
+                "status": "success",
+                "running": False,
+                "next_run_at": next_run_at,
+                "last_success_at": finished_at_iso,
+                "last_scan_mode": scan_mode,
+                "last_message": message,
+                "last_discovered_count": len(current_items),
+                "last_new_count": len(new_items),
+                "last_enqueued_count": enqueued_count,
+                "last_deleted_count": len(deleted_items),
+                "current_items": current_items,
+                "tracked_items": tracked_items,
+            }
+            if full_reconciliation:
+                state_changes["last_full_reconcile_at"] = finished_at_iso
             self.task_store.patch_subscription_state(
                 subscription.id,
-                status="success",
-                running=False,
-                next_run_at=next_run_at,
-                last_success_at=finished_at_iso,
-                last_message=message,
-                last_discovered_count=len(current_items),
-                last_new_count=len(new_items),
-                last_enqueued_count=enqueued_count,
-                last_deleted_count=len(deleted_items),
-                current_items=current_items,
-                tracked_items=tracked_items,
+                **state_changes,
             )
             _append_subscription_log(
                 "sync_done",
@@ -2103,6 +2146,8 @@ class SubscriptionManager:
                 new=len(new_items),
                 enqueued=enqueued_count,
                 deleted=len(deleted_items),
+                scan_mode=scan_mode,
+                pages_scanned=int(discovered.get("pages_scanned") or 0),
             )
             self._refresh_source_preview_snapshots(subscription.id, subscription=subscription)
         except Exception as exc:
@@ -2117,12 +2162,56 @@ class SubscriptionManager:
             )
             _append_subscription_log("sync_error", subscription_id=subscription.id, url=subscription.url, error=str(exc))
 
-    def _discover_subscription_items(self, subscription: SubscriptionRecord) -> dict:
+    def _discover_subscription_for_sync(
+        self,
+        subscription: SubscriptionRecord,
+        previous_state: dict,
+        *,
+        manual_requested_at: str,
+        started_at: datetime,
+    ) -> dict:
+        if _should_probe_author_frontier(
+            subscription,
+            previous_state,
+            manual_requested_at=manual_requested_at,
+            now=started_at,
+        ):
+            probe = self._discover_subscription_head_items(subscription)
+            if _incremental_probe_matches_known_frontier(probe, previous_state):
+                return {
+                    **probe,
+                    "items": _normalize_source_items(previous_state.get("current_items") or []),
+                    "scan_mode": "incremental",
+                    "full_reconciliation": False,
+                }
+
+        discovered = self._discover_subscription_items(subscription)
+        return {
+            **dict(discovered or {}),
+            "scan_mode": "full",
+            "full_reconciliation": True,
+        }
+
+    def _run_subscription_discovery(self, subscription: SubscriptionRecord, *, max_pages: int) -> dict:
         config = self.store.load()
         cookie = _select_cookie(subscription.url, config)
         if not cookie:
             raise RuntimeError("未找到可用 Cookie，请先到设置页配置对应站点 Cookie。")
-        return run_discover_batch_urls_job(subscription.url, cookie, proxy_config=config.proxy)
+        return run_discover_batch_urls_job(
+            subscription.url,
+            cookie,
+            proxy_config=config.proxy,
+            max_pages=max_pages,
+        )
+
+    def _discover_subscription_head_items(self, subscription: SubscriptionRecord) -> dict:
+        return self._run_subscription_discovery(
+            subscription,
+            max_pages=SUBSCRIPTION_INCREMENTAL_PROBE_MAX_PAGES,
+        )
+
+    def _discover_subscription_items(self, subscription: SubscriptionRecord) -> dict:
+        return self._run_subscription_discovery(subscription, max_pages=12)
 
     def _refresh_subscription_source_metadata(
         self,

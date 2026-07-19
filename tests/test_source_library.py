@@ -256,7 +256,7 @@ class SourceLibraryTest(unittest.TestCase):
         }
         store = type("StoreStub", (), {"load": lambda self: object()})()
         with patch("app.services.source_library.load_database_json_state", side_effect=lambda key, default: dict(state.get(key) or default)), \
-                patch("app.services.source_library.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value), \
+                patch("app.services.source_library.save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value) as save_state, \
                 patch("app.services.source_library._group_models", return_value=(groups, [], [])), \
                 patch("app.services.source_library.load_source_metadata_cache", return_value={"items": {}}), \
                 patch("app.services.source_library._fetch_author_metadata", return_value={"title": "Remote"}), \
@@ -266,6 +266,7 @@ class SourceLibraryTest(unittest.TestCase):
 
             source_library.refresh_source_metadata(store=store)
 
+        self.assertEqual(save_state.call_count, 1)
         publish_event.assert_called_once_with(
             "source_library",
             "source_library.changed",

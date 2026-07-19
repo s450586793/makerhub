@@ -125,8 +125,8 @@ class ProcessJobsTest(unittest.TestCase):
         original_use_subprocess = process_jobs._use_subprocess
         process_jobs._use_subprocess = lambda: False
 
-        def fake_discover(url, cookie):
-            calls.append((url, cookie))
+        def fake_discover(url, cookie, *, max_pages):
+            calls.append((url, cookie, max_pages))
             return {"items": []}
 
         proxy_config = {
@@ -151,7 +151,7 @@ class ProcessJobsTest(unittest.TestCase):
             process_jobs._use_subprocess = original_use_subprocess
 
         self.assertEqual(result, {"items": []})
-        self.assertEqual(calls, [("https://makerworld.com.cn/zh/@ace/upload", "token=ok")])
+        self.assertEqual(calls, [("https://makerworld.com.cn/zh/@ace/upload", "token=ok", 12)])
         proxy_env.assert_called_once_with(proxy_config, "https://makerworld.com.cn/zh/@ace/upload")
 
     def test_run_archive_model_job_passes_instance_ids_to_inline_archiver(self):

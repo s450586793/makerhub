@@ -251,7 +251,12 @@ def _publish_source_library_changed(source_key: str) -> None:
 def _source_library_change_batch():
     batch_state = getattr(_SOURCE_LIBRARY_CHANGE_STATE, "batch", None)
     if batch_state is None:
-        batch_state = {"depth": 0, "source_keys": set()}
+        batch_state = {
+            "depth": 0,
+            "source_keys": set(),
+            "metadata_updates": {},
+            "snapshot_updates": {},
+        }
         _SOURCE_LIBRARY_CHANGE_STATE.batch = batch_state
     batch_state["depth"] += 1
     try:
@@ -259,6 +264,10 @@ def _source_library_change_batch():
     finally:
         batch_state["depth"] -= 1
         if batch_state["depth"] == 0:
+            _write_source_metadata_updates(
+                batch_state["metadata_updates"],
+                batch_state["snapshot_updates"],
+            )
             changed_count = len(batch_state["source_keys"])
             delattr(_SOURCE_LIBRARY_CHANGE_STATE, "batch")
             if changed_count:
@@ -269,19 +278,87 @@ def _source_library_change_batch():
                 )
 
 
-def _save_source_metadata_item(source_key: str, payload: dict[str, Any]) -> None:
+def _merge_pending_metadata_update(
+    updates: dict[str, dict[str, Any]],
+    source_key: str,
+    payload: dict[str, Any],
+    *,
+    preserve_existing_avatar: bool,
+) -> None:
+    clean_source_key = str(source_key or "").strip()
+    if not clean_source_key:
+        return
+    pending = dict(updates.get(clean_source_key) or {})
+    for key, value in payload.items():
+        if key == "avatar_url" and preserve_existing_avatar and not str(value or "").strip() and str(pending.get(key) or "").strip():
+            continue
+        pending[key] = value
+    updates[clean_source_key] = pending
+
+
+def _write_source_metadata_updates(
+    metadata_updates: dict[str, dict[str, Any]],
+    snapshot_updates: dict[str, dict[str, Any]],
+) -> list[str]:
+    clean_metadata_updates = {
+        str(source_key).strip(): dict(payload or {})
+        for source_key, payload in (metadata_updates or {}).items()
+        if str(source_key or "").strip()
+    }
+    clean_snapshot_updates = {
+        str(source_key).strip(): dict(payload or {})
+        for source_key, payload in (snapshot_updates or {}).items()
+        if str(source_key or "").strip()
+    }
+    source_keys = list(dict.fromkeys([*clean_metadata_updates, *clean_snapshot_updates]))
+    if not source_keys:
+        return []
+
+    now_iso = _now_iso()
     with _SOURCE_LIBRARY_LOCK:
         cache = _read_metadata_cache_unlocked()
         items = dict(cache.get("items") or {})
-        current = dict(items.get(source_key) or {})
-        for key, value in payload.items():
-            if key == "avatar_url" and not str(value or "").strip() and str(current.get(key) or "").strip():
-                continue
-            current[key] = value
-        current["last_synced_at"] = _now_iso()
-        items[source_key] = current
-        _write_metadata_cache_unlocked({"items": items, "updated_at": _now_iso()})
-    _publish_source_library_changed(source_key)
+        for source_key in source_keys:
+            current = dict(items.get(source_key) or {})
+            metadata_payload = clean_metadata_updates.get(source_key) or {}
+            for key, value in metadata_payload.items():
+                if key == "avatar_url" and not str(value or "").strip() and str(current.get(key) or "").strip():
+                    continue
+                current[key] = value
+            if metadata_payload:
+                current["last_synced_at"] = now_iso
+
+            snapshot_payload = clean_snapshot_updates.get(source_key) or {}
+            if snapshot_payload:
+                current.update(snapshot_payload)
+                current["preview_snapshot_updated_at"] = now_iso
+            items[source_key] = current
+        _write_metadata_cache_unlocked({"items": items, "updated_at": now_iso})
+    return source_keys
+
+
+def _queue_source_metadata_update(source_key: str, payload: dict[str, Any], *, snapshot: bool = False) -> bool:
+    batch_state = getattr(_SOURCE_LIBRARY_CHANGE_STATE, "batch", None)
+    if not batch_state or not batch_state.get("depth"):
+        return False
+    update_key = "snapshot_updates" if snapshot else "metadata_updates"
+    _merge_pending_metadata_update(
+        batch_state[update_key],
+        source_key,
+        payload,
+        preserve_existing_avatar=not snapshot,
+    )
+    clean_source_key = str(source_key or "").strip()
+    if clean_source_key:
+        batch_state["source_keys"].add(clean_source_key)
+    return True
+
+
+def _save_source_metadata_item(source_key: str, payload: dict[str, Any]) -> None:
+    if _queue_source_metadata_update(source_key, payload):
+        return
+    for changed_source_key in _write_source_metadata_updates({source_key: payload}, {}):
+        _publish_source_library_changed(changed_source_key)
 
 
 def _clone_groups(groups: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -663,15 +740,10 @@ def _prune_old_source_preview_snapshots(source_key: str, keep_filename: str) -> 
 
 
 def _save_source_snapshot_metadata(source_key: str, payload: dict[str, Any]) -> None:
-    with _SOURCE_LIBRARY_LOCK:
-        cache = _read_metadata_cache_unlocked()
-        items = dict(cache.get("items") or {})
-        current = dict(items.get(source_key) or {})
-        current.update(payload)
-        current["preview_snapshot_updated_at"] = _now_iso()
-        items[source_key] = current
-        _write_metadata_cache_unlocked({"items": items, "updated_at": _now_iso()})
-    _publish_source_library_changed(source_key)
+    if _queue_source_metadata_update(source_key, payload, snapshot=True):
+        return
+    for changed_source_key in _write_source_metadata_updates({}, {source_key: payload}):
+        _publish_source_library_changed(changed_source_key)
 
 
 def _iter_nodes(payload: Any):
