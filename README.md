@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.13.0`
+> 当前版本：`v0.13.1`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -190,6 +190,11 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
+### 2026-07-19 · v0.13.1
+
+- 作者订阅在近期全量校验后先探测来源前沿；模型总数和前沿未变化时跳过历史分页，发现新增、手动同步或超过一天后自动回退全量校验。
+- 来源卡 metadata 和预览 metadata 在一次刷新中合并为单次 Postgres 状态写入，减少多来源同步时的重复读写和状态事件。
+
 ### 2026-07-19 · v0.13.0
 
 - 网页更新只发现已发布的 GitHub Release，并固定拉取对应 `v版本号` 镜像；镜像、Release 和 `latest` 推广按顺序发布，避免版本号与镜像不一致导致更新回滚。
@@ -200,13 +205,13 @@ uvicorn app.main:app --reload
 
 - 修复缓存工作页激活失败时的异步异常处理；任务轻量接口失败会显示提示，不再产生未处理 Promise rejection。
 
+<details>
+<summary>历史更新记录</summary>
+
 ### 2026-07-18 · v0.12.0
 
 - 模型库、订阅库、本地库、源端刷新和归档任务会保留已加载内容；返回页面时立即可用，并在后台静默刷新轻量数据。
 - 离开上述工作页会中止未完成的列表请求、断开状态订阅和自动加载观察器，避免隐藏页面继续请求和重绘。
-
-<details>
-<summary>历史更新记录</summary>
 
 ### 2026-07-17 · v0.11.21
 
