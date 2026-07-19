@@ -4,7 +4,7 @@
 
 # MakerHub
 
-> 当前版本：`v0.13.5`
+> 当前版本：`v0.13.6`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -190,7 +190,7 @@ uvicorn app.main:app --reload
 
 ## 更新记录
 
-### 2026-07-20 · v0.13.5
+### 2026-07-20 · v0.13.6
 
 - `3MF` 授权优先由关联的指纹浏览器 profile 发起，成功后仍使用现有下载器保存大文件，避免浏览器验证通过后再被普通 HTTP 授权拒绝。
 - “已验证”改为先显示检测中；只有实际取得 `3MF` 授权后才恢复可归档状态和同平台暂停任务，失败时保持浏览器验证提示。
