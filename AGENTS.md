@@ -17,4 +17,5 @@ Release and Git notes:
 
 - Only push to GitHub when the user explicitly asks to push.
 - Every user-facing change needs a version bump and update notes before release: patch for small fixes, minor for feature-level changes, major for breaking or migration-heavy changes.
+- When an explicit push includes a user-facing version change, treat it as a release rather than a `main`-only push: push the matching annotated `v<VERSION>` tag after `main`, wait for GitHub Actions, and verify the GitHub Release plus `ghcr.io/s450586793/makerhub:v<VERSION>` before reporting completion. A normal `main` push must not be presented as a web-updatable release.
 - Keep README update notes focused: show only the latest three releases directly and place older notes in a collapsed section.
