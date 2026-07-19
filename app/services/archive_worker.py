@@ -2388,6 +2388,7 @@ class ArchiveTaskManager:
         accepted = 0
         queued = 0
         failed = 0
+        targeted_resumed = 0
         last_message = ""
         for item in candidates:
             result = self.retry_missing_3mf(
@@ -2402,10 +2403,22 @@ class ArchiveTaskManager:
                 accepted += 1
             elif result.get("queued") or result.get("merged") or "已经在归档队列中" in last_message:
                 queued += 1
+                if not retry_all and self._resume_browser_session_recovery_task(
+                    model_url=item["model_url"],
+                    model_id=item["model_id"],
+                    source=normalize_makerworld_source(item.get("source"), item.get("model_url")),
+                    title=item["title"],
+                    instance_id=item["instance_id"],
+                ):
+                    targeted_resumed += 1
             else:
                 failed += 1
 
-        resumed = self._resume_paused_missing_3mf_retry_tasks_for_platform(normalized_platform) if retry_all else 0
+        resumed = (
+            self._resume_paused_missing_3mf_retry_tasks_for_platform(normalized_platform)
+            if retry_all
+            else targeted_resumed
+        )
         append_business_log(
             "missing_3mf",
             "verification_retry_completed",

@@ -736,11 +736,20 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         refresh_batches.assert_called_once_with()
         self.assertEqual(payload["archive_queue"], refreshed_queue)
 
-    def test_verified_missing_3mf_route_queues_same_platform_verification_items_in_background(self):
+    def test_verified_missing_3mf_route_queues_only_current_verification_item_in_background(self):
         request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin"}))
+        health = {
+            "platform": "global",
+            "three_mf_gate": "verification_required",
+            "three_mf_detail": "MakerWorld 需要验证，前往官网任意下载一个模型。",
+            "model_url": "https://makerworld.com/zh/models/2193050",
+            "model_id": "2193050",
+            "instance_id": "profile-1",
+        }
 
         with patch.object(tasks_routes, "_require_session_auth") as require_auth, \
                 patch.object(tasks_routes.crawler.manager, "retry_verification_missing_3mf") as retry_mock, \
+                patch.object(tasks_routes, "get_account_health", return_value=health), \
                 patch.object(tasks_routes, "mark_account_ok", return_value={"status": "ok", "three_mf_gate": "open"}) as mark_account_ok_mock, \
                 patch.object(tasks_routes, "_submit_background_task", return_value=True) as background_mock, \
                 patch.object(tasks_routes, "append_business_log") as log_mock:
@@ -756,9 +765,21 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         mark_account_ok_mock.assert_called_once_with(
             "global",
             source="manual_verification",
-            detail="用户已在 MakerWorld 完成验证，已重新启动同平台 3MF 重试。",
+            detail="用户已在 MakerWorld 完成验证，已重新启动当前受阻 3MF 重试。",
         )
-        background_mock.assert_called_once_with(retry_mock, platform="global")
+        background_mock.assert_called_once_with(
+            retry_mock,
+            platform="global",
+            primary={
+                "model_url": "https://makerworld.com/zh/models/2193050",
+                "model_id": "2193050",
+                "instance_id": "profile-1",
+                "source": "global",
+                "status": "verification_required",
+                "message": "MakerWorld 需要验证，前往官网任意下载一个模型。",
+            },
+            retry_all=False,
+        )
         self.assertTrue(payload["accepted"])
         self.assertEqual(payload["accepted_count"], 0)
         self.assertEqual(payload["account_health"]["status"], "ok")
@@ -776,6 +797,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
 
         with patch.object(tasks_routes, "_require_session_auth"), \
                 patch.object(tasks_routes.crawler.manager, "retry_verification_missing_3mf", return_value=retry_payload), \
+                patch.object(tasks_routes, "get_account_health", return_value={}), \
                 patch.object(tasks_routes, "mark_account_ok", return_value={"status": "ok"}) as mark_account_ok_mock, \
                 patch.object(tasks_routes, "_submit_background_task", return_value=True), \
                 patch.object(tasks_routes, "append_business_log"):
@@ -789,7 +811,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         mark_account_ok_mock.assert_called_once_with(
             "global",
             source="manual_verification",
-            detail="用户已在 MakerWorld 完成验证，已重新启动同平台 3MF 重试。",
+            detail="用户已在 MakerWorld 完成验证，已重新启动当前受阻 3MF 重试。",
         )
         self.assertEqual(payload["account_health"]["status"], "ok")
 
@@ -807,6 +829,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
 
         with patch.object(tasks_routes, "_require_session_auth"), \
                 patch.object(tasks_routes.crawler.manager, "retry_verification_missing_3mf"), \
+                patch.object(tasks_routes, "get_account_health", return_value={}), \
                 patch.object(tasks_routes, "mark_account_ok", side_effect=_mark), \
                 patch.object(tasks_routes, "_submit_background_task", side_effect=_background), \
                 patch.object(tasks_routes, "append_business_log"):
@@ -825,6 +848,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
 
         with patch.object(tasks_routes, "_require_session_auth"), \
                 patch.object(tasks_routes.crawler.manager, "retry_verification_missing_3mf") as retry_mock, \
+                patch.object(tasks_routes, "get_account_health", return_value={}), \
                 patch.object(tasks_routes, "mark_account_ok", return_value={"status": "ok", "three_mf_gate": "open"}) as mark_account_ok_mock, \
                 patch.object(tasks_routes, "_submit_background_task", return_value=True) as background_mock, \
                 patch.object(tasks_routes, "append_business_log"):
@@ -848,6 +872,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         with patch.dict(os.environ, {"MAKERHUB_RUNTIME_ENGINE": "1"}), \
                 patch.object(tasks_routes, "_require_session_auth") as require_auth, \
                 patch("app.api.runtime_routes.runtime_engine.submit_run") as submit_runtime_run, \
+                patch.object(tasks_routes, "get_account_health", return_value={}), \
                 patch.object(tasks_routes, "_submit_background_task", return_value=True) as background_retry, \
                 patch.object(tasks_routes, "mark_account_ok", return_value={"status": "ok"}), \
                 patch.object(tasks_routes, "append_business_log"):
@@ -863,6 +888,8 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         background_retry.assert_called_once_with(
             tasks_routes.crawler.manager.retry_verification_missing_3mf,
             platform="cn",
+            primary=None,
+            retry_all=False,
         )
         self.assertTrue(payload["accepted"])
         self.assertEqual(payload["account_health"]["status"], "ok")

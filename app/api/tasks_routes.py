@@ -17,7 +17,7 @@ from app.schemas.models import (
 )
 from app.services.archive_repair import read_archive_repair_status, run_archive_repair_job, write_archive_repair_status
 from app.services.archive_worker import BATCH_TASK_MODES, detect_archive_mode
-from app.services.account_health import mark_account_ok
+from app.services.account_health import get_account_health, mark_account_ok
 from app.services.business_logs import append_business_log
 from app.services.catalog import build_tasks_light_payload, build_tasks_payload
 from app.services.request_threads import TASK_API_EXECUTOR, run_task_api, run_ui_io, run_web_io
@@ -168,7 +168,20 @@ async def retry_all_missing_3mf(request: Request):
 @router.post("/tasks/missing-3mf/verification-verified")
 async def retry_verified_missing_3mf(payload: Missing3mfVerificationRetryRequest, request: Request):
     _require_session_auth(request)
-    verification_detail = "用户已在 MakerWorld 完成验证，已重新启动同平台 3MF 重试。"
+    previous_health = get_account_health(payload.platform)
+    model_url = str(previous_health.get("model_url") or "")
+    model_id = str(previous_health.get("model_id") or "")
+    primary = None
+    if model_url or model_id:
+        primary = {
+            "model_url": model_url,
+            "model_id": model_id,
+            "instance_id": str(previous_health.get("instance_id") or ""),
+            "source": payload.platform,
+            "status": str(previous_health.get("three_mf_gate") or "verification_required"),
+            "message": str(previous_health.get("three_mf_detail") or previous_health.get("detail") or ""),
+        }
+    verification_detail = "用户已在 MakerWorld 完成验证，已重新启动当前受阻 3MF 重试。"
     snapshot = mark_account_ok(
         payload.platform,
         source="manual_verification",
@@ -177,6 +190,8 @@ async def retry_verified_missing_3mf(payload: Missing3mfVerificationRetryRequest
     submitted = _submit_background_task(
         crawler.manager.retry_verification_missing_3mf,
         platform=payload.platform,
+        primary=primary,
+        retry_all=False,
     )
     result = {
         "accepted": submitted,
@@ -185,7 +200,7 @@ async def retry_verified_missing_3mf(payload: Missing3mfVerificationRetryRequest
         "failed_count": 0,
         "total_count": 0,
         "account_health": snapshot,
-        "message": "已确认验证完成，正在后台重试同平台验证类 3MF 任务。",
+        "message": "已确认验证完成，正在后台重试当前受阻 3MF 任务。",
     }
     append_business_log(
         "missing_3mf",

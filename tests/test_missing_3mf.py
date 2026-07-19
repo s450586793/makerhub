@@ -685,6 +685,43 @@ class Missing3mfTest(unittest.TestCase):
             (("cn",), {"status": "queued", "message": "验证已完成，等待重新下载 3MF"})
         ])
 
+    def test_targeted_verification_retry_only_resumes_the_current_model(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager.task_store = SimpleNamespace(
+            load_missing_3mf=lambda: {"items": []},
+            mark_missing_3mf_retrying=lambda *_args, **_kwargs: None,
+        )
+        manager.retry_missing_3mf = lambda **_payload: {
+            "accepted": False,
+            "queued": True,
+            "message": "该模型的缺失 3MF 重试已在队列中。",
+        }
+
+        with patch.object(manager, "_resume_browser_session_recovery_task", return_value=True) as resume_mock, \
+                patch.object(archive_worker_module, "append_business_log"):
+            result = manager.retry_verification_missing_3mf(
+                platform="cn",
+                primary={
+                    "model_url": "https://makerworld.com.cn/zh/models/123",
+                    "model_id": "123",
+                    "title": "Demo",
+                    "instance_id": "profile-1",
+                    "source": "cn",
+                    "status": "verification_required",
+                },
+                retry_all=False,
+            )
+
+        resume_mock.assert_called_once_with(
+            model_url="https://makerworld.com.cn/zh/models/123",
+            model_id="123",
+            source="cn",
+            title="Demo",
+            instance_id="profile-1",
+        )
+        self.assertEqual(result["resumed_count"], 1)
+        self.assertTrue(result["accepted"])
+
     def test_run_single_task_marks_account_ok_after_missing_3mf_retry_success(self):
         manager = ArchiveTaskManager(background_enabled=False)
         manager.store = SimpleNamespace(
