@@ -2428,23 +2428,20 @@ class ArchiveTaskManager:
                 normalize_makerworld_source(item.get("source"), item.get("model_url")),
             )
 
-        source_items = [primary_item] if primary_item else []
-        if retry_all:
-            source_items.extend(missing_payload.get("items") or [])
-        for raw_item in source_items:
+        def _append_candidate(raw_item: Any) -> bool:
             if not isinstance(raw_item, dict):
-                continue
+                return False
             item_url = normalize_source_url(str(raw_item.get("model_url") or ""))
             item_platform = normalize_makerworld_source(raw_item.get("source"), item_url)
             if normalized_platform and item_platform and item_platform != normalized_platform:
-                continue
+                return False
             state = normalize_three_mf_failure_state(
                 raw_item.get("status") or raw_item.get("downloadState") or "",
                 raw_item.get("message") or raw_item.get("downloadMessage") or "",
                 url=item_url,
             )
             if state not in verification_states:
-                continue
+                return False
             candidate = {
                 "model_url": item_url,
                 "model_id": str(raw_item.get("model_id") or raw_item.get("id") or extract_model_id(item_url) or "").strip(),
@@ -2454,9 +2451,38 @@ class ArchiveTaskManager:
             }
             key = _candidate_key(candidate)
             if key in seen:
-                continue
+                return False
             seen.add(key)
             candidates.append(candidate)
+            return True
+
+        if primary_item:
+            _append_candidate(primary_item)
+        if retry_all:
+            for raw_item in missing_payload.get("items") or []:
+                _append_candidate(raw_item)
+        elif not candidates:
+            fallback_priority = {
+                "verification_required": 0,
+                "cloudflare": 1,
+                "auth_required": 2,
+                "cookie_invalid": 3,
+            }
+
+            def _fallback_priority(raw_item: Any) -> int:
+                if not isinstance(raw_item, dict):
+                    return len(fallback_priority)
+                item_url = normalize_source_url(str(raw_item.get("model_url") or ""))
+                state = normalize_three_mf_failure_state(
+                    raw_item.get("status") or raw_item.get("downloadState") or "",
+                    raw_item.get("message") or raw_item.get("downloadMessage") or "",
+                    url=item_url,
+                )
+                return fallback_priority.get(state, len(fallback_priority))
+
+            for raw_item in sorted(missing_payload.get("items") or [], key=_fallback_priority):
+                if _append_candidate(raw_item):
+                    break
 
         if hasattr(self.task_store, "mark_missing_3mf_retrying"):
             self.task_store.mark_missing_3mf_retrying(

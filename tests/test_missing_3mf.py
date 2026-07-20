@@ -623,6 +623,72 @@ class Missing3mfTest(unittest.TestCase):
         self.assertEqual(result["queued_count"], 1)
         self.assertEqual(result["failed_count"], 0)
 
+    def test_targeted_verification_retry_selects_one_platform_blocker_when_primary_is_missing(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager.task_store = SimpleNamespace(
+            load_missing_3mf=lambda: {
+                "items": [
+                    {
+                        "model_id": "auth-model",
+                        "model_url": "https://makerworld.com.cn/zh/models/auth-model",
+                        "title": "Auth blocked",
+                        "instance_id": "auth-instance",
+                        "source": "cn",
+                        "status": "auth_required",
+                        "message": "国区下载 3MF 需要有效登录态。",
+                    },
+                    {
+                        "model_id": "verify-model",
+                        "model_url": "https://makerworld.com.cn/zh/models/verify-model",
+                        "title": "Verification blocked",
+                        "instance_id": "verify-instance",
+                        "source": "cn",
+                        "status": "verification_required",
+                        "message": "MakerWorld 需要验证。",
+                    },
+                    {
+                        "model_id": "global-model",
+                        "model_url": "https://makerworld.com/zh/models/global-model",
+                        "title": "Global blocked",
+                        "instance_id": "global-instance",
+                        "source": "global",
+                        "status": "verification_required",
+                        "message": "MakerWorld 需要验证。",
+                    },
+                ]
+            },
+            mark_missing_3mf_retrying=lambda *_args, **_kwargs: None,
+        )
+        retry_calls = []
+        manager.retry_missing_3mf = lambda **payload: retry_calls.append(payload) or {
+            "accepted": False,
+            "queued": True,
+            "message": "该模型的缺失 3MF 重试已在队列中。",
+        }
+
+        with patch.object(manager, "_resume_browser_session_recovery_task", return_value=True) as resume_mock, \
+                patch.object(archive_worker_module, "append_business_log"):
+            result = manager.retry_verification_missing_3mf(
+                platform="cn",
+                primary=None,
+                retry_all=False,
+            )
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["total_count"], 1)
+        self.assertEqual(result["queued_count"], 1)
+        self.assertEqual(result["resumed_count"], 1)
+        self.assertEqual(len(retry_calls), 1)
+        self.assertEqual(retry_calls[0]["model_id"], "verify-model")
+        self.assertTrue(retry_calls[0]["browser_session_recovery"])
+        resume_mock.assert_called_once_with(
+            model_url="https://makerworld.com.cn/zh/models/verify-model",
+            model_id="verify-model",
+            source="cn",
+            title="Verification blocked",
+            instance_id="verify-instance",
+        )
+
     def test_retry_verification_missing_resumes_paused_queue_items(self):
         manager = ArchiveTaskManager(background_enabled=False)
         queue = {
