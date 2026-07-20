@@ -18,3 +18,7 @@ def test_state_event_callbacks_only_wake_matching_scopes():
         unregister_models()
 
     assert received == ["archive"]
+
+
+def test_state_event_scopes_include_account_health():
+    assert "account_health" in state_events.STATE_EVENT_SCOPES

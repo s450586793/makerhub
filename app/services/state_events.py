@@ -17,6 +17,7 @@ from app.core.database import (
 )
 from app.core.timezone import now_iso as china_now_iso
 from app.services.state_contracts import (
+    ACCOUNT_HEALTH_STATE_KEY,
     ARCHIVE_QUEUE_STATE_KEY,
     MISSING_3MF_STATE_KEY,
     ORGANIZE_TASKS_STATE_KEY,
@@ -39,6 +40,7 @@ _LAST_STATE_CHANGED_EVENT_SIGNATURE: dict[str, str] = {}
 
 
 STATE_EVENT_SCOPES = {
+    ACCOUNT_HEALTH_STATE_KEY,
     ARCHIVE_QUEUE_STATE_KEY,
     MISSING_3MF_STATE_KEY,
     ORGANIZE_TASKS_STATE_KEY,
