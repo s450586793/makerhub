@@ -14,8 +14,8 @@
     "three": "^0.184.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^5.2.1",
-    "vite": "^6.4.3",
+    "@vitejs/plugin-vue": "^6.0.7",
+    "vite": "^8.0.16",
     "vue": "^3.5.13",
     "vue-router": "^4.5.1"
   }
