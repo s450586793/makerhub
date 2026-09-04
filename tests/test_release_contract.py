@@ -351,13 +351,13 @@ class AutomaticVerificationReleaseContractTest(unittest.TestCase):
         self.assertIn("solve_click_challenge", smoke_command)
         self.assertNotIn("browser", smoke_command.lower())
 
-        self.assertEqual(version, "0.16.22")
+        self.assertEqual(version, "0.16.23")
         self.assertEqual(package["version"], version)
         self.assertEqual(package_lock["version"], version)
         self.assertEqual(package_lock["packages"][""]["version"], version)
-        self.assertIn("> 当前版本：`v0.16.22`", readme)
-        self.assertIn("### 2026-09-04 · v0.16.22", readme)
-        self.assertIn("## 2026-09-04 · v0.16.22", changelog)
+        self.assertIn("> 当前版本：`v0.16.23`", readme)
+        self.assertIn("### 2026-09-04 · v0.16.23", readme)
+        self.assertIn("## 2026-09-04 · v0.16.23", changelog)
         self.assertIn("### 2026-08-28 · v0.16.15", readme)
         self.assertIn("## 2026-08-28 · v0.16.15", changelog)
 

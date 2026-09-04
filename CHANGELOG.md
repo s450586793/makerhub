@@ -1,5 +1,10 @@
 # 更新说明
 
+## 2026-09-04 · v0.16.23
+
+- Global profile 已完成 Cloudflare 验证、但隐藏 CDP 抓取页仍被单独返回 `HTTP 403` 时，会自动回退到正常后台标签页读取模型文档；临时 target 继续在成功、异常和超时路径中统一关闭，不会持续累积新标签页。
+- CloakBrowser 恢复冷却现在只限制真正需要启动、重启或切换代理的 profile；已在运行且代理一致的 profile 可继续抓取，避免一次会话同步超时让后续任务反复误报“CloakBrowser 服务暂时不可用”。
+
 ## 2026-09-04 · v0.16.22
 
 - Global 模型页抓取会在 Worker 启动后首次使用 profile 时同步 MakerHub 的代理配置，修复旧 profile 未绑定代理而落入 MakerWorld 中国地区访问提示、进而找不到 `3MF` 下载按钮的问题。

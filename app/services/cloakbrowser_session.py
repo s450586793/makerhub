@@ -723,12 +723,6 @@ def _ensure_running_profile(
     allow_recovery_restart: bool = False,
 ) -> tuple[CloakBrowserProfile, CloakBrowserProfile, bool]:
     clean_profile_id = str(profile_id or "").strip()
-    if (
-        clean_profile_id
-        and not allow_recovery_restart
-        and _profile_recovery_cooldown_active(clean_profile_id)
-    ):
-        raise _profile_cooldown_error()
     try:
         managed_proxy = _managed_profile_proxy(platform, proxy_config)
         profile = ensure_profile(platform, clean_profile_id, browser_proxy=managed_proxy)
@@ -736,9 +730,18 @@ def _ensure_running_profile(
         if clean_profile_id and _is_transient_profile_error(exc):
             _mark_profile_recovery_attempt(clean_profile_id)
         raise
-    if not allow_recovery_restart and _profile_recovery_cooldown_active(profile.id):
+    proxy_change_required = managed_proxy is not None and not _profile_uses_proxy(
+        profile,
+        managed_proxy,
+    )
+    profile_requires_recovery = profile.status != "running" or proxy_change_required
+    if (
+        not allow_recovery_restart
+        and profile_requires_recovery
+        and _profile_recovery_cooldown_active(profile.id)
+    ):
         raise _profile_cooldown_error()
-    if managed_proxy is not None and not _profile_uses_proxy(profile, managed_proxy):
+    if proxy_change_required:
         if profile.status == "running":
             profile = _stop_profile_for_proxy_change(profile)
         profile = _update_profile_proxy(profile, managed_proxy)

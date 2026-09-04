@@ -598,7 +598,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
                     profile_id="profile-cn",
                 )
 
-    def test_bridge_uses_hidden_cdp_fetch_and_closes_every_temporary_target_by_id(self):
+    def test_bridge_falls_back_to_temporary_page_for_cloudflare_and_closes_targets_by_id(self):
         source = cloakbrowser_session.BRIDGE_SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn('if (input.action === "fetch")', source)
@@ -627,7 +627,13 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertIn("maxResourceBufferSize: BROWSER_FETCH_RESOURCE_BUFFER_BYTES", fetch_source)
         self.assertIn("enableDurableMessages: true", fetch_source)
         self.assertIn('event.resourceType !== "Document"', fetch_source)
-        self.assertNotIn("withTemporaryPage", fetch_source)
+        self.assertIn("isCloudflareChallengeResponse(result)", fetch_source)
+        self.assertIn(
+            "fetchVisibleBrowserResponse(browser, context, platform, targetUrl, timeoutMs)",
+            fetch_source,
+        )
+        self.assertIn("withTemporaryPage(browser, context, async (page) =>", helper_source)
+        self.assertIn('waitUntil: "domcontentloaded"', helper_source)
         self.assertNotIn("context.newPage()", fetch_source)
         self.assertIn("const profileCookies = (await context.cookies()).filter", fetch_source)
         self.assertNotIn("page.setExtraHTTPHeaders", fetch_source)
@@ -808,6 +814,71 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertEqual(running.proxy, "http://user-controlled.example:7890")
         self.assertFalse(launched_here)
         update_mock.assert_not_called()
+
+    def test_running_profile_ignores_recovery_cooldown_when_proxy_matches(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(
+            id="profile-global",
+            name="MakerHub Global",
+            status="running",
+            proxy="http://proxy.example:7891",
+        )
+        proxy_config = {
+            "enabled": True,
+            "https_proxy": "http://proxy.example:7891",
+        }
+
+        with tempfile.TemporaryDirectory() as state_dir, \
+                patch.object(cloakbrowser_session, "STATE_DIR", Path(state_dir), create=True), \
+                patch.object(cloakbrowser_session, "ensure_profile", return_value=profile) as ensure_mock, \
+                patch.object(
+                    cloakbrowser_session,
+                    "launch_profile",
+                    return_value=(profile, False),
+                ) as launch_mock:
+            cloakbrowser_session._mark_profile_recovery_attempt(profile.id)
+
+            original, running, launched_here = cloakbrowser_session._ensure_running_profile(
+                "global",
+                profile.id,
+                proxy_config=proxy_config,
+            )
+
+        self.assertEqual(original, profile)
+        self.assertEqual(running, profile)
+        self.assertFalse(launched_here)
+        ensure_mock.assert_called_once_with(
+            "global",
+            profile.id,
+            browser_proxy="http://proxy.example:7891",
+        )
+        launch_mock.assert_called_once_with(profile)
+
+    def test_stopped_profile_respects_recovery_cooldown(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(
+            id="profile-global",
+            name="MakerHub Global",
+            status="stopped",
+            proxy="http://proxy.example:7891",
+        )
+        proxy_config = {
+            "enabled": True,
+            "https_proxy": "http://proxy.example:7891",
+        }
+
+        with tempfile.TemporaryDirectory() as state_dir, \
+                patch.object(cloakbrowser_session, "STATE_DIR", Path(state_dir), create=True), \
+                patch.object(cloakbrowser_session, "ensure_profile", return_value=profile), \
+                patch.object(cloakbrowser_session, "launch_profile") as launch_mock:
+            cloakbrowser_session._mark_profile_recovery_attempt(profile.id)
+
+            with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserUnavailable, "暂停自动重试"):
+                cloakbrowser_session._ensure_running_profile(
+                    "global",
+                    profile.id,
+                    proxy_config=proxy_config,
+                )
+
+        launch_mock.assert_not_called()
 
     def test_browser_cookie_items_preserve_structured_domain_and_expand_tokens(self):
         items = cloakbrowser_session.browser_cookie_items(

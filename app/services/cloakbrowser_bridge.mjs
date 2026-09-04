@@ -296,6 +296,44 @@ async function waitForCdpCondition(predicate, timeoutMs, timeoutMessage) {
   throw new Error(timeoutMessage);
 }
 
+function isCloudflareChallengeResponse(response) {
+  if (Number(response?.status_code || 0) !== 403) return false;
+  const text = String(response?.text || "").toLowerCase();
+  return [
+    "cf-chl-",
+    "challenge-platform",
+    "<title>just a moment",
+    "<title>请稍候",
+  ].some((marker) => text.includes(marker));
+}
+
+async function fetchVisibleBrowserResponse(browser, context, platform, targetUrl, timeoutMs) {
+  return await withTemporaryPage(browser, context, async (page) => {
+    const response = await page.goto(targetUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: Math.max(Number(timeoutMs || 30000), 15000),
+    });
+    if (!response) throw new Error("browser fallback fetch did not return a response");
+    const finalUrl = page.url();
+    if (!isAllowedBrowserFetchUrl(finalUrl, platform)) {
+      throw new Error("browser fallback fetch redirected outside allowed domains");
+    }
+    const responseHeaders = response.headers();
+    const safeHeaders = {};
+    for (const name of ["content-type", "retry-after", "location"]) {
+      const value = cdpHeaderValue(responseHeaders, name);
+      if (value) safeHeaders[name] = value;
+    }
+    return {
+      status_code: response.status(),
+      url: finalUrl,
+      content_type: cdpHeaderValue(responseHeaders, "content-type"),
+      headers: safeHeaders,
+      text: await response.text(),
+    };
+  });
+}
+
 function cdpHeaderEntries(headers) {
   return Object.entries(headers).map(([name, value]) => ({
     name: String(name),
@@ -313,7 +351,7 @@ async function fetchBrowserResponse(browser, context, platform, targetUrl, heade
   if (!isAllowedBrowserFetchUrl(targetUrl, platform)) throw new Error("invalid browser fetch URL");
   const cleanCookies = (Array.isArray(cookies) ? cookies : []).map(cleanCookie).filter(Boolean);
   if (cleanCookies.length) await context.setCookie(...cleanCookies);
-  return await withTemporaryCdpSession(browser, context, async (session) => {
+  const result = await withTemporaryCdpSession(browser, context, async (session) => {
     const profileCookies = (await context.cookies()).filter((item) => (
       hostnameMatchesDomains(String(item?.domain || ""), platformDomains(platform))
     ));
@@ -407,6 +445,10 @@ async function fetchBrowserResponse(browser, context, platform, targetUrl, heade
       await session.send("Fetch.disable").catch(() => undefined);
     }
   });
+  if (isMakerWorldUrl(targetUrl, platform) && isCloudflareChallengeResponse(result)) {
+    return await fetchVisibleBrowserResponse(browser, context, platform, targetUrl, timeoutMs);
+  }
+  return result;
 }
 
 function isThreeMfAuthorizationUrl(value) {
