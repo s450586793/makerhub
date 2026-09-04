@@ -650,18 +650,6 @@ def _account_health_failure_from_missing_items(
     return None
 
 
-def _account_health_http_error_from_missing_items(
-    missing_items: list[dict[str, Any]],
-) -> Optional[dict[str, str]]:
-    for item in missing_items:
-        if str(item.get("status") or "").strip() == "http_error":
-            return {
-                "detail": str(item.get("message") or "").strip(),
-                "instance_id": str(item.get("instance_id") or "").strip(),
-            }
-    return None
-
-
 def _preserve_browser_confirmation_gate(
     platform: str,
     classified_failure: Optional[dict[str, str]],
@@ -703,7 +691,6 @@ def _sync_account_health_for_archive_result(
         classified_failure is not None
         and classified_failure.get("status") in {"verification_required", "cloudflare"}
     )
-    http_error = _account_health_http_error_from_missing_items(missing_items)
     if (
         classified_failure is not None
         and browser_session_recovery
@@ -768,14 +755,6 @@ def _sync_account_health_for_archive_result(
                 instance_id=classified_failure["instance_id"] or instance_id,
             )
             return classified_failure
-        elif http_error is not None:
-            mark_account_network_error(
-                platform,
-                detail=http_error["detail"],
-                model_url=model_url,
-                model_id=model_id,
-                instance_id=http_error["instance_id"] or instance_id,
-            )
         elif (missing_3mf_retry or browser_session_recovery) and not missing_items:
             mark_account_ok(
                 platform,

@@ -958,7 +958,7 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
         )
         update_gate_mock.assert_not_called()
 
-    def test_browser_bridge_http_error_does_not_close_platform_gate(self):
+    def test_browser_bridge_http_error_does_not_change_platform_health(self):
         missing_items = [
             {
                 "status": "http_error",
@@ -980,13 +980,7 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
 
         self.assertIsNone(failure)
         update_gate_mock.assert_not_called()
-        network_error_mock.assert_called_once_with(
-            "cn",
-            detail="指纹浏览器暂时无法完成 3MF 授权，请稍后自动重试。",
-            model_url="https://makerworld.com.cn/zh/models/123",
-            model_id="123",
-            instance_id="instance-1",
-        )
+        network_error_mock.assert_not_called()
 
     def test_unchanged_browser_confirmation_gate_is_not_overwritten_by_parallel_auth_failure(self):
         missing_items = [

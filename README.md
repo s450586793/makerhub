@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.24`
+> 当前版本：`v0.16.25`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -359,6 +359,10 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-09-05 · v0.16.25
+
+- 单个模型没有可用 `3MF` 下载操作或授权桥接临时失败时，不再把整个站点账号误报为“状态待确认”；真实页面网络错误和成功授权仍会正确更新账号状态。
+
 ### 2026-09-05 · v0.16.24
 
 - Global profile 的代理确认结果改为跨进程短时复用；归档子进程在代理未变化时直接连接已知 CDP，避免重复查询 CloakBrowser Manager 时被间歇 `HTTP 502` 阻断。
@@ -367,12 +371,12 @@ npm --prefix frontend run build
 
 - Global 验证成功后，如果 Cloudflare 仍单独拦截隐藏 CDP 抓取，MakerHub 会自动使用临时正常后台页完成抓取并立即关闭；已运行的 profile 也不再被旧恢复冷却误拦。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-09-04 · v0.16.22
 
 - Global 指纹浏览器会在首次模型抓取时自动同步 MakerHub 代理，避免旧 profile 直连中国出口后停在地区提示页；同一配置后续仍复用 CDP 快速路径。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-09-04 · v0.16.21
 
