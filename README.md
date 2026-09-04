@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.20`
+> 当前版本：`v0.16.21`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -359,6 +359,10 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-09-04 · v0.16.21
+
+- `3MF` 授权会直接复用归档页面抓取已启动的 profile，不再因额外查询 Manager 状态接口而在恢复窗口内误报 `HTTP 502`。
+
 ### 2026-09-04 · v0.16.20
 
 - `3MF` 瞬时故障重试会复用已确认 running 的 CDP 会话，避免 Manager 刚释放高负载会话时，后续重试反而被 profile 状态查询 `502` 拦下。
@@ -367,12 +371,12 @@ npm --prefix frontend run build
 
 - `3MF` 授权遇到 CloakBrowser 短暂 `HTTP 502` 时，会在独占浏览器操作期间按 2 秒、5 秒退避恢复，不再因 Manager 刚释放高负载会话就立即进入补档冷却。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-09-04 · v0.16.18
 
 - 国内站和国际站的 CloakBrowser 操作改为共享同一个跨进程串行队列，避免两条 CDP 会话同时占用 Manager 时触发 `HTTP 502` 并阻断缺失 `3MF` 补档。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-09-04 · v0.16.17
 
