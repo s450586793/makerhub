@@ -121,6 +121,49 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertEqual(result["stopped_count"], 0)
         stop_mock.assert_not_called()
 
+    def test_stop_idle_profiles_uses_shorter_timeout_after_background_fetch(self):
+        profiles = [
+            {"id": "profile-cn", "name": "MakerHub CN", "status": "running"},
+            {"id": "profile-global", "name": "MakerHub Global", "status": "running"},
+        ]
+        now = 20_000.0
+        with tempfile.TemporaryDirectory() as state_dir, \
+                patch.object(cloakbrowser_session, "STATE_DIR", Path(state_dir)), \
+                patch.dict(os.environ, {
+                    "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                    "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+                }, clear=False), \
+                patch.object(cloakbrowser_session, "resource_slot", return_value=nullcontext()), \
+                patch.object(cloakbrowser_session, "_request") as request_mock, \
+                patch.object(cloakbrowser_session, "stop_profile") as stop_mock:
+            cloakbrowser_session.touch_profile_activity("cn", now=now - 121, detail="fetch")
+            cloakbrowser_session.touch_profile_activity("global", now=now - 121, detail="prepare-login")
+            request_mock.side_effect = [
+                profiles,
+                {"id": "profile-cn", "name": "MakerHub CN", "status": "running"},
+            ]
+
+            result = cloakbrowser_session.stop_idle_profiles(
+                idle_seconds=1800,
+                automation_idle_seconds=120,
+                now=now,
+            )
+
+        self.assertEqual(result["automation_idle_seconds"], 120)
+        self.assertEqual(result["stopped_profiles"], ["profile-cn"])
+        stop_mock.assert_called_once_with("profile-cn")
+
+    def test_profile_operation_records_latest_activity_detail(self):
+        with tempfile.TemporaryDirectory() as state_dir, \
+                patch.object(cloakbrowser_session, "STATE_DIR", Path(state_dir)), \
+                patch.object(cloakbrowser_session, "resource_slot", return_value=nullcontext()):
+            with cloakbrowser_session._profile_operation("global", detail="fetch"):
+                pass
+
+            detail = cloakbrowser_session.profile_activity_detail("global")
+
+        self.assertEqual(detail, "fetch")
+
     def test_profile_resource_name_is_stable_before_and_after_profile_resolution(self):
         self.assertEqual(
             cloakbrowser_session._profile_resource_name("cn"),
@@ -527,15 +570,51 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertIn("await cleanupStaleAutomationTargets(browser, context, input.platform)", source)
 
     def test_ensure_profile_reuses_saved_profile_id(self):
-        with patch.object(
-            cloakbrowser_session,
-            "_request",
-            return_value={"id": "profile-cn", "name": "MakerHub CN", "status": "stopped"},
-        ) as request_mock:
+        responses = [
+            {"id": "profile-cn", "name": "MakerHub CN", "status": "stopped", "launch_args": []},
+            {
+                "id": "profile-cn",
+                "name": "MakerHub CN",
+                "status": "stopped",
+                "launch_args": ["--disable-gpu"],
+            },
+        ]
+        with patch.object(cloakbrowser_session, "_request", side_effect=responses) as request_mock:
             profile = cloakbrowser_session.ensure_profile("cn", "profile-cn")
 
         self.assertEqual(profile.id, "profile-cn")
-        request_mock.assert_called_once_with("GET", "/api/profiles/profile-cn")
+        self.assertEqual(profile.launch_args, ("--disable-gpu",))
+        self.assertEqual(request_mock.call_count, 2)
+        request_mock.assert_any_call("GET", "/api/profiles/profile-cn")
+        request_mock.assert_any_call(
+            "PUT",
+            "/api/profiles/profile-cn",
+            json_payload={"launch_args": ["--disable-gpu"]},
+        )
+
+    def test_ensure_profile_preserves_custom_launch_args_when_adding_low_cpu_default(self):
+        responses = [
+            {
+                "id": "profile-cn",
+                "name": "MakerHub CN",
+                "status": "stopped",
+                "launch_args": ["--window-size=1280,720"],
+            },
+            {
+                "id": "profile-cn",
+                "name": "MakerHub CN",
+                "status": "stopped",
+                "launch_args": ["--window-size=1280,720", "--disable-gpu"],
+            },
+        ]
+        with patch.object(cloakbrowser_session, "_request", side_effect=responses) as request_mock:
+            profile = cloakbrowser_session.ensure_profile("cn", "profile-cn")
+
+        self.assertEqual(profile.launch_args, ("--window-size=1280,720", "--disable-gpu"))
+        self.assertEqual(
+            request_mock.call_args_list[1].kwargs["json_payload"]["launch_args"],
+            ["--window-size=1280,720", "--disable-gpu"],
+        )
 
     def test_ensure_profile_reuses_managed_tag(self):
         responses = [
@@ -568,6 +647,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertEqual(create_payload["name"], "MakerHub CN")
         self.assertTrue(create_payload["humanize"])
         self.assertFalse(create_payload["auto_launch"])
+        self.assertEqual(create_payload["launch_args"], ["--disable-gpu"])
         self.assertEqual({item["tag"] for item in create_payload["tags"]}, {"makerhub", "cn"})
 
     def test_ensure_profile_sets_managed_global_proxy_when_creating_profile(self):

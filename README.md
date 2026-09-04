@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.16`
+> 当前版本：`v0.16.17`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -117,6 +117,7 @@ services:
       MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
       MAKERHUB_AUTO_VERIFY_3MF: "${MAKERHUB_AUTO_VERIFY_3MF:-false}"
       MAKERHUB_CLOAKBROWSER_IDLE_SECONDS: "${MAKERHUB_CLOAKBROWSER_IDLE_SECONDS:-1800}"
+      MAKERHUB_CLOAKBROWSER_AUTOMATION_IDLE_SECONDS: "${MAKERHUB_CLOAKBROWSER_AUTOMATION_IDLE_SECONDS:-120}"
       MAKERHUB_WORKER_RECYCLE_RSS_MIB: "${MAKERHUB_WORKER_RECYCLE_RSS_MIB:-2048}"
       MAKERHUB_WORKER_HARD_RECYCLE_RSS_MIB: "${MAKERHUB_WORKER_HARD_RECYCLE_RSS_MIB:-4096}"
       MAKERHUB_ORGANIZER_RECYCLE_RSS_MIB: "${MAKERHUB_ORGANIZER_RECYCLE_RSS_MIB:-768}"
@@ -358,6 +359,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-09-04 · v0.16.17
+
+- CloakBrowser profile 下次启动时会自动关闭高占用的软件 GPU 路径，保留现有登录数据和自定义参数。
+- 后台抓取结束后空闲 2 分钟即停止 profile；人工登录、同步和 3MF 验证仍保留 30 分钟窗口。
+
 ### 2026-09-01 · v0.16.16
 
 - 限制 `3MF` 检查缓存数量，长期归档时仍会定期清理 catalog、来源库和 Python 堆内存。
@@ -368,13 +374,13 @@ npm --prefix frontend run build
 - 本地模型包内的多个 3MF 配置会分别提取并展示各自的内嵌缩略图，不再全部复用模型包封面。
 - 设置模型总封面和生成 Three.js 预览时不再覆盖其他配置图片；打开旧本地模型详情还会一次性修复历史共享引用。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-26 · v0.16.14
 
 - 识别 MakerWorld `SDFL-PPO` 仅限平台打印许可，不再把官方未提供下载入口的打印配置误算为缺失 3MF。
 - 这类配置不会占用下载额度或 CloakBrowser 授权队列，待补任务会继续处理后续可下载模型。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-26 · v0.16.13
 

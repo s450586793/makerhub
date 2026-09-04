@@ -35,6 +35,10 @@ AUTHORIZATION_TRANSIENT_RETRY_DELAY_SECONDS = 0.5
 PROFILE_RECOVERY_COOLDOWN_SECONDS = 60
 CLOAKBROWSER_IDLE_SECONDS_ENV = "MAKERHUB_CLOAKBROWSER_IDLE_SECONDS"
 DEFAULT_CLOAKBROWSER_IDLE_SECONDS = 30 * 60
+CLOAKBROWSER_AUTOMATION_IDLE_SECONDS_ENV = "MAKERHUB_CLOAKBROWSER_AUTOMATION_IDLE_SECONDS"
+DEFAULT_CLOAKBROWSER_AUTOMATION_IDLE_SECONDS = 2 * 60
+MANAGED_PROFILE_LAUNCH_ARGS = ("--disable-gpu",)
+AUTOMATION_ACTIVITY_DETAILS = frozenset({"fetch"})
 TRANSIENT_BRIDGE_ERROR_MARKERS = (
     "超时",
     "timeout",
@@ -108,6 +112,7 @@ class CloakBrowserProfile:
     status: str = "stopped"
     cdp_url: str = ""
     proxy: str = ""
+    launch_args: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -280,6 +285,15 @@ def _profile_from_payload(payload: Any) -> CloakBrowserProfile | None:
         status=str(payload.get("status") or "stopped").strip().lower() or "stopped",
         cdp_url=str(payload.get("cdp_url") or "").strip(),
         proxy=str(payload.get("proxy") or "").strip(),
+        launch_args=tuple(
+            str(item).strip()
+            for item in (
+                payload.get("launch_args")
+                if isinstance(payload.get("launch_args"), list)
+                else []
+            )
+            if str(item).strip()
+        ),
     )
 
 
@@ -317,6 +331,29 @@ def _profile_uses_proxy(profile: CloakBrowserProfile, proxy: str) -> bool:
     return str(profile.proxy or "").strip() == str(proxy or "").strip()
 
 
+def _managed_profile_launch_args(profile: CloakBrowserProfile) -> tuple[str, ...]:
+    launch_args = list(profile.launch_args)
+    for required_arg in MANAGED_PROFILE_LAUNCH_ARGS:
+        if required_arg not in launch_args:
+            launch_args.append(required_arg)
+    return tuple(launch_args)
+
+
+def _ensure_managed_profile_launch_args(profile: CloakBrowserProfile) -> CloakBrowserProfile:
+    launch_args = _managed_profile_launch_args(profile)
+    if profile.status == "running" or launch_args == profile.launch_args:
+        return profile
+    payload = _request(
+        "PUT",
+        f"/api/profiles/{profile.id}",
+        json_payload={"launch_args": list(launch_args)},
+    )
+    updated = _profile_from_payload(payload)
+    if updated is None:
+        raise CloakBrowserError("指纹浏览器更新 profile 资源参数后没有返回有效 profile。")
+    return updated
+
+
 def ensure_profile(
     platform: str,
     profile_id: str = "",
@@ -326,8 +363,11 @@ def ensure_profile(
     clean_platform = normalize_platform(platform)
     clean_profile_id = str(profile_id or "").strip()
     if clean_profile_id:
-        profile = _profile_from_payload(_request("GET", f"/api/profiles/{clean_profile_id}"))
+        profile_payload = _request("GET", f"/api/profiles/{clean_profile_id}")
+        profile = _profile_from_payload(profile_payload)
         if profile is not None:
+            if isinstance(profile_payload, dict) and _matches_managed_profile(profile_payload, clean_platform):
+                profile = _ensure_managed_profile_launch_args(profile)
             return profile
 
     profiles = _request("GET", "/api/profiles")
@@ -336,7 +376,7 @@ def ensure_profile(
             if isinstance(payload, dict) and _matches_managed_profile(payload, clean_platform):
                 profile = _profile_from_payload(payload)
                 if profile is not None:
-                    return profile
+                    return _ensure_managed_profile_launch_args(profile)
 
     payload_data: dict[str, Any] = {
         "name": PROFILE_NAMES[clean_platform],
@@ -347,6 +387,7 @@ def ensure_profile(
         "human_preset": "careful",
         "headless": False,
         "auto_launch": False,
+        "launch_args": list(MANAGED_PROFILE_LAUNCH_ARGS),
         "clipboard_sync": True,
         "notes": f"MakerHub managed {clean_platform} account profile",
         "tags": [
@@ -376,6 +417,7 @@ def launch_profile(profile: CloakBrowserProfile) -> tuple[CloakBrowserProfile, b
             status="running",
             cdp_url=f"/api/profiles/{profile.id}/cdp",
             proxy=profile.proxy,
+            launch_args=profile.launch_args,
         )
     return launched, True
 
@@ -421,11 +463,19 @@ def _profile_activity_path(platform: str) -> Path:
     return STATE_DIR / "cloakbrowser_activity" / f"{normalize_platform(platform)}.marker"
 
 
-def touch_profile_activity(platform: str, *, now: float | None = None) -> None:
+def touch_profile_activity(
+    platform: str,
+    *,
+    now: float | None = None,
+    detail: str | None = None,
+) -> None:
     marker_path = _profile_activity_path(platform)
     try:
         marker_path.parent.mkdir(parents=True, exist_ok=True)
-        marker_path.touch(exist_ok=True)
+        if detail is None:
+            marker_path.touch(exist_ok=True)
+        else:
+            marker_path.write_text(str(detail or "").strip().lower()[:64], encoding="utf-8")
         if now is not None:
             os.utime(marker_path, (float(now), float(now)))
     except OSError:
@@ -439,6 +489,13 @@ def profile_activity_at(platform: str) -> float:
         return 0.0
 
 
+def profile_activity_detail(platform: str) -> str:
+    try:
+        return _profile_activity_path(platform).read_text(encoding="utf-8").strip().lower()[:64]
+    except (OSError, UnicodeError):
+        return ""
+
+
 def _clear_profile_activity(platform: str) -> None:
     try:
         _profile_activity_path(platform).unlink(missing_ok=True)
@@ -449,17 +506,17 @@ def _clear_profile_activity(platform: str) -> None:
 @contextmanager
 def _profile_operation(platform: str, profile_id: str = "", *, detail: str):
     clean_platform = normalize_platform(platform)
-    touch_profile_activity(clean_platform)
+    touch_profile_activity(clean_platform, detail=detail)
     try:
         with resource_slot(
             _profile_resource_name(clean_platform, profile_id),
             detail=detail,
             priority=100 if detail == "click" else 0,
         ):
-            touch_profile_activity(clean_platform)
+            touch_profile_activity(clean_platform, detail=detail)
             yield
     finally:
-        touch_profile_activity(clean_platform)
+        touch_profile_activity(clean_platform, detail=detail)
 
 
 def _cloakbrowser_idle_seconds(value: int | None = None) -> int:
@@ -470,6 +527,28 @@ def _cloakbrowser_idle_seconds(value: int | None = None) -> int:
         return DEFAULT_CLOAKBROWSER_IDLE_SECONDS
 
 
+def _cloakbrowser_automation_idle_seconds(value: int | None = None) -> int:
+    raw = value if value is not None else os.getenv(CLOAKBROWSER_AUTOMATION_IDLE_SECONDS_ENV)
+    try:
+        return max(
+            int(raw if raw not in (None, "") else DEFAULT_CLOAKBROWSER_AUTOMATION_IDLE_SECONDS),
+            0,
+        )
+    except (TypeError, ValueError):
+        return DEFAULT_CLOAKBROWSER_AUTOMATION_IDLE_SECONDS
+
+
+def _profile_idle_timeout(
+    platform: str,
+    *,
+    idle_seconds: int,
+    automation_idle_seconds: int,
+) -> int:
+    if profile_activity_detail(platform) in AUTOMATION_ACTIVITY_DETAILS:
+        return automation_idle_seconds
+    return idle_seconds
+
+
 def _managed_profile_platform(payload: dict[str, Any]) -> str:
     for platform in ("cn", "global"):
         if _matches_managed_profile(payload, platform):
@@ -477,16 +556,23 @@ def _managed_profile_platform(payload: dict[str, Any]) -> str:
     return ""
 
 
-def stop_idle_profiles(*, idle_seconds: int | None = None, now: float | None = None) -> dict[str, Any]:
+def stop_idle_profiles(
+    *,
+    idle_seconds: int | None = None,
+    automation_idle_seconds: int | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
     timeout = _cloakbrowser_idle_seconds(idle_seconds)
+    automation_timeout = _cloakbrowser_automation_idle_seconds(automation_idle_seconds)
     result: dict[str, Any] = {
         "idle_seconds": timeout,
+        "automation_idle_seconds": automation_timeout,
         "checked_count": 0,
         "initialized_count": 0,
         "stopped_count": 0,
         "stopped_profiles": [],
     }
-    if timeout <= 0 or not cloakbrowser_configured():
+    if (timeout <= 0 and automation_timeout <= 0) or not cloakbrowser_configured():
         return result
     current_time = float(now if now is not None else time.time())
     try:
@@ -510,12 +596,26 @@ def stop_idle_profiles(*, idle_seconds: int | None = None, now: float | None = N
             touch_profile_activity(platform, now=current_time)
             result["initialized_count"] += 1
             continue
-        if current_time - activity_at < timeout:
+        profile_timeout = _profile_idle_timeout(
+            platform,
+            idle_seconds=timeout,
+            automation_idle_seconds=automation_timeout,
+        )
+        if profile_timeout <= 0 or current_time - activity_at < profile_timeout:
             continue
 
         with resource_slot(_profile_resource_name(platform, profile.id), detail="idle-stop"):
             activity_at = profile_activity_at(platform)
-            if activity_at <= 0 or current_time - activity_at < timeout:
+            profile_timeout = _profile_idle_timeout(
+                platform,
+                idle_seconds=timeout,
+                automation_idle_seconds=automation_timeout,
+            )
+            if (
+                activity_at <= 0
+                or profile_timeout <= 0
+                or current_time - activity_at < profile_timeout
+            ):
                 continue
             current = _profile_from_payload(_request("GET", f"/api/profiles/{profile.id}"))
             if current is None or current.status != "running":
