@@ -31,7 +31,7 @@ DEFAULT_TIMEOUT_SECONDS = 30
 AUTHORIZATION_TIMEOUT_SECONDS = 90
 AUTO_VERIFY_TIMEOUT_SECONDS = 50
 AUTHORIZATION_BRIDGE_CLEANUP_MARGIN_SECONDS = 40
-AUTHORIZATION_TRANSIENT_RETRY_DELAY_SECONDS = 0.5
+AUTHORIZATION_TRANSIENT_RETRY_DELAYS_SECONDS = (2.0, 5.0)
 PROFILE_RECOVERY_COOLDOWN_SECONDS = 60
 CLOAKBROWSER_IDLE_SECONDS_ENV = "MAKERHUB_CLOAKBROWSER_IDLE_SECONDS"
 DEFAULT_CLOAKBROWSER_IDLE_SECONDS = 30 * 60
@@ -1135,7 +1135,7 @@ def browser_authorize_3mf_download(
     page_url = _browser_model_page_url(model_url, clean_platform, clean_instance_id)
 
     with _profile_operation(clean_platform, clean_profile_id, detail="click"):
-        for attempt in range(2):
+        for attempt in range(len(AUTHORIZATION_TRANSIENT_RETRY_DELAYS_SECONDS) + 1):
             try:
                 _profile, running, _launched_here = _ensure_running_profile(
                     clean_platform,
@@ -1162,10 +1162,13 @@ def browser_authorize_3mf_download(
                 _clear_profile_recovery_attempt(running.id)
                 break
             except CloakBrowserError as exc:
-                if attempt > 0 or not _is_transient_profile_error(exc):
+                if (
+                    attempt >= len(AUTHORIZATION_TRANSIENT_RETRY_DELAYS_SECONDS)
+                    or not _is_transient_profile_error(exc)
+                ):
                     raise
                 _mark_profile_recovery_attempt(clean_profile_id)
-                time.sleep(AUTHORIZATION_TRANSIENT_RETRY_DELAY_SECONDS)
+                time.sleep(AUTHORIZATION_TRANSIENT_RETRY_DELAYS_SECONDS[attempt])
 
     try:
         status_code = int(result.get("status_code") or 0)

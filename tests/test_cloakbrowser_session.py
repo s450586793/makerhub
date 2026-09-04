@@ -7,7 +7,7 @@ import unittest
 from contextlib import contextmanager, nullcontext
 from multiprocessing import get_context
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from app.services import cloakbrowser_session
 
@@ -1182,7 +1182,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
             priority=100,
         )
 
-    def test_browser_3mf_authorization_retries_one_transient_bridge_failure(self):
+    def test_browser_3mf_authorization_uses_backoff_for_transient_bridge_failures(self):
         profile = cloakbrowser_session.CloakBrowserProfile(
             id="profile-cn",
             name="MakerHub CN",
@@ -1212,6 +1212,9 @@ class CloakBrowserSessionTest(unittest.TestCase):
                         cloakbrowser_session.CloakBrowserBridgeError(
                             "CDP endpoint returned HTTP 502"
                         ),
+                        cloakbrowser_session.CloakBrowserUnavailable(
+                            "指纹浏览器返回 HTTP 502"
+                        ),
                         bridge_result,
                     ],
                 ) as bridge_mock, \
@@ -1233,13 +1236,17 @@ class CloakBrowserSessionTest(unittest.TestCase):
             )
 
         self.assertEqual(result["status_code"], 200)
-        self.assertEqual(bridge_mock.call_count, 2)
+        self.assertEqual(bridge_mock.call_count, 3)
         self.assertEqual(
             [call.kwargs["allow_recovery_restart"] for call in ensure_mock.call_args_list],
-            [False, True],
+            [False, True, True],
         )
-        sleep_mock.assert_called_once_with(
-            cloakbrowser_session.AUTHORIZATION_TRANSIENT_RETRY_DELAY_SECONDS
+        self.assertEqual(
+            sleep_mock.call_args_list,
+            [
+                call(2.0),
+                call(5.0),
+            ],
         )
 
     def test_browser_3mf_authorization_reads_auto_verify_flag_per_operation(self):

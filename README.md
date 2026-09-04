@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.18`
+> 当前版本：`v0.16.19`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -359,6 +359,10 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-09-04 · v0.16.19
+
+- `3MF` 授权遇到 CloakBrowser 短暂 `HTTP 502` 时，会在独占浏览器操作期间按 2 秒、5 秒退避恢复，不再因 Manager 刚释放高负载会话就立即进入补档冷却。
+
 ### 2026-09-04 · v0.16.18
 
 - 国内站和国际站的 CloakBrowser 操作改为共享同一个跨进程串行队列，避免两条 CDP 会话同时占用 Manager 时触发 `HTTP 502` 并阻断缺失 `3MF` 补档。
@@ -368,13 +372,13 @@ npm --prefix frontend run build
 - CloakBrowser profile 下次启动时会自动关闭高占用的软件 GPU 路径，保留现有登录数据和自定义参数。
 - 后台抓取结束后空闲 2 分钟即停止 profile；人工登录、同步和 3MF 验证仍保留 30 分钟窗口。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-09-01 · v0.16.16
 
 - 限制 `3MF` 检查缓存数量，长期归档时仍会定期清理 catalog、来源库和 Python 堆内存。
 - Worker 超过 4 GiB、整理 daemon 超过 768 MiB 时会在可恢复机制保护下自动回收，不再无限增长并占用 Swap。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-28 · v0.16.15
 
