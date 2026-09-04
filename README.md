@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.21`
+> 当前版本：`v0.16.22`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -359,6 +359,10 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-09-04 · v0.16.22
+
+- Global 指纹浏览器会在首次模型抓取时自动同步 MakerHub 代理，避免旧 profile 直连中国出口后停在地区提示页；同一配置后续仍复用 CDP 快速路径。
+
 ### 2026-09-04 · v0.16.21
 
 - `3MF` 授权会直接复用归档页面抓取已启动的 profile，不再因额外查询 Manager 状态接口而在恢复窗口内误报 `HTTP 502`。
@@ -367,12 +371,12 @@ npm --prefix frontend run build
 
 - `3MF` 瞬时故障重试会复用已确认 running 的 CDP 会话，避免 Manager 刚释放高负载会话时，后续重试反而被 profile 状态查询 `502` 拦下。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-09-04 · v0.16.19
 
 - `3MF` 授权遇到 CloakBrowser 短暂 `HTTP 502` 时，会在独占浏览器操作期间按 2 秒、5 秒退避恢复，不再因 Manager 刚释放高负载会话就立即进入补档冷却。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-09-04 · v0.16.18
 

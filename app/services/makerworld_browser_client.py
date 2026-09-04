@@ -52,14 +52,15 @@ def _url_with_params(url: str, params: dict[str, Any] | None) -> str:
     return urlunparse(parsed._replace(query=urlencode(pairs, doseq=True)))
 
 
-def _linked_profile(platform: str) -> tuple[str, bool]:
+def _linked_profile(platform: str) -> tuple[str, bool, Any]:
     config = JsonStore().load()
+    proxy_config = getattr(config, "proxy", None)
     for item in config.cookies:
         if str(getattr(item, "platform", "") or "").strip().lower() != platform:
             continue
         profile_id = str(getattr(item, "browser_profile_id", "") or "").strip()
-        return profile_id, bool(profile_id)
-    return "", False
+        return profile_id, bool(profile_id), proxy_config
+    return "", False, proxy_config
 
 
 def _headers_for_profile(
@@ -151,7 +152,7 @@ def makerworld_browser_get(
     if clean_platform not in {"cn", "global"}:
         raise MakerWorldBrowserError("无法识别 MakerWorld 请求所属平台。")
     try:
-        profile_id, linked = _linked_profile(clean_platform)
+        profile_id, linked, proxy_config = _linked_profile(clean_platform)
     except Exception as exc:
         raise MakerWorldBrowserError("读取 MakerWorld 浏览器配置失败。") from exc
     cookie_items = [] if linked else browser_cookie_items(raw_cookie, clean_platform)
@@ -163,6 +164,7 @@ def makerworld_browser_get(
                 clean_platform,
                 target_url,
                 profile_id=profile_id,
+                proxy_config=proxy_config,
                 headers=request_headers,
                 cookie_items=cookie_items,
                 timeout_seconds=timeout_seconds,

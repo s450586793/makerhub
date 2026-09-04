@@ -460,6 +460,73 @@ class CloakBrowserSessionTest(unittest.TestCase):
         ensure_mock.assert_called_once_with("cn", "profile-cn", browser_proxy=None)
         launch_mock.assert_called_once_with(profile)
 
+    def test_browser_fetch_reconciles_global_profile_proxy_before_cdp_connection(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(
+            id="profile-global",
+            name="MakerHub Global",
+            status="running",
+            proxy="http://proxy.example:7890",
+        )
+        bridge_result = {
+            "status_code": 200,
+            "url": "https://makerworld.com/zh/models/1",
+            "content_type": "text/html; charset=utf-8",
+            "text": "<html>ok</html>",
+        }
+        with patch.dict(
+            os.environ,
+            {
+                "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+            },
+            clear=True,
+        ), patch.dict(
+            cloakbrowser_session._BROWSER_FETCH_PROXY_CACHE,
+            {},
+            clear=True,
+        ), patch.object(
+            cloakbrowser_session,
+            "_managed_profile_proxy",
+            return_value="http://proxy.example:7890",
+        ), patch.object(
+            cloakbrowser_session,
+            "_ensure_running_profile",
+            return_value=(profile, profile, False),
+        ) as ensure_mock, patch.object(
+            cloakbrowser_session,
+            "_run_bridge",
+            return_value=bridge_result,
+        ):
+            first = cloakbrowser_session.browser_fetch(
+                "global",
+                "https://makerworld.com/zh/models/1",
+                profile_id="profile-global",
+                proxy_config={
+                    "enabled": True,
+                    "https_proxy": "http://proxy.example:7890",
+                },
+            )
+            second = cloakbrowser_session.browser_fetch(
+                "global",
+                "https://makerworld.com/zh/models/1",
+                profile_id="profile-global",
+                proxy_config={
+                    "enabled": True,
+                    "https_proxy": "http://proxy.example:7890",
+                },
+            )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        ensure_mock.assert_called_once_with(
+            "global",
+            "profile-global",
+            proxy_config={
+                "enabled": True,
+                "https_proxy": "http://proxy.example:7890",
+            },
+        )
+
     def test_browser_fetch_protocol_timeout_does_not_restart_profile(self):
         profile = cloakbrowser_session.CloakBrowserProfile(
             id="profile-cn",

@@ -1,5 +1,10 @@
 # 更新说明
 
+## 2026-09-04 · v0.16.22
+
+- Global 模型页抓取会在 Worker 启动后首次使用 profile 时同步 MakerHub 的代理配置，修复旧 profile 未绑定代理而落入 MakerWorld 中国地区访问提示、进而找不到 `3MF` 下载按钮的问题。
+- 已确认的 profile 与代理配置会在进程内缓存；后续模型继续直连 CDP，代理配置变化时才重新对账，避免恢复成每次抓取都查询 CloakBrowser Manager 的慢路径。
+
 ## 2026-09-04 · v0.16.21
 
 - `3MF` 授权在已有 profile ID 时直接连接 CDP，不再先查询 Manager profile 状态，避免页面抓取释放连接后的短暂恢复期让控制面请求返回 `HTTP 502`。

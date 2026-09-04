@@ -29,7 +29,9 @@ def _fetch_result(
 
 class MakerWorldBrowserClientTest(unittest.TestCase):
     def test_linked_profile_does_not_seed_stale_cookie(self):
+        proxy_config = SimpleNamespace(enabled=False, http_proxy="", https_proxy="")
         config = SimpleNamespace(
+            proxy=proxy_config,
             cookies=[
                 SimpleNamespace(
                     platform="cn",
@@ -56,6 +58,7 @@ class MakerWorldBrowserClientTest(unittest.TestCase):
 
         self.assertEqual(response.profile_id, "profile-cn")
         self.assertEqual(fetch_mock.call_args.kwargs["profile_id"], "profile-cn")
+        self.assertIs(fetch_mock.call_args.kwargs["proxy_config"], proxy_config)
         self.assertEqual(fetch_mock.call_args.kwargs["cookie_items"], [])
         self.assertEqual(
             fetch_mock.call_args.kwargs["headers"],

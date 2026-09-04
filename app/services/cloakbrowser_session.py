@@ -92,6 +92,7 @@ ALLOWED_BROWSER_FETCH_HEADERS = {
     "x-bbl-captcha-result",
     "x-token",
 }
+_BROWSER_FETCH_PROXY_CACHE: dict[str, str] = {}
 
 class CloakBrowserError(RuntimeError):
     pass
@@ -996,6 +997,7 @@ def browser_fetch(
     url: str,
     *,
     profile_id: str = "",
+    proxy_config: ProxyConfig | dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
     cookie_items: list[dict[str, Any]] | None = None,
     timeout_seconds: int | None = None,
@@ -1010,7 +1012,13 @@ def browser_fetch(
     clean_profile_id = str(profile_id or "").strip()
 
     with _profile_operation(clean_platform, clean_profile_id, detail="fetch"):
-        if clean_profile_id:
+        managed_proxy = _managed_profile_proxy(clean_platform, proxy_config)
+        proxy_cache_hit = (
+            clean_platform == "global"
+            and bool(clean_profile_id)
+            and _BROWSER_FETCH_PROXY_CACHE.get(clean_profile_id) == str(managed_proxy or "")
+        )
+        if clean_profile_id and (clean_platform != "global" or proxy_cache_hit):
             running = CloakBrowserProfile(
                 id=clean_profile_id,
                 name=PROFILE_NAMES[clean_platform],
@@ -1018,10 +1026,17 @@ def browser_fetch(
                 cdp_url=f"{_configured_url()}/api/profiles/{clean_profile_id}/cdp",
             )
         else:
+            # Global profiles own MakerHub's outbound proxy setting. Reconcile it
+            # before the page fetch so the following direct-CDP authorization
+            # cannot land on MakerWorld's regional access notice.
+            ensure_kwargs = {"proxy_config": proxy_config} if proxy_config is not None else {}
             _profile, running, _launched_here = _ensure_running_profile(
                 clean_platform,
                 clean_profile_id,
+                **ensure_kwargs,
             )
+            if clean_platform == "global":
+                _BROWSER_FETCH_PROXY_CACHE[running.id] = str(managed_proxy or "")
         payload = _bridge_payload(
             running.id,
             action="fetch",
