@@ -473,13 +473,17 @@ class CloakBrowserSessionTest(unittest.TestCase):
             "content_type": "text/html; charset=utf-8",
             "text": "<html>ok</html>",
         }
-        with patch.dict(
+        with tempfile.TemporaryDirectory() as state_dir, patch.dict(
             os.environ,
             {
                 "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
                 "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
             },
             clear=True,
+        ), patch.object(
+            cloakbrowser_session,
+            "STATE_DIR",
+            Path(state_dir),
         ), patch.dict(
             cloakbrowser_session._BROWSER_FETCH_PROXY_CACHE,
             {},
@@ -506,6 +510,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
                     "https_proxy": "http://proxy.example:7890",
                 },
             )
+            cloakbrowser_session._BROWSER_FETCH_PROXY_CACHE.clear()
             second = cloakbrowser_session.browser_fetch(
                 "global",
                 "https://makerworld.com/zh/models/1",
@@ -515,6 +520,9 @@ class CloakBrowserSessionTest(unittest.TestCase):
                     "https_proxy": "http://proxy.example:7890",
                 },
             )
+            marker_text = next(
+                (Path(state_dir) / "cloakbrowser_proxy_cache").glob("*.marker")
+            ).read_text(encoding="utf-8")
 
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)
@@ -526,6 +534,93 @@ class CloakBrowserSessionTest(unittest.TestCase):
                 "https_proxy": "http://proxy.example:7890",
             },
         )
+        self.assertNotIn("proxy.example", marker_text)
+
+    def test_browser_fetch_rechecks_global_profile_when_shared_proxy_cache_changes(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(
+            id="profile-global",
+            name="MakerHub Global",
+            status="running",
+            proxy="http://proxy-new.example:7890",
+        )
+        bridge_result = {
+            "status_code": 200,
+            "url": "https://makerworld.com/en/models/1",
+            "content_type": "text/html; charset=utf-8",
+            "text": "<html>ok</html>",
+        }
+        with tempfile.TemporaryDirectory() as state_dir, patch.dict(
+            os.environ,
+            {
+                "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+            },
+            clear=True,
+        ), patch.object(
+            cloakbrowser_session,
+            "STATE_DIR",
+            Path(state_dir),
+        ), patch.dict(
+            cloakbrowser_session._BROWSER_FETCH_PROXY_CACHE,
+            {},
+            clear=True,
+        ), patch.object(
+            cloakbrowser_session,
+            "_managed_profile_proxy",
+            side_effect=["http://proxy-old.example:7890", "http://proxy-new.example:7890"],
+        ), patch.object(
+            cloakbrowser_session,
+            "_ensure_running_profile",
+            return_value=(profile, profile, False),
+        ) as ensure_mock, patch.object(
+            cloakbrowser_session,
+            "_run_bridge",
+            return_value=bridge_result,
+        ):
+            cloakbrowser_session.browser_fetch(
+                "global",
+                "https://makerworld.com/en/models/1",
+                profile_id="profile-global",
+            )
+            cloakbrowser_session._BROWSER_FETCH_PROXY_CACHE.clear()
+            cloakbrowser_session.browser_fetch(
+                "global",
+                "https://makerworld.com/en/models/1",
+                profile_id="profile-global",
+            )
+
+        self.assertEqual(ensure_mock.call_count, 2)
+
+    def test_global_profile_proxy_cache_expires_in_memory_and_on_disk(self):
+        with tempfile.TemporaryDirectory() as state_dir, patch.object(
+            cloakbrowser_session,
+            "STATE_DIR",
+            Path(state_dir),
+        ), patch.dict(
+            cloakbrowser_session._BROWSER_FETCH_PROXY_CACHE,
+            {},
+            clear=True,
+        ), patch.object(
+            cloakbrowser_session.time,
+            "time",
+            side_effect=[
+                1000.0,
+                1000.0 + cloakbrowser_session.GLOBAL_PROFILE_PROXY_CACHE_SECONDS + 1,
+            ],
+        ):
+            cloakbrowser_session._remember_global_profile_proxy(
+                "profile-global",
+                "http://proxy.example:7890",
+            )
+            marker_path = cloakbrowser_session._profile_proxy_cache_path("profile-global")
+            os.utime(marker_path, (1.0, 1.0))
+
+            cache_hit = cloakbrowser_session._global_profile_proxy_cache_hit(
+                "profile-global",
+                "http://proxy.example:7890",
+            )
+
+        self.assertFalse(cache_hit)
 
     def test_browser_fetch_protocol_timeout_does_not_restart_profile(self):
         profile = cloakbrowser_session.CloakBrowserProfile(

@@ -33,6 +33,7 @@ AUTO_VERIFY_TIMEOUT_SECONDS = 50
 AUTHORIZATION_BRIDGE_CLEANUP_MARGIN_SECONDS = 40
 AUTHORIZATION_TRANSIENT_RETRY_DELAYS_SECONDS = (2.0, 5.0)
 PROFILE_RECOVERY_COOLDOWN_SECONDS = 60
+GLOBAL_PROFILE_PROXY_CACHE_SECONDS = 30 * 60
 CLOAKBROWSER_IDLE_SECONDS_ENV = "MAKERHUB_CLOAKBROWSER_IDLE_SECONDS"
 DEFAULT_CLOAKBROWSER_IDLE_SECONDS = 30 * 60
 CLOAKBROWSER_AUTOMATION_IDLE_SECONDS_ENV = "MAKERHUB_CLOAKBROWSER_AUTOMATION_IDLE_SECONDS"
@@ -92,7 +93,7 @@ ALLOWED_BROWSER_FETCH_HEADERS = {
     "x-bbl-captcha-result",
     "x-token",
 }
-_BROWSER_FETCH_PROXY_CACHE: dict[str, str] = {}
+_BROWSER_FETCH_PROXY_CACHE: dict[str, tuple[str, float]] = {}
 
 class CloakBrowserError(RuntimeError):
     pass
@@ -682,6 +683,65 @@ def _profile_recovery_marker_path(profile_id: str) -> Path:
     return STATE_DIR / "cloakbrowser_recovery" / f"{digest}.marker"
 
 
+def _profile_proxy_cache_path(profile_id: str) -> Path:
+    digest = hashlib.sha256(str(profile_id or "").encode("utf-8")).hexdigest()[:24]
+    return STATE_DIR / "cloakbrowser_proxy_cache" / f"{digest}.marker"
+
+
+def _profile_proxy_fingerprint(proxy: str | None) -> str:
+    return hashlib.sha256(str(proxy or "").strip().encode("utf-8")).hexdigest()
+
+
+def _global_profile_proxy_cache_hit(profile_id: str, proxy: str | None) -> bool:
+    clean_profile_id = str(profile_id or "").strip()
+    clean_proxy = str(proxy or "").strip()
+    if not clean_profile_id:
+        return False
+    current_time = time.time()
+    cached = _BROWSER_FETCH_PROXY_CACHE.get(clean_profile_id)
+    if (
+        cached is not None
+        and cached[0] == clean_proxy
+        and cached[1] + GLOBAL_PROFILE_PROXY_CACHE_SECONDS > current_time
+    ):
+        return True
+    _BROWSER_FETCH_PROXY_CACHE.pop(clean_profile_id, None)
+    marker_path = _profile_proxy_cache_path(clean_profile_id)
+    try:
+        if marker_path.stat().st_mtime + GLOBAL_PROFILE_PROXY_CACHE_SECONDS <= current_time:
+            marker_path.unlink(missing_ok=True)
+            return False
+        if marker_path.read_text(encoding="utf-8").strip() != _profile_proxy_fingerprint(clean_proxy):
+            return False
+    except (OSError, UnicodeError):
+        return False
+    _BROWSER_FETCH_PROXY_CACHE[clean_profile_id] = (clean_proxy, current_time)
+    return True
+
+
+def _remember_global_profile_proxy(profile_id: str, proxy: str | None) -> None:
+    clean_profile_id = str(profile_id or "").strip()
+    clean_proxy = str(proxy or "").strip()
+    if not clean_profile_id:
+        return
+    _BROWSER_FETCH_PROXY_CACHE[clean_profile_id] = (clean_proxy, time.time())
+    marker_path = _profile_proxy_cache_path(clean_profile_id)
+    temp_path = marker_path.with_name(
+        f"{marker_path.name}.{os.getpid()}.{time.time_ns()}.tmp"
+    )
+    try:
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path.write_text(_profile_proxy_fingerprint(clean_proxy), encoding="utf-8")
+        os.replace(temp_path, marker_path)
+    except OSError:
+        pass
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _profile_recovery_cooldown_active(profile_id: str) -> bool:
     marker_path = _profile_recovery_marker_path(profile_id)
     try:
@@ -722,10 +782,11 @@ def _ensure_running_profile(
     proxy_config: ProxyConfig | dict[str, Any] | None = None,
     allow_recovery_restart: bool = False,
 ) -> tuple[CloakBrowserProfile, CloakBrowserProfile, bool]:
+    clean_platform = normalize_platform(platform)
     clean_profile_id = str(profile_id or "").strip()
     try:
-        managed_proxy = _managed_profile_proxy(platform, proxy_config)
-        profile = ensure_profile(platform, clean_profile_id, browser_proxy=managed_proxy)
+        managed_proxy = _managed_profile_proxy(clean_platform, proxy_config)
+        profile = ensure_profile(clean_platform, clean_profile_id, browser_proxy=managed_proxy)
     except CloakBrowserError as exc:
         if clean_profile_id and _is_transient_profile_error(exc):
             _mark_profile_recovery_attempt(clean_profile_id)
@@ -754,6 +815,8 @@ def _ensure_running_profile(
                 "指纹浏览器启动失败，已暂停自动重试，请稍后再试。"
             ) from exc
         raise
+    if clean_platform == "global" and _profile_uses_proxy(running, managed_proxy):
+        _remember_global_profile_proxy(running.id, managed_proxy)
     return profile, running, launched_here
 
 
@@ -1016,10 +1079,9 @@ def browser_fetch(
 
     with _profile_operation(clean_platform, clean_profile_id, detail="fetch"):
         managed_proxy = _managed_profile_proxy(clean_platform, proxy_config)
-        proxy_cache_hit = (
-            clean_platform == "global"
-            and bool(clean_profile_id)
-            and _BROWSER_FETCH_PROXY_CACHE.get(clean_profile_id) == str(managed_proxy or "")
+        proxy_cache_hit = clean_platform == "global" and _global_profile_proxy_cache_hit(
+            clean_profile_id,
+            managed_proxy,
         )
         if clean_profile_id and (clean_platform != "global" or proxy_cache_hit):
             running = CloakBrowserProfile(
@@ -1039,7 +1101,7 @@ def browser_fetch(
                 **ensure_kwargs,
             )
             if clean_platform == "global":
-                _BROWSER_FETCH_PROXY_CACHE[running.id] = str(managed_proxy or "")
+                _remember_global_profile_proxy(running.id, managed_proxy)
         payload = _bridge_payload(
             running.id,
             action="fetch",
