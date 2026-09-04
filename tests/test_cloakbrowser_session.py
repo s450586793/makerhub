@@ -1237,9 +1237,10 @@ class CloakBrowserSessionTest(unittest.TestCase):
 
         self.assertEqual(result["status_code"], 200)
         self.assertEqual(bridge_mock.call_count, 3)
-        self.assertEqual(
-            [call.kwargs["allow_recovery_restart"] for call in ensure_mock.call_args_list],
-            [False, True, True],
+        ensure_mock.assert_called_once_with(
+            "cn",
+            "profile-cn",
+            allow_recovery_restart=False,
         )
         self.assertEqual(
             sleep_mock.call_args_list,
@@ -1248,6 +1249,65 @@ class CloakBrowserSessionTest(unittest.TestCase):
                 call(5.0),
             ],
         )
+
+    def test_browser_3mf_authorization_retries_profile_lookup_until_running(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(
+            id="profile-cn",
+            name="MakerHub CN",
+            status="running",
+        )
+        bridge_result = {
+            "ok": True,
+            "status_code": 200,
+            "payload": {
+                "name": "part.3mf",
+                "url": "https://download.example.test/part.3mf",
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as state_dir, \
+                patch.object(cloakbrowser_session, "STATE_DIR", Path(state_dir), create=True), \
+                patch.object(cloakbrowser_session, "resource_slot", return_value=nullcontext()), \
+                patch.object(
+                    cloakbrowser_session,
+                    "_ensure_running_profile",
+                    side_effect=[
+                        cloakbrowser_session.CloakBrowserUnavailable(
+                            "指纹浏览器返回 HTTP 502"
+                        ),
+                        (profile, profile, False),
+                    ],
+                ) as ensure_mock, \
+                patch.object(
+                    cloakbrowser_session,
+                    "_run_bridge",
+                    return_value=bridge_result,
+                ) as bridge_mock, \
+                patch.object(cloakbrowser_session.time, "sleep") as sleep_mock, \
+                patch.dict(
+                    os.environ,
+                    {
+                        "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                        "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+                    },
+                    clear=True,
+                ):
+            result = cloakbrowser_session.browser_authorize_3mf_download(
+                "cn",
+                "https://api.bambulab.cn/v1/design-service/instance/123/f3mf",
+                profile_id="profile-cn",
+                model_url="https://makerworld.com.cn/zh/models/456",
+                instance_id="123",
+            )
+
+        self.assertEqual(result["status_code"], 200)
+        self.assertEqual(ensure_mock.call_count, 2)
+        self.assertEqual(
+            [call.kwargs["allow_recovery_restart"] for call in ensure_mock.call_args_list],
+            [False, True],
+        )
+        bridge_mock.assert_called_once()
+        sleep_mock.assert_called_once_with(2.0)
 
     def test_browser_3mf_authorization_reads_auto_verify_flag_per_operation(self):
         profile = cloakbrowser_session.CloakBrowserProfile(

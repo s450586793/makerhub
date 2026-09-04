@@ -1135,13 +1135,15 @@ def browser_authorize_3mf_download(
     page_url = _browser_model_page_url(model_url, clean_platform, clean_instance_id)
 
     with _profile_operation(clean_platform, clean_profile_id, detail="click"):
+        running: CloakBrowserProfile | None = None
         for attempt in range(len(AUTHORIZATION_TRANSIENT_RETRY_DELAYS_SECONDS) + 1):
             try:
-                _profile, running, _launched_here = _ensure_running_profile(
-                    clean_platform,
-                    clean_profile_id,
-                    allow_recovery_restart=attempt > 0,
-                )
+                if running is None:
+                    _profile, running, _launched_here = _ensure_running_profile(
+                        clean_platform,
+                        clean_profile_id,
+                        allow_recovery_restart=attempt > 0,
+                    )
                 bridge_payload = _bridge_payload(
                     running.id,
                     action="click",
