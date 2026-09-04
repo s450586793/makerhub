@@ -456,7 +456,9 @@ def _update_profile_proxy(profile: CloakBrowserProfile, proxy: str) -> CloakBrow
 
 
 def _profile_resource_name(platform: str, profile_id: str = "") -> str:
-    return f"cloakbrowser_platform_{normalize_platform(platform)}"
+    # CloakBrowser Manager proxies every profile through one service. Serializing
+    # only per platform still allows CN and Global CDP sessions to overload it.
+    return "cloakbrowser_manager"
 
 
 def _profile_activity_path(platform: str) -> Path:

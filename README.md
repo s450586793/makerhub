@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.17`
+> 当前版本：`v0.16.18`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -359,6 +359,10 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-09-04 · v0.16.18
+
+- 国内站和国际站的 CloakBrowser 操作改为共享同一个跨进程串行队列，避免两条 CDP 会话同时占用 Manager 时触发 `HTTP 502` 并阻断缺失 `3MF` 补档。
+
 ### 2026-09-04 · v0.16.17
 
 - CloakBrowser profile 下次启动时会自动关闭高占用的软件 GPU 路径，保留现有登录数据和自定义参数。
@@ -369,13 +373,13 @@ npm --prefix frontend run build
 - 限制 `3MF` 检查缓存数量，长期归档时仍会定期清理 catalog、来源库和 Python 堆内存。
 - Worker 超过 4 GiB、整理 daemon 超过 768 MiB 时会在可恢复机制保护下自动回收，不再无限增长并占用 Swap。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-08-28 · v0.16.15
 
 - 本地模型包内的多个 3MF 配置会分别提取并展示各自的内嵌缩略图，不再全部复用模型包封面。
 - 设置模型总封面和生成 Three.js 预览时不再覆盖其他配置图片；打开旧本地模型详情还会一次性修复历史共享引用。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-08-26 · v0.16.14
 

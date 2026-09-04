@@ -1,5 +1,10 @@
 # 更新说明
 
+## 2026-09-04 · v0.16.18
+
+- 国内站和国际站的 CloakBrowser 页面抓取、账号同步、`3MF` 授权及空闲停止操作现在共享同一个跨进程资源锁，避免不同 profile 同时建立 CDP 代理时压垮 Manager。
+- `3MF` 点击授权继续保留队列优先级；普通来源刷新会等待当前浏览器操作完成，不再因 Manager `HTTP 502` 让 Global 缺失项反复失败并进入冷却。
+
 ## 2026-09-04 · v0.16.17
 
 - MakerHub 管理的 CloakBrowser profile 会在下次启动前自动加入 `--disable-gpu`，避免 SwiftShader 软件 GPU 进程长期占满多个 CPU 核心；现有登录数据和自定义启动参数保持不变。

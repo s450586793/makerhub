@@ -17,6 +17,7 @@ SPAWN_CONTEXT = get_context("spawn")
 
 def _hold_cloakbrowser_profile_slot(
     state_dir: str,
+    platform: str,
     ready_queue,
     start_event,
     active,
@@ -26,7 +27,7 @@ def _hold_cloakbrowser_profile_slot(
     from app.services import resource_limiter
 
     resource_limiter.STATE_DIR = Path(state_dir)
-    slot_name = cloakbrowser_session._profile_resource_name("cn", "profile-cn")
+    slot_name = cloakbrowser_session._profile_resource_name(platform, f"profile-{platform}")
     ready_queue.put(True)
     start_event.wait(5)
     with cloakbrowser_session.resource_slot(slot_name, detail="test-bridge"):
@@ -164,13 +165,17 @@ class CloakBrowserSessionTest(unittest.TestCase):
 
         self.assertEqual(detail, "fetch")
 
-    def test_profile_resource_name_is_stable_before_and_after_profile_resolution(self):
+    def test_profile_resource_name_is_shared_across_profiles_and_platforms(self):
         self.assertEqual(
             cloakbrowser_session._profile_resource_name("cn"),
             cloakbrowser_session._profile_resource_name("cn", "profile-cn"),
         )
+        self.assertEqual(
+            cloakbrowser_session._profile_resource_name("cn", "profile-cn"),
+            cloakbrowser_session._profile_resource_name("global", "profile-global"),
+        )
 
-    def test_spawned_bridge_operations_for_same_profile_do_not_overlap(self):
+    def test_spawned_bridge_operations_across_platforms_do_not_overlap(self):
         with tempfile.TemporaryDirectory() as state_dir:
             ready_queue = SPAWN_CONTEXT.Queue()
             start_event = SPAWN_CONTEXT.Event()
@@ -180,9 +185,17 @@ class CloakBrowserSessionTest(unittest.TestCase):
             processes = [
                 SPAWN_CONTEXT.Process(
                     target=_hold_cloakbrowser_profile_slot,
-                    args=(state_dir, ready_queue, start_event, active, max_active, counter_lock),
+                    args=(
+                        state_dir,
+                        platform,
+                        ready_queue,
+                        start_event,
+                        active,
+                        max_active,
+                        counter_lock,
+                    ),
                 )
-                for _ in range(2)
+                for platform in ("cn", "global")
             ]
             for process in processes:
                 process.start()
@@ -1164,7 +1177,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertFalse(bridge_payload["auto_verify_3mf"])
         self.assertEqual(bridge_mock.call_args.kwargs["timeout_seconds"], 210)
         resource_slot_mock.assert_called_once_with(
-            "cloakbrowser_platform_cn",
+            "cloakbrowser_manager",
             detail="click",
             priority=100,
         )
