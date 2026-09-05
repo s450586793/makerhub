@@ -9,7 +9,6 @@ import sys
 import threading
 import time
 import zipfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from fnmatch import fnmatchcase
 from html import escape, unescape
 from pathlib import Path
@@ -28,6 +27,11 @@ import requests
 from bs4 import BeautifulSoup
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
 from app.services.business_logs import append_business_log
+from app.services.asset_downloader import (
+    download_file,
+    download_with_fresh_session,
+    run_asset_tasks,
+)
 from app.services.cookie_utils import extract_auth_token, parse_cookie_values, sanitize_cookie_header
 from app.services.makerworld_browser_client import (
     MakerWorldBrowserError,
@@ -623,47 +627,6 @@ def _emit_stage_progress(
     )
 
 
-def download_file(
-    session: requests.Session,
-    url: str,
-    dest: Path,
-    overwrite: bool = False,
-    *,
-    timeout: tuple[int, int] = (CONNECT_TIMEOUT_SECONDS, READ_TIMEOUT_SECONDS),
-    max_duration: int = IMAGE_TRANSFER_TIMEOUT_SECONDS,
-):
-    if dest.exists() and not overwrite:
-        log("存在，跳过：", dest)
-        return
-    if fake_three_mf_downloads_enabled() and _is_three_mf_fake_download_target(url, dest):
-        _write_fake_three_mf_file(dest, url)
-        log("[3MF] 假下载已写入：", dest)
-        return
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    temp_dest = dest.with_name(f"{dest.name}.{os.getpid()}.{threading.get_ident()}.part")
-    started_at = time.monotonic()
-    log("开始下载：", url, "->", dest)
-    try:
-        with session.get(url, timeout=timeout, stream=True) as resp:
-            resp.raise_for_status()
-            with temp_dest.open("wb") as f:
-                for chunk in resp.iter_content(chunk_size=64 * 1024):
-                    if max_duration > 0 and time.monotonic() - started_at > max_duration:
-                        raise TimeoutError(f"下载超时（>{max_duration}s）: {url}")
-                    if not chunk:
-                        continue
-                    f.write(chunk)
-        temp_dest.replace(dest)
-    except Exception:
-        try:
-            if temp_dest.exists():
-                temp_dest.unlink()
-        except Exception:
-            pass
-        raise
-    log("已下载：", dest)
-
-
 def pick_instance_filename(inst: dict, name_hint: str = "") -> str:
     base = sanitize_filename(
         inst.get("fileName")
@@ -1032,62 +995,31 @@ def _comment_resource_stats(comments: list[dict]) -> dict[str, int]:
 
 
 def _download_asset_with_fresh_session(base_session: requests.Session, url: str, dest: Path) -> None:
-    with resource_slot("comment_assets", detail=url):
-        if type(base_session) is not requests.Session:
-            download_file(
-                base_session,
-                url,
-                dest,
-                overwrite=True,
-                max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
-            )
-            return
-        with requests.Session() as asset_session:
-            asset_session.headers.update(getattr(base_session, "headers", {}) or {})
-            asset_session.cookies.update(getattr(base_session, "cookies", {}) or {})
-            download_file(
-                asset_session,
-                url,
-                dest,
-                overwrite=True,
-                max_duration=IMAGE_TRANSFER_TIMEOUT_SECONDS,
-            )
+    download_with_fresh_session(base_session, url, dest)
 
 
 def _download_comment_assets(tasks: list[dict], progress_callback, progress_start: int, progress_end: int) -> dict[str, int]:
-    stats = {"completed": 0, "failed": 0}
-    if not tasks:
-        return stats
-    total = len(tasks)
-    completed = 0
-    workers = max(1, min(COMMENT_ASSET_DOWNLOAD_WORKERS, total))
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        future_map = {executor.submit(task["download"]): task for task in tasks}
-        for future in as_completed(future_map):
-            task = future_map[future]
-            completed += 1
-            if total and (completed == 1 or completed == total or completed % 5 == 0):
-                _emit_stage_progress(
-                    progress_callback,
-                    progress_start,
-                    progress_end,
-                    completed,
-                    total,
-                    "正在下载评论资源",
-                )
-            try:
-                future.result()
-            except Exception as exc:
-                stats["failed"] += 1
-                log(task.get("error_message") or "评论资源下载失败，保留原始链接：", task.get("url") or "", exc)
-                continue
-            stats["completed"] += 1
-            for apply_ref in task.get("apply") or []:
-                try:
-                    apply_ref()
-                except Exception:
-                    continue
-    return stats
+    def on_progress(completed: int, total: int) -> None:
+        if completed == 1 or completed == total or completed % 5 == 0:
+            _emit_stage_progress(
+                progress_callback,
+                progress_start,
+                progress_end,
+                completed,
+                total,
+                "正在下载评论资源",
+            )
+
+    return run_asset_tasks(
+        tasks,
+        max_workers=COMMENT_ASSET_DOWNLOAD_WORKERS,
+        on_progress=on_progress,
+        on_error=lambda task, exc: log(
+            task.get("error_message") or "评论资源下载失败，保留原始链接：",
+            task.get("url") or "",
+            exc,
+        ),
+    )
 
 
 def _download_image_assets(
@@ -1097,38 +1029,23 @@ def _download_image_assets(
     progress_end: int,
     message: str,
 ) -> dict[str, int]:
-    stats = {"completed": 0, "failed": 0}
-    if not tasks:
-        return stats
-    total = len(tasks)
-    completed = 0
-    workers = max(1, min(IMAGE_ASSET_DOWNLOAD_WORKERS, total))
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        future_map = {executor.submit(task["download"]): task for task in tasks}
-        for future in as_completed(future_map):
-            task = future_map[future]
-            completed += 1
-            _emit_stage_progress(
-                progress_callback,
-                progress_start,
-                progress_end,
-                completed,
-                total,
-                message,
-            )
-            try:
-                future.result()
-            except Exception as exc:
-                stats["failed"] += 1
-                log(task.get("error_message") or "图片下载失败，保留原始链接：", task.get("url") or "", exc)
-                continue
-            stats["completed"] += 1
-            for apply_ref in task.get("apply") or []:
-                try:
-                    apply_ref()
-                except Exception:
-                    continue
-    return stats
+    return run_asset_tasks(
+        tasks,
+        max_workers=IMAGE_ASSET_DOWNLOAD_WORKERS,
+        on_progress=lambda completed, total: _emit_stage_progress(
+            progress_callback,
+            progress_start,
+            progress_end,
+            completed,
+            total,
+            message,
+        ),
+        on_error=lambda task, exc: log(
+            task.get("error_message") or "图片下载失败，保留原始链接：",
+            task.get("url") or "",
+            exc,
+        ),
+    )
 
 
 def _apply_existing_comment_assets(
