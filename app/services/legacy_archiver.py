@@ -224,53 +224,6 @@ def _trace_url(value: str) -> str:
         return ""
 
 
-def _scrapling_trace(
-    stage: str,
-    result=None,
-    *,
-    url: str = "",
-    state: str = "",
-    used: bool = False,
-    fallback: str = "",
-    logger=None,
-    level: str = "info",
-    **extra,
-) -> None:
-    engine = str(getattr(result, "engine", "") or "").strip()
-    status_code = int(getattr(result, "status_code", 0) or 0)
-    error = str(getattr(result, "error", "") or "").strip()
-    ok = bool(getattr(result, "ok", False))
-    safe_extra = {key: value for key, value in extra.items() if value not in (None, "", [], {}, ())}
-    trace_state = state or ("ok" if ok else "failed")
-    message = (
-        f"[scrapling] stage={stage} engine={engine or '-'} "
-        f"status={status_code or '-'} state={trace_state} used={bool(used)}"
-    )
-    if fallback:
-        message = f"{message} fallback={fallback}"
-    if logger is not None:
-        log(logger, message)
-    try:
-        append_business_log(
-            "scrapling",
-            "fetch_trace",
-            message,
-            level=level,
-            stage=stage,
-            engine=engine,
-            status_code=status_code,
-            ok=ok,
-            state=trace_state,
-            used=bool(used),
-            fallback=fallback,
-            url=_trace_url(url),
-            error=error[:300] if error else "",
-            **safe_extra,
-        )
-    except Exception:
-        return
-
-
 def _record_missing_3mf_summary(logs_dir: Path, base_name: str, missing_3mf: list[dict], logger=None) -> None:
     if not missing_3mf:
         return

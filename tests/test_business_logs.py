@@ -54,7 +54,7 @@ class BusinessLogsTest(unittest.TestCase):
             "append_database_log_entry",
             side_effect=lambda file_name, entry, raw="": captured.append((file_name, entry, raw)) or True,
         ), patch("builtins.print") as printed:
-            business_logs.append_business_log("scrapling", "fetch_trace", "trace detail", status_code=200)
+            business_logs.append_business_log("subscription", "metadata_refreshed", "trace detail", status_code=200)
 
         self.assertEqual(captured, [])
         printed.assert_not_called()
@@ -67,11 +67,17 @@ class BusinessLogsTest(unittest.TestCase):
             "append_database_log_entry",
             side_effect=lambda file_name, entry, raw="": captured.append((file_name, entry, raw)) or True,
         ), patch("builtins.print"):
-            business_logs.append_business_log("scrapling", "fetch_trace", "failed trace", level="warning", status_code=403)
+            business_logs.append_business_log(
+                "subscription",
+                "metadata_refreshed",
+                "failed trace",
+                level="warning",
+                status_code=403,
+            )
 
         self.assertEqual(captured[0][0], "business.log")
         self.assertEqual(captured[0][1]["level"], "warning")
-        self.assertEqual(captured[0][1]["event"], "fetch_trace")
+        self.assertEqual(captured[0][1]["event"], "metadata_refreshed")
 
     def test_async_info_business_log_is_persisted_by_background_writer(self):
         writer = getattr(business_logs, "append_business_log_async", None)

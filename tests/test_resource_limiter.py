@@ -408,10 +408,13 @@ class ResourceLimiterConfigTest(unittest.TestCase):
         self.assertEqual(config.three_mf_download_limit, 2)
         self.assertEqual(config.disk_io_limit, 2)
 
-    def test_advanced_runtime_defaults_enable_scrapling_first(self):
-        config = AdvancedRuntimeConfig()
+    def test_advanced_config_accepts_old_scraping_engine_but_does_not_expose_runtime_choice(self):
+        config = AdvancedRuntimeConfig.model_validate({
+            "scraping_engine": "scrapling_only",
+            "makerworld_request_limit": 2,
+        })
 
-        self.assertEqual(config.scraping_engine, "scrapling_first")
+        self.assertEqual(config.scraping_engine, "scrapling_only")
 
     def test_resource_gate_reports_waiters_and_serves_them_fifo(self):
         resource_limiter.RESOURCE_LIMITS["fifo_test"] = 1

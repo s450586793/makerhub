@@ -48,7 +48,6 @@ ASYNC_LOG_QUEUE_MAX_ITEMS = 1000
 ASYNC_LOG_BATCH_SIZE = 100
 ASYNC_LOG_BATCH_WAIT_SECONDS = 0.25
 NOISY_INFO_EVENTS = {
-    ("scrapling", "fetch_trace"),
     ("subscription", "metadata_refreshed"),
     ("subscription", "preview_snapshots_refreshed"),
     ("source_library", "preview_snapshots_refreshed"),

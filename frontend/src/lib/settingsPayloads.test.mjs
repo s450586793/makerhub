@@ -43,7 +43,7 @@ test("runtime payload clamps process settings", () => {
   );
 });
 
-test("advanced payload normalizes engine and worker limits", () => {
+test("advanced payload normalizes worker limits", () => {
   assert.deepEqual(
     buildAdvancedPayload({
       remote_refresh_model_workers: 99,
@@ -53,7 +53,6 @@ test("advanced payload normalizes engine and worker limits", () => {
       disk_io_limit: 8,
     }),
     {
-      scraping_engine: "scrapling_first",
       remote_refresh_model_workers: 4,
       makerworld_request_limit: 1,
       comment_asset_download_limit: 4,
@@ -61,6 +60,16 @@ test("advanced payload normalizes engine and worker limits", () => {
       disk_io_limit: 4,
     },
   );
+});
+
+test("advanced payload omits retired scraping engine", () => {
+  assert.deepEqual(buildAdvancedPayload({ makerworld_request_limit: 2 }), {
+    remote_refresh_model_workers: 2,
+    makerworld_request_limit: 2,
+    comment_asset_download_limit: 4,
+    three_mf_download_limit: 1,
+    disk_io_limit: 1,
+  });
 });
 
 test("proxy and sharing payloads copy mutable form data safely", () => {

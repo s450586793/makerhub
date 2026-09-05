@@ -52,6 +52,7 @@
 - `makerworld_parsers/` 只负责 URL、HTML 和 JSON 载荷解析，不得依赖网络客户端或状态存储。
 - `AssetDownloader` 保持图片、附件和已取得签名直链 `3MF` 的 `requests` 流式下载通道；它不是控制面 BrowserTransport 的例外实现。
 - `batch_discovery.py` 仅保留发现入口的兼容 re-export。`legacy_archiver.py` 仍保留离线页面重建、归档目录整理、归档入口 facade，以及迁移期兼容和既有 monkeypatch 测试所需的旧控制面实现；生产调用与控制面编排入口已迁到 `makerworld_pipeline/`，不得再新增对 legacy 控制面实现的生产依赖。
+- `AdvancedRuntimeConfig.scraping_engine` 在 `v0.17.0` 中只用于读取旧 JSON 和接受旧客户端请求，运行时忽略该字段且不提供可切换的抓取引擎。
 
 ## 数据和目录
 
@@ -68,7 +69,8 @@
 ## 常用测试命令
 
 ```bash
-.venv/bin/python -m pytest tests/test_makerworld_transport_boundary.py tests/test_process_jobs.py tests/test_batch_discovery.py tests/test_subscriptions.py tests/test_source_refresh.py tests/test_source_library.py -q
+.venv/bin/python -m pytest tests/test_business_logs.py tests/test_resource_limiter.py tests/test_web_routes.py tests/test_makerworld_transport_boundary.py -q
+.venv/bin/python -m pytest tests/test_process_jobs.py tests/test_batch_discovery.py tests/test_subscriptions.py tests/test_source_refresh.py tests/test_source_library.py -q
 ```
 
 ## 修改时不能破坏
@@ -78,7 +80,7 @@
 - CloakBrowser `5xx`、CDP 超时和断开按网络错误重试；只有真实 `401/403`、登录页、Cloudflare challenge 或验证载荷才能更新账号/gate 状态。
 - 普通页面抓取和 3MF 授权遇到瞬时 CDP 超时时只能断开并重连，不得停止共享 profile；只有显式登录态同步/人工恢复流程可以在平台级锁内重启一次 profile。
 - 图片、附件和已取得签名直链的 `3MF` 必须保留普通下载器直连，不得把大文件塞进浏览器通道；真实 `3MF` 点击授权不得内部重复。
-- 不得绕过 BrowserTransport 以 Scrapling 或 `requests` 承担 MakerWorld 控制面抓取；静态资源下载继续使用 AssetDownloader，日志不得泄露 Cookie/Token。
+- 不得绕过 BrowserTransport 以其他 HTTP 客户端承担 MakerWorld 控制面抓取；静态资源下载继续使用 AssetDownloader，日志不得泄露 Cookie/Token。
 - 批量发现结果要和源端总数形成闭环；数量不匹配时应保留状态并提示，不要误归档或误标删除。
 - 同一任务不能重复入队；缺失 3MF 重试也要检查已排队任务。
 - 3MF 每日/站点限额命中后要暂停自动重试，避免每天半夜反复触发上限。
@@ -89,7 +91,7 @@
 
 ## 给 Codex 的上下文入口
 
-改归档、3MF、MakerWorld 接口、Scrapling、批量发现时，先读：
+改归档、3MF、MakerWorld 接口、传输边界、批量发现时，先读：
 
 - `app/services/archive_worker.py`
 - `app/services/process_jobs.py`

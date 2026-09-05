@@ -359,6 +359,7 @@ class ThreeMfDownloadLimitsConfig(BaseModel):
 
 
 class AdvancedRuntimeConfig(BaseModel):
+    # v0.17.0 仅用于读取旧配置和接受旧客户端请求；运行时固定使用 CloakBrowser。
     scraping_engine: Literal["legacy", "scrapling_first", "scrapling_only"] = "scrapling_first"
     remote_refresh_model_workers: int = Field(
         default_factory=lambda: _env_int("MAKERHUB_REMOTE_REFRESH_MODEL_WORKERS", 2, 1, 4),

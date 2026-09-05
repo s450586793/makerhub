@@ -875,3 +875,24 @@ def test_control_plane_does_not_issue_unapproved_direct_gets():
     for path in CONTROL_GET_FILES:
         findings = _unapproved_direct_gets(path)
         assert not findings, f"{path}: {_finding_summary(findings)}"
+
+
+def test_runtime_has_no_scrapling_engine_branches():
+    allowed = {Path("app/schemas/models.py")}
+    forbidden = {"scraping_engine", "scrapling_first", "scrapling_only"}
+    violations = []
+    for path in (ROOT / "app").rglob("*.py"):
+        relative = path.relative_to(ROOT)
+        if relative in allowed:
+            continue
+        tree = _tree(path)
+        tokens = {
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        }
+        tokens.update(node.id for node in ast.walk(tree) if isinstance(node, ast.Name))
+        tokens.update(node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute))
+        if tokens & forbidden:
+            violations.append(relative.as_posix())
+    assert violations == []
