@@ -51,7 +51,7 @@
 - `makerworld_browser_client.py` 是服务层唯一允许调用 `browser_fetch()` 的客户端。MakerWorld 的页面和 JSON 控制面请求必须经由此客户端，供 `makerworld_pipeline/` 使用。
 - `makerworld_parsers/` 只负责 URL、HTML 和 JSON 载荷解析，不得依赖网络客户端或状态存储。
 - `AssetDownloader` 保持图片、附件和已取得签名直链 `3MF` 的 `requests` 流式下载通道；它不是控制面 BrowserTransport 的例外实现。
-- `batch_discovery.py` 仅保留发现入口的兼容 re-export；`legacy_archiver.py` 保留离线页面重建、归档目录整理及归档入口兼容 facade，不再负责 MakerWorld 控制面编排。
+- `batch_discovery.py` 仅保留发现入口的兼容 re-export。`legacy_archiver.py` 仍保留离线页面重建、归档目录整理、归档入口 facade，以及迁移期兼容和既有 monkeypatch 测试所需的旧控制面实现；生产调用与控制面编排入口已迁到 `makerworld_pipeline/`，不得再新增对 legacy 控制面实现的生产依赖。
 
 ## 数据和目录
 
@@ -97,7 +97,7 @@
 - `app/services/makerworld_parsers/`
 - `app/services/makerworld_browser_client.py`
 - `app/services/asset_downloader.py`
-- `app/services/legacy_archiver.py`（兼容 facade 与离线归档工具）
+- `app/services/legacy_archiver.py`（离线归档工具、兼容 facade 与迁移期 monkeypatch 实现；非生产控制面入口）
 - `app/services/batch_discovery.py`（兼容 re-export）
 - `app/services/three_mf.py`
 - `app/services/three_mf_quota.py`
