@@ -1,5 +1,10 @@
+from pathlib import Path
+
 from app.services import legacy_archiver
 from app.services.makerworld_parsers.comments import (
+    _collect_comment_tree as parser_collect_comment_tree,
+    _collect_comments_from_payload as parser_collect_comments_from_payload,
+    _merge_threaded_comment_list as parser_merge_threaded_comment_list,
     extract_comment_list_items,
     extract_comment_replies,
     extract_comment_sections,
@@ -280,3 +285,46 @@ def test_legacy_comments_facade_is_parser_function_and_keeps_schema_version():
     assert legacy_archiver.COMMENT_SCHEMA_VERSION == 4
     assert legacy_archiver.normalize_threaded_comments is normalize_threaded_comments
     assert legacy_archiver.normalize_threaded_comments(items) == normalize_threaded_comments(items)
+
+
+def test_legacy_comment_tree_helpers_are_parser_aliases():
+    assert legacy_archiver._collect_comment_tree is parser_collect_comment_tree
+    assert legacy_archiver._collect_comments_from_payload is parser_collect_comments_from_payload
+    assert legacy_archiver._merge_threaded_comment_list is parser_merge_threaded_comment_list
+
+
+def test_collect_comments_embedded_payload_matches_parser_output():
+    next_data = {
+        "props": {
+            "pageProps": {
+                "comments": [
+                    {
+                        "commentId": "root",
+                        "commentContent": "主评论",
+                        "commentTime": "2026-09-05 10:00:00",
+                        "replyCount": 1,
+                        "commentReplyList": {
+                            "items": [
+                                {
+                                    "commentId": "reply",
+                                    "rootCommentId": "root",
+                                    "commentContent": "回复",
+                                    "commentTime": "2026-09-05 10:01:00",
+                                }
+                            ]
+                        },
+                    }
+                ]
+            }
+        }
+    }
+
+    result = legacy_archiver.collect_comments(
+        next_data,
+        {},
+        object(),
+        Path("."),
+        download_assets=False,
+    )
+
+    assert result["items"] == extract_comment_list_items(next_data)

@@ -161,6 +161,16 @@ def _comment_reply_items(node: object) -> list[dict]:
     return [item for item in node.get("replies", []) if isinstance(item, dict)] if isinstance(node, dict) else []
 
 
+def _comment_tree_items(items: object):
+    if not isinstance(items, list):
+        return
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        yield item
+        yield from _comment_tree_items(item.get("replies"))
+
+
 def _comment_reply_count(node: dict) -> int:
     return _comment_numeric(node.get("replyCount") or node.get("reply_count") or node.get("subCommentCount") or node.get("childrenCount"))
 
@@ -230,6 +240,14 @@ def _merge_threaded_comment_list(existing_items: list[dict], fresh_items: list[d
             merged.append(normalized)
             by_key[key] = normalized
     return merged
+
+
+def _count_comment_threads(items: list[dict]) -> int:
+    return sum(
+        1 + _count_comment_threads(_comment_reply_items(item))
+        for item in items or []
+        if isinstance(item, dict)
+    )
 
 
 def _normalize_comment_candidate(node: dict, *, replies: Optional[list[dict]] = None) -> Optional[dict]:
@@ -419,6 +437,19 @@ def _iter_payload_dicts(node: object, depth: int = 0):
             yield from _iter_payload_dicts(item, depth + 1)
 
 
+def _extract_comment_reply_payload_has_more(payload: object) -> Optional[bool]:
+    for node in _iter_payload_dicts(payload):
+        for key in ("hasNext", "hasMore", "more"):
+            value = node.get(key)
+            if isinstance(value, bool):
+                return value
+        for key in ("isEnd", "end"):
+            value = node.get(key)
+            if isinstance(value, bool):
+                return not value
+    return None
+
+
 def extract_comment_replies(payload: object, root_comment_id: str) -> list[dict]:
     if not root_comment_id:
         return []
@@ -462,6 +493,69 @@ def extract_comment_list_items(payload: object) -> list[dict]:
     else:
         _collect_comments_from_payload(payload, comments, seen)
     return normalize_threaded_comments(comments)
+
+
+def _comment_list_node_total(node: object) -> int:
+    if not isinstance(node, dict):
+        return 0
+    return _comment_numeric(
+        node.get("total") or node.get("count") or node.get("totalCount") or node.get("commentCount")
+    )
+
+
+def _comment_list_payload_total(payload: object) -> int:
+    for node in _iter_payload_dicts(payload):
+        total = _comment_list_node_total(node)
+        if total > 0:
+            return total
+    return 0
+
+
+def _comment_list_payload_declares_empty(payload: object) -> bool:
+    for node in _iter_payload_dicts(payload):
+        if not any(key in node for key in ("total", "count", "totalCount", "commentCount")):
+            continue
+        if _comment_list_node_total(node) != 0:
+            continue
+        for key in ("hits", "items", "list", "records", "rows", "results"):
+            value = node.get(key)
+            if isinstance(value, list) and not value:
+                return True
+    return False
+
+
+def _comment_list_items_look_like_roots(items: object) -> bool:
+    if not isinstance(items, list):
+        return False
+    for item in items[:5]:
+        if not isinstance(item, dict):
+            continue
+        if isinstance(item.get("comment"), dict) or isinstance(item.get("ratingItem"), dict):
+            return True
+        if item.get("rootCommentId") or item.get("replyToName") or item.get("replyUser"):
+            return False
+        if (
+            (item.get("commentId") or item.get("id"))
+            and (item.get("commentContent") or item.get("content") or item.get("text"))
+        ):
+            return True
+    return False
+
+
+def _comment_list_payload_hit_count(payload: object) -> int:
+    for node in _iter_payload_dicts(payload):
+        for key in ("hits", "items", "list", "records", "rows", "results"):
+            value = node.get(key)
+            if not isinstance(value, list):
+                continue
+            if (
+                key == "hits"
+                or node is payload
+                or _comment_list_node_total(node) > 0
+                or _comment_list_items_look_like_roots(value)
+            ):
+                return len(value)
+    return 0
 
 
 def _normalize_payload_key(value: object) -> str:
