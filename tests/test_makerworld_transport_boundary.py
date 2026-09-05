@@ -6,6 +6,8 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PARSER_ROOT = ROOT / "app/services/makerworld_parsers"
+PARSER_PACKAGE = "app.services.makerworld_parsers"
 BROWSER_FETCH_SYMBOL = "app.services.cloakbrowser_session.browser_fetch"
 HTTP_MODULES = ("requests", "httpx", "aiohttp")
 HTTP_CLIENT_NAMES = {"client", "http", "http_client", "session"}
@@ -30,7 +32,7 @@ def _python_files(root: Path) -> tuple[Path, ...]:
     return tuple(sorted(root.rglob("*.py")))
 
 
-PARSER_FILES = _python_files(ROOT / "app/services/makerworld_parsers")
+PARSER_FILES = _python_files(PARSER_ROOT)
 PIPELINE_FILES = _python_files(ROOT / "app/services/makerworld_pipeline")
 CONTROL_GET_FILES = (
     ROOT / "app/services/source_library.py",
@@ -49,18 +51,51 @@ def _tree(path: Path) -> ast.AST:
     return ast.parse(path.read_text(encoding="utf-8"))
 
 
+def _parser_package(path: Path) -> str:
+    try:
+        relative_parent = path.relative_to(PARSER_ROOT).parent
+    except ValueError:
+        return PARSER_PACKAGE
+    if relative_parent == Path("."):
+        return PARSER_PACKAGE
+    return ".".join((PARSER_PACKAGE, *relative_parent.parts))
+
+
+def _resolved_from_import_base(path: Path, node: ast.ImportFrom) -> str | None:
+    if not node.level:
+        return node.module
+
+    package_parts = _parser_package(path).split(".")
+    base_length = len(package_parts) - node.level + 1
+    if base_length <= 0:
+        return None
+    base = ".".join(package_parts[:base_length])
+    return f"{base}.{node.module}" if node.module else base
+
+
 def _disallowed_parser_dependencies(path: Path) -> set[str]:
     violations: set[str] = set()
     for node in ast.walk(_tree(path)):
         if isinstance(node, ast.Import):
             violations.update(alias.name for alias in node.names if alias.name not in PARSER_ALLOWED_MODULES)
-        elif isinstance(node, ast.ImportFrom) and node.module and node.module not in PARSER_ALLOWED_MODULES:
-            violations.add(node.module)
-            violations.update(
-                f"{node.module}.{alias.name}"
-                for alias in node.names
-                if alias.name != "*"
-            )
+        elif isinstance(node, ast.ImportFrom):
+            module = _resolved_from_import_base(path, node)
+            if module is None:
+                violations.add(f"unresolved relative import level {node.level}")
+                continue
+            if node.module is None:
+                for alias in node.names:
+                    imported_module = f"{module}.{alias.name}"
+                    if alias.name == "*" or imported_module not in PARSER_ALLOWED_MODULES:
+                        violations.add(imported_module)
+                continue
+            if module not in PARSER_ALLOWED_MODULES:
+                violations.add(module)
+                violations.update(
+                    f"{module}.{alias.name}"
+                    for alias in node.names
+                    if alias.name != "*"
+                )
     violations.update(
         f"dynamic:{finding.symbol}"
         for finding in _transport_findings(path).dynamic_import_calls
@@ -430,13 +465,24 @@ def _unapproved_direct_gets(path: Path, logical_path: Path | None = None) -> lis
         kind: [finding for finding in findings if _direct_get_exception_kind(relative_path, finding) == kind]
         for kind in expected_counts
     }
+    contract_violations = [
+        _AstFinding(
+            0,
+            0,
+            "<contract>",
+            f"contract violation: expected {expected_count} {kind} GET call(s), found {len(findings_by_kind[kind])}",
+            ast.Constant(value=None),
+        )
+        for kind, expected_count in expected_counts.items()
+        if len(findings_by_kind[kind]) != expected_count
+    ]
     allowed_ids = {
         id(finding)
         for kind, expected_count in expected_counts.items()
         if len(findings_by_kind[kind]) == expected_count
         for finding in findings_by_kind[kind]
     }
-    return [finding for finding in findings if id(finding) not in allowed_ids]
+    return [finding for finding in findings if id(finding) not in allowed_ids] + contract_violations
 
 
 def _finding_summary(findings: list[_AstFinding]) -> list[str]:
@@ -664,6 +710,25 @@ def test_parser_guard_rejects_non_allowlisted_and_dynamic_imports(tmp_path, sour
     assert expected in _disallowed_parser_dependencies(path)
 
 
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    (
+        ("from . import transport\n", "app.services.makerworld_parsers.transport"),
+        (
+            "from .. import makerworld_browser_client as network\n",
+            "app.services.makerworld_browser_client",
+        ),
+        ("from ..... import transport\n", "unresolved relative import level 5"),
+    ),
+    ids=("sibling-module", "parent-service-module", "unresolved-parent-module"),
+)
+def test_parser_guard_rejects_relative_import_mutations(tmp_path, source, expected):
+    path = tmp_path / "mutated_parser.py"
+    path.write_text(source, encoding="utf-8")
+
+    assert expected in _disallowed_parser_dependencies(path)
+
+
 def test_python_file_discovery_is_recursive(tmp_path):
     nested = tmp_path / "nested" / "parser.py"
     nested.parent.mkdir()
@@ -697,7 +762,9 @@ def test_asset_downloader_rejects_a_duplicate_static_stream_get(tmp_path):
         encoding="utf-8",
     )
 
-    assert _unapproved_direct_gets(path, Path("app/services/asset_downloader.py"))
+    findings = _unapproved_direct_gets(path, Path("app/services/asset_downloader.py"))
+
+    assert any("contract violation" in finding.symbol for finding in findings)
 
 
 def test_asset_downloader_rejects_an_incomplete_stream_get_shape(tmp_path):
@@ -710,6 +777,20 @@ def test_asset_downloader_rejects_an_incomplete_stream_get_shape(tmp_path):
     )
 
     assert _unapproved_direct_gets(path, Path("app/services/asset_downloader.py"))
+
+
+def test_asset_downloader_rejects_a_missing_static_stream_get(tmp_path):
+    path = tmp_path / "asset_downloader.py"
+    path.write_text(
+        "import requests\n"
+        "def download_file(session: requests.Session, url):\n"
+        "    return None\n",
+        encoding="utf-8",
+    )
+
+    findings = _unapproved_direct_gets(path, Path("app/services/asset_downloader.py"))
+
+    assert any("contract violation" in finding.symbol for finding in findings)
 
 
 def test_ticket_gets_are_the_only_online_account_exceptions(tmp_path):
@@ -739,7 +820,9 @@ def test_online_accounts_rejects_a_duplicate_ticket_get(tmp_path):
         encoding="utf-8",
     )
 
-    assert _unapproved_direct_gets(path, Path("app/services/online_accounts.py"))
+    findings = _unapproved_direct_gets(path, Path("app/services/online_accounts.py"))
+
+    assert any("contract violation" in finding.symbol for finding in findings)
 
 
 def test_online_accounts_rejects_a_changed_ticket_get_shape(tmp_path):
@@ -753,6 +836,27 @@ def test_online_accounts_rejects_a_changed_ticket_get_shape(tmp_path):
     )
 
     assert _unapproved_direct_gets(path, Path("app/services/online_accounts.py"))
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import requests\n"
+        "def _exchange_makerworld_ticket(session: requests.Session, ticket_url, makerworld_ticket_url, ticket):\n"
+        "    return None\n",
+        "import requests\n"
+        "def _exchange_makerworld_ticket(session: requests.Session, ticket_url, makerworld_ticket_url, ticket):\n"
+        "    session.get(ticket_url, proxies=None, timeout=(8, 20))\n",
+    ),
+    ids=("zero-ticket-gets", "one-ticket-get"),
+)
+def test_online_accounts_rejects_missing_ticket_gets(tmp_path, source):
+    path = tmp_path / "online_accounts.py"
+    path.write_text(source, encoding="utf-8")
+
+    findings = _unapproved_direct_gets(path, Path("app/services/online_accounts.py"))
+
+    assert any("contract violation" in finding.symbol for finding in findings)
 
 
 def test_parsers_have_no_network_or_store_dependencies():
