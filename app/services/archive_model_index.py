@@ -19,7 +19,7 @@ from app.core.database import (
 from app.core.database_json_state import load_database_json_state, save_database_json_state
 from app.core.settings import ARCHIVE_DIR
 from app.core.timezone import now_iso as china_now_iso
-from app.services.batch_discovery import normalize_source_url
+from app.services.makerworld_parsers.common import normalize_source_url
 from app.services.business_logs import append_business_log
 from app.services.state_events import publish_state_event
 

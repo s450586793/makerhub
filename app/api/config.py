@@ -113,7 +113,7 @@ from app.services.model_attachments import create_manual_attachment, delete_manu
 from app.services.request_threads import run_task_api, run_ui_io, run_web_io
 from app.services.release_status import read_latest_release_version
 from app.services.archive_model_index import resolve_model_dir_from_short_key
-from app.services.batch_discovery import extract_model_id, normalize_source_url
+from app.services.makerworld_parsers.common import extract_model_id, normalize_source_url
 from app.services.subscriptions import cookie_source_inventory_payload, cookie_source_sync_state_payload
 from app.services.source_health import probe_cookie_auth_status
 from app.services.account_health import (

@@ -21,7 +21,7 @@ from app.core.database_json_state import (
 from app.core.settings import ARCHIVE_DIR, STATE_DIR
 from app.core.store import JsonStore
 from app.core.timezone import from_timestamp as china_from_timestamp, now_iso as china_now_iso, parse_timestamp as china_parse_timestamp
-from app.services.batch_discovery import extract_model_id, normalize_source_url
+from app.services.makerworld_parsers.common import extract_model_id, normalize_source_url
 from app.services.archive_model_index import (
     archive_model_index_row_count,
     delete_archive_model_index,

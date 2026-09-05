@@ -24,7 +24,7 @@ from app.services.archive_worker import (
     _three_mf_limit_message,
     detect_archive_mode,
 )
-from app.services.batch_discovery import normalize_source_url
+from app.services.makerworld_parsers.common import normalize_source_url
 from app.services.business_logs import append_business_log, append_structured_log
 from app.services.catalog import (
     get_archive_snapshot,
