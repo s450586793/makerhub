@@ -4,7 +4,7 @@
 
 - 提交单模型归档任务。
 - 对作者页、收藏夹、合集进行批量预扫描和入队。
-- 通过对应 CloakBrowser profile 调用 MakerWorld/Bambu 控制面，使用现有辅助解析器获取模型详情。
+- 通过 `makerworld_browser_client.py` 的 BrowserTransport 调用对应 CloakBrowser profile 的 MakerWorld/Bambu 控制面；页面和 JSON 载荷由 `makerworld_pipeline/` 编排、`makerworld_parsers/` 解析。
 - 下载图片、评论、附件、打印配置、3MF 文件。
 - 维护缺失 3MF 列表、下载限额、防重复入队和失败原因。
 - 支持重建模型索引、修复 3MF 映射。
@@ -42,9 +42,16 @@
 - `normalize_source_url()`
 - `makerworld_browser_get()` / `makerworld_browser_get_text()` / `makerworld_browser_get_json()`
 - `browser_authorize_3mf_download()`
-- `fetch_with_scrapling()` / Scrapling helper
+- `AssetDownloader` / `download_file()` / `download_with_fresh_session()`
 - `reserve_three_mf_download_slot()`
 - `inspect_3mf_file()` / `resolve_model_instance_files()`
+
+### MakerWorld 传输边界
+
+- `makerworld_browser_client.py` 是服务层唯一允许调用 `browser_fetch()` 的客户端。MakerWorld 的页面和 JSON 控制面请求必须经由此客户端，供 `makerworld_pipeline/` 使用。
+- `makerworld_parsers/` 只负责 URL、HTML 和 JSON 载荷解析，不得依赖网络客户端或状态存储。
+- `AssetDownloader` 保持图片、附件和已取得签名直链 `3MF` 的 `requests` 流式下载通道；它不是控制面 BrowserTransport 的例外实现。
+- `batch_discovery.py` 仅保留发现入口的兼容 re-export；`legacy_archiver.py` 保留离线页面重建、归档目录整理及归档入口兼容 facade，不再负责 MakerWorld 控制面编排。
 
 ## 数据和目录
 
@@ -61,7 +68,7 @@
 ## 常用测试命令
 
 ```bash
-.venv/bin/python -m unittest tests.test_batch_discovery tests.test_legacy_archiver_validation tests.test_legacy_archiver_three_mf_wait tests.test_scrapling_fetch tests.test_missing_3mf tests.test_three_mf_quota tests.test_process_jobs tests.test_asset_sync
+.venv/bin/python -m pytest tests/test_makerworld_transport_boundary.py tests/test_process_jobs.py tests/test_batch_discovery.py tests/test_subscriptions.py tests/test_source_refresh.py tests/test_source_library.py -q
 ```
 
 ## 修改时不能破坏
@@ -71,7 +78,7 @@
 - CloakBrowser `5xx`、CDP 超时和断开按网络错误重试；只有真实 `401/403`、登录页、Cloudflare challenge 或验证载荷才能更新账号/gate 状态。
 - 普通页面抓取和 3MF 授权遇到瞬时 CDP 超时时只能断开并重连，不得停止共享 profile；只有显式登录态同步/人工恢复流程可以在平台级锁内重启一次 profile。
 - 图片、附件和已取得签名直链的 `3MF` 必须保留普通下载器直连，不得把大文件塞进浏览器通道；真实 `3MF` 点击授权不得内部重复。
-- Scrapling 只保留既有辅助抓取和解析职责；fallback 要有日志 trace，但不要泄露 Cookie/Token。
+- 不得绕过 BrowserTransport 以 Scrapling 或 `requests` 承担 MakerWorld 控制面抓取；静态资源下载继续使用 AssetDownloader，日志不得泄露 Cookie/Token。
 - 批量发现结果要和源端总数形成闭环；数量不匹配时应保留状态并提示，不要误归档或误标删除。
 - 同一任务不能重复入队；缺失 3MF 重试也要检查已排队任务。
 - 3MF 每日/站点限额命中后要暂停自动重试，避免每天半夜反复触发上限。
@@ -86,9 +93,12 @@
 
 - `app/services/archive_worker.py`
 - `app/services/process_jobs.py`
-- `app/services/legacy_archiver.py`
-- `app/services/batch_discovery.py`
-- `app/services/scrapling_fetch.py`
+- `app/services/makerworld_pipeline/`
+- `app/services/makerworld_parsers/`
+- `app/services/makerworld_browser_client.py`
+- `app/services/asset_downloader.py`
+- `app/services/legacy_archiver.py`（兼容 facade 与离线归档工具）
+- `app/services/batch_discovery.py`（兼容 re-export）
 - `app/services/three_mf.py`
 - `app/services/three_mf_quota.py`
 - `app/services/archive_repair.py`

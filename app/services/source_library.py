@@ -36,8 +36,8 @@ from app.services.catalog import (
     get_decorated_models,
     get_decorated_models_signature,
 )
-from app.services.cookie_utils import sanitize_cookie_header
-from app.services.legacy_archiver import fetch_html_with_browser, parse_cookies
+from app.services.cookie_utils import parse_cookie_values, sanitize_cookie_header
+from app.services.makerworld_pipeline.archive import fetch_html_with_browser
 from app.services.makerworld_parsers.model import extract_next_data
 from app.services.proxy_policy import proxy_mapping, temporary_proxy_env
 from app.services.state_events import publish_state_event
@@ -834,7 +834,7 @@ def _fetch_listing_html(url: str, raw_cookie: str, proxy_config=None) -> str:
             )
         }
     )
-    session.cookies.update(parse_cookies(raw_cookie))
+    session.cookies.update(parse_cookie_values(raw_cookie))
     session.proxies.update(proxy_mapping(proxy_config, url))
     html_text = fetch_html_with_browser(session, url, raw_cookie) or ""
     if not html_text:
