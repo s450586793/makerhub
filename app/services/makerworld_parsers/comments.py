@@ -223,8 +223,9 @@ def _merge_threaded_comment_list(existing_items: list[dict], fresh_items: list[d
             continue
         key = _comment_identity_key(normalized)
         if key in by_key:
+            merged_item = _merge_comment_items(by_key[key], normalized)
             by_key[key].clear()
-            by_key[key].update(_merge_comment_items(by_key[key], normalized))
+            by_key[key].update(merged_item)
         else:
             merged.append(normalized)
             by_key[key] = normalized
@@ -235,9 +236,8 @@ def _normalize_comment_candidate(node: dict, *, replies: Optional[list[dict]] = 
     if not isinstance(node, dict):
         return None
     strong = any(key in node for key in _COMMENT_STRONG_MARKER_KEYS)
-    has_identifier = any(key in node for key in ("id", "commentId", "rootCommentId"))
     weak = any(key in node for key in _COMMENT_WEAK_MARKER_KEYS)
-    if not (strong or weak or has_identifier) or any(key in node for key in ("designExtension", "coverUrl", "downloadCount", "printCount", "instances")):
+    if not (strong or weak) or any(key in node for key in ("designExtension", "coverUrl", "downloadCount", "printCount", "instances")):
         return None
     content_keys = ("commentContent", "content", "comment", "message", "text", "body", "description") if strong else ("commentContent", "content", "comment", "message", "text", "body")
     content = next((_comment_text_value(node.get(key)) for key in content_keys if _comment_text_value(node.get(key))), "")
@@ -311,8 +311,9 @@ def _collect_comment_tree(node: object, seen: dict[str, dict], depth: int = 0) -
         return None, False
     comment_id = str(comment.get("id") or "").strip()
     if comment_id and comment_id in seen:
+        merged_comment = _merge_comment_items(seen[comment_id], comment)
         seen[comment_id].clear()
-        seen[comment_id].update(_merge_comment_items(seen[comment_id], comment))
+        seen[comment_id].update(merged_comment)
         return seen[comment_id], False
     if comment_id:
         seen[comment_id] = comment
@@ -373,8 +374,9 @@ def normalize_threaded_comments(comment_items: list[dict] | None) -> list[dict]:
         normalized["replies"] = _merge_threaded_comment_list([], _comment_reply_items(item))
         normalized["replyCount"] = max(len(normalized["replies"]), _comment_reply_count(normalized))
         if key in roots_by_key:
+            merged_root = _merge_comment_items(roots_by_key[key], normalized)
             roots_by_key[key].clear()
-            roots_by_key[key].update(_merge_comment_items(roots_by_key[key], normalized))
+            roots_by_key[key].update(merged_root)
         else:
             roots.append(normalized)
             roots_by_key[key] = normalized

@@ -50,6 +50,7 @@ from app.services.makerworld_parsers.comments import (
     extract_comment_list_items as _extract_comment_list_items,
     extract_comment_replies as _extract_comment_replies_from_payload,
     extract_comment_sections as _extract_comment_sections,
+    normalize_threaded_comments,
     resolve_comment_count as _resolved_comment_count,
 )
 from app.services.profile_rating import normalize_profile_rating
@@ -1620,7 +1621,7 @@ def _count_comment_threads(items: List[dict]) -> int:
     return total
 
 
-def normalize_threaded_comments(comment_items: Optional[List[dict]]) -> List[dict]:
+def _legacy_normalize_threaded_comments(comment_items: Optional[List[dict]]) -> List[dict]:
     roots: List[dict] = []
     roots_by_key: dict[str, dict] = {}
     pending_replies: dict[str, List[dict]] = {}
