@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.services import legacy_archiver
+from app.services.asset_downloader import AssetDownloadError
 from app.services.makerworld_browser_client import MakerWorldBrowserError
 
 
@@ -238,6 +239,21 @@ class LegacyArchiverValidationTest(unittest.TestCase):
                     "https://makerworld.com.cn/zh/models/2416065",
                     "token=abc",
                 )
+
+    def test_legacy_download_file_keeps_static_failures_outside_browser_errors(self):
+        signed = "https://cdn.example.test/file.3mf?token=secret&signature=hidden"
+
+        class Session:
+            def get(self, *_args, **_kwargs):
+                raise TimeoutError("download timed out")
+
+        with TemporaryDirectory() as temp_dir:
+            with self.assertRaises(AssetDownloadError) as caught:
+                legacy_archiver.download_file(Session(), signed, Path(temp_dir) / "file.3mf")
+
+        self.assertNotIsInstance(caught.exception, MakerWorldBrowserError)
+        self.assertNotIn("secret", str(caught.exception))
+        self.assertNotIn("signature", str(caught.exception))
 
     def test_archive_model_reports_makerworld_404_page_as_source_deleted(self):
         makerworld_404_html = """

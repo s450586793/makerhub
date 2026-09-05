@@ -6,6 +6,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
@@ -21,8 +22,17 @@ FAKE_THREE_MF_DOWNLOAD_URL_PREFIX = "makerhub://fake-3mf/"
 FAKE_THREE_MF_DOWNLOAD_MESSAGE = "本地 Docker 已启用 3MF 假下载，不会请求 MakerWorld 实际文件。"
 
 
+class AssetDownloadError(RuntimeError):
+    pass
+
+
 def log(*args):
     print("[MW-FETCH]", *args)
+
+
+def safe_asset_url(url: str) -> str:
+    parsed = urlsplit(str(url or ""))
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
 
 
 def fake_three_mf_downloads_enabled() -> bool:
@@ -109,7 +119,7 @@ def download_file(
     dest.parent.mkdir(parents=True, exist_ok=True)
     temp_dest = dest.with_name(f"{dest.name}.{os.getpid()}.{threading.get_ident()}.part")
     started_at = time.monotonic()
-    log("开始下载：", url, "->", dest)
+    log("开始下载：", safe_asset_url(url), "->", dest)
     try:
         with session.get(url, timeout=timeout, stream=True) as resp:
             resp.raise_for_status()
@@ -121,12 +131,14 @@ def download_file(
                         continue
                     f.write(chunk)
         temp_dest.replace(dest)
-    except Exception:
+    except Exception as exc:
         try:
             if temp_dest.exists():
                 temp_dest.unlink()
         except Exception:
             pass
+        if isinstance(exc, (requests.RequestException, TimeoutError)):
+            raise AssetDownloadError(f"静态资源下载失败：{safe_asset_url(url)}") from exc
         raise
     log("已下载：", dest)
 
@@ -139,7 +151,7 @@ def download_with_fresh_session(
     download_func: Callable[..., None] | None = None,
 ) -> None:
     active_download = download_func or download_file
-    with resource_slot("comment_assets", detail=url):
+    with resource_slot("comment_assets", detail=safe_asset_url(url)):
         if type(base_session) is not requests.Session:
             active_download(
                 base_session,

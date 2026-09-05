@@ -27,11 +27,38 @@ def test_download_file_removes_partial_file_on_stream_failure(tmp_path):
         def get(self, *_args, **_kwargs):
             return Response()
 
-    with pytest.raises(requests.RequestException):
+    with pytest.raises(asset_downloader.AssetDownloadError):
         download_file(Session(), "https://cdn.example.test/asset.bin", destination)
 
     assert not destination.exists()
     assert list(tmp_path.glob("*.part")) == []
+
+
+def test_download_error_redacts_signed_query(tmp_path):
+    signed = "https://cdn.example.test/file.3mf?token=secret&signature=hidden"
+
+    class Response:
+        status_code = 403
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def raise_for_status(self):
+            raise requests.HTTPError("403 for signed URL")
+
+    class Session:
+        def get(self, *_args, **_kwargs):
+            return Response()
+
+    with pytest.raises(asset_downloader.AssetDownloadError) as caught:
+        download_file(Session(), signed, tmp_path / "file.3mf")
+
+    assert "secret" not in str(caught.value)
+    assert "signature" not in str(caught.value)
+    assert "https://cdn.example.test/file.3mf" in str(caught.value)
 
 
 def test_run_asset_tasks_applies_successes_caps_workers_and_reports_failures(monkeypatch):
