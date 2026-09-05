@@ -1,10 +1,9 @@
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import requests
 
-from app.services.asset_downloader import download_file
 from app.services.makerworld_browser_client import (
     MakerWorldBrowserError,
     MakerWorldBrowserResponse,
@@ -118,19 +117,70 @@ def test_archive_pipeline_calls_browser_authorizer_at_most_once_per_instance():
 
 def test_archive_does_not_send_signed_asset_through_browser(tmp_path):
     signed_url = "https://cdn.example.test/model.3mf?signature=secret"
+    design = {
+        "id": 129,
+        "title": "Signed 3MF",
+        "instances": [{"id": 790, "title": "Profile"}],
+    }
+    html = (
+        '<script id="__NEXT_DATA__" type="application/json">'
+        + json.dumps({"props": {"pageProps": {"design": design}}})
+        + "</script>"
+    )
+    browser_urls = []
+    downloader_urls = []
 
-    response = MagicMock()
-    response.__enter__.return_value = response
-    response.raise_for_status.return_value = None
-    response.iter_content.return_value = [b"PK\x03\x04valid-3mf"]
-    session = MagicMock()
-    session.get.return_value = response
+    def fetch_signed_url(url, **_kwargs):
+        browser_urls.append(url)
+        return {"name": "model.3mf", "downloadUrl": signed_url}
 
-    with patch("app.services.makerworld_browser_client.makerworld_browser_get") as browser:
-        download_file(session, signed_url, tmp_path / "model.3mf")
+    def write_download(_session, url, destination, **_kwargs):
+        downloader_urls.append(url)
+        destination.write_bytes(b"PK\x03\x04valid-3mf")
 
-    browser.assert_not_called()
-    assert (tmp_path / "model.3mf").read_bytes().startswith(b"PK")
+    with (
+        patch.dict("os.environ", {"MAKERHUB_FAKE_THREE_MF_DOWNLOADS": "false"}),
+        patch(
+            "app.services.makerworld_pipeline.archive.fetch_html_with_browser",
+            return_value=html,
+        ),
+        patch(
+            "app.services.makerworld_pipeline.archive.reserve_three_mf_download_slot",
+            return_value={"allowed": True},
+        ) as reserve_slot,
+        patch(
+            "app.services.makerworld_pipeline.archive.makerworld_browser_get_json",
+            side_effect=fetch_signed_url,
+        ),
+        patch("app.services.makerworld_pipeline.archive._wait_before_three_mf_download", return_value=0),
+        patch("app.services.makerworld_pipeline.archive.browser_authorize_3mf_download") as authorize,
+        patch.object(legacy_archiver, "download_file", side_effect=write_download),
+        patch.object(legacy_archiver, "_wait_before_three_mf_download", return_value=0),
+    ):
+        result = archive_model(
+            url="https://makerworld.com.cn/zh/models/129",
+            cookie="token=ok",
+            download_dir=tmp_path / "archive",
+            logs_dir=tmp_path / "logs",
+            download_assets=False,
+            collect_comments_data=False,
+            rebuild_archive=True,
+            browser_three_mf_authorization=False,
+        )
+
+    instance = result["instances"][0]
+    downloaded_file = Path(result["work_dir"]) / "instances" / instance["fileName"]
+    assert len(browser_urls) == 1
+    assert "/instance/790/f3mf" in browser_urls[0]
+    assert signed_url not in browser_urls
+    assert downloader_urls == [signed_url]
+    assert instance["downloadUrl"] == signed_url
+    assert downloaded_file.is_file()
+    assert downloaded_file.read_bytes().startswith(b"PK\x03\x04")
+    assert result["stats"]["instances"]["api_fetch_attempts"] == 1
+    assert result["stats"]["instances"]["three_mf_downloaded"] == 1
+    reserve_slot.assert_called_once()
+    authorize.assert_not_called()
 
 
 def test_archive_pipeline_default_comments_path_has_no_missing_globals(tmp_path):
