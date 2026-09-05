@@ -19,6 +19,7 @@ from app.services.makerworld_parsers.common import (
     extract_model_id,
     normalize_model_url,
     normalize_source_url,
+    platform_from_url,
 )
 from app.services.makerworld_parsers.listing import (
     _coerce_numeric_string,
@@ -45,7 +46,13 @@ from app.services.makerworld_parsers.listing import (
     extract_total_count as _extract_total_count,
     extract_user_info_from_next_data as _extract_user_info_from_next_data,
 )
-from app.services.makerworld_parsers.model import extract_next_data, unwrap_design_payload
+from app.services.makerworld_parsers.model import (
+    append_api_base_candidate,
+    design_payload_error,
+    extract_next_data,
+    normalize_design_payload_identity,
+    unwrap_design_payload,
+)
 from app.services.makerworld_browser_client import (
     MakerWorldBrowserError,
     makerworld_browser_get_json,
@@ -96,8 +103,19 @@ def _browser_control_lock(url: str) -> threading.RLock:
         return _BROWSER_CONTROL_LOCKS.setdefault(platform, threading.RLock())
 
 
+def _session_cookie_header(session: requests.Session) -> str:
+    try:
+        return "; ".join(
+            f"{cookie.name}={cookie.value}"
+            for cookie in session.cookies
+            if getattr(cookie, "name", "") and getattr(cookie, "value", "") is not None
+        )
+    except Exception:
+        return ""
+
+
 def _fetch_listing_html(session: requests.Session, page_url: str, raw_cookie: str) -> str:
-    cookie_header = sanitize_cookie_header(raw_cookie)
+    cookie_header = sanitize_cookie_header(raw_cookie) or _session_cookie_header(session)
     headers = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
@@ -1598,17 +1616,85 @@ def _fetch_sample_design(
     design_id = extract_model_id(model_url)
     if not design_id:
         return None
-    for path in (f"/design/{design_id}", f"/design/{design_id}/detail"):
-        payload = _api_get_json(
-            session,
-            source_url=source_url,
-            raw_cookie=raw_cookie,
-            service_name="design-service",
-            path=path,
-        )
+
+    parsed = urlparse(model_url)
+    origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else "https://makerworld.com.cn"
+    platform = platform_from_url(model_url)
+    bases: list[str] = []
+    if platform == "global":
+        append_api_base_candidate(bases, "https://api.bambulab.com", platform)
+    elif platform == "cn":
+        append_api_base_candidate(bases, "https://api.bambulab.cn", platform)
+    else:
+        append_api_base_candidate(bases, "https://api.bambulab.cn", platform)
+        append_api_base_candidate(bases, "https://api.bambulab.com", platform)
+    append_api_base_candidate(bases, _origin_from_url(source_url), platform)
+    append_api_base_candidate(bases, origin, platform)
+
+    endpoints: list[str] = []
+    for base in bases:
+        if urlparse(base).netloc.lower().startswith("api.bambulab."):
+            path_templates = (
+                "/v1/design-service/design/{id}",
+                "/v1/design-service/design/{id}/detail",
+                "/v1/design-service/design/{id}/detail?source=web",
+                "/v1/design-service/design/{id}?lang=zh",
+            )
+        else:
+            path_templates = (
+                "/api/v1/design-service/design/{id}",
+                "/api/v1/design-service/design/{id}/detail",
+                "/api/v1/design-service/design/{id}/detail?source=web",
+                "/api/v1/design-service/design/{id}?lang=zh",
+                "/v1/design-service/design/{id}",
+                "/v1/design-service/design/{id}/detail",
+            )
+        for path in path_templates:
+            endpoint = f"{base.rstrip('/')}{path.format(id=design_id)}"
+            if endpoint not in endpoints:
+                endpoints.append(endpoint)
+
+    cookie_header = sanitize_cookie_header(raw_cookie) or _session_cookie_header(session)
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Referer": model_url,
+        "User-Agent": session.headers.get("User-Agent", "Mozilla/5.0 (MW-Fetcher)"),
+    }
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+
+    for endpoint in endpoints:
+        try:
+            with _browser_control_lock(model_url):
+                payload = makerworld_browser_get_json(
+                    endpoint,
+                    raw_cookie=cookie_header,
+                    headers=headers,
+                    session=session,
+                    allow_non_json=True,
+                )
+        except MakerWorldBrowserError as exc:
+            _append_discovery_debug(
+                "author_uid_sample_api_error",
+                api_url=endpoint,
+                model_url=model_url,
+                error=str(exc),
+            )
+            continue
         design = unwrap_design_payload(payload)
-        if isinstance(design, dict):
-            return design
+        if not isinstance(design, dict):
+            continue
+        payload_error = design_payload_error(design, model_url)
+        if payload_error:
+            _append_discovery_debug(
+                "author_uid_sample_invalid_design",
+                api_url=endpoint,
+                model_url=model_url,
+                error=payload_error,
+            )
+            continue
+        normalize_design_payload_identity(design, model_url)
+        return design
     return None
 
 

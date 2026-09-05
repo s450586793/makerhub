@@ -225,6 +225,113 @@ class BatchDiscoveryTest(unittest.TestCase):
 
         self.assertIn("__NEXT_DATA__", html)
 
+    def test_fetch_listing_html_uses_session_cookie_when_raw_cookie_is_empty(self):
+        session = requests.Session()
+        session.cookies.set("token", "session-token")
+        captured = {}
+
+        def fake_browser_get(_url, **kwargs):
+            captured.update(kwargs)
+            return "<html>ok</html>"
+
+        with patch.object(batch_discovery, "makerworld_browser_get_text", side_effect=fake_browser_get):
+            html = batch_discovery._fetch_listing_html(
+                session,
+                "https://makerworld.com.cn/zh/@ace/upload",
+                "",
+            )
+
+        self.assertEqual(html, "<html>ok</html>")
+        self.assertEqual(captured["raw_cookie"], "token=session-token")
+        self.assertEqual(captured["headers"]["Cookie"], "token=session-token")
+
+    def test_fetch_sample_design_rejects_wrong_id_and_uses_next_candidate(self):
+        payloads = [
+            {"id": 999, "title": "Wrong", "coverUrl": "https://example.test/wrong.jpg", "instances": []},
+            {"id": "2416065", "title": "Correct", "coverUrl": "https://example.test/ok.jpg", "instances": []},
+        ]
+
+        with patch.object(batch_discovery, "makerworld_browser_get_json", side_effect=payloads):
+            design = batch_discovery._fetch_sample_design(
+                requests.Session(),
+                "https://makerworld.com.cn/zh/@ace/upload",
+                "token=ok",
+                "https://makerworld.com.cn/zh/models/2416065",
+            )
+
+        self.assertEqual(design["id"], 2416065)
+        self.assertEqual(design["title"], "Correct")
+        self.assertEqual(design["url"], "https://makerworld.com.cn/zh/models/2416065")
+
+    def test_fetch_sample_design_continues_after_invalid_design_dict(self):
+        payloads = [
+            {"id": 2416065, "title": "", "coverUrl": "https://example.test/invalid.jpg", "instances": []},
+            {"id": 2416065, "title": "Valid", "coverUrl": "https://example.test/ok.jpg", "instances": []},
+        ]
+
+        with patch.object(batch_discovery, "makerworld_browser_get_json", side_effect=payloads):
+            design = batch_discovery._fetch_sample_design(
+                requests.Session(),
+                "https://makerworld.com.cn/zh/@ace/upload",
+                "token=ok",
+                "https://makerworld.com.cn/zh/models/2416065",
+            )
+
+        self.assertEqual(design["title"], "Valid")
+
+    def test_fetch_sample_design_probes_api_then_site_query_endpoints(self):
+        calls = []
+
+        def fake_browser_get(url, **_kwargs):
+            calls.append(url)
+            return None
+
+        with patch.object(batch_discovery, "makerworld_browser_get_json", side_effect=fake_browser_get):
+            design = batch_discovery._fetch_sample_design(
+                requests.Session(),
+                "https://makerworld.com/zh/@ace/upload",
+                "token=ok",
+                "https://makerworld.com/zh/models/2416065",
+            )
+
+        self.assertIsNone(design)
+        self.assertEqual(
+            calls,
+            [
+                "https://api.bambulab.com/v1/design-service/design/2416065",
+                "https://api.bambulab.com/v1/design-service/design/2416065/detail",
+                "https://api.bambulab.com/v1/design-service/design/2416065/detail?source=web",
+                "https://api.bambulab.com/v1/design-service/design/2416065?lang=zh",
+                "https://makerworld.com/api/v1/design-service/design/2416065",
+                "https://makerworld.com/api/v1/design-service/design/2416065/detail",
+                "https://makerworld.com/api/v1/design-service/design/2416065/detail?source=web",
+                "https://makerworld.com/api/v1/design-service/design/2416065?lang=zh",
+                "https://makerworld.com/v1/design-service/design/2416065",
+                "https://makerworld.com/v1/design-service/design/2416065/detail",
+            ],
+        )
+
+    def test_fetch_sample_design_uses_model_referer_and_cookie_headers(self):
+        captured = {}
+        model_url = "https://makerworld.com.cn/zh/models/2416065"
+
+        def fake_browser_get(_url, **kwargs):
+            captured.update(kwargs)
+            return {"id": 2416065, "title": "Model", "coverUrl": "https://example.test/ok.jpg", "instances": []}
+
+        with patch.object(batch_discovery, "makerworld_browser_get_json", side_effect=fake_browser_get):
+            design = batch_discovery._fetch_sample_design(
+                requests.Session(),
+                "https://makerworld.com.cn/zh/@ace/upload",
+                "token=access-token",
+                model_url,
+            )
+
+        self.assertEqual(design["title"], "Model")
+        self.assertEqual(captured["raw_cookie"], "token=access-token")
+        self.assertEqual(captured["headers"]["Cookie"], "token=access-token")
+        self.assertEqual(captured["headers"]["Referer"], model_url)
+
     def test_api_get_json_uses_cloakbrowser_without_requests(self):
         calls = []
 

@@ -19,3 +19,13 @@
 
 - 未修改数据库 schema、任务队列、账号 Gate、每日限额、历史数据、目录或 `online_accounts` 的 POST/ticket 流程。
 - 未触碰 `videos/makerhub-intro/output/`。
+
+## Review Round 1
+
+- `_fetch_sample_design()` 恢复旧 `fetch_design_from_api()` 的完整候选顺序，包括 API、站点、`source=web` 和 `lang=zh` endpoint。
+- 模型抽样请求恢复模型页 Referer、raw/session Cookie header 语义，并继续保持 BrowserTransport-only。
+- 抽样 payload 通过 `design_payload_error()` 校验模型 ID 与标题；无效候选继续探测，成功结果通过 `normalize_design_payload_identity()` 归一化。
+- HTML 控制请求在 raw Cookie 为空时恢复 `session.cookies` header fallback。
+- `batch_discovery` facade 恢复 `normalize_source_url`、`normalize_model_url`、`extract_model_id` 的同对象兼容导出。
+- 新增错误 ID、无效 dict、site/query endpoint、Referer/Cookie、session-only Cookie 与 facade 对象身份回归测试。
+- 聚焦及相关 parser/compat 回归：`184 passed, 4 subtests passed`。

@@ -1,5 +1,6 @@
 """MakerWorld discovery compatibility facade."""
 
+from app.services.makerworld_parsers.common import extract_model_id, normalize_model_url, normalize_source_url
 from app.services.makerworld_pipeline.discovery import (
     default_favorites_source as default_favorites_subscription_source,
     discover_account_home_summary as discover_cookie_account_home_summary,
@@ -19,5 +20,8 @@ __all__ = [
     "discover_cookie_followed_authors",
     "discover_cookie_followed_authors_from_page",
     "discover_cookie_followed_collections",
+    "extract_model_id",
+    "normalize_model_url",
+    "normalize_source_url",
     "resolve_batch_source_name",
 ]

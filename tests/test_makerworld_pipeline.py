@@ -5,12 +5,19 @@ from app.services.makerworld_browser_client import (
     MakerWorldBrowserError,
     MakerWorldBrowserResponse,
 )
+from app.services.makerworld_parsers import common as parser_common
 from app.services.makerworld_pipeline import (
     archive_model,
     discover_source,
     source_is_deleted,
 )
 from app.services import batch_discovery
+
+
+def test_batch_discovery_facade_preserves_url_helper_identity():
+    assert getattr(batch_discovery, "normalize_source_url", None) is parser_common.normalize_source_url
+    assert getattr(batch_discovery, "normalize_model_url", None) is parser_common.normalize_model_url
+    assert getattr(batch_discovery, "extract_model_id", None) is parser_common.extract_model_id
 
 
 def test_source_is_deleted_uses_browser_response():
