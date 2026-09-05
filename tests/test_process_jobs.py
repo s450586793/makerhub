@@ -137,7 +137,7 @@ class ProcessJobsTest(unittest.TestCase):
         }
 
         try:
-            with patch.object(process_jobs, "discover_batch_model_urls", side_effect=fake_discover), \
+            with patch.object(process_jobs, "discover_source", side_effect=fake_discover), \
                     patch.object(process_jobs, "temporary_proxy_env") as proxy_env:
                 proxy_env.return_value.__enter__.return_value = None
                 proxy_env.return_value.__exit__.return_value = False
@@ -164,7 +164,7 @@ class ProcessJobsTest(unittest.TestCase):
             return {"ok": True}
 
         try:
-            with patch.object(process_jobs, "legacy_archive_model", side_effect=fake_archive_model), \
+            with patch.object(process_jobs, "archive_model", side_effect=fake_archive_model), \
                     patch.object(process_jobs, "temporary_proxy_env") as proxy_env, \
                     patch.object(process_jobs, "resource_slot") as resource_slot:
                 proxy_env.return_value.__enter__.return_value = None
@@ -199,7 +199,7 @@ class ProcessJobsTest(unittest.TestCase):
             return {"ok": True}
 
         try:
-            with patch.object(process_jobs, "legacy_archive_model", side_effect=fake_archive_model), \
+            with patch.object(process_jobs, "archive_model", side_effect=fake_archive_model), \
                     patch.object(process_jobs, "temporary_proxy_env") as proxy_env, \
                     patch.object(process_jobs, "resource_slot") as resource_slot:
                 proxy_env.return_value.__enter__.return_value = None

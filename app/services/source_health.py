@@ -346,7 +346,6 @@ def _probe_auth_endpoints(
     if not probes:
         return _empty_cookie_auth_payload(platform, "http_error", "连接异常", "缺少认证探针配置。")
 
-    session = _make_session()
     proxies = _build_proxy_mapping(
         proxy_config,
         platform=platform,
@@ -355,40 +354,35 @@ def _probe_auth_endpoints(
     headers = _build_request_headers(PLATFORM_ORIGINS.get(platform, ""), raw_cookie)
     states: list[str] = []
     results: list[dict[str, Any]] = []
-    try:
-        for name, url in probes:
-            started = time.perf_counter()
-            try:
-                response = session.get(
-                    url,
-                    headers=headers,
-                    proxies=proxies or None,
-                    timeout=(6, 12),
-                    allow_redirects=False,
-                )
-                elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
-                result = _auth_probe_result_from_response(
-                    name=name,
-                    url=url,
-                    status_code=int(response.status_code),
-                    text=response.text or "",
-                    headers=response.headers,
-                    elapsed_ms=elapsed_ms,
-                )
-            except Exception as exc:
-                elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
-                result = {
-                    "target": name,
-                    "url": url,
-                    "ok": False,
-                    "elapsed_ms": elapsed_ms,
-                    "failure_kind": "http_error",
-                    "error": _safe_error_message(exc),
-                }
-            results.append(result)
-            states.append(_classify_auth_probe_result(result))
-    finally:
-        session.close()
+    for name, url in probes:
+        started = time.perf_counter()
+        try:
+            response = makerworld_browser_get(
+                url,
+                raw_cookie=raw_cookie,
+                headers=headers,
+            )
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+            result = _auth_probe_result_from_response(
+                name=name,
+                url=url,
+                status_code=int(response.status_code),
+                text=response.text or "",
+                headers=response.headers,
+                elapsed_ms=elapsed_ms,
+            )
+        except Exception as exc:
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+            result = {
+                "target": name,
+                "url": url,
+                "ok": False,
+                "elapsed_ms": elapsed_ms,
+                "failure_kind": "http_error",
+                "error": _safe_error_message(exc),
+            }
+        results.append(result)
+        states.append(_classify_auth_probe_result(result))
 
     success_count = sum(1 for item in results if item.get("ok"))
     if "ok" in states:

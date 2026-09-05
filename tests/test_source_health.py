@@ -458,64 +458,42 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(result["failure_kind"], "verification_required")
         self.assertIn("验证页面", result["error"])
 
-    def test_auth_probe_uses_direct_session_with_platform_proxy(self):
-        class RecordingSession:
-            def __init__(self):
-                self.calls = []
-                self.closed = False
-
-            def get(self, url, **kwargs):
-                self.calls.append((url, kwargs))
-                return SimpleNamespace(
-                    status_code=200,
-                    text='{"uid": 1, "name": "ok"}',
-                    headers={"content-type": "application/json"},
-                )
-
-            def close(self):
-                self.closed = True
-
-        proxy = SimpleNamespace(
-            enabled=True,
-            http_proxy="http://proxy.local:7890",
-            https_proxy="http://proxy.local:7891",
-        )
-        session = RecordingSession()
-        with patch.object(source_health, "_make_session", return_value=session), patch.object(
-            source_health,
-            "makerworld_browser_get",
-            side_effect=AssertionError("auth API probes must keep their direct request path"),
-        ):
-            payload = source_health._probe_auth_endpoints("global", "token=abc", proxy)
-
-        self.assertTrue(payload["ok"])
-        self.assertTrue(payload["used_proxy"])
-        self.assertEqual(len(session.calls), 2)
-        for _url, kwargs in session.calls:
-            self.assertEqual(
-                kwargs["proxies"],
-                {"http": "http://proxy.local:7890", "https": "http://proxy.local:7891"},
-            )
-            self.assertIs(kwargs.get("allow_redirects"), False)
-            self.assertIn("Cookie", kwargs["headers"])
-        self.assertTrue(session.closed)
-
-    def test_auth_probe_preserves_upstream_unauthorized_status(self):
-        class UnauthorizedSession:
-            def get(self, _url, **_kwargs):
-                return SimpleNamespace(
-                    status_code=401,
-                    text='{"error": "unauthorized"}',
-                    headers={"content-type": "application/json"},
-                )
+    def test_auth_probe_uses_browser_client_without_session_get(self):
+        class FailingSession:
+            def get(self, *_args, **_kwargs):
+                raise AssertionError("account probes must use BrowserTransport")
 
             def close(self):
                 return None
 
-        with patch.object(source_health, "_make_session", return_value=UnauthorizedSession()), patch.object(
+        response = SimpleNamespace(
+            status_code=200,
+            text='{"uid": 1, "name": "ok"}',
+            headers={"content-type": "application/json"},
+            url="https://api.bambulab.com/v1/user-service/my/message/count",
+        )
+        with patch.object(source_health, "_make_session", return_value=FailingSession()), patch.object(
             source_health,
             "makerworld_browser_get",
-            side_effect=AssertionError("auth API probes must keep their direct request path"),
+            return_value=response,
+        ) as browser_get:
+            payload = source_health._probe_auth_endpoints("global", "token=abc", None)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(browser_get.call_count, 2)
+
+    def test_auth_probe_preserves_upstream_unauthorized_status(self):
+        session = SimpleNamespace(close=lambda: None)
+        response = SimpleNamespace(
+            status_code=401,
+            text='{"error": "unauthorized"}',
+            headers={"content-type": "application/json"},
+            url="https://api.bambulab.com/v1/user-service/my/message/count",
+        )
+        with patch.object(source_health, "_make_session", return_value=session), patch.object(
+            source_health,
+            "makerworld_browser_get",
+            return_value=response,
         ):
             payload = source_health._probe_auth_endpoints("global", "token=expired", None)
 
@@ -523,24 +501,20 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual([item["status_code"] for item in payload["results"]], [401, 401])
 
     def test_auth_probe_rejects_redirect_status_as_http_error(self):
-        class RedirectSession:
-            def get(self, _url, **_kwargs):
-                return SimpleNamespace(
-                    status_code=302,
-                    text="",
-                    headers={
-                        "content-type": "text/plain",
-                        "location": "https://makerworld.com/login",
-                    },
-                )
-
-            def close(self):
-                return None
-
-        with patch.object(source_health, "_make_session", return_value=RedirectSession()), patch.object(
+        session = SimpleNamespace(close=lambda: None)
+        response = SimpleNamespace(
+            status_code=302,
+            text="",
+            headers={
+                "content-type": "text/plain",
+                "location": "https://makerworld.com/login",
+            },
+            url="https://api.bambulab.com/v1/user-service/my/message/count",
+        )
+        with patch.object(source_health, "_make_session", return_value=session), patch.object(
             source_health,
             "makerworld_browser_get",
-            side_effect=AssertionError("auth API probes must keep their direct request path"),
+            return_value=response,
         ):
             payload = source_health._probe_auth_endpoints("global", "", None)
 

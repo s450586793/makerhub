@@ -8,11 +8,8 @@ from pathlib import Path
 from queue import Empty
 from typing import Any, Callable, Optional
 
-import requests
-
-from app.services.batch_discovery import discover_batch_model_urls, normalize_source_url
-from app.services.cookie_utils import sanitize_cookie_header
-from app.services.legacy_archiver import archive_model as legacy_archive_model
+from app.services.makerworld_parsers.common import normalize_source_url
+from app.services.makerworld_pipeline import archive_model, discover_source, source_is_deleted
 from app.services.proxy_policy import temporary_proxy_env
 from app.services.resource_limiter import (
     configure_resource_limits,
@@ -96,29 +93,6 @@ def _apply_heavy_job_niceness() -> None:
         os.nice(increment)
     except OSError:
         return
-
-
-def _source_looks_deleted(url: str, cookie: str) -> bool:
-    cookie_header = sanitize_cookie_header(cookie)
-    headers = {
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "User-Agent": "Mozilla/5.0 (Makerhub Worker)",
-    }
-    if cookie_header:
-        headers["Cookie"] = cookie_header
-    try:
-        response = requests.get(
-            normalize_source_url(url),
-            headers=headers,
-            timeout=(6, 12),
-            allow_redirects=True,
-        )
-    except Exception:
-        return False
-    if response.status_code == 404:
-        return True
-    final_url = str(response.url or "")
-    return "/404" in final_url or "not found" in response.text[:400].lower()
 
 
 def _emit(queue, event_type: str, payload: Any) -> None:
@@ -206,7 +180,7 @@ def _run_archive_model_entry(queue, payload: dict[str, Any]) -> None:
 
     try:
         with temporary_proxy_env(payload.get("proxy_config") or {}, url):
-            result = legacy_archive_model(
+            result = archive_model(
                 url=url,
                 cookie=str(payload.get("cookie") or ""),
                 download_dir=Path(str(payload.get("download_dir") or "")),
@@ -252,7 +226,7 @@ def _run_discover_batch_entry(queue, payload: dict[str, Any]) -> None:
 
     try:
         with temporary_proxy_env(payload.get("proxy_config") or {}, url):
-            result = discover_batch_model_urls(
+            result = discover_source(
                 url,
                 str(payload.get("cookie") or ""),
                 max_pages=max_pages,
@@ -274,7 +248,7 @@ def _run_source_deleted_entry(queue, payload: dict[str, Any]) -> None:
     url = str(payload.get("url") or "")
     try:
         with temporary_proxy_env(payload.get("proxy_config") or {}, url):
-            result = _source_looks_deleted(
+            result = source_is_deleted(
                 url,
                 str(payload.get("cookie") or ""),
             )
@@ -472,7 +446,7 @@ def run_archive_model_job(
         proxy_payload = _proxy_config_payload(proxy_config)
         if not _use_subprocess():
             with temporary_proxy_env(proxy_payload, url):
-                return legacy_archive_model(
+                return archive_model(
                     url=url,
                     cookie=cookie,
                     download_dir=Path(download_dir),
@@ -540,7 +514,7 @@ def run_discover_batch_urls_job(
         proxy_payload = _proxy_config_payload(proxy_config)
         if not _use_subprocess():
             with temporary_proxy_env(proxy_payload, url):
-                return discover_batch_model_urls(url, cookie, max_pages=safe_max_pages)
+                return discover_source(url, cookie, max_pages=safe_max_pages)
         return _run_process_job(
             _run_discover_batch_entry,
             {
@@ -557,7 +531,7 @@ def run_source_deleted_check_job(url: str, cookie: str, proxy_config: Any = None
         proxy_payload = _proxy_config_payload(proxy_config)
         if not _use_subprocess():
             with temporary_proxy_env(proxy_payload, url):
-                return _source_looks_deleted(url, cookie)
+                return source_is_deleted(url, cookie)
         result = _run_process_job(
             _run_source_deleted_entry,
             {
