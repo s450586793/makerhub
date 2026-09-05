@@ -46,6 +46,12 @@ from app.services.makerworld_parsers.model import (
     parse_design_id as _parse_design_id,
     unwrap_design_payload as _unwrap_design_payload,
 )
+from app.services.makerworld_parsers.comments import (
+    extract_comment_list_items as _extract_comment_list_items,
+    extract_comment_replies as _extract_comment_replies_from_payload,
+    extract_comment_sections as _extract_comment_sections,
+    resolve_comment_count as _resolved_comment_count,
+)
 from app.services.profile_rating import normalize_profile_rating
 from app.services.resource_limiter import resource_slot
 from app.services.three_mf import (
@@ -2052,7 +2058,7 @@ def _comment_count_from_design(design: dict) -> int:
     )
 
 
-def _resolved_comment_count(
+def _legacy_resolved_comment_count(
     *,
     unique_sections: List[object],
     next_data: dict,
@@ -2179,7 +2185,7 @@ def _extract_comment_reply_payload_has_more(payload: object) -> Optional[bool]:
     return None
 
 
-def _extract_comment_replies_from_payload(payload: object, root_comment_id: str) -> List[dict]:
+def _legacy_extract_comment_replies_from_payload(payload: object, root_comment_id: str) -> List[dict]:
     if not root_comment_id:
         return []
 
@@ -2384,7 +2390,7 @@ def _comment_list_payload_hit_count(payload: object) -> int:
     return 0
 
 
-def _extract_comment_list_items(payload: object) -> List[dict]:
+def _legacy_extract_comment_list_items(payload: object) -> List[dict]:
     comments: List[dict] = []
     seen: dict[str, dict] = {}
     if isinstance(payload, dict) and isinstance(payload.get("hits"), list):
@@ -2598,8 +2604,8 @@ def collect_comments(
     seen: dict[str, dict] = {}
 
     section_lookup_started_at = time.perf_counter()
-    candidate_sections = _extract_comment_candidate_sections(next_data)
-    candidate_sections.extend(_extract_comment_candidate_sections(design))
+    candidate_sections = _extract_comment_sections(next_data)
+    candidate_sections.extend(_extract_comment_sections(design))
     unique_sections: List[object] = []
     seen_sections: set[int] = set()
     for section in candidate_sections:

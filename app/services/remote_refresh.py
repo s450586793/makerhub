@@ -24,6 +24,7 @@ from app.services.archive_worker import (
     _three_mf_limit_message,
     detect_archive_mode,
 )
+from app.services.makerworld_parsers.comments import normalize_threaded_comments
 from app.services.makerworld_parsers.common import normalize_source_url
 from app.services.business_logs import append_business_log, append_structured_log
 from app.services.catalog import (
@@ -33,7 +34,7 @@ from app.services.catalog import (
     release_catalog_memory,
     upsert_archive_snapshot_model,
 )
-from app.services.legacy_archiver import COMMENT_SCHEMA_VERSION, normalize_threaded_comments
+from app.services.legacy_archiver import COMMENT_SCHEMA_VERSION
 from app.services.process_jobs import run_source_deleted_check_job
 from app.services.process_memory import release_process_memory
 from app.services.resource_limiter import resource_snapshot, resource_slot

@@ -24,10 +24,20 @@ from app.services.makerworld_parsers.listing import (
     extract_total_count,
     extract_user_info_from_next_data,
 )
+from app.services.makerworld_parsers.comments import (
+    extract_comment_list_items,
+    extract_comment_replies,
+    extract_comment_sections,
+    normalize_threaded_comments,
+    resolve_comment_count,
+)
 
 __all__ = [
     "append_api_base_candidate",
     "design_payload_error",
+    "extract_comment_list_items",
+    "extract_comment_replies",
+    "extract_comment_sections",
     "extract_account_profile",
     "extract_collection_entries",
     "extract_api_host",
@@ -44,6 +54,8 @@ __all__ = [
     "is_cloudflare_challenge",
     "is_makerworld_not_found_page",
     "normalize_design_payload_identity",
+    "normalize_threaded_comments",
     "parse_design_id",
+    "resolve_comment_count",
     "unwrap_design_payload",
 ]
