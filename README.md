@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.16.26`
+> 当前版本：`v0.17.0`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -359,6 +359,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-09-05 · v0.17.0
+
+- MakerWorld 单模型归档、批量发现和兼容入口统一收敛到同一 Pipeline；页面、列表、评论及 `3MF` 授权等控制请求只通过 CloakBrowser，取得签名地址后的图片、附件和 `3MF` 大文件仍由普通下载器传输。
+- Parser 与 Downloader 已从流程编排中拆分；浏览器、解析和静态下载错误保持明确分类与脱敏边界，成功的单 endpoint 控制请求不会重复发送。
+- Scrapling 运行时实现、分支和旧日志已退场，仅保留一版 `scraping_engine` schema 与旧客户端兼容；数据库 schema、历史配置、归档数据、账号 Gate 和下载限额均未改变。
+
 ### 2026-09-05 · v0.16.26
 
 - 自动迁移旧版本地整理容器路径，确保 Web 上传和 Worker 使用同一个持久化目录；未被后台接管的上传也会明确显示失败，不再停在 35% 后消失。CloakBrowser 短暂故障遗留的 `waiting` 状态也会自动恢复并唤醒归档队列。
@@ -367,12 +373,12 @@ npm --prefix frontend run build
 
 - 单个模型没有可用 `3MF` 下载操作或授权桥接临时失败时，不再把整个站点账号误报为“状态待确认”；真实页面网络错误和成功授权仍会正确更新账号状态。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-09-05 · v0.16.24
 
 - Global profile 的代理确认结果改为跨进程短时复用；归档子进程在代理未变化时直接连接已知 CDP，避免重复查询 CloakBrowser Manager 时被间歇 `HTTP 502` 阻断。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-09-04 · v0.16.23
 

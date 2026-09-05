@@ -1,5 +1,12 @@
 # 更新说明
 
+## 2026-09-05 · v0.17.0
+
+- 单模型归档、批量来源发现及旧兼容入口统一复用 `app.services.makerworld_pipeline`，避免多套流程在请求策略、结果结构和错误语义上继续分叉。
+- MakerWorld 页面、列表、评论和 `3MF` 授权等控制面请求统一只走 CloakBrowser；取得签名 URL 后的图片、附件和 `3MF` 大文件继续由普通 HTTP Downloader 流式传输，不把大文件送入浏览器。
+- Parser 与 Downloader 从 Pipeline 编排中拆分，浏览器故障、解析失败和静态下载错误保持独立、脱敏且可诊断的边界；单 endpoint 成功请求固定只发送一次，临时页面继续由既有回收机制清理。
+- Scrapling 运行时实现、engine 分支和旧日志字段已删除，仅保留一版 `scraping_engine` schema 与旧客户端请求兼容。此次升级不修改数据库 schema、历史配置与归档数据，也不改变账号 Gate、每日下载限额或 Runtime Engine。
+
 ## 2026-09-05 · v0.16.26
 
 - 升级后仍保存 `/app/local`、`/app/archive` 或 `/app/data/archive` 的本地整理配置会自动跟随当前容器共享挂载路径，Web 上传与 Worker 不再写入彼此隔离的临时目录。

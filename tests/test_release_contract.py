@@ -320,7 +320,7 @@ class ReleaseDocumentationContractTest(unittest.TestCase):
 
 
 class AutomaticVerificationReleaseContractTest(unittest.TestCase):
-    def test_v016_rollout_keeps_automatic_verification_opt_in_and_smokes_opencv(self):
+    def test_v017_rollout_keeps_automatic_verification_opt_in_and_smokes_opencv(self):
         env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
         compose_text = (ROOT_DIR / "compose.yaml").read_text(encoding="utf-8")
         compose = yaml.safe_load(compose_text)
@@ -351,13 +351,13 @@ class AutomaticVerificationReleaseContractTest(unittest.TestCase):
         self.assertIn("solve_click_challenge", smoke_command)
         self.assertNotIn("browser", smoke_command.lower())
 
-        self.assertEqual(version, "0.16.26")
+        self.assertEqual(version, "0.17.0")
         self.assertEqual(package["version"], version)
         self.assertEqual(package_lock["version"], version)
         self.assertEqual(package_lock["packages"][""]["version"], version)
-        self.assertIn("> 当前版本：`v0.16.26`", readme)
-        self.assertIn("### 2026-09-05 · v0.16.26", readme)
-        self.assertIn("## 2026-09-05 · v0.16.26", changelog)
+        self.assertIn("> 当前版本：`v0.17.0`", readme)
+        self.assertIn("### 2026-09-05 · v0.17.0", readme)
+        self.assertIn("## 2026-09-05 · v0.17.0", changelog)
         self.assertIn("### 2026-08-28 · v0.16.15", readme)
         self.assertIn("## 2026-08-28 · v0.16.15", changelog)
 

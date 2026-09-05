@@ -1,9 +1,10 @@
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import requests
 
+from app.services.asset_downloader import download_file
 from app.services.makerworld_browser_client import (
     MakerWorldBrowserError,
     MakerWorldBrowserResponse,
@@ -17,6 +18,7 @@ from app.services.makerworld_pipeline import (
 from app.services import batch_discovery, legacy_archiver
 from app.services.makerworld_pipeline import archive as pipeline_archive
 from app.services.makerworld_pipeline.archive import fetch_instance_3mf
+from app.services.makerworld_pipeline.discovery import _api_get_json
 
 
 def test_batch_discovery_facade_preserves_url_helper_identity():
@@ -112,6 +114,23 @@ def test_archive_pipeline_calls_browser_authorizer_at_most_once_per_instance():
     assert name == "demo.3mf"
     assert signed_url.startswith("https://cdn.example.test/demo.3mf")
     assert failure["state"] == "available"
+
+
+def test_archive_does_not_send_signed_asset_through_browser(tmp_path):
+    signed_url = "https://cdn.example.test/model.3mf?signature=secret"
+
+    response = MagicMock()
+    response.__enter__.return_value = response
+    response.raise_for_status.return_value = None
+    response.iter_content.return_value = [b"PK\x03\x04valid-3mf"]
+    session = MagicMock()
+    session.get.return_value = response
+
+    with patch("app.services.makerworld_browser_client.makerworld_browser_get") as browser:
+        download_file(session, signed_url, tmp_path / "model.3mf")
+
+    browser.assert_not_called()
+    assert (tmp_path / "model.3mf").read_bytes().startswith(b"PK")
 
 
 def test_archive_pipeline_default_comments_path_has_no_missing_globals(tmp_path):
@@ -370,3 +389,25 @@ def test_discover_source_fetches_each_candidate_once_and_keeps_result_shape():
             "token=ok",
             max_pages=1,
         ) == result
+
+
+def test_discovery_control_request_count_does_not_double_on_success():
+    payload = {"hits": [{"id": 1001, "title": "A"}], "total": 1}
+    with patch(
+        "app.services.makerworld_pipeline.discovery._service_endpoint_candidates",
+        return_value=["https://api.bambulab.cn/v1/design-service/designs"],
+    ), patch(
+        "app.services.makerworld_pipeline.discovery.makerworld_browser_get_json",
+        return_value=payload,
+    ) as fetch:
+        result = _api_get_json(
+            requests.Session(),
+            "https://makerworld.com.cn/zh/@ace/upload",
+            "",
+            "design-service",
+            "/designs",
+            {"offset": 0, "limit": 20},
+        )
+
+    assert result == payload
+    fetch.assert_called_once()
