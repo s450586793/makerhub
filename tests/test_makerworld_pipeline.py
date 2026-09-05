@@ -116,6 +116,7 @@ def test_archive_pipeline_calls_browser_authorizer_at_most_once_per_instance():
 
 
 def test_archive_does_not_send_signed_asset_through_browser(tmp_path):
+    model_url = "https://makerworld.com.cn/zh/models/129"
     signed_url = "https://cdn.example.test/model.3mf?signature=secret"
     design = {
         "id": 129,
@@ -127,11 +128,18 @@ def test_archive_does_not_send_signed_asset_through_browser(tmp_path):
         + json.dumps({"props": {"pageProps": {"design": design}}})
         + "</script>"
     )
-    browser_urls = []
+    browser_html_urls = []
+    browser_json_urls = []
     downloader_urls = []
 
+    def fetch_model_html(_session, url, _raw_cookie):
+        browser_html_urls.append(url)
+        if url == signed_url:
+            raise AssertionError("signed URL must not enter the HTML browser path")
+        return html
+
     def fetch_signed_url(url, **_kwargs):
-        browser_urls.append(url)
+        browser_json_urls.append(url)
         return {"name": "model.3mf", "downloadUrl": signed_url}
 
     def write_download(_session, url, destination, **_kwargs):
@@ -142,7 +150,7 @@ def test_archive_does_not_send_signed_asset_through_browser(tmp_path):
         patch.dict("os.environ", {"MAKERHUB_FAKE_THREE_MF_DOWNLOADS": "false"}),
         patch(
             "app.services.makerworld_pipeline.archive.fetch_html_with_browser",
-            return_value=html,
+            side_effect=fetch_model_html,
         ),
         patch(
             "app.services.makerworld_pipeline.archive.reserve_three_mf_download_slot",
@@ -158,7 +166,7 @@ def test_archive_does_not_send_signed_asset_through_browser(tmp_path):
         patch.object(legacy_archiver, "_wait_before_three_mf_download", return_value=0),
     ):
         result = archive_model(
-            url="https://makerworld.com.cn/zh/models/129",
+            url=model_url,
             cookie="token=ok",
             download_dir=tmp_path / "archive",
             logs_dir=tmp_path / "logs",
@@ -170,9 +178,15 @@ def test_archive_does_not_send_signed_asset_through_browser(tmp_path):
 
     instance = result["instances"][0]
     downloaded_file = Path(result["work_dir"]) / "instances" / instance["fileName"]
-    assert len(browser_urls) == 1
-    assert "/instance/790/f3mf" in browser_urls[0]
-    assert signed_url not in browser_urls
+    authorize_urls = [
+        str(call.kwargs.get("api_url") or (call.args[1] if len(call.args) > 1 else ""))
+        for call in authorize.call_args_list
+    ]
+    browser_call_urls = [*browser_html_urls, *browser_json_urls, *authorize_urls]
+    assert browser_html_urls == [model_url]
+    assert len(browser_json_urls) == 1
+    assert "/instance/790/f3mf" in browser_json_urls[0]
+    assert signed_url not in browser_call_urls
     assert downloader_urls == [signed_url]
     assert instance["downloadUrl"] == signed_url
     assert downloaded_file.is_file()
