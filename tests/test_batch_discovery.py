@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import requests
 
-from app.services import batch_discovery
+from app.services.makerworld_pipeline import discovery as batch_discovery
 
 
 class BatchDiscoveryTest(unittest.TestCase):
@@ -214,7 +214,7 @@ class BatchDiscoveryTest(unittest.TestCase):
 
         with patch.object(
             batch_discovery,
-            "fetch_html_with_browser",
+            "makerworld_browser_get_text",
             return_value="<html><script id=\"__NEXT_DATA__\"></script></html>",
         ):
             html = batch_discovery._fetch_listing_html(
@@ -339,7 +339,7 @@ class BatchDiscoveryTest(unittest.TestCase):
 
         with patch.object(batch_discovery, "_api_get_json", side_effect=fake_api_get_json), \
                 patch.object(batch_discovery, "_append_discovery_debug"):
-            result = batch_discovery.discover_cookie_followed_authors(
+            result = batch_discovery.discover_followed_authors(
                 "cn",
                 "token=ok",
                 uid="2024907479",
@@ -391,7 +391,7 @@ class BatchDiscoveryTest(unittest.TestCase):
 
         with patch.object(batch_discovery, "_api_get_json", side_effect=fake_api_get_json), \
                 patch.object(batch_discovery, "_append_discovery_debug"):
-            result = batch_discovery.discover_cookie_followed_authors(
+            result = batch_discovery.discover_followed_authors(
                 "cn",
                 "token=ok",
                 uid="2024907479",
@@ -438,7 +438,7 @@ class BatchDiscoveryTest(unittest.TestCase):
 
         with patch.object(batch_discovery, "_api_get_json", side_effect=fake_api_get_json), \
                 patch.object(batch_discovery, "_append_discovery_debug"):
-            result = batch_discovery.discover_cookie_followed_authors(
+            result = batch_discovery.discover_followed_authors(
                 "cn",
                 "token=ok",
                 uid="2024907479",
@@ -508,7 +508,7 @@ class BatchDiscoveryTest(unittest.TestCase):
         self.assertEqual(calls[0]["uid"], "2407765850")
 
     def test_default_favorites_subscription_source_uses_account_handle(self):
-        source = batch_discovery.default_favorites_subscription_source(
+        source = batch_discovery.default_favorites_source(
             "global",
             {"handle": "s450586793", "name": "艾斯", "avatar_url": "https://example.test/avatar.jpg"},
         )
@@ -565,7 +565,7 @@ class BatchDiscoveryTest(unittest.TestCase):
         self.assertEqual(profile["liked_collection_count"], 1)
 
     def test_default_favorites_subscription_source_requires_real_handle(self):
-        source = batch_discovery.default_favorites_subscription_source(
+        source = batch_discovery.default_favorites_source(
             "global",
             {"uid": "2073587493", "handle": "", "name": "艾斯"},
         )
@@ -595,7 +595,7 @@ class BatchDiscoveryTest(unittest.TestCase):
 
         with patch.object(batch_discovery, "_api_get_json", side_effect=payloads), \
                 patch.object(batch_discovery, "_append_discovery_debug"):
-            profile = batch_discovery.discover_cookie_account_profile("global", "token=ok")
+            profile = batch_discovery.discover_account_profile("global", "token=ok")
 
         self.assertEqual(profile["uid"], "2073587493")
         self.assertEqual(profile["handle"], "s450586793")
@@ -671,7 +671,7 @@ class BatchDiscoveryTest(unittest.TestCase):
                 patch.object(batch_discovery, "extract_next_data", return_value=next_data), \
                 patch.object(batch_discovery, "_api_get_json") as api_get, \
                 patch.object(batch_discovery, "_append_discovery_debug"):
-            result = batch_discovery.discover_cookie_followed_collections(
+            result = batch_discovery.discover_followed_collections(
                 "cn",
                 "token=ok",
                 uid="2024907479",
@@ -698,7 +698,7 @@ class BatchDiscoveryTest(unittest.TestCase):
 
         with patch.object(batch_discovery, "_api_get_json", side_effect=fake_api_get_json), \
                 patch.object(batch_discovery, "_append_discovery_debug") as debug_log:
-            result = batch_discovery.discover_cookie_followed_collections(
+            result = batch_discovery.discover_followed_collections(
                 "cn",
                 "token=ok",
                 uid="2024907479",

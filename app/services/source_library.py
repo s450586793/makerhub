@@ -21,10 +21,10 @@ from app.core.database_json_state import (
 from app.core.settings import ARCHIVE_DIR, STATE_DIR, ensure_app_dirs
 from app.core.store import JsonStore
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
-from app.services.batch_discovery import (
-    default_favorites_subscription_source,
-    discover_cookie_account_profile,
-    normalize_source_url,
+from app.services.makerworld_parsers.common import normalize_source_url
+from app.services.makerworld_pipeline import (
+    default_favorites_source as default_favorites_subscription_source,
+    discover_account_profile as discover_cookie_account_profile,
 )
 from app.services.business_logs import append_business_log
 from app.services.catalog import (

@@ -21,12 +21,8 @@ from app.services.cloakbrowser_session import (
     collect_browser_session,
 )
 from app.services.cookie_utils import extract_auth_token, parse_cookie_values, sanitize_cookie_header
-from app.services.batch_discovery import (
-    extract_model_id,
-    normalize_model_url,
-    normalize_source_url,
-    resolve_batch_source_name,
-)
+from app.services.makerworld_parsers.common import extract_model_id, normalize_model_url, normalize_source_url
+from app.services.makerworld_pipeline import resolve_source_name
 from app.services.account_health import (
     get_account_health,
     load_account_health,
@@ -3296,7 +3292,7 @@ class ArchiveTaskManager:
         with _temporary_proxy_env(config, clean_url):
             _log_archive("batch_preview_started", "开始批量预扫描。", url=clean_url, mode=mode)
             discovered = run_discover_batch_urls_job(clean_url, cookie, proxy_config=config.proxy)
-            discovered["source_name"] = resolve_batch_source_name(clean_url, cookie)
+            discovered["source_name"] = resolve_source_name(clean_url, cookie)
 
         discovered_items = [_source_item_url(item) for item in discovered.get("items") or [] if _source_item_url(item)]
         discovered_count = len(discovered_items)

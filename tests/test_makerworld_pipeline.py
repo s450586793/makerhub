@@ -10,6 +10,7 @@ from app.services.makerworld_pipeline import (
     discover_source,
     source_is_deleted,
 )
+from app.services import batch_discovery
 
 
 def test_source_is_deleted_uses_browser_response():
@@ -56,17 +57,35 @@ def test_archive_model_delegates_to_legacy_archiver():
     legacy_archive_model.assert_called_once_with(**kwargs)
 
 
-def test_discover_source_delegates_to_legacy_discovery():
-    expected = {"items": []}
+def test_discover_source_fetches_each_candidate_once_and_keeps_result_shape():
+    payload = {"hits": [{"id": 1001, "title": "A"}], "total": 1}
 
     with patch(
-        "app.services.makerworld_pipeline.discover_batch_model_urls",
-        return_value=expected,
-    ) as discover_batch_model_urls:
-        assert discover_source("https://makerworld.com.cn/zh/@ace/upload", "token=ok", 3) == expected
+        "app.services.makerworld_pipeline.discovery.makerworld_browser_get_json",
+        return_value=payload,
+    ) as fetch, patch(
+        "app.services.makerworld_pipeline.discovery._resolve_author_uid",
+        return_value="100",
+    ):
+        result = discover_source(
+            "https://makerworld.com.cn/zh/@ace/upload",
+            "token=ok",
+            max_pages=1,
+        )
 
-    discover_batch_model_urls.assert_called_once_with(
-        "https://makerworld.com.cn/zh/@ace/upload",
-        "token=ok",
-        max_pages=3,
-    )
+    assert set(("items", "expected_total", "mode")).issubset(result)
+    assert result["expected_total"] == 1
+    assert fetch.call_count >= 1
+
+    with patch(
+        "app.services.makerworld_pipeline.discovery.makerworld_browser_get_json",
+        return_value=payload,
+    ), patch(
+        "app.services.makerworld_pipeline.discovery._resolve_author_uid",
+        return_value="100",
+    ):
+        assert batch_discovery.discover_batch_model_urls(
+            "https://makerworld.com.cn/zh/@ace/upload",
+            "token=ok",
+            max_pages=1,
+        ) == result

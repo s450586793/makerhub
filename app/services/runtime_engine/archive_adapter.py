@@ -4,7 +4,8 @@ from typing import Any
 
 from app.api.dependencies import crawler, store
 from app.services.archive_worker import BATCH_TASK_MODES, detect_archive_mode
-from app.services.batch_discovery import discover_batch_model_urls, normalize_source_url
+from app.services.makerworld_parsers.common import normalize_source_url
+from app.services.makerworld_pipeline import discover_source
 from app.services.cookie_utils import sanitize_cookie_header
 
 
@@ -29,7 +30,7 @@ class ArchiveRuntimeAdapter:
         if mode not in BATCH_TASK_MODES:
             return []
 
-        discovered = discover_batch_model_urls(source_url, _select_cookie(source_url))
+        discovered = discover_source(source_url, _select_cookie(source_url))
         items = discovered.get("items") if isinstance(discovered, dict) else discovered
         candidates: list[dict[str, Any]] = []
         for item in items or []:

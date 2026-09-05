@@ -16,15 +16,14 @@ from app.core.timezone import ensure_timezone, now as china_now, now_iso as chin
 from app.schemas.models import SubscriptionRecord
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.archive_worker import ArchiveTaskManager, detect_archive_mode
-from app.services.batch_discovery import (
-    default_favorites_subscription_source,
-    discover_cookie_account_home_summary,
-    discover_cookie_account_profile,
-    discover_cookie_followed_authors,
-    discover_cookie_followed_authors_from_page,
-    discover_cookie_followed_collections,
-    extract_model_id,
-    normalize_source_url,
+from app.services.makerworld_parsers.common import extract_model_id, normalize_source_url
+from app.services.makerworld_pipeline import (
+    default_favorites_source as default_favorites_subscription_source,
+    discover_account_home_summary as discover_cookie_account_home_summary,
+    discover_account_profile as discover_cookie_account_profile,
+    discover_followed_authors as discover_cookie_followed_authors,
+    discover_followed_authors_from_page as discover_cookie_followed_authors_from_page,
+    discover_followed_collections as discover_cookie_followed_collections,
 )
 from app.services.business_logs import append_business_log, append_structured_log
 from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot, invalidate_model_detail_cache

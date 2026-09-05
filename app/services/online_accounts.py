@@ -81,7 +81,7 @@ _LOGIN_CONTEXTS: dict[tuple[str, str], dict[str, Any]] = {}
 
 
 def discover_cookie_account_profile(platform: str, raw_cookie: str) -> dict[str, Any]:
-    from app.services.batch_discovery import discover_cookie_account_profile as discover
+    from app.services.makerworld_pipeline import discover_account_profile as discover
 
     return discover(platform, raw_cookie)
 
