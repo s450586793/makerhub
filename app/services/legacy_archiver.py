@@ -4999,8 +4999,34 @@ if __name__ == "__main__":
     sys.exit(0)
 
 
+_ARCHIVE_COMPAT_PATCH_POINTS = (
+    ("fetch_html_with_browser", fetch_html_with_browser),
+    ("fetch_design_from_api", fetch_design_from_api),
+    ("collect_comments", collect_comments),
+    ("fetch_instance_3mf", fetch_instance_3mf),
+    ("reserve_three_mf_download_slot", reserve_three_mf_download_slot),
+)
+
+
+def _archive_dependency_overrides() -> dict[str, Callable[..., Any]]:
+    return {
+        name: current
+        for name, original in _ARCHIVE_COMPAT_PATCH_POINTS
+        if (current := globals().get(name)) is not original
+    }
+
+
 def archive_model(*args, **kwargs):
     """Compatibility facade for the MakerWorld Pipeline archive entry point."""
-    from app.services.makerworld_pipeline.archive import archive_model as pipeline_archive_model
+    from app.services.makerworld_pipeline.archive import (
+        archive_dependencies_with_overrides,
+        archive_model as pipeline_archive_model,
+        archive_model_with_dependencies,
+    )
+
+    overrides = _archive_dependency_overrides()
+    if overrides:
+        dependencies = archive_dependencies_with_overrides(**overrides)
+        return archive_model_with_dependencies(dependencies, *args, **kwargs)
 
     return pipeline_archive_model(*args, **kwargs)

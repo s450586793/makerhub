@@ -7,7 +7,6 @@ from unittest.mock import patch
 from app.services import legacy_archiver
 from app.services.asset_downloader import AssetDownloadError
 from app.services.makerworld_browser_client import MakerWorldBrowserError
-from app.services.makerworld_pipeline import archive as pipeline_archive
 
 
 class _ApiSession:
@@ -41,15 +40,15 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         )
 
         with TemporaryDirectory() as temp_dir, patch.object(
-            pipeline_archive,
+            legacy_archiver,
             "fetch_html_with_browser",
             return_value=html,
-        ), patch.object(
-            pipeline_archive,
+        ) as fetch_html, patch.object(
+            legacy_archiver,
             "reserve_three_mf_download_slot",
             side_effect=AssertionError("print-only model must not reserve download quota"),
         ), patch.object(
-            pipeline_archive,
+            legacy_archiver,
             "fetch_instance_3mf",
             side_effect=AssertionError("print-only model must not request 3MF authorization"),
         ):
@@ -65,6 +64,7 @@ class LegacyArchiverValidationTest(unittest.TestCase):
 
             meta = json.loads((Path(result["work_dir"]) / "meta.json").read_text(encoding="utf-8"))
 
+        fetch_html.assert_called_once()
         self.assertEqual(result["missing_3mf"], [])
         self.assertEqual(meta["license"], design["license"])
         self.assertFalse(meta["threeMfDownloadAllowed"])
@@ -269,12 +269,12 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         """
 
         with TemporaryDirectory() as temp_dir, patch(
-            "app.services.makerworld_pipeline.archive.fetch_html_with_browser",
+            "app.services.legacy_archiver.fetch_html_with_browser",
             return_value=makerworld_404_html,
-        ), patch(
-            "app.services.makerworld_pipeline.archive.fetch_design_from_api",
+        ) as fetch_html, patch(
+            "app.services.legacy_archiver.fetch_design_from_api",
             return_value=None,
-        ):
+        ) as fetch_design:
             with self.assertRaisesRegex(RuntimeError, "404|下架|私有|草稿"):
                 legacy_archiver.archive_model(
                     "https://makerworld.com.cn/zh/models/1590150",
@@ -282,6 +282,8 @@ class LegacyArchiverValidationTest(unittest.TestCase):
                     Path(temp_dir) / "archive",
                     Path(temp_dir) / "logs",
                 )
+        fetch_html.assert_called_once()
+        fetch_design.assert_called_once()
 
     def test_three_mf_fetch_html_404_is_not_classified_as_cloudflare(self):
         makerworld_404_html = """

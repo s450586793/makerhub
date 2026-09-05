@@ -4,12 +4,17 @@ Browser-facing MakerWorld operations live here. Static assets still use the
 streaming AssetDownloader path exposed by the compatibility helpers.
 """
 
+import hashlib
 import json
 import math
+import os
+import shutil
+import threading
 import time
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
 import requests
 
@@ -25,11 +30,16 @@ from app.services.cookie_utils import parse_cookie_values, sanitize_cookie_heade
 from app.services.legacy_archiver import (
     COMMENT_ASSET_DOWNLOAD_WORKERS,
     BINARY_TRANSFER_TIMEOUT_SECONDS,
+    IMAGE_ASSET_DOWNLOAD_WORKERS,
     PROFILE_DETAIL_SCHEMA_VERSION,
     FAKE_THREE_MF_DOWNLOAD_MESSAGE,
+    MAKERWORLD_API_BROWSER_HEADERS,
     SAFE_REASON_CODES,
     SAFE_VERIFICATION_CHALLENGE_TYPES,
     SAFE_VERIFICATION_PROVIDERS,
+    SHARED_AVATAR_REL_DIR,
+    VOLATILE_ASSET_QUERY_KEYS,
+    VOLATILE_ASSET_QUERY_PREFIXES,
     _archive_root_from_comment_out_dir,
     _build_existing_comment_lookup,
     _build_existing_media_lookup,
@@ -38,6 +48,7 @@ from app.services.legacy_archiver import (
     _comment_model_root,
     _comment_resource_stats,
     _download_asset_with_fresh_session,
+    _emit_stage_progress,
     _extract_auth_token,
     _existing_media_ref,
     _find_existing_instance,
@@ -1619,7 +1630,40 @@ def fetch_instance_3mf(
     log("3MF 获取失败", inst_id, _summarize_three_mf_fetch_attempts(attempts), str(last_failure.get("message") or ""))
     return "", "", api_url or "", last_failure
 
-def archive_model(
+
+@dataclass(frozen=True)
+class ArchiveDependencies:
+    fetch_html_with_browser: Callable[..., Optional[str]]
+    fetch_design_from_api: Callable[..., Optional[dict]]
+    collect_comments: Callable[..., dict]
+    fetch_instance_3mf: Callable[..., tuple]
+    reserve_three_mf_download_slot: Callable[..., dict]
+
+
+DEFAULT_ARCHIVE_DEPENDENCIES = ArchiveDependencies(
+    fetch_html_with_browser=fetch_html_with_browser,
+    fetch_design_from_api=fetch_design_from_api,
+    collect_comments=collect_comments,
+    fetch_instance_3mf=fetch_instance_3mf,
+    reserve_three_mf_download_slot=reserve_three_mf_download_slot,
+)
+
+
+def _current_archive_dependencies() -> ArchiveDependencies:
+    return ArchiveDependencies(
+        fetch_html_with_browser=fetch_html_with_browser,
+        fetch_design_from_api=fetch_design_from_api,
+        collect_comments=collect_comments,
+        fetch_instance_3mf=fetch_instance_3mf,
+        reserve_three_mf_download_slot=reserve_three_mf_download_slot,
+    )
+
+
+def archive_dependencies_with_overrides(**overrides: Callable[..., Any]) -> ArchiveDependencies:
+    return replace(DEFAULT_ARCHIVE_DEPENDENCIES, **overrides)
+
+
+def _archive_model(
     url: str,
     cookie: str,
     download_dir: Path,
@@ -1642,11 +1686,13 @@ def archive_model(
     browser_three_mf_authorization: bool = False,
     browser_profile_id: str = "",
     instance_ids: Optional[list[str]] = None,
+    _dependencies: Optional[ArchiveDependencies] = None,
 ):
     """
     对外主入口：采集 + 下载文件 + 生成 meta，并整理归档目录。
     返回: {base_name, work_dir, missing_3mf, action}
     """
+    dependencies = _dependencies or _current_archive_dependencies()
     archive_started_at = time.perf_counter()
     timings_ms: dict[str, float] = {}
     # 采集阶段
@@ -1673,7 +1719,7 @@ def archive_model(
 
     fetch_started_at = time.perf_counter()
     emit_progress(progress_callback, 12, "正在获取模型页面")
-    html_text = fetch_html_with_browser(sess, fetch_url, raw_cookie_header)
+    html_text = dependencies.fetch_html_with_browser(sess, fetch_url, raw_cookie_header)
     if not html_text:
         raise RuntimeError("CloakBrowser 获取模型页面失败，请检查指纹浏览器服务和当前平台 profile 状态。")
     elif "__NEXT_DATA__" not in html_text and "__NUXT__" not in html_text:
@@ -1741,7 +1787,13 @@ def archive_model(
         fallback_message = api_fallback_reason or "页面内嵌数据不完整"
         emit_progress(progress_callback, 22, f"{fallback_message}，正在改用接口抓取")
         api_fallback_started_at = time.perf_counter()
-        design = fetch_design_from_api(sess, raw_cookie_header, fetch_url, api_host_hint=api_host_hint, logger=logger)
+        design = dependencies.fetch_design_from_api(
+            sess,
+            raw_cookie_header,
+            fetch_url,
+            api_host_hint=api_host_hint,
+            logger=logger,
+        )
         timings_ms["fetch_design_api"] = _log_perf(
             "archive.fetch_design_api",
             api_fallback_started_at,
@@ -1924,7 +1976,7 @@ def archive_model(
         )
     comments_started_at = time.perf_counter()
     if collect_comments_data:
-        comments_bundle = collect_comments(
+        comments_bundle = dependencies.collect_comments(
             next_data,
             design,
             sess,
@@ -2048,7 +2100,7 @@ def archive_model(
                 "message": describe_three_mf_failure(THREE_MF_NOT_DOWNLOADABLE_STATE),
             }
         elif fake_three_mf_downloads_enabled() and not three_mf_fetch_paused:
-            name3mf, url3mf, used_api_url, failure_info = fetch_instance_3mf(
+            name3mf, url3mf, used_api_url, failure_info = dependencies.fetch_instance_3mf(
                 sess,
                 inst_id,
                 raw_cookie_header,
@@ -2091,7 +2143,7 @@ def archive_model(
             )
         else:
             quota_limit = three_mf_daily_limit_global if makerworld_source == "global" else three_mf_daily_limit_cn
-            quota_result = reserve_three_mf_download_slot(
+            quota_result = dependencies.reserve_three_mf_download_slot(
                 source=makerworld_source,
                 url=fetch_url,
                 limit=quota_limit,
@@ -2110,7 +2162,7 @@ def archive_model(
                 skipped_due_limit += 1
             else:
                 api_fetch_attempts += 1
-                name3mf, url3mf, used_api_url, failure_info = fetch_instance_3mf(
+                name3mf, url3mf, used_api_url, failure_info = dependencies.fetch_instance_3mf(
                     sess,
                     inst_id,
                     raw_cookie_header,
@@ -2315,9 +2367,64 @@ def archive_model(
     }
 
 
-if __name__ == "__main__":
-    log("此模块用于被导入调用，不建议直接运行。")
-    sys.exit(0)
+def archive_model(
+    url: str,
+    cookie: str,
+    download_dir: Path,
+    logs_dir: Path,
+    logger=None,
+    existing_root: Optional[Path] = None,
+    progress_callback=None,
+    skip_three_mf_fetch: bool = False,
+    three_mf_skip_message: str = "",
+    download_assets: bool = True,
+    download_comment_assets: Optional[bool] = None,
+    collect_comments_data: bool = True,
+    rebuild_archive: bool = True,
+    record_missing_3mf_log: bool = True,
+    three_mf_skip_state: str = "",
+    three_mf_daily_limit_cn: int = 100,
+    three_mf_daily_limit_global: int = 100,
+    existing_model_dir: str = "",
+    three_mf_captcha_result_header: str = "",
+    browser_three_mf_authorization: bool = False,
+    browser_profile_id: str = "",
+    instance_ids: Optional[list[str]] = None,
+):
+    return _archive_model(
+        url=url,
+        cookie=cookie,
+        download_dir=download_dir,
+        logs_dir=logs_dir,
+        logger=logger,
+        existing_root=existing_root,
+        progress_callback=progress_callback,
+        skip_three_mf_fetch=skip_three_mf_fetch,
+        three_mf_skip_message=three_mf_skip_message,
+        download_assets=download_assets,
+        download_comment_assets=download_comment_assets,
+        collect_comments_data=collect_comments_data,
+        rebuild_archive=rebuild_archive,
+        record_missing_3mf_log=record_missing_3mf_log,
+        three_mf_skip_state=three_mf_skip_state,
+        three_mf_daily_limit_cn=three_mf_daily_limit_cn,
+        three_mf_daily_limit_global=three_mf_daily_limit_global,
+        existing_model_dir=existing_model_dir,
+        three_mf_captcha_result_header=three_mf_captcha_result_header,
+        browser_three_mf_authorization=browser_three_mf_authorization,
+        browser_profile_id=browser_profile_id,
+        instance_ids=instance_ids,
+    )
+
+
+def archive_model_with_dependencies(
+    dependencies: ArchiveDependencies,
+    *args,
+    **kwargs,
+):
+    return _archive_model(*args, **kwargs, _dependencies=dependencies)
+
+
 def _extract_instance_download(data: object) -> tuple[str, str]:
     payload = data
     if isinstance(data, dict):
