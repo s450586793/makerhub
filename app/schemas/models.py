@@ -15,6 +15,23 @@ def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     return max(min(value, maximum), minimum)
 
 
+def _migrate_legacy_organizer_path(
+    value,
+    *,
+    env_name: str,
+    current_path,
+    legacy_paths: set[str],
+):
+    raw = str(value or "").strip()
+    if not raw or not str(os.environ.get(env_name) or "").strip():
+        return value
+    normalized = os.path.normpath(os.path.expanduser(raw))
+    current = os.path.normpath(os.path.expanduser(str(current_path)))
+    if normalized not in legacy_paths or current in legacy_paths:
+        return value
+    return current
+
+
 class CookiePair(BaseModel):
     platform: str
     cookie: str = ""
@@ -304,6 +321,28 @@ class Missing3mfCancelRequest(BaseModel):
 
 
 class OrganizeTask(BaseModel):
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_container_paths(cls, value):
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        if "source_dir" in payload:
+            payload["source_dir"] = _migrate_legacy_organizer_path(
+                payload.get("source_dir"),
+                env_name="MAKERHUB_LOCAL_DIR",
+                current_path=LOCAL_DIR,
+                legacy_paths={"/app/local"},
+            )
+        if "target_dir" in payload:
+            payload["target_dir"] = _migrate_legacy_organizer_path(
+                payload.get("target_dir"),
+                env_name="MAKERHUB_ARCHIVE_DIR",
+                current_path=ARCHIVE_DIR,
+                legacy_paths={"/app/archive", "/app/data/archive"},
+            )
+        return payload
+
     source_dir: str = str(LOCAL_DIR)
     target_dir: str = str(ARCHIVE_DIR)
     move_files: bool = True

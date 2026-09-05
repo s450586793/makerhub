@@ -5,6 +5,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.core import settings
+from app.schemas import models as schema_models
+from app.schemas.models import AppConfig
 
 
 class SettingsLayoutTest(unittest.TestCase):
@@ -71,6 +73,60 @@ class SettingsLayoutTest(unittest.TestCase):
                 resolved = settings._resolve_archive_dir("MAKERHUB_ARCHIVE_DIR", fallback_root)
 
         self.assertEqual(resolved, custom_root)
+
+    def test_legacy_organizer_container_paths_follow_current_runtime_mounts(self):
+        with patch.object(schema_models, "LOCAL_DIR", Path("/app/data/local")), \
+                patch.object(schema_models, "ARCHIVE_DIR", Path("/app/data")), \
+                patch.dict(
+                    "os.environ",
+                    {
+                        "MAKERHUB_LOCAL_DIR": "/app/data/local",
+                        "MAKERHUB_ARCHIVE_DIR": "/app/data",
+                    },
+                ):
+            config = AppConfig.model_validate(
+                {
+                    "organizer": {
+                        "source_dir": "/app/local",
+                        "target_dir": "/app/archive",
+                        "move_files": True,
+                    }
+                }
+            )
+
+        self.assertEqual(config.organizer.source_dir, "/app/data/local")
+        self.assertEqual(config.organizer.target_dir, "/app/data")
+
+    def test_legacy_data_archive_child_follows_current_archive_root(self):
+        with patch.object(schema_models, "ARCHIVE_DIR", Path("/app/data")), \
+                patch.dict("os.environ", {"MAKERHUB_ARCHIVE_DIR": "/app/data"}):
+            config = AppConfig.model_validate(
+                {"organizer": {"target_dir": "/app/data/archive"}}
+            )
+
+        self.assertEqual(config.organizer.target_dir, "/app/data")
+
+    def test_custom_organizer_paths_are_preserved(self):
+        with patch.object(schema_models, "LOCAL_DIR", Path("/app/data/local")), \
+                patch.object(schema_models, "ARCHIVE_DIR", Path("/app/data")), \
+                patch.dict(
+                    "os.environ",
+                    {
+                        "MAKERHUB_LOCAL_DIR": "/app/data/local",
+                        "MAKERHUB_ARCHIVE_DIR": "/app/data",
+                    },
+                ):
+            config = AppConfig.model_validate(
+                {
+                    "organizer": {
+                        "source_dir": "/mnt/imports",
+                        "target_dir": "/mnt/library",
+                    }
+                }
+            )
+
+        self.assertEqual(config.organizer.source_dir, "/mnt/imports")
+        self.assertEqual(config.organizer.target_dir, "/mnt/library")
 
 
 if __name__ == "__main__":

@@ -199,6 +199,10 @@ import { useRouter } from "vue-router";
 
 import SourceLibraryCard from "../components/SourceLibraryCard.vue";
 import { apiRequest, apiUploadRequest } from "../lib/api";
+import {
+  localImportBatchIsFresh,
+  unmatchedLocalImportFailureCount,
+} from "../lib/localImportStatus";
 import { deletePageCache, deletePageCacheByPrefix, getPageCache, setPageCache } from "../lib/pageCache";
 import { createPagePerformanceTracker } from "../lib/performance";
 import { createHydratedResource } from "../lib/useHydratedResource";
@@ -206,7 +210,6 @@ import { useKeepAlivePage } from "../lib/useKeepAlivePage";
 import { createPageRefreshController } from "../lib/usePageRefresh";
 
 
-const RECENT_IMPORT_PENDING_GRACE_MS = 10 * 60 * 1000;
 const IMPORT_PROGRESS_STORAGE_KEY = "makerhub:local-import-progress";
 const IMPORT_PROGRESS_STALE_MS = 30 * 60 * 1000;
 const IMPORT_UPLOAD_PROGRESS_CAP = 35;
@@ -531,6 +534,7 @@ const recentOrganizerRows = computed(() => {
   const lastImport = organizerTasks.value?.last_import;
   const importFiles = Array.isArray(lastImport?.files) ? lastImport.files : [];
   const matchedImportTask = currentImportOrganizerTask.value;
+  const importFresh = importBatchStillFresh(lastImport);
   for (const file of importFiles) {
     if (rows.length >= 8) {
       break;
@@ -541,8 +545,8 @@ const recentOrganizerRows = computed(() => {
     const row = organizerTaskRow(
       {
         ...file,
-        status: file.status || (importBatchStillFresh(lastImport) ? "pending" : ""),
-        message: file.message || (importBatchStillFresh(lastImport) ? "等待本地整理处理。" : "最近上传文件。"),
+        status: file.status || (importFresh ? "pending" : "failed"),
+        message: file.message || (importFresh ? "等待本地整理处理。" : "后台未接收到上传文件，请重新上传。"),
         progress: file.progress || 0,
       },
       `import-${rows.length}`,
@@ -971,11 +975,7 @@ function countImportStatus(result, status) {
 }
 
 function importBatchStillFresh(lastImport) {
-  const uploadedAt = Date.parse(String(lastImport?.uploaded_at || ""));
-  if (!Number.isFinite(uploadedAt)) {
-    return false;
-  }
-  return Date.now() - uploadedAt < RECENT_IMPORT_PENDING_GRACE_MS;
+  return localImportBatchIsFresh(lastImport);
 }
 
 function findLastImportPackageTask(tasks) {
@@ -1030,10 +1030,26 @@ function recentImportStatusCounts(tasks) {
     },
     { success: 0, skipped: 0, failed: 0, pending: 0 }
   );
+  const terminalImportFileCount = importFiles.filter((item) => (
+    ["success", "skipped", "failed"].includes(normalizeImportStatus(item?.status))
+  )).length;
+  const effectiveMatchedCount = Math.max(batchItems.length, terminalImportFileCount);
+  const unmatchedFailedCount = unmatchedLocalImportFailureCount({
+    lastImport,
+    uploadedCount,
+    matchedCount: effectiveMatchedCount,
+  });
+  if (unmatchedFailedCount > 0) {
+    counts.failed += unmatchedFailedCount;
+    if (!batchItems.length) {
+      counts.pending = 0;
+    }
+  }
   return {
     uploadedCount,
     counts,
-    matchedCount: batchItems.length,
+    matchedCount: effectiveMatchedCount,
+    unmatchedFailedCount,
   };
 }
 
@@ -1196,6 +1212,22 @@ function reconcileImportUploadProgress() {
   const tasks = organizerTasks.value || {};
   const lastImport = organizerTasks.value?.last_import;
   const matchingTask = findCurrentImportOrganizerTask();
+  const recentStatus = recentImportStatusCounts(tasks);
+  if (
+    lastImport
+    && lastImportUpdatedAfter(lastImport, importUploadProgress.startedAt)
+    && recentStatus.unmatchedFailedCount > 0
+    && !matchingTask
+  ) {
+    applyImportUploadProgress({
+      phase: "failed",
+      status: "failed",
+      progress: Math.max(importUploadProgress.progress || 0, IMPORT_PROCESS_PROGRESS_START),
+      message: "后台未接收到上传文件，导入已失败，请重新上传。",
+    });
+    clearImportUploadProgressStorage();
+    return;
+  }
   if (
     lastImport
     && lastImportUpdatedAfter(lastImport, importUploadProgress.startedAt)
