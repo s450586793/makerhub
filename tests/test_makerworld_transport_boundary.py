@@ -9,21 +9,21 @@ ROOT = Path(__file__).resolve().parents[1]
 BROWSER_FETCH_SYMBOL = "app.services.cloakbrowser_session.browser_fetch"
 HTTP_MODULES = ("requests", "httpx", "aiohttp")
 HTTP_CLIENT_NAMES = {"client", "http", "http_client", "session"}
-PARSER_FORBIDDEN_IMPORTS = (
-    "requests",
-    "urllib.request",
-    "http.client",
-    "httpx",
-    "aiohttp",
-    "sqlalchemy",
-    "psycopg",
-    "psycopg2",
-    "app.core.database",
-    "app.core.database_json_state",
-    "app.core.store",
-    "app.services.cloakbrowser_session",
-    "app.services.makerworld_browser_client",
-)
+PARSER_ALLOWED_MODULES = frozenset({
+    "__future__",
+    "bs4",
+    "hashlib",
+    "html",
+    "json",
+    "re",
+    "typing",
+    "urllib.parse",
+    "app.services.makerworld_parsers.comments",
+    "app.services.makerworld_parsers.common",
+    "app.services.makerworld_parsers.listing",
+    "app.services.makerworld_parsers.model",
+    "app.services.three_mf",
+})
 
 
 def _python_files(root: Path) -> tuple[Path, ...]:
@@ -49,27 +49,23 @@ def _tree(path: Path) -> ast.AST:
     return ast.parse(path.read_text(encoding="utf-8"))
 
 
-def _imported_modules(path: Path) -> set[str]:
-    result = set()
+def _disallowed_parser_dependencies(path: Path) -> set[str]:
+    violations: set[str] = set()
     for node in ast.walk(_tree(path)):
         if isinstance(node, ast.Import):
-            result.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            result.add(node.module)
-            result.update(
+            violations.update(alias.name for alias in node.names if alias.name not in PARSER_ALLOWED_MODULES)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.module not in PARSER_ALLOWED_MODULES:
+            violations.add(node.module)
+            violations.update(
                 f"{node.module}.{alias.name}"
                 for alias in node.names
                 if alias.name != "*"
             )
-    return result
-
-
-def _forbidden_parser_imports(path: Path) -> set[str]:
-    return {
-        module
-        for module in _imported_modules(path)
-        if any(module == prefix or module.startswith(f"{prefix}.") for prefix in PARSER_FORBIDDEN_IMPORTS)
-    }
+    violations.update(
+        f"dynamic:{finding.symbol}"
+        for finding in _transport_findings(path).dynamic_import_calls
+    )
+    return violations
 
 
 @dataclass(frozen=True)
@@ -84,20 +80,33 @@ class _AstFinding:
 class _TransportBoundaryVisitor(ast.NodeVisitor):
     def __init__(self) -> None:
         self._scopes: list[dict[str, str]] = [{}]
+        self._string_scopes: list[dict[str, str | None]] = [{}]
         self._functions: list[str] = []
         self.browser_fetch_references: list[_AstFinding] = []
         self.direct_get_calls: list[_AstFinding] = []
+        self.dynamic_import_calls: list[_AstFinding] = []
         self._browser_positions: set[tuple[int, int]] = set()
         self._get_positions: set[tuple[int, int]] = set()
+        self._dynamic_import_positions: set[tuple[int, int]] = set()
 
-    def _bind(self, name: str, symbol: str) -> None:
+    def _bind(self, name: str, symbol: str, string_value: str | None = None) -> None:
         self._scopes[-1][name] = symbol
+        self._string_scopes[-1][name] = string_value
 
     def _lookup(self, name: str) -> str:
         for scope in reversed(self._scopes):
             if name in scope:
                 return scope[name]
         return name
+
+    def _string_value(self, node: ast.AST | None) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            for scope in reversed(self._string_scopes):
+                if node.id in scope:
+                    return scope[node.id]
+        return None
 
     def _qualified_name(self, node: ast.AST | None) -> str:
         if isinstance(node, ast.Name):
@@ -117,11 +126,11 @@ class _TransportBoundaryVisitor(ast.NodeVisitor):
     def _dynamic_attribute(self, node: ast.Call) -> str:
         if not isinstance(node.func, ast.Name) or node.func.id != "getattr" or len(node.args) < 2:
             return ""
-        attribute = node.args[1]
-        if not isinstance(attribute, ast.Constant) or not isinstance(attribute.value, str):
+        attribute = self._string_value(node.args[1])
+        if attribute is None:
             return ""
         base = self._qualified_name(node.args[0])
-        return f"{base}.{attribute.value}" if base else ""
+        return f"{base}.{attribute}" if base else ""
 
     @staticmethod
     def _is_http_symbol(symbol: str) -> bool:
@@ -142,6 +151,16 @@ class _TransportBoundaryVisitor(ast.NodeVisitor):
     @staticmethod
     def _is_browser_fetch_symbol(symbol: str) -> bool:
         return symbol == "browser_fetch" or symbol.endswith(".browser_fetch")
+
+    @staticmethod
+    def _looks_like_http_factory(symbol: str) -> bool:
+        name = symbol.rsplit(".", 1)[-1].strip("_").lower()
+        tokens = name.split("_")
+        return (
+            len(tokens) >= 2
+            and tokens[0] in {"build", "create", "make", "new", "open"}
+            and tokens[-1] in {"client", "session"}
+        )
 
     @staticmethod
     def _request_may_be_get(node: ast.Call) -> bool:
@@ -167,6 +186,15 @@ class _TransportBoundaryVisitor(ast.NodeVisitor):
             return
         self._get_positions.add(position)
         self.direct_get_calls.append(
+            _AstFinding(*position, self._functions[-1] if self._functions else "", symbol, node)
+        )
+
+    def _record_dynamic_import(self, node: ast.Call, symbol: str) -> None:
+        position = (node.lineno, node.col_offset)
+        if position in self._dynamic_import_positions:
+            return
+        self._dynamic_import_positions.add(position)
+        self.dynamic_import_calls.append(
             _AstFinding(*position, self._functions[-1] if self._functions else "", symbol, node)
         )
 
@@ -198,8 +226,16 @@ class _TransportBoundaryVisitor(ast.NodeVisitor):
             self.visit(default)
         if node.returns:
             self.visit(node.returns)
+        return_symbol = self._qualified_name(node.returns)
+        if self._is_http_symbol(return_symbol):
+            self._bind(node.name, return_symbol)
+        elif self._looks_like_http_factory(node.name):
+            self._bind(node.name, "local.session")
+        else:
+            self._bind(node.name, f"function.{node.name}")
         self._functions.append(node.name)
         self._scopes.append({})
+        self._string_scopes.append({})
         arguments = (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
         if node.args.vararg:
             arguments += (node.args.vararg,)
@@ -212,6 +248,7 @@ class _TransportBoundaryVisitor(ast.NodeVisitor):
             self._bind(argument.arg, annotation or f"local.{argument.arg}")
         for statement in node.body:
             self.visit(statement)
+        self._string_scopes.pop()
         self._scopes.pop()
         self._functions.pop()
 
@@ -224,16 +261,27 @@ class _TransportBoundaryVisitor(ast.NodeVisitor):
     def visit_Assign(self, node: ast.Assign) -> None:
         self.visit(node.value)
         symbol = self._qualified_name(node.value)
+        string_value = self._string_value(node.value)
         for target in node.targets:
             if isinstance(target, ast.Name):
-                self._bind(target.id, symbol or f"local.{target.id}")
+                if target.id in HTTP_CLIENT_NAMES and not self._is_http_symbol(symbol):
+                    assigned_symbol = f"local.{target.id}"
+                elif self._looks_like_http_factory(symbol):
+                    assigned_symbol = "local.session"
+                else:
+                    assigned_symbol = symbol or f"local.{target.id}"
+                self._bind(target.id, assigned_symbol, string_value)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if node.value:
             self.visit(node.value)
         if isinstance(node.target, ast.Name):
             symbol = self._qualified_name(node.value) or self._qualified_name(node.annotation)
-            self._bind(node.target.id, symbol or f"local.{node.target.id}")
+            if node.target.id in HTTP_CLIENT_NAMES and not self._is_http_symbol(symbol):
+                symbol = f"local.{node.target.id}"
+            elif self._looks_like_http_factory(symbol):
+                symbol = "local.session"
+            self._bind(node.target.id, symbol or f"local.{node.target.id}", self._string_value(node.value))
 
     def visit_With(self, node: ast.With) -> None:
         for item in node.items:
@@ -266,6 +314,8 @@ class _TransportBoundaryVisitor(ast.NodeVisitor):
             self._record_direct_get(node, dynamic_symbol)
 
         symbol = self._qualified_name(node.func)
+        if symbol in {"__import__", "builtins.__import__", "importlib.import_module"}:
+            self._record_dynamic_import(node, symbol)
         if symbol.endswith(".get") and self._is_http_symbol(symbol.rsplit(".", 1)[0]):
             self._record_direct_get(node, symbol)
         elif (
@@ -296,7 +346,25 @@ def _keyword_map(node: ast.Call) -> dict[str, ast.AST]:
 
 
 def _first_argument_name(node: ast.Call) -> str:
-    return node.args[0].id if node.args and isinstance(node.args[0], ast.Name) else ""
+    return node.args[0].id if len(node.args) == 1 and isinstance(node.args[0], ast.Name) else ""
+
+
+def _literal_value(node: ast.AST | None, expected) -> bool:
+    try:
+        return ast.literal_eval(node) == expected
+    except (ValueError, TypeError):
+        return False
+
+
+def _ticket_params_are_exact(node: ast.AST | None) -> bool:
+    return (
+        isinstance(node, ast.Dict)
+        and len(node.keys) == 1
+        and isinstance(node.keys[0], ast.Constant)
+        and node.keys[0].value == "ticket"
+        and isinstance(node.values[0], ast.Name)
+        and node.values[0].id == "ticket"
+    )
 
 
 def _is_named_session_get(finding: _AstFinding) -> bool:
@@ -307,37 +375,43 @@ def _is_named_session_get(finding: _AstFinding) -> bool:
     )
 
 
-def _is_allowed_direct_get(path: Path, finding: _AstFinding) -> bool:
+def _direct_get_exception_kind(path: Path, finding: _AstFinding) -> str:
     if not _is_named_session_get(finding):
-        return False
+        return ""
     node = finding.node
     if path == Path("app/services/asset_downloader.py"):
         keywords = _keyword_map(node)
-        return (
+        allowed = (
             finding.function == "download_file"
             and _first_argument_name(node) == "url"
+            and set(keywords) == {"stream", "timeout"}
+            and isinstance(keywords["timeout"], ast.Name)
+            and keywords["timeout"].id == "timeout"
             and isinstance(keywords.get("stream"), ast.Constant)
             and keywords["stream"].value is True
         )
+        return "asset-stream" if allowed else ""
     if path != Path("app/services/online_accounts.py") or finding.function != "_exchange_makerworld_ticket":
-        return False
+        return ""
 
     first_argument = _first_argument_name(node)
     keywords = _keyword_map(node)
     if first_argument == "ticket_url":
-        return {"proxies", "timeout"}.issubset(keywords)
-    if first_argument != "makerworld_ticket_url" or not {
+        allowed = set(keywords) == {"proxies", "timeout"} and _literal_value(keywords["timeout"], (8, 20))
+        return "account-ticket" if allowed else ""
+    if first_argument != "makerworld_ticket_url" or set(keywords) != {
         "params",
         "proxies",
         "timeout",
         "allow_redirects",
-    }.issubset(keywords):
-        return False
-    params = keywords["params"]
-    return isinstance(params, ast.Dict) and any(
-        isinstance(key, ast.Constant) and key.value == "ticket"
-        for key in params.keys
+    }:
+        return ""
+    allowed = (
+        _ticket_params_are_exact(keywords["params"])
+        and _literal_value(keywords["timeout"], (8, 20))
+        and _literal_value(keywords["allow_redirects"], True)
     )
+    return "makerworld-ticket" if allowed else ""
 
 
 def _unapproved_direct_gets(path: Path, logical_path: Path | None = None) -> list[_AstFinding]:
@@ -347,11 +421,22 @@ def _unapproved_direct_gets(path: Path, logical_path: Path | None = None) -> lis
             relative_path = path.relative_to(ROOT)
         except ValueError:
             relative_path = path
-    return [
-        finding
-        for finding in _direct_http_gets(path)
-        if not _is_allowed_direct_get(relative_path, finding)
-    ]
+    findings = _direct_http_gets(path)
+    expected_counts = {
+        Path("app/services/asset_downloader.py"): {"asset-stream": 1},
+        Path("app/services/online_accounts.py"): {"account-ticket": 1, "makerworld-ticket": 1},
+    }.get(relative_path, {})
+    findings_by_kind = {
+        kind: [finding for finding in findings if _direct_get_exception_kind(relative_path, finding) == kind]
+        for kind in expected_counts
+    }
+    allowed_ids = {
+        id(finding)
+        for kind, expected_count in expected_counts.items()
+        if len(findings_by_kind[kind]) == expected_count
+        for finding in findings_by_kind[kind]
+    }
+    return [finding for finding in findings if id(finding) not in allowed_ids]
 
 
 def _finding_summary(findings: list[_AstFinding]) -> list[str]:
@@ -415,6 +500,18 @@ def test_browser_fetch_guard_detects_reference_mutations(tmp_path, source, expec
     assert expected_lineno in {finding.lineno for finding in _browser_fetch_references(path)}
 
 
+def test_browser_fetch_guard_resolves_constant_getattr_name(tmp_path):
+    path = tmp_path / "mutated_service.py"
+    path.write_text(
+        "import app.services.cloakbrowser_session as bridge\n"
+        "name = 'browser_fetch'\n"
+        "callback = getattr(bridge, name)\n",
+        encoding="utf-8",
+    )
+
+    assert 3 in {finding.lineno for finding in _browser_fetch_references(path)}
+
+
 @pytest.mark.parametrize(
     "source",
     (
@@ -465,6 +562,58 @@ def test_direct_get_guard_ignores_mapping_access_and_explicit_post(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "source",
+    (
+        (
+            "def _make_session():\n"
+            "    return object()\n"
+            "session = _make_session()\n"
+            "session.get('https://example.test')\n"
+        ),
+        (
+            "def _make_session():\n"
+            "    return object()\n"
+            "transport = _make_session()\n"
+            "transport.get('https://example.test')\n"
+        ),
+        (
+            "def build():\n"
+            "    return object()\n"
+            "client = build()\n"
+            "client.get('https://example.test')\n"
+        ),
+        (
+            "import requests\n"
+            "def build() -> requests.Session:\n"
+            "    return requests.Session()\n"
+            "transport = build()\n"
+            "transport.get('https://example.test')\n"
+        ),
+    ),
+    ids=("session-target", "known-factory", "client-target", "return-annotation"),
+)
+def test_direct_get_guard_preserves_factory_http_origin(tmp_path, source):
+    path = tmp_path / "mutated_service.py"
+    path.write_text(source, encoding="utf-8")
+
+    assert _direct_http_gets(path)
+
+
+def test_direct_get_guard_resolves_constant_getattr_name(tmp_path):
+    path = tmp_path / "mutated_service.py"
+    path.write_text(
+        "def _make_session():\n"
+        "    return object()\n"
+        "session = _make_session()\n"
+        "name = 'get'\n"
+        "getattr(session, name)('https://example.test')\n",
+        encoding="utf-8",
+    )
+
+    assert _direct_http_gets(path)
+
+
+@pytest.mark.parametrize(
     ("source", "expected"),
     (
         ("import requests as http\n", "requests"),
@@ -479,7 +628,40 @@ def test_parser_guard_detects_dependency_import_mutations(tmp_path, source, expe
     path = tmp_path / "mutated_parser.py"
     path.write_text(source, encoding="utf-8")
 
-    assert expected in _forbidden_parser_imports(path)
+    assert expected in _disallowed_parser_dependencies(path)
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    (
+        ("import socket\n", "socket"),
+        ("import urllib3\n", "urllib3"),
+        ("import asyncpg\n", "asyncpg"),
+        ("import sqlite3\n", "sqlite3"),
+        ("import importlib as loader\nloader.import_module('json')\n", "importlib"),
+        ("module = __import__('json')\n", "dynamic:__import__"),
+        (
+            "import app.services.makerworld_parsers.transport\n",
+            "app.services.makerworld_parsers.transport",
+        ),
+        ("import app.services.three_mf.transport\n", "app.services.three_mf.transport"),
+    ),
+    ids=(
+        "socket",
+        "urllib3",
+        "asyncpg",
+        "sqlite3",
+        "importlib",
+        "dunder-import",
+        "unknown-parser-module",
+        "unknown-three-mf-module",
+    ),
+)
+def test_parser_guard_rejects_non_allowlisted_and_dynamic_imports(tmp_path, source, expected):
+    path = tmp_path / "mutated_parser.py"
+    path.write_text(source, encoding="utf-8")
+
+    assert expected in _disallowed_parser_dependencies(path)
 
 
 def test_python_file_discovery_is_recursive(tmp_path):
@@ -495,7 +677,7 @@ def test_static_asset_stream_get_is_the_only_asset_downloader_exception(tmp_path
     path.write_text(
         "import requests\n"
         "def download_file(session: requests.Session, url, control_url):\n"
-        "    session.get(url, stream=True)\n"
+        "    session.get(url, timeout=timeout, stream=True)\n"
         "    session.get(control_url)\n",
         encoding="utf-8",
     )
@@ -505,13 +687,38 @@ def test_static_asset_stream_get_is_the_only_asset_downloader_exception(tmp_path
     assert [finding.lineno for finding in findings] == [4]
 
 
+def test_asset_downloader_rejects_a_duplicate_static_stream_get(tmp_path):
+    path = tmp_path / "asset_downloader.py"
+    path.write_text(
+        "import requests\n"
+        "def download_file(session: requests.Session, url):\n"
+        "    session.get(url, timeout=timeout, stream=True)\n"
+        "    session.get(url, timeout=timeout, stream=True)\n",
+        encoding="utf-8",
+    )
+
+    assert _unapproved_direct_gets(path, Path("app/services/asset_downloader.py"))
+
+
+def test_asset_downloader_rejects_an_incomplete_stream_get_shape(tmp_path):
+    path = tmp_path / "asset_downloader.py"
+    path.write_text(
+        "import requests\n"
+        "def download_file(session: requests.Session, url):\n"
+        "    session.get(url, stream=True)\n",
+        encoding="utf-8",
+    )
+
+    assert _unapproved_direct_gets(path, Path("app/services/asset_downloader.py"))
+
+
 def test_ticket_gets_are_the_only_online_account_exceptions(tmp_path):
     path = tmp_path / "online_accounts.py"
     path.write_text(
         "import requests\n"
-        "def _exchange_makerworld_ticket(session: requests.Session, ticket_url, makerworld_ticket_url, control_url):\n"
+        "def _exchange_makerworld_ticket(session: requests.Session, ticket_url, makerworld_ticket_url, control_url, ticket):\n"
         "    session.get(ticket_url, proxies=None, timeout=(8, 20))\n"
-        "    session.get(makerworld_ticket_url, params={'ticket': 'value'}, proxies=None, timeout=(8, 20), allow_redirects=True)\n"
+        "    session.get(makerworld_ticket_url, params={'ticket': ticket}, proxies=None, timeout=(8, 20), allow_redirects=True)\n"
         "    session.get(control_url)\n",
         encoding="utf-8",
     )
@@ -521,10 +728,37 @@ def test_ticket_gets_are_the_only_online_account_exceptions(tmp_path):
     assert [finding.lineno for finding in findings] == [5]
 
 
+def test_online_accounts_rejects_a_duplicate_ticket_get(tmp_path):
+    path = tmp_path / "online_accounts.py"
+    path.write_text(
+        "import requests\n"
+        "def _exchange_makerworld_ticket(session: requests.Session, ticket_url, makerworld_ticket_url, ticket):\n"
+        "    session.get(ticket_url, proxies=None, timeout=(8, 20))\n"
+        "    session.get(ticket_url, proxies=None, timeout=(8, 20))\n"
+        "    session.get(makerworld_ticket_url, params={'ticket': ticket}, proxies=None, timeout=(8, 20), allow_redirects=True)\n",
+        encoding="utf-8",
+    )
+
+    assert _unapproved_direct_gets(path, Path("app/services/online_accounts.py"))
+
+
+def test_online_accounts_rejects_a_changed_ticket_get_shape(tmp_path):
+    path = tmp_path / "online_accounts.py"
+    path.write_text(
+        "import requests\n"
+        "def _exchange_makerworld_ticket(session: requests.Session, ticket_url, makerworld_ticket_url, ticket):\n"
+        "    session.get(ticket_url, proxies=None, timeout=(8, 20))\n"
+        "    session.get(makerworld_ticket_url, params={'ticket': ticket}, proxies=None, timeout=(8, 20), allow_redirects=False)\n",
+        encoding="utf-8",
+    )
+
+    assert _unapproved_direct_gets(path, Path("app/services/online_accounts.py"))
+
+
 def test_parsers_have_no_network_or_store_dependencies():
     for path in PARSER_FILES:
-        forbidden = _forbidden_parser_imports(path)
-        assert not forbidden, f"{path}: {sorted(forbidden)}"
+        violations = _disallowed_parser_dependencies(path)
+        assert not violations, f"{path}: {sorted(violations)}"
 
 
 def test_only_browser_client_calls_browser_fetch():
