@@ -1,5 +1,8 @@
+import json
 from pathlib import Path
 from unittest.mock import patch
+
+import requests
 
 from app.services.makerworld_browser_client import (
     MakerWorldBrowserError,
@@ -12,6 +15,7 @@ from app.services.makerworld_pipeline import (
     source_is_deleted,
 )
 from app.services import batch_discovery
+from app.services.makerworld_pipeline.archive import fetch_instance_3mf
 
 
 def test_batch_discovery_facade_preserves_url_helper_identity():
@@ -46,22 +50,67 @@ def test_source_is_deleted_treats_browser_outage_as_unknown_not_deleted():
         assert source_is_deleted("https://makerworld.com.cn/zh/models/1", "token=ok") is False
 
 
-def test_archive_model_delegates_to_legacy_archiver():
-    kwargs = {
-        "url": "https://makerworld.com.cn/zh/models/1",
-        "cookie": "token=ok",
-        "download_dir": Path("/tmp/archive"),
-        "logs_dir": Path("/tmp/logs"),
-    }
-    expected = {"ok": True}
-
+def test_archive_pipeline_keeps_result_contract(tmp_path):
+    design = {"id": 123, "title": "Demo", "instances": []}
+    html = (
+        '<script id="__NEXT_DATA__" type="application/json">'
+        + json.dumps({"props": {"pageProps": {"design": design}}})
+        + "</script>"
+    )
     with patch(
-        "app.services.makerworld_pipeline.legacy_archive_model",
-        return_value=expected,
-    ) as legacy_archive_model:
-        assert archive_model(**kwargs) == expected
+        "app.services.makerworld_pipeline.archive.fetch_html_with_browser",
+        return_value=html,
+    ), patch(
+        "app.services.makerworld_pipeline.archive.reserve_three_mf_download_slot",
+        side_effect=AssertionError("no instance"),
+    ):
+        result = archive_model(
+            url="https://makerworld.com.cn/zh/models/123",
+            cookie="",
+            download_dir=tmp_path / "archive",
+            logs_dir=tmp_path / "logs",
+            download_assets=False,
+            collect_comments_data=False,
+            rebuild_archive=False,
+        )
 
-    legacy_archive_model.assert_called_once_with(**kwargs)
+    assert set(result) == {
+        "base_name",
+        "work_dir",
+        "missing_3mf",
+        "action",
+        "model_id",
+        "instances",
+        "stats",
+    }
+
+
+def test_archive_pipeline_calls_browser_authorizer_at_most_once_per_instance():
+    browser_result = {
+        "status_code": 200,
+        "text": "",
+        "payload": {"name": "demo.3mf", "url": "https://cdn.example.test/demo.3mf?signature=ok"},
+        "verification": {},
+    }
+    with patch(
+        "app.services.makerworld_pipeline.archive.browser_authorize_3mf_download",
+        return_value=browser_result,
+    ) as authorize:
+        name, signed_url, _api_url, failure = fetch_instance_3mf(
+            requests.Session(),
+            456,
+            "",
+            api_url="https://api.bambulab.cn/v1/i/456/3mf",
+            origin="https://makerworld.com.cn",
+            browser_authorization=True,
+            browser_profile_id="profile-cn",
+            model_page_url="https://makerworld.com.cn/zh/models/123",
+        )
+
+    authorize.assert_called_once()
+    assert name == "demo.3mf"
+    assert signed_url.startswith("https://cdn.example.test/demo.3mf")
+    assert failure["state"] == "available"
 
 
 def test_discover_source_fetches_each_candidate_once_and_keeps_result_shape():

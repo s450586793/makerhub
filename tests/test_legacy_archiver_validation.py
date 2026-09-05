@@ -7,6 +7,7 @@ from unittest.mock import patch
 from app.services import legacy_archiver
 from app.services.asset_downloader import AssetDownloadError
 from app.services.makerworld_browser_client import MakerWorldBrowserError
+from app.services.makerworld_pipeline import archive as pipeline_archive
 
 
 class _ApiSession:
@@ -40,15 +41,15 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         )
 
         with TemporaryDirectory() as temp_dir, patch.object(
-            legacy_archiver,
+            pipeline_archive,
             "fetch_html_with_browser",
             return_value=html,
         ), patch.object(
-            legacy_archiver,
+            pipeline_archive,
             "reserve_three_mf_download_slot",
             side_effect=AssertionError("print-only model must not reserve download quota"),
         ), patch.object(
-            legacy_archiver,
+            pipeline_archive,
             "fetch_instance_3mf",
             side_effect=AssertionError("print-only model must not request 3MF authorization"),
         ):
@@ -268,10 +269,10 @@ class LegacyArchiverValidationTest(unittest.TestCase):
         """
 
         with TemporaryDirectory() as temp_dir, patch(
-            "app.services.legacy_archiver.fetch_html_with_browser",
+            "app.services.makerworld_pipeline.archive.fetch_html_with_browser",
             return_value=makerworld_404_html,
         ), patch(
-            "app.services.legacy_archiver.fetch_design_from_api",
+            "app.services.makerworld_pipeline.archive.fetch_design_from_api",
             return_value=None,
         ):
             with self.assertRaisesRegex(RuntimeError, "404|下架|私有|草稿"):

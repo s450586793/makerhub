@@ -1,6 +1,4 @@
-from typing import Any
-
-from app.services.legacy_archiver import archive_model as legacy_archive_model
+from .archive import archive_model
 
 from .discovery import (
     default_favorites_source,
@@ -13,10 +11,6 @@ from .discovery import (
     resolve_source_name,
 )
 from .source_status import source_is_deleted
-
-
-def archive_model(**kwargs: Any) -> dict[str, Any]:
-    return legacy_archive_model(**kwargs)
 
 
 __all__ = [
