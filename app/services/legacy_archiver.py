@@ -995,7 +995,7 @@ def _comment_resource_stats(comments: list[dict]) -> dict[str, int]:
 
 
 def _download_asset_with_fresh_session(base_session: requests.Session, url: str, dest: Path) -> None:
-    download_with_fresh_session(base_session, url, dest)
+    download_with_fresh_session(base_session, url, dest, download_func=download_file)
 
 
 def _download_comment_assets(tasks: list[dict], progress_callback, progress_start: int, progress_end: int) -> dict[str, int]:

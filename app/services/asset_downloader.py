@@ -131,10 +131,17 @@ def download_file(
     log("已下载：", dest)
 
 
-def download_with_fresh_session(base_session: requests.Session, url: str, dest: Path) -> None:
+def download_with_fresh_session(
+    base_session: requests.Session,
+    url: str,
+    dest: Path,
+    *,
+    download_func: Callable[..., None] | None = None,
+) -> None:
+    active_download = download_func or download_file
     with resource_slot("comment_assets", detail=url):
         if type(base_session) is not requests.Session:
-            download_file(
+            active_download(
                 base_session,
                 url,
                 dest,
@@ -145,7 +152,7 @@ def download_with_fresh_session(base_session: requests.Session, url: str, dest: 
         with requests.Session() as asset_session:
             asset_session.headers.update(getattr(base_session, "headers", {}) or {})
             asset_session.cookies.update(getattr(base_session, "cookies", {}) or {})
-            download_file(
+            active_download(
                 asset_session,
                 url,
                 dest,

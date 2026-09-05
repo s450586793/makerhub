@@ -56,7 +56,7 @@ class LegacyArchiverParallelAssetsTest(unittest.TestCase):
             def fake_download(_session, _url, dest, **_kwargs):
                 dest.write_text("ok", encoding="utf-8")
 
-            with patch.object(asset_downloader, "download_file", side_effect=fake_download):
+            with patch.object(legacy_archiver, "download_file", side_effect=fake_download) as fake_downloader:
                 summary = legacy_archiver.parse_summary(
                     {"summary": html},
                     "Demo",
@@ -64,6 +64,7 @@ class LegacyArchiverParallelAssetsTest(unittest.TestCase):
                     out_dir,
                 )
 
+        self.assertEqual(fake_downloader.call_count, 2)
         self.assertEqual(
             [item["fileName"] for item in summary["summaryImages"]],
             ["summary_img_01.jpg", "summary_img_02.jpg"],
@@ -83,7 +84,7 @@ class LegacyArchiverParallelAssetsTest(unittest.TestCase):
             def fake_download(_session, _url, dest, **_kwargs):
                 dest.write_text("ok", encoding="utf-8")
 
-            with patch.object(asset_downloader, "download_file", side_effect=fake_download):
+            with patch.object(legacy_archiver, "download_file", side_effect=fake_download) as fake_downloader:
                 images, cover = legacy_archiver.collect_design_images(
                     design,
                     object(),
@@ -91,6 +92,7 @@ class LegacyArchiverParallelAssetsTest(unittest.TestCase):
                     "Demo",
                 )
 
+        self.assertEqual(fake_downloader.call_count, 2)
         self.assertEqual(
             [item["fileName"] for item in images],
             ["design_01.jpg", "design_02.jpg"],
@@ -109,13 +111,18 @@ class LegacyArchiverParallelAssetsTest(unittest.TestCase):
                 captured.append(session.cookies.get("maker_session", domain="example.test", path="/"))
                 _dest.write_text("ok", encoding="utf-8")
 
-            with patch.object(asset_downloader, "download_file", side_effect=fake_download):
-                legacy_archiver._download_asset_with_fresh_session(
-                    base_session,
-                    "https://example.test/asset.jpg",
-                    dest,
-                )
+            with patch.object(
+                requests.Session,
+                "get",
+                side_effect=AssertionError("asset test must not use the network"),
+            ), patch.object(
+                legacy_archiver,
+                "download_file",
+                side_effect=fake_download,
+            ) as fake_downloader:
+                legacy_archiver._download_asset_with_fresh_session(base_session, "https://example.test/asset.jpg", dest)
 
+        fake_downloader.assert_called_once()
         self.assertEqual(captured, ["secret"])
 
 
