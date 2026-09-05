@@ -1,9 +1,15 @@
+import tempfile
 import unittest
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app import main as main_app
+from app.api import config as config_api
+from app.core.store import JsonStore
+from app.schemas.models import AdvancedRuntimeConfig
 from tests.test_helpers import iter_app_routes
 
 
@@ -96,6 +102,50 @@ class RemovedEmbeddedVerificationWebRouteTest(unittest.TestCase):
         ):
             with self.subTest(static_path=static_path):
                 self.assertLess(route_order.index(static_path), detail_index)
+
+    def test_advanced_config_post_accepts_legacy_engine_values_without_runtime_effects(self):
+        test_app = FastAPI()
+        test_app.include_router(config_api.router)
+        expected_runtime = AdvancedRuntimeConfig().model_dump(exclude={"scraping_engine"})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            with (
+                patch.object(config_api, "store", store),
+                patch.object(config_api, "_require_session_auth"),
+                patch.object(
+                    config_api,
+                    "_public_config_payload",
+                    side_effect=lambda config: {
+                        "advanced": config.advanced.model_dump(exclude={"scraping_engine"}),
+                    },
+                ),
+                patch.object(
+                    config_api,
+                    "_get_github_version_status",
+                    new=AsyncMock(return_value={}),
+                ),
+                patch.object(config_api, "append_business_log") as log_mock,
+            ):
+                client = TestClient(test_app)
+                responses = [
+                    client.post("/api/config/advanced", json={"scraping_engine": value})
+                    for value in ("legacy", "scrapling_first", "scrapling_only")
+                ]
+
+            for response in responses:
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["advanced"], expected_runtime)
+            self.assertEqual(log_mock.call_count, 3)
+            for log_call in log_mock.call_args_list:
+                self.assertNotIn("scraping_engine", log_call.kwargs)
+
+            saved = store.load()
+            self.assertEqual(saved.advanced.scraping_engine, "scrapling_only")
+            self.assertEqual(
+                saved.advanced.model_dump(exclude={"scraping_engine"}),
+                expected_runtime,
+            )
 
 
 if __name__ == "__main__":

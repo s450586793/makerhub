@@ -11,6 +11,18 @@ PARSER_PACKAGE = "app.services.makerworld_parsers"
 BROWSER_FETCH_SYMBOL = "app.services.cloakbrowser_session.browser_fetch"
 HTTP_MODULES = ("requests", "httpx", "aiohttp")
 HTTP_CLIENT_NAMES = {"client", "http", "http_client", "session"}
+SCRAPLING_SCHEMA_COMPAT_PATH = Path("app/schemas/models.py")
+SCRAPLING_RUNTIME_ALLOWED_FILES = frozenset({SCRAPLING_SCHEMA_COMPAT_PATH})
+SCRAPLING_RUNTIME_TOKENS = frozenset({
+    "scraping_engine",
+    "scrapling_first",
+    "scrapling_only",
+    "scrapling_fetch",
+    "fetch_with_scrapling",
+    "_scrapling_trace",
+    "scrapling",
+    "fetch_trace",
+})
 PARSER_ALLOWED_MODULES = frozenset({
     "__future__",
     "bs4",
@@ -492,6 +504,34 @@ def _finding_summary(findings: list[_AstFinding]) -> list[str]:
     ]
 
 
+def _scrapling_runtime_token_violations(path: Path) -> set[str]:
+    tokens: set[str] = set()
+
+    def add_token(value: str | None) -> None:
+        if not value:
+            return
+        tokens.add(value)
+        tokens.update(value.split("."))
+
+    for node in ast.walk(_tree(path)):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            add_token(node.value)
+        elif isinstance(node, ast.Name):
+            add_token(node.id)
+        elif isinstance(node, ast.Attribute):
+            add_token(node.attr)
+        elif isinstance(node, ast.keyword):
+            add_token(node.arg)
+        elif isinstance(node, ast.arg):
+            add_token(node.arg)
+        elif isinstance(node, ast.alias):
+            add_token(node.name)
+            add_token(node.asname)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            add_token(node.name)
+    return tokens & SCRAPLING_RUNTIME_TOKENS
+
+
 @pytest.mark.parametrize(
     ("source", "expected_lineno"),
     (
@@ -878,21 +918,47 @@ def test_control_plane_does_not_issue_unapproved_direct_gets():
 
 
 def test_runtime_has_no_scrapling_engine_branches():
-    allowed = {Path("app/schemas/models.py")}
-    forbidden = {"scraping_engine", "scrapling_first", "scrapling_only"}
     violations = []
     for path in (ROOT / "app").rglob("*.py"):
         relative = path.relative_to(ROOT)
-        if relative in allowed:
+        if relative in SCRAPLING_RUNTIME_ALLOWED_FILES:
             continue
-        tree = _tree(path)
-        tokens = {
-            node.value
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Constant) and isinstance(node.value, str)
-        }
-        tokens.update(node.id for node in ast.walk(tree) if isinstance(node, ast.Name))
-        tokens.update(node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute))
-        if tokens & forbidden:
+        if _scrapling_runtime_token_violations(path):
             violations.append(relative.as_posix())
     assert violations == []
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    (
+        ("configure(scraping_engine='legacy')\n", "scraping_engine"),
+        ("def configure(scrapling_fetch):\n    return None\n", "scrapling_fetch"),
+        ("import app.services.scrapling_fetch\n", "scrapling_fetch"),
+        ("import json as fetch_with_scrapling\n", "fetch_with_scrapling"),
+        ("value = config.scraping_engine\n", "scraping_engine"),
+        ("scrapling_fetch = None\n", "scrapling_fetch"),
+        ("mode = 'scrapling_only'\n", "scrapling_only"),
+        ("category = 'scrapling'\n", "scrapling"),
+        ("event = 'fetch_trace'\n", "fetch_trace"),
+        ("callback = service._scrapling_trace\n", "_scrapling_trace"),
+        ("def _scrapling_trace():\n    return None\n", "_scrapling_trace"),
+    ),
+    ids=(
+        "keyword",
+        "function-argument",
+        "import-name",
+        "import-alias",
+        "attribute",
+        "name",
+        "engine-string",
+        "log-category-string",
+        "log-event-string",
+        "trace-attribute",
+        "trace-function",
+    ),
+)
+def test_scrapling_runtime_token_guard_rejects_ast_mutations(tmp_path, source, expected):
+    path = tmp_path / "mutated_runtime.py"
+    path.write_text(source, encoding="utf-8")
+
+    assert expected in _scrapling_runtime_token_violations(path)

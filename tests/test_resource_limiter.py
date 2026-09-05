@@ -1,3 +1,4 @@
+import json
 import os
 import threading
 import time
@@ -8,7 +9,8 @@ from queue import Empty
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from app.schemas.models import AdvancedRuntimeConfig
+from app.core.store import JsonStore
+from app.schemas.models import AdvancedRuntimeConfig, AppConfig
 from app.services import resource_limiter
 
 
@@ -415,6 +417,24 @@ class ResourceLimiterConfigTest(unittest.TestCase):
         })
 
         self.assertEqual(config.scraping_engine, "scrapling_only")
+
+    def test_json_store_loads_legacy_scraping_engine_config(self):
+        config_path = Path(self.temp_dir.name) / "legacy-config.json"
+        config_path.write_text(
+            json.dumps({
+                "advanced": {
+                    "scraping_engine": "scrapling_only",
+                    "makerworld_request_limit": 3,
+                },
+            }),
+            encoding="utf-8",
+        )
+
+        config = JsonStore(config_path).load()
+
+        self.assertIsInstance(config, AppConfig)
+        self.assertEqual(config.advanced.scraping_engine, "scrapling_only")
+        self.assertEqual(config.advanced.makerworld_request_limit, 3)
 
     def test_resource_gate_reports_waiters_and_serves_them_fifo(self):
         resource_limiter.RESOURCE_LIMITS["fifo_test"] = 1
