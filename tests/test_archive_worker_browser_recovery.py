@@ -459,6 +459,102 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
 
         self.assertNotEqual(manager._queue_wakeup_signature(queue), blocked_signature)
 
+    def test_waiting_browser_platform_is_selected_for_automatic_status_recovery(self):
+        manager, store = self._manager_with_cookie("token=cn")
+        config = store.load()
+        config.cookies = [
+            config.cookies[0].model_copy(update={"browser_status": "action_required"}),
+            CookiePair(
+                platform="global",
+                cookie="token=global",
+                browser_profile_id="profile-global",
+                browser_status="waiting",
+            ),
+        ]
+        store.save(config)
+        queue = {
+            "active": [],
+            "queued": [
+                {
+                    "id": "cn-task",
+                    "status": "queued",
+                    "url": "https://makerworld.com.cn/zh/models/123",
+                    "meta": {"source": "cn"},
+                },
+                {
+                    "id": "global-task",
+                    "status": "queued",
+                    "url": "https://makerworld.com/zh/models/456",
+                    "meta": {"source": "global"},
+                },
+            ],
+        }
+
+        with patch.object(
+            manager,
+            "_schedule_transient_browser_status_recovery",
+            return_value=True,
+        ) as schedule_mock:
+            scheduled = manager._schedule_transient_browser_recovery_for_queue(queue)
+
+        self.assertTrue(scheduled)
+        schedule_mock.assert_called_once_with("global")
+
+    def test_transient_browser_status_recovery_refreshes_session_in_background(self):
+        manager = ArchiveTaskManager(background_enabled=True)
+        thread = Mock()
+
+        with patch.object(archive_worker_module.threading, "Thread", return_value=thread) as thread_mock, \
+                patch.object(archive_worker_module.time, "monotonic", return_value=1000.0), \
+                patch.object(archive_worker_module, "cloakbrowser_configured", return_value=True), \
+                patch.object(manager, "_refresh_browser_session_for_task") as refresh_mock:
+            scheduled = manager._schedule_transient_browser_status_recovery("global")
+            target = thread_mock.call_args.kwargs["target"]
+            target()
+            duplicate = manager._schedule_transient_browser_status_recovery("global")
+
+        self.assertTrue(scheduled)
+        self.assertFalse(duplicate)
+        thread_mock.assert_called_once()
+        thread.start.assert_called_once()
+        refresh_mock.assert_called_once_with("global")
+
+    def test_browser_status_recovery_allows_first_attempt_soon_after_host_boot(self):
+        manager = ArchiveTaskManager(background_enabled=True)
+
+        with patch.object(archive_worker_module.threading, "Thread", return_value=Mock()), \
+                patch.object(archive_worker_module.time, "monotonic", return_value=0.0), \
+                patch.object(archive_worker_module, "cloakbrowser_configured", return_value=True):
+            scheduled = manager._schedule_transient_browser_status_recovery("global")
+
+        self.assertTrue(scheduled)
+
+    def test_blocked_worker_loop_schedules_transient_browser_status_recovery(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        queue = {
+            "active": [],
+            "queued": [
+                {
+                    "id": "global-task",
+                    "status": "queued",
+                    "url": "https://makerworld.com/zh/models/456",
+                    "meta": {"source": "global"},
+                }
+            ],
+            "running_count": 0,
+            "queued_count": 1,
+        }
+        manager.task_store = SimpleNamespace(load_archive_queue=Mock(return_value=queue))
+
+        with patch.object(manager, "_refresh_batch_tasks", return_value=False), \
+                patch.object(manager, "_next_executable_task", return_value=None), \
+                patch.object(manager, "_schedule_transient_browser_recovery_for_queue") as schedule_mock, \
+                patch.object(manager, "_queue_wakeup_signature", return_value=("blocked",)), \
+                patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": False}):
+            manager._run_loop()
+
+        schedule_mock.assert_called_once_with(queue)
+
     def test_three_mf_gate_change_wakes_a_gate_blocked_queue(self):
         manager, _store = self._manager_with_cookie("token=old")
         queue = {

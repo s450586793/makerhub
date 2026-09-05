@@ -95,6 +95,7 @@ CLOAKBROWSER_TASK_BLOCKING_STATUSES = {
     "account_mismatch",
     "not_configured",
 }
+CLOAKBROWSER_AUTO_RECOVERABLE_BLOCKING_STATUSES = {"waiting"}
 THREE_MF_RECOVERY_PROBE_BATCH_SIZE = 1
 AUTO_MISSING_3MF_RETRY_COOLDOWN_SECONDS = 15 * 60
 AUTO_MISSING_3MF_RETRY_STATUSES = {
@@ -1361,12 +1362,8 @@ class ArchiveTaskManager:
         normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
         if normalized_platform not in {"cn", "global"} or not self.background_enabled:
             return False
-        now = time.monotonic()
-        with self._cloakbrowser_recovery_lock:
-            previous = self._cloakbrowser_recovery_attempted_at.get(normalized_platform, 0.0)
-            if now - previous < CLOAKBROWSER_AUTO_RECOVERY_COOLDOWN_SECONDS:
-                return False
-            self._cloakbrowser_recovery_attempted_at[normalized_platform] = now
+        if not self._reserve_browser_recovery_attempt(normalized_platform):
+            return False
         snapshot = dict(primary) if isinstance(primary, dict) else {}
 
         def _worker() -> None:
@@ -1384,6 +1381,41 @@ class ArchiveTaskManager:
         threading.Thread(
             target=_worker,
             name=f"makerhub-cloakbrowser-recovery-{normalized_platform}",
+            daemon=True,
+        ).start()
+        return True
+
+    def _reserve_browser_recovery_attempt(self, platform: str) -> bool:
+        now = time.monotonic()
+        with self._cloakbrowser_recovery_lock:
+            previous = self._cloakbrowser_recovery_attempted_at.get(platform)
+            if previous is not None and now - previous < CLOAKBROWSER_AUTO_RECOVERY_COOLDOWN_SECONDS:
+                return False
+            self._cloakbrowser_recovery_attempted_at[platform] = now
+        return True
+
+    def _schedule_transient_browser_status_recovery(self, platform: str) -> bool:
+        normalized_platform = normalize_makerworld_source(platform) or str(platform or "").strip().lower()
+        if normalized_platform not in {"cn", "global"} or not self.background_enabled:
+            return False
+        if not cloakbrowser_configured() or not self._reserve_browser_recovery_attempt(normalized_platform):
+            return False
+
+        def _worker() -> None:
+            try:
+                self._refresh_browser_session_for_task(normalized_platform)
+            except Exception as exc:
+                _log_archive(
+                    "cloakbrowser_transient_status_recovery_failed",
+                    "指纹浏览器临时等待状态自动恢复失败。",
+                    level="warning",
+                    platform=normalized_platform,
+                    error=str(exc)[:240],
+                )
+
+        threading.Thread(
+            target=_worker,
+            name=f"makerhub-cloakbrowser-status-recovery-{normalized_platform}",
             daemon=True,
         ).start()
         return True
@@ -3490,6 +3522,32 @@ class ArchiveTaskManager:
                 blocked_platforms.add(platform)
         return blocked_platforms, tuple(sorted(signature))
 
+    def _schedule_transient_browser_recovery_for_queue(self, queue: dict) -> bool:
+        _blocked_platforms, browser_signature = self._browser_session_queue_state()
+        recoverable_platforms = {
+            platform
+            for platform, status, _synced_at in browser_signature
+            if status in CLOAKBROWSER_AUTO_RECOVERABLE_BLOCKING_STATUSES
+        }
+        if not recoverable_platforms:
+            return False
+
+        scheduled = False
+        for item in queue.get("queued") or []:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "queued").strip().lower()
+            if status not in {"", "queued", "pending"}:
+                continue
+            platform, _url, _meta = self._task_platform_and_url(item)
+            if platform not in recoverable_platforms:
+                continue
+            scheduled = self._schedule_transient_browser_status_recovery(platform) or scheduled
+            recoverable_platforms.discard(platform)
+            if not recoverable_platforms:
+                break
+        return scheduled
+
     def _queue_wakeup_signature(self, queue: dict) -> tuple[Any, ...]:
         queued = list(queue.get("queued") or [])
         first = queued[0] if queued and isinstance(queued[0], dict) else {}
@@ -3899,6 +3957,7 @@ class ArchiveTaskManager:
                 if has_active_batch:
                     time.sleep(ACTIVE_BATCH_IDLE_POLL_SECONDS)
                     continue
+                self._schedule_transient_browser_recovery_for_queue(queue)
                 self._blocked_queue_signature = self._queue_wakeup_signature(queue)
                 retry_delays = [
                     _archive_task_retry_delay(item)
