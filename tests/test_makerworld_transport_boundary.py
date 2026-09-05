@@ -524,6 +524,8 @@ def _scrapling_runtime_token_violations(path: Path) -> set[str]:
             add_token(node.arg)
         elif isinstance(node, ast.arg):
             add_token(node.arg)
+        elif isinstance(node, ast.ImportFrom):
+            add_token(node.module)
         elif isinstance(node, ast.alias):
             add_token(node.name)
             add_token(node.asname)
@@ -934,6 +936,8 @@ def test_runtime_has_no_scrapling_engine_branches():
         ("configure(scraping_engine='legacy')\n", "scraping_engine"),
         ("def configure(scrapling_fetch):\n    return None\n", "scrapling_fetch"),
         ("import app.services.scrapling_fetch\n", "scrapling_fetch"),
+        ("from app.services.scrapling_fetch import fetch_text\n", "scrapling_fetch"),
+        ("from app.services.scrapling_fetch import fetch_text as fetch\n", "scrapling_fetch"),
         ("import json as fetch_with_scrapling\n", "fetch_with_scrapling"),
         ("value = config.scraping_engine\n", "scraping_engine"),
         ("scrapling_fetch = None\n", "scrapling_fetch"),
@@ -947,6 +951,8 @@ def test_runtime_has_no_scrapling_engine_branches():
         "keyword",
         "function-argument",
         "import-name",
+        "import-from-module",
+        "import-from-module-with-alias",
         "import-alias",
         "attribute",
         "name",
