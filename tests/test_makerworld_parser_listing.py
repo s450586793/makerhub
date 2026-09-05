@@ -24,8 +24,14 @@ def test_listing_parser_emits_only_author_hits():
         {"designId": 2, "title": "Not author", "coverUrl": "https://example.test/m.jpg"},
     ]}
 
-    assert [item["url"] for item in extract_followed_authors(payload, "cn")] == [
-        "https://makerworld.com.cn/zh/@AcePrint/upload"
+    assert extract_followed_authors(payload, "cn") == [
+        {
+            "title": "Ace",
+            "handle": "AcePrint",
+            "uid": "1",
+            "avatar_url": "https://example.test/a.jpg",
+            "url": "https://makerworld.com.cn/zh/@AcePrint/upload",
+        }
     ]
 
 

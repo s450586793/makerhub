@@ -3,7 +3,7 @@ import re
 import time
 from html import unescape
 from typing import Any, Optional
-from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlparse, urlunparse
+from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -21,14 +21,24 @@ from app.services.makerworld_parsers.common import (
     AUTHOR_ROOT_RE,
     AUTHOR_UPLOAD_RE,
     COLLECTION_DETAIL_RE,
-    MODEL_PATH_RE,
     extract_model_id,
     normalize_model_url,
     normalize_source_url,
 )
 from app.services.makerworld_parsers.listing import (
+    _coerce_numeric_string,
+    _collect_model_urls_from_node,
+    _extract_avatar_url,
+    _extract_design_id_from_hit,
+    _extract_handle_from_url,
+    _extract_node_handle,
+    _extract_node_uid,
     _iter_dicts,
-    _iter_nodes,
+    _looks_like_author_follow_node,
+    _looks_like_design_hit,
+    _makerworld_model_path_lang,
+    _platform_origin,
+    _safe_positive_int,
     extract_account_profile as _extract_account_profile,
     extract_collection_entries as _extract_collection_entries,
     extract_followed_authors as _extract_followed_authors,
@@ -61,19 +71,6 @@ BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/135.0.0.0 Safari/537.36"
-)
-
-ACCOUNT_AVATAR_KEYS = (
-    "avatar",
-    "avatarUrl",
-    "avatar_url",
-    "avatarImageUrl",
-    "avatarURI",
-    "headIcon",
-    "portraitUrl",
-    "faceUrl",
-    "headPic",
-    "profileImage",
 )
 
 AUTHOR_BATCH_PAGE_LIMIT = 100
@@ -257,15 +254,6 @@ def _api_get_json(
     return None
 
 
-def _coerce_numeric_string(value: Any) -> str:
-    try:
-        if value in (None, ""):
-            return ""
-        return str(int(str(value).strip()))
-    except Exception:
-        return ""
-
-
 def _extract_uid(payload: Any) -> str:
     for node in _iter_dicts(payload):
         for key in ("uid", "userId", "ownerUid", "creatorUid", "authorUid"):
@@ -273,72 +261,6 @@ def _extract_uid(payload: Any) -> str:
             if candidate:
                 return candidate
     return ""
-
-
-def _extract_node_uid(node: Any) -> str:
-    if not isinstance(node, dict):
-        return ""
-    for key in ("uid", "userId", "ownerUid", "creatorUid", "authorUid", "id"):
-        candidate = _coerce_numeric_string(node.get(key))
-        if candidate:
-            return candidate
-    return ""
-
-
-def _extract_node_handle(node: Any) -> str:
-    if not isinstance(node, dict):
-        return ""
-    for key in ("username", "userName", "slug", "handle", "userHandle", "user_handle", "creatorUsername"):
-        candidate = str(node.get(key) or "").strip().lstrip("@")
-        if candidate:
-            return candidate
-    for key in ("url", "homepage", "profileUrl", "authorUrl", "link", "href"):
-        candidate = _extract_handle_from_url(str(node.get(key) or ""))
-        if candidate:
-            return candidate
-    return ""
-
-
-def _extract_avatar_url(node: Any) -> str:
-    if not isinstance(node, dict):
-        return ""
-    for key in ACCOUNT_AVATAR_KEYS:
-        value = node.get(key)
-        if isinstance(value, dict):
-            for nested_key in ("url", "src", "avatarUrl", "imageUrl"):
-                nested = str(value.get(nested_key) or "").strip()
-                if nested:
-                    return nested
-        elif isinstance(value, list):
-            for item in value:
-                nested = _extract_avatar_url(item)
-                if nested:
-                    return nested
-        else:
-            candidate = str(value or "").strip()
-            if candidate:
-                return candidate
-    return ""
-
-
-def _looks_like_design_hit(node: Any) -> bool:
-    if not isinstance(node, dict):
-        return False
-    if _extract_design_id_from_hit(node):
-        return True
-    return any(
-        key in node
-        for key in (
-            "title",
-            "name",
-            "coverUrl",
-            "designCreator",
-            "downloadCount",
-            "printCount",
-            "likeCount",
-            "commentCount",
-        )
-    )
 
 
 def _hits_payload_is_empty_result(payload: Any) -> bool:
@@ -410,16 +332,6 @@ def _payload_debug_summary(payload: Any) -> list[dict[str, Any]]:
             break
 
     return summaries
-
-
-def _safe_positive_int(value: Any) -> Optional[int]:
-    try:
-        if value in (None, ""):
-            return None
-        parsed = int(str(value).replace(",", "").strip())
-        return parsed if parsed > 0 else None
-    except Exception:
-        return None
 
 
 def _extract_collection_page_all_models_count_from_text(text: str) -> Optional[int]:
@@ -519,23 +431,6 @@ def _apply_collection_page_expected_total(result: Optional[dict], expected_total
     return result
 
 
-def _extract_design_id_from_hit(hit: Any) -> str:
-    if not isinstance(hit, dict):
-        return ""
-    for key in ("designId", "id", "modelId"):
-        candidate = _coerce_numeric_string(hit.get(key))
-        if candidate and any(
-            field in hit
-            for field in ("title", "name", "coverUrl", "downloadCount", "printCount", "likeCount", "commentCount")
-        ):
-            return candidate
-    for key in ("design", "model", "item"):
-        candidate = _extract_design_id_from_hit(hit.get(key))
-        if candidate:
-            return candidate
-    return ""
-
-
 def _extract_model_urls_from_hits(payload: dict, base_url: str) -> list[str]:
     found: list[str] = []
     seen: set[str] = set()
@@ -552,27 +447,6 @@ def _extract_model_urls_from_hits(payload: dict, base_url: str) -> list[str]:
             seen.add(url)
             found.append(url)
     return found
-
-
-def _extract_time_value(node: Any) -> str:
-    if not isinstance(node, dict):
-        return ""
-    for key in (
-        "favoritedAt",
-        "favoriteTime",
-        "favoritedTime",
-        "collectionTime",
-        "collectedAt",
-        "collectedTime",
-        "createTime",
-        "createdAt",
-        "updatedAt",
-    ):
-        value = node.get(key)
-        if value in (None, ""):
-            continue
-        return str(value).strip()
-    return ""
 
 
 def _source_items_to_urls(items: list[Any]) -> list[str]:
@@ -705,18 +579,6 @@ def _extract_collection_handle(source_url: str) -> str:
     if not _is_collection_models_url(source_url) or _is_collection_detail_url(source_url):
         return ""
     return _extract_handle_from_url(source_url)
-
-
-def _extract_handle_from_url(value: str) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    if raw.startswith("@"):
-        raw = f"/zh/{raw}"
-    parsed = urlparse(raw)
-    path = parsed.path or raw
-    match = re.search(r"(?:^|/)@([A-Za-z0-9_.-]+)(?:[/?#]|$)", path)
-    return match.group(1).strip("@").strip() if match else ""
 
 
 def _extract_author_handles_from_design(design: Any) -> set[str]:
@@ -901,14 +763,6 @@ def _platform_source_url(platform: str) -> str:
     return "https://makerworld.com/zh" if str(platform or "").strip().lower() == "global" else "https://makerworld.com.cn/zh"
 
 
-def _platform_origin(platform: str) -> str:
-    return "https://makerworld.com" if str(platform or "").strip().lower() == "global" else "https://makerworld.com.cn"
-
-
-def _makerworld_model_path_lang(platform: str) -> str:
-    return "en" if str(platform or "").strip().lower() == "global" else "zh"
-
-
 def discover_cookie_account_profile(platform: str, raw_cookie: str) -> dict[str, Any]:
     clean_platform = "global" if str(platform or "").strip().lower() == "global" else "cn"
     source_url = _platform_source_url(clean_platform)
@@ -986,34 +840,6 @@ def _profile_handle_or_uid_handle(profile: dict[str, str]) -> str:
     if handle and not _is_synthetic_user_handle(handle):
         return handle
     return ""
-
-
-def _looks_like_author_follow_node(node: Any) -> bool:
-    if not isinstance(node, dict):
-        return False
-    if not (_extract_node_handle(node) or _extract_node_uid(node)):
-        return False
-    if _extract_design_id_from_hit(node):
-        return False
-    if any(key in node for key in ("designId", "modelId", "coverLandscape", "coverUrl", "cover")):
-        return False
-    return any(
-        key in node
-        for key in (
-            "uid",
-            "userId",
-            "name",
-            "nickname",
-            "avatar",
-            "avatarUrl",
-            "fanCount",
-            "fansCount",
-            "followCount",
-            "followerCount",
-            "publicInstanceUploadCount",
-            "isFollowed",
-        )
-    )
 
 
 def _extract_followed_author_nodes(payload: Any) -> list[dict[str, Any]]:
@@ -2065,71 +1891,6 @@ def _collection_list_param_candidates(source_url: str, handle: str) -> list[dict
     return deduped
 
 
-def _extract_collection_entry_id(node: Any) -> str:
-    if not isinstance(node, dict):
-        return ""
-    for key in ("collectionId", "favoriteId", "favoritesId", "listId", "id"):
-        candidate = _coerce_numeric_string(node.get(key))
-        if candidate:
-            return candidate
-    return ""
-
-
-def _extract_collection_entry_count(node: dict) -> Optional[int]:
-    for key in ("designCount", "designCnt", "modelCount", "modelsCount"):
-        try:
-            value = node.get(key)
-            if value in (None, ""):
-                continue
-            return max(int(value), 0)
-        except Exception:
-            continue
-    designs = node.get("designs")
-    if isinstance(designs, list) and designs:
-        return len(designs)
-    return None
-
-
-def _looks_like_collection_entry(node: Any, owner_uid: str) -> bool:
-    if not isinstance(node, dict):
-        return False
-    collection_id = _extract_collection_entry_id(node)
-    if not collection_id or collection_id == owner_uid:
-        return False
-    if node.get("designId") or node.get("modelId"):
-        return False
-    if any(
-        key in node
-        for key in (
-            "downloadCount",
-            "printCount",
-            "commentCount",
-            "collectionCount",
-            "coverLandscape",
-            "boostCnt",
-            "bomsNeeded",
-        )
-    ):
-        return False
-    return any(
-        key in node
-        for key in (
-            "designCount",
-            "designCnt",
-            "modelCount",
-            "modelsCount",
-            "collectionType",
-            "privacy",
-            "isDefault",
-            "isPublic",
-            "hiddenCnt",
-            "hiddenIds",
-            "designCover",
-            "inCollection",
-        )
-    )
-
-
 def _fetch_collection_list_entries(
     session: requests.Session,
     source_url: str,
@@ -2704,39 +2465,6 @@ def _discover_collection_detail_models_api(
         "strict_expected_total": bool(expected_total),
         "collection_id": collection_id,
     }
-
-
-def _collect_model_urls_from_node(node: object, found: set[str], base_url: str) -> None:
-    if isinstance(node, str):
-        normalized = normalize_model_url(node, fallback_base=base_url)
-        if normalized:
-            found.add(normalized)
-        return
-
-    if isinstance(node, list):
-        for item in node:
-            _collect_model_urls_from_node(item, found, base_url)
-        return
-
-    if not isinstance(node, dict):
-        return
-
-    for key in ("url", "link", "href", "designUrl", "modelUrl"):
-        normalized = normalize_model_url(str(node.get(key) or ""), fallback_base=base_url)
-        if normalized:
-            found.add(normalized)
-
-    title = str(node.get("title") or node.get("name") or "").strip()
-    candidate_id = node.get("designId") or node.get("id") or node.get("modelId")
-    try:
-        candidate_id = str(int(candidate_id))
-    except Exception:
-        candidate_id = ""
-    if candidate_id and title and any(key in node for key in ("coverUrl", "downloadCount", "printCount", "likeCount", "designCreator", "user")):
-        found.add(normalize_model_url(f"/zh/models/{candidate_id}", fallback_base=base_url))
-
-    for value in node.values():
-        _collect_model_urls_from_node(value, found, base_url)
 
 
 def _normalize_source_title(title: str, source_url: str) -> str:
