@@ -10,8 +10,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import app.services.archive_worker as archive_worker_module
+import app.services.legacy_archiver as legacy_archiver_module
 from app.core.store import JsonStore
 from app.schemas.models import CookiePair
+from app.services.asset_downloader import AssetDownloadError
 from app.services.archive_worker import ArchiveTaskManager
 from app.services.cloakbrowser_session import (
     CloakBrowserBridgeError,
@@ -1074,6 +1076,38 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
                 missing_3mf_retry=True,
             )
 
+        self.assertIsNone(failure)
+        update_gate_mock.assert_not_called()
+        network_error_mock.assert_not_called()
+
+    def test_static_asset_error_with_gate_keywords_does_not_change_platform_health(self):
+        instance = {"id": "instance-1"}
+        legacy_archiver_module._mark_instance_3mf_download_failed(
+            instance,
+            AssetDownloadError(
+                "静态资源下载失败：https://cloudflare.example.test/login/verification.3mf"
+            ),
+        )
+        missing_items = [
+            {
+                "status": instance["downloadState"],
+                "message": instance["downloadMessage"],
+                "instance_id": instance["id"],
+            }
+        ]
+
+        with patch.object(archive_worker_module, "update_three_mf_gate") as update_gate_mock, \
+                patch.object(archive_worker_module, "mark_account_network_error") as network_error_mock:
+            failure = archive_worker_module._sync_account_health_for_archive_result(
+                platform="cn",
+                model_url="https://makerworld.com.cn/zh/models/123",
+                model_id="123",
+                instance_id="instance-1",
+                missing_items=missing_items,
+                missing_3mf_retry=True,
+            )
+
+        self.assertEqual(instance["downloadState"], "http_error")
         self.assertIsNone(failure)
         update_gate_mock.assert_not_called()
         network_error_mock.assert_not_called()

@@ -28,9 +28,11 @@ from bs4 import BeautifulSoup
 from app.core.timezone import now as china_now, now_iso as china_now_iso, parse_datetime
 from app.services.business_logs import append_business_log
 from app.services.asset_downloader import (
+    AssetDownloadError,
     download_file,
     download_with_fresh_session,
     run_asset_tasks,
+    safe_asset_url,
 )
 from app.services.cookie_utils import extract_auth_token, parse_cookie_values, sanitize_cookie_header
 from app.services.makerworld_browser_client import (
@@ -300,9 +302,12 @@ def _record_missing_3mf_summary(logs_dir: Path, base_name: str, missing_3mf: lis
 
 def _mark_instance_3mf_download_failed(inst: dict, error: Exception, logger=None) -> None:
     message = f"3MF 静态文件下载失败：{error}"
-    state = normalize_three_mf_failure_state("", message)
-    if state == "missing":
+    if isinstance(error, AssetDownloadError):
         state = "http_error"
+    else:
+        state = normalize_three_mf_failure_state("", message)
+        if state == "missing":
+            state = "http_error"
     inst["downloadState"] = state
     inst["downloadMessage"] = message
     log(logger, "3MF 静态文件下载失败:", inst.get("id") or inst.get("title") or inst.get("fileName") or "", error)
@@ -998,6 +1003,10 @@ def _download_asset_with_fresh_session(base_session: requests.Session, url: str,
     download_with_fresh_session(base_session, url, dest, download_func=download_file)
 
 
+def _log_asset_download_failure(message: str, url: str, error: Exception, logger=None) -> None:
+    log(logger, message, safe_asset_url(url), error)
+
+
 def _download_comment_assets(tasks: list[dict], progress_callback, progress_start: int, progress_end: int) -> dict[str, int]:
     def on_progress(completed: int, total: int) -> None:
         if completed == 1 or completed == total or completed % 5 == 0:
@@ -1014,7 +1023,7 @@ def _download_comment_assets(tasks: list[dict], progress_callback, progress_star
         tasks,
         max_workers=COMMENT_ASSET_DOWNLOAD_WORKERS,
         on_progress=on_progress,
-        on_error=lambda task, exc: log(
+        on_error=lambda task, exc: _log_asset_download_failure(
             task.get("error_message") or "评论资源下载失败，保留原始链接：",
             task.get("url") or "",
             exc,
@@ -1040,7 +1049,7 @@ def _download_image_assets(
             total,
             message,
         ),
-        on_error=lambda task, exc: log(
+        on_error=lambda task, exc: _log_asset_download_failure(
             task.get("error_message") or "图片下载失败，保留原始链接：",
             task.get("url") or "",
             exc,
@@ -1791,7 +1800,7 @@ def parse_summary(
                 }
             )
         except Exception as exc:
-            log("摘要图片任务准备失败，保留原始链接：", src, exc)
+            _log_asset_download_failure("摘要图片任务准备失败，保留原始链接：", src, exc)
             continue
 
     if summary_download_tasks:
@@ -2989,7 +2998,7 @@ def collect_instance_media(
                     record["thumbnailRelPath"] = f"images/{fname}"
                     record["thumbnailFile"] = fname
                 except Exception as exc:
-                    log("实例分盘缩略图下载失败，保留原始链接：", thumb, exc)
+                    _log_asset_download_failure("实例分盘缩略图下载失败，保留原始链接：", thumb, exc)
         plate_out.append(record)
     # auxiliary pictures
     pic_idx = 1
@@ -3038,7 +3047,7 @@ def collect_instance_media(
                     record["relPath"] = f"images/{fname}"
                     record["fileName"] = fname
                 except Exception as exc:
-                    log("实例图片下载失败，保留原始链接：", url, exc)
+                    _log_asset_download_failure("实例图片下载失败，保留原始链接：", url, exc)
         pics_out.append(record)
         pic_idx += 1
     if not pics_out:
@@ -3079,7 +3088,7 @@ def collect_instance_media(
                         record["relPath"] = f"images/{fname}"
                         record["fileName"] = fname
                     except Exception as exc:
-                        log("实例封面下载失败，保留原始链接：", cover, exc)
+                        _log_asset_download_failure("实例封面下载失败，保留原始链接：", cover, exc)
             pics_out.append(record)
     return plate_out, pics_out
 
@@ -5166,7 +5175,12 @@ def archive_model(
                     author["avatarLocal"] = fname
                     author["avatarRelPath"] = f"images/{fname}"
                 except Exception as exc:
-                    log(logger, "作者头像下载失败，保留原始链接：", author["avatarUrl"], exc)
+                    _log_asset_download_failure(
+                        "作者头像下载失败，保留原始链接：",
+                        author["avatarUrl"],
+                        exc,
+                        logger=logger,
+                    )
         else:
             if author_avatar_matches and str(existing_author.get("avatarLocal") or "").strip():
                 author["avatarLocal"] = str(existing_author.get("avatarLocal") or "").strip()
@@ -5270,7 +5284,12 @@ def archive_model(
                     max_duration=BINARY_TRANSFER_TIMEOUT_SECONDS,
                 )
             except Exception as exc:
-                log(logger, "附件下载失败，保留原始链接：", attachment_url, exc)
+                _log_asset_download_failure(
+                    "附件下载失败，保留原始链接：",
+                    attachment_url,
+                    exc,
+                    logger=logger,
+                )
         timings_ms["download_attachments"] = _log_perf(
             "archive.download_attachments",
             attachment_download_started_at,

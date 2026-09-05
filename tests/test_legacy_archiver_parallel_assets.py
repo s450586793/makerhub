@@ -1,4 +1,6 @@
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -46,6 +48,40 @@ class LegacyArchiverParallelAssetsTest(unittest.TestCase):
 
     def test_download_file_is_reexported_for_legacy_callers(self):
         self.assertIs(legacy_archiver.download_file, asset_downloader.download_file)
+
+    def test_static_asset_failure_log_redacts_credentials_query_and_fragment(self):
+        signed = (
+            "https://user:password@cdn.example.test:8443/cloudflare/image.jpg"
+            "?token=secret#verification"
+        )
+
+        def fail_download():
+            raise asset_downloader.AssetDownloadError("static download failed")
+
+        output = StringIO()
+        with redirect_stdout(output):
+            stats = legacy_archiver._download_image_assets(
+                [
+                    {
+                        "url": signed,
+                        "download": fail_download,
+                        "apply": [],
+                    }
+                ],
+                None,
+                40,
+                45,
+                "正在下载图片",
+            )
+
+        logged = output.getvalue()
+        self.assertEqual(stats, {"completed": 0, "failed": 1})
+        self.assertIn("https://cdn.example.test:8443/cloudflare/image.jpg", logged)
+        self.assertNotIn("user", logged)
+        self.assertNotIn("password", logged)
+        self.assertNotIn("token", logged)
+        self.assertNotIn("secret", logged)
+        self.assertNotIn("verification", logged)
 
     def test_parse_summary_keeps_image_order_after_parallel_downloads(self):
         html = '<p><img src="https://example.test/2.jpg"><img src="https://example.test/1.jpg"></p>'

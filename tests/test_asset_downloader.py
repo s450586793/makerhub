@@ -5,6 +5,27 @@ from app.services import asset_downloader
 from app.services.asset_downloader import download_file, run_asset_tasks
 
 
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (
+            "https://user:password@cdn.example.test:8443/files/model.3mf?token=secret#download",
+            "https://cdn.example.test:8443/files/model.3mf",
+        ),
+        (
+            "https://user:password@[2001:db8::1]:9443/files/model.3mf?token=secret#download",
+            "https://[2001:db8::1]:9443/files/model.3mf",
+        ),
+        (
+            "https://user:password@[2001:db8::1]/files/model.3mf?token=secret#download",
+            "https://[2001:db8::1]/files/model.3mf",
+        ),
+    ],
+)
+def test_safe_asset_url_removes_credentials_query_and_fragment(url, expected):
+    assert asset_downloader.safe_asset_url(url) == expected
+
+
 def test_download_file_removes_partial_file_on_stream_failure(tmp_path):
     destination = tmp_path / "asset.bin"
 

@@ -32,7 +32,15 @@ def log(*args):
 
 def safe_asset_url(url: str) -> str:
     parsed = urlsplit(str(url or ""))
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    hostname = parsed.hostname or ""
+    authority = f"[{hostname}]" if ":" in hostname else hostname
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if port is not None:
+        authority = f"{authority}:{port}"
+    return urlunsplit((parsed.scheme, authority, parsed.path, "", ""))
 
 
 def fake_three_mf_downloads_enabled() -> bool:
