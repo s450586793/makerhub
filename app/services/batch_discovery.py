@@ -26,6 +26,20 @@ from app.services.makerworld_parsers.common import (
     normalize_model_url,
     normalize_source_url,
 )
+from app.services.makerworld_parsers.listing import (
+    _iter_dicts,
+    _iter_nodes,
+    extract_account_profile as _extract_account_profile,
+    extract_collection_entries as _extract_collection_entries,
+    extract_followed_authors as _extract_followed_authors,
+    extract_followed_collections as _extract_followed_collections,
+    extract_has_next as _extract_has_next,
+    extract_hits_payload as _extract_hits_payload,
+    extract_model_source_items as _extract_model_source_items_from_hits,
+    extract_page_links as _extract_page_links,
+    extract_total_count as _extract_total_count,
+    extract_user_info_from_next_data as _extract_user_info_from_next_data,
+)
 from app.services.makerworld_browser_client import (
     MakerWorldBrowserError,
     makerworld_browser_get_json,
@@ -243,22 +257,6 @@ def _api_get_json(
     return None
 
 
-def _iter_nodes(node: Any):
-    yield node
-    if isinstance(node, dict):
-        for value in node.values():
-            yield from _iter_nodes(value)
-    elif isinstance(node, list):
-        for item in node:
-            yield from _iter_nodes(item)
-
-
-def _iter_dicts(node: Any):
-    for item in _iter_nodes(node):
-        if isinstance(item, dict):
-            yield item
-
-
 def _coerce_numeric_string(value: Any) -> str:
     try:
         if value in (None, ""):
@@ -343,27 +341,6 @@ def _looks_like_design_hit(node: Any) -> bool:
     )
 
 
-def _extract_hits_payload(payload: Any) -> Optional[dict]:
-    best_node: Optional[dict] = None
-    best_score: tuple[int, int, int, int] = (-1, -1, -1, -1)
-    for node in _iter_dicts(payload):
-        hits = node.get("hits")
-        if not isinstance(hits, list):
-            continue
-        total = _extract_total_count(node, len(hits))
-        design_like_count = sum(1 for hit in hits[:8] if _looks_like_design_hit(hit))
-        score = (
-            1 if design_like_count > 0 else 0,
-            max(int(total or 0), 0),
-            design_like_count,
-            len(hits),
-        )
-        if score > best_score:
-            best_node = node
-            best_score = score
-    return best_node
-
-
 def _hits_payload_is_empty_result(payload: Any) -> bool:
     if not isinstance(payload, dict):
         return False
@@ -372,25 +349,6 @@ def _hits_payload_is_empty_result(payload: Any) -> bool:
         return False
     total = _extract_total_count(payload, 0)
     return total == 0
-
-
-def _extract_total_count(payload: dict, fallback: int) -> Optional[int]:
-    for key in ("total", "count", "totalCount"):
-        try:
-            value = payload.get(key)
-            if value in (None, ""):
-                continue
-            return max(int(value), 0)
-        except Exception:
-            continue
-    return fallback if fallback >= 0 else None
-
-
-def _extract_has_next(payload: dict) -> Optional[bool]:
-    value = payload.get("hasNext")
-    if isinstance(value, bool):
-        return value
-    return None
 
 
 def _extract_search_session_id(payload: Any) -> str:
@@ -615,44 +573,6 @@ def _extract_time_value(node: Any) -> str:
             continue
         return str(value).strip()
     return ""
-
-
-def _extract_model_source_items_from_hits(payload: dict, base_url: str, start_order: int = 0) -> list[dict[str, Any]]:
-    found: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    hits = payload.get("hits") or []
-    for hit in hits:
-        hit_urls: list[str] = []
-        hit_url_set: set[str] = set()
-        raw_url_set: set[str] = set()
-        _collect_model_urls_from_node(hit, raw_url_set, base_url)
-        design_id = _extract_design_id_from_hit(hit)
-        if design_id:
-            raw_url_set.add(normalize_model_url(f"/zh/models/{design_id}", fallback_base=base_url))
-        raw_urls = sorted(raw_url_set, key=lambda url: (0 if design_id and extract_model_id(url) == design_id else 1, url))
-        for url in raw_urls:
-            if not url or url in hit_url_set:
-                continue
-            hit_url_set.add(url)
-            hit_urls.append(url)
-        favorited_at = _extract_time_value(hit)
-        for url in hit_urls:
-            if not url or url in seen:
-                continue
-            seen.add(url)
-            source_order = start_order + len(found)
-            model_id = extract_model_id(url)
-            item = {
-                "url": url,
-                "model_id": model_id,
-                "task_key": f"model:{model_id}" if model_id else url,
-                "source_order": source_order,
-                "source_position": source_order,
-            }
-            if favorited_at:
-                item["favorited_at"] = favorited_at
-            found.append(item)
-    return found
 
 
 def _source_items_to_urls(items: list[Any]) -> list[str]:
@@ -989,112 +909,6 @@ def _makerworld_model_path_lang(platform: str) -> str:
     return "en" if str(platform or "").strip().lower() == "global" else "zh"
 
 
-def _extract_account_profile(payload: Any) -> dict[str, Any]:
-    best: dict[str, Any] = {}
-    best_score = -1
-    for node in _iter_dicts(payload):
-        uid = _extract_node_uid(node)
-        handle = _extract_node_handle(node)
-        name = str(node.get("name") or node.get("nickname") or node.get("nickName") or node.get("displayName") or "").strip()
-        avatar = _extract_avatar_url(node)
-        follow_count = _safe_positive_int(node.get("followCount"))
-        liked_collection_count = _safe_positive_int(node.get("likeCount"))
-        collection_count = _safe_positive_int(node.get("collectionCount"))
-        lowered_keys = {str(key).lower() for key in node.keys()}
-        profile_keys = {
-            "name",
-            "username",
-            "handle",
-            "userhandle",
-            "user_handle",
-            "nickname",
-            "displayname",
-            "avatar",
-            "avatarurl",
-            "avatar_url",
-        }
-        if not (handle or profile_keys & lowered_keys):
-            continue
-        score = 0
-        if uid:
-            score += 4
-        if handle:
-            score += 4
-        if name:
-            score += 2
-        if avatar:
-            score += 1
-        if follow_count is not None:
-            score += 2
-        if liked_collection_count is not None:
-            score += 2
-        if collection_count is not None:
-            score += 1
-        if profile_keys & lowered_keys:
-            score += 2
-        if score > best_score:
-            best_score = score
-            best = {
-                "uid": uid,
-                "handle": handle,
-                "name": name,
-                "avatar_url": avatar,
-            }
-            if follow_count is not None:
-                best["follow_count"] = follow_count
-            if liked_collection_count is not None:
-                best["liked_collection_count"] = liked_collection_count
-            if collection_count is not None:
-                best["collection_count"] = collection_count
-    return best
-
-
-def _extract_user_info_from_next_data(payload: Any) -> dict[str, Any]:
-    best: dict[str, Any] = {}
-    best_score = -1
-    for node in _iter_dicts(payload):
-        if not isinstance(node, dict):
-            continue
-        handle = _extract_node_handle(node)
-        uid = _extract_node_uid(node)
-        name = str(node.get("name") or node.get("nickname") or node.get("nickName") or node.get("displayName") or "").strip()
-        avatar = _extract_avatar_url(node)
-        if not (handle or uid or name or avatar):
-            continue
-        score = 0
-        if "userInfo" in node:
-            score += 8
-        if uid:
-            score += 4
-        if handle:
-            score += 4
-        if name:
-            score += 2
-        if avatar:
-            score += 1
-        for key in ("followCount", "likeCount", "favoritesCount", "collectionCount"):
-            if key in node:
-                score += 2
-        if score <= best_score:
-            continue
-        best_score = score
-        best = {
-            "uid": uid,
-            "handle": handle,
-            "name": name,
-            "avatar_url": avatar,
-            "follow_count": _safe_positive_int(node.get("followCount")),
-            "liked_collection_count": _safe_positive_int(node.get("likeCount")),
-            "collection_count": _safe_positive_int(node.get("collectionCount")),
-        }
-        favorites_count = node.get("favoritesCount")
-        if isinstance(favorites_count, dict):
-            best["favorites_public_count"] = _safe_positive_int(favorites_count.get("publicCount"))
-            best["favorites_private_count"] = _safe_positive_int(favorites_count.get("privateCount"))
-            best["favorites_liked_count"] = _safe_positive_int(favorites_count.get("likedCount"))
-    return best
-
-
 def discover_cookie_account_profile(platform: str, raw_cookie: str) -> dict[str, Any]:
     clean_platform = "global" if str(platform or "").strip().lower() == "global" else "cn"
     source_url = _platform_source_url(clean_platform)
@@ -1200,49 +1014,6 @@ def _looks_like_author_follow_node(node: Any) -> bool:
             "isFollowed",
         )
     )
-
-
-def _extract_followed_authors(payload: Any, platform: str) -> list[dict[str, str]]:
-    source_origin = _platform_origin(platform)
-    lang = _makerworld_model_path_lang(platform)
-    authors: list[dict[str, str]] = []
-    seen: set[str] = set()
-    candidate_nodes: list[dict[str, Any]] = []
-
-    for node in _iter_dicts(payload):
-        hits = node.get("hits")
-        if isinstance(hits, list):
-            candidate_nodes.extend(item for item in hits if isinstance(item, dict))
-        for key in ("items", "list", "records", "users", "followers", "followings", "data"):
-            values = node.get(key)
-            if isinstance(values, list):
-                candidate_nodes.extend(item for item in values if isinstance(item, dict))
-
-    if not candidate_nodes:
-        candidate_nodes = [node for node in _iter_dicts(payload) if isinstance(node, dict)]
-
-    for node in candidate_nodes:
-        if not _looks_like_author_follow_node(node):
-            continue
-        handle = _extract_node_handle(node)
-        if not handle:
-            continue
-        key = handle.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        title = str(node.get("name") or node.get("nickname") or node.get("nickName") or handle).strip() or handle
-        avatar = _extract_avatar_url(node)
-        authors.append(
-            {
-                "title": title,
-                "handle": handle,
-                "uid": _extract_node_uid(node),
-                "avatar_url": avatar,
-                "url": f"{source_origin}/{lang}/@{quote(handle, safe='@._-')}/upload",
-            }
-        )
-    return authors
 
 
 def _extract_followed_author_nodes(payload: Any) -> list[dict[str, Any]]:
@@ -1633,55 +1404,6 @@ def discover_cookie_followed_authors(
         "pages_scanned": pages_scanned,
         "path": selected_path,
     }
-
-
-def _collection_detail_url_from_entry(entry: dict[str, Any], platform: str) -> str:
-    for key in ("url", "link", "href", "collectionUrl", "favoriteUrl"):
-        candidate = str(entry.get(key) or "").strip()
-        if candidate:
-            parsed_url = urljoin(_platform_origin(platform), candidate)
-            if COLLECTION_DETAIL_RE.search(urlparse(parsed_url).path or ""):
-                return normalize_source_url(parsed_url)
-    collection_id = str(entry.get("id") or entry.get("collectionId") or entry.get("favoriteId") or "").strip()
-    if not collection_id:
-        return ""
-    slug = str(entry.get("slug") or entry.get("name") or entry.get("title") or "").strip()
-    suffix = f"-{quote(slug, safe='')}" if slug else ""
-    return f"{_platform_origin(platform)}/{_makerworld_model_path_lang(platform)}/collections/{collection_id}{suffix}"
-
-
-def _extract_followed_collections(payload: Any, platform: str) -> list[dict[str, Any]]:
-    collections: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    candidate_nodes: list[dict[str, Any]] = []
-    for node in _iter_dicts(payload):
-        hits = node.get("hits")
-        if isinstance(hits, list):
-            candidate_nodes.extend(item for item in hits if isinstance(item, dict))
-        for key in ("items", "list", "records", "collections", "favorites", "data"):
-            values = node.get(key)
-            if isinstance(values, list):
-                candidate_nodes.extend(item for item in values if isinstance(item, dict))
-    if not candidate_nodes:
-        candidate_nodes = [node for node in _iter_dicts(payload) if isinstance(node, dict)]
-
-    for node in candidate_nodes:
-        if not _looks_like_collection_entry(node, ""):
-            continue
-        url = _collection_detail_url_from_entry(node, platform)
-        if not url or url in seen:
-            continue
-        seen.add(url)
-        title = str(node.get("name") or node.get("title") or "关注收藏夹").strip() or "关注收藏夹"
-        collections.append(
-            {
-                "title": title,
-                "id": _extract_collection_entry_id(node),
-                "url": url,
-                "count": _extract_collection_entry_count(node),
-            }
-        )
-    return collections
 
 
 def _extract_followed_collections_page(next_data: Any, platform: str) -> tuple[list[dict[str, Any]], Optional[int]]:
@@ -2408,37 +2130,6 @@ def _looks_like_collection_entry(node: Any, owner_uid: str) -> bool:
     )
 
 
-def _extract_collection_entries(payload: Any, owner_uid: str) -> list[dict[str, Any]]:
-    entries: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    candidate_nodes: list[dict[str, Any]] = []
-
-    for node in _iter_dicts(payload):
-        hits = node.get("hits")
-        if not isinstance(hits, list):
-            continue
-        candidate_nodes.extend(hit for hit in hits if isinstance(hit, dict))
-
-    if not candidate_nodes:
-        candidate_nodes = [node for node in _iter_dicts(payload) if isinstance(node, dict)]
-
-    for node in candidate_nodes:
-        if not _looks_like_collection_entry(node, owner_uid):
-            continue
-        collection_id = _extract_collection_entry_id(node)
-        if collection_id in seen:
-            continue
-        seen.add(collection_id)
-        entries.append(
-            {
-                "id": collection_id,
-                "name": str(node.get("name") or node.get("title") or "").strip(),
-                "count": _extract_collection_entry_count(node),
-            }
-        )
-    return entries
-
-
 def _fetch_collection_list_entries(
     session: requests.Session,
     source_url: str,
@@ -3046,37 +2737,6 @@ def _collect_model_urls_from_node(node: object, found: set[str], base_url: str) 
 
     for value in node.values():
         _collect_model_urls_from_node(value, found, base_url)
-
-
-def _extract_page_links(html_text: str, base_url: str) -> list[str]:
-    found: list[str] = []
-    seen: set[str] = set()
-    expanded = str(html_text or "").replace("\\/", "/").replace("\\u002F", "/")
-
-    def add_link(raw_url: str) -> None:
-        normalized = normalize_model_url(raw_url, fallback_base=base_url)
-        if not normalized or normalized in seen:
-            return
-        seen.add(normalized)
-        found.append(normalized)
-
-    for raw in MODEL_PATH_RE.findall(expanded):
-        add_link(f"/zh/models/{raw}")
-
-    soup = BeautifulSoup(expanded, "html.parser")
-    for link in soup.find_all("a", href=True):
-        add_link(link.get("href") or "")
-
-    try:
-        next_data = extract_next_data(expanded)
-    except Exception:
-        next_data = {}
-    next_data_links: set[str] = set()
-    _collect_model_urls_from_node(next_data, next_data_links, base_url)
-    for link in sorted(next_data_links):
-        add_link(link)
-
-    return found
 
 
 def _normalize_source_title(title: str, source_url: str) -> str:

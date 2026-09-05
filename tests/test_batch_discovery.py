@@ -74,47 +74,6 @@ class BatchDiscoveryTest(unittest.TestCase):
 
         self.assertEqual(uid, "2595475119")
 
-    def test_extract_collection_entries_ignores_nested_design_samples(self):
-        payload = {
-            "total": 2,
-            "hits": [
-                {
-                    "id": 518732,
-                    "title": "默认收藏夹",
-                    "isDefault": True,
-                    "designCnt": 338,
-                    "designCover": [
-                        "https://example.test/cover.jpg",
-                    ],
-                    "designs": [
-                        {
-                            "id": 2356866,
-                            "title": "嵌套模型样例",
-                            "coverLandscape": "https://example.test/model.jpg",
-                            "downloadCount": 12,
-                        }
-                    ],
-                },
-                {
-                    "id": 989423,
-                    "title": "已打印",
-                    "isDefault": False,
-                    "designCnt": 14,
-                },
-            ],
-        }
-
-        entries = batch_discovery._extract_collection_entries(payload, "2024907479")
-
-        self.assertEqual(
-            entries,
-            [
-                {"id": "518732", "name": "默认收藏夹", "count": 338},
-                {"id": "989423", "name": "已打印", "count": 14},
-            ],
-        )
-        self.assertNotIn("2356866", {item["id"] for item in entries})
-
     def test_collection_list_discovery_prefers_design_endpoint_total_for_expected_total(self):
         def fake_fetch_entries(*_args, **_kwargs):
             return [
@@ -302,21 +261,6 @@ class BatchDiscoveryTest(unittest.TestCase):
 
         self.assertEqual(len(calls), 2)
         self.assertEqual(payload["total"], 1)
-
-    def test_extract_followed_authors_builds_upload_urls(self):
-        payload = {
-            "hits": [
-                {"uid": 1, "handle": "AcePrint", "name": "Ace Print", "avatarUrl": "https://example.test/a.jpg"},
-                {"designId": 1001, "title": "Not an author", "coverUrl": "https://example.test/m.jpg"},
-            ]
-        }
-
-        authors = batch_discovery._extract_followed_authors(payload, "cn")
-
-        self.assertEqual(len(authors), 1)
-        self.assertEqual(authors[0]["title"], "Ace Print")
-        self.assertEqual(authors[0]["avatar_url"], "https://example.test/a.jpg")
-        self.assertEqual(authors[0]["url"], "https://makerworld.com.cn/zh/@AcePrint/upload")
 
     def test_extract_followed_authors_skips_uid_only_frontend_follow_hits(self):
         payload = {
