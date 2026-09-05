@@ -92,6 +92,19 @@ class LegacyArchiverValidationTest(unittest.TestCase):
 
         self.assertIn("标题为空", error)
 
+    def test_model_parser_facade_matches_public_parser(self):
+        from app.services.makerworld_parsers import model
+
+        design = {"id": 2416065, "title": "Demo", "coverUrl": "https://cdn.example.com/a.jpg"}
+        html = (
+            '<script id="__NEXT_DATA__">'
+            + json.dumps({"props": {"pageProps": {"design": design}}}, ensure_ascii=False)
+            + "</script>"
+        )
+
+        self.assertEqual(legacy_archiver.extract_next_data(html), model.extract_next_data(html))
+        self.assertEqual(legacy_archiver._design_payload_error(design, "https://makerworld.com.cn/zh/models/2416065"), model.design_payload_error(design, "https://makerworld.com.cn/zh/models/2416065"))
+
     def test_fetch_design_from_api_does_not_cross_cn_to_global(self):
         session = _ApiSession()
         calls = []
