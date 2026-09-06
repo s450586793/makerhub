@@ -334,7 +334,10 @@ import {
   sourceRefreshPillClass,
   sourceRefreshStatusLabel,
 } from "../lib/dashboardStatus";
-import { resolveCloakBrowserPublicUrl } from "../lib/browserSession";
+import {
+  navigateCloakBrowserPopup,
+  resolveCloakBrowserPublicUrl,
+} from "../lib/browserSession";
 import { formatServerDateTime } from "../lib/helpers";
 import { createPagePerformanceTracker } from "../lib/performance";
 import { subscribeStateRefresh } from "../lib/stateEvents";
@@ -518,9 +521,6 @@ async function runStatusAction(item, action) {
   const popup = opensBrowser && typeof window !== "undefined"
     ? window.open("about:blank", "_blank")
     : null;
-  if (popup) {
-    popup.opener = null;
-  }
   const key = statusActionKey(item, action);
   statusActionState.value = {
     ...statusActionState.value,
@@ -533,10 +533,8 @@ async function runStatusAction(item, action) {
     });
     if (opensBrowser) {
       const publicUrl = resolveCloakBrowserPublicUrl(result?.browser_session?.public_url, window.location);
-      if (popup) {
-        popup.location.replace(publicUrl);
-      } else {
-        window.open(publicUrl, "_blank", "noopener,noreferrer");
+      if (!navigateCloakBrowserPopup(popup, publicUrl, window)) {
+        throw new Error("浏览器阻止打开指纹浏览器，请允许弹出窗口后重试。");
       }
     }
     statusActionState.value = {

@@ -57,3 +57,31 @@ export function resolveCloakBrowserPublicUrl(configuredUrl = "", locationLike = 
   const hostname = String(locationLike?.hostname || "localhost");
   return `${protocol}//${hostname}:9050/`;
 }
+
+export function navigateCloakBrowserPopup(popup, publicUrl, windowLike = {}) {
+  if (popup && !popup.closed) {
+    try {
+      popup.location.replace(publicUrl);
+      try {
+        popup.opener = null;
+      } catch {
+        // 页面可能已切换到跨域地址，不应把成功导航判为失败。
+      }
+      return true;
+    } catch {
+      try {
+        popup.close();
+      } catch {
+        // 占位窗口失效时继续尝试标准的新窗口打开方式。
+      }
+    }
+  }
+
+  if (typeof windowLike?.open !== "function") return false;
+  try {
+    windowLike.open(publicUrl, "_blank", "noopener,noreferrer");
+    return true;
+  } catch {
+    return false;
+  }
+}

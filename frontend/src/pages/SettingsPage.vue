@@ -908,6 +908,7 @@ import {
   browserSessionMessage,
   browserSessionStatusClass,
   browserSessionStatusLabel,
+  navigateCloakBrowserPopup,
   resolveCloakBrowserPublicUrl,
   shouldShowBrowserSession,
 } from "../lib/browserSession";
@@ -1905,9 +1906,6 @@ async function openBrowserAccount(platform, { closeDialog = false } = {}) {
   }
   statuses.accounts = "";
   const popup = window.open("about:blank", "_blank");
-  if (popup) {
-    popup.opener = null;
-  }
   try {
     const payload = await apiRequest(`/api/config/online-accounts/${encodeURIComponent(cleanPlatform)}/browser/open`, {
       method: "POST",
@@ -1916,10 +1914,8 @@ async function openBrowserAccount(platform, { closeDialog = false } = {}) {
     applyConfigToForms(payload);
     browserErrorPlatform.value = "";
     const publicUrl = resolveCloakBrowserPublicUrl(payload?.browser_session?.public_url, window.location);
-    if (popup) {
-      popup.location.replace(publicUrl);
-    } else {
-      window.open(publicUrl, "_blank", "noopener,noreferrer");
+    if (!navigateCloakBrowserPopup(popup, publicUrl, window)) {
+      throw new Error("浏览器阻止打开指纹浏览器，请允许弹出窗口后重试。");
     }
     statuses.accounts = payload?.browser_session?.message || "指纹浏览器已打开，登录完成后会自动同步。";
     if (closeDialog) {

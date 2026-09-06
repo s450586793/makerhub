@@ -7,6 +7,7 @@ import {
   browserSessionMessage,
   browserSessionStatusClass,
   browserSessionStatusLabel,
+  navigateCloakBrowserPopup,
   resolveCloakBrowserPublicUrl,
   shouldShowBrowserSession,
 } from "./browserSession.js";
@@ -85,5 +86,86 @@ test("public URL uses configured value or current host port 9050", () => {
   assert.equal(
     resolveCloakBrowserPublicUrl("", { protocol: "http:", hostname: "nas.local" }),
     "http://nas.local:9050/",
+  );
+});
+
+test("deferred browser popup navigates before severing its opener", () => {
+  const events = [];
+  let openerAttached = true;
+  const popup = {
+    closed: false,
+    location: {
+      replace(url) {
+        assert.equal(openerAttached, true);
+        events.push(["replace", url]);
+      },
+    },
+    set opener(value) {
+      openerAttached = value !== null;
+      events.push(["opener", value]);
+    },
+  };
+  const windowLike = {
+    open() {
+      assert.fail("the existing popup should be reused");
+    },
+  };
+
+  assert.equal(
+    navigateCloakBrowserPopup(popup, "http://browser.example.test/", windowLike),
+    true,
+  );
+  assert.deepEqual(events, [
+    ["replace", "http://browser.example.test/"],
+    ["opener", null],
+  ]);
+});
+
+test("deferred browser popup falls back to a protected new window", () => {
+  const openCalls = [];
+  const windowLike = {
+    open(...args) {
+      openCalls.push(args);
+      return null;
+    },
+  };
+
+  assert.equal(
+    navigateCloakBrowserPopup(null, "http://browser.example.test/", windowLike),
+    true,
+  );
+  assert.deepEqual(openCalls, [[
+    "http://browser.example.test/",
+    "_blank",
+    "noopener,noreferrer",
+  ]]);
+});
+
+test("failed placeholder navigation closes it before using the fallback", () => {
+  let closed = false;
+  const popup = {
+    closed: false,
+    location: {
+      replace() {
+        throw new DOMException("cross-origin navigation denied");
+      },
+    },
+    close() {
+      closed = true;
+    },
+  };
+  const windowLike = { open: () => null };
+
+  assert.equal(
+    navigateCloakBrowserPopup(popup, "http://browser.example.test/", windowLike),
+    true,
+  );
+  assert.equal(closed, true);
+});
+
+test("browser popup navigation reports an unavailable window API", () => {
+  assert.equal(
+    navigateCloakBrowserPopup(null, "http://browser.example.test/", {}),
+    false,
   );
 });
