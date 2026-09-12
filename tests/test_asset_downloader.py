@@ -30,6 +30,8 @@ def test_download_file_removes_partial_file_on_stream_failure(tmp_path):
     destination = tmp_path / "asset.bin"
 
     class Response:
+        status_code = 200
+
         def __enter__(self):
             return self
 
@@ -48,9 +50,12 @@ def test_download_file_removes_partial_file_on_stream_failure(tmp_path):
         def get(self, *_args, **_kwargs):
             return Response()
 
-    with pytest.raises(asset_downloader.AssetDownloadError):
+    with pytest.raises(asset_downloader.AssetDownloadError) as caught:
         download_file(Session(), "https://cdn.example.test/asset.bin", destination)
 
+    assert caught.value.status_code == 0
+    assert caught.value.failure_kind == "request_error"
+    assert "HTTP 200" not in str(caught.value)
     assert not destination.exists()
     assert list(tmp_path.glob("*.part")) == []
 
@@ -79,6 +84,25 @@ def test_download_error_redacts_signed_query(tmp_path):
 
     assert "secret" not in str(caught.value)
     assert "signature" not in str(caught.value)
+    assert "https://cdn.example.test/file.3mf" in str(caught.value)
+    assert caught.value.status_code == 403
+    assert caught.value.failure_kind == "http_error"
+    assert "HTTP 403" in str(caught.value)
+
+
+def test_download_timeout_reports_sanitized_failure_kind(tmp_path):
+    signed = "https://cdn.example.test/file.3mf?token=secret&signature=hidden"
+
+    class Session:
+        def get(self, *_args, **_kwargs):
+            raise requests.Timeout("timeout while requesting token=secret")
+
+    with pytest.raises(asset_downloader.AssetDownloadError) as caught:
+        download_file(Session(), signed, tmp_path / "file.3mf")
+
+    assert caught.value.status_code == 0
+    assert caught.value.failure_kind == "timeout"
+    assert "secret" not in str(caught.value)
     assert "https://cdn.example.test/file.3mf" in str(caught.value)
 
 

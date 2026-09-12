@@ -1591,30 +1591,30 @@ select:focus {
 }
 
 .table-like__row--missing {
-  grid-template-columns: 140px minmax(0, 1fr) 120px 140px;
+  grid-template-columns: 140px minmax(0, 1fr) 140px minmax(164px, max-content);
 }
 
 .table-like__row:not(.table-like__row--head):nth-child(even) {
   background: var(--surface-soft);
 }
 
-.table-like__row span {
+.table-like__row > span {
   padding: 14px 16px;
   border-bottom: 1px solid var(--border);
   font-size: 14px;
   min-width: 0;
 }
 
-.table-like__row:last-child span {
+.table-like__row:last-child > span {
   border-bottom: 0;
 }
 
-.table-like__row--missing span {
+.table-like__row--missing > span {
   padding-top: 10px;
   padding-bottom: 10px;
 }
 
-.table-like__row span .button {
+.table-like__row > span .button {
   margin: -4px 0;
 }
 

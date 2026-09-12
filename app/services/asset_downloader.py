@@ -23,7 +23,18 @@ FAKE_THREE_MF_DOWNLOAD_MESSAGE = "本地 Docker 已启用 3MF 假下载，不会
 
 
 class AssetDownloadError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int = 0,
+        failure_kind: str = "request_error",
+        url: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.status_code = max(int(status_code or 0), 0)
+        self.failure_kind = str(failure_kind or "request_error")
+        self.safe_url = safe_asset_url(url)
 
 
 def log(*args):
@@ -41,6 +52,40 @@ def safe_asset_url(url: str) -> str:
     if port is not None:
         authority = f"{authority}:{port}"
     return urlunsplit((parsed.scheme, authority, parsed.path, "", ""))
+
+
+def _asset_download_failure_kind(exc: Exception) -> str:
+    if isinstance(exc, (requests.Timeout, TimeoutError)):
+        return "timeout"
+    if isinstance(exc, requests.TooManyRedirects):
+        return "redirect_error"
+    if isinstance(exc, requests.ConnectionError):
+        return "connection_error"
+    if isinstance(exc, requests.HTTPError):
+        return "http_error"
+    return "request_error"
+
+
+def _asset_download_error(exc: Exception, url: str, *, response_status: int = 0) -> AssetDownloadError:
+    observed_status = int(
+        getattr(getattr(exc, "response", None), "status_code", 0)
+        or response_status
+        or 0
+    )
+    failure_kind = _asset_download_failure_kind(exc)
+    status_code = observed_status if observed_status >= 300 else 0
+    if failure_kind == "http_error" and status_code:
+        detail = f"HTTP {status_code}"
+    elif status_code:
+        detail = f"{failure_kind}, HTTP {status_code}"
+    else:
+        detail = failure_kind
+    return AssetDownloadError(
+        f"静态资源下载失败（{detail}）：{safe_asset_url(url)}",
+        status_code=status_code,
+        failure_kind=failure_kind,
+        url=url,
+    )
 
 
 def fake_three_mf_downloads_enabled() -> bool:
@@ -127,9 +172,11 @@ def download_file(
     dest.parent.mkdir(parents=True, exist_ok=True)
     temp_dest = dest.with_name(f"{dest.name}.{os.getpid()}.{threading.get_ident()}.part")
     started_at = time.monotonic()
+    response_status = 0
     log("开始下载：", safe_asset_url(url), "->", dest)
     try:
         with session.get(url, timeout=timeout, stream=True) as resp:
+            response_status = int(getattr(resp, "status_code", 0) or 0)
             resp.raise_for_status()
             with temp_dest.open("wb") as f:
                 for chunk in resp.iter_content(chunk_size=64 * 1024):
@@ -146,7 +193,7 @@ def download_file(
         except Exception:
             pass
         if isinstance(exc, (requests.RequestException, TimeoutError)):
-            raise AssetDownloadError(f"静态资源下载失败：{safe_asset_url(url)}") from exc
+            raise _asset_download_error(exc, url, response_status=response_status) from exc
         raise
     log("已下载：", dest)
 

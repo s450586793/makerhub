@@ -334,6 +334,72 @@ def test_archive_pipeline_reuses_existing_design_media(tmp_path):
     assert meta["designImages"][0]["relPath"] == "images/design_01.jpg"
 
 
+def test_archive_pipeline_refreshes_failed_existing_three_mf_url(tmp_path):
+    archive_root = tmp_path / "archive"
+    model_dir = archive_root / "MW_127_Retry"
+    model_dir.mkdir(parents=True)
+    stale_url = "https://cdn.example.test/profile.3mf?signature=stale"
+    fresh_url = "https://cdn.example.test/profile.3mf?signature=fresh"
+    (model_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "id": 127,
+                "baseName": model_dir.name,
+                "author": {},
+                "designImages": [],
+                "stats": {},
+                "instances": [
+                    {
+                        "id": 456,
+                        "title": "Profile",
+                        "name": "profile.3mf",
+                        "fileName": "profile.3mf",
+                        "downloadUrl": stale_url,
+                        "downloadState": "http_error",
+                        "downloadMessage": "3MF 静态文件下载失败。",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    design = {"id": 127, "title": "Retry", "instances": [{"id": 456, "title": "Profile"}]}
+    html = (
+        '<script id="__NEXT_DATA__" type="application/json">'
+        + json.dumps({"props": {"pageProps": {"design": design}}})
+        + "</script>"
+    )
+
+    with patch(
+        "app.services.makerworld_pipeline.archive.fetch_html_with_browser",
+        return_value=html,
+    ), patch(
+        "app.services.makerworld_pipeline.archive.reserve_three_mf_download_slot",
+        return_value={"allowed": True},
+    ), patch(
+        "app.services.makerworld_pipeline.archive.fetch_instance_3mf",
+        return_value=("profile.3mf", fresh_url, "https://api.example.test/profile", {"state": "available", "message": ""}),
+    ):
+        result = archive_model(
+            url="https://makerworld.com.cn/zh/models/127",
+            cookie="token=ok",
+            download_dir=archive_root,
+            logs_dir=tmp_path / "logs",
+            existing_root=archive_root,
+            existing_model_dir=model_dir.name,
+            download_assets=False,
+            collect_comments_data=False,
+            rebuild_archive=False,
+        )
+
+    instance = result["instances"][0]
+    assert instance["downloadUrl"] == fresh_url
+    assert instance["downloadState"] == ""
+    assert result["stats"]["instances"]["existing_hint"] == 0
+    assert result["stats"]["instances"]["api_fetch_attempts"] == 1
+    assert result["stats"]["instances"]["api_fetch"] == 1
+
+
 def test_archive_pipeline_fetches_3mf_without_browser_authorization(tmp_path):
     design = {"id": 127, "title": "Direct 3MF", "instances": [{"id": 456, "title": "Profile"}]}
     html = (

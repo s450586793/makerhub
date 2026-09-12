@@ -2079,7 +2079,14 @@ def _archive_model(
             or f"{origin}/api/v1/design-service/instance/{inst_id}/f3mf?type=download&fileType="
         )
         name3mf = hinted_name or str(existing_inst.get("name") or "").strip()
-        url3mf = hinted_url or str(existing_inst.get("downloadUrl") or "").strip()
+        existing_download_state = str(existing_inst.get("downloadState") or "").strip()
+        existing_download_url = str(existing_inst.get("downloadUrl") or "").strip()
+        reusable_existing_url = (
+            existing_download_url
+            if existing_download_state in {"", "available"}
+            else ""
+        )
+        url3mf = hinted_url or reusable_existing_url
         used_api_url = api_url
         failure_info = (
             {"state": "available", "message": ""}

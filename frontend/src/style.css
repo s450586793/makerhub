@@ -3336,6 +3336,12 @@ html[data-theme="dark"] .system-update-progress.is-failed .system-update-progres
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+  align-items: center;
+}
+
+.missing-actions .button {
+  flex: 0 0 auto;
+  max-width: 100%;
 }
 
 .submit-dialog {

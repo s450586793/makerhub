@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.17.1`
+> 当前版本：`v0.17.2`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -359,6 +359,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-09-12 · v0.17.2
+
+- 缺失 `3MF` 重试不再复用已记录下载失败的历史直链，会重新获取授权地址后再下载。
+- 静态资源错误在隐去签名参数和凭证的同时，保留 HTTP 状态码或超时、连接、重定向类别，便于区分 CDN 拒绝与网络故障。
+- 任务页缺失 `3MF` 操作列修复了内层容器间距和窄屏按钮重叠，重试与取消操作可正常换行。
+
 ### 2026-09-06 · v0.17.1
 
 - 首页和设置页打开 CloakBrowser 时会先完成占位窗口导航，再断开来源页引用，修复 Chrome 因过早清空 `opener` 而拒绝跳转到指纹浏览器地址的问题；两个入口统一使用相同的安全回退逻辑。
@@ -369,12 +375,12 @@ npm --prefix frontend run build
 - Parser 与 Downloader 已从流程编排中拆分；浏览器、解析和静态下载错误保持明确分类与脱敏边界，成功的单 endpoint 控制请求不会重复发送。
 - Scrapling 运行时实现、分支和旧日志已退场，仅保留一版 `scraping_engine` schema 与旧客户端兼容；数据库 schema、历史配置、归档数据、账号 Gate 和下载限额均未改变。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-09-05 · v0.16.26
 
 - 自动迁移旧版本地整理容器路径，确保 Web 上传和 Worker 使用同一个持久化目录；未被后台接管的上传也会明确显示失败，不再停在 35% 后消失。CloakBrowser 短暂故障遗留的 `waiting` 状态也会自动恢复并唤醒归档队列。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-09-05 · v0.16.25
 
