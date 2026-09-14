@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import math
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -9,6 +11,8 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 import requests
 
 from app.core.store import JsonStore
+from app.core.settings import STATE_DIR
+from app.services.resource_limiter import resource_slot
 from app.services.cloakbrowser_session import (
     CloakBrowserBridgeError,
     CloakBrowserError,
@@ -25,6 +29,59 @@ class MakerWorldBrowserError(RuntimeError):
 
 class MakerWorldBrowserJsonError(MakerWorldBrowserError):
     pass
+
+
+_BROWSER_RETRY_DELAYS = (2, 5, 15, 30)
+
+
+def _read_browser_retry(platform: str) -> dict:
+    try:
+        value = json.loads((STATE_DIR / f"browser_get_retry_{platform}.json").read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _wait_browser_retry(platform: str) -> None:
+    state = _read_browser_retry(platform)
+    try:
+        retry_at = float(state.get("retry_at") or 0)
+        delay = min(max(retry_at - time.time(), 0), _BROWSER_RETRY_DELAYS[-1]) if math.isfinite(retry_at) else 0
+    except (TypeError, ValueError):
+        delay = 0
+    if delay:
+        time.sleep(delay)
+
+
+def wait_for_makerworld_browser_retry(url: str) -> None:
+    platform = normalize_makerworld_source(url=url)
+    if platform in {"cn", "global"}:
+        with resource_slot(f"makerworld_browser_get_{platform}"):
+            _wait_browser_retry(platform)
+
+
+def _record_browser_result(platform: str, *, failed: bool) -> None:
+    path = STATE_DIR / f"browser_get_retry_{platform}.json"
+    if not failed:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return
+    previous = _read_browser_retry(platform)
+    try:
+        failures = max(0, int(previous.get("failures") or 0))
+    except (TypeError, ValueError):
+        failures = 0
+    failures = min(failures + 1, len(_BROWSER_RETRY_DELAYS))
+    value = {"failures": failures, "retry_at": time.time() + _BROWSER_RETRY_DELAYS[failures - 1]}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(value), encoding="utf-8")
+        temporary.replace(path)
+    except OSError:
+        pass
 
 
 @dataclass(frozen=True)
@@ -158,31 +215,36 @@ def makerworld_browser_get(
     cookie_items = [] if linked else browser_cookie_items(raw_cookie, clean_platform)
     request_headers = _headers_for_profile(headers, linked=linked)
 
-    for attempt in range(2):
-        try:
-            result = browser_fetch(
-                clean_platform,
-                target_url,
-                profile_id=profile_id,
-                proxy_config=proxy_config,
-                headers=request_headers,
-                cookie_items=cookie_items,
-                timeout_seconds=timeout_seconds,
-            )
-        except CloakBrowserError as exc:
-            if attempt == 0 and _is_retryable_browser_error(exc):
+    with resource_slot(f"makerworld_browser_get_{clean_platform}"):
+        for attempt in range(2):
+            _wait_browser_retry(clean_platform)
+            try:
+                result = browser_fetch(
+                    clean_platform,
+                    target_url,
+                    profile_id=profile_id,
+                    proxy_config=proxy_config,
+                    headers=request_headers,
+                    cookie_items=cookie_items,
+                    timeout_seconds=timeout_seconds,
+                )
+            except CloakBrowserError as exc:
+                retryable = _is_retryable_browser_error(exc)
+                _record_browser_result(clean_platform, failed=retryable)
+                if attempt == 0 and retryable:
+                    continue
+                raise _safe_browser_error(exc) from exc
+            _record_browser_result(clean_platform, failed=result.status_code >= 500)
+            if result.status_code >= 500 and attempt == 0:
                 continue
-            raise _safe_browser_error(exc) from exc
-        if result.status_code >= 500 and attempt == 0:
-            continue
-        return MakerWorldBrowserResponse(
-            url=result.url,
-            status_code=result.status_code,
-            content_type=result.content_type,
-            text=result.text,
-            profile_id=result.profile_id,
-            headers=dict(result.headers),
-        )
+            return MakerWorldBrowserResponse(
+                url=result.url,
+                status_code=result.status_code,
+                content_type=result.content_type,
+                text=result.text,
+                profile_id=result.profile_id,
+                headers=dict(result.headers),
+            )
 
     raise MakerWorldBrowserError("CloakBrowser 请求失败。")
 

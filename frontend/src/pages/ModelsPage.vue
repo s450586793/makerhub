@@ -1,6 +1,6 @@
 <template>
   <section class="surface surface--filters">
-    <form class="filter-bar" @submit.prevent="applyFilters">
+    <form class="filter-bar model-library-filters" @submit.prevent="applyFilters">
       <label class="filter-field filter-field--wide">
         <input
           v-model.trim="filters.q"
@@ -19,16 +19,9 @@
           <option value="local">本地 ({{ payload.source_counts.local || 0 }})</option>
         </select>
       </label>
-      <label class="filter-field">
-        <select v-model="filters.tag" aria-label="标签筛选" @change="applyFiltersIfChanged">
-          <option value="">全部</option>
-          <option value="__favorite__">收藏</option>
-          <option value="__printed__">已打印</option>
-          <option value="__source_deleted__">源端删除</option>
-          <option value="__local_deleted__">本地删除</option>
-          <option v-for="tag in payload.tags" :key="tag" :value="tag">{{ tag }}</option>
-        </select>
-      </label>
+      <div class="filter-field">
+        <ModelTagFilter v-model="filters.tag" @change="applyFiltersIfChanged" />
+      </div>
       <label class="filter-field">
         <select v-model="filters.sort" aria-label="排序方式" @change="applyFiltersIfChanged">
           <option value="collectDate">采集时间倒序</option>
@@ -113,6 +106,7 @@ import { useRoute, useRouter } from "vue-router";
 
 import ModelCard from "../components/ModelCard.vue";
 import ShareDialog from "../components/ShareDialog.vue";
+import ModelTagFilter from "../components/ModelTagFilter.vue";
 import { subscribeArchiveCompletion } from "../lib/archiveEvents";
 import { apiRequest } from "../lib/api";
 import { createAutoLoadObserver } from "../lib/autoLoadObserver";
@@ -979,3 +973,22 @@ async function activatePage({ initial, isCurrent }) {
   startModelPageListeners();
 }
 </script>
+
+<style scoped>
+@media (max-width: 760px) {
+  .model-library-filters {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .model-library-filters .filter-actions {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .model-library-filters .filter-actions .button {
+    width: auto;
+    min-width: 64px;
+  }
+}
+</style>

@@ -3,6 +3,7 @@ import os
 import tempfile
 import time
 import traceback
+from contextlib import contextmanager
 from multiprocessing import get_context
 from pathlib import Path
 from queue import Empty
@@ -10,6 +11,7 @@ from typing import Any, Callable, Optional
 
 from app.services.makerworld_parsers.common import normalize_source_url
 from app.services.makerworld_pipeline import archive_model, discover_source, source_is_deleted
+from app.services.makerworld_browser_client import wait_for_makerworld_browser_retry
 from app.services.proxy_policy import temporary_proxy_env
 from app.services.resource_limiter import (
     configure_resource_limits,
@@ -25,6 +27,14 @@ DEFAULT_JOB_IDLE_TIMEOUT_SECONDS = 30 * 60
 DEFAULT_FINAL_PROGRESS_TIMEOUT_SECONDS = 60
 DEFAULT_THREE_MF_DAILY_LIMIT = 100
 DEFAULT_HEAVY_JOB_NICE = 5
+
+
+@contextmanager
+def background_makerworld_job(url: str, *, priority: int = 0):
+    # 后台刷新在启动隔离进程前等待，避免多个重进程同时排队争用浏览器。
+    with resource_slot("makerworld_background_job", detail=normalize_source_url(url), priority=priority):
+        wait_for_makerworld_browser_retry(url)
+        yield
 
 
 def _normalize_three_mf_daily_limit(value: Any, fallback: int = DEFAULT_THREE_MF_DAILY_LIMIT) -> int:

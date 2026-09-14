@@ -43,6 +43,29 @@ def _model(model_dir: str, *, source: str = "cn") -> dict:
 
 
 class SourceLibraryTest(unittest.TestCase):
+    def test_organizer_cards_use_database_counts_without_loading_all_models(self):
+        task_store = type("Store", (), {"load_organize_tasks": lambda self: {"items": []}})()
+        projection = {
+            "visible_model_count": 9000,
+            "groups": {
+                "local-organizer": {"model_count": 700, "author_count": 31, "preview_models": [{"model_dir": "local-1", "title": "One", "cover_url": "/archive/local-1/cover.png"}]},
+                "source_deleted": {"model_count": 21, "source_count": 3, "preview_models": []},
+                "local_favorite": {"model_count": 45, "local_count": 7, "preview_models": []},
+            },
+        }
+        with patch.object(source_library, "query_organizer_model_groups", return_value=projection), \
+                patch.object(source_library, "_load_models", side_effect=AssertionError("full model load")):
+            locals_, states, tasks, count = source_library._organizer_light_projection(task_store, {})
+        self.assertEqual(count, 9000)
+        self.assertEqual(locals_[0]["local_model_count"], 700)
+        self.assertEqual(locals_[0]["stats"], [{"label": "模型", "value": 700}, {"label": "作者", "value": 31}])
+        self.assertEqual(locals_[0]["cover_url"], "/archive/local-1/cover.png")
+        self.assertEqual(states[0]["stats"], [{"label": "模型", "value": 45}, {"label": "本地", "value": 7}])
+        self.assertEqual(states[2]["stats"], [{"label": "模型", "value": 21}, {"label": "来源", "value": 3}])
+        self.assertEqual(states[3]["model_count"], 0)
+        for group in [*locals_, *states]:
+            self.assertNotIn("model_dirs", group)
+
     def test_release_source_library_memory_clears_group_cache(self):
         _SOURCE_LIBRARY_GROUP_CACHE.update(
             signature=("marker", 1),

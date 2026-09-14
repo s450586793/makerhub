@@ -63,6 +63,11 @@ async def get_tasks_light_data():
     return await run_ui_io(_tasks_payload)
 
 
+@router.get("/tasks/organize")
+async def get_organize_tasks_data():
+    return await run_ui_io(task_state_store.load_organize_tasks)
+
+
 @router.post("/tasks/recent-failures/clear")
 async def clear_recent_archive_failures(request: Request):
     _require_session_auth(request)

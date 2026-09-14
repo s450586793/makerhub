@@ -44,6 +44,43 @@ class FakeTaskStore:
 
 
 class LocalOrganizerTest(unittest.TestCase):
+    def test_candidate_poll_only_saves_when_queue_changes(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = root / "demo.3mf"
+            candidate.write_bytes(b"demo")
+            task_store = FakeTaskStore()
+            service = local_organizer.LocalOrganizerService(store=SimpleNamespace(), task_store=task_store)
+            options = dict(candidates=[candidate], source_dir=root, library_root=root / "archive", move_files=False)
+            with patch.object(task_store, "save_organize_tasks", wraps=task_store.save_organize_tasks) as save, \
+                    patch.object(local_organizer, "_now_iso", side_effect=["2026-09-14T01:00:00+08:00", "2026-09-14T01:00:05+08:00", "2026-09-14T01:00:10+08:00"]):
+                self.assertEqual(service._sync_candidate_queue(**options), [candidate])
+                self.assertEqual(service._sync_candidate_queue(**options), [candidate])
+                self.assertEqual(save.call_count, 1)
+                task_store.payload["items"][0]["status"] = "failed"
+                self.assertEqual(service._sync_candidate_queue(**options), [candidate])
+                self.assertEqual(save.call_count, 2)
+                self.assertEqual(task_store.payload["items"][0]["status"], "queued")
+
+    def test_terminal_poll_preserves_timestamp_and_detects_removed_source(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = root / "demo.3mf"
+            candidate.write_bytes(b"demo")
+            task_store = FakeTaskStore()
+            service = local_organizer.LocalOrganizerService(store=SimpleNamespace(), task_store=task_store)
+            options = dict(candidates=[candidate], source_dir=root, library_root=root / "archive", move_files=False)
+            service._sync_candidate_queue(**options)
+            task_store.payload["items"][0]["status"] = "success"
+            with patch.object(task_store, "save_organize_tasks", wraps=task_store.save_organize_tasks) as save, \
+                    patch.object(local_organizer, "_now_iso", return_value="2026-09-15T00:00:00+08:00"):
+                self.assertEqual(service._sync_candidate_queue(**options), [])
+                save.assert_not_called()
+                service._sync_candidate_queue(**{**options, "candidates": []})
+                self.assertEqual(save.call_count, 1)
+                self.assertEqual(task_store.payload["detected_total"], 0)
+                self.assertEqual(task_store.payload["items"][0]["status"], "success")
+
     def test_organizer_recycle_threshold_can_be_disabled(self):
         self.assertTrue(local_organizer.organizer_should_recycle(rss_mib=800, threshold_mib=768))
         self.assertFalse(local_organizer.organizer_should_recycle(rss_mib=800, threshold_mib=0))

@@ -27,6 +27,7 @@ from app.services.makerworld_pipeline import (
     discover_account_profile as discover_cookie_account_profile,
 )
 from app.services.business_logs import append_business_log
+from app.services.archive_model_index import query_organizer_model_groups
 from app.services.catalog import (
     _file_signature,
     _sort_models,
@@ -1543,6 +1544,28 @@ def _organizer_light_projection(
 
     organize_tasks = load_organize_tasks()
     organize_tasks = dict(organize_tasks) if isinstance(organize_tasks, dict) else {}
+    indexed = query_organizer_model_groups(preview_limit=SOURCE_LIBRARY_PREVIEW_LIMIT)
+    if indexed is not None:
+        groups = [*_group_local_sources([]), *_group_state_cards([], [])]
+        for group in groups:
+            summary = indexed.get("groups", {}).get(group["key"], {})
+            previews = list(summary.get("preview_models") or [])[:SOURCE_LIBRARY_PREVIEW_LIMIT]
+            preview_lookup = {item["model_dir"]: {**item, "collect_ts": len(previews) - index} for index, item in enumerate(previews)}
+            group["model_dirs"] = list(preview_lookup)
+            _finalize_group(group, preview_lookup, metadata_cache.get(group["key"]) or {})
+            group.pop("model_dirs", None)
+            group["local_model_count"] = _safe_int(summary.get("model_count"))
+            group["model_count"] = max(group["local_model_count"], group["remote_model_count"])
+            secondary_label, secondary_field = {
+                "local": ("作者", "author_count"),
+                "source_deleted": ("来源", "source_count"),
+            }.get(group["kind"], ("本地", "local_count"))
+            group["stats"] = [
+                {"label": "模型", "value": group["model_count"]},
+                {"label": secondary_label, "value": _safe_int(summary.get(secondary_field))},
+            ]
+            group["sort_score"] = max(group["followers_count"], group["model_count"], group["likes_count"])
+        return groups[:1], groups[1:], organize_tasks, _safe_int(indexed.get("visible_model_count"))
     all_models, visible_models = _load_models(task_store=task_store)
     all_models_by_dir = {str(item.get("model_dir") or ""): item for item in all_models}
     visible_models_by_dir = {str(item.get("model_dir") or ""): item for item in visible_models}

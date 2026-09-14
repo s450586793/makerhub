@@ -33,6 +33,7 @@ from app.services.account_health import (
     update_three_mf_gate,
 )
 from app.services.business_logs import append_business_log, append_structured_log
+from app.services.archive_model_index import lookup_archive_model_keys
 from app.services.catalog import (
     get_archive_snapshot,
     invalidate_archive_snapshot,
@@ -1476,18 +1477,30 @@ class ArchiveTaskManager:
             if key
         }
 
-    def _archived_task_keys(self) -> set[str]:
+    def _archived_task_keys(self, candidates: Optional[set[str]] = None) -> set[str]:
+        indexed = lookup_archive_model_keys(candidates)
+        if indexed is not None:
+            keys = set()
+            for item in indexed:
+                if item.get("id"):
+                    keys.add(f"model:{item['id']}")
+                if item.get("origin_url"):
+                    keys.add(normalize_source_url(item["origin_url"]))
+            return keys
         snapshot = get_archive_snapshot()
-        return set(snapshot.get("archived_keys") or [])
+        keys = set(snapshot.get("archived_keys") or [])
+        return keys if candidates is None else keys.intersection(candidates)
 
-    def _deleted_task_lookup(self) -> dict[str, dict[str, str]]:
+    def _deleted_task_lookup(self, candidates: Optional[set[str]] = None) -> dict[str, dict[str, str]]:
         deleted_dirs = set(self.task_store.load_model_flags().get("deleted") or [])
         if not deleted_dirs:
             return {}
 
-        snapshot = get_archive_snapshot()
+        models = lookup_archive_model_keys(candidates, model_dirs=deleted_dirs)
+        if models is None:
+            models = get_archive_snapshot().get("models") or []
         lookup: dict[str, dict[str, str]] = {}
-        for item in snapshot.get("models") or []:
+        for item in models:
             if str(item.get("source") or "").strip().lower() == "local":
                 continue
             model_dir = str(item.get("model_dir") or "").strip().strip("/")
@@ -2026,7 +2039,11 @@ class ArchiveTaskManager:
             for item in snapshot["recent_failures"]
             if not _is_three_mf_only_task(item) and _queue_item_key(item)
         }
-        archived_keys = self._archived_task_keys()
+        archived_keys = self._archived_task_keys({
+            item["task_key"]
+            for batch in batch_tasks
+            for item in self._normalize_batch_expected_items((batch.get("meta") or {}).get("batch_expected_items"))
+        })
 
         for batch_task in batch_tasks:
             batch_id = str(batch_task.get("id") or "")
@@ -2342,7 +2359,7 @@ class ArchiveTaskManager:
             if force or task_meta.get("missing_3mf_retry")
             else ""
         )
-        deleted_item = self._deleted_task_lookup().get(task_key)
+        deleted_item = self._deleted_task_lookup({task_key}).get(task_key)
         if deleted_item is not None:
             message = f"该模型已在 MakerHub 端删除，默认不会再次归档：{deleted_item.get('title') or clean_url}"
             _log_archive(
@@ -2375,7 +2392,7 @@ class ArchiveTaskManager:
                 "mode": "single_model",
                 "url": clean_url,
             }
-        if not force and task_key in self._archived_task_keys():
+        if not force and task_key in self._archived_task_keys({task_key}):
             _log_archive("single_submit_skipped", "单模型已归档，跳过重复提交。", url=clean_url, task_key=task_key)
             return {
                 "accepted": False,
@@ -2468,7 +2485,7 @@ class ArchiveTaskManager:
             }
 
         task_key = _task_key(clean_url)
-        deleted_item = self._deleted_task_lookup().get(task_key)
+        deleted_item = self._deleted_task_lookup({task_key}).get(task_key)
         if deleted_item is not None:
             message = f"该模型已在 MakerHub 端删除，不会自动下载新增 3MF：{deleted_item.get('title') or clean_url}"
             _log_archive(
@@ -3306,7 +3323,7 @@ class ArchiveTaskManager:
             }
 
         pending_keys = self._queued_task_keys()
-        archived_keys = self._archived_task_keys()
+        archived_keys = self._archived_task_keys({_task_key(url) for url in discovered_items})
         queued_count = 0
         archived_count = 0
         new_count = 0
@@ -4161,13 +4178,13 @@ class ArchiveTaskManager:
             with _temporary_proxy_env(config, url):
                 discovered = run_discover_batch_urls_job(url, cookie, proxy_config=config.proxy)
 
+        discovered_items = [_source_item_url(item) for item in discovered.get("items") or [] if _source_item_url(item)]
         pending_keys = self._queued_task_keys()
-        archived_keys = self._archived_task_keys()
+        archived_keys = self._archived_task_keys({_task_key(url) for url in discovered_items})
         queued_count = 0
         skipped_pending = 0
         skipped_archived = 0
         expected_items: list[dict[str, Any]] = []
-        discovered_items = [_source_item_url(item) for item in discovered.get("items") or [] if _source_item_url(item)]
         total_items = len(discovered_items)
 
         if total_items:

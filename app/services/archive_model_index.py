@@ -16,7 +16,7 @@ from app.core.database import (
     initialize_database,
     jsonb_value,
 )
-from app.core.database_json_state import load_database_json_state, save_database_json_state
+from app.core.database_json_state import database_json_state_signature, load_database_json_state, save_database_json_state
 from app.core.settings import ARCHIVE_DIR
 from app.core.timezone import now_iso as china_now_iso
 from app.services.makerworld_parsers.common import normalize_source_url
@@ -34,6 +34,7 @@ _SCHEMA_LOCK = threading.Lock()
 _SCHEMA_READY = False
 _ARCHIVE_MODEL_FACETS_LOCK = threading.Lock()
 _ARCHIVE_MODEL_FACETS_CACHE: dict[str, Any] = {}
+_ARCHIVE_MODEL_TAGS_CACHE: dict[tuple, dict[str, Any]] = {}
 _LAST_WARNING_AT = 0.0
 _DB_RETRY_AFTER = 0.0
 _WARNING_INTERVAL_SECONDS = 300
@@ -824,7 +825,7 @@ def load_archive_model_index_unchecked(archive_root: Path = ARCHIVE_DIR) -> Opti
     return models
 
 
-def _archive_model_query_cte(*, include_source_deleted: bool = False) -> str:
+def _archive_model_query_cte(*, include_source_deleted: bool = False, summary_only: bool = False) -> str:
     source_deleted_ctes = ""
     source_deleted_expression = """
         lower(COALESCE(model_index.model_json #>> '{remote_sync,source_deleted}', ''))
@@ -883,7 +884,8 @@ def _archive_model_query_cte(*, include_source_deleted: bool = False) -> str:
             WHERE btrim(current_item.value ->> 'task_key') <> ''
         ),
         source_deleted_keys AS MATERIALIZED (
-            SELECT DISTINCT btrim(tracked_item.value ->> 'task_key') AS task_key
+            SELECT DISTINCT source_subscription_states.subscription_id,
+                btrim(tracked_item.value ->> 'task_key') AS task_key
             FROM source_subscription_states
             CROSS JOIN LATERAL jsonb_array_elements(
                 CASE
@@ -904,12 +906,8 @@ def _archive_model_query_cte(*, include_source_deleted: bool = False) -> str:
         source_deleted_expression = """
             lower(COALESCE(model_index.model_json #>> '{remote_sync,source_deleted}', ''))
                 IN ('true', '1', 'yes', 'on')
-            OR EXISTS (
-                SELECT 1
-                FROM source_deleted_keys
-                WHERE source_deleted_keys.task_key = 'model:' || model_index.model_id
-                   OR source_deleted_keys.task_key = model_index.origin_url
-            )
+            OR 'model:' || model_index.model_id IN (SELECT task_key FROM source_deleted_keys)
+            OR model_index.origin_url IN (SELECT task_key FROM source_deleted_keys)
         """
 
     return """
@@ -956,7 +954,7 @@ def _archive_model_query_cte(*, include_source_deleted: bool = False) -> str:
             %(source_deleted_ctes)s,
             indexed_models AS (
                 SELECT
-                    model_index.*,
+                    %(model_columns)s,
                     favorite_models.model_dir IS NOT NULL AS favorite,
                     printed_models.model_dir IS NOT NULL AS printed,
                     deleted_models.model_dir IS NOT NULL AS deleted,
@@ -967,9 +965,107 @@ def _archive_model_query_cte(*, include_source_deleted: bool = False) -> str:
             LEFT JOIN deleted_models ON deleted_models.model_dir = model_index.model_dir
         )
     """ % {
+        "model_columns": """
+            model_index.model_dir, model_index.model_id, model_index.origin_url,
+            model_index.source, model_index.title, model_index.author_name,
+            model_index.cover_url, model_index.collect_ts,
+            lower(COALESCE(model_index.model_json #>> '{remote_sync,source_deleted}', ''))
+                IN ('true', '1', 'yes', 'on') AS remote_source_deleted
+        """ if summary_only else "model_index.*",
         "source_deleted_ctes": source_deleted_ctes,
         "source_deleted_expression": source_deleted_expression,
     }
+
+
+def query_organizer_model_groups(*, preview_limit: int = 4) -> Optional[dict[str, Any]]:
+    if not archive_model_index_configured() or _database_temporarily_unavailable():
+        return None
+    try:
+        if not ensure_archive_model_index_schema() or not archive_model_index_is_bootstrapped(archive_root=ARCHIVE_DIR):
+            return None
+        with database_connection() as connection:
+            rows = connection.execute(
+                _archive_model_query_cte(include_source_deleted=True, summary_only=True) + """
+                , group_members AS (
+                    SELECT indexed_models.*, groups.key,
+                        row_number() OVER (
+                            PARTITION BY groups.key
+                            ORDER BY collect_ts DESC, title DESC, model_dir ASC
+                        ) AS preview_rank
+                    FROM indexed_models
+                    CROSS JOIN LATERAL (VALUES
+                        ('local-organizer', source = 'local' AND NOT deleted),
+                        ('local_favorite', favorite AND NOT deleted),
+                        ('printed', printed AND NOT deleted),
+                        ('source_deleted', source_deleted),
+                        ('local_deleted', deleted)
+                    ) AS groups(key, matched)
+                    WHERE groups.matched
+                ), deleted_sources AS (
+                    SELECT source_deleted_keys.subscription_id AS source_id
+                    FROM source_deleted_keys
+                    WHERE source_deleted_keys.task_key IN (SELECT 'model:' || model_id FROM indexed_models)
+                       OR source_deleted_keys.task_key IN (SELECT origin_url FROM indexed_models)
+                    UNION
+                    SELECT 'remote_refresh' WHERE EXISTS (
+                        SELECT 1 FROM indexed_models WHERE remote_source_deleted
+                    )
+                ), group_summaries AS (
+                    SELECT key, count(*) AS model_count,
+                        count(*) FILTER (WHERE source = 'local') AS local_count,
+                        count(DISTINCT nullif(btrim(author_name), '')) AS author_count,
+                        jsonb_agg(jsonb_build_object(
+                            'model_dir', model_dir, 'title', title, 'cover_url', cover_url
+                        ) ORDER BY preview_rank) FILTER (WHERE preview_rank <= %s) AS preview_models
+                    FROM group_members GROUP BY key
+                )
+                SELECT group_summaries.*,
+                    (SELECT count(*) FROM indexed_models WHERE NOT deleted) AS visible_model_count,
+                    (SELECT count(*) FROM deleted_sources) AS source_count
+                FROM (SELECT 1) AS singleton LEFT JOIN group_summaries ON TRUE
+                """,
+                (max(1, min(int(preview_limit or 4), 12)),),
+            ).fetchall()
+        return {
+            "visible_model_count": _index_stat_value((rows[0] if rows else {}).get("visible_model_count")),
+            "groups": {row["key"]: dict(row) for row in rows if row.get("key")},
+        }
+    except Exception as exc:
+        _warn_once("organizer_model_groups_query_failed", "本地库分组统计查询失败。", error=str(exc))
+        return None
+
+
+def lookup_archive_model_keys(
+    task_keys: Optional[set[str]] = None,
+    *,
+    model_dirs: Optional[set[str]] = None,
+) -> Optional[list[dict[str, Any]]]:
+    if task_keys == set() or model_dirs == set():
+        return []
+    if not archive_model_index_configured() or _database_temporarily_unavailable():
+        return None
+    conditions = ["source <> 'local'"]
+    params: list[Any] = []
+    if task_keys is not None:
+        model_ids = sorted({key[len("model:"):] for key in task_keys if key.startswith("model:")})
+        urls = sorted({normalize_source_url(key) for key in task_keys if not key.startswith("model:") and key})
+        conditions.append("(model_id = ANY(%s) OR origin_url = ANY(%s))")
+        params.extend((model_ids, urls))
+    if model_dirs is not None:
+        conditions.append("model_dir = ANY(%s)")
+        params.append(sorted(model_dirs))
+    try:
+        if not ensure_archive_model_index_schema() or not archive_model_index_is_bootstrapped(archive_root=ARCHIVE_DIR):
+            return None
+        with database_connection() as connection:
+            return connection.execute(
+                "SELECT model_dir, model_id AS id, origin_url, title FROM archive_model_index WHERE "
+                + " AND ".join(conditions) + " ORDER BY model_dir",
+                tuple(params),
+            ).fetchall()
+    except Exception as exc:
+        _warn_once("archive_model_keys_query_failed", "归档判重索引查询失败。", error=str(exc))
+        return None
 
 
 def _escaped_ilike_pattern(value: str) -> str:
@@ -1144,7 +1240,6 @@ def _copy_archive_model_facets(value: dict[str, Any]) -> dict[str, Any]:
     return {
         "available": bool(value.get("available", True)),
         "total": _index_stat_value(value.get("total")),
-        "tags": [str(item) for item in value.get("tags") or []],
         "source_counts": {
             "all": _index_stat_value(source_counts.get("all")),
             "cn": _index_stat_value(source_counts.get("cn")),
@@ -1165,7 +1260,6 @@ def load_archive_model_facets(revision: Any, flags_signature: Any) -> dict[str, 
     unavailable = {
         "available": False,
         "total": 0,
-        "tags": [],
         "source_counts": {"all": 0, "cn": 0, "global": 0, "local": 0},
     }
     try:
@@ -1192,7 +1286,7 @@ def load_archive_model_facets(revision: Any, flags_signature: Any) -> dict[str, 
                     ) AS flag_model_dir
                 ),
                 visible_models AS (
-                    SELECT model_index.source, model_index.tags
+                    SELECT model_index.source
                     FROM archive_model_index AS model_index
                     WHERE NOT EXISTS (
                         SELECT 1
@@ -1204,17 +1298,7 @@ def load_archive_model_facets(revision: Any, flags_signature: Any) -> dict[str, 
                     count(*) AS total,
                     count(*) FILTER (WHERE source = 'cn') AS cn_count,
                     count(*) FILTER (WHERE source = 'global') AS global_count,
-                    count(*) FILTER (WHERE source = 'local') AS local_count,
-                    COALESCE(
-                        ARRAY(
-                            SELECT DISTINCT lower(trim(tag_value))
-                            FROM visible_models
-                            CROSS JOIN LATERAL unnest(tags) AS tag_value
-                            WHERE trim(tag_value) <> ''
-                            ORDER BY lower(trim(tag_value))
-                        ),
-                        ARRAY[]::text[]
-                    ) AS tags
+                    count(*) FILTER (WHERE source = 'local') AS local_count
                 FROM visible_models
                 """
             ).fetchone()
@@ -1226,7 +1310,6 @@ def load_archive_model_facets(revision: Any, flags_signature: Any) -> dict[str, 
     facets = {
         "available": True,
         "total": _index_stat_value(row.get("total")),
-        "tags": sorted({str(item or "").strip().lower() for item in row.get("tags") or [] if str(item or "").strip()}),
         "source_counts": {
             "all": _index_stat_value(row.get("total")),
             "cn": _index_stat_value(row.get("cn_count")),
@@ -1238,6 +1321,45 @@ def load_archive_model_facets(revision: Any, flags_signature: Any) -> dict[str, 
         _ARCHIVE_MODEL_FACETS_CACHE["key"] = cache_key
         _ARCHIVE_MODEL_FACETS_CACHE["value"] = _copy_archive_model_facets(facets)
     return _copy_archive_model_facets(facets)
+
+
+def query_archive_model_tags(q: str = "", *, limit: int = 50) -> Optional[dict[str, Any]]:
+    if not archive_model_index_configured() or _database_temporarily_unavailable():
+        return None
+    safe_limit = max(1, min(int(limit or 50), 100))
+    query = str(q or "").strip().lower()[:200]
+    try:
+        if not ensure_archive_model_index_schema() or not archive_model_index_is_bootstrapped(archive_root=ARCHIVE_DIR):
+            return None
+        revision = _metadata_value(ARCHIVE_MODEL_INDEX_REVISION_KEY).get("revision", 0)
+        flags_signature = database_json_state_signature("model_flags", {"favorites": [], "printed": [], "deleted": []})
+        cache_key = (str(ARCHIVE_DIR), str(revision), repr(flags_signature), query, safe_limit)
+        with _ARCHIVE_MODEL_FACETS_LOCK:
+            cached = _ARCHIVE_MODEL_TAGS_CACHE.get(cache_key)
+            if cached is not None:
+                return {**cached, "items": list(cached["items"])}
+        with database_connection() as connection:
+            rows = connection.execute(
+                _archive_model_query_cte() + """
+                SELECT DISTINCT lower(btrim(tag_value)) AS tag
+                FROM indexed_models
+                CROSS JOIN LATERAL unnest(tags) AS tag_value
+                WHERE NOT deleted AND btrim(tag_value) <> ''
+                  AND lower(btrim(tag_value)) ILIKE %s ESCAPE E'\\\\'
+                ORDER BY tag
+                LIMIT %s
+                """,
+                (_escaped_ilike_pattern(query), safe_limit + 1),
+            ).fetchall()
+        result = {"items": [row["tag"] for row in rows[:safe_limit]], "has_more": len(rows) > safe_limit}
+        with _ARCHIVE_MODEL_FACETS_LOCK:
+            if len(_ARCHIVE_MODEL_TAGS_CACHE) >= 32:
+                _ARCHIVE_MODEL_TAGS_CACHE.pop(next(iter(_ARCHIVE_MODEL_TAGS_CACHE)))
+            _ARCHIVE_MODEL_TAGS_CACHE[cache_key] = result
+        return {**result, "items": list(result["items"])}
+    except Exception as exc:
+        _warn_once("archive_model_tags_query_failed", "模型标签查询失败。", error=str(exc))
+        return None
 
 
 def archive_model_index_row_count() -> int:

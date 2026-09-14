@@ -48,6 +48,24 @@ class JsonStatePathKeyTest(unittest.TestCase):
 
 
 class OrganizeTaskStateTest(unittest.TestCase):
+    def test_unchanged_organizer_updates_do_not_write_or_publish(self):
+        state = {}
+        store = TaskStateStore()
+        with patch.object(task_state, "load_database_json_state", side_effect=lambda key, default: state.get(key, default)), \
+                patch.object(task_state, "save_database_json_state", side_effect=lambda key, value: state.__setitem__(key, value) or value) as save, \
+                patch.object(task_state, "publish_state_event") as publish:
+            payload = store.save_organize_tasks({"items": [{"id": "one", "status": "running", "progress": 35}]})
+            save.reset_mock()
+            publish.reset_mock()
+            store.save_organize_tasks(payload)
+            store._update_organize_tasks(lambda current: current)
+            save.assert_not_called()
+            publish.assert_not_called()
+            result = store._update_organize_tasks(lambda current: {**current, "items": [{**current["items"][0], "progress": 45}]})
+            self.assertEqual(result["items"][0]["progress"], 45)
+            save.assert_called_once()
+            publish.assert_called_once()
+
     def test_normalize_preserves_last_import_batch(self):
         payload = {
             "items": [

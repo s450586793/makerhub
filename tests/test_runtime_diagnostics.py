@@ -483,7 +483,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
         self.assertEqual(payload["items"][0]["model_dir"], "MW_2")
         self.assertEqual(payload["filtered_total"], 4)
         self.assertEqual(payload["total"], 12)
-        self.assertEqual(payload["tags"], ["art", "tool"])
+        self.assertEqual(payload["tags"], [])
         self.assertEqual(payload["source_counts"]["global"], 4)
         self.assertEqual(payload["filters"], {"q": "tool", "source": "global", "tag": "tool", "sort": "downloads"})
         self.assertTrue(payload["light"])

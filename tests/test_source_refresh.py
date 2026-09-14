@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -7,12 +9,51 @@ from app.core.store import JsonStore
 from app.services import remote_refresh
 from app.services import source_refresh
 from app.services import source_refresh_jobs
+from app.services import process_jobs, resource_limiter
 import app.services.task_state as task_state_module
 from app.services.source_refresh import SourceRefreshTaskManager
 from app.services.task_state import TaskStateStore
 
 
 class SourceRefreshTaskManagerTest(unittest.TestCase):
+    def test_source_refresh_waits_before_starting_a_heavy_job(self):
+        entered = threading.Event()
+        release = threading.Event()
+        attempted = threading.Event()
+        calls = []
+
+        def run_job(**kwargs):
+            calls.append(kwargs["url"])
+            entered.set()
+            if not release.wait(3):
+                raise RuntimeError("test did not release job")
+            return {"ok": True}
+
+        def refresh(number):
+            if number == 2:
+                attempted.set()
+            return source_refresh_jobs.run_source_refresh_model_job(
+                url=f"https://makerworld.com.cn/zh/models/{number}", cookie="", download_dir="", logs_dir="",
+            )
+
+        with patch.object(resource_limiter, "STATE_DIR", self.temp_path), \
+                patch.object(source_refresh_jobs, "run_archive_model_job", side_effect=run_job), \
+                patch.object(process_jobs, "wait_for_makerworld_browser_retry", create=True), \
+                ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(refresh, 1)
+            try:
+                self.assertTrue(entered.wait(3))
+                second = executor.submit(refresh, 2)
+                self.assertTrue(attempted.wait(3))
+                with self.assertRaises(TimeoutError):
+                    second.result(timeout=0.1)
+                self.assertEqual(len(calls), 1)
+            finally:
+                release.set()
+            self.assertTrue(first.result(timeout=3)["ok"])
+            self.assertTrue(second.result(timeout=3)["ok"])
+        self.assertEqual(len(calls), 2)
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.temp_path = Path(self.temp_dir.name)

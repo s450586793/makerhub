@@ -22,7 +22,7 @@ class ArchiveManagerStub:
     def _queued_task_keys(self):
         return set()
 
-    def _archived_task_keys(self):
+    def _archived_task_keys(self, candidates=None):
         return set()
 
     def submit_discovered_batch(self, **kwargs):

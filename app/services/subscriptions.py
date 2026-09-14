@@ -27,7 +27,7 @@ from app.services.makerworld_pipeline import (
 )
 from app.services.business_logs import append_business_log, append_structured_log
 from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot, invalidate_model_detail_cache
-from app.services.process_jobs import run_discover_batch_urls_job
+from app.services.process_jobs import background_makerworld_job, run_discover_batch_urls_job
 from app.services.proxy_policy import temporary_proxy_env
 from app.services.source_library import (
     build_subscription_overview_light_payload,
@@ -2120,7 +2120,7 @@ class SubscriptionManager:
 
             candidate_items = current_items if manual_requested_at else source_new_items
             pending_keys = self.archive_manager._queued_task_keys()
-            archived_keys = self.archive_manager._archived_task_keys()
+            archived_keys = self.archive_manager._archived_task_keys({item["task_key"] for item in candidate_items})
             new_items = []
             for item in candidate_items:
                 task_key = item.get("task_key") or ""
@@ -2241,12 +2241,13 @@ class SubscriptionManager:
         cookie = _select_cookie(subscription.url, config)
         if not cookie:
             raise RuntimeError("未找到可用 Cookie，请先到设置页配置对应站点 Cookie。")
-        return run_discover_batch_urls_job(
-            subscription.url,
-            cookie,
-            proxy_config=config.proxy,
-            max_pages=max_pages,
-        )
+        with background_makerworld_job(subscription.url, priority=10):
+            return run_discover_batch_urls_job(
+                subscription.url,
+                cookie,
+                proxy_config=config.proxy,
+                max_pages=max_pages,
+            )
 
     def _discover_subscription_head_items(self, subscription: SubscriptionRecord) -> dict:
         return self._run_subscription_discovery(
@@ -2320,7 +2321,7 @@ class SubscriptionManager:
     def _enqueue_initialized_subscription_items(self, subscription: SubscriptionRecord, initialized: dict) -> dict:
         current_items = _normalize_source_items(initialized.get("current_items") or [])
         pending_keys = self.archive_manager._queued_task_keys()
-        archived_keys = self.archive_manager._archived_task_keys()
+        archived_keys = self.archive_manager._archived_task_keys({item["task_key"] for item in current_items})
         new_items = []
         for item in current_items:
             task_key = item.get("task_key") or ""

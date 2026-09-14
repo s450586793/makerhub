@@ -1703,10 +1703,15 @@ class TaskStateStore:
     def _update_organize_tasks(self, updater) -> dict:
         with _state_lock_for_path(ORGANIZE_TASKS_PATH), self._state_file_lock(ORGANIZE_TASKS_PATH):
             payload = self._load_organize_tasks_unlocked()
+            before_signature = _state_payload_signature(payload)
             updated = updater(payload)
             if updated is None:
                 updated = payload
-            result = self._save_organize_tasks_unlocked(updated)
+            normalized = _normalize_organize_tasks(updated)
+            normalized["count_trusted"] = True
+            if before_signature == _state_payload_signature(normalized):
+                return payload
+            result = self._save_organize_tasks_unlocked(normalized)
         self._publish_state_event(ORGANIZE_TASKS_STATE_KEY, result)
         return result
 
@@ -1796,10 +1801,7 @@ class TaskStateStore:
             return self._load_organize_tasks_unlocked()
 
     def save_organize_tasks(self, payload: dict) -> dict:
-        with _state_lock_for_path(ORGANIZE_TASKS_PATH), self._state_file_lock(ORGANIZE_TASKS_PATH):
-            result = self._save_organize_tasks_unlocked(payload)
-        self._publish_state_event(ORGANIZE_TASKS_STATE_KEY, result)
-        return result
+        return self._update_organize_tasks(lambda current: payload)
 
     def save_subscriptions_state(self, payload: dict) -> dict:
         with _state_lock_for_path(SUBSCRIPTIONS_STATE_PATH), self._state_file_lock(SUBSCRIPTIONS_STATE_PATH):

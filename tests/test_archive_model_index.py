@@ -123,7 +123,8 @@ class FakeConnection:
 
 
 class RecordingQueryConnection:
-    def __init__(self, *, filtered_total=0, revision=1, page_rows=None, facet_row=None):
+    def __init__(self, *, filtered_total=0, revision=1, page_rows=None, facet_row=None, tag_rows=None):
+        self.tag_rows = tag_rows or []
         self.filtered_total = filtered_total
         self.revision = revision
         self.page_rows = list(page_rows or [])
@@ -140,6 +141,10 @@ class RecordingQueryConnection:
         normalized = " ".join(str(sql).split())
         self.executed.append((normalized, params))
         upper = normalized.upper()
+        if "SELECT DISTINCT LOWER(BTRIM(TAG_VALUE)) AS TAG" in upper:
+            return FakeCursor(rows=self.tag_rows[:params[-1]])
+        if "SELECT MODEL_DIR, MODEL_ID AS ID, ORIGIN_URL, TITLE" in upper:
+            return FakeCursor(rows=self.page_rows)
         if "AS FILTERED_TOTAL" in upper:
             result_rows = [
                 {
@@ -200,6 +205,47 @@ def _write_meta(root: Path, model_dir: str, title: str, model_id: str = "1", sou
 
 
 class ArchiveModelIndexTest(unittest.TestCase):
+    def test_archive_lookup_reads_only_identity_columns_for_candidates(self):
+        connection = RecordingQueryConnection(page_rows=[{"model_dir": "MW_7", "id": "7", "origin_url": "https://makerworld.com/zh/models/7", "title": "Seven"}])
+        self.connection = connection
+        with patch.object(archive_model_index, "ensure_archive_model_index_schema", return_value=True), \
+                patch.object(archive_model_index, "archive_model_index_is_bootstrapped", return_value=True):
+            empty = archive_model_index.lookup_archive_model_keys(set())
+            self.assertEqual(empty, [])
+            self.assertEqual(connection.executed, [])
+            rows = archive_model_index.lookup_archive_model_keys({"model:7", "https://makerworld.com/zh/models/8"}, model_dirs={"MW_7"})
+        self.assertEqual(rows[0]["id"], "7")
+        sql, params = connection.executed[0]
+        self.assertNotIn("model_json", sql)
+        self.assertIn("model_id = ANY(%s)", sql)
+        self.assertIn("origin_url = ANY(%s)", sql)
+        self.assertIn("source <> 'local'", sql)
+        self.assertEqual(params, (["7"], ["https://makerworld.com/zh/models/8"], ["MW_7"]))
+
+    def test_tag_search_is_bounded_and_cache_tracks_index_and_flags(self):
+        connection = RecordingQueryConnection(tag_rows=[{"tag": "a"}, {"tag": "b"}, {"tag": "c"}])
+        self.connection = connection
+        with patch.object(archive_model_index, "ensure_archive_model_index_schema", return_value=True), \
+                patch.object(archive_model_index, "archive_model_index_is_bootstrapped", return_value=True), \
+                patch.object(archive_model_index, "_metadata_value", return_value={"revision": 7}) as revision, \
+                patch.object(archive_model_index, "database_json_state_signature", return_value=("flags-1", "hash")) as flags, \
+                patch.object(archive_model_index, "_ARCHIVE_MODEL_TAGS_CACHE", {}):
+            first = archive_model_index.query_archive_model_tags("a%_", limit=2)
+            first["items"].clear()
+            second = archive_model_index.query_archive_model_tags("a%_", limit=2)
+            self.assertEqual(second["items"], ["a", "b"])
+            self.assertTrue(second["has_more"])
+            self.assertEqual(len(connection.executed), 1)
+            revision.return_value = {"revision": 8}
+            archive_model_index.query_archive_model_tags("a%_", limit=2)
+            flags.return_value = ("flags-2", "hash")
+            archive_model_index.query_archive_model_tags("a%_", limit=2)
+        self.assertEqual(len(connection.executed), 3)
+        sql, params = connection.executed[0]
+        self.assertIn("NOT deleted", sql)
+        self.assertIn("LIMIT %s", sql)
+        self.assertEqual(params, ("%a\\%\\_%", 3))
+
     def setUp(self):
         self.connection = FakeConnection()
         self.patches = [
@@ -466,7 +512,7 @@ class ArchiveModelIndexTest(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first["total"], 6)
         self.assertEqual(first["source_counts"], {"all": 6, "cn": 2, "global": 3, "local": 1})
-        self.assertEqual(first["tags"], ["art", "tool"])
+        self.assertNotIn("tags", first)
         facet_queries = [sql for sql, _ in connection.executed if "AS cn_count" in sql]
         self.assertEqual(len(facet_queries), 3)
 

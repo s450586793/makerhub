@@ -299,6 +299,16 @@ const importUploadProgress = reactive({
 });
 const organizerProgressOpen = ref(false);
 let organizerRefreshController = null;
+let organizerTaskRefreshController = null;
+
+const organizerTaskResource = createHydratedResource({
+  load: ({ signal }) => apiRequest("/api/tasks/organize", { signal }),
+  onData: (response) => {
+    organizerTasks.value = response;
+    reconcileImportUploadProgress();
+    rememberOrganizerPage();
+  },
+});
 
 const organizerResource = createHydratedResource({
   load: ({ signal }) => apiRequest("/api/source-library/light", { signal }),
@@ -1154,18 +1164,28 @@ function startOrganizerRefreshController() {
   organizerRefreshController = createPageRefreshController({
     scopes: ["organize_tasks", "archive_queue", "source_library"],
     eventRules: [
-      { scopes: ["organize_tasks"], types: ["state.changed", "organize.completed"] },
+      { scopes: ["organize_tasks"], types: ["organize.completed"] },
       { scopes: ["source_library"], types: ["source_library.changed"] },
       { scopes: ["archive_queue"], types: ["archive.completed", "archive.failed"] },
     ],
-    refresh: refreshOrganizerTasks,
+    refresh: () => load({ silent: true }),
     delayMs: 300,
     refreshOnVisible: true,
+    isActive: () => pageActive.value,
+  });
+  organizerTaskRefreshController = createPageRefreshController({
+    scopes: ["organize_tasks"],
+    types: ["state.changed"],
+    refresh: refreshOrganizerTasks,
+    delayMs: 500,
+    resetExistingTimer: false,
     isActive: () => pageActive.value,
   });
 }
 
 function stopOrganizerRefreshController() {
+  organizerTaskRefreshController?.dispose();
+  organizerTaskRefreshController = null;
   if (organizerRefreshController) {
     organizerRefreshController.dispose();
     organizerRefreshController = null;
@@ -1173,15 +1193,24 @@ function stopOrganizerRefreshController() {
 }
 
 function scheduleOrganizerRefresh(reason = "organizer-state") {
-  organizerRefreshController?.schedule(reason);
+  organizerTaskRefreshController?.schedule(reason);
 }
 
 function clearOrganizerRefresh() {
   organizerRefreshController?.clear();
+  organizerTaskRefreshController?.clear();
 }
 
-function refreshOrganizerTasks() {
-  return load({ silent: true });
+async function refreshOrganizerTasks() {
+  if (loading.value) {
+    organizerTaskRefreshController?.schedule("after-library-load");
+    return;
+  }
+  try {
+    await organizerTaskResource.load();
+  } catch (error) {
+    console.error("本地整理进度加载失败", error);
+  }
 }
 
 async function load({ silent = false } = {}) {
@@ -1189,6 +1218,7 @@ async function load({ silent = false } = {}) {
     return;
   }
   loading.value = true;
+  organizerTaskResource.cancel();
   try {
     await organizerResource.load();
     reconcileImportUploadProgress();
@@ -1675,6 +1705,7 @@ function closeOrganizerProgressPopover() {
 
 function deactivatePage() {
   organizerResource.cancel();
+  organizerTaskResource.cancel();
   loading.value = false;
   stopOrganizerRefreshController();
   document.removeEventListener("click", closeOrganizerProgressPopover);

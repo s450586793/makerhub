@@ -1,11 +1,18 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from app.api import config as config_api
+from app.services.catalog import build_model_tags_payload
+from app.services.request_threads import run_web_io
 
 
 router = APIRouter(prefix="/api")
+
+
+@router.get("/models/tags")
+async def get_model_tags(q: str = Query("", max_length=200), limit: int = Query(50, ge=1, le=100)):
+    return await run_web_io(build_model_tags_payload, q=q, limit=limit)
 
 router.add_api_route("/models", config_api.get_models_data, methods=["GET"])
 router.add_api_route("/models/light", config_api.get_models_light_data, methods=["GET"])

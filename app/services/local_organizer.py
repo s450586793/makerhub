@@ -31,7 +31,7 @@ from app.services.local_import_upload import (
     run_queued_package_import_task,
 )
 from app.services.process_memory import process_rss_mib, release_process_memory
-from app.services.task_state import TaskStateStore
+from app.services.task_state import TaskStateStore, _normalize_organize_tasks
 from app.services.three_mf import parse_3mf_metadata
 
 
@@ -529,7 +529,7 @@ class LocalOrganizerService:
                         else "上次整理失败，等待自动重试。"
                     ),
                     "progress": 0,
-                    "updated_at": now_iso,
+                    "updated_at": str(existing.get("updated_at") or now_iso) if status == "queued" else now_iso,
                     "move_files": candidate_move_files,
                     "fingerprint": fingerprint,
                 }
@@ -569,16 +569,15 @@ class LocalOrganizerService:
                 continue
             history_items.append(item)
 
-        self.task_store.save_organize_tasks(
-            {
-                **existing_payload,
-                "items": (queued_items + history_items)[: max(int(ORGANIZER_TASK_LIMIT or 0), 1)],
-                "count": len(queued_items) + len(history_items),
-                "detected_total": len(candidates),
-                "source_dir": source_dir.as_posix(),
-                "updated_at": now_iso,
-            }
-        )
+        updated_payload = {
+            **existing_payload,
+            "items": (queued_items + history_items)[: max(int(ORGANIZER_TASK_LIMIT or 0), 1)],
+            "count": len(queued_items) + len(history_items),
+            "detected_total": len(candidates),
+            "source_dir": source_dir.as_posix(),
+        }
+        if _normalize_organize_tasks(updated_payload) != _normalize_organize_tasks(existing_payload):
+            self.task_store.save_organize_tasks({**updated_payload, "updated_at": now_iso})
         return actionable_candidates
 
     def _next_package_import_task(self) -> Optional[dict[str, Any]]:

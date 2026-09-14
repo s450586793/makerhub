@@ -29,6 +29,7 @@ from app.services.archive_model_index import (
     load_archive_model_index,
     load_archive_model_index_unchecked,
     query_archive_model_index,
+    query_archive_model_tags,
     upsert_archive_model_index,
 )
 from app.services.model_attachments import (
@@ -2851,7 +2852,7 @@ def _paginate_models_payload(
         "page": safe_page,
         "page_size": safe_page_size,
         "has_more": end < total_filtered,
-        "tags": _tags_from_items(visible_models),
+        "tags": [] if light else _tags_from_items(visible_models),
         "source_counts": _source_counts_from_items(visible_models),
         "filters": {
             "q": q,
@@ -2931,7 +2932,7 @@ def build_models_light_payload(
                 "page": max(1, _safe_int_value(indexed_page.get("page")) or 1),
                 "page_size": max(1, _safe_int_value(indexed_page.get("page_size")) or 8),
                 "has_more": bool(indexed_page.get("has_more")),
-                "tags": [str(item) for item in facets.get("tags") or []],
+                "tags": [],
                 "source_counts": dict(facets.get("source_counts") or {}),
                 "filters": {
                     "q": q,
@@ -2968,6 +2969,17 @@ def build_models_light_payload(
         limit=limit,
         light=True,
     )
+
+
+def build_model_tags_payload(q: str = "", *, limit: int = 50) -> dict:
+    indexed = query_archive_model_tags(q, limit=limit)
+    if indexed is not None:
+        return indexed
+    _, visible_models = get_decorated_models()
+    query = str(q or "").strip().lower()[:200]
+    tags = sorted({tag.lower() for tag in _tags_from_items(visible_models) if query in tag.lower()})
+    safe_limit = max(1, min(int(limit or 50), 100))
+    return {"items": tags[:safe_limit], "has_more": len(tags) > safe_limit}
 
 
 def get_model_detail(model_dir: str, include_detail: bool = True) -> Optional[dict]:

@@ -378,7 +378,7 @@ class Missing3mfTest(unittest.TestCase):
                 manager = ArchiveTaskManager(background_enabled=False)
                 manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[]))
                 manager.task_store.update_missing_3mf_status = lambda **_payload: None
-                manager._deleted_task_lookup = lambda: {}
+                manager._deleted_task_lookup = lambda candidates=None: {}
                 archive_worker_module._select_cookie = lambda *_: "cookie"
 
                 result = manager.retry_missing_3mf(
@@ -432,7 +432,7 @@ class Missing3mfTest(unittest.TestCase):
                 manager = ArchiveTaskManager(background_enabled=False)
                 manager.store = SimpleNamespace(load=lambda: SimpleNamespace(cookies=[]))
                 manager.task_store.update_missing_3mf_status = lambda **_payload: None
-                manager._deleted_task_lookup = lambda: {}
+                manager._deleted_task_lookup = lambda candidates=None: {}
                 archive_worker_module._select_cookie = lambda *_: "cookie"
 
                 result = manager.retry_missing_3mf(
