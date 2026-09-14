@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.18.0`
+> 当前版本：`v0.19.0`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -359,6 +359,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-09-14 · v0.19.0
+
+- 分组详情改为数据库分页及按需标签搜索，来源封面仅查询目标分组；保留收藏夹顺序、删除状态及本地合并建议。
+- 任务摘要合并数据库读取，缓存改用修订号；本地预览持久排队并支持中断恢复，减少全目录扫描。
+- 增加脱敏 CB 阶段耗时记录，下载并发和每日限额继续沿用原配置。
+
 ### 2026-09-14 · v0.18.0
 
 - 模型标签按需搜索，分页不再返回全库标签；本地整理无变化时不写状态，进度更新也不再触发本地库整页查询。
@@ -371,12 +377,12 @@ npm --prefix frontend run build
 - 静态资源错误在隐去签名参数和凭证的同时，保留 HTTP 状态码或超时、连接、重定向类别，便于区分 CDN 拒绝与网络故障。
 - 任务页缺失 `3MF` 操作列修复了内层容器间距和窄屏按钮重叠，重试与取消操作可正常换行。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-09-06 · v0.17.1
 
 - 首页和设置页打开 CloakBrowser 时会先完成占位窗口导航，再断开来源页引用，修复 Chrome 因过早清空 `opener` 而拒绝跳转到指纹浏览器地址的问题；两个入口统一使用相同的安全回退逻辑。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-09-05 · v0.17.0
 

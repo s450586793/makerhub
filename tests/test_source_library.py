@@ -43,6 +43,41 @@ def _model(model_dir: str, *, source: str = "cn") -> dict:
 
 
 class SourceLibraryTest(unittest.TestCase):
+    def test_targeted_preview_only_queries_selected_group_and_reuses_unchanged_cover(self):
+        summary = {"total": 7, "preview_models": [{"model_dir": "M1", "title": "One", "cover_url": "", "collect_ts": 1}]}
+        with TemporaryDirectory() as tmp, InMemoryDatabaseState(), \
+                patch.object(source_library, "SOURCE_LIBRARY_SNAPSHOT_DIR", Path(tmp)), \
+                patch.object(source_library, "query_group_models", return_value={"summary": summary}) as query, \
+                patch.object(source_library, "_group_models", side_effect=AssertionError("full library")), \
+                patch.object(source_library, "append_business_log"):
+            first = refresh_source_preview_snapshots(source_keys={"local-organizer"})
+            summary["total"] = 8
+            second = refresh_source_preview_snapshots(source_keys={"local-organizer"})
+        self.assertEqual(first["generated"], 1)
+        self.assertEqual(second["skipped"], 1)
+        self.assertEqual([call.args[0]["key"] for call in query.call_args_list], ["local-organizer", "local-organizer"])
+
+    def test_indexed_group_page_does_not_load_full_library(self):
+        row = {"items": [_model("M1", source="local")], "total": 1500, "count": 1,
+               "summary": {"total": 1500, "author_count": 12, "local_count": 1500, "preview_models": []}}
+        with InMemoryDatabaseState(), \
+                patch.object(source_library, "query_group_models", return_value=row, create=True), \
+                patch.object(source_library, "query_group_merge_candidates", return_value=[], create=True), \
+                patch.object(source_library, "_group_models", side_effect=AssertionError("full library must not be loaded")):
+            result = build_source_group_models_payload("local", "local-organizer")
+        self.assertEqual(result["total"], 1500)
+        self.assertEqual(result["view"]["local_model_count"], 1500)
+        self.assertEqual(result["view"]["stats"], [{"label": "模型", "value": 1500}, {"label": "作者", "value": 12}])
+
+    def test_payload_cache_revision_signature_survives_json_roundtrip(self):
+        with TemporaryDirectory() as tmp, patch.object(source_library, "SOURCE_LIBRARY_PAYLOAD_CACHE_PATH", Path(tmp) / "cache.json"):
+            signature = (1, (4, "timestamp"), (2, "timestamp"))
+            source_library._write_source_library_payload_cache({"sections": []}, signature)
+            _, stale = source_library._load_source_library_payload_cache(signature)
+            self.assertFalse(stale)
+            _, stale = source_library._load_source_library_payload_cache((1, (5, "timestamp"), (2, "timestamp")))
+            self.assertTrue(stale)
+
     def test_organizer_cards_use_database_counts_without_loading_all_models(self):
         task_store = type("Store", (), {"load_organize_tasks": lambda self: {"items": []}})()
         projection = {

@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from app.core.database_json_state import load_database_json_state, save_database_json_state
+from app.core.database_json_state import load_database_json_state, save_database_json_state, update_database_json_state
 from app.core.settings import (
     ARCHIVE_DIR,
     LOCAL_PREVIEW_MAX_BYTES,
@@ -18,6 +18,7 @@ from app.core.settings import (
 )
 from app.core.timezone import now_iso as china_now_iso
 from app.services.business_logs import append_business_log
+from app.services.resource_limiter import resource_slot
 from app.services.catalog import invalidate_archive_snapshot, invalidate_model_detail_cache, upsert_archive_snapshot_model
 from app.services.local_model_preview import (
     PREVIEW_VERSION,
@@ -33,9 +34,24 @@ RENDERER_SCRIPT = ROOT_DIR / "app" / "services" / "local_preview_renderer.mjs"
 DEFAULT_RENDER_SIZE = 720
 PREVIEW_QUEUE_MARKER_PATH = STATE_DIR / "local_preview_queue.marker"
 PREVIEW_QUEUE_MARKER_KEY = "local_preview_queue_marker"
+PREVIEW_QUEUE_STATE_KEY = "local_preview_jobs"
+PREVIEW_RECONCILE_SECONDS = 15 * 60
 
 
-def mark_local_preview_queue_updated(reason: str = "") -> None:
+def mark_local_preview_queue_updated(reason: str = "", *, model_dir: str = "") -> None:
+    if model_dir:
+        root = ARCHIVE_DIR.resolve()
+        target = (root / model_dir).resolve()
+        relative = target.relative_to(root).as_posix()
+        if relative == ".":
+            raise ValueError("预览任务必须指定模型目录。")
+        job = {"model_dir": relative, "token": str(time.time_ns())}
+
+        def enqueue(state):
+            items = [item for item in state.get("items") or [] if item.get("model_dir") != relative]
+            return {**state, "items": [*items, job]}
+
+        update_database_json_state(PREVIEW_QUEUE_STATE_KEY, {"items": []}, enqueue)
     save_database_json_state(
         PREVIEW_QUEUE_MARKER_KEY,
         {
@@ -189,43 +205,92 @@ def _render_preview_png(model_file: Path, source_file_name: str) -> bytes:
         return data
 
 
+def _ack_preview_job(job: dict) -> None:
+    def acknowledge(state):
+        return {**state, "items": [item for item in state.get("items") or [] if item != job]}
+    update_database_json_state(PREVIEW_QUEUE_STATE_KEY, {"items": []}, acknowledge)
+
+
+def _preview_jobs() -> list[dict]:
+    state = load_database_json_state(PREVIEW_QUEUE_STATE_KEY, {"items": []})
+    jobs = list(state.get("items") or [])
+    now = time.time()
+    last_scan = float(state.get("last_scan_at") or 0)
+    if jobs or 0 <= now - last_scan < PREVIEW_RECONCILE_SECONDS:
+        return jobs
+    root = ARCHIVE_DIR.resolve()
+    discovered = []
+    # 全目录扫描仅用于首次启动或低频找回遗漏任务，正常消费直接读取持久队列。
+    for meta_path in root.rglob("meta.json"):
+        meta = _read_meta(meta_path)
+        if not meta or str(meta.get("source") or "").lower() != "local":
+            continue
+        local_import = meta.get("localImport") or {}
+        if local_import.get("previewNeedsGeneration") or local_import.get("previewStatus") == "running":
+            discovered.append({"model_dir": meta_path.parent.relative_to(root).as_posix(), "token": str(time.time_ns())})
+
+    def reconcile(current):
+        existing = list(current.get("items") or [])
+        known = {item["model_dir"] for item in existing}
+        return {**current, "last_scan_at": now,
+                "items": [*existing, *(item for item in discovered if item["model_dir"] not in known)]}
+
+    state, _ = update_database_json_state(PREVIEW_QUEUE_STATE_KEY, {"items": []}, reconcile)
+    return state["items"]
+
+
 def find_pending_local_preview_model() -> tuple[Path, dict[str, Any], dict[str, Any]] | None:
     archive_root = ARCHIVE_DIR.resolve()
     if not archive_root.exists():
         return None
-    for meta_path in sorted(archive_root.rglob("meta.json")):
-        if not meta_path.is_file():
+    for job in _preview_jobs():
+        model_root = (archive_root / str(job.get("model_dir") or "")).resolve()
+        if not model_root.is_relative_to(archive_root) or model_root == archive_root:
+            _ack_preview_job(job)
             continue
-        model_root = meta_path.parent
+        meta_path = model_root / "meta.json"
         meta = _read_meta(meta_path)
         if not meta or str(meta.get("source") or "").strip().lower() != "local":
+            _ack_preview_job(job)
             continue
         local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
         persisted_status = str(local_import.get("previewStatus") or "").strip().lower()
         explicitly_queued = bool(local_import.get("previewNeedsGeneration")) or persisted_status == "running"
         if not explicitly_queued:
+            _ack_preview_job(job)
             continue
         state = build_local_preview_state(meta, model_root)
         if state and _status(meta) == "running":
             candidate = state.get("candidate") if isinstance(state.get("candidate"), dict) else {}
             _mark_preview_pending(meta, candidate)
             _write_meta(model_root, meta, reason="local_preview_stale_running")
-            continue
+            state = build_local_preview_state(meta, model_root)
         if not state.get("needs_generation"):
             _write_meta(model_root, meta, reason="local_preview_not_needed")
+            _ack_preview_job(job)
             continue
         candidate = state.get("candidate") if isinstance(state.get("candidate"), dict) else first_previewable_instance(meta, model_root)
         if not candidate:
+            _ack_preview_job(job)
             continue
+        candidate = {**candidate, "queue_job": job}
         return model_root, meta, candidate
     return None
 
 
 def run_local_preview_generation_once() -> dict[str, Any]:
-    pending = find_pending_local_preview_model()
-    if pending is None:
-        return {"processed": False, "reason": "idle"}
+    with resource_slot("local_preview_generation"):
+        pending = find_pending_local_preview_model()
+        if pending is None:
+            return {"processed": False, "reason": "idle"}
+        result = _generate_local_preview(pending)
+        job = pending[2].get("queue_job")
+        if result.get("processed") and job:
+            _ack_preview_job(job)
+        return result
 
+
+def _generate_local_preview(pending) -> dict[str, Any]:
     model_root, meta, candidate = pending
     model_dir = _model_dir(model_root)
     source_file_name = Path(str(candidate.get("file_name") or "")).name
@@ -299,6 +364,8 @@ def run_local_preview_generation_once() -> dict[str, Any]:
 
     try:
         image_bytes = _render_preview_png(model_file, source_file_name)
+        if not _preview_job_is_current(candidate):
+            return {"processed": True, "status": "superseded", "model_dir": model_dir}
         refreshed_meta = _read_meta(model_root / "meta.json") or meta
         apply_generated_preview_image(
             model_root=model_root,
@@ -325,6 +392,8 @@ def run_local_preview_generation_once() -> dict[str, Any]:
         failure_status = "failed"
         message = str(exc) or "Three.js 预览图生成失败。"
 
+    if not _preview_job_is_current(candidate):
+        return {"processed": True, "status": "superseded", "model_dir": model_dir}
     refreshed_meta = _read_meta(model_root / "meta.json") or meta
     record_generated_preview_failure(
         refreshed_meta,
@@ -344,3 +413,11 @@ def run_local_preview_generation_once() -> dict[str, Any]:
         error=message,
     )
     return {"processed": True, "status": failure_status, "model_dir": model_dir}
+
+
+def _preview_job_is_current(candidate: dict) -> bool:
+    job = candidate.get("queue_job")
+    if not job:
+        return True
+    state = load_database_json_state(PREVIEW_QUEUE_STATE_KEY, {"items": []})
+    return job in (state.get("items") or [])

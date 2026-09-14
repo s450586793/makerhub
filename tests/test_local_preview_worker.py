@@ -71,6 +71,74 @@ class LocalPreviewWorkerTest(unittest.TestCase):
     def tearDown(self):
         self.db_state.__exit__(None, None, None)
 
+    def test_explicit_queue_survives_restart_without_scanning_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            _write_model(root)
+            with patch.object(local_preview_worker, "ARCHIVE_DIR", root), \
+                    patch.object(local_preview_worker, "_write_meta"), \
+                    patch.object(Path, "rglob", side_effect=AssertionError("queued jobs must not scan archive")):
+                local_preview_worker.mark_local_preview_queue_updated("import", model_dir="LOCAL_Cube")
+                first = local_preview_worker.find_pending_local_preview_model()
+                second = local_preview_worker.find_pending_local_preview_model()
+            self.assertEqual(first[0], root / "LOCAL_Cube")
+            self.assertEqual(second[0], first[0])
+
+    def test_idle_preview_queue_scans_once_and_completed_jobs_are_acknowledged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            _write_model(root)
+            with patch.object(local_preview_worker, "ARCHIVE_DIR", root), \
+                    patch.object(catalog, "ARCHIVE_DIR", root), \
+                    patch.object(local_preview_worker, "_render_preview_png", return_value=PNG_BYTES), \
+                    patch.object(local_preview_worker, "append_business_log"):
+                result = local_preview_worker.run_local_preview_generation_once()
+                self.assertEqual(result["status"], "success")
+                with patch.object(Path, "rglob", side_effect=AssertionError("idle queue must not rescan immediately")):
+                    self.assertIsNone(local_preview_worker.find_pending_local_preview_model())
+
+    def test_requeued_job_is_not_removed_by_older_acknowledgement(self):
+        with patch.object(local_preview_worker, "ARCHIVE_DIR", Path("/tmp/archive")):
+            local_preview_worker.mark_local_preview_queue_updated("first", model_dir="LOCAL_Cube")
+            old_job = self.db_state.load("local_preview_jobs")["items"][0]
+            local_preview_worker.mark_local_preview_queue_updated("retry", model_dir="LOCAL_Cube")
+            local_preview_worker._ack_preview_job(old_job)
+        self.assertEqual(len(self.db_state.load("local_preview_jobs")["items"]), 1)
+
+    def test_interrupted_render_is_recovered_on_next_worker_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            _write_model(root)
+            with patch.object(local_preview_worker, "ARCHIVE_DIR", root), \
+                    patch.object(catalog, "ARCHIVE_DIR", root), \
+                    patch.object(local_preview_worker, "append_business_log"):
+                with patch.object(local_preview_worker, "_render_preview_png", side_effect=SystemExit), self.assertRaises(SystemExit):
+                    local_preview_worker.run_local_preview_generation_once()
+                self.assertEqual(len(self.db_state.load("local_preview_jobs")["items"]), 1)
+                with patch.object(local_preview_worker, "_render_preview_png", return_value=PNG_BYTES), \
+                        patch.object(Path, "rglob", side_effect=AssertionError("restart must use queue")):
+                    result = local_preview_worker.run_local_preview_generation_once()
+                self.assertEqual(result["status"], "success")
+                self.assertEqual(self.db_state.load("local_preview_jobs")["items"], [])
+
+    def test_new_request_during_render_does_not_get_overwritten_by_old_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            model = _write_model(root)
+
+            def render(*args):
+                local_preview_worker.mark_local_preview_queue_updated("new request", model_dir="LOCAL_Cube")
+                return PNG_BYTES
+
+            with patch.object(local_preview_worker, "ARCHIVE_DIR", root), \
+                    patch.object(catalog, "ARCHIVE_DIR", root), \
+                    patch.object(local_preview_worker, "_render_preview_png", side_effect=render), \
+                    patch.object(local_preview_worker, "append_business_log"):
+                result = local_preview_worker.run_local_preview_generation_once()
+            self.assertEqual(result["status"], "superseded")
+            self.assertEqual(len(self.db_state.load("local_preview_jobs")["items"]), 1)
+            self.assertTrue(json.loads((model / "meta.json").read_text())["localImport"]["previewNeedsGeneration"])
+
     def test_worker_generates_three_preview_and_replaces_legacy_svg(self):
         with tempfile.TemporaryDirectory() as tmp:
             archive_root = Path(tmp).resolve()

@@ -787,6 +787,7 @@ async function clickAuthorization(
 }
 
 async function main() {
+  const bridgeStarted = performance.now();
   const input = await readInput();
   const cdpUrl = String(input.cdp_url || "").trim();
   if (!cdpUrl) throw new Error("cdp_url is required");
@@ -801,6 +802,8 @@ async function main() {
       input.action === "click" ? Number(input.authorization_timeout_ms || 90000) : 15000,
     ),
   });
+  const connectedAt = performance.now();
+  let output = null;
   let navigationError = "";
   try {
     const contexts = browser.browserContexts();
@@ -816,7 +819,7 @@ async function main() {
         input.cookies,
         input.navigation_timeout_ms,
       );
-      process.stdout.write(JSON.stringify({ ok: true, ...fetched }));
+      output = { ok: true, ...fetched };
       return;
     }
     if (input.action === "click") {
@@ -831,7 +834,7 @@ async function main() {
         input.authorization_timeout_ms,
         input.auto_verify_3mf === true,
       );
-      process.stdout.write(JSON.stringify({ ok: true, ...authorization }));
+      output = { ok: true, ...authorization };
       return;
     }
     if (input.action === "seed") {
@@ -879,15 +882,26 @@ async function main() {
       const item = await storageSnapshot(currentPage);
       if (item) storage.push(item);
     }
-    process.stdout.write(JSON.stringify({
+    output = {
       ok: true,
       current_url: page.url(),
       cookies: await context.cookies(),
       storage,
       navigation_error: navigationError,
-    }));
+    };
   } finally {
+    const operationFinished = performance.now();
     await browser.disconnect();
+    const finished = performance.now();
+    process.stdout.write(JSON.stringify({
+      ...(output || { ok: false }),
+      timings: {
+        connect_ms: connectedAt - bridgeStarted,
+        operation_ms: operationFinished - connectedAt,
+        cleanup_ms: finished - operationFinished,
+        bridge_ms: finished - bridgeStarted,
+      },
+    }));
   }
 }
 

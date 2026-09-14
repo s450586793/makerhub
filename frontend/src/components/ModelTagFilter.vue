@@ -21,7 +21,10 @@ import { computed, nextTick, onBeforeUnmount, onDeactivated, ref } from "vue";
 import { apiRequest } from "../lib/api";
 import { createHydratedResource } from "../lib/useHydratedResource";
 
-const props = defineProps({ modelValue: { type: String, default: "" } });
+const props = defineProps({
+  modelValue: { type: String, default: "" },
+  endpoint: { type: String, default: "/api/models/tags" },
+});
 const emit = defineEmits(["update:modelValue", "change"]);
 const stateOptions = [
   { value: "", label: "全部标签" },
@@ -41,7 +44,7 @@ const error = ref("");
 const menuStyle = ref({});
 let searchTimer = null;
 const resource = createHydratedResource({
-  load: ({ signal }) => apiRequest(`/api/models/tags?${new URLSearchParams({ q: query.value, limit: "50" })}`, { signal }),
+  load: ({ signal }) => apiRequest(`${props.endpoint}?${new URLSearchParams({ q: query.value, limit: "50" })}`, { signal }),
   onData: (response) => {
     items.value = response?.items || [];
     hasMore.value = Boolean(response?.has_more);

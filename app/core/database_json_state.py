@@ -14,6 +14,7 @@ from app.core.database import (
     load_json_state_without_initialization,
     load_json_state_array_summary,
     load_json_state_with_revision,
+    load_json_state_revisions,
     save_json_state,
     update_json_state,
 )
@@ -95,6 +96,22 @@ def load_database_archive_queue_verification_summary(key: str) -> dict[str, int]
         "cn": max(int(payload.get("cn") or 0), 0),
         "global": max(int(payload.get("global") or 0), 0),
     }
+
+
+def load_database_archive_queue_summary(key: str, *, limit: int = 5) -> dict[str, Any]:
+    require_database_json_state()
+    return _with_database_json_state_attempts(
+        lambda: load_json_state_archive_queue_verification_summary(key, item_limit=max(0, int(limit)))
+    )
+
+
+def database_json_state_revisions(keys: list[str]) -> dict[str, tuple[int, str]]:
+    require_database_json_state()
+    return _with_database_json_state_attempts(lambda: load_json_state_revisions(keys))
+
+
+def database_json_state_revision(key: str, default: dict[str, Any] | None = None) -> tuple[int, str]:
+    return database_json_state_revisions([key])[key]
 
 
 def save_database_json_state(key: str, payload: dict[str, Any]) -> dict[str, Any]:

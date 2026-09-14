@@ -16,7 +16,7 @@ from app.core.database import (
     initialize_database,
     jsonb_value,
 )
-from app.core.database_json_state import database_json_state_signature, load_database_json_state, save_database_json_state
+from app.core.database_json_state import database_json_state_revision, load_database_json_state, save_database_json_state
 from app.core.settings import ARCHIVE_DIR
 from app.core.timezone import now_iso as china_now_iso
 from app.services.makerworld_parsers.common import normalize_source_url
@@ -1332,7 +1332,7 @@ def query_archive_model_tags(q: str = "", *, limit: int = 50) -> Optional[dict[s
         if not ensure_archive_model_index_schema() or not archive_model_index_is_bootstrapped(archive_root=ARCHIVE_DIR):
             return None
         revision = _metadata_value(ARCHIVE_MODEL_INDEX_REVISION_KEY).get("revision", 0)
-        flags_signature = database_json_state_signature("model_flags", {"favorites": [], "printed": [], "deleted": []})
+        flags_signature = database_json_state_revision("model_flags", {"favorites": [], "printed": [], "deleted": []})
         cache_key = (str(ARCHIVE_DIR), str(revision), repr(flags_signature), query, safe_limit)
         with _ARCHIVE_MODEL_FACETS_LOCK:
             cached = _ARCHIVE_MODEL_TAGS_CACHE.get(cache_key)

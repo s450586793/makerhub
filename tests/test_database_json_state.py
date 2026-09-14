@@ -46,7 +46,7 @@ class JsonStateDatabaseRoutingTest(unittest.TestCase):
             patch("app.services.subscriptions.save_database_json_state", side_effect=lambda key, value: self.state.__setitem__(key, value) or value),
             patch("app.services.source_library.load_database_json_state", side_effect=lambda key, default: dict(self.state.get(key) or default)),
             patch("app.services.source_library.save_database_json_state", side_effect=lambda key, value: self.state.__setitem__(key, value) or value),
-            patch("app.services.source_library.database_json_state_signature", side_effect=lambda key, default=None: ("", str(self.state.get(key) or default or {}))),
+            patch("app.services.source_library.database_json_state_revision", side_effect=lambda key, default=None: ("", str(self.state.get(key) or default or {}))),
             patch("app.api.config.load_database_json_state", side_effect=lambda key, default: dict(self.state.get(key) or default)),
             patch("app.api.config.save_database_json_state", side_effect=lambda key, value: self.state.__setitem__(key, value) or value),
             patch("app.services.business_logs.database_configured", return_value=True),

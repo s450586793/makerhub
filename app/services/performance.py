@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -17,6 +18,31 @@ HIGH_FREQUENCY_PATHS = {
 SKIP_API_TIMING_PATHS = {
     "/api/performance/events",
 }
+
+
+def log_browser_bridge_timing(payload: dict, timings: dict, *, total_ms: float, failed: bool) -> None:
+    if not failed and total_ms < 2500:
+        return
+    fields = {}
+    timings = timings if isinstance(timings, dict) else {}
+    for key in ("connect_ms", "operation_ms", "cleanup_ms", "bridge_ms"):
+        try:
+            value = float(timings.get(key))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value) and value >= 0:
+            fields[key] = round(value, 1)
+    if "bridge_ms" in fields:
+        fields["outside_bridge_ms"] = round(max(0, total_ms - fields["bridge_ms"]), 1)
+    try:
+        append_business_log_async(
+            "performance", "browser_bridge_timing", "指纹浏览器操作耗时。",
+            platform=payload.get("platform") if payload.get("platform") in {"cn", "global"} else "unknown",
+            action=payload.get("action") if payload.get("action") in {"fetch", "click", "seed", "sync", "login", "snapshot"} else "unknown",
+            total_ms=round(total_ms, 1), failed=failed, **fields,
+        )
+    except Exception:
+        return
 
 
 def _safe_path(value: Any) -> str:

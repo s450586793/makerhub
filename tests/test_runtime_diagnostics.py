@@ -464,7 +464,7 @@ class RuntimeDiagnosticsTest(unittest.TestCase):
 
         with patch.object(catalog, "query_archive_model_index", return_value=sql_page, create=True) as query_index, \
                 patch.object(catalog, "load_archive_model_facets", return_value=facets, create=True) as load_facets, \
-                patch.object(catalog, "database_json_state_signature", return_value=("flags-v1", "flags-hash")), \
+                patch.object(catalog, "database_json_state_revision", return_value=("flags-v1", "flags-hash")), \
                 patch.object(catalog, "load_archive_model_index_unchecked", side_effect=AssertionError("SQL page must not load the full index")), \
                 patch.object(catalog, "get_decorated_models", side_effect=AssertionError("SQL page must not build decorated models")), \
                 patch.object(catalog, "_apply_subscription_flags", side_effect=lambda items: items) as decorate_page:

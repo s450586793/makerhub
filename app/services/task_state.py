@@ -7,7 +7,7 @@ from typing import Any, Optional
 from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 from app.core.database_json_state import (
-    load_database_archive_queue_verification_summary,
+    load_database_archive_queue_summary,
     load_database_json_state,
     load_database_json_state_array_summary,
     save_database_json_state,
@@ -1506,14 +1506,8 @@ class TaskStateStore:
 
     def _load_archive_queue_compact_unlocked(self, *, item_limit: int = 5) -> dict:
         clean_limit = max(0, int(item_limit or 0))
-        summaries = {
-            field: load_database_json_state_array_summary(
-                ARCHIVE_QUEUE_STATE_KEY,
-                field,
-                limit=clean_limit,
-            )
-            for field in ("active", "queued", "recent_failures")
-        }
+        summary = load_database_archive_queue_summary(ARCHIVE_QUEUE_STATE_KEY, limit=clean_limit)
+        summaries = summary["arrays"]
         queue = _normalize_archive_queue(
             {
                 field: summaries[field].get("items") or []
@@ -1530,9 +1524,7 @@ class TaskStateStore:
         queue["active_truncated"] = counts["active"] > len(queue["active"])
         queue["queued_truncated"] = counts["queued"] > len(queue["queued"])
         queue["recent_failures_truncated"] = counts["recent_failures"] > len(queue["recent_failures"])
-        queue["verification_paused_by_platform"] = load_database_archive_queue_verification_summary(
-            ARCHIVE_QUEUE_STATE_KEY
-        )
+        queue["verification_paused_by_platform"] = {platform: int(summary.get(platform) or 0) for platform in ("cn", "global")}
         return queue
 
     def _save_archive_queue_unlocked(self, payload: dict) -> dict:

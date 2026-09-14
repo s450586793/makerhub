@@ -11,9 +11,11 @@ from urllib.parse import quote, unquote, urlparse
 import requests
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
+from app.core.database import DatabaseUnavailable
 
 from app.core.database_json_state import (
-    database_json_state_signature,
+    database_json_state_revision,
+    database_json_state_revisions,
     load_database_json_state,
     load_database_json_state_version,
     save_database_json_state,
@@ -28,7 +30,9 @@ from app.services.makerworld_pipeline import (
 )
 from app.services.business_logs import append_business_log
 from app.services.archive_model_index import query_organizer_model_groups
+from app.services.source_group_index import query_group_models, query_group_tags, query_group_merge_candidates
 from app.services.catalog import (
+    _apply_subscription_flags,
     _file_signature,
     _sort_models,
     _source_counts_from_items,
@@ -76,6 +80,7 @@ _SOURCE_LIBRARY_PAYLOAD_REFRESH_STATE: dict[str, Any] = {
     "last_started": 0.0,
 }
 _SOURCE_LIBRARY_CHANGE_STATE = threading.local()
+_SOURCE_GROUP_MERGE_CACHE: dict[tuple, list[dict]] = {}
 
 AUTHOR_NAME_KEYS = ("name", "nickname", "displayName", "userName", "username")
 AUTHOR_HANDLE_KEYS = ("handle", "userHandle", "user_handle", "username", "userName", "slug")
@@ -112,6 +117,7 @@ SOURCE_LIBRARY_SNAPSHOT_KINDS = {
 
 def release_source_library_memory() -> None:
     with _SOURCE_LIBRARY_GROUP_CACHE_LOCK:
+        _SOURCE_GROUP_MERGE_CACHE.clear()
         _SOURCE_LIBRARY_GROUP_CACHE.update(
             signature=None,
             groups={},
@@ -408,13 +414,11 @@ def _directory_signature(path: Path) -> tuple[int, int, int]:
 
 
 def _source_library_payload_signature(store: Optional[JsonStore] = None) -> tuple[Any, ...]:
+    keys = ["app_config", "subscriptions_state", "model_flags", SOURCE_LIBRARY_ARCHIVE_MARKER_KEY, SOURCE_LIBRARY_METADATA_STATE_KEY]
+    revisions = database_json_state_revisions(keys)
     return (
         SOURCE_LIBRARY_PAYLOAD_CACHE_VERSION,
-        database_json_state_signature("app_config", {}),
-        database_json_state_signature("subscriptions_state", {"items": []}),
-        database_json_state_signature("model_flags", {"favorites": [], "printed": [], "deleted": []}),
-        load_database_json_state_version(SOURCE_LIBRARY_ARCHIVE_MARKER_KEY),
-        database_json_state_signature(SOURCE_LIBRARY_METADATA_STATE_KEY, {"items": {}, "updated_at": ""}),
+        *(revisions[key] for key in keys),
         _directory_signature(SOURCE_LIBRARY_SNAPSHOT_DIR),
     )
 
@@ -462,8 +466,7 @@ def _load_source_library_payload_cache(signature: tuple[Any, ...]) -> tuple[dict
     payload = wrapped.get("payload")
     if not isinstance(payload, dict):
         return {}, True
-    cached_signature = tuple(wrapped.get("signature") or ())
-    stale = cached_signature != signature
+    stale = wrapped.get("signature") != json.loads(json.dumps(signature))
     cloned = _clone_payload(payload)
     cloned["cache"] = {
         **(cloned.get("cache") if isinstance(cloned.get("cache"), dict) else {}),
@@ -518,7 +521,6 @@ def _refresh_source_library_payload_cache(
 ) -> None:
     try:
         payload = _build_source_library_payload_uncached("", store=store, task_store=task_store)
-        signature = _source_library_payload_signature(store)
         with _SOURCE_LIBRARY_PAYLOAD_CACHE_LOCK:
             _write_source_library_payload_cache(payload, signature)
     except Exception as exc:
@@ -579,7 +581,7 @@ def _source_library_payload_from_cache_or_build(
 def _group_cache_signature() -> tuple[Any, ...]:
     return (
         get_decorated_models_signature(),
-        database_json_state_signature(SOURCE_LIBRARY_METADATA_STATE_KEY, {"items": {}, "updated_at": ""}),
+        database_json_state_revision(SOURCE_LIBRARY_METADATA_STATE_KEY, {"items": {}, "updated_at": ""}),
         _directory_signature(SOURCE_LIBRARY_SNAPSHOT_DIR),
     )
 
@@ -1907,6 +1909,10 @@ def build_source_group_models_payload(
     store: Optional[JsonStore] = None,
     task_store: Optional[TaskStateStore] = None,
 ) -> Optional[dict[str, Any]]:
+    indexed = _indexed_group_payload(source_key, source_type=source_type, q=q, source=source, tag=tag,
+                                     sort_key=sort_key, page=page, page_size=page_size, store=store)
+    if indexed is not None:
+        return indexed
     groups, all_models, _ = _group_models(store=store, task_store=task_store)
     group = groups.get(source_key)
     if not group or str(group.get("route_kind") or "") != "source":
@@ -1948,6 +1954,10 @@ def build_state_group_models_payload(
     store: Optional[JsonStore] = None,
     task_store: Optional[TaskStateStore] = None,
 ) -> Optional[dict[str, Any]]:
+    indexed = _indexed_group_payload(state_key, source_type="state", q=q, source=source, tag=tag,
+                                     sort_key=sort_key, page=page, page_size=page_size, store=store)
+    if indexed is not None:
+        return indexed
     groups, all_models, _ = _group_models(store=store, task_store=task_store)
     group = groups.get(state_key)
     if not group or str(group.get("route_kind") or "") != "state":
@@ -1966,6 +1976,94 @@ def build_state_group_models_payload(
     )
     payload["view"] = group
     return payload
+
+
+def _indexed_group_definitions(store: Optional[JsonStore] = None) -> Optional[dict[str, dict]]:
+    try:
+        config = (store or JsonStore()).load()
+    except DatabaseUnavailable:
+        return None
+    groups = [*build_subscription_source_cards_light(config, metadata_cache={}),
+              *_group_local_sources([]), *_group_state_cards([], [])]
+    return {group["key"]: group for group in groups}
+
+
+def _finalize_indexed_group(group: dict, summary: dict, metadata: dict) -> dict:
+    previews = list(summary.get("preview_models") or [])[:SOURCE_LIBRARY_PREVIEW_LIMIT]
+    group["model_dirs"] = [item["model_dir"] for item in previews]
+    group["remote_model_count"] = _safe_int(summary.get("remote_model_count"))
+    group["likes_count"] = _safe_int(summary.get("likes_count"))
+    _finalize_group(group, {item["model_dir"]: item for item in previews}, metadata)
+    group.pop("model_dirs", None)
+    group["local_model_count"] = _safe_int(summary.get("total"))
+    if group["kind"] in {"favorite", "collection"} and group["remote_model_count"]:
+        group["model_count"] = group["remote_model_count"]
+    else:
+        group["model_count"] = max(group["local_model_count"], group["remote_model_count"])
+    group["stats"] = _build_group_stats(group, [])
+    field = {"local": "author_count", "source_deleted": "source_count",
+             "local_favorite": "local_count", "printed": "local_count", "local_deleted": "local_count"}.get(group["kind"])
+    if field:
+        group["stats"][1]["value"] = _safe_int(summary.get(field))
+    group["sort_score"] = max(group["followers_count"], group["model_count"], group["likes_count"])
+    return group
+
+
+def _indexed_merge_suggestions(group: dict, revision: Any = None) -> list[dict]:
+    if group.get("kind") not in {"local", "local_favorite", "printed", "source_deleted"}:
+        return []
+    keys = [SOURCE_LIBRARY_ARCHIVE_MARKER_KEY, "model_flags", "subscriptions_state", "app_config"]
+    versions = database_json_state_revisions(keys)
+    signature = (group["key"], revision, *(versions[key] for key in keys))
+    with _SOURCE_LIBRARY_GROUP_CACHE_LOCK:
+        if signature in _SOURCE_GROUP_MERGE_CACHE:
+            return _clone_payload({"items": _SOURCE_GROUP_MERGE_CACHE[signature]})["items"]
+    candidates = query_group_merge_candidates(group)
+    if candidates is None:
+        return []
+    result = _build_local_merge_suggestions(candidates)
+    with _SOURCE_LIBRARY_GROUP_CACHE_LOCK:
+        if len(_SOURCE_GROUP_MERGE_CACHE) >= 16:
+            _SOURCE_GROUP_MERGE_CACHE.pop(next(iter(_SOURCE_GROUP_MERGE_CACHE)))
+        _SOURCE_GROUP_MERGE_CACHE[signature] = result
+    return _clone_payload({"items": result})["items"]
+
+
+def _matches_group_route(group: Optional[dict], source_type: str) -> bool:
+    if not group:
+        return False
+    if source_type == "state":
+        return group.get("route_kind") == "state"
+    return group.get("route_kind") == "source" and group.get("kind") == source_type
+
+
+def _indexed_group_payload(source_key: str, *, source_type: str, store=None, **filters) -> Optional[dict]:
+    group = (_indexed_group_definitions(store) or {}).get(source_key)
+    if not _matches_group_route(group, source_type):
+        return None
+    payload = query_group_models(group, **filters)
+    if payload is None:
+        return None
+    summary = payload.pop("summary")
+    _apply_subscription_flags(payload["items"])
+    metadata = load_source_metadata_cache().get("items", {}).get(source_key, {})
+    payload["view"] = _finalize_indexed_group(group, summary, metadata)
+    payload["merge_suggestions"] = _indexed_merge_suggestions(group, payload.pop("revision", None))
+    return payload
+
+
+def build_group_tags_payload(source_key: str, *, source_type: str, q: str = "", limit: int = 50, store=None) -> Optional[dict]:
+    group = (_indexed_group_definitions(store) or {}).get(source_key)
+    if not _matches_group_route(group, source_type):
+        return None
+    result = query_group_tags(group, q, limit=limit)
+    if result is not None:
+        return result
+    groups, models, _ = _group_models(store=store)
+    member_dirs = set((groups.get(source_key) or {}).get("model_dirs") or [])
+    tags = sorted({str(tag).lower() for model in models if model.get("model_dir") in member_dirs
+                   for tag in model.get("tags") or [] if q.strip().lower() in str(tag).lower()})
+    return {"items": tags[:limit], "has_more": len(tags) > limit}
 
 
 def _stale_metadata(item: dict[str, Any], *, force: bool) -> bool:
@@ -2151,13 +2249,24 @@ def refresh_source_preview_snapshots(
 ) -> dict[str, Any]:
     store = store or JsonStore()
     task_store = task_store or TaskStateStore()
-    groups, _, _ = _group_models(store=store, task_store=task_store)
     metadata_cache = load_source_metadata_cache().get("items") or {}
     source_key_filter = {
         str(item or "").strip()
         for item in (source_keys or set())
         if str(item or "").strip()
     }
+    definitions = _indexed_group_definitions(store)
+    groups = {}
+    if definitions is None:
+        groups, _, _ = _group_models(store=store, task_store=task_store)
+    for key, group in (definitions or {}).items():
+        if source_key_filter and key not in source_key_filter:
+            continue
+        indexed = query_group_models(group, page_size=0)
+        if indexed is None:
+            groups, _, _ = _group_models(store=store, task_store=task_store)
+            break
+        groups[key] = _finalize_indexed_group(group, indexed["summary"], metadata_cache.get(key) or {})
 
     candidates = [
         group

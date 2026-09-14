@@ -10,6 +10,7 @@ from app.services.request_threads import run_web_io
 from app.services.source_library import (
     SOURCE_LIBRARY_SNAPSHOT_DIR,
     build_source_group_models_payload,
+    build_group_tags_payload,
     build_source_library_light_payload,
     build_source_library_payload,
     build_state_group_models_payload,
@@ -17,6 +18,19 @@ from app.services.source_library import (
 
 
 router = APIRouter(prefix="/api")
+
+
+@router.get("/source-library/sources/{source_type}/{source_key}/tags")
+async def get_source_group_tags(source_type: str, source_key: str, q: str = Query("", max_length=200), limit: int = Query(50, ge=1, le=100)):
+    result = await run_web_io(build_group_tags_payload, source_key, source_type=source_type, q=q, limit=limit, store=store)
+    if result is None:
+        raise HTTPException(status_code=404, detail="来源不存在。")
+    return result
+
+
+@router.get("/source-library/states/{state_key}/tags")
+async def get_state_group_tags(state_key: str, q: str = Query("", max_length=200), limit: int = Query(50, ge=1, le=100)):
+    return await get_source_group_tags("state", state_key, q=q, limit=limit)
 
 
 @router.get("/source-library")

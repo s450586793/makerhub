@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 
 from app.core.database import DatabaseUnavailable
 from app.core.database_json_state import (
-    database_json_state_signature,
+    database_json_state_revision,
     load_database_json_state,
     save_database_json_state,
 )
@@ -324,7 +324,7 @@ def get_archive_snapshot(force: bool = False) -> dict[str, Any]:
 def _decorated_models_signature(snapshot: dict[str, Any]) -> tuple[Any, ...]:
     return (
         _archive_snapshot_signature(snapshot),
-        database_json_state_signature("model_flags", {"favorites": [], "printed": [], "deleted": []}),
+        database_json_state_revision("model_flags", {"favorites": [], "printed": [], "deleted": []}),
         _subscription_flags_cache_signature(),
     )
 
@@ -2614,8 +2614,8 @@ def _build_subscription_deleted_index(config: Any, state_payload: dict[str, Any]
 
 def _subscription_flags_cache_signature() -> tuple[tuple[str, int], tuple[str, int]]:
     return (
-        database_json_state_signature("app_config", {}),
-        database_json_state_signature("subscriptions_state", {"items": []}),
+        database_json_state_revision("app_config", {}),
+        database_json_state_revision("subscriptions_state", {"items": []}),
     )
 
 
@@ -2908,7 +2908,7 @@ def build_models_light_payload(
     indexed_page = query_archive_model_index(q, source, tag, sort_key, page, page_size, limit)
     if indexed_page is not None:
         try:
-            flags_signature = database_json_state_signature(
+            flags_signature = database_json_state_revision(
                 "model_flags",
                 {"favorites": [], "printed": [], "deleted": []},
             )
@@ -3008,7 +3008,7 @@ def get_model_detail(model_dir: str, include_detail: bool = True) -> Optional[di
                 if preview_state.get("needs_generation"):
                     from app.services.local_preview_worker import mark_local_preview_queue_updated
 
-                    mark_local_preview_queue_updated("local_preview_queued_from_detail")
+                    mark_local_preview_queue_updated("local_preview_queued_from_detail", model_dir=clean_model_dir)
                 invalidate_model_detail_cache(clean_model_dir)
                 invalidate_archive_snapshot("local_preview_state_updated_from_detail")
 

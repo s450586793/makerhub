@@ -387,6 +387,22 @@ def load_json_state_with_revision(key: str) -> tuple[Any, int]:
     return row.get("value"), int(row.get("revision") or 0)
 
 
+def load_json_state_revisions(keys: Iterable[str]) -> dict[str, tuple[int, str]]:
+    clean_keys = list(dict.fromkeys(str(key or "").strip() for key in keys if str(key or "").strip()))
+    if not clean_keys:
+        return {}
+    initialize_database()
+    with database_connection() as connection:
+        rows = connection.execute(
+            "SELECT key, revision, updated_at FROM makerhub_json_state WHERE key = ANY(%s)",
+            (clean_keys,),
+        ).fetchall()
+    versions = {key: (0, "") for key in clean_keys}
+    for row in rows:
+        versions[row["key"]] = (int(row.get("revision") or 0), str(row.get("updated_at") or ""))
+    return versions
+
+
 def load_json_states(keys: Iterable[str]) -> dict[str, Any]:
     clean_keys = list(dict.fromkeys(str(key or "").strip() for key in keys))
     clean_keys = [key for key in clean_keys if key]
@@ -460,17 +476,34 @@ def load_json_state_array_summary(key: str, array_field: str, *, limit: int = 5)
     }
 
 
-def load_json_state_archive_queue_verification_summary(key: str) -> dict[str, int]:
+def load_json_state_archive_queue_verification_summary(key: str, *, item_limit: int | None = None) -> dict[str, Any]:
     """Return paused MakerWorld verification task counts without loading the queue payload."""
     clean_key = str(key or "").strip()
     if not clean_key:
         raise ValueError("JSON 状态 key 不能为空。")
+    arrays_projection = ""
+    params = (clean_key,)
+    if item_limit is not None:
+        params = (clean_key, max(0, int(item_limit)))
+        arrays_projection = """,
+            (SELECT jsonb_object_agg(field, jsonb_build_object(
+                'count', jsonb_array_length(items),
+                'items', COALESCE((SELECT jsonb_agg(items -> idx ORDER BY idx)
+                    FROM generate_series(0, LEAST(jsonb_array_length(items), %s) - 1) idx), '[]'::jsonb)
+            )) FROM (
+                SELECT field, CASE WHEN jsonb_typeof(value -> field) = 'array'
+                    THEN value -> field ELSE '[]'::jsonb END AS items
+                FROM (VALUES ('active'), ('queued'), ('recent_failures')) fields(field)
+                LEFT JOIN state ON TRUE
+            ) summaries) AS arrays
+        """
     initialize_database()
     with database_connection() as connection:
         row = connection.execute(
             """
             WITH state AS (
                 SELECT
+                    value,
                     value -> 'queued' AS queued_items,
                     CASE
                         WHEN jsonb_typeof(value -> 'verification_paused_by_platform') = 'object'
@@ -521,15 +554,18 @@ def load_json_state_archive_queue_verification_summary(key: str) -> dict[str, in
             SELECT
                 COALESCE((SELECT cn_count FROM cached), (SELECT cn_count FROM computed), 0) AS cn_count,
                 COALESCE((SELECT global_count FROM cached), (SELECT global_count FROM computed), 0) AS global_count
-            """,
-            (clean_key,),
+            """ + arrays_projection,
+            params,
         ).fetchone()
     if not isinstance(row, dict):
         return {"cn": 0, "global": 0}
-    return {
+    result = {
         "cn": int(row.get("cn_count") or 0),
         "global": int(row.get("global_count") or 0),
     }
+    if item_limit is not None:
+        result["arrays"] = row.get("arrays") or {}
+    return result
 
 
 def save_json_state(key: str, value: Any) -> Any:

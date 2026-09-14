@@ -21,16 +21,9 @@
             <option value="local">本地 ({{ payload.source_counts.local || 0 }})</option>
           </select>
         </label>
-        <label class="filter-field">
-          <select v-model="filters.tag" aria-label="标签筛选" @change="applyFiltersIfChanged">
-            <option value="">全部</option>
-            <option value="__favorite__">收藏</option>
-            <option value="__printed__">已打印</option>
-            <option value="__source_deleted__">源端删除</option>
-            <option value="__local_deleted__">本地删除</option>
-            <option v-for="tag in payload.tags" :key="tag" :value="tag">{{ tag }}</option>
-          </select>
-        </label>
+        <div class="filter-field">
+          <ModelTagFilter :key="endpointBase()" v-model="filters.tag" :endpoint="`${endpointBase()}/tags`" @change="applyFiltersIfChanged" />
+        </div>
         <label class="filter-field">
           <select v-model="filters.sort" aria-label="排序方式" @change="applyFiltersIfChanged">
             <option value="collectDate">采集时间倒序</option>
@@ -210,6 +203,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useRoute, useRouter } from "vue-router";
 
 import ModelCard from "../components/ModelCard.vue";
+import ModelTagFilter from "../components/ModelTagFilter.vue";
 import ShareDialog from "../components/ShareDialog.vue";
 import { apiRequest } from "../lib/api";
 import { subscribeArchiveCompletion } from "../lib/archiveEvents";
@@ -620,6 +614,7 @@ function applyFiltersIfChanged() {
 }
 
 function resetFilters() {
+  Object.assign(filters, { q: "", source: "all", tag: "", sort: "collectDate" });
   router.replace({ path: route.path, query: buildRouteQuery() });
 }
 

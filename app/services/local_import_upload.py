@@ -1777,10 +1777,11 @@ def _run_package_import_from_staging(
             description_text=description_text,
             groups=grouped_downloads,
         )
-        if mark_local_preview_pending(meta, model_root=model_root):
-            mark_local_preview_queue_updated("local_package_import")
+        preview_queued = mark_local_preview_pending(meta, model_root=model_root)
         meta_path = model_root / "meta.json"
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        if preview_queued:
+            mark_local_preview_queue_updated("local_package_import", model_dir=model_root.relative_to(ARCHIVE_DIR).as_posix())
         cleanup_staging = True
     except Exception as exc:
         _upsert_package_progress(

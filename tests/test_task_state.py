@@ -1828,12 +1828,9 @@ class ArchiveQueueStateTest(unittest.TestCase):
         store = TaskStateStore()
 
         with patch(
-            "app.services.task_state.load_database_json_state_array_summary",
-            side_effect=lambda key, field, *, limit: summaries[field],
-        ) as load_summary, patch(
-            "app.services.task_state.load_database_archive_queue_verification_summary",
-            return_value={"cn": 3, "global": 1},
-        ) as verification_summary:
+            "app.services.task_state.load_database_archive_queue_summary",
+            return_value={"arrays": summaries, "cn": 3, "global": 1},
+        ) as load_summary:
             queue = store.load_archive_queue_compact(item_limit=5)
 
         self.assertEqual(queue["running_count"], 12)
@@ -1846,15 +1843,7 @@ class ArchiveQueueStateTest(unittest.TestCase):
         self.assertTrue(queue["queued_truncated"])
         self.assertTrue(queue["recent_failures_truncated"])
         self.assertEqual(queue["verification_paused_by_platform"], {"cn": 3, "global": 1})
-        verification_summary.assert_called_once_with("archive_queue")
-        self.assertEqual(
-            [(args[0], args[1], kwargs["limit"]) for args, kwargs in load_summary.call_args_list],
-            [
-                ("archive_queue", "active", 5),
-                ("archive_queue", "queued", 5),
-                ("archive_queue", "recent_failures", 5),
-            ],
-        )
+        load_summary.assert_called_once_with("archive_queue", limit=5)
 
     def test_save_archive_queue_persists_verification_pause_summary(self):
         state = {}

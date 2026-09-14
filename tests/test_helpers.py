@@ -30,6 +30,11 @@ class InMemoryDatabaseState:
         self.state[str(key or "")] = payload
         return deepcopy(payload)
 
+    def update(self, key, default, mutator, *, expected_revision=None):
+        current = self.load(key, default)
+        updated = mutator(current)
+        return self.save(key, current if updated is None else updated), 1
+
     def signature(self, key: str, default: dict | None = None) -> tuple[str, str]:
         payload = self.load(key, default or {})
         version = ""
@@ -65,6 +70,8 @@ class InMemoryDatabaseState:
 
         for module_name in ("app.services.source_library", "app.services.catalog"):
             stack.enter_context(patch(f"{module_name}.database_json_state_signature", side_effect=self.signature, create=True))
+            stack.enter_context(patch(f"{module_name}.database_json_state_revision", side_effect=self.signature, create=True))
+            stack.enter_context(patch(f"{module_name}.database_json_state_revisions", side_effect=lambda keys: {key: self.signature(key) for key in keys}, create=True))
             stack.enter_context(
                 patch(
                     f"{module_name}.load_database_json_state_version",
@@ -77,6 +84,7 @@ class InMemoryDatabaseState:
         stack.enter_context(patch("app.core.database_json_state.database_driver_available", return_value=True))
         stack.enter_context(patch("app.core.database_json_state.load_json_state", side_effect=lambda key: self.load(key, {})))
         stack.enter_context(patch("app.core.database_json_state.save_json_state", side_effect=self.save))
+        stack.enter_context(patch("app.core.database_json_state.update_json_state", side_effect=self.update))
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:

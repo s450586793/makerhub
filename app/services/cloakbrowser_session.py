@@ -24,6 +24,7 @@ from app.services.online_accounts import (
 )
 from app.services.proxy_policy import proxy_mapping, proxy_url
 from app.services.resource_limiter import resource_slot
+from app.services.performance import log_browser_bridge_timing
 
 
 BRIDGE_SCRIPT = ROOT_DIR / "app" / "services" / "cloakbrowser_bridge.mjs"
@@ -641,6 +642,7 @@ def _run_bridge(payload: dict[str, Any], *, timeout_seconds: int | None = None) 
         raise CloakBrowserUnavailable("MAKERHUB_CLOAKBROWSER_AUTH_TOKEN 未配置。")
     if not BRIDGE_SCRIPT.is_file():
         raise CloakBrowserBridgeError("指纹浏览器 CDP bridge 脚本不存在。")
+    started = time.perf_counter()
     try:
         result = subprocess.run(
             ["node", BRIDGE_SCRIPT.as_posix()],
@@ -655,14 +657,22 @@ def _run_bridge(payload: dict[str, Any], *, timeout_seconds: int | None = None) 
     except FileNotFoundError as exc:
         raise CloakBrowserBridgeError("MakerHub 容器缺少 Node.js，无法连接指纹浏览器。") from exc
     except subprocess.TimeoutExpired as exc:
+        log_browser_bridge_timing(payload, {}, total_ms=(time.perf_counter() - started) * 1000, failed=True)
         raise CloakBrowserBridgeError("指纹浏览器 CDP 操作超时。") from exc
+    try:
+        output = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        output = {}
+    log_browser_bridge_timing(
+        payload, output.get("timings") or {} if isinstance(output, dict) else {},
+        total_ms=(time.perf_counter() - started) * 1000,
+        failed=result.returncode != 0 or not isinstance(output, dict) or not output.get("ok"),
+    )
     if result.returncode != 0:
         message = str(result.stderr or "指纹浏览器 CDP 操作失败。").strip()[:400]
         raise CloakBrowserBridgeError(message)
-    try:
-        output = json.loads(result.stdout or "{}")
-    except json.JSONDecodeError as exc:
-        raise CloakBrowserBridgeError("指纹浏览器 CDP bridge 返回了无效 JSON。") from exc
+    if not output:
+        raise CloakBrowserBridgeError("指纹浏览器 CDP bridge 返回了无效 JSON。")
     if not isinstance(output, dict) or not output.get("ok"):
         raise CloakBrowserBridgeError(str(output.get("message") if isinstance(output, dict) else "CDP 操作失败。")[:400])
     return output

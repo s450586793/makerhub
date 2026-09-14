@@ -228,7 +228,7 @@ class ArchiveModelIndexTest(unittest.TestCase):
         with patch.object(archive_model_index, "ensure_archive_model_index_schema", return_value=True), \
                 patch.object(archive_model_index, "archive_model_index_is_bootstrapped", return_value=True), \
                 patch.object(archive_model_index, "_metadata_value", return_value={"revision": 7}) as revision, \
-                patch.object(archive_model_index, "database_json_state_signature", return_value=("flags-1", "hash")) as flags, \
+                patch.object(archive_model_index, "database_json_state_revision", return_value=("flags-1", "hash")) as flags, \
                 patch.object(archive_model_index, "_ARCHIVE_MODEL_TAGS_CACHE", {}):
             first = archive_model_index.query_archive_model_tags("a%_", limit=2)
             first["items"].clear()

@@ -4,6 +4,23 @@ from unittest.mock import patch
 from app.services import performance
 
 
+def test_browser_timing_logs_only_allowed_fields_and_never_credentials():
+    with patch.object(performance, "append_business_log_async") as log:
+        performance.log_browser_bridge_timing(
+            {"platform": "global", "action": "fetch", "auth_token": "private", "target_url": "https://example.com/?token=private"},
+            {"connect_ms": 400, "operation_ms": 2200, "bridge_ms": 2700, "cookie": "private"},
+            total_ms=2900, failed=False,
+        )
+    log.assert_called_once()
+    fields = log.call_args.kwargs
+    assert fields["outside_bridge_ms"] == 200
+    assert fields["connect_ms"] == 400
+    assert "private" not in str(log.call_args)
+    with patch.object(performance, "append_business_log_async") as fast:
+        performance.log_browser_bridge_timing({"action": "sync"}, {}, total_ms=25, failed=False)
+    fast.assert_not_called()
+
+
 def test_slow_get_request_is_logged_without_query_values():
     request = SimpleNamespace(
         method="GET",

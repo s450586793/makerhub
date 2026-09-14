@@ -289,9 +289,10 @@ def add_local_model_file(model_dir: str, upload: UploadFile, title: str = "") ->
     local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
     local_import["modelFileCount"] = len(instances)
     meta["localImport"] = local_import
-    if mark_local_preview_pending(meta, model_root=model_root):
-        mark_local_preview_queue_updated("local_model_file_added")
+    preview_queued = mark_local_preview_pending(meta, model_root=model_root)
     _write_meta(model_root, meta)
+    if preview_queued:
+        mark_local_preview_queue_updated("local_model_file_added", model_dir=model_root.relative_to(ARCHIVE_DIR).as_posix())
     return entry
 
 
