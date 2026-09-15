@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.19.0`
+> 当前版本：`v0.20.0`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -359,6 +359,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-09-15 · v0.20.0
+
+- 模型详情对齐当前 MakerWorld 的双栏图集、打印机筛选、配置浮层、分盘详情和下载菜单，适配深浅主题与手机。
+- 图集可放大切换，章节导航吸顶；许可与相关模型基于本地归档，下载、收藏和打印标记继续接入 MakerHub。
+- 修复嵌套说明 HTML 导致详情加载失败，以及 3MF 预览解析器选择错误；3D 静止时停止持续渲染。
+
 ### 2026-09-14 · v0.19.0
 
 - 分组详情改为数据库分页及按需标签搜索，来源封面仅查询目标分组；保留收藏夹顺序、删除状态及本地合并建议。
@@ -371,14 +377,14 @@ npm --prefix frontend run build
 - 本地库卡片使用数据库统计和每组 4 张预览，归档与订阅判重只读取候选索引字段，减少传输和内存占用。
 - 后台刷新与订阅发现先排队再启动隔离进程，浏览器临时故障共享退避；正式归档与 3MF 下载的并发、限额不变，无需迁移历史数据。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-09-12 · v0.17.2
 
 - 缺失 `3MF` 重试不再复用已记录下载失败的历史直链，会重新获取授权地址后再下载。
 - 静态资源错误在隐去签名参数和凭证的同时，保留 HTTP 状态码或超时、连接、重定向类别，便于区分 CDN 拒绝与网络故障。
 - 任务页缺失 `3MF` 操作列修复了内层容器间距和窄屏按钮重叠，重试与取消操作可正常换行。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-09-06 · v0.17.1
 

@@ -1152,6 +1152,8 @@ def _is_safe_summary_url(value: str, *, allow_fragment: bool = False) -> bool:
 
 def _sanitize_summary_html(soup: BeautifulSoup) -> None:
     for tag in list(soup.find_all(True)):
+        if tag.parent is None:
+            continue
         name = str(tag.name or "").lower()
         if name in SUMMARY_DANGEROUS_TAGS:
             tag.decompose()
@@ -2400,6 +2402,18 @@ def _sample_cover(title: str) -> str:
     return f"data:image/svg+xml;charset=utf-8,{quote(svg)}"
 
 
+def _normalize_model_license(meta: dict) -> str:
+    for value in (meta.get("licenseName"), meta.get("license"), meta.get("licenseDescriptionInfo")):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, dict):
+            for key in ("name", "title", "description", "licenseName"):
+                text = value.get(key)
+                if isinstance(text, str) and text.strip():
+                    return text.strip()
+    return ""
+
+
 def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[dict]:
     try:
         meta = _read_json(meta_path)
@@ -2532,6 +2546,7 @@ def _normalize_model(meta_path: Path, include_detail: bool = False) -> Optional[
             "comments_next_offset": comments_next_offset,
             "instances": _normalize_instances(meta, model_root),
             "attachments": _normalize_attachments(meta, model_root),
+            "license": _normalize_model_license(meta),
         }
     )
     return payload

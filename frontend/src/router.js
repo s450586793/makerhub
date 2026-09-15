@@ -4,7 +4,7 @@ import AppShell from "./layouts/AppShell.vue";
 import { appState, bootstrapApp } from "./lib/appState";
 
 
-const BODY_CLASSES = ["login-page", "detail-page", "detail-page--makerworld"];
+const BODY_CLASSES = ["login-page", "detail-page", "detail-page--makerworld", "detail-page--makerworld-v2"];
 const DashboardPage = () => import("./pages/DashboardPage.vue");
 const DetailPreviewPage = () => import("./pages/DetailPreviewPage.vue");
 const LoginPage = () => import("./pages/LoginPage.vue");
@@ -73,7 +73,7 @@ const routes = [
         component: ModelDetailPage,
         meta: {
           title: "模型详情 | makerhub",
-          bodyClass: "detail-page detail-page--makerworld",
+          bodyClass: "detail-page detail-page--makerworld-v2",
         },
       },
       {

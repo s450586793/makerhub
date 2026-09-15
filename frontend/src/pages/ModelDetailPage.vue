@@ -9,12 +9,15 @@
     <p>{{ errorMessage }}</p>
   </section>
 
-  <div v-else-if="detail" class="mw-detail-layout">
-    <section class="mw-card">
-      <div :class="['mw-hero', detail.gallery?.length && 'mw-hero--has-gallery-strip']">
+  <div v-else-if="detail" ref="detailRootRef" class="mw-detail-layout mw-detail-v2">
+    <form class="mw-detail-search" role="search" @submit.prevent="searchLibrary">
+      <Search :size="18" aria-hidden="true" />
+      <input v-model="searchQuery" type="search" aria-label="搜索模型库" placeholder="搜索模型、作者和标签">
+      <button type="submit" class="mw-icon-button" aria-label="搜索" title="搜索"><ArrowRight :size="18" /></button>
+    </form>
         <header class="mw-head mw-head--gallery mw-hero__head">
           <div class="mw-head__top">
-            <RouterLink class="button button-secondary mw-head__back" :to="detailBackTarget">{{ detailBackLabel }}</RouterLink>
+            <RouterLink class="mw-icon-button mw-head__back" :to="detailBackTarget" aria-label="返回" title="返回"><ArrowLeft :size="20" /></RouterLink>
 
             <div class="mw-head__author">
               <img
@@ -55,43 +58,37 @@
                 <span class="mw-crumb__sep">&gt;</span>
                 <span class="mw-crumb">{{ crumb }}</span>
               </template>
-              <button
-                v-if="isLocalModel"
-                class="button button-secondary button-small mw-local-edit-trigger"
-                type="button"
-                @click="openLocalEditDialog"
-              >
-                编辑
-              </button>
+              <button v-if="isLocalModel" class="mw-icon-button" type="button" title="编辑模型" aria-label="编辑模型" @click="openLocalEditDialog"><Pencil :size="18" /></button>
+              <a v-else-if="sourceModelUrl" class="mw-icon-button" :href="sourceModelUrl" target="_blank" rel="noreferrer" title="查看源站" aria-label="查看源站"><ExternalLink :size="18" /></a>
             </div>
           </div>
         </header>
 
+    <div class="mw-detail-columns">
+      <div class="mw-detail-main">
         <div class="mw-hero__gallery-column">
 
           <div class="mw-gallery">
-            <div class="mw-gallery__cover">
+            <div class="mw-gallery__cover" tabindex="0" aria-label="模型图集" @keydown.left.prevent="stepGallery(-1)" @keydown.right.prevent="stepGallery(1)" @touchstart.passive="startGallerySwipe" @touchend.passive="endGallerySwipe">
               <img
                 v-if="currentMedia.src"
                 class="mw-gallery__image"
                 :src="currentMedia.src"
                 :alt="currentMedia.alt || detail.title"
                 @error="onMainMediaError"
+                @click="openGalleryLightbox"
               >
               <div v-else class="media-placeholder media-placeholder--large">{{ detail.title.slice(0, 1) }}</div>
+              <button v-if="detail.gallery?.length > 1" class="mw-gallery-arrow is-prev" type="button" aria-label="上一张图片" title="上一张" @click="stepGallery(-1)"><ChevronLeft :size="22" /></button>
+              <button v-if="detail.gallery?.length > 1" class="mw-gallery-arrow is-next" type="button" aria-label="下一张图片" title="下一张" @click="stepGallery(1)"><ChevronRight :size="22" /></button>
+              <button v-if="currentMedia.src" class="mw-gallery-zoom mw-icon-button" type="button" aria-label="放大图片" title="放大图片" @click="openGalleryLightbox"><Expand :size="19" /></button>
               <button
                 v-if="activeModelPreviewFile"
                 class="mw-gallery__preview"
                 type="button"
                 @click="openModelPreview"
               >
-                <span class="mw-gallery__preview-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M4.5 16.19V8.96l6.56 3.65v7.23L4.5 16.19Z" />
-                    <path d="M19.5 16.19V8.96l-6.56 3.65v7.23l6.56-3.65Z" />
-                    <path d="M12 10.98 5.49 7.37 12 3.75l6.51 3.62L12 10.98Z" />
-                  </svg>
-                </span>
+                <Box :size="20" aria-hidden="true" />
                 <span>3D 预览</span>
               </button>
             </div>
@@ -150,342 +147,38 @@
           </div>
         </div>
 
-        <aside class="mw-hero__sidebar">
-          <div class="mw-stat-row">
-            <div
-              v-for="item in actionStats"
-              :key="item.key"
-              class="mw-stat-pill"
-              :data-kind="item.key"
-              :title="`${item.label} ${formatStat(item.value)}`"
-            >
-              <span class="mw-stat-pill__icon" aria-hidden="true" v-html="item.icon"></span>
-              <strong class="mw-stat-pill__value">{{ formatStat(item.value) }}</strong>
-            </div>
-          </div>
-
-          <div class="mw-statline">
-            <span class="mw-stat-row__publish">发布于 {{ detail.publish_date || "未知时间" }}</span>
-            <span>采集于 {{ detail.collect_date || "未知时间" }}</span>
-            <span v-if="activeInstance?.publish_date">实例上传于 {{ activeInstance.publish_date }}</span>
-          </div>
-
-          <div class="mw-action-strip">
-            <div class="mw-download-split" :class="{ 'is-open': downloadMenuOpen }">
-              <button
-                v-if="canOpenBambuStudio"
-                class="mw-download-button mw-download-button--hero mw-download-split__main"
-                type="button"
-                :disabled="bambuStudioOpening"
-                @click="openBambuStudio"
-              >
-                {{ primaryDownloadLabel }}
-              </button>
-              <a
-                v-else-if="heroDownloadHref"
-                class="mw-download-button mw-download-button--hero mw-download-split__main"
-                :href="heroDownloadHref"
-                :download="heroDownloadFilename"
-              >
-                {{ primaryDownloadLabel }}
-              </a>
-              <span
-                v-else
-                class="mw-download-button mw-download-button--hero mw-download-split__main is-disabled"
-              >
-                {{ primaryDownloadLabel }}
-              </span>
-              <button
-                class="mw-download-split__toggle"
-                type="button"
-                :aria-expanded="downloadMenuOpen ? 'true' : 'false'"
-                aria-label="更多下载选项"
-                @click.stop="toggleDownloadMenu"
-              >
-                <svg aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="m5 7.5 5 5 5-5"/>
-                </svg>
-              </button>
-              <div v-if="downloadMenuOpen" class="mw-download-menu" @click.stop>
-                <button
-                  class="mw-download-menu__item"
-                  type="button"
-                  :disabled="!canOpenBambuStudio || bambuStudioOpening"
-                  @click="openBambuStudio"
-                >
-                  {{ bambuStudioOpening ? "正在打开..." : "在 Bambu Studio 打开" }}
-                </button>
-                <a
-                  :class="['mw-download-menu__item', !heroDownloadHref && 'is-disabled']"
-                  :href="heroDownloadHref || undefined"
-                  :download="heroDownloadFilename"
-                  @click="closeDownloadMenu"
-                >
-                  {{ heroDownloadHref ? `下载当前${activeFileKindLabel}` : "当前文件不可下载" }}
-                </a>
-                <a
-                  class="mw-download-menu__item"
-                  :href="downloadAllHref"
-                  :download="downloadAllFilename"
-                  @click="closeDownloadMenu"
-                >
-                  下载所有文件.zip
-                </a>
-                <p v-if="bambuStudioError" class="mw-download-menu__error">{{ bambuStudioError }}</p>
-              </div>
-            </div>
-            <a
-              v-if="detail.origin_url"
-              class="mw-inline-link mw-inline-link--ghost"
-              :href="detail.origin_url"
-              target="_blank"
-              rel="noreferrer"
-            >
-              原始链接
-            </a>
-            <button
-              class="mw-inline-link mw-inline-link--ghost"
-              type="button"
-              @click="openShareDialog"
-            >
-              分享
-            </button>
-          </div>
-
-          <aside class="mw-config-panel">
-          <div class="mw-config-panel__header">
-            <h2>打印配置 <span>({{ detail.instances?.length || 0 }})</span></h2>
-
-            <div v-if="machineFilters.length" class="mw-config-panel__filters">
-              <span class="mw-filter-pill is-active">全部</span>
-              <span v-for="machine in machineFilters.slice(0, 10)" :key="machine" class="mw-filter-pill">{{ machine }}</span>
-            </div>
-          </div>
-          <div class="mw-config-panel__divider"></div>
-
-          <div v-if="localImportGroups.length" class="mw-local-package-groups">
-            <article
-              v-for="group in localImportGroups"
-              :key="group.id"
-              class="mw-local-package-group"
-            >
-              <div class="mw-local-package-group__main">
-                <strong :title="group.title">{{ group.title }}</strong>
-                <span>{{ localImportGroupSummary(group) }}</span>
-              </div>
-              <a
-                v-if="group.download_url"
-                class="mw-local-package-group__download"
-                :href="group.download_url"
-                :download="group.download_name || `${group.title}.zip`"
-              >
-                下载
-              </a>
-            </article>
-          </div>
-
-          <div v-if="detail.instances?.length" class="mw-profile-list" @scroll="handleProfileListScroll">
-            <div
-              v-for="(profile, profileIndex) in detail.instances"
-              :key="profile.instance_key"
-              class="mw-profile-entry"
-              :ref="(element) => setProfileEntryRef(profile.instance_key, element)"
-              @mouseenter="openProfilePopover(profile, $event.currentTarget)"
-              @mouseleave="closeProfilePopover(profile.instance_key)"
-              @focusin="openProfilePopover(profile, $event.currentTarget)"
-              @focusout="handleProfileEntryFocusOut($event, profile)"
-            >
-              <button
-                :class="[
-                  'mw-profile-card',
-                  activeInstance?.instance_key === profile.instance_key && 'is-active',
-                  isProfilePopoverOpen(profile) && 'is-previewing',
-                ]"
-                :aria-expanded="isProfilePopoverOpen(profile) ? 'true' : 'false'"
-                type="button"
-                @click="handleProfileCardClick(profile)"
-              >
-                <div class="mw-profile-card__thumb-wrap">
-                  <img
-                    v-if="profile.preview_url_resolved"
-                    class="mw-profile-card__thumb"
-                    :src="profile.preview_url_resolved"
-                    :alt="profile.title"
-                    loading="lazy"
-                    @error="swapEventImage($event, profile.preview_fallback_resolved)"
-                  >
-                  <span v-else class="mw-profile-card__thumb avatar-placeholder">{{ detail.title.slice(0, 1) }}</span>
-                </div>
-
-                <div class="mw-profile-card__body">
-                  <div class="mw-profile-card__title">{{ profile.title }}</div>
-                  <div class="mw-profile-card__meta">
-                    <span class="mw-profile-card__badge">{{ profile.machine || "通用" }}</span>
-                    <span v-if="profile.source_deleted" class="mw-profile-card__meta-item mw-profile-card__meta-item--danger">
-                      已删除
-                    </span>
-                    <span v-if="profileTimeLabel(profile)" class="mw-profile-card__meta-item">
-                      <span class="mw-profile-card__meta-icon" aria-hidden="true" v-html="PROFILE_FACT_ICONS.clock"></span>
-                      <span>{{ profileTimeLabel(profile) }}</span>
-                    </span>
-                    <span v-if="profile.plates" class="mw-profile-card__meta-item">
-                      <span class="mw-profile-card__meta-icon" aria-hidden="true" v-html="PROFILE_FACT_ICONS.plates"></span>
-                      <span>{{ profile.plates }} 盘</span>
-                    </span>
-                    <span v-if="formatProfileRating(profile.rating)" class="mw-profile-card__meta-item mw-profile-card__meta-item--rating">
-                      <span class="mw-profile-card__meta-icon" aria-hidden="true" v-html="PROFILE_FACT_ICONS.rating"></span>
-                      <span>{{ formatProfileRating(profile.rating) }}</span>
-                    </span>
-                  </div>
-                </div>
-              </button>
-
-              <section
-                v-if="isProfilePopoverOpen(profile)"
-                :class="[
-                  'mw-profile-popover',
-                  profilePopoverPlacement(profile, profileIndex, detail.instances.length),
-                ]"
-                :style="profilePopoverStyle(profile, profileIndex, detail.instances.length)"
-              >
-                <div v-if="profile.media_resolved?.length" class="mw-profile-popover__gallery">
-                  <div
-                    :class="[
-                      'mw-thumb-rail',
-                      'mw-thumb-rail--popover',
-                      profileMediaRailState(profile.instance_key).overflow && 'is-overflowing',
-                      profileMediaRailState(profile.instance_key).canScrollPrev && 'has-prev',
-                      profileMediaRailState(profile.instance_key).canScrollNext && 'has-next',
-                    ]"
-                  >
-                    <button
-                      v-if="profileMediaRailState(profile.instance_key).overflow"
-                      class="mw-thumb-rail__control is-prev"
-                      type="button"
-                      :disabled="!profileMediaRailState(profile.instance_key).canScrollPrev"
-                      aria-label="向左查看配置图片"
-                      @click="scrollProfileMediaStrip(profile.instance_key, 'prev')"
-                    >
-                      <span class="mw-thumb-rail__control-icon" aria-hidden="true" v-html="THUMB_RAIL_ICONS.prev"></span>
-                    </button>
-                    <div
-                      :ref="(element) => setProfileMediaStripRef(profile.instance_key, element)"
-                      class="mw-profile-popover__media-strip"
-                      @scroll="syncProfileMediaRail(profile.instance_key)"
-                    >
-                    <button
-                      v-for="(media, mediaIndex) in profile.media_resolved"
-                      :key="`${profile.instance_key}-${media.label}-${mediaIndex}`"
-                      class="mw-profile-popover__media-thumb"
-                      type="button"
-                      :title="media.label || `预览 ${mediaIndex + 1}`"
-                      @click="openLightbox(media.url || media.fallback_url || '', `${profile.title} ${media.label || `预览 ${mediaIndex + 1}`}`.trim())"
-                    >
-                      <span class="mw-profile-popover__media-thumb-figure">
-                        <img
-                          v-if="media.url || media.fallback_url"
-                          :src="media.url || media.fallback_url"
-                          :alt="`${profile.title} ${media.label}`.trim()"
-                          loading="lazy"
-                          @error="swapEventImage($event, media.fallback_url)"
-                        >
-                        <span v-else class="avatar-placeholder">{{ detail.title.slice(0, 1) }}</span>
-                      </span>
-                    </button>
-                    </div>
-                    <button
-                      v-if="profileMediaRailState(profile.instance_key).overflow"
-                      class="mw-thumb-rail__control is-next"
-                      type="button"
-                      :disabled="!profileMediaRailState(profile.instance_key).canScrollNext"
-                      aria-label="向右查看配置图片"
-                      @click="scrollProfileMediaStrip(profile.instance_key, 'next')"
-                    >
-                      <span class="mw-thumb-rail__control-icon" aria-hidden="true" v-html="THUMB_RAIL_ICONS.next"></span>
-                    </button>
-                  </div>
-                </div>
-
-                <div class="mw-profile-popover__hero-body">
-                  <div class="mw-profile-popover__eyebrow">打印配置</div>
-                  <h3>{{ profile.title }}</h3>
-                <div class="mw-profile-popover__meta">
-                  <span>{{ profile.machine || "通用" }}</span>
-                  <span v-if="profileTimeLabel(profile)">{{ profileTimeLabel(profile) }}</span>
-                  <span v-if="profile.publish_date">上传于 {{ profile.publish_date }}</span>
-                  <span v-if="profile.source_deleted">源端已删除</span>
-                </div>
-              </div>
-
-                <div v-if="profilePopoverFacts(profile).length" class="mw-active-profile__facts mw-profile-popover__facts">
-                  <span
-                    v-for="item in profilePopoverFacts(profile)"
-                    :key="`${profile.instance_key}-${item.key}`"
-                    :class="['mw-active-profile__fact', item.key === 'rating' && 'mw-active-profile__fact--rating']"
-                    :title="`${item.label} ${item.value}`"
-                  >
-                    <span class="mw-active-profile__fact-icon" aria-hidden="true" v-html="item.icon"></span>
-                    <span>{{ item.value }}</span>
-                  </span>
-                </div>
-
-                <div v-if="profileFilaments(profile).length" class="mw-profile-filaments mw-profile-filaments--popover">
-                  <span v-if="profileNeedAms(profile)" class="mw-profile-ams" aria-hidden="true" v-html="AMS_ICON"></span>
-                  <span
-                    v-for="(filament, filamentIndex) in profileFilaments(profile)"
-                    :key="`${profile.instance_key}-${filament.material}-${filament.color}-${filamentIndex}`"
-                    class="mw-profile-filament-chip"
-                    :style="filamentChipStyle(filament)"
-                  >
-                    <span>{{ formatFilamentChipLabel(filament) }}</span>
-                  </span>
-                </div>
-
-                <p class="mw-profile-popover__summary">
-                  {{ profile.summary || "该打印配置可单独查看图集、分盘图片与 3MF 状态。" }}
-                </p>
-
-                <p v-if="profile.source_deleted_message" class="mw-profile-popover__note">
-                  {{ profile.source_deleted_message }}
-                </p>
-              </section>
-            </div>
-          </div>
-          <p v-else class="empty-copy">当前没有可展示的打印配置。</p>
-          </aside>
-        </aside>
-      </div>
-    </section>
-
-    <nav class="mw-detail-nav" aria-label="详情导航">
+    <nav ref="detailNavRef" :class="['mw-detail-nav', detailNavStuck && 'is-stuck']" aria-label="详情导航">
       <a
         v-for="section in detailSections"
         :key="section.id"
-        class="mw-detail-nav__link"
+        :class="['mw-detail-nav__link', activeSection === section.id && 'is-active']"
         :href="`#${section.id}`"
+        :aria-current="activeSection === section.id ? 'location' : undefined"
+        @click.prevent="goToDetailSection(section.id)"
       >
         {{ section.label }}
       </a>
+      <button v-if="detailNavStuck" class="mw-return-profiles" type="button" @click="returnToProfiles">选择打印配置 <ArrowUp :size="14" /></button>
     </nav>
 
     <section class="mw-content-stack">
       <article id="detail-description" class="mw-section-card">
         <div class="mw-section-card__header">
-          <h2>描述</h2>
+          <h2>模型详情</h2>
         </div>
         <div v-if="detail.summary_html" class="rich-content" v-html="detail.summary_html"></div>
         <p v-else class="empty-copy">{{ detail.summary_text || "当前没有描述内容。" }}</p>
         <div v-if="visibleDetailTags.length" class="mw-tag-wall">
-          <span v-for="tag in visibleDetailTags" :key="tag" class="mw-chip mw-chip--tag">{{ tag }}</span>
+          <RouterLink v-for="tag in visibleDetailTags" :key="tag" class="mw-chip mw-chip--tag" :to="{ path: '/models', query: { tag } }">{{ tag }}</RouterLink>
         </div>
       </article>
 
       <article v-if="showDocsSection" id="detail-docs" class="mw-section-card mw-section-card--docs">
         <div class="mw-section-card__header">
           <div class="mw-section-card__heading">
-            <h2>文档 ({{ detail.attachments?.length || 0 }})</h2>
-            <p v-if="!isLocalModel" class="mw-section-card__hint">可以在这里补传组装图、说明书或其他附件。</p>
+            <h2>文件与说明</h2>
           </div>
+          <button v-if="!isLocalModel" class="mw-icon-button" type="button" aria-label="上传附件" title="上传附件" :aria-expanded="attachmentFormOpen" @click="attachmentFormOpen = !attachmentFormOpen"><Plus :size="18" /></button>
         </div>
         <div v-if="attachmentGroups.length" class="mw-doc-groups">
           <section v-for="group in attachmentGroups" :key="group.label" class="doc-group">
@@ -512,7 +205,7 @@
                     :target="attachmentDownloadUrl(attachment) ? '_blank' : undefined"
                     :rel="attachmentDownloadUrl(attachment) ? 'noreferrer' : undefined"
                   >
-                    打开
+                    <Eye :size="16" /><span class="sr-only">打开 {{ attachment.name }}</span>
                   </a>
                   <a
                     :class="['button button-secondary button-small mw-doc-action', !attachmentDownloadUrl(attachment) && 'is-disabled']"
@@ -520,7 +213,7 @@
                     :download="attachmentDownloadName(attachment)"
                     :rel="attachmentDownloadUrl(attachment) ? 'noreferrer' : undefined"
                   >
-                    下载
+                    <Download :size="16" /><span class="sr-only">下载 {{ attachment.name }}</span>
                   </a>
                   <button
                     v-if="attachment.is_image && attachmentDownloadUrl(attachment)"
@@ -528,7 +221,7 @@
                     type="button"
                     @click="openLightbox(attachmentDownloadUrl(attachment), attachment.name || '附件预览')"
                   >
-                    预览
+                    <Expand :size="16" /><span class="sr-only">预览 {{ attachment.name }}</span>
                   </button>
                   <button
                     v-if="attachment.can_delete"
@@ -537,16 +230,16 @@
                     type="button"
                     @click="removeAttachment(attachment)"
                   >
-                    {{ deletingAttachmentId === attachment.id ? "删除中..." : "删除" }}
+                    <Trash2 :size="16" /><span class="sr-only">{{ deletingAttachmentId === attachment.id ? "删除中..." : "删除" }}</span>
                   </button>
                 </div>
               </article>
             </div>
           </section>
         </div>
-        <p v-else-if="!isLocalModel" class="empty-copy">当前没有同步到文档附件，你可以在下方上传组装图或说明文件。</p>
+        <p v-else-if="!isLocalModel" class="empty-copy">暂无文档附件</p>
 
-        <form v-if="!isLocalModel" class="mw-attachment-upload" @submit.prevent="submitAttachmentUpload">
+        <form v-if="!isLocalModel && attachmentFormOpen" class="mw-attachment-upload" @submit.prevent="submitAttachmentUpload">
           <div class="mw-attachment-upload__fields">
             <select v-model="attachmentForm.category" class="mw-attachment-upload__select">
               <option v-for="item in attachmentCategories" :key="item.value" :value="item.value">{{ item.label }}</option>
@@ -587,7 +280,7 @@
       <article v-if="showCommentsSection" id="detail-comments" class="mw-section-card">
         <div class="mw-section-card__header mw-comment-section__header">
           <div>
-            <h2>评论 &amp; 评分 ({{ commentsTotal }})</h2>
+            <h2>评论与评分 ({{ commentsTotal }})</h2>
           </div>
         </div>
 
@@ -836,6 +529,291 @@
       </article>
     </section>
 
+      </div>
+      <aside class="mw-detail-aside">
+        <section id="detail-profiles" ref="profilePanelRef" class="mw-config-surface">
+
+          <div class="mw-stat-row">
+            <span class="mw-stat-pill" title="源站点赞数"><ThumbsUp :size="18" /> {{ formatStat(detail.stats?.likes) }}</span>
+            <button :class="['mw-stat-pill', detail.local_flags?.favorite && 'is-active']" type="button" :disabled="Boolean(flagSaving)" :aria-pressed="Boolean(detail.local_flags?.favorite)" :title="detail.local_flags?.favorite ? '取消本地收藏' : '加入本地收藏'" @click="toggleDetailFlag('favorite')"><Bookmark :size="18" /> {{ formatStat(detail.stats?.favorites) }}</button>
+            <button :class="['mw-stat-pill', detail.local_flags?.printed && 'is-active']" type="button" :disabled="Boolean(flagSaving)" :aria-pressed="Boolean(detail.local_flags?.printed)" title="标记已打印" @click="toggleDetailFlag('printed')"><Printer :size="18" /> {{ detail.local_flags?.printed ? '已打印' : '打印' }}</button>
+            <button class="mw-stat-pill" type="button" aria-label="分享模型" title="分享模型" @click="openShareDialog"><Share2 :size="18" /></button>
+          </div>
+          <p v-if="flagError" class="mw-detail-error" role="alert">{{ flagError }}</p>
+
+          <div class="mw-statline">
+            <span class="mw-stat-row__publish">发布于 {{ detail.publish_date || "未知时间" }}</span>
+            <span title="源站下载数"><Download :size="13" /> {{ formatStat(detail.stats?.downloads) }}</span>
+            <span title="源站打印数"><Printer :size="13" /> {{ formatStat(detail.stats?.prints) }}</span>
+          </div>
+
+          <div class="mw-action-strip">
+            <div class="mw-download-split" :class="{ 'is-open': downloadMenuOpen }">
+              <a
+                v-if="heroDownloadHref"
+                class="mw-download-button mw-download-button--hero mw-download-split__main"
+                :href="heroDownloadHref"
+                :download="heroDownloadFilename"
+              >
+                {{ heroDownloadLabel }}
+              </a>
+              <span
+                v-else
+                class="mw-download-button mw-download-button--hero mw-download-split__main is-disabled"
+              >
+                {{ heroDownloadLabel }}
+              </span>
+              <button
+                class="mw-download-split__toggle"
+                type="button"
+                :aria-expanded="downloadMenuOpen ? 'true' : 'false'"
+                aria-label="更多下载选项"
+                @click.stop="toggleDownloadMenu"
+              >
+                <ChevronDown :size="18" aria-hidden="true" />
+              </button>
+              <div v-if="downloadMenuOpen" class="mw-download-menu" @click.stop>
+                <button
+                  class="mw-download-menu__item"
+                  type="button"
+                  :disabled="!canOpenBambuStudio || bambuStudioOpening"
+                  @click="openBambuStudio"
+                >
+                  {{ bambuStudioOpening ? "正在打开..." : "在 Bambu Studio 打开" }}
+                </button>
+                <button class="mw-download-menu__item" type="button" :disabled="!rawModelFiles.length" @click="fileDrawerOpen = true; closeDownloadMenu()">下载 STL/CAD 文件</button>
+                <a
+                  class="mw-download-menu__item"
+                  :href="downloadAllHref"
+                  :download="downloadAllFilename"
+                  @click="closeDownloadMenu"
+                >
+                  下载所有文件.zip
+                </a>
+                <p v-if="bambuStudioError" class="mw-download-menu__error">{{ bambuStudioError }}</p>
+              </div>
+            </div>
+          </div>
+
+          <aside class="mw-config-panel">
+          <div class="mw-config-panel__header">
+            <h2>打印配置 <span>({{ filteredProfiles.length }})</span></h2>
+
+            <div v-if="machineFilters.length" class="mw-machine-filter">
+              <div ref="machineStripRef" class="mw-config-panel__filters" aria-label="按打印机筛选">
+                <button :class="['mw-filter-pill', !selectedMachine && 'is-active']" type="button" :aria-pressed="!selectedMachine" @click="selectMachine('')">全部</button>
+                <button v-for="machine in machineFilters" :key="machine" :class="['mw-filter-pill', selectedMachine === machine && 'is-active']" type="button" :aria-pressed="selectedMachine === machine" @click="selectMachine(machine)">{{ machine }}</button>
+              </div>
+              <button class="mw-icon-button" type="button" aria-label="更多打印机" title="更多打印机" @click="scrollMachines"><ChevronRight :size="15" /></button>
+            </div>
+          </div>
+          <div class="mw-config-panel__divider"></div>
+
+          <div v-if="localImportGroups.length" class="mw-local-package-groups">
+            <article
+              v-for="group in localImportGroups"
+              :key="group.id"
+              class="mw-local-package-group"
+            >
+              <div class="mw-local-package-group__main">
+                <strong :title="group.title">{{ group.title }}</strong>
+                <span>{{ localImportGroupSummary(group) }}</span>
+              </div>
+              <a
+                v-if="group.download_url"
+                class="mw-local-package-group__download"
+                :href="group.download_url"
+                :download="group.download_name || `${group.title}.zip`"
+              >
+                下载
+              </a>
+            </article>
+          </div>
+
+          <div v-if="filteredProfiles.length" class="mw-profile-list" @scroll="handleProfileListScroll">
+            <div
+              v-for="(profile, profileIndex) in filteredProfiles"
+              :key="profile.instance_key"
+              class="mw-profile-entry"
+              :ref="(element) => setProfileEntryRef(profile.instance_key, element)"
+              @mouseenter="openProfilePopover(profile, $event.currentTarget)"
+              @mouseleave="closeProfilePopover(profile.instance_key)"
+              @focusin="openProfilePopover(profile, $event.currentTarget)"
+              @focusout="handleProfileEntryFocusOut($event, profile)"
+            >
+              <button
+                :class="[
+                  'mw-profile-card',
+                  activeInstance?.instance_key === profile.instance_key && 'is-active',
+                  isProfilePopoverOpen(profile) && 'is-previewing',
+                ]"
+                :aria-expanded="isProfilePopoverOpen(profile) ? 'true' : 'false'"
+                :aria-pressed="activeInstance?.instance_key === profile.instance_key"
+                type="button"
+                @click="handleProfileCardClick(profile)"
+              >
+                <div class="mw-profile-card__thumb-wrap">
+                  <img
+                    v-if="profile.preview_url_resolved"
+                    class="mw-profile-card__thumb"
+                    :src="profile.preview_url_resolved"
+                    :alt="profile.title"
+                    loading="lazy"
+                    @error="swapEventImage($event, profile.preview_fallback_resolved)"
+                  >
+                  <span v-else class="mw-profile-card__thumb avatar-placeholder">{{ detail.title.slice(0, 1) }}</span>
+                </div>
+
+                <div class="mw-profile-card__body">
+                  <div class="mw-profile-card__title">{{ profile.title }}</div>
+                  <div class="mw-profile-card__meta">
+                    <span class="mw-profile-card__badge" :title="profile.machine || '通用'">{{ profile.author === detail.author?.name ? '设计师' : (profile.author || '打印配置') }}</span>
+                    <span v-if="profile.source_deleted" class="mw-profile-card__meta-item mw-profile-card__meta-item--danger">
+                      已删除
+                    </span>
+                    <span v-if="profileTimeLabel(profile)" class="mw-profile-card__meta-item">
+                      <span class="mw-profile-card__meta-icon" aria-hidden="true" v-html="PROFILE_FACT_ICONS.clock"></span>
+                      <span>{{ profileTimeLabel(profile) }}</span>
+                    </span>
+                    <span v-if="profile.plates" class="mw-profile-card__meta-item">
+                      <span class="mw-profile-card__meta-icon" aria-hidden="true" v-html="PROFILE_FACT_ICONS.plates"></span>
+                      <span>{{ profile.plates }} 盘</span>
+                    </span>
+                    <span v-if="formatProfileRating(profile.rating)" class="mw-profile-card__meta-item mw-profile-card__meta-item--rating">
+                      <span class="mw-profile-card__meta-icon" aria-hidden="true" v-html="PROFILE_FACT_ICONS.rating"></span>
+                      <span>{{ formatProfileRating(profile.rating) }}</span>
+                    </span>
+                  </div>
+                  <div v-if="profileFilaments(profile).length" class="mw-profile-filaments mw-profile-filaments--inline">
+                    <span v-for="(filament, index) in profileFilaments(profile)" :key="index" class="mw-profile-filament-chip" :style="filamentChipStyle(filament)">{{ formatFilamentChipLabel(filament) }}</span>
+                  </div>
+                  <span v-if="!profile.file_available" class="mw-profile-file-state">{{ profile.file_status_message || '文件待归档' }}</span>
+                </div>
+              </button>
+
+              <section
+                v-if="isProfilePopoverOpen(profile)"
+                :class="[
+                  'mw-profile-popover',
+                  profilePopoverPlacement(profile, profileIndex, filteredProfiles.length),
+                ]"
+                :style="profilePopoverStyle(profile, profileIndex, filteredProfiles.length)"
+                role="region"
+                :aria-label="`${profile.title} 配置详情`"
+                @mouseenter="cancelProfileClose"
+                @mouseleave="closeProfilePopover(profile.instance_key)"
+              >
+                <button class="mw-profile-popover__close mw-icon-button" type="button" aria-label="关闭配置详情" title="关闭" @click="closeProfilePopover('', { force: true })"><X :size="18" /></button>
+                <div v-if="profile.media_resolved?.length" class="mw-profile-popover__gallery">
+                  <div
+                    :class="[
+                      'mw-thumb-rail',
+                      'mw-thumb-rail--popover',
+                      profileMediaRailState(profile.instance_key).overflow && 'is-overflowing',
+                      profileMediaRailState(profile.instance_key).canScrollPrev && 'has-prev',
+                      profileMediaRailState(profile.instance_key).canScrollNext && 'has-next',
+                    ]"
+                  >
+                    <button
+                      v-if="profileMediaRailState(profile.instance_key).overflow"
+                      class="mw-thumb-rail__control is-prev"
+                      type="button"
+                      :disabled="!profileMediaRailState(profile.instance_key).canScrollPrev"
+                      aria-label="向左查看配置图片"
+                      @click="scrollProfileMediaStrip(profile.instance_key, 'prev')"
+                    >
+                      <span class="mw-thumb-rail__control-icon" aria-hidden="true" v-html="THUMB_RAIL_ICONS.prev"></span>
+                    </button>
+                    <div
+                      :ref="(element) => setProfileMediaStripRef(profile.instance_key, element)"
+                      class="mw-profile-popover__media-strip"
+                      @scroll="syncProfileMediaRail(profile.instance_key)"
+                    >
+                    <button
+                      v-for="(media, mediaIndex) in profile.media_resolved"
+                      :key="`${profile.instance_key}-${media.label}-${mediaIndex}`"
+                      class="mw-profile-popover__media-thumb"
+                      type="button"
+                      :title="media.label || `预览 ${mediaIndex + 1}`"
+                      @click="openProfileImage(profile, mediaIndex)"
+                    >
+                      <span class="mw-profile-popover__media-thumb-figure">
+                        <img
+                          v-if="media.url || media.fallback_url"
+                          :src="media.url || media.fallback_url"
+                          :alt="`${profile.title} ${media.label}`.trim()"
+                          loading="lazy"
+                          @error="swapEventImage($event, media.fallback_url)"
+                        >
+                        <span v-else class="avatar-placeholder">{{ detail.title.slice(0, 1) }}</span>
+                      </span>
+                    </button>
+                    </div>
+                    <button
+                      v-if="profileMediaRailState(profile.instance_key).overflow"
+                      class="mw-thumb-rail__control is-next"
+                      type="button"
+                      :disabled="!profileMediaRailState(profile.instance_key).canScrollNext"
+                      aria-label="向右查看配置图片"
+                      @click="scrollProfileMediaStrip(profile.instance_key, 'next')"
+                    >
+                      <span class="mw-thumb-rail__control-icon" aria-hidden="true" v-html="THUMB_RAIL_ICONS.next"></span>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="mw-profile-popover__hero-body">
+                  <h3>{{ profile.title }}</h3>
+                  <span v-if="profile.author" class="mw-popover-author">{{ profile.author }}</span>
+                <div class="mw-profile-popover__meta">
+                  <span>{{ profile.machine || "通用" }}</span>
+                  <span v-if="profileTimeLabel(profile)">{{ profileTimeLabel(profile) }}</span>
+                  <span v-if="profile.publish_date">上传于 {{ profile.publish_date }}</span>
+                  <span v-if="profile.source_deleted">源端已删除</span>
+                </div>
+              </div>
+
+                <div v-if="profilePopoverFacts(profile).length" class="mw-active-profile__facts mw-profile-popover__facts">
+                  <span
+                    v-for="item in profilePopoverFacts(profile)"
+                    :key="`${profile.instance_key}-${item.key}`"
+                    :class="['mw-active-profile__fact', item.key === 'rating' && 'mw-active-profile__fact--rating']"
+                    :title="`${item.label} ${item.value}`"
+                  >
+                    <span class="mw-active-profile__fact-icon" aria-hidden="true" v-html="item.icon"></span>
+                    <span>{{ item.value }}</span>
+                  </span>
+                </div>
+
+                <div v-if="profileFilaments(profile).length" class="mw-profile-filaments mw-profile-filaments--popover">
+                  <span v-if="profileNeedAms(profile)" class="mw-profile-ams" aria-hidden="true" v-html="AMS_ICON"></span>
+                  <span
+                    v-for="(filament, filamentIndex) in profileFilaments(profile)"
+                    :key="`${profile.instance_key}-${filament.material}-${filament.color}-${filamentIndex}`"
+                    class="mw-profile-filament-chip"
+                    :style="filamentChipStyle(filament)"
+                  >
+                    <span>{{ formatFilamentChipLabel(filament) }}</span>
+                  </span>
+                </div>
+
+                <details v-if="profile.summary" class="mw-profile-popover__summary"><summary><span>{{ profile.summary }}</span></summary><p>{{ profile.summary }}</p></details>
+
+                <button v-if="profile.plate_media.length" class="mw-profile-plates" type="button" @click="openProfilePlates(profile)"><Layers :size="17" /> 分盘 ({{ profile.plates || profile.plate_media.length }}) <span>详情</span><ChevronRight :size="16" /></button>
+
+                <p v-if="profile.source_deleted_message" class="mw-profile-popover__note">
+                  {{ profile.source_deleted_message }}
+                </p>
+              </section>
+            </div>
+          </div>
+          <p v-else class="empty-copy" role="status">{{ selectedMachine ? '没有适用于该打印机的配置' : '当前没有可展示的打印配置' }}</p>
+          </aside>
+        </section>
+        <ModelDetailAside :detail="detail" />
+      </aside>
+    </div>
+
     <div
       v-if="lightbox.open && lightbox.src"
       class="lightbox"
@@ -843,11 +821,35 @@
       aria-modal="true"
       aria-label="图片预览"
       @click="closeLightbox"
+      @keydown="trapDrawerFocus"
     >
-      <div class="lightbox__dialog" @click.stop>
+      <button class="mw-lightbox-close" type="button" aria-label="关闭图片预览" title="关闭" @click.stop="closeLightbox"><X :size="24" /></button>
+      <button v-if="lightboxItems.length > 1" class="mw-lightbox-prev" type="button" aria-label="上一张预览" @click.stop="stepLightbox(-1)"><ChevronLeft :size="30" /></button>
+      <button v-if="lightboxItems.length > 1" class="mw-lightbox-next" type="button" aria-label="下一张预览" @click.stop="stepLightbox(1)"><ChevronRight :size="30" /></button>
+      <div class="lightbox__dialog" @click.stop @touchstart.passive="startGallerySwipe" @touchend.passive="endLightboxSwipe">
         <img class="lightbox__image" :src="lightbox.src" :alt="lightbox.alt || '预览图片'">
       </div>
+      <span v-if="lightboxItems.length > 1" class="mw-lightbox-count">{{ lightboxIndex + 1 }} / {{ lightboxItems.length }}</span>
     </div>
+
+    <div v-if="plateProfile || fileDrawerOpen" class="mw-detail-drawer" role="dialog" aria-modal="true" aria-labelledby="detail-drawer-title" @click.self="closeDetailDrawer">
+      <section ref="detailDrawerRef" class="mw-detail-drawer__panel" tabindex="-1" @keydown="trapDrawerFocus">
+        <header><div><h2 id="detail-drawer-title">{{ plateProfile ? '分盘详情' : 'STL / CAD 文件' }}</h2><p>{{ plateProfile?.title || detail.title }}</p></div><button class="mw-icon-button" type="button" aria-label="关闭文件详情" title="关闭" @click="closeDetailDrawer"><X :size="22" /></button></header>
+        <div v-if="plateProfile" class="mw-plate-list">
+          <article v-for="(media, index) in plateProfile.media_resolved" :key="index" class="mw-plate-item">
+            <button type="button" :aria-label="`查看${media.label || `分盘 ${index + 1}`}`" @click="openProfileImage(plateProfile, index)"><img :src="media.url || media.fallback_url" :alt="media.label || `分盘 ${index + 1}`" loading="lazy" @error="swapEventImage($event, media.fallback_url)"></button>
+            <strong>{{ media.label || `分盘 ${index + 1}` }}</strong>
+          </article>
+        </div>
+        <div v-else class="mw-raw-files">
+          <a v-for="file in rawModelFiles" :key="file.url" :href="file.url" :download="file.name"><FileBox :size="24" /><span>{{ file.name }}<small>{{ file.size ? formatBytes(file.size) : file.kind }}</small></span><Download :size="18" /></a>
+          <p v-if="!rawModelFiles.length" class="empty-copy">没有已归档的 STL / CAD 文件</p>
+        </div>
+        <footer v-if="plateProfile"><a v-if="plateProfile.file_available" class="button button-primary" :href="plateProfile.file_url" :download="plateProfile.file_name"><Download :size="17" /> 下载 {{ plateProfile.file_kind || '3MF' }}</a><span v-else>{{ plateProfile.file_status_message || '文件待归档' }}</span></footer>
+      </section>
+    </div>
+
+    <button v-if="detailNavStuck" class="mw-back-top" type="button" aria-label="返回顶部" title="返回顶部" @click="returnToTop"><ArrowUp :size="20" /></button>
 
     <div
       v-if="modelPreview.open"
@@ -857,7 +859,7 @@
       aria-labelledby="model-preview-title"
       @click="closeModelPreview"
     >
-      <div class="model-preview-dialog__panel" @click.stop>
+      <div class="model-preview-dialog__panel" @click.stop @keydown="trapDrawerFocus">
         <header class="model-preview-dialog__header">
           <div class="model-preview-dialog__title">
             <span>3D 预览</span>
@@ -1093,8 +1095,12 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onErrorCaptured, onMounted, ref, shallowRef, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import { ArrowLeft, ArrowRight, ArrowUp, Bookmark, Box, ChevronDown, ChevronLeft, ChevronRight, Download, Expand, ExternalLink, Eye, FileBox, Layers, Pencil, Plus, Printer, Search, Share2, ThumbsUp, Trash2, X } from "@lucide/vue";
 
 import ShareDialog from "../components/ShareDialog.vue";
+import ModelDetailAside from "../components/ModelDetailAside.vue";
+import { availableMachines, filterProfiles, nextGalleryIndex, profilePopoverPosition, safeExternalUrl } from "../lib/modelDetail";
+import "../styles/model-detail.css";
 import { apiRequest } from "../lib/api";
 import { formatProfileRating } from "../lib/helpers";
 import {
@@ -1135,6 +1141,38 @@ function formatBytes(bytes) {
 const loading = ref(true);
 const errorMessage = ref("");
 const detail = shallowRef(null);
+const detailRootRef = ref(null);
+const detailNavRef = ref(null);
+const profilePanelRef = ref(null);
+const machineStripRef = ref(null);
+const selectedMachine = ref("");
+const searchQuery = ref("");
+const activeSection = ref("detail-description");
+const detailNavStuck = ref(false);
+const attachmentFormOpen = ref(false);
+const plateProfile = shallowRef(null);
+const fileDrawerOpen = ref(false);
+const detailDrawerRef = ref(null);
+const flagSaving = ref("");
+const flagError = ref("");
+const lightboxItems = shallowRef([]);
+const lightboxIndex = ref(0);
+const sourceModelUrl = computed(() => safeExternalUrl(detail.value?.origin_url));
+const filteredProfiles = computed(() => filterProfiles(detail.value?.instances || [], selectedMachine.value));
+const rawModelFiles = computed(() => {
+  const files = (detail.value?.instances || []).filter(item => item.file_available && /\.(stl|obj|step|stp|cad|f3d)$/i.test(item.file_name || "")).map(item => ({ url: item.file_url, name: item.file_name, size: item.file_size, kind: item.file_kind }));
+  for (const item of detail.value?.attachments || []) {
+    if (/\.(stl|obj|step|stp|cad|f3d)$/i.test(item.name || "") && attachmentDownloadUrl(item)) files.push({ url: attachmentDownloadUrl(item), name: item.name, kind: attachmentExtLabel(item) });
+  }
+  return files.filter((file, index) => files.findIndex(item => item.url === file.url) === index);
+});
+let profileCloseTimer;
+let detailScrollFrame = 0;
+let galleryTouch = null;
+let overlayReturnFocus = null;
+let lightboxReturnFocus = null;
+let modelPreviewReturnFocus = null;
+let detailLoadGeneration = 0;
 const currentMedia = ref({
   key: "",
   src: "",
@@ -1281,13 +1319,13 @@ const attachmentCategories = [
 
 const detailSections = computed(() => {
   const sections = [
-    { id: "detail-description", label: "描述" },
+    { id: "detail-description", label: "模型详情" },
   ];
   if (showDocsSection.value) {
-    sections.push({ id: "detail-docs", label: "文档" });
+    sections.push({ id: "detail-docs", label: `文件与说明 (${detail.value?.attachments?.length || 0})` });
   }
   if (showCommentsSection.value) {
-    sections.push({ id: "detail-comments", label: "评论" });
+    sections.push({ id: "detail-comments", label: `评论与评分 (${commentsTotal.value})` });
   }
   return sections;
 });
@@ -1412,10 +1450,6 @@ const detailBackTarget = computed(() => {
   }
   return "/models";
 });
-const detailBackLabel = computed(() => {
-  return "返回";
-});
-
 const activeInstance = computed(() => {
   return detail.value?.instances?.find((item) => item.instance_key === activeInstanceKey.value) || null;
 });
@@ -1465,17 +1499,7 @@ const deletedSourceTitle = computed(() => {
 });
 
 const machineFilters = computed(() => {
-  const seen = new Set();
-  const items = [];
-  for (const instance of detail.value?.instances || []) {
-    const label = String(instance.machine || "").trim();
-    if (!label || seen.has(label)) {
-      continue;
-    }
-    seen.add(label);
-    items.push(label);
-  }
-  return items;
+  return availableMachines(detail.value?.instances || []);
 });
 
 const attachmentGroups = computed(() => {
@@ -1544,42 +1568,6 @@ const editableGallery = computed(() => {
   }).filter((image) => image.rel_path);
 });
 
-const actionStats = computed(() => {
-  const items = [
-    {
-      key: "downloads",
-      label: "下载",
-      value: detail.value?.stats?.downloads || 0,
-      icon: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.6v8.1"/><path d="m6.9 8.8 3.1 3.2 3.1-3.2"/><path d="M4.2 15.4h11.6"/></svg>',
-    },
-    {
-      key: "likes",
-      label: "点赞",
-      value: detail.value?.stats?.likes || 0,
-      icon: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M7.4 8.2V16H4.7A1.7 1.7 0 0 1 3 14.3V9.9c0-.94.76-1.7 1.7-1.7h2.7Z"/><path d="M7.4 8.2 10 3.9c.42-.68 1.5-.38 1.5.42v2.48h2.66c1.15 0 1.99 1.1 1.68 2.2l-1.46 5.2A1.7 1.7 0 0 1 12.74 16H7.4"/></svg>',
-    },
-    {
-      key: "favorites",
-      label: "收藏",
-      value: detail.value?.stats?.favorites || 0,
-      icon: '<svg viewBox="0 0 20 20" fill="currentColor"><path d="m10 2.4 2.27 4.6 5.08.74-3.67 3.58.86 5.06L10 13.98l-4.54 2.4.86-5.06-3.67-3.58L7.73 7 10 2.4Z"/></svg>',
-    },
-    {
-      key: "comments",
-      label: "评论",
-      value: detail.value?.stats?.comments || 0,
-      icon: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M4.1 5.4A2.4 2.4 0 0 1 6.5 3h7a2.4 2.4 0 0 1 2.4 2.4v5.2a2.4 2.4 0 0 1-2.4 2.4H9l-3.9 3v-3H6.5a2.4 2.4 0 0 1-2.4-2.4V5.4Z"/></svg>',
-    },
-    {
-      key: "prints",
-      label: "打印",
-      value: detail.value?.stats?.prints || 0,
-      icon: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M6 7.2V3.8h8v3.4"/><path d="M5.1 15.8h9.8v-4.7H5.1v4.7Z"/><path d="M4.3 7.2h11.4A1.3 1.3 0 0 1 17 8.5v3.1h-2.1"/><path d="M3 11.6V8.5a1.3 1.3 0 0 1 1.3-1.3"/><circle cx="14.3" cy="9.2" r=".7" fill="currentColor" stroke="none"/></svg>',
-    },
-  ];
-  return isLocalModel.value ? items.filter((item) => item.key !== "comments") : items;
-});
-
 const heroDownloadHref = computed(() => {
   if (activeInstance.value?.file_available && activeInstance.value?.file_url) {
     return activeInstance.value.file_url;
@@ -1609,22 +1597,6 @@ const canOpenBambuStudio = computed(() => {
   return Boolean(heroDownloadHref.value && filename.toLowerCase().endsWith(".3mf"));
 });
 
-const activeFileKindLabel = computed(() => {
-  const label = String(activeInstance.value?.file_kind || "").trim().toUpperCase();
-  if (label) {
-    return label;
-  }
-  const suffix = heroDownloadFilename.value.split(".").pop();
-  return suffix ? suffix.toUpperCase() : "文件";
-});
-
-const primaryDownloadLabel = computed(() => {
-  if (canOpenBambuStudio.value) {
-    return bambuStudioOpening.value ? "正在打开..." : "在 Bambu Studio 打开";
-  }
-  return heroDownloadLabel.value;
-});
-
 function bambuStudioOpenHref(downloadUrl, filename) {
   const absoluteUrl = absoluteDownloadUrl(downloadUrl);
   const nameParam = filename ? `&name=${filename}` : "";
@@ -1640,6 +1612,147 @@ const downloadAllFilename = computed(() => {
   const title = String(detail.value?.title || detail.value?.model_dir || "MakerHub模型").trim() || "MakerHub模型";
   return `${title}_所有文件.zip`;
 });
+
+function searchLibrary() {
+  router.push({ path: "/models", query: searchQuery.value.trim() ? { q: searchQuery.value.trim() } : {} });
+}
+
+function selectMachine(machine) {
+  selectedMachine.value = machine;
+  closeProfilePopover("", { force: true });
+  if (!filteredProfiles.value.some(profile => profile.instance_key === activeInstanceKey.value)) {
+    if (filteredProfiles.value.length) selectInstance(filteredProfiles.value[0]);
+    else activeInstanceKey.value = "";
+  }
+}
+
+function scrollMachines() {
+  const strip = machineStripRef.value;
+  if (!strip) return;
+  const end = strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 2;
+  strip.scrollTo({ left: end ? 0 : strip.scrollLeft + strip.clientWidth * .7, behavior: motionBehavior() });
+}
+
+function motionBehavior() {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth";
+}
+
+function stepGallery(offset) {
+  const current = Number(currentMedia.value.key.replace("gallery:", ""));
+  const next = nextGalleryIndex(current, offset, detail.value?.gallery?.length || 0);
+  if (next < 0) return;
+  selectGallery(next);
+  nextTick(() => mainGalleryThumbsRef.value?.querySelector(".is-active")?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: motionBehavior() }));
+}
+
+function startGallerySwipe(event) {
+  galleryTouch = event.touches.length === 1 ? { x: event.touches[0].clientX, y: event.touches[0].clientY } : null;
+}
+
+function swipeDirection(event) {
+  if (!galleryTouch || !event.changedTouches.length) return 0;
+  const dx = event.changedTouches[0].clientX - galleryTouch.x;
+  const dy = event.changedTouches[0].clientY - galleryTouch.y;
+  galleryTouch = null;
+  return Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.5 ? (dx > 0 ? -1 : 1) : 0;
+}
+
+function endGallerySwipe(event) { const direction = swipeDirection(event); if (direction) stepGallery(direction); }
+function endLightboxSwipe(event) { const direction = swipeDirection(event); if (direction) stepLightbox(direction); }
+
+function openGalleryLightbox() {
+  openLightbox(currentMedia.value.src, currentMedia.value.alt);
+  lightboxItems.value = detail.value?.gallery || [];
+  const found = lightboxItems.value.findIndex(item => item.url === currentMedia.value.src || item.fallback_url === currentMedia.value.src);
+  lightboxIndex.value = Math.max(0, found);
+}
+
+function openProfileImage(profile, index) {
+  const media = profile.media_resolved[index];
+  openLightbox(media.url || media.fallback_url, media.label || profile.title);
+  lightboxItems.value = profile.media_resolved;
+  lightboxIndex.value = index;
+}
+
+function stepLightbox(offset) {
+  const next = nextGalleryIndex(lightboxIndex.value, offset, lightboxItems.value.length);
+  if (next < 0) return;
+  const media = lightboxItems.value[next];
+  lightboxIndex.value = next;
+  lightbox.value = { open: true, src: media.url || media.fallback_url, alt: media.label || detail.value.title };
+}
+
+function syncDetailNavigation() {
+  detailScrollFrame = 0;
+  if (!detailRootRef.value || !detailNavRef.value) return;
+  const rect = detailNavRef.value.getBoundingClientRect();
+  detailNavStuck.value = rect.top <= 66;
+  detailRootRef.value.style.setProperty("--detail-width", `${detailRootRef.value.clientWidth}px`);
+  let current = detailSections.value[0]?.id;
+  for (const section of detailSections.value) {
+    const el = document.getElementById(section.id);
+    if (el && el.getBoundingClientRect().top <= 160) current = section.id;
+  }
+  activeSection.value = current;
+}
+
+function queueDetailNavigation() {
+  if (!detailScrollFrame) detailScrollFrame = window.requestAnimationFrame(syncDetailNavigation);
+}
+
+function goToDetailSection(id) {
+  document.getElementById(id)?.scrollIntoView({ behavior: motionBehavior(), block: "start" });
+  activeSection.value = id;
+}
+
+function returnToProfiles() {
+  profilePanelRef.value?.scrollIntoView({ behavior: motionBehavior(), block: "start" });
+  nextTick(() => profilePanelRef.value?.querySelector(".mw-profile-card.is-active")?.focus({ preventScroll: true }));
+}
+
+function returnToTop() {
+  window.scrollTo({ top: 0, behavior: motionBehavior() });
+}
+
+function openProfilePlates(profile) {
+  overlayReturnFocus = profileEntryRefs.get(profile.instance_key)?.querySelector(".mw-profile-card");
+  plateProfile.value = { ...profile, media_resolved: profile.plate_media };
+  closeProfilePopover("", { force: true });
+}
+
+function closeDetailDrawer() {
+  plateProfile.value = null;
+  fileDrawerOpen.value = false;
+}
+
+function trapDrawerFocus(event) {
+  if (event.key !== "Tab") return;
+  const nodes = [...event.currentTarget.querySelectorAll('a[href],button:not([disabled]),input,select,[tabindex="0"]')];
+  const first = nodes[0], last = nodes.at(-1);
+  if (!first) { event.preventDefault(); return; }
+  if (event.shiftKey && (document.activeElement === first || document.activeElement === event.currentTarget)) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+}
+
+async function toggleDetailFlag(flag) {
+  if (flagSaving.value || !detail.value) return;
+  const currentDir = detail.value.model_dir;
+  const value = !detail.value.local_flags?.[flag];
+  flagSaving.value = flag;
+  flagError.value = "";
+  try {
+    await apiRequest(`/api/models/flags/${flag}`, { method: "POST", body: { model_dir: currentDir, value } });
+    if (detail.value?.model_dir !== currentDir) return;
+    detail.value = { ...detail.value, local_flags: { ...detail.value.local_flags, [flag]: value } };
+    setPageCache(detailCacheKey(), { detail: detail.value });
+  } catch (error) {
+    if (detail.value?.model_dir === currentDir) flagError.value = error instanceof Error ? error.message : "更新失败，请重试";
+  } finally {
+    flagSaving.value = "";
+  }
+}
+
+function cancelProfileClose() { window.clearTimeout(profileCloseTimer); }
 
 function createThumbRailState() {
   return {
@@ -1919,53 +2032,28 @@ function setProfileEntryRef(instanceKey, element) {
 }
 
 function updateProfilePopoverPlacement(profile, entryElement = null) {
-  if (!profile?.instance_key || typeof window === "undefined") {
-    return;
-  }
-  const host = entryElement instanceof HTMLElement ? entryElement : profileEntryRefs.get(profile.instance_key);
-  if (!(host instanceof HTMLElement)) {
-    return;
-  }
-  const rect = host.getBoundingClientRect();
-  const viewportPadding = 16;
-  const horizontalGap = 18;
-  const estimatedPopoverWidth = Math.min(380, Math.max(window.innerWidth - 140, 260));
-  const canOpenLeft = rect.left >= estimatedPopoverWidth + horizontalGap + viewportPadding;
-  const nextPlacement = canOpenLeft ? "left" : "below";
-  const popoverGap = nextPlacement === "left" ? horizontalGap : 10;
-  const left = nextPlacement === "left" ? rect.left - popoverGap - estimatedPopoverWidth : rect.left + 6;
-  const right = nextPlacement === "left" ? "auto" : Math.max(window.innerWidth - rect.right + 6, viewportPadding);
-  popoverPlacementState.value = {
-    ...popoverPlacementState.value,
-    [profile.instance_key]: {
-      placement: nextPlacement,
-      top: rect.top,
-      belowTop: rect.bottom + popoverGap,
-      center: rect.top + (rect.height / 2),
-      bottom: rect.bottom,
-      left,
-      right,
-    },
-  };
+  const host = entryElement instanceof HTMLElement ? entryElement : profileEntryRefs.get(profile?.instance_key);
+  if (!host) return;
+  const position = profilePopoverPosition(host.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight });
+  popoverPlacementState.value = { [profile.instance_key]: position };
 }
 
 function openProfilePopover(profile, entryElement = null) {
-  if (!hoverPopoverEnabled.value || !profile) {
-    return;
-  }
+  cancelProfileClose();
+  if (!hoverPopoverEnabled.value || !profile || plateProfile.value || fileDrawerOpen.value || lightbox.value.open) return;
   updateProfilePopoverPlacement(profile, entryElement);
   previewedInstanceKey.value = profile.instance_key;
   nextTick(() => syncProfileMediaRail(profile.instance_key));
 }
 
 function closeProfilePopover(instanceKey = "", options = {}) {
-  const { force = false } = options;
-  if (!hoverPopoverEnabled.value && !force) {
-    return;
-  }
-  if (!instanceKey || previewedInstanceKey.value === instanceKey) {
-    previewedInstanceKey.value = "";
-  }
+  cancelProfileClose();
+  if (!hoverPopoverEnabled.value && !options.force) return;
+  const close = () => {
+    if (!instanceKey || previewedInstanceKey.value === instanceKey) previewedInstanceKey.value = "";
+  };
+  if (options.force) close();
+  else profileCloseTimer = window.setTimeout(close, 160);
 }
 
 function handleProfileEntryFocusOut(event, profile) {
@@ -2023,28 +2111,10 @@ function profilePopoverPlacement(profile, index, total) {
   return "";
 }
 
-function profilePopoverStyle(profile, index = 0, total = 0) {
+function profilePopoverStyle(profile) {
   const state = popoverPlacementState.value[profile?.instance_key];
-  if (!state) {
-    return {};
-  }
-  if (state.placement === "below") {
-    return {
-      top: `${Math.round(state.belowTop)}px`,
-      left: `${Math.round(state.left)}px`,
-      right: `${Math.round(state.right)}px`,
-    };
-  }
-  let top = state.center;
-  if (index === 0) {
-    top = state.top;
-  } else if (index >= total - 1) {
-    top = state.bottom;
-  }
-  return {
-    top: `${Math.round(top)}px`,
-    left: `${Math.round(state.left)}px`,
-  };
+  if (!state) return {};
+  return { top: state.top + "px", left: state.left + "px", width: state.width + "px", maxHeight: Math.min(state.maxHeight, window.innerHeight - state.top - 16) + "px" };
 }
 
 function handleProfileListScroll() {
@@ -2078,6 +2148,7 @@ function handleWindowPointerDown(event) {
 }
 
 function handleWindowResize() {
+  queueDetailNavigation();
   syncAllThumbRails();
   resizeModelPreviewRenderer();
   if (!previewedInstanceKey.value || !detail.value?.instances?.length) {
@@ -2111,6 +2182,10 @@ function openLightbox(src, alt = "预览图片") {
   if (!resolvedSrc) {
     return;
   }
+  lightboxReturnFocus = document.activeElement.closest(".mw-profile-entry")?.querySelector(".mw-profile-card") || document.activeElement;
+  lightboxItems.value = [];
+  lightboxIndex.value = 0;
+  closeProfilePopover("", { force: true });
   lightbox.value = {
     open: true,
     src: resolvedSrc,
@@ -2118,18 +2193,23 @@ function openLightbox(src, alt = "预览图片") {
   };
   if (typeof document !== "undefined") {
     document.body.classList.add("is-lightbox-open");
+    nextTick(() => document.querySelector(".mw-lightbox-close")?.focus());
   }
 }
 
 function closeLightbox() {
+  const wasOpen = lightbox.value.open;
   lightbox.value = {
     open: false,
     src: "",
     alt: "预览图片",
   };
-  if (typeof document !== "undefined" && !modelPreview.value.open) {
+  lightboxItems.value = [];
+  if (typeof document !== "undefined" && !modelPreview.value.open && !plateProfile.value && !fileDrawerOpen.value) {
     document.body.classList.remove("is-lightbox-open");
   }
+  if (wasOpen && lightboxReturnFocus?.isConnected) lightboxReturnFocus.focus({ preventScroll: true });
+  lightboxReturnFocus = null;
 }
 
 function disposeModelPreviewScene() {
@@ -2194,13 +2274,12 @@ function startModelPreviewLoop() {
     return;
   }
   const render = () => {
+    modelPreviewFrame = 0;
     if (!modelPreviewRenderer || !modelPreviewScene || !modelPreviewCamera) {
       modelPreviewFrame = 0;
       return;
     }
-    modelPreviewControls?.update();
     modelPreviewRenderer.render(modelPreviewScene, modelPreviewCamera);
-    modelPreviewFrame = window.requestAnimationFrame(render);
   };
   if (!modelPreviewFrame) {
     modelPreviewFrame = window.requestAnimationFrame(render);
@@ -2245,12 +2324,12 @@ async function mountModelPreviewScene(fileUrl, requestId) {
   modelPreviewGrid = sceneBundle.grid;
 
   modelPreviewControls = new OrbitControls(modelPreviewCamera, canvas);
-  modelPreviewControls.enableDamping = true;
-  modelPreviewControls.dampingFactor = 0.08;
+  modelPreviewControls.enableDamping = false;
+  modelPreviewControls.addEventListener("change", startModelPreviewLoop);
   modelPreviewControls.screenSpacePanning = false;
 
   resizeModelPreviewRenderer();
-  const object = await loadModelPreviewObject(THREE, fileUrl, modelPreview.value.title);
+  const object = await loadModelPreviewObject(THREE, fileUrl, modelPreview.value.fileName);
   if (requestId !== modelPreviewRequestId || !modelPreview.value.open) {
     disposeModelPreviewObject(object);
     disposeModelPreviewScene();
@@ -2274,11 +2353,13 @@ async function openModelPreview() {
   if (!previewFile?.file_url) {
     return;
   }
+  modelPreviewReturnFocus = document.activeElement;
   modelPreview.value = {
     open: true,
     loading: true,
     error: "",
     fileUrl: previewFile.file_url,
+    fileName: previewFile.file_name,
     title: previewFile.title || previewFile.file_name || detail.value?.title || "3D 模型",
     detail: "正在检查模型大小。",
   };
@@ -2287,6 +2368,7 @@ async function openModelPreview() {
   }
   const requestId = ++modelPreviewRequestId;
   await nextTick();
+  document.querySelector(".model-preview-dialog__close")?.focus();
   try {
     const mounted = await mountModelPreviewScene(previewFile.file_url, requestId);
     if (!mounted || requestId !== modelPreviewRequestId) {
@@ -2313,6 +2395,7 @@ async function openModelPreview() {
 }
 
 function closeModelPreview() {
+  const wasOpen = modelPreview.value.open;
   modelPreviewRequestId += 1;
   disposeModelPreviewScene();
   modelPreview.value = {
@@ -2323,19 +2406,25 @@ function closeModelPreview() {
     title: "",
     detail: "",
   };
-  if (typeof document !== "undefined" && !lightbox.value.open) {
+  if (typeof document !== "undefined" && !lightbox.value.open && !plateProfile.value && !fileDrawerOpen.value) {
     document.body.classList.remove("is-lightbox-open");
   }
+  if (wasOpen && modelPreviewReturnFocus?.isConnected) modelPreviewReturnFocus.focus({ preventScroll: true });
+  modelPreviewReturnFocus = null;
 }
 
 function handleWindowKeydown(event) {
-  if (event.key === "Escape" && downloadMenuOpen.value) {
-    closeDownloadMenu();
-  } else if (event.key === "Escape" && lightbox.value.open) {
-    closeLightbox();
-  } else if (event.key === "Escape" && modelPreview.value.open) {
-    closeModelPreview();
+  if (lightbox.value.open) {
+    if (event.key === "Escape") closeLightbox();
+    if (event.key === "ArrowLeft") { event.preventDefault(); stepLightbox(-1); }
+    if (event.key === "ArrowRight") { event.preventDefault(); stepLightbox(1); }
+    return;
   }
+  if (event.key !== "Escape") return;
+  if (plateProfile.value || fileDrawerOpen.value) closeDetailDrawer();
+  else if (modelPreview.value.open) closeModelPreview();
+  else if (downloadMenuOpen.value) { closeDownloadMenu(); nextTick(() => document.querySelector(".mw-download-split__toggle")?.focus()); }
+  else closeProfilePopover("", { force: true });
 }
 
 function formatStat(value) {
@@ -3430,6 +3519,7 @@ function prepareDetailPayload(payload) {
           preview_url_resolved: previewUrl,
           preview_fallback_resolved: previewFallback,
           media_resolved: mediaResolved,
+          plate_media: mediaResolved.filter(media => media.kind === "plate"),
         };
       })
     : [];
@@ -3446,6 +3536,12 @@ function detailCacheKey(value = modelDir.value) {
 }
 
 function resetDetailViewState({ clearDetail = true } = {}) {
+  cancelProfileClose();
+  closeDetailDrawer();
+  selectedMachine.value = "";
+  flagError.value = "";
+  activeSection.value = "detail-description";
+  attachmentFormOpen.value = false;
   closeLightbox();
   closeModelPreview();
   profileEntryRefs.clear();
@@ -3511,6 +3607,7 @@ async function applyDetailPayload(payload, { syncHash = true, cache = true } = {
   scheduleCommentsRender();
   await nextTick();
   syncAllThumbRails();
+  queueDetailNavigation();
 }
 
 function prepareComments(items) {
@@ -3697,6 +3794,8 @@ async function removeAttachment(attachment) {
 }
 
 async function load() {
+  const generation = ++detailLoadGeneration;
+  const requestedModel = apiModelDir.value;
   const cached = getPageCache(detailCacheKey());
   const hasCachedDetail = Boolean(cached?.detail);
   loading.value = !hasCachedDetail;
@@ -3706,14 +3805,15 @@ async function load() {
     await applyDetailPayload(cached.detail, { cache: false });
   }
   try {
-    const payload = await apiRequest(`/api/models/${encodeURIComponent(apiModelDir.value)}`);
+    const payload = await apiRequest(`/api/models/${encodeURIComponent(requestedModel)}`);
+    if (generation !== detailLoadGeneration) return;
     await applyDetailPayload(payload);
   } catch (error) {
-    if (!hasCachedDetail) {
+    if (!hasCachedDetail && generation === detailLoadGeneration) {
       errorMessage.value = error instanceof Error ? error.message : "读取模型失败。";
     }
   } finally {
-    loading.value = false;
+    if (generation === detailLoadGeneration) loading.value = false;
   }
 }
 
@@ -3754,6 +3854,18 @@ watch(previewedInstanceKey, async (value) => {
   syncProfileMediaRail(value);
 }, { flush: "post" });
 
+watch(() => Boolean(plateProfile.value || fileDrawerOpen.value), async (open) => {
+  if (open) {
+    if (!plateProfile.value) overlayReturnFocus = document.activeElement;
+    document.body.classList.add("is-lightbox-open");
+    await nextTick();
+    detailDrawerRef.value?.focus();
+  } else {
+    if (!modelPreview.value.open && !lightbox.value.open) document.body.classList.remove("is-lightbox-open");
+    if (overlayReturnFocus?.isConnected) overlayReturnFocus.focus({ preventScroll: true });
+  }
+});
+
 onErrorCaptured((error) => {
   errorMessage.value = error instanceof Error ? error.message : "模型详情渲染失败。";
   loading.value = false;
@@ -3787,8 +3899,13 @@ onMounted(() => {
   window.addEventListener("keydown", handleWindowKeydown);
   window.addEventListener("pointerdown", handleWindowPointerDown);
   window.addEventListener("resize", handleWindowResize);
+  window.addEventListener("scroll", queueDetailNavigation, { passive: true });
 });
 onBeforeUnmount(() => {
+  detailLoadGeneration += 1;
+  cancelProfileClose();
+  closeDetailDrawer();
+  window.cancelAnimationFrame(detailScrollFrame);
   closeLightbox();
   closeModelPreview();
   profileEntryRefs.clear();
@@ -3828,6 +3945,7 @@ onBeforeUnmount(() => {
     window.removeEventListener("keydown", handleWindowKeydown);
     window.removeEventListener("pointerdown", handleWindowPointerDown);
     window.removeEventListener("resize", handleWindowResize);
+    window.removeEventListener("scroll", queueDetailNavigation);
   }
 });
 </script>
