@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -351,13 +352,13 @@ class AutomaticVerificationReleaseContractTest(unittest.TestCase):
         self.assertIn("solve_click_challenge", smoke_command)
         self.assertNotIn("browser", smoke_command.lower())
 
-        self.assertEqual(version, "0.19.0")
+        self.assertRegex(version, r"^\d+\.\d+\.\d+$")
         self.assertEqual(package["version"], version)
         self.assertEqual(package_lock["version"], version)
         self.assertEqual(package_lock["packages"][""]["version"], version)
-        self.assertIn("> 当前版本：`v0.19.0`", readme)
-        self.assertIn("### 2026-09-14 · v0.19.0", readme)
-        self.assertIn("## 2026-09-14 · v0.19.0", changelog)
+        self.assertIn(f"> 当前版本：`v{version}`", readme)
+        self.assertRegex(readme, rf"(?m)^### \d{{4}}-\d{{2}}-\d{{2}} · v{re.escape(version)}$")
+        self.assertRegex(changelog, rf"(?m)^## \d{{4}}-\d{{2}}-\d{{2}} · v{re.escape(version)}$")
         self.assertIn("### 2026-09-12 · v0.17.2", readme)
         self.assertIn("## 2026-09-12 · v0.17.2", changelog)
         self.assertIn("### 2026-09-05 · v0.17.0", readme)
