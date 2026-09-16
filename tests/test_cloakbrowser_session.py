@@ -738,17 +738,21 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertIn("withTemporaryPage(browser, context, async (page) =>", click_source)
         self.assertNotIn("context.newPage()", click_source)
 
-    def test_bridge_closes_stale_makerhub_api_targets_before_automation(self):
-        source = cloakbrowser_session.BRIDGE_SCRIPT.read_text(encoding="utf-8")
+    def test_bridge_payload_keeps_target_registry_inside_shared_state_per_profile(self):
+        with tempfile.TemporaryDirectory() as state_dir, \
+                patch.object(cloakbrowser_session, "STATE_DIR", Path(state_dir)), \
+                patch.dict(os.environ, {
+                    "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                    "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+                }, clear=False):
+            first = cloakbrowser_session._bridge_payload("../profile-cn", action="fetch")
+            again = cloakbrowser_session._bridge_payload("../profile-cn", action="click")
+            other = cloakbrowser_session._bridge_payload("profile-global", action="fetch")
 
-        cleanup_start = source.index("async function cleanupStaleAutomationTargets")
-        cleanup_end = source.index("async function withTemporaryTarget")
-        cleanup_source = source[cleanup_start:cleanup_end]
-        self.assertIn('client.send("Target.getTargets")', cleanup_source)
-        self.assertIn('targetInfo.type !== "page"', cleanup_source)
-        self.assertIn("isMakerHubApiTargetUrl(targetInfo.url, platform)", cleanup_source)
-        self.assertIn('client.send("Target.closeTarget", { targetId: targetInfo.targetId })', cleanup_source)
-        self.assertIn("await cleanupStaleAutomationTargets(browser, context, input.platform)", source)
+        registry_path = Path(first["automation_targets_path"])
+        self.assertEqual(registry_path.parent, Path(state_dir) / "cloakbrowser_targets")
+        self.assertEqual(first["automation_targets_path"], again["automation_targets_path"])
+        self.assertNotEqual(first["automation_targets_path"], other["automation_targets_path"])
 
     def test_ensure_profile_reuses_saved_profile_id(self):
         responses = [

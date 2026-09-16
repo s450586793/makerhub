@@ -1053,9 +1053,11 @@ def _bridge_payload(
     instance_id: str = "",
     platform: str = "",
 ) -> dict[str, Any]:
+    profile_digest = hashlib.sha256(str(profile_id or "").encode("utf-8")).hexdigest()[:24]
     return {
         "action": action,
         "cdp_url": f"{_configured_url()}/api/profiles/{profile_id}/cdp",
+        "automation_targets_path": str(STATE_DIR / "cloakbrowser_targets" / f"{profile_digest}.json"),
         "auth_token": _auth_token(),
         "cookies": cookies or [],
         "target_url": str(target_url or "").strip(),

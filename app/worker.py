@@ -18,7 +18,7 @@ from app.services.self_update import (
 WORKER_HEALTHCHECK_MODE = "--healthcheck" in sys.argv[1:]
 
 if not WORKER_HEALTHCHECK_MODE:
-    from app.core.database import close_database_pool
+    from app.core.database import DatabaseUnavailable, close_database_pool
     from app.core.settings import LOCAL_PREVIEW_POLL_SECONDS, PROCESS_ROLE, ensure_app_dirs
     from app.core.store import JsonStore
     from app.services.account_cookie_maintenance import run_account_cookie_maintenance_once
@@ -330,139 +330,160 @@ def main() -> int:
     archive_model_index_rebuild_thread: threading.Thread | None = None
     next_poll_seconds = WORKER_POLL_SECONDS
     last_memory_maintenance = 0.0
+    database_failures = 0
     try:
         while not stop_event.wait(next_poll_seconds):
-            _run_database_maintenance()
             try:
-                local_organizer.start()
-            except Exception as exc:
-                append_business_log(
-                    "organizer",
-                    "daemon_restart_failed",
-                    "本地整理后台进程启动失败，稍后自动重试。",
-                    level="warning",
-                    error=str(exc)[:240],
-                )
-            archive_queue = archive_manager.ensure_worker_for_pending()
-            archive_model_index_rebuild_status = read_archive_model_index_rebuild_status()
-            if archive_model_index_rebuild_thread is not None and not archive_model_index_rebuild_thread.is_alive():
-                archive_model_index_rebuild_thread = None
-            if archive_model_index_rebuild_status.get("running") and archive_model_index_rebuild_thread is None:
-                archive_model_index_rebuild_thread = _start_archive_model_index_rebuild_worker(archive_model_index_rebuild_status)
-            next_poll_seconds = worker_poll_seconds(
-                archive_queue,
-                rebuild_running=bool(archive_model_index_rebuild_status.get("running")),
-            )
-            now = time.monotonic()
-            if now - last_cloakbrowser_idle_check >= CLOAKBROWSER_IDLE_CHECK_INTERVAL_SECONDS:
-                last_cloakbrowser_idle_check = now
+                _run_database_maintenance()
                 try:
-                    idle_result = stop_idle_profiles()
-                    if int(idle_result.get("stopped_count") or 0) > 0:
-                        append_business_log(
-                            "system",
-                            "cloakbrowser_idle_profiles_stopped",
-                            "已停止空闲的指纹浏览器 profile。",
-                            stopped_count=int(idle_result.get("stopped_count") or 0),
-                            stopped_profiles=list(idle_result.get("stopped_profiles") or []),
-                        )
+                    local_organizer.start()
                 except Exception as exc:
                     append_business_log(
-                        "system",
-                        "cloakbrowser_idle_cleanup_failed",
-                        "指纹浏览器空闲 profile 清理失败。",
+                        "organizer",
+                        "daemon_restart_failed",
+                        "本地整理后台进程启动失败，稍后自动重试。",
                         level="warning",
                         error=str(exc)[:240],
                     )
-            if now - last_account_cookie_poll >= ACCOUNT_COOKIE_MAINTENANCE_POLL_SECONDS:
-                last_account_cookie_poll = now
-                try:
-                    run_account_cookie_maintenance_once(store=store)
-                except Exception as exc:
-                    append_business_log(
-                        "settings",
-                        "online_account_cookie_maintenance_failed",
-                        "线上账号 Cookie 定时检测失败。",
-                        level="warning",
-                        error=str(exc),
-                    )
-            if now - last_auto_missing_3mf_retry >= AUTO_MISSING_3MF_RETRY_INTERVAL_SECONDS:
-                last_auto_missing_3mf_retry = now
-                retry_result = run_worker_idle_missing_3mf_retry(archive_manager, archive_queue)
-                if retry_result.get("accepted"):
-                    archive_queue = task_store.load_archive_queue_compact(item_limit=1)
-            marker_mtime = local_preview_queue_marker_mtime()
-            marker_changed = bool(marker_mtime and marker_mtime != last_local_preview_marker_mtime)
-            quick_interval = max(int(LOCAL_PREVIEW_POLL_SECONDS or 20), 5)
-            idle_interval = max(int(LOCAL_PREVIEW_IDLE_POLL_SECONDS or 0), quick_interval)
-            should_poll_preview = (
-                (local_preview_active or marker_changed) and now - last_local_preview_poll >= quick_interval
-            ) or (
-                now - last_local_preview_full_scan >= idle_interval
-            )
-            if should_poll_preview:
-                last_local_preview_poll = now
-                if not (local_preview_active or marker_changed):
-                    last_local_preview_full_scan = now
-                try:
-                    result = run_local_preview_generation_once()
-                    local_preview_active = bool(result.get("processed"))
-                    if marker_changed:
-                        last_local_preview_marker_mtime = marker_mtime
-                    if not local_preview_active:
+                archive_queue = archive_manager.ensure_worker_for_pending()
+                archive_model_index_rebuild_status = read_archive_model_index_rebuild_status()
+                if archive_model_index_rebuild_thread is not None and not archive_model_index_rebuild_thread.is_alive():
+                    archive_model_index_rebuild_thread = None
+                if archive_model_index_rebuild_status.get("running") and archive_model_index_rebuild_thread is None:
+                    archive_model_index_rebuild_thread = _start_archive_model_index_rebuild_worker(archive_model_index_rebuild_status)
+                next_poll_seconds = worker_poll_seconds(
+                    archive_queue,
+                    rebuild_running=bool(archive_model_index_rebuild_status.get("running")),
+                )
+                now = time.monotonic()
+                if now - last_cloakbrowser_idle_check >= CLOAKBROWSER_IDLE_CHECK_INTERVAL_SECONDS:
+                    last_cloakbrowser_idle_check = now
+                    try:
+                        idle_result = stop_idle_profiles()
+                        if int(idle_result.get("stopped_count") or 0) > 0:
+                            append_business_log(
+                                "system",
+                                "cloakbrowser_idle_profiles_stopped",
+                                "已停止空闲的指纹浏览器 profile。",
+                                stopped_count=int(idle_result.get("stopped_count") or 0),
+                                stopped_profiles=list(idle_result.get("stopped_profiles") or []),
+                            )
+                    except Exception as exc:
+                        append_business_log(
+                            "system",
+                            "cloakbrowser_idle_cleanup_failed",
+                            "指纹浏览器空闲 profile 清理失败。",
+                            level="warning",
+                            error=str(exc)[:240],
+                        )
+                if now - last_account_cookie_poll >= ACCOUNT_COOKIE_MAINTENANCE_POLL_SECONDS:
+                    last_account_cookie_poll = now
+                    try:
+                        run_account_cookie_maintenance_once(store=store)
+                    except Exception as exc:
+                        append_business_log(
+                            "settings",
+                            "online_account_cookie_maintenance_failed",
+                            "线上账号 Cookie 定时检测失败。",
+                            level="warning",
+                            error=str(exc),
+                        )
+                if now - last_auto_missing_3mf_retry >= AUTO_MISSING_3MF_RETRY_INTERVAL_SECONDS:
+                    last_auto_missing_3mf_retry = now
+                    retry_result = run_worker_idle_missing_3mf_retry(archive_manager, archive_queue)
+                    if retry_result.get("accepted"):
+                        archive_queue = task_store.load_archive_queue_compact(item_limit=1)
+                marker_mtime = local_preview_queue_marker_mtime()
+                marker_changed = bool(marker_mtime and marker_mtime != last_local_preview_marker_mtime)
+                quick_interval = max(int(LOCAL_PREVIEW_POLL_SECONDS or 20), 5)
+                idle_interval = max(int(LOCAL_PREVIEW_IDLE_POLL_SECONDS or 0), quick_interval)
+                should_poll_preview = (
+                    (local_preview_active or marker_changed) and now - last_local_preview_poll >= quick_interval
+                ) or (
+                    now - last_local_preview_full_scan >= idle_interval
+                )
+                if should_poll_preview:
+                    last_local_preview_poll = now
+                    if not (local_preview_active or marker_changed):
                         last_local_preview_full_scan = now
-                except Exception as exc:
-                    local_preview_active = False
-                    if marker_changed:
-                        last_local_preview_marker_mtime = marker_mtime
-                    append_business_log(
-                        "model",
-                        "local_model_preview_worker_error",
-                        "本地模型 Three.js 封面 worker 轮询失败。",
-                        level="warning",
-                        error=str(exc),
-                    )
-            if now - last_memory_maintenance >= WORKER_MEMORY_MAINTENANCE_INTERVAL_SECONDS:
-                last_memory_maintenance = now
+                    try:
+                        result = run_local_preview_generation_once()
+                        local_preview_active = bool(result.get("processed"))
+                        if marker_changed:
+                            last_local_preview_marker_mtime = marker_mtime
+                        if not local_preview_active:
+                            last_local_preview_full_scan = now
+                    except Exception as exc:
+                        local_preview_active = False
+                        if marker_changed:
+                            last_local_preview_marker_mtime = marker_mtime
+                        append_business_log(
+                            "model",
+                            "local_model_preview_worker_error",
+                            "本地模型 Three.js 封面 worker 轮询失败。",
+                            level="warning",
+                            error=str(exc),
+                        )
+                if now - last_memory_maintenance >= WORKER_MEMORY_MAINTENANCE_INTERVAL_SECONDS:
+                    last_memory_maintenance = now
 
-                def _load_worker_activity() -> dict[str, bool]:
-                    organize_queue = task_store.load_organize_tasks()
-                    return {
-                        "archive": int(archive_queue.get("running_count") or 0) > 0,
-                        "subscription": subscription_manager._has_active_work(),
-                        "source_library": source_library_manager._has_active_work(),
-                        "source_refresh": remote_refresh_manager._has_active_work(),
-                        "organizer": int(organize_queue.get("running_count") or 0) > 0,
-                        "index_rebuild": bool(archive_model_index_rebuild_status.get("running")),
-                        "preview": bool(local_preview_active),
-                    }
+                    def _load_worker_activity() -> dict[str, bool]:
+                        organize_queue = task_store.load_organize_tasks()
+                        return {
+                            "archive": int(archive_queue.get("running_count") or 0) > 0,
+                            "subscription": subscription_manager._has_active_work(),
+                            "source_library": source_library_manager._has_active_work(),
+                            "source_refresh": remote_refresh_manager._has_active_work(),
+                            "organizer": int(organize_queue.get("running_count") or 0) > 0,
+                            "index_rebuild": bool(archive_model_index_rebuild_status.get("running")),
+                            "preview": bool(local_preview_active),
+                        }
 
-                memory_result = run_worker_memory_maintenance(_load_worker_activity)
-                if memory_result.get("error"):
-                    append_business_log(
-                        "system",
-                        "worker_memory_maintenance_failed",
-                        "makerhub worker 空闲内存维护失败。",
-                        level="warning",
-                        error=str(memory_result.get("error") or "")[:240],
-                    )
-                if memory_result.get("recycle"):
-                    hard_limit = memory_result.get("reason") == "hard_limit"
-                    append_business_log(
-                        "system",
-                        "worker_memory_recycle",
-                        (
-                            "makerhub worker 内存超过硬上限，正在重启并自动恢复任务。"
-                            if hard_limit
-                            else "makerhub worker 已到达安全任务间隙，正在重启回收内存。"
-                        ),
-                        level="warning",
-                        reason=str(memory_result.get("reason") or ""),
-                        rss_mib=float(memory_result.get("rss_mib") or 0.0),
-                        threshold_mib=int(memory_result.get("threshold_mib") or 0),
-                        hard_threshold_mib=int(memory_result.get("hard_threshold_mib") or 0),
-                    )
-                    break
+                    memory_result = run_worker_memory_maintenance(_load_worker_activity)
+                    if memory_result.get("error"):
+                        append_business_log(
+                            "system",
+                            "worker_memory_maintenance_failed",
+                            "makerhub worker 空闲内存维护失败。",
+                            level="warning",
+                            error=str(memory_result.get("error") or "")[:240],
+                        )
+                    if memory_result.get("recycle"):
+                        hard_limit = memory_result.get("reason") == "hard_limit"
+                        append_business_log(
+                            "system",
+                            "worker_memory_recycle",
+                            (
+                                "makerhub worker 内存超过硬上限，正在重启并自动恢复任务。"
+                                if hard_limit
+                                else "makerhub worker 已到达安全任务间隙，正在重启回收内存。"
+                            ),
+                            level="warning",
+                            reason=str(memory_result.get("reason") or ""),
+                            rss_mib=float(memory_result.get("rss_mib") or 0.0),
+                            threshold_mib=int(memory_result.get("threshold_mib") or 0),
+                            hard_threshold_mib=int(memory_result.get("hard_threshold_mib") or 0),
+                        )
+                        break
+            except DatabaseUnavailable:
+                database_failures += 1
+                next_poll_seconds = min(5.0 * (2 ** min(database_failures - 1, 3)), 30.0)
+                # 数据库拥堵时直接输出日志，避免告警再次等待连接池。
+                print(
+                    "[makerhub][warning][system] worker_database_unavailable "
+                    f"数据库暂时不可用，保留任务并在 {next_poll_seconds:g} 秒后重试。",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                continue
+            if database_failures:
+                append_business_log(
+                    "system",
+                    "worker_database_recovered",
+                    "数据库连接已恢复，继续处理原有任务。",
+                    failed_polls=database_failures,
+                )
+                database_failures = 0
     finally:
         stop_event.set()
         heartbeat_thread.join(timeout=WORKER_HEARTBEAT_INTERVAL_SECONDS + 1)

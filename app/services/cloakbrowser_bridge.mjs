@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,6 +25,7 @@ const requireFromFrontend = createRequire(path.join(ROOT_DIR, "frontend", "node_
 const puppeteer = requireFromFrontend("puppeteer-core");
 const BROWSER_FETCH_TOTAL_BUFFER_BYTES = 32 * 1024 * 1024;
 const BROWSER_FETCH_RESOURCE_BUFFER_BYTES = 24 * 1024 * 1024;
+const automationTargetRegistries = new WeakMap();
 
 async function readInput() {
   const chunks = [];
@@ -191,38 +193,71 @@ function headersWithBrowserAuth(headers, cookies, targetUrl) {
   return result;
 }
 
-function isMakerHubApiTargetUrl(value, platform) {
+async function saveAutomationTargets(registry) {
+  const serialized = JSON.stringify([...registry.ids]);
+  if (serialized === registry.saved) return;
+  const temporaryPath = `${registry.path}.${process.pid}.tmp`;
   try {
-    const parsed = new URL(String(value || ""));
-    const apiHost = platform === "global" ? "api.bambulab.com" : "api.bambulab.cn";
-    return parsed.protocol === "https:"
-      && parsed.hostname.toLowerCase() === apiHost
-      && (parsed.pathname.startsWith("/api/") || parsed.pathname.startsWith("/v1/"));
+    await mkdir(path.dirname(registry.path), { recursive: true });
+    await writeFile(temporaryPath, serialized, { mode: 0o600 });
+    await rename(temporaryPath, registry.path);
+    registry.saved = serialized;
   } catch {
-    return false;
+    throw new Error("automation target registry could not be saved");
+  } finally {
+    await unlink(temporaryPath).catch(() => undefined);
   }
 }
 
-async function cleanupStaleAutomationTargets(browser, context, platform) {
+export async function cleanupStaleAutomationTargets(browser, context, registryPath) {
+  automationTargetRegistries.delete(browser);
+  if (!registryPath) return;
+  const registry = { path: registryPath, ids: new Set(), saved: "" };
+  try {
+    registry.saved = await readFile(registryPath, "utf8");
+    const ids = JSON.parse(registry.saved);
+    if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string" || !id || id.length > 128)) {
+      throw new Error("invalid registry");
+    }
+    registry.ids = new Set(ids);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw new Error("automation target registry could not be read");
+  }
   const client = await browser.target().createCDPSession();
   try {
+    // 新版 Chrome 为默认上下文返回 ID，Puppeteer 的默认 context.id 仍可能为空。
+    const { defaultBrowserContextId = "", browserContextIds = [] } = context.id
+      ? {}
+      : await client.send("Target.getBrowserContexts");
+    const contextId = String(context.id || defaultBrowserContextId || "");
     const { targetInfos = [] } = await client.send("Target.getTargets");
+    const remaining = new Set();
     for (const targetInfo of targetInfos) {
+      const targetContextId = String(targetInfo.browserContextId || "");
+      const belongsToContext = contextId
+        ? targetContextId === contextId
+        : !browserContextIds.includes(targetContextId);
       if (
         targetInfo.type !== "page"
-        || String(targetInfo.browserContextId || "") !== String(context.id || "")
-        || !isMakerHubApiTargetUrl(targetInfo.url, platform)
+        || !belongsToContext
+        || (!registry.ids.has(targetInfo.targetId)
+          && !String(targetInfo.url || "").startsWith("about:blank#makerhub-"))
       ) continue;
-      await client.send("Target.closeTarget", { targetId: targetInfo.targetId }).catch(() => undefined);
+      const closed = await client.send("Target.closeTarget", { targetId: targetInfo.targetId }).catch(() => ({ success: false }));
+      if (closed.success === false) remaining.add(targetInfo.targetId);
     }
-  } catch {
-    // 历史标签清理失败不应阻断新的浏览器操作。
+    registry.ids = remaining;
+    await saveAutomationTargets(registry);
+    if (remaining.size) throw new Error("stale automation targets could not be closed");
+    automationTargetRegistries.set(browser, registry);
   } finally {
     await client.detach().catch(() => undefined);
   }
 }
 
-async function withTemporaryTarget(browser, context, { hidden }, callback) {
+export async function withTemporaryTarget(browser, context, { hidden }, callback) {
+  const registry = automationTargetRegistries.get(browser);
+  if (!hidden && !registry) throw new Error("automation target registry is required for a visible page");
   const client = await browser.target().createCDPSession();
   const markerUrl = `about:blank#makerhub-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   let targetId = "";
@@ -234,6 +269,11 @@ async function withTemporaryTarget(browser, context, { hidden }, callback) {
     };
     if (hidden) targetOptions.hidden = true;
     ({ targetId } = await client.send("Target.createTarget", targetOptions));
+    // 可见标签不会随 CDP 断开而销毁，先记录归属再导航，便于下次清理中断遗留。
+    if (!hidden) {
+      registry.ids.add(targetId);
+      await saveAutomationTargets(registry);
+    }
     const target = await browser.waitForTarget(
       (candidate) => candidate.url() === markerUrl && candidate.browserContext() === context,
       { timeout: 15000 },
@@ -241,7 +281,11 @@ async function withTemporaryTarget(browser, context, { hidden }, callback) {
     return await callback(target);
   } finally {
     if (targetId) {
-      await client.send("Target.closeTarget", { targetId }).catch(() => undefined);
+      const closed = await client.send("Target.closeTarget", { targetId }).catch(() => ({ success: false }));
+      if (!hidden && closed.success !== false) {
+        registry.ids.delete(targetId);
+        await saveAutomationTargets(registry).catch(() => undefined);
+      }
     }
     await client.detach().catch(() => undefined);
   }
@@ -808,7 +852,9 @@ async function main() {
   try {
     const contexts = browser.browserContexts();
     const context = contexts[0] || browser.defaultBrowserContext();
-    await cleanupStaleAutomationTargets(browser, context, input.platform);
+    const cleanup = cleanupStaleAutomationTargets(browser, context, input.automation_targets_path);
+    if (input.action === "fetch" || input.action === "click") await cleanup;
+    else await cleanup.catch(() => undefined);
     if (input.action === "fetch") {
       const fetched = await fetchBrowserResponse(
         browser,

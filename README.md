@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.20.0`
+> 当前版本：`v0.20.1`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -168,11 +168,15 @@ services:
       AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
     volumes:
       - ${MAKERHUB_CLOAKBROWSER_DATA_PATH:-./data/cloakbrowser}:/data
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=2g,mode=1777
     stop_grace_period: 30s
     logging: *default-logging
     restart: unless-stopped
 ```
 <!-- compose:end -->
+
+CloakBrowser 的 `/tmp` 使用上限 2 GiB、按需占用内存的临时盘，减少 Chromium 共享临时文件对磁盘的持续写入；登录资料仍保存在 `/data`。已有部署需要同步这项 Compose 配置并重建 `cloakbrowser` 服务才能生效，单独更新 App/Worker 镜像不会修改该挂载。请同时观察内存与交换空间使用情况。
 
 可以直接下载同一份部署文件和环境变量模板：
 
@@ -359,6 +363,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-09-16 · v0.20.1
+
+- CloakBrowser 临时目录改用有容量上限的内存盘，减少 SSD 写入；登录资料继续持久保存。
+- 自动化可见标签记录归属，中断后按标签 ID 回收，保留用户手动打开的页面。
+- Worker 遇到数据库暂时不可用时保留队列并退避重试，恢复后继续处理，避免短暂拥堵导致进程退出。
+
 ### 2026-09-15 · v0.20.0
 
 - 模型详情对齐当前 MakerWorld 的双栏图集、打印机筛选、配置浮层、分盘详情和下载菜单，适配深浅主题与手机。
@@ -371,14 +381,14 @@ npm --prefix frontend run build
 - 任务摘要合并数据库读取，缓存改用修订号；本地预览持久排队并支持中断恢复，减少全目录扫描。
 - 增加脱敏 CB 阶段耗时记录，下载并发和每日限额继续沿用原配置。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-09-14 · v0.18.0
 
 - 模型标签按需搜索，分页不再返回全库标签；本地整理无变化时不写状态，进度更新也不再触发本地库整页查询。
 - 本地库卡片使用数据库统计和每组 4 张预览，归档与订阅判重只读取候选索引字段，减少传输和内存占用。
 - 后台刷新与订阅发现先排队再启动隔离进程，浏览器临时故障共享退避；正式归档与 3MF 下载的并发、限额不变，无需迁移历史数据。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-09-12 · v0.17.2
 

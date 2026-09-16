@@ -1,6 +1,10 @@
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import pytest
+
 from app import worker
+from app.core.database import DatabaseUnavailable
 
 
 def test_idle_worker_uses_backoff_after_archive_and_index_work_are_quiet():
@@ -168,3 +172,90 @@ def test_worker_schedules_missing_3mf_retry_only_when_archive_queue_is_idle():
     assert busy_result == {"accepted": False, "reason": "archive_queue_busy"}
     assert idle_result["accepted_count"] == 2
     manager.retry_idle_missing_3mf.assert_called_once_with(limit=4)
+
+
+@pytest.fixture
+def worker_runtime(monkeypatch):
+    pending = {"id": "pending-1", "status": "paused"}
+    queue = {"queued_count": 1, "running_count": 0, "queued": [pending]}
+    stop = Mock()
+    stop.wait.side_effect = [False, False, False, True]
+    manager = Mock()
+    manager.resume_pending_tasks.return_value = queue
+    manager.ensure_worker_for_pending.return_value = queue
+    monkeypatch.setattr(worker, "threading", SimpleNamespace(Event=lambda: stop, Thread=Mock()))
+    monkeypatch.setattr(worker.signal, "signal", Mock())
+    for name in [
+        "ensure_app_dirs", "record_worker_heartbeat", "close_database_pool",
+        "append_business_log", "_run_database_maintenance", "run_account_cookie_maintenance_once",
+    ]:
+        monkeypatch.setattr(worker, name, Mock())
+    for name in [
+        "JsonStore", "TaskStateStore", "SubscriptionManager", "LocalOrganizerService",
+        "SourceLibraryManager", "SourceRefreshTaskManager",
+    ]:
+        monkeypatch.setattr(worker, name, Mock())
+    monkeypatch.setattr(worker, "ArchiveTaskManager", Mock(return_value=manager))
+    monkeypatch.setattr(worker, "should_auto_rebuild_database_index", lambda: False)
+    monkeypatch.setattr(worker, "read_archive_model_index_rebuild_status", lambda: {"running": False})
+    monkeypatch.setattr(worker, "local_preview_queue_marker_mtime", lambda: 0)
+    monkeypatch.setattr(worker, "run_local_preview_generation_once", lambda: {"processed": False})
+    monkeypatch.setattr(worker, "stop_idle_profiles", lambda: {"stopped_count": 0})
+    monkeypatch.setattr(worker, "run_worker_memory_maintenance", lambda *_: {"recycle": False})
+    monkeypatch.setattr(worker, "run_worker_idle_missing_3mf_retry", lambda *_: {"accepted": False})
+    return SimpleNamespace(manager=manager, stop=stop, pending=pending, queue=queue)
+
+
+def test_worker_resumes_pending_queue_after_database_recovers(worker_runtime, capsys):
+    runtime = worker_runtime
+    runtime.manager.ensure_worker_for_pending.side_effect = [
+        DatabaseUnavailable("private connection details"),
+        DatabaseUnavailable("private connection details"),
+        runtime.queue,
+    ]
+
+    assert worker.main() == 0
+
+    assert runtime.manager.ensure_worker_for_pending.call_count == 3
+    runtime.manager.resume_pending_tasks.assert_called_once()
+    assert runtime.pending == {"id": "pending-1", "status": "paused"}
+    assert [call.args[0] for call in runtime.stop.wait.call_args_list] == [2.0, 5.0, 10.0, 15.0]
+    stderr = capsys.readouterr().err
+    assert "worker_database_unavailable" in stderr
+    assert "private connection details" not in stderr
+    assert any(call.args[1] == "worker_database_recovered" for call in worker.append_business_log.call_args_list)
+
+
+def test_worker_database_backoff_is_capped_and_interruptible(worker_runtime):
+    runtime = worker_runtime
+    runtime.stop.wait.side_effect = [False] * 7 + [True]
+    runtime.manager.ensure_worker_for_pending.side_effect = DatabaseUnavailable("database busy")
+
+    assert worker.main() == 0
+
+    assert [call.args[0] for call in runtime.stop.wait.call_args_list] == [2.0, 5.0, 10.0, 20.0, 30.0, 30.0, 30.0, 30.0]
+    assert runtime.manager.ensure_worker_for_pending.call_count == 7
+    runtime.manager.resume_pending_tasks.assert_called_once()
+    worker.close_database_pool.assert_called_once()
+
+
+def test_worker_database_backoff_resets_after_success(worker_runtime):
+    runtime = worker_runtime
+    runtime.stop.wait.side_effect = [False] * 4 + [True]
+    runtime.manager.ensure_worker_for_pending.side_effect = [
+        DatabaseUnavailable("database busy"), runtime.queue,
+        DatabaseUnavailable("database busy"), runtime.queue,
+    ]
+
+    assert worker.main() == 0
+
+    assert [call.args[0] for call in runtime.stop.wait.call_args_list] == [2.0, 5.0, 15.0, 5.0, 15.0]
+
+
+def test_worker_does_not_hide_non_database_errors(worker_runtime):
+    worker_runtime.manager.ensure_worker_for_pending.side_effect = ValueError("invalid queue")
+
+    with pytest.raises(ValueError, match="invalid queue"):
+        worker.main()
+
+    worker.close_database_pool.assert_called_once()

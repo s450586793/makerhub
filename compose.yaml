@@ -115,6 +115,8 @@ services:
       AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
     volumes:
       - ${MAKERHUB_CLOAKBROWSER_DATA_PATH:-./data/cloakbrowser}:/data
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=2g,mode=1777
     stop_grace_period: 30s
     logging: *default-logging
     restart: unless-stopped
