@@ -257,6 +257,9 @@ function hydrateSubscriptionsPageFromCache() {
   if (!cached?.payload) {
     return false;
   }
+  if (route.query.page != null && Number(cached.page || 1) !== routePage()) {
+    return false;
+  }
   payload.value = normalizeSubscriptionsPayload(cached.payload);
   initialLoaded.value = true;
   initialLoadFailed.value = false;
@@ -421,7 +424,8 @@ async function loadMoreSubscriptionSources() {
       return false;
     }
     const incomingSection = subscriptionSourcesSection(response);
-    const mergedItems = mergeSubscriptionSourceItems(subscriptionSources.value?.items || [], incomingSection?.items || []);
+    const previousItems = subscriptionSources.value?.items || [];
+    const mergedItems = mergeSubscriptionSourceItems(previousItems, incomingSection?.items || []);
     payload.value = replaceSubscriptionSourcesSection(
       response,
       mergedItems,
@@ -429,6 +433,7 @@ async function loadMoreSubscriptionSources() {
         ...(incomingSection || {}),
         page: nextPage,
         page_size: PAGE_SIZE,
+        page_item_count: mergedItems.length - previousItems.length,
         has_more: Boolean(incomingSection?.has_more),
         total: Number(incomingSection?.total || mergedItems.length),
       },
@@ -639,9 +644,22 @@ async function activatePage({ initial, isCurrent }) {
   if (initial) {
     hydrateSubscriptionsPageFromCache();
   }
+  const page = route.query.page != null
+    ? routePage()
+    : Number(subscriptionSources.value?.page || 1);
+  if (Number(subscriptionSources.value?.page || page) !== page) {
+    payload.value = createEmptySubscriptionsPayload();
+    initialLoaded.value = false;
+  }
+  if (routePage() !== page) {
+    await updateRoutePage(page);
+  }
+  if (!isCurrent()) {
+    return;
+  }
   await load({
     silent: !initial,
-    pages: Number(subscriptionSources.value?.page || routePage()),
+    pages: page,
   });
   if (!isCurrent()) {
     return;

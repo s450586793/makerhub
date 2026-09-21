@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.20.1`
+> 当前版本：`v0.20.2`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -363,6 +363,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-09-21 · v0.20.2
+
+- 订阅来源后台刷新保留已加载卡片，修复加载完成后整批卡片被最后一页替换的问题；继续使用按页请求。
+- 返回页面时恢复对应页码，明确指定页码时避免复用其他页的缓存。
+- 新封面优先显示，接口暂时缺图时保留已有预览。
+
 ### 2026-09-16 · v0.20.1
 
 - CloakBrowser 临时目录改用有容量上限的内存盘，减少 SSD 写入；登录资料继续持久保存。
@@ -375,14 +381,14 @@ npm --prefix frontend run build
 - 图集可放大切换，章节导航吸顶；许可与相关模型基于本地归档，下载、收藏和打印标记继续接入 MakerHub。
 - 修复嵌套说明 HTML 导致详情加载失败，以及 3MF 预览解析器选择错误；3D 静止时停止持续渲染。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-09-14 · v0.19.0
 
 - 分组详情改为数据库分页及按需标签搜索，来源封面仅查询目标分组；保留收藏夹顺序、删除状态及本地合并建议。
 - 任务摘要合并数据库读取，缓存改用修订号；本地预览持久排队并支持中断恢复，减少全目录扫描。
 - 增加脱敏 CB 阶段耗时记录，下载并发和每日限额继续沿用原配置。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-09-14 · v0.18.0
 

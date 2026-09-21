@@ -60,7 +60,7 @@ export function normalizeSubscriptionsPayload(response = {}) {
 
 function cardHasFullVisuals(card = {}) {
   return Boolean(
-    String(card.preview_snapshot_url || "").trim()
+    String(card.preview_snapshot_url || card.cover_url || "").trim()
       || (Array.isArray(card.preview_models) && card.preview_models.length)
       || (Array.isArray(card.model_dirs) && card.model_dirs.length)
   );
@@ -78,13 +78,6 @@ export function shouldDeferLightSubscriptionCards({ hydrateFull = false, current
 export function mergeSubscriptionSourcesForLightRefresh(currentSection = {}, lightSection = {}) {
   const currentItems = Array.isArray(currentSection?.items) ? currentSection.items : [];
   const lightItems = Array.isArray(lightSection?.items) ? lightSection.items : [];
-  if (!currentItems.length || !lightItems.length) {
-    return {
-      ...(lightSection || {}),
-      items: lightItems,
-      count: lightItems.length,
-    };
-  }
   const currentByKey = new Map(
     currentItems
       .map((item) => [String(item?.key || "").trim(), item])
@@ -93,26 +86,47 @@ export function mergeSubscriptionSourcesForLightRefresh(currentSection = {}, lig
   const items = lightItems.map((item) => {
     const key = String(item?.key || "").trim();
     const currentItem = key ? currentByKey.get(key) : null;
-    if (!currentItem || !cardHasFullVisuals(currentItem)) {
+    const hasFreshPreview = Boolean(
+      String(item?.preview_snapshot_url || item?.cover_url || "").trim()
+        || (Array.isArray(item?.preview_models) && item.preview_models.some((model) => model?.cover_url)),
+    );
+    if (!currentItem || !cardHasFullVisuals(currentItem) || hasFreshPreview) {
       return item;
     }
+    const modelData = cardHasFullVisuals(item) ? item : currentItem;
     return {
       ...item,
       preview_models: currentItem.preview_models,
       preview_snapshot_url: currentItem.preview_snapshot_url,
-      cover_url: currentItem.cover_url || item.cover_url,
-      avatar_url: currentItem.avatar_url || item.avatar_url,
-      model_dirs: currentItem.model_dirs,
-      model_count: currentItem.model_count,
-      local_model_count: currentItem.local_model_count,
-      stats: currentItem.stats,
-      recent_summary: currentItem.recent_summary,
+      cover_url: item.cover_url || currentItem.cover_url,
+      avatar_url: item.avatar_url || currentItem.avatar_url,
+      model_dirs: modelData.model_dirs,
+      model_count: modelData.model_count,
+      local_model_count: modelData.local_model_count,
+      stats: modelData.stats,
+      recent_summary: modelData.recent_summary,
     };
   });
+  // 后台刷新只返回末页，保留此前已加载的卡片。
+  const samePage = Number(currentSection?.page || 1) === Number(lightSection?.page || 1);
+  const previousPageCount = Math.max(0, Number(
+    currentSection?.page_item_count ?? currentSection?.page_size ?? currentItems.length,
+  ));
+  const previousItems = samePage
+    ? currentItems.slice(0, Math.max(0, currentItems.length - previousPageCount))
+    : [];
+  const incomingKeys = new Set(items.map((item) => String(item?.key || "")));
+  const mergedItems = [
+    ...previousItems.filter((item) => !incomingKeys.has(String(item?.key || ""))),
+    ...items,
+  ];
+  const total = Math.max(0, Number(lightSection?.total ?? mergedItems.length));
+  const visibleItems = mergedItems.slice(0, total);
   return {
     ...(lightSection || {}),
-    items,
-    count: items.length,
+    items: visibleItems,
+    count: visibleItems.length,
+    page_item_count: Math.min(items.length, visibleItems.length),
   };
 }
 
