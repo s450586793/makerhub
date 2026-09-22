@@ -9,7 +9,7 @@ from multiprocessing import get_context
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
-from app.services import cloakbrowser_session
+from app.services import account_health, cloakbrowser_session, three_mf_pacing
 
 
 SPAWN_CONTEXT = get_context("spawn")
@@ -40,6 +40,12 @@ def _hold_cloakbrowser_profile_slot(
 
 
 class CloakBrowserSessionTest(unittest.TestCase):
+    def setUp(self):
+        state_dir = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(patch.object(cloakbrowser_session, "STATE_DIR", Path(state_dir)))
+        self.enterContext(patch.object(account_health, "get_account_health", return_value={"three_mf_gate": "open"}))
+        self.enterContext(patch.object(three_mf_pacing, "_authorization_interval", return_value=0))
+
     def test_stop_idle_profiles_only_stops_expired_running_profile(self):
         profiles = [
             {"id": "profile-cn", "name": "MakerHub CN", "status": "running"},

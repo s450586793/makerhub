@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import requests
+import pytest
 
 from app.services.makerworld_browser_client import (
     MakerWorldBrowserError,
@@ -15,6 +16,7 @@ from app.services.makerworld_pipeline import (
     source_is_deleted,
 )
 from app.services import batch_discovery, legacy_archiver
+from app.services.asset_downloader import AssetDownloadError
 from app.services.makerworld_pipeline import archive as pipeline_archive
 from app.services.makerworld_pipeline.archive import fetch_instance_3mf
 from app.services.makerworld_pipeline.discovery import _api_get_json
@@ -398,6 +400,57 @@ def test_archive_pipeline_refreshes_failed_existing_three_mf_url(tmp_path):
     assert result["stats"]["instances"]["existing_hint"] == 0
     assert result["stats"]["instances"]["api_fetch_attempts"] == 1
     assert result["stats"]["instances"]["api_fetch"] == 1
+
+
+@pytest.mark.parametrize("failure", [
+    AssetDownloadError("timeout", failure_kind="timeout"),
+    AssetDownloadError("connection error", failure_kind="connection_error"),
+    AssetDownloadError("HTTP 503", status_code=503, failure_kind="http_error"),
+])
+def test_three_mf_transfer_retry_reuses_one_authorization(tmp_path, failure):
+    signed_url = "https://cdn.example.test/profile.3mf?signature=existing"
+    design = {"id": 130, "title": "Transfer retry", "instances": [{"id": 456, "title": "Profile"}]}
+    html = '<script id="__NEXT_DATA__" type="application/json">' + json.dumps({"props": {"pageProps": {"design": design}}}) + "</script>"
+    transfers = []
+
+    def transfer(session, url, destination, **kwargs):
+        transfers.append(url)
+        if len(transfers) == 1:
+            raise failure
+        destination.write_bytes(b"PK\x03\x04test-3mf")
+
+    with patch.object(pipeline_archive, "fetch_html_with_browser", return_value=html), \
+            patch.object(pipeline_archive, "reserve_three_mf_download_slot", return_value={"allowed": True}) as quota, \
+            patch.object(pipeline_archive, "fetch_instance_3mf", return_value=("profile.3mf", signed_url, "", {"state": "available"})) as authorization, \
+            patch.object(legacy_archiver, "download_file", side_effect=transfer), \
+            patch.object(legacy_archiver.time, "sleep"):
+        result = archive_model(
+            url="https://makerworld.com.cn/zh/models/130", cookie="", download_dir=tmp_path / "archive",
+            logs_dir=tmp_path / "logs", download_assets=False, collect_comments_data=False, rebuild_archive=True,
+        )
+
+    assert result["missing_3mf"] == []
+    assert transfers == [signed_url, signed_url]
+    assert authorization.call_count == quota.call_count == 1
+    assert (Path(result["work_dir"]) / "instances" / result["instances"][0]["fileName"]).read_bytes().startswith(b"PK")
+
+
+@pytest.mark.parametrize("status, kind, attempts", [(403, "http_error", 1), (404, "http_error", 1), (0, "timeout", 3)])
+def test_three_mf_transfer_retries_are_bounded(tmp_path, status, kind, attempts):
+    error = AssetDownloadError("download failed", status_code=status, failure_kind=kind)
+    with patch.object(legacy_archiver, "download_file", side_effect=error) as download, patch.object(legacy_archiver.time, "sleep"):
+        with pytest.raises(AssetDownloadError):
+            legacy_archiver._download_three_mf_file("https://cdn.example.test/demo.3mf", tmp_path / "demo.3mf")
+    assert download.call_count == attempts
+
+
+def test_three_mf_transfer_retry_keeps_original_time_budget(tmp_path):
+    error = AssetDownloadError("download failed", failure_kind="timeout")
+    with patch.object(legacy_archiver, "download_file", side_effect=error) as download, \
+            patch.object(legacy_archiver.time, "monotonic", side_effect=[100, 100, 400]):
+        with pytest.raises(AssetDownloadError):
+            legacy_archiver._download_three_mf_file("https://cdn.example.test/demo.3mf", tmp_path / "demo.3mf")
+    assert download.call_count == 1
 
 
 def test_archive_pipeline_fetches_3mf_without_browser_authorization(tmp_path):

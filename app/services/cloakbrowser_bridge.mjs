@@ -556,10 +556,17 @@ export async function readAuthorizationResponse(response) {
   } catch {
     payload = null;
   }
+  let retryAfter = "";
+  try {
+    retryAfter = String(response.headers?.()?.["retry-after"] || "").slice(0, 1000);
+  } catch {
+    // 附加响应头读取失败时保留已经取得的下载授权。
+  }
   return {
     status_code: statusCode,
     payload: sanitizedAuthorizationPayload(payload, text),
     text: payload ? "" : text.slice(0, 1024),
+    ...(retryAfter ? { headers: { "retry-after": retryAfter } } : {}),
   };
 }
 

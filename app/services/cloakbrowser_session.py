@@ -25,6 +25,7 @@ from app.services.online_accounts import (
 from app.services.proxy_policy import proxy_mapping, proxy_url
 from app.services.resource_limiter import resource_slot
 from app.services.performance import log_browser_bridge_timing
+from app.services.three_mf_pacing import ThreeMfAuthorizationAttempt
 
 
 BRIDGE_SCRIPT = ROOT_DIR / "app" / "services" / "cloakbrowser_bridge.mjs"
@@ -1070,6 +1071,34 @@ def _bridge_payload(
     }
 
 
+def _run_paced_bridge(
+    platform: str,
+    running: CloakBrowserProfile,
+    payload: dict[str, Any],
+    *,
+    timeout_seconds: int,
+) -> tuple[CloakBrowserProfile, bool, dict[str, Any]]:
+    if not _is_browser_three_mf_authorization_url(payload.get("target_url", ""), platform):
+        return _run_bridge_with_profile_recovery(
+            platform, running, payload, timeout_seconds=timeout_seconds, allow_profile_restart=False,
+        )
+    with ThreeMfAuthorizationAttempt(
+        platform, running.id, STATE_DIR,
+        model_url=payload.get("model_url", ""), instance_id=payload.get("instance_id", ""),
+    ) as attempt:
+        if attempt.response is not None:
+            return running, False, {
+                **attempt.response,
+                "text": json.dumps(attempt.response.get("payload") or {}),
+                "content_type": "application/json",
+            }
+        running, restarted, result = _run_bridge_with_profile_recovery(
+            platform, running, payload, timeout_seconds=timeout_seconds, allow_profile_restart=False,
+        )
+        attempt.response = result
+        return running, restarted, result
+
+
 def browser_fetch(
     platform: str,
     url: str,
@@ -1124,12 +1153,11 @@ def browser_fetch(
         payload["headers"] = _safe_browser_fetch_headers(headers)
         payload["navigation_timeout_ms"] = operation_timeout * 1000
         try:
-            running, _restarted, result = _run_bridge_with_profile_recovery(
+            running, _restarted, result = _run_paced_bridge(
                 clean_platform,
                 running,
                 payload,
                 timeout_seconds=max(operation_timeout + 30, operation_timeout * 2),
-                allow_profile_restart=False,
             )
         except CloakBrowserBridgeError:
             if not clean_profile_id:
@@ -1139,12 +1167,11 @@ def browser_fetch(
                 clean_profile_id,
             )
             payload["cdp_url"] = f"{_configured_url()}/api/profiles/{running.id}/cdp"
-            running, _restarted, result = _run_bridge_with_profile_recovery(
+            running, _restarted, result = _run_paced_bridge(
                 clean_platform,
                 running,
                 payload,
                 timeout_seconds=max(operation_timeout + 30, operation_timeout * 2),
-                allow_profile_restart=False,
             )
 
     final_url = _validate_browser_fetch_url(str(result.get("url") or clean_url), clean_platform)
@@ -1243,14 +1270,13 @@ def browser_authorize_3mf_download(
                     instance_id=clean_instance_id,
                     platform=clean_platform,
                 )
-                running, _restarted, result = _run_bridge_with_profile_recovery(
+                running, _restarted, result = _run_paced_bridge(
                     clean_platform,
                     running,
                     bridge_payload,
                     timeout_seconds=_authorization_bridge_timeout_seconds(
                         bridge_payload["navigation_timeout_ms"]
                     ),
-                    allow_profile_restart=False,
                 )
                 _clear_profile_recovery_attempt(running.id)
                 break

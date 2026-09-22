@@ -2720,8 +2720,6 @@ def fetch_instance_3mf(
         or normalize_makerworld_source(url=api_url)
         or normalize_makerworld_source(url=api_host_hint)
     )
-    if candidates:
-        _wait_before_three_mf_download(f"获取下载地址 {inst_id}")
     if browser_authorization:
         candidate = candidates[0] if candidates else api_url or ""
         if not candidate:
@@ -4692,6 +4690,24 @@ def build_index_html(meta: dict, assets: dict = None, logger=None) -> str:
     return html
 
 
+def _download_three_mf_file(url: str, dest: Path, logger=None) -> None:
+    deadline = time.monotonic() + BINARY_TRANSFER_TIMEOUT_SECONDS
+    retry_delays = (1.0, 3.0)
+    for attempt in range(len(retry_delays) + 1):
+        try:
+            download_file(
+                REBUILD_SESSION, url, dest,
+                max_duration=max(1, int(deadline - time.monotonic())),
+            )
+            return
+        except AssetDownloadError as exc:
+            transient = exc.failure_kind in {"timeout", "connection_error"} or 500 <= exc.status_code < 600
+            if not transient or attempt >= len(retry_delays) or time.monotonic() + retry_delays[attempt] >= deadline:
+                raise
+            log(logger, f"[3MF] 文件传输暂时失败，复用原下载地址重试（{attempt + 1}/{len(retry_delays)}）")
+            time.sleep(retry_delays[attempt])
+
+
 def rebuild_once(meta_path: Path, progress_callback=None, logger=None, build_offline_page: bool = False):
     rebuild_started_at = time.perf_counter()
     with meta_path.open("r", encoding="utf-8") as f:
@@ -4811,14 +4827,8 @@ def rebuild_once(meta_path: Path, progress_callback=None, logger=None, build_off
             existing_instance_downloads += 1
         else:
             with resource_slot("three_mf_download", detail=dest.name):
-                _wait_before_three_mf_download(f"下载文件 {dest.name}", logger=logger)
                 try:
-                    download_file(
-                        REBUILD_SESSION,
-                        url,
-                        dest,
-                        max_duration=BINARY_TRANSFER_TIMEOUT_SECONDS,
-                    )
+                    _download_three_mf_file(url, dest, logger=logger)
                     new_instance_downloads += 1
                 except Exception as exc:
                     _mark_instance_3mf_download_failed(inst, exc, logger=logger)

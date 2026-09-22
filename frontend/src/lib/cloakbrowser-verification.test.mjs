@@ -640,6 +640,21 @@ test("authorization response parsing does not expose text rejection details", as
   );
 });
 
+test("authorization response forwards only Retry-After for download pacing", async () => {
+  const response = fakeAuthorizationResponse({ status: 429, payload: { message: "Too Many Requests" } });
+  response.headers = () => ({ "retry-after": "120", "set-cookie": "secret-cookie", authorization: "secret-token" });
+  const result = await readAuthorizationResponse(response);
+  assert.deepEqual(result.headers, { "retry-after": "120" });
+  assert.equal(JSON.stringify(result).includes("secret-"), false);
+});
+
+test("authorization header failure preserves an already granted download", async () => {
+  const response = fakeAuthorizationResponse();
+  response.headers = () => { throw new Error("header metadata unavailable"); };
+  const result = await readAuthorizationResponse(response);
+  assert.equal(result.payload.url, "https://download.example.test/part.3mf");
+});
+
 test("3MF coordinator falls back when the second response cannot be parsed", async () => {
   const first = fakeAuthorizationResponse({ status: 418, payload: { captchaId: "captcha-123" } });
   const second = fakeAuthorizationResponse({

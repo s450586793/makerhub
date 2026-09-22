@@ -1515,8 +1515,6 @@ def fetch_instance_3mf(
         or normalize_makerworld_source(url=api_url)
         or normalize_makerworld_source(url=api_host_hint)
     )
-    if candidates:
-        _wait_before_three_mf_download(f"获取下载地址 {inst_id}")
     if browser_authorization:
         candidate = candidates[0] if candidates else api_url or ""
         if not candidate:
