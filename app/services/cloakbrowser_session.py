@@ -465,8 +465,9 @@ def _profile_resource_name(platform: str, profile_id: str = "") -> str:
     return "cloakbrowser_manager"
 
 
-def _profile_activity_path(platform: str) -> Path:
-    return STATE_DIR / "cloakbrowser_activity" / f"{normalize_platform(platform)}.marker"
+def _profile_activity_path(platform: str, *, manual: bool = False) -> Path:
+    suffix = ".manual" if manual else ""
+    return STATE_DIR / "cloakbrowser_activity" / f"{normalize_platform(platform)}{suffix}.marker"
 
 
 def touch_profile_activity(
@@ -484,6 +485,11 @@ def touch_profile_activity(
             marker_path.write_text(str(detail or "").strip().lower()[:64], encoding="utf-8")
         if now is not None:
             os.utime(marker_path, (float(now), float(now)))
+        if str(detail or "").strip().lower() == "prepare-login":
+            manual_path = _profile_activity_path(platform, manual=True)
+            manual_path.touch(exist_ok=True)
+            if now is not None:
+                os.utime(manual_path, (float(now), float(now)))
     except OSError:
         pass
 
@@ -502,11 +508,21 @@ def profile_activity_detail(platform: str) -> str:
         return ""
 
 
-def _clear_profile_activity(platform: str) -> None:
+def _manual_profile_active(platform: str, *, idle_seconds: int, now: float) -> bool:
+    # 手动窗口的保留时间独立于后台抓取，避免 fetch 覆盖后提前回收。
     try:
-        _profile_activity_path(platform).unlink(missing_ok=True)
+        opened_at = _profile_activity_path(platform, manual=True).stat().st_mtime
     except OSError:
-        pass
+        return False
+    return idle_seconds <= 0 or now - opened_at < idle_seconds
+
+
+def _clear_profile_activity(platform: str) -> None:
+    for manual in (False, True):
+        try:
+            _profile_activity_path(platform, manual=manual).unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 @contextmanager
@@ -607,7 +623,11 @@ def stop_idle_profiles(
             idle_seconds=timeout,
             automation_idle_seconds=automation_timeout,
         )
-        if profile_timeout <= 0 or current_time - activity_at < profile_timeout:
+        if (
+            profile_timeout <= 0
+            or current_time - activity_at < profile_timeout
+            or _manual_profile_active(platform, idle_seconds=timeout, now=current_time)
+        ):
             continue
 
         with resource_slot(_profile_resource_name(platform, profile.id), detail="idle-stop"):
@@ -621,6 +641,7 @@ def stop_idle_profiles(
                 activity_at <= 0
                 or profile_timeout <= 0
                 or current_time - activity_at < profile_timeout
+                or _manual_profile_active(platform, idle_seconds=timeout, now=current_time)
             ):
                 continue
             current = _profile_from_payload(_request("GET", f"/api/profiles/{profile.id}"))
@@ -839,15 +860,18 @@ def _run_bridge_with_profile_recovery(
     timeout_seconds: int | None = None,
     allow_profile_restart: bool = True,
 ) -> tuple[CloakBrowserProfile, bool, dict[str, Any]]:
-    if allow_profile_restart and _profile_recovery_cooldown_active(running.id):
-        raise CloakBrowserUnavailable(
-            "指纹浏览器连接仍未恢复，profile 刚刚自动重启过，请稍后重试。"
-        )
     try:
-        return running, False, _run_bridge(payload, timeout_seconds=timeout_seconds)
+        result = _run_bridge(payload, timeout_seconds=timeout_seconds)
     except CloakBrowserBridgeError as exc:
         if not _is_transient_bridge_error(exc) or not allow_profile_restart:
             raise
+        if _profile_recovery_cooldown_active(running.id):
+            raise CloakBrowserUnavailable(
+                "指纹浏览器连接仍未恢复，profile 刚刚自动重启过，请稍后重试。"
+            ) from exc
+    else:
+        _clear_profile_recovery_attempt(running.id)
+        return running, False, result
 
     _mark_profile_recovery_attempt(running.id)
     try:
@@ -1380,6 +1404,7 @@ def prepare_browser_login(
             clean_platform,
             profile_id,
             proxy_config=proxy_config,
+            allow_recovery_restart=True,
         )
         target_url = makerworld_ticket_url(clean_platform, raw_cookie, proxy_config) or browser_login_url(clean_platform)
         action = "seed" if raw_cookie and target_url != browser_login_url(clean_platform) else "login"
