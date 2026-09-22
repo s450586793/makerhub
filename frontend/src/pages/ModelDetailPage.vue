@@ -10,11 +10,6 @@
   </section>
 
   <div v-else-if="detail" ref="detailRootRef" class="mw-detail-layout mw-detail-v2">
-    <form class="mw-detail-search" role="search" @submit.prevent="searchLibrary">
-      <Search :size="18" aria-hidden="true" />
-      <input v-model="searchQuery" type="search" aria-label="搜索模型库" placeholder="搜索模型、作者和标签">
-      <button type="submit" class="mw-icon-button" aria-label="搜索" title="搜索"><ArrowRight :size="18" /></button>
-    </form>
         <header class="mw-head mw-head--gallery mw-hero__head">
           <div class="mw-head__top">
             <RouterLink class="mw-icon-button mw-head__back" :to="detailBackTarget" aria-label="返回" title="返回"><ArrowLeft :size="20" /></RouterLink>
@@ -1095,7 +1090,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onErrorCaptured, onMounted, ref, shallowRef, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ArrowLeft, ArrowRight, ArrowUp, Bookmark, Box, ChevronDown, ChevronLeft, ChevronRight, Download, Expand, ExternalLink, Eye, FileBox, Layers, Pencil, Plus, Printer, Search, Share2, ThumbsUp, Trash2, X } from "@lucide/vue";
+import { ArrowLeft, ArrowUp, Bookmark, Box, ChevronDown, ChevronLeft, ChevronRight, Download, Expand, ExternalLink, Eye, FileBox, Layers, Pencil, Plus, Printer, Share2, ThumbsUp, Trash2, X } from "@lucide/vue";
 
 import ShareDialog from "../components/ShareDialog.vue";
 import ModelDetailAside from "../components/ModelDetailAside.vue";
@@ -1146,7 +1141,6 @@ const detailNavRef = ref(null);
 const profilePanelRef = ref(null);
 const machineStripRef = ref(null);
 const selectedMachine = ref("");
-const searchQuery = ref("");
 const activeSection = ref("detail-description");
 const detailNavStuck = ref(false);
 const attachmentFormOpen = ref(false);
@@ -1612,10 +1606,6 @@ const downloadAllFilename = computed(() => {
   const title = String(detail.value?.title || detail.value?.model_dir || "MakerHub模型").trim() || "MakerHub模型";
   return `${title}_所有文件.zip`;
 });
-
-function searchLibrary() {
-  router.push({ path: "/models", query: searchQuery.value.trim() ? { q: searchQuery.value.trim() } : {} });
-}
 
 function selectMachine(machine) {
   selectedMachine.value = machine;

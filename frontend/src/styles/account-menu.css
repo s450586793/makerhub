@@ -1,0 +1,260 @@
+.site-shell .page-shell.page-shell--account-header {
+  min-width: 0;
+  padding-top: 0;
+}
+
+.shell-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 0;
+  background: var(--bg);
+}
+
+.detail-page--makerworld-v2 .shell-topbar {
+  min-height: 66px;
+  background: #f7f7f7;
+}
+
+html[data-theme="dark"] .shell-topbar {
+  background: var(--bg);
+}
+
+.shell-topbar__nav,
+.shell-search button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+}
+
+.shell-topbar__nav:hover,
+.shell-search button:hover {
+  background: var(--surface-soft);
+}
+
+.shell-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 1088px;
+}
+
+.shell-search > svg {
+  position: absolute;
+  left: 16px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.shell-search input {
+  width: 100%;
+  min-width: 0;
+  height: 42px;
+  padding: 0 44px;
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+.shell-search button {
+  position: absolute;
+  right: 4px;
+  border-radius: 50%;
+}
+
+.account-menu {
+  position: relative;
+  flex: 0 0 auto;
+  margin-left: auto;
+  letter-spacing: 0;
+}
+
+.account-menu .user-launcher {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  padding: 2px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: none;
+}
+
+.account-menu .user-launcher:hover,
+.account-menu .user-launcher[aria-expanded="true"] {
+  background: var(--brand-soft);
+}
+
+.account-menu .user-launcher__avatar,
+.account-menu .user-menu__avatar {
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--brand);
+  color: #fff;
+}
+
+.account-menu .user-launcher__avatar {
+  width: 32px;
+  height: 32px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.account-menu__update-dot {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--bg);
+  border-radius: 50%;
+  background: var(--brand);
+}
+
+.account-menu .user-menu {
+  top: calc(100% + 8px);
+  right: 0;
+  bottom: auto;
+  left: auto;
+  width: 280px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 80px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 8px;
+  background: var(--surface-floating);
+  box-shadow: var(--shadow-2);
+}
+
+.account-menu .user-menu__header {
+  gap: 12px;
+  padding-bottom: 12px;
+}
+
+.account-menu .user-menu__header div {
+  min-width: 0;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
+.account-menu .user-menu__header strong {
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.account-menu .user-menu__header small {
+  line-height: 1.4;
+}
+
+.account-menu .user-menu__group {
+  gap: 2px;
+}
+
+.account-menu .user-menu__link {
+  gap: 10px;
+  min-height: 40px;
+  padding: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 14px;
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+}
+
+.account-menu .user-menu__link:hover {
+  background: var(--surface-soft);
+}
+
+.account-menu .user-menu__link svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.account-menu .user-menu__theme {
+  gap: 8px;
+  padding: 0 8px;
+}
+
+.account-menu .user-menu__section-title {
+  letter-spacing: 0;
+}
+
+.account-menu__versions {
+  display: grid;
+  gap: 8px;
+  padding: 12px 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.account-menu__version {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.account-menu__version strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--text);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.account-menu__version .is-update,
+.account-menu__version-link:hover strong {
+  color: var(--brand-strong);
+}
+
+.account-menu .user-menu__logout:disabled {
+  opacity: .56;
+  cursor: wait;
+}
+
+.account-menu__error {
+  margin: 0;
+  padding: 0 8px;
+  color: var(--danger);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.shell-topbar :is(a, button, input):focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+}
+
+@media (max-width: 600px) {
+  .shell-topbar {
+    gap: 8px;
+  }
+}

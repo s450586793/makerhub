@@ -33,49 +33,40 @@
           <RouterLink :class="navClass('/settings')" to="/settings" @click="closeSidebar">设置</RouterLink>
           <RouterLink :class="navClass('/logs')" to="/logs" @click="closeSidebar">日志</RouterLink>
         </nav>
+      </div>
+    </aside>
 
+    <main class="page-shell page-shell--account-header">
+      <header class="shell-topbar">
+        <button
+          v-if="!sidebarVisible"
+          class="shell-topbar__nav"
+          type="button"
+          title="显示导航栏"
+          aria-label="显示导航栏"
+          @click="toggleSidebar"
+        >
+          <PanelLeft :size="20" aria-hidden="true" />
+        </button>
+        <form v-if="route.name === 'model-detail'" class="shell-search" role="search" @submit.prevent="searchLibrary">
+          <Search :size="18" aria-hidden="true" />
+          <input v-model="searchQuery" type="search" aria-label="搜索模型库" placeholder="搜索模型、作者和标签">
+          <button type="submit" aria-label="搜索" title="搜索"><ArrowRight :size="18" aria-hidden="true" /></button>
+        </form>
         <UserMenu
           :display-name="user.displayName"
           :username="user.username"
           :avatar="user.avatarText"
           :theme-preference="appState.themePreference"
+          :app-version="appState.appVersion"
+          :latest-version="githubVersionText"
+          :update-available="appState.githubUpdateAvailable"
+          :logout-pending="logoutPending"
+          :error-message="accountError"
           @logout="handleLogout"
           @theme-change="handleThemeChange"
         />
-
-        <div class="sidebar-version">
-          <span class="sidebar-version__line">
-            <span class="sidebar-version__label">当前</span>
-            <span class="sidebar-version__value">{{ appState.appVersion ? `v${appState.appVersion}` : "读取中" }}</span>
-          </span>
-          <span class="sidebar-version__line">
-            <span class="sidebar-version__label">最新版本</span>
-            <RouterLink
-              class="sidebar-version__link"
-              :to="{ path: '/settings', query: { tab: 'system' } }"
-              title="打开系统更新设置"
-              @click="closeSidebar"
-            >
-              <span :class="['sidebar-version__value', appState.githubUpdateAvailable && 'is-update']">
-                {{ githubVersionText }}
-              </span>
-            </RouterLink>
-          </span>
-        </div>
-      </div>
-    </aside>
-
-    <main class="page-shell">
-      <button
-        v-if="!sidebarVisible"
-        class="shell-visibility-toggle"
-        type="button"
-        title="显示导航栏"
-        aria-label="显示导航栏"
-        @click="toggleSidebar"
-      >
-        显示
-      </button>
+      </header>
       <RouterView v-slot="{ Component, route: currentRoute }">
         <KeepAlive :max="5">
           <component
@@ -95,14 +86,20 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { RouterLink, RouterView, useRoute } from "vue-router";
+import { RouterLink, RouterView, useRoute, useRouter } from "vue-router";
+import { ArrowRight, PanelLeft, Search } from "@lucide/vue";
 
 import UserMenu from "../components/UserMenu.vue";
+import "../styles/account-menu.css";
 import { appState, currentUser, logoutSession, refreshVersionStatusInBackground, saveThemePreference } from "../lib/appState";
 import { getStoredModelReturnState, inferModelReturnContext, normalizeModelReturnContext } from "../lib/modelNavigation";
 
 
 const route = useRoute();
+const router = useRouter();
+const searchQuery = ref("");
+const logoutPending = ref(false);
+const accountError = ref("");
 const COMPACT_MEDIA_QUERY = "(max-width: 980px)";
 const logoUrl = "/static/img/makerhub-logo.png";
 const NAV_CONTEXT_ROOTS = {
@@ -198,11 +195,32 @@ function browserSessionStorage() {
 }
 
 async function handleThemeChange(preference) {
-  await saveThemePreference(preference);
+  accountError.value = "";
+  try {
+    await saveThemePreference(preference);
+  } catch {
+    accountError.value = "主题保存失败，请重试。";
+  }
 }
 
 async function handleLogout() {
-  await logoutSession();
+  if (logoutPending.value) {
+    return;
+  }
+  accountError.value = "";
+  logoutPending.value = true;
+  try {
+    await logoutSession();
+  } catch {
+    accountError.value = "退出失败，请重试。";
+  } finally {
+    logoutPending.value = false;
+  }
+}
+
+function searchLibrary() {
+  const query = searchQuery.value.trim();
+  router.push({ path: "/models", query: query ? { q: query } : {} });
 }
 
 function applyCompact(matches) {
@@ -256,6 +274,7 @@ function onWindowKeydown(event) {
 
 watch(() => route.fullPath, () => {
   closeSidebar();
+  searchQuery.value = "";
 });
 
 watch(sidebarVisible, (visible) => {

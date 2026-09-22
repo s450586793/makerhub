@@ -35,10 +35,6 @@ html[data-theme="dark"] .page-shell:has(.mw-detail-v2) { background: var(--bg); 
 .mw-detail-v2 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .mw-detail-v2 .mw-icon-button { width: 36px; height: 36px; padding: 0; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 6px; background: transparent; color: var(--mw-text); }
 .mw-detail-v2 .mw-icon-button:hover { background: var(--mw-soft); }
-.mw-detail-v2 .mw-detail-search { position: sticky; top: 0; z-index: 30; min-height: 66px; display: flex; gap: 12px; align-items: center; padding: 12px 0; background: var(--mw-page); }
-.mw-detail-v2 .mw-detail-search > svg { position: absolute; left: 16px; color: var(--mw-muted); }
-.mw-detail-v2 .mw-detail-search input { width: 100%; height: 42px; padding: 0 48px 0 44px; border: 1px solid var(--mw-line); border-radius: 24px; background: var(--mw-panel); color: var(--mw-text); font-size: 14px; }
-.mw-detail-v2 .mw-detail-search button { position: absolute; right: 6px; }
 .mw-detail-v2 .mw-head { display: block; grid-column: auto; margin: 0; padding: 8px 0 16px; background: transparent; border: 0; }
 .mw-detail-v2 .mw-head__top { display: flex; align-items: center; gap: 8px; min-height: 62px; }
 .mw-detail-v2 .mw-head__back { width: 28px; align-self: flex-start; margin-top: 0; }

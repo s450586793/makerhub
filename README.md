@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.20.4`
+> 当前版本：`v0.20.5`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -363,6 +363,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-09-22 · v0.20.5
+
+- 账号入口移到右上角圆形头像，菜单收纳个人信息、主题、版本和退出登录，详情页与搜索框同排。
+- 适配深浅色主题和手机布局，支持键盘操作、点击外部收起及更新提示。
+
 ### 2026-09-22 · v0.20.4
 
 - 修复 3MF 下载误点说明正文中的 Download 链接，避免重复打开模型页和授权超时。
@@ -375,14 +380,14 @@ npm --prefix frontend run build
 - 429 自动冷却，明确需要验证时暂停后续授权；点击“已验证”后恢复，保留现有并发和每日额度设置。
 - 短暂文件传输故障优先复用已取得的下载地址有限重试，减少重复授权；取消文件传输前的重复等待。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-09-21 · v0.20.2
 
 - 订阅来源后台刷新保留已加载卡片，修复加载完成后整批卡片被最后一页替换的问题；继续使用按页请求。
 - 返回页面时恢复对应页码，明确指定页码时避免复用其他页的缓存。
 - 新封面优先显示，接口暂时缺图时保留已有预览。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-09-16 · v0.20.1
 
