@@ -49,6 +49,7 @@ from app.services.task_runtime import task_attempt_count
 from app.services.state_events import publish_state_event
 from app.services.three_mf import (
     describe_three_mf_failure,
+    is_three_mf_download_prohibited,
     normalize_makerworld_source,
     normalize_three_mf_failure_state,
 )
@@ -2321,6 +2322,9 @@ class ArchiveTaskManager:
 
     def _enqueue_three_mf_stage_task_from_result(self, url: str, result: dict[str, Any], meta: dict[str, Any]) -> str:
         instances = result.get("instances") if isinstance(result.get("instances"), list) else []
+        instances = [item for item in instances if isinstance(item, dict) and not is_three_mf_download_prohibited(item)]
+        if not instances:
+            return ""
         task_id = self._enqueue_single_task(
             normalize_source_url(url),
             message="等待下载 3MF",
@@ -4464,6 +4468,7 @@ class ArchiveTaskManager:
                 )
 
         result = run_job()
+        crowdfunding_skipped = result.get("three_mf_skip_reason") == "crowdfunding"
 
         missing_items = []
         cleared_not_found_items = []
@@ -4528,7 +4533,7 @@ class ArchiveTaskManager:
                 url=account_model_url,
                 model_id=resolved_model_id,
             )
-        else:
+        elif not crowdfunding_skipped:
             account_gate_failure = _sync_account_health_for_archive_result(
                 platform=account_platform,
                 model_url=account_model_url,
@@ -4568,7 +4573,7 @@ class ArchiveTaskManager:
                         "source": account_platform,
                     },
                 )
-        elif browser_three_mf_authorization and (missing_3mf_retry or three_mf_download_task) and not missing_items:
+        elif not crowdfunding_skipped and browser_three_mf_authorization and (missing_3mf_retry or three_mf_download_task) and not missing_items:
             resumed_count = self._resume_paused_missing_3mf_retry_tasks_for_platform(account_platform)
             if resumed_count:
                 _log_archive(
@@ -4593,12 +4598,14 @@ class ArchiveTaskManager:
             invalidate_archive_snapshot("archive_worker_single_task_completed")
 
         three_mf_stage_enqueued = False
-        if defer_three_mf_download and isinstance(result.get("instances"), list) and result.get("instances"):
-            self._enqueue_three_mf_stage_task_from_result(url, result, meta)
-            three_mf_stage_enqueued = True
+        if not crowdfunding_skipped and defer_three_mf_download and isinstance(result.get("instances"), list) and result.get("instances"):
+            three_mf_stage_enqueued = bool(self._enqueue_three_mf_stage_task_from_result(url, result, meta))
 
         result_name = result.get("base_name") or result.get("work_dir") or ""
-        if three_mf_download_task or missing_3mf_retry:
+        if crowdfunding_skipped:
+            completion_event = "single_completed"
+            completion_message = f"归档完成：{result_name}，众筹模型已跳过 3MF 下载。"
+        elif three_mf_download_task or missing_3mf_retry:
             completion_event, completion_message = _three_mf_task_completion(result_name, missing_items)
         elif three_mf_stage_enqueued:
             completion_event = "single_metadata_completed"
@@ -4630,4 +4637,5 @@ class ArchiveTaskManager:
             three_mf_authorized=int(instance_stats.get("api_fetch") or 0),
             three_mf_downloaded=int(instance_stats.get("three_mf_downloaded") or 0),
             three_mf_existing=int(instance_stats.get("three_mf_existing") or 0),
+            three_mf_skip_reason=str(result.get("three_mf_skip_reason") or ""),
         )

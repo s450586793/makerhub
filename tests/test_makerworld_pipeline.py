@@ -85,8 +85,10 @@ def test_archive_pipeline_keeps_result_contract(tmp_path):
         "action",
         "model_id",
         "instances",
+        "three_mf_skip_reason",
         "stats",
     }
+    assert result["three_mf_skip_reason"] == ""
 
 
 def test_archive_pipeline_calls_browser_authorizer_at_most_once_per_instance():

@@ -32,6 +32,7 @@ _THREE_MF_FAILURE_PRIORITY = {
     "available": 0,
 }
 THREE_MF_NOT_DOWNLOADABLE_STATE = "not_downloadable"
+THREE_MF_CROWDFUNDING_MESSAGE = "众筹模型已跳过 3MF 下载，仅归档其他资料。"
 _THREE_MF_TRANSIENT_STATES = {
     "queued",
     "running",
@@ -193,9 +194,23 @@ def normalize_makerworld_source(source: Any = "", url: Any = "") -> str:
     return ""
 
 
+def is_crowdfunding_model(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("threeMfSkipReason") == "crowdfunding":
+        return True
+    paid = payload.get("paidSetting")
+    if isinstance(paid, dict) and str(paid.get("crowdfunding") or "").lower() in {"1", "true"}:
+        return True
+    project = payload.get("crowdfundingInfo")
+    return isinstance(project, dict) and _safe_int(project.get("projectId")) > 0
+
+
 def is_three_mf_download_prohibited(payload: Any) -> bool:
     if not isinstance(payload, dict):
         return False
+    if is_crowdfunding_model(payload):
+        return True
     if payload.get("threeMfDownloadAllowed") is False:
         return True
     if str(payload.get("downloadState") or "").strip().lower() == THREE_MF_NOT_DOWNLOADABLE_STATE:

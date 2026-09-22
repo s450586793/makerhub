@@ -74,8 +74,10 @@ from app.services.makerworld_parsers.comments import (
 from app.services.profile_rating import normalize_profile_rating
 from app.services.resource_limiter import resource_slot
 from app.services.three_mf import (
+    THREE_MF_CROWDFUNDING_MESSAGE,
     THREE_MF_NOT_DOWNLOADABLE_STATE,
     describe_three_mf_failure,
+    is_crowdfunding_model,
     is_three_mf_download_prohibited,
     is_three_mf_daily_download_limited,
     merge_three_mf_failure,
@@ -2756,6 +2758,12 @@ def fetch_instance_3mf(
                 "message": "指纹浏览器暂时无法完成 3MF 授权，将稍后自动重试。",
             }
         browser_payload = browser_result.get("payload") if isinstance(browser_result.get("payload"), dict) else {}
+        if browser_payload.get("code") == "MAKERHUB_CROWDFUNDING":
+            return "", "", candidate, {
+                "state": THREE_MF_NOT_DOWNLOADABLE_STATE,
+                "message": THREE_MF_CROWDFUNDING_MESSAGE,
+                "reason": "crowdfunding",
+            }
         verification_diagnostics = _normalized_auto_verification_diagnostics(browser_result.get("verification"))
         name, url = _extract_instance_download(browser_payload)
         if url:
@@ -3710,6 +3718,7 @@ def build_meta(
         "titleTranslated": design.get("titleTranslated") or "",
         "license": design.get("license") or "",
         "threeMfDownloadAllowed": not is_three_mf_download_prohibited(design),
+        "threeMfSkipReason": "crowdfunding" if is_crowdfunding_model(design) else "",
         "coverUrl": cover_url,
         "tags": design.get("tags") or [],
         "tagsOriginal": design.get("tagsOriginal") or [],
@@ -4805,6 +4814,8 @@ def rebuild_once(meta_path: Path, progress_callback=None, logger=None, build_off
     }
     reserved_instance_names: set[str] = set()
     for inst in instances:
+        if is_three_mf_download_prohibited(meta) or is_three_mf_download_prohibited(inst):
+            continue
         url = inst.get("downloadUrl")
         if not url:
             continue

@@ -609,7 +609,8 @@ function authorizationWaitError(error) {
 }
 
 export function threeMfDownloadActionScore(candidate = {}) {
-  if (!candidate.visible || candidate.disabled) return 0;
+  if (!candidate.visible || candidate.disabled || candidate.inDescription || candidate.target === "_blank") return 0;
+  if (/\/(?:models|crowdfunding)\//i.test(String(candidate.href || ""))) return 0;
   const ownText = [
     candidate.text,
     candidate.ariaLabel,
@@ -617,7 +618,8 @@ export function threeMfDownloadActionScore(candidate = {}) {
     candidate.testId,
     candidate.tracking,
   ].map((value) => String(value || "")).join(" ").replace(/\s+/g, " ").trim();
-  const signalText = [ownText, candidate.className, candidate.href]
+  if (/(?:\bstl\b|\bcad\b|\bpdf\b|\bimage\b|图片|附件)/i.test(ownText)) return 0;
+  const signalText = [ownText, candidate.className]
     .map((value) => String(value || ""))
     .join(" ");
   const contextText = String(candidate.contextText || "").replace(/\s+/g, " ").trim();
@@ -728,6 +730,11 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
       secondWaiterController?.abort();
       if (secondResponseOutcome) await secondResponseOutcome;
     }
+  } catch (error) {
+    if (error?.code === "MAKERHUB_CROWDFUNDING") {
+      return { status_code: 200, payload: { code: "MAKERHUB_CROWDFUNDING" } };
+    }
+    throw error;
   } finally {
     firstWaiterController.abort();
     await firstResponseOutcome;
@@ -743,6 +750,7 @@ async function findThreeMfDownloadButton(page, timeoutMs) {
     );
     let bestHandle = null;
     let bestScore = 0;
+    let crowdfunding = false;
     for (const handle of handles) {
       let candidate;
       try {
@@ -777,12 +785,25 @@ async function findThreeMfDownloadButton(page, timeoutMs) {
             ).slice(0, 256),
             className: String(element.className || "").slice(0, 256),
             href: String(element.getAttribute("href") || "").slice(0, 512),
+            target: element.getAttribute("target") || "",
+            inDescription: Boolean(element.closest(".rich_text_show, [class*='ck-content'], [data-testid='model-description']")),
             contextText: contextParts.join(" ").slice(0, 1536),
           };
         });
       } catch {
         await handle.dispose().catch(() => undefined);
         continue;
+      }
+      if (candidate.visible && !candidate.inDescription) {
+        try {
+          const link = new URL(candidate.href, page.url());
+          const current = new URL(page.url());
+          if (link.origin === current.origin
+            && /^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?crowdfunding\/\d+(?:-|\/|$)/i.test(link.pathname)
+            && /^(?:view\s+(?:the\s+)?project|查看项目|查看众筹项目|查看專案)$/i.test(String(candidate.text || "").trim())) {
+            crowdfunding = true;
+          }
+        } catch {}
       }
       const score = threeMfDownloadActionScore(candidate);
       if (score > bestScore) {
@@ -792,6 +813,11 @@ async function findThreeMfDownloadButton(page, timeoutMs) {
       } else {
         await handle.dispose().catch(() => undefined);
       }
+    }
+    if (crowdfunding && !bestHandle) {
+      const error = new Error("crowdfunding model skips 3MF archival");
+      error.code = "MAKERHUB_CROWDFUNDING";
+      throw error;
     }
     if (bestHandle) return bestHandle;
     await new Promise((resolve) => setTimeout(resolve, 500));

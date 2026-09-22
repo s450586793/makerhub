@@ -134,8 +134,10 @@ from app.services.makerworld_parsers.model import (
     unwrap_design_payload as _unwrap_design_payload,
 )
 from app.services.three_mf import (
+    THREE_MF_CROWDFUNDING_MESSAGE,
     THREE_MF_NOT_DOWNLOADABLE_STATE,
     describe_three_mf_failure,
+    is_crowdfunding_model,
     is_three_mf_daily_download_limited,
     is_three_mf_download_prohibited,
     merge_three_mf_failure,
@@ -2102,7 +2104,8 @@ def _archive_model(
                 url3mf = ""
             failure_info = {
                 "state": THREE_MF_NOT_DOWNLOADABLE_STATE,
-                "message": describe_three_mf_failure(THREE_MF_NOT_DOWNLOADABLE_STATE),
+                "message": THREE_MF_CROWDFUNDING_MESSAGE if is_crowdfunding_model(design)
+                else describe_three_mf_failure(THREE_MF_NOT_DOWNLOADABLE_STATE),
             }
         elif fake_three_mf_downloads_enabled() and not three_mf_fetch_paused:
             name3mf, url3mf, used_api_url, failure_info = dependencies.fetch_instance_3mf(
@@ -2187,6 +2190,9 @@ def _archive_model(
                     if str(failure_info.get("state") or "").strip() != "download_limited":
                         normalized_three_mf_skip_state = str(failure_info.get("state") or "").strip()
                     three_mf_skip_message = str((failure_info or {}).get("message") or three_mf_skip_message or "")
+        if failure_info.get("reason") == "crowdfunding":
+            design["threeMfSkipReason"] = "crowdfunding"
+            three_mf_download_prohibited = True
         failure_state = str((failure_info or {}).get("state") or "").strip()
         failure_message = str((failure_info or {}).get("message") or "").strip()
         verification_info = (failure_info or {}).get("verification") if isinstance((failure_info or {}).get("verification"), dict) else {}
@@ -2280,6 +2286,15 @@ def _archive_model(
         skipped_due_limit=skipped_due_limit,
     )
 
+    if is_crowdfunding_model(design):
+        # 页面入口可能比元数据更新，统一清除旧直链，保留已存在的本地文件。
+        for inst_record in inst_list:
+            inst_record.update(
+                downloadUrl="", downloadState=THREE_MF_NOT_DOWNLOADABLE_STATE,
+                downloadMessage=THREE_MF_CROWDFUNDING_MESSAGE,
+                threeMfSkipReason="crowdfunding",
+            )
+
     meta = build_meta(
         design,
         summary,
@@ -2354,6 +2369,7 @@ def _archive_model(
         "action": action,
         "model_id": design_id,
         "instances": inst_list,
+        "three_mf_skip_reason": "crowdfunding" if is_crowdfunding_model(design) else "",
         "stats": {
             "timings_ms": timings_ms,
             "comments": comments_bundle.get("assetStats") if isinstance(comments_bundle.get("assetStats"), dict) else {},

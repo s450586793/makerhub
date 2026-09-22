@@ -116,6 +116,65 @@ test("3MF download action scoring rejects disabled and unrelated download action
   }), 0);
 });
 
+test("3MF download discovery ignores model links in descriptions and selects the actual action", async () => {
+  const clicked = [];
+  const candidates = [
+    { text: "Download 3MF", className: "primaryButton", visible: false },
+    { text: "Download", href: "https://makerworld.com/fr/models/2684142#profileId-2973114", target: "_blank" },
+    { text: "Download 3MF", className: "primaryButton", inDescription: true },
+    { text: "Download 3MF", className: "primaryButton" },
+  ];
+  const page = fakeAuthorizationPage([fakeAuthorizationResponse()]);
+  page.$$ = async () => candidates.map((candidate, index) => ({
+    evaluate: async () => ({ visible: true, disabled: false, ...candidate }),
+    click: async () => { clicked.push(index); },
+    dispose: async () => {},
+  }));
+  await coordinateThreeMfAuthorization(page, { authorizationTimeout: 1000 });
+  assert.deepEqual(clicked, [3]);
+});
+
+test("3MF action scoring excludes navigation and non-3MF assets", () => {
+  for (const candidate of [
+    { text: "Download", href: "/en/models/2684142#profileId-1" },
+    { text: "Download model image", className: "primaryButton" },
+    { text: "Download STL", contextText: "Download 3MF", className: "primaryButton" },
+    { text: "Download 3MF", inDescription: true },
+    { text: "Download 3MF", href: "https://example.org/models/1", target: "_blank" },
+  ]) assert.equal(threeMfDownloadActionScore({ visible: true, ...candidate }), 0);
+});
+
+test("crowdfunding project entry skips authorization without clicking", async () => {
+  const lifecycle = [];
+  const page = fakeAuthorizationPage([], lifecycle);
+  page.url = () => "https://makerworld.com/en/models/2888275";
+  page.$$ = async () => [{
+    evaluate: async () => ({ visible: true, disabled: false, text: "View the project", href: "/en/crowdfunding/272-demo" }),
+    click: async () => { assert.fail("crowdfunding must not be clicked"); },
+    dispose: async () => {},
+  }];
+  const result = await coordinateThreeMfAuthorization(page, { authorizationTimeout: 1000 });
+  assert.equal(result.payload.code, "MAKERHUB_CROWDFUNDING");
+  assert.equal(result.payload.url, undefined);
+});
+
+test("a project recommendation does not suppress an available 3MF action", async () => {
+  const clicked = [];
+  const page = fakeAuthorizationPage([fakeAuthorizationResponse()]);
+  page.url = () => "https://makerworld.com/en/models/1";
+  page.$$ = async () => [
+    { text: "View the project", href: "/en/crowdfunding/272-demo" },
+    { text: "Download 3MF", className: "primaryButton" },
+  ].map((candidate, index) => ({
+    evaluate: async () => ({ visible: true, ...candidate }),
+    click: async () => { clicked.push(index); },
+    dispose: async () => {},
+  }));
+  const result = await coordinateThreeMfAuthorization(page, { authorizationTimeout: 1000 });
+  assert.equal(result.payload.name, "part.3mf");
+  assert.deepEqual(clicked, [1]);
+});
+
 function fakeFrame({ one = () => null, many = () => [], label = "frame" } = {}) {
   return {
     label,

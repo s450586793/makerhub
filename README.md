@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.20.3`
+> 当前版本：`v0.20.4`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -363,6 +363,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-09-22 · v0.20.4
+
+- 修复 3MF 下载误点说明正文中的 Download 链接，避免重复打开模型页和授权超时。
+- 众筹模型跳过 3MF，继续归档其他资料，完成后不再进入下载子任务或待补重试。
+- 已有众筹待补下次处理后移出列表；刷新不恢复旧下载地址，保留已有文件，不误报账号验证成功。
+
 ### 2026-09-22 · v0.20.3
 
 - 同账号 3MF 授权共享随机间隔，默认 5～10 秒；多个 Worker 和两种授权入口统一控制，国区、国际站独立计时。
@@ -375,14 +381,14 @@ npm --prefix frontend run build
 - 返回页面时恢复对应页码，明确指定页码时避免复用其他页的缓存。
 - 新封面优先显示，接口暂时缺图时保留已有预览。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-09-16 · v0.20.1
 
 - CloakBrowser 临时目录改用有容量上限的内存盘，减少 SSD 写入；登录资料继续持久保存。
 - 自动化可见标签记录归属，中断后按标签 ID 回收，保留用户手动打开的页面。
 - Worker 遇到数据库暂时不可用时保留队列并退避重试，恢复后继续处理，避免短暂拥堵导致进程退出。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-09-15 · v0.20.0
 

@@ -611,7 +611,10 @@ def _merge_instance_record(existing_item: dict[str, Any], fresh_item: dict[str, 
     # 源端刷新有时能拿到实例卡片信息，但拿不到 3MF 下载地址。
     # 这种情况下不能把本地已经存在的 3MF 元信息冲掉。
     if not str(merged.get("downloadUrl") or "").strip():
-        for field in ("downloadUrl", "fileName", "name", "apiUrl", "downloadState", "downloadMessage"):
+        fields = ("fileName", "name") if is_three_mf_download_prohibited(merged) else (
+            "downloadUrl", "fileName", "name", "apiUrl", "downloadState", "downloadMessage",
+        )
+        for field in fields:
             value = existing_item.get(field)
             if value not in ("", None):
                 merged[field] = copy.deepcopy(value)
