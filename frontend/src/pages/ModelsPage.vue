@@ -32,6 +32,16 @@
         </select>
       </label>
       <div class="filter-actions">
+        <button
+          :class="['button', 'model-library-refresh', hasUpdates ? 'button-primary' : 'button-secondary']"
+          type="button"
+          title="刷新模型库"
+          :disabled="refreshing"
+          @click="refreshLibrary"
+        >
+          <RefreshCw :size="16" aria-hidden="true" />
+          {{ refreshing ? "刷新中" : hasUpdates ? "有更新" : "刷新" }}
+        </button>
         <button class="button button-secondary" type="button" @click="resetFilters">重置</button>
         <button class="button button-secondary" type="button" @click="toggleSelectMode">
           {{ selectMode ? "取消选择" : "选择" }}
@@ -103,6 +113,7 @@
 <script setup>
 import { computed, nextTick, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import { RefreshCw } from "@lucide/vue";
 
 import ModelCard from "../components/ModelCard.vue";
 import ShareDialog from "../components/ShareDialog.vue";
@@ -141,6 +152,8 @@ const status = ref("");
 const loaded = ref(false);
 const deleting = ref(false);
 const loadingMore = ref(false);
+const refreshing = ref(false);
+const hasUpdates = ref(false);
 const loadMoreTrigger = ref(null);
 const selectMode = ref(false);
 const selectedModelDirSet = ref(new Set());
@@ -151,7 +164,8 @@ let loadMoreToken = 0;
 let deleteSettleToken = 0;
 let loadMoreAbortController = null;
 let unsubscribeArchiveEvents = null;
-let refreshWhenVisible = false;
+let displayedListKey = "";
+let archiveRevision = 0;
 let locallyHiddenDeletedModelDirs = new Set();
 
 const selectedModelDirs = computed(() => Array.from(selectedModelDirSet.value));
@@ -351,7 +365,7 @@ function routePage() {
   if (!Number.isFinite(page) || page <= 1) {
     return 1;
   }
-  return Math.min(page, 200);
+  return page;
 }
 
 function routeAnchor() {
@@ -376,8 +390,10 @@ function modelListCacheKey(page = routePage()) {
 }
 
 function rememberModelList() {
-  setPageCache(modelListCacheKey(payload.value.page), {
+  if (!displayedListKey) return;
+  setPageCache(displayedListKey, {
     payload: payload.value,
+    hasUpdates: hasUpdates.value,
   });
 }
 
@@ -388,7 +404,10 @@ async function renderLightModelListResponse(response, page) {
     items: incomingItems,
     count: incomingItems.length,
     page,
+    page_model_dirs: incomingItems.map((item) => item.model_dir),
   };
+  displayedListKey = modelListCacheKey(page);
+  hasUpdates.value = false;
   loaded.value = true;
   rememberModelList();
   await nextTick();
@@ -396,11 +415,14 @@ async function renderLightModelListResponse(response, page) {
 }
 
 async function hydrateModelListFromCache() {
-  const cached = getPageCache(modelListCacheKey());
+  const cacheKey = modelListCacheKey();
+  const cached = getPageCache(cacheKey);
   if (!cached?.payload) {
     return false;
   }
   payload.value = cached.payload;
+  displayedListKey = cacheKey;
+  hasUpdates.value = Boolean(cached.hasUpdates);
   loaded.value = true;
   loadingMore.value = false;
   syncFiltersFromRoute();
@@ -435,15 +457,18 @@ function buildModelReturnTo(modelDir) {
   }).fullPath;
 }
 
-async function load({ append = false, refresh = false } = {}) {
+async function load({ append = false, refresh = false, page = routePage() } = {}) {
   const currentToken = ++requestToken;
+  const initialArchiveRevision = archiveRevision;
   if (!append) {
     loadMoreToken += 1;
+    loadMoreAbortController?.abort();
+    disconnectObserver();
     loadingMore.value = false;
   }
   syncFiltersFromRoute();
 
-  const nextPage = append ? payload.value.page + 1 : routePage();
+  const nextPage = append ? payload.value.page + 1 : page;
   const cacheKeyBase = refresh ? Date.now() : "";
   const requestOptions = {
     cacheKey: cacheKeyBase ? `${cacheKeyBase}-${nextPage}` : "",
@@ -465,9 +490,13 @@ async function load({ append = false, refresh = false } = {}) {
       ...response,
       items: mergedItems,
       count: mergedItems.length,
+      page_model_dirs: (response.items || []).map((item) => item.model_dir),
     };
+    displayedListKey = modelListCacheKey(nextPage);
   } else {
     await renderLightModelListResponse(response, nextPage);
+    hasUpdates.value = archiveRevision !== initialArchiveRevision;
+    rememberModelList();
   }
   if (append) {
     loaded.value = true;
@@ -477,6 +506,7 @@ async function load({ append = false, refresh = false } = {}) {
   } else {
     await scrollToRouteAnchor();
   }
+  return true;
 }
 
 async function reloadVisiblePages({ refresh = false } = {}) {
@@ -499,12 +529,23 @@ async function reloadVisiblePages({ refresh = false } = {}) {
     return;
   }
 
-  payload.value = {
-    ...response,
-    items: response.items || [],
-    count: (response.items || []).length,
-    page: pagesToLoad,
-  };
+  const incomingItems = response.items || [];
+  const expectedIds = payload.value.page_model_dirs || payload.value.items.slice(-PAGE_SIZE).map((item) => item.model_dir);
+  const incomingIds = incomingItems.map((item) => item.model_dir);
+  const listChanged = JSON.stringify(expectedIds) !== JSON.stringify(incomingIds)
+    || Number(payload.value.filtered_total) !== Number(response.filtered_total);
+  if (listChanged) {
+    hasUpdates.value = true;
+  } else {
+    const updates = new Map(incomingItems.map((item) => [item.model_dir, item]));
+    payload.value = {
+      ...payload.value,
+      items: payload.value.items.map((item) => updates.get(item.model_dir) || item),
+      source_counts: response.source_counts,
+      total: response.total,
+      has_more: response.has_more,
+    };
+  }
   rememberModelList();
   await nextTick();
   ensureObserver();
@@ -601,9 +642,11 @@ async function refreshCurrentModelLibrary(anchor = null, options = {}) {
 }
 
 async function loadMore() {
-  if (!pageActive.value || loadingMore.value || !payload.value.has_more) {
+  if (!pageActive.value || refreshing.value || loadingMore.value || !payload.value.has_more) {
     return false;
   }
+  requestToken += 1;
+  modelsResource.cancel();
   const currentToken = ++loadMoreToken;
   const routeAtLoad = route.fullPath;
   const nextPage = Math.max(Number(payload.value.page) || 1, 1) + 1;
@@ -628,9 +671,12 @@ async function loadMore() {
       items: mergedItems,
       count: mergedItems.length,
       page: nextPage,
+      page_model_dirs: (response.items || []).map((item) => item.model_dir),
     };
+    displayedListKey = modelListCacheKey(nextPage);
     loaded.value = true;
     rememberModelList();
+    await router.replace({ path: "/models", query: buildRouteQuery({ page: nextPage, anchor: routeAnchor() }) });
     return true;
   } catch (error) {
     if (error?.name === "AbortError") {
@@ -693,6 +739,26 @@ function resetFilters() {
   router.replace("/models");
 }
 
+async function refreshLibrary() {
+  if (refreshing.value) return;
+  refreshing.value = true;
+  status.value = "";
+  const routeAtRefresh = route.fullPath;
+  try {
+    const applied = await load({ refresh: true, page: 1 });
+    if (!applied || !pageActive.value || route.fullPath !== routeAtRefresh) return;
+    selectedModelDirSet.value = new Set();
+    await router.replace({ path: "/models", query: buildRouteQuery() });
+    window.scrollTo({ top: 0, behavior: "auto" });
+  } catch (error) {
+    status.value = error instanceof Error ? error.message : "模型列表刷新失败。";
+  } finally {
+    refreshing.value = false;
+    await nextTick();
+    ensureObserver();
+  }
+}
+
 function isSelected(modelDir) {
   return selectedModelDirSet.value.has(String(modelDir || "").trim());
 }
@@ -746,6 +812,8 @@ function findModel(modelDir) {
 }
 
 function patchLocalFlag(modelDir, key, value) {
+  requestToken += 1;
+  modelsResource.cancel();
   payload.value = {
     ...payload.value,
     items: payload.value.items.map((item) => {
@@ -763,31 +831,17 @@ function patchLocalFlag(modelDir, key, value) {
       };
     }),
   };
+  rememberModelList();
 }
 
 function handleArchiveCompleted() {
   if (!pageActive.value) {
     return;
   }
-  if (document.hidden) {
-    refreshWhenVisible = true;
-    return;
-  }
-  void reloadVisiblePages();
-}
-
-function handleVisibilityChange() {
-  if (!pageActive.value) {
-    return;
-  }
-  if (document.hidden) {
-    return;
-  }
-  const shouldRefresh = refreshWhenVisible;
-  refreshWhenVisible = false;
-  if (shouldRefresh) {
-    void reloadVisiblePages();
-  }
+  archiveRevision += 1;
+  if (hasUpdates.value) return;
+  hasUpdates.value = true;
+  rememberModelList();
 }
 
 async function toggleFavorite(modelDir) {
@@ -855,6 +909,7 @@ async function deleteOne(modelDir) {
   const routeAtDelete = route.fullPath;
   locallyHiddenDeletedModelDirs.add(cleanModelDir);
   removeModelFromCurrentPayload(modelDir);
+  rememberModelList();
   status.value = "已从当前列表隐藏，正在后台删除。";
   void settleLoadMoreAfterDelete(routeAtDelete, currentDeleteSettleToken);
 
@@ -875,6 +930,7 @@ async function deleteOne(modelDir) {
     locallyHiddenDeletedModelDirs.delete(cleanModelDir);
     if (route.fullPath === routeAtDelete) {
       restoreModelToCurrentPayload(removedModel, originalIndex);
+      rememberModelList();
       await nextTick();
       ensureObserver();
       await restoreModelListAnchor(scrollAnchor);
@@ -901,6 +957,10 @@ async function restoreOne(modelDir) {
       },
     });
     status.value = response.message || "模型已恢复到模型库。";
+    if (filters.tag === "__local_deleted__") {
+      removeModelFromCurrentPayload(modelDir);
+      rememberModelList();
+    }
     await reloadVisiblePages();
   } catch (error) {
     patchLocalFlag(modelDir, "deleted", true);
@@ -908,23 +968,57 @@ async function restoreOne(modelDir) {
   }
 }
 
-watch(() => route.fullPath, () => {
-  if (!pageActive.value) {
+watch(() => route.fullPath, (_nextPath, previousPath) => {
+  if (!pageActive.value || route.name !== "models") {
+    return;
+  }
+  if (loaded.value && displayedListKey === modelListCacheKey()) {
+    if (String(router.resolve(previousPath).query.anchor || "") !== routeAnchor()) {
+      void scrollToRouteAnchor();
+    }
     return;
   }
   status.value = "";
-  void hydrateModelListFromCache();
-  void load({ append: false }).catch((error) => {
+  void showModelListForRoute().catch((error) => {
     status.value = error instanceof Error ? error.message : "模型列表加载失败。";
     loaded.value = true;
   });
 });
 
+async function showModelListForRoute({ revalidate = false } = {}) {
+  const routeAtLoad = route.fullPath;
+  if (loaded.value && displayedListKey === modelListCacheKey()) {
+    syncFiltersFromRoute();
+    await scrollToRouteAnchor();
+    if (revalidate && pageActive.value && route.fullPath === routeAtLoad) {
+      await reloadVisiblePages({ refresh: true });
+    }
+    return;
+  }
+  modelsResource.cancel();
+  requestToken += 1;
+  loadMoreToken += 1;
+  loadMoreAbortController?.abort();
+  loadingMore.value = false;
+  disconnectObserver();
+  selectedModelDirSet.value = new Set();
+  const cached = await hydrateModelListFromCache();
+  if (!pageActive.value || route.fullPath !== routeAtLoad) return;
+  if (cached) {
+    await reloadVisiblePages({ refresh: true });
+  } else {
+    displayedListKey = "";
+    hasUpdates.value = false;
+    loaded.value = false;
+    payload.value = { ...payload.value, items: [], page: routePage(), has_more: false };
+    await load({ append: false });
+  }
+}
+
 function startModelPageListeners() {
   if (typeof unsubscribeArchiveEvents !== "function") {
     unsubscribeArchiveEvents = subscribeArchiveCompletion(handleArchiveCompleted);
   }
-  document.addEventListener("visibilitychange", handleVisibilityChange);
 }
 
 function deactivatePage() {
@@ -935,28 +1029,19 @@ function deactivatePage() {
   loadMoreAbortController = null;
   disconnectObserver();
   loadingMore.value = false;
-  refreshWhenVisible = false;
   if (typeof unsubscribeArchiveEvents === "function") {
     unsubscribeArchiveEvents();
     unsubscribeArchiveEvents = null;
   }
-  document.removeEventListener("visibilitychange", handleVisibilityChange);
 }
 
 async function activatePage({ initial, isCurrent }) {
   const perf = initial ? createPagePerformanceTracker({ page: "models", route: () => route.fullPath }) : null;
-  if (initial) {
-    await hydrateModelListFromCache();
-  }
   if (!isCurrent()) {
     return;
   }
   try {
-    if (initial) {
-      await load({ append: false });
-    } else {
-      await reloadVisiblePages({ refresh: true });
-    }
+    await showModelListForRoute({ revalidate: true });
   } catch (error) {
     if (isCurrent()) {
       status.value = error instanceof Error ? error.message : "模型列表加载失败。";
@@ -975,6 +1060,13 @@ async function activatePage({ initial, isCurrent }) {
 </script>
 
 <style scoped>
+.model-library-filters .filter-actions .button.model-library-refresh {
+  width: 112px;
+  min-width: 112px;
+  flex: 0 0 112px;
+  gap: 6px;
+}
+
 @media (max-width: 760px) {
   .model-library-filters {
     grid-template-columns: repeat(3, minmax(0, 1fr));

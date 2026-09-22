@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.20.5`
+> 当前版本：`v0.20.6`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -363,6 +363,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-09-22 · v0.20.6
+
+- 模型库后台更新只显示“有更新”，点击刷新才重新排列卡片，刷新失败保留原列表。
+- 返回模型库时保留已加载页和定位，修复浏览中卡片整批跳变、多页缩回一页及浏览器后退恢复旧缓存的问题。
+
 ### 2026-09-22 · v0.20.5
 
 - 账号入口移到右上角圆形头像，菜单收纳个人信息、主题、版本和退出登录，详情页与搜索框同排。
@@ -374,14 +379,14 @@ npm --prefix frontend run build
 - 众筹模型跳过 3MF，继续归档其他资料，完成后不再进入下载子任务或待补重试。
 - 已有众筹待补下次处理后移出列表；刷新不恢复旧下载地址，保留已有文件，不误报账号验证成功。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-09-22 · v0.20.3
 
 - 同账号 3MF 授权共享随机间隔，默认 5～10 秒；多个 Worker 和两种授权入口统一控制，国区、国际站独立计时。
 - 429 自动冷却，明确需要验证时暂停后续授权；点击“已验证”后恢复，保留现有并发和每日额度设置。
 - 短暂文件传输故障优先复用已取得的下载地址有限重试，减少重复授权；取消文件传输前的重复等待。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-09-21 · v0.20.2
 
