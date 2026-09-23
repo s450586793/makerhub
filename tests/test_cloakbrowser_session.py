@@ -312,7 +312,6 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertRegex(source, r"fetch\([^;]+\{ headers \}\)")
         self.assertRegex(source, r"puppeteer\.connect\(\{[\s\S]+?headers,")
         self.assertIn('if (input.action === "click")', source)
-        self.assertIn("await button.click({ delay: 20 })", source)
         self.assertIn("authorizationResponseMatches(response, instanceId)", source)
         self.assertIn('client.send("Target.closeTarget", { targetId })', source)
         self.assertNotIn("async function fetchAuthorization", source)
@@ -1542,6 +1541,34 @@ class CloakBrowserSessionTest(unittest.TestCase):
         ensure_mock.assert_not_called()
         self.assertEqual(bridge_mock.call_count, 3)
         self.assertEqual(sleep_mock.call_args_list, [call(2.0), call(5.0)])
+
+    def test_browser_3mf_authorization_does_not_repeat_an_uncertain_download(self):
+        for message in (
+            "3MF authorization response timed out",
+            "Protocol error (Input.dispatchMouseEvent): Target closed",
+            "指纹浏览器 CDP 操作超时。",
+            "Connection closed",
+        ):
+            with self.subTest(message=message), \
+                    patch.object(cloakbrowser_session, "resource_slot", return_value=nullcontext()), \
+                    patch.object(cloakbrowser_session, "_run_bridge", side_effect=(
+                        cloakbrowser_session.CloakBrowserBridgeError(message)
+                    )) as bridge_mock, \
+                    patch.object(cloakbrowser_session.time, "sleep") as sleep_mock, \
+                    patch.dict(os.environ, {
+                        "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                        "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+                    }, clear=True):
+                with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserBridgeError, ".+"):
+                    cloakbrowser_session.browser_authorize_3mf_download(
+                        "global",
+                        "https://api.bambulab.com/v1/design-service/instance/123/f3mf",
+                        profile_id="profile-global",
+                        model_url="https://makerworld.com/en/models/456",
+                        instance_id="123",
+                    )
+                bridge_mock.assert_called_once()
+                sleep_mock.assert_not_called()
 
     def test_browser_3mf_authorization_reads_auto_verify_flag_per_operation(self):
         profile = cloakbrowser_session.CloakBrowserProfile(

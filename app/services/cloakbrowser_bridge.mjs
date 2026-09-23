@@ -610,7 +610,8 @@ function authorizationWaitError(error) {
 
 export function threeMfDownloadActionScore(candidate = {}) {
   if (!candidate.visible || candidate.disabled || candidate.inDescription || candidate.target === "_blank") return 0;
-  if (/\/(?:models|crowdfunding)\//i.test(String(candidate.href || ""))) return 0;
+  const href = String(candidate.href || "").trim();
+  if (href && href !== "#" && !/^javascript:void\(0\);?$/i.test(href)) return 0;
   const ownText = [
     candidate.text,
     candidate.ariaLabel,
@@ -638,6 +639,47 @@ export function threeMfDownloadActionScore(candidate = {}) {
   return 0;
 }
 
+function isStaleDownloadControlError(error) {
+  if (error?.clickDispatched) return false;
+  return /same JavaScript world|Execution context was destroyed|Cannot find context with specified id|Cannot find object with given id|Node is detached from document/i
+    .test(String(error?.message || ""));
+}
+
+function downloadControl(page, handle) {
+  return {
+    dispose: () => handle.dispose(),
+    async click({ signal, ...options }) {
+      // 在句柄所属上下文中读取坐标，避免 ElementHandle.click 再迁移到隔离上下文。
+      const point = await handle.evaluate((element) => {
+        if (!element.isConnected) throw new Error("Node is detached from document");
+        if (element.closest("[disabled], [aria-disabled='true']")) {
+          throw new Error("3MF download action is disabled");
+        }
+        element.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+        const rect = element.getBoundingClientRect();
+        const left = Math.max(0, rect.left);
+        const right = Math.min(window.innerWidth, rect.right);
+        const top = Math.max(0, rect.top);
+        const bottom = Math.min(window.innerHeight, rect.bottom);
+        if (right <= left || bottom <= top) throw new Error("3MF download action is not visible");
+        const x = (left + right) / 2;
+        const y = (top + bottom) / 2;
+        const target = document.elementFromPoint(x, y);
+        if (!target || !element.contains(target)) throw new Error("3MF download action is obscured");
+        return { x, y };
+      }, "download-click-point");
+      signal?.throwIfAborted();
+      try {
+        await page.mouse.click(point.x, point.y, options);
+      } catch (error) {
+        // 发出鼠标事件后无法确定网站是否已消费授权，不能重新点击。
+        error.clickDispatched = true;
+        throw error;
+      }
+    },
+  };
+}
+
 export async function coordinateThreeMfAuthorization(page, options = {}) {
   const authorizationTimeout = Math.max(Number(options.authorizationTimeout || 90000), 1);
   const navigationTimeout = Math.max(Number(options.navigationTimeout || 30000), 1);
@@ -646,16 +688,27 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
   const firstResponseOutcome = authorizationResponseOutcome(page, matcher, {
     timeout: authorizationTimeout,
     signal: firstWaiterController.signal,
+  }).then((outcome) => {
+    if (outcome.error) firstWaiterController.abort(authorizationWaitError(outcome.error));
+    return outcome;
   });
   try {
     const findButton = options.findButton || findThreeMfDownloadButton;
-    const button = await findButton(page, navigationTimeout);
-    try {
-      await button.click({ delay: 20 });
-    } finally {
+    for (let attempt = 0; ; attempt += 1) {
+      let button;
       try {
-        await button.dispose();
-      } catch {}
+        button = await findButton(page, navigationTimeout);
+        firstWaiterController.signal.throwIfAborted();
+        await button.click({ delay: 20, signal: firstWaiterController.signal });
+        break;
+      } catch (error) {
+        if (attempt >= 2 || !isStaleDownloadControlError(error)) throw error;
+      } finally {
+        try {
+          await button?.dispose();
+        } catch {}
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
     const firstOutcome = await firstResponseOutcome;
     if (!firstOutcome.response) throw authorizationWaitError(firstOutcome.error);
@@ -747,6 +800,7 @@ async function findThreeMfDownloadButton(page, timeoutMs) {
     const handles = await page.$$(
       "button, a, [role='button'], .primaryButton, [aria-label*='download' i], "
       + "[title*='download' i], [data-testid*='download' i], [class*='download' i]",
+      { isolate: false },
     );
     let bestHandle = null;
     let bestScore = 0;
@@ -757,6 +811,7 @@ async function findThreeMfDownloadButton(page, timeoutMs) {
         candidate = await handle.evaluate((element) => {
           const style = window.getComputedStyle(element);
           const rect = element.getBoundingClientRect();
+          const link = element.closest("a[href]");
           const contextParts = [];
           let current = element;
           for (let depth = 0; current && depth < 4; depth += 1, current = current.parentElement) {
@@ -784,8 +839,8 @@ async function findThreeMfDownloadButton(page, timeoutMs) {
               || "",
             ).slice(0, 256),
             className: String(element.className || "").slice(0, 256),
-            href: String(element.getAttribute("href") || "").slice(0, 512),
-            target: element.getAttribute("target") || "",
+            href: String(link?.getAttribute("href") || "").slice(0, 512),
+            target: link?.getAttribute("target") || "",
             inDescription: Boolean(element.closest(".rich_text_show, [class*='ck-content'], [data-testid='model-description']")),
             contextText: contextParts.join(" ").slice(0, 1536),
           };
@@ -819,7 +874,7 @@ async function findThreeMfDownloadButton(page, timeoutMs) {
       error.code = "MAKERHUB_CROWDFUNDING";
       throw error;
     }
-    if (bestHandle) return bestHandle;
+    if (bestHandle) return downloadControl(page, bestHandle);
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   throw new Error("model page did not expose an enabled 3MF download action");

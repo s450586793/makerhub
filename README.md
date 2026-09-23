@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.20.7`
+> 当前版本：`v0.20.8`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -363,6 +363,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-09-23 · v0.20.8
+
+- 下载控件排除搜索标签和导航链接，修复误点后授权一直超时的问题。
+- 避免下载点击中的浏览器 JavaScript 上下文错误；点击前失效控件有限重查，遮挡或禁用时不点击。
+- 授权响应超时、断连或监听过期后不盲目重复点击，减少无谓授权风险，保留现有并发、限额与账号状态规则。
+
 ### 2026-09-22 · v0.20.7
 
 - 修复手动打开指纹浏览器后被后台抓取覆盖使用时间、提前按 2 分钟回收的问题，保留原有空闲释放机制。
@@ -373,13 +379,13 @@ npm --prefix frontend run build
 - 模型库后台更新只显示“有更新”，点击刷新才重新排列卡片，刷新失败保留原列表。
 - 返回模型库时保留已加载页和定位，修复浏览中卡片整批跳变、多页缩回一页及浏览器后退恢复旧缓存的问题。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-09-22 · v0.20.5
 
 - 账号入口移到右上角圆形头像，菜单收纳个人信息、主题、版本和退出登录，详情页与搜索框同排。
 - 适配深浅色主题和手机布局，支持键盘操作、点击外部收起及更新提示。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-09-22 · v0.20.4
 

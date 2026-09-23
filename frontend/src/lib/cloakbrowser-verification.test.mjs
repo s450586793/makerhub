@@ -125,9 +125,10 @@ test("3MF download discovery ignores model links in descriptions and selects the
     { text: "Download 3MF", className: "primaryButton" },
   ];
   const page = fakeAuthorizationPage([fakeAuthorizationResponse()]);
+  page.mouse = { click: async (index) => { clicked.push(index); } };
   page.$$ = async () => candidates.map((candidate, index) => ({
-    evaluate: async () => ({ visible: true, disabled: false, ...candidate }),
-    click: async () => { clicked.push(index); },
+    evaluate: async (_fn, operation) => operation === "download-click-point"
+      ? { x: index, y: 30 } : { visible: true, disabled: false, ...candidate },
     dispose: async () => {},
   }));
   await coordinateThreeMfAuthorization(page, { authorizationTimeout: 1000 });
@@ -142,6 +143,110 @@ test("3MF action scoring excludes navigation and non-3MF assets", () => {
     { text: "Download 3MF", inDescription: true },
     { text: "Download 3MF", href: "https://example.org/models/1", target: "_blank" },
   ]) assert.equal(threeMfDownloadActionScore({ visible: true, ...candidate }), 0);
+});
+
+test("3MF discovery rejects tag search links even when their labels describe model downloads", () => {
+  for (const href of [
+    "/zh/search/models?keyword=tag:download",
+    "/en/collections/123",
+    "https://example.test/3mf",
+  ]) {
+    assert.equal(threeMfDownloadActionScore({
+      visible: true, text: "无 AMS 3D打印模型下载", href,
+    }), 0);
+  }
+});
+
+test("3MF download avoids Puppeteer isolated-world handle clicks", async () => {
+  const page = fakeAuthorizationPage([fakeAuthorizationResponse()]);
+  const clicks = [];
+  let disposed = false;
+  page.$$ = async (_selector, options) => {
+    if (options?.isolate !== false) {
+      throw new Error("Protocol error (Runtime.callFunctionOn): Argument should belong to the same JavaScript world as target object");
+    }
+    return [{
+      evaluate: async (_fn, operation) => operation === "download-click-point"
+        ? { x: 40, y: 30 }
+        : { visible: true, text: "Download 3MF", className: "primaryButton" },
+      click: async () => {
+        throw new Error("Protocol error (Runtime.callFunctionOn): Argument should belong to the same JavaScript world as target object");
+      },
+      dispose: async () => { disposed = true; },
+    }];
+  };
+  page.mouse = { click: async (...args) => clicks.push(args) };
+  const result = await coordinateThreeMfAuthorization(page, { authorizationTimeout: 1000 });
+  assert.equal(result.payload.name, "part.3mf");
+  assert.deepEqual(clicks, [[40, 30, { delay: 20 }]]);
+  assert.equal(disposed, true);
+});
+
+test("3MF coordinator reacquires a stale download control before any click is dispatched", async () => {
+  const page = fakeAuthorizationPage([fakeAuthorizationResponse()]);
+  let lookups = 0;
+  let clicks = 0;
+  let disposed = 0;
+  const result = await coordinateThreeMfAuthorization(page, {
+    authorizationTimeout: 1000,
+    findButton: async () => {
+      const attempt = ++lookups;
+      return {
+        click: async () => {
+          if (attempt === 1) throw new Error("Execution context was destroyed, most likely because of a navigation.");
+          clicks++;
+        },
+        dispose: async () => { disposed++; },
+      };
+    },
+  });
+  assert.equal(result.payload.name, "part.3mf");
+  assert.equal(lookups, 2);
+  assert.equal(clicks, 1);
+  assert.equal(disposed, 2);
+});
+
+test("3MF coordinator retries a cross-world query failure but bounds repeated failures", async () => {
+  const page = fakeAuthorizationPage([fakeAuthorizationResponse()]);
+  let lookups = 0;
+  await assert.rejects(coordinateThreeMfAuthorization(page, {
+    authorizationTimeout: 1000,
+    findButton: async () => {
+      lookups++;
+      throw new Error("Protocol error (Runtime.callFunctionOn): Argument should belong to the same JavaScript world as target object");
+    },
+  }), /same JavaScript world/);
+  assert.equal(lookups, 3);
+});
+
+test("3MF coordinator never repeats an uncertain mouse dispatch", async () => {
+  const page = fakeAuthorizationPage([fakeAuthorizationResponse()]);
+  let clicks = 0;
+  await assert.rejects(coordinateThreeMfAuthorization(page, {
+    findButton: async () => ({
+      click: async () => {
+        clicks++;
+        throw new Error("Protocol error (Input.dispatchMouseEvent): Target closed");
+      },
+      dispose: async () => {},
+    }),
+  }), /Target closed/);
+  assert.equal(clicks, 1);
+});
+
+test("3MF coordinator does not click after its response listener has already timed out", async () => {
+  const page = fakeAuthorizationPage([]);
+  let clicks = 0;
+  let disposed = 0;
+  await assert.rejects(coordinateThreeMfAuthorization(page, {
+    authorizationTimeout: 5,
+    findButton: async () => {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      return { click: async () => { clicks++; }, dispose: async () => { disposed++; } };
+    },
+  }), /authorization response timed out/);
+  assert.equal(clicks, 0);
+  assert.equal(disposed, 1);
 });
 
 test("crowdfunding project entry skips authorization without clicking", async () => {
@@ -162,12 +267,13 @@ test("a project recommendation does not suppress an available 3MF action", async
   const clicked = [];
   const page = fakeAuthorizationPage([fakeAuthorizationResponse()]);
   page.url = () => "https://makerworld.com/en/models/1";
+  page.mouse = { click: async (index) => { clicked.push(index); } };
   page.$$ = async () => [
     { text: "View the project", href: "/en/crowdfunding/272-demo" },
     { text: "Download 3MF", className: "primaryButton" },
   ].map((candidate, index) => ({
-    evaluate: async () => ({ visible: true, ...candidate }),
-    click: async () => { clicked.push(index); },
+    evaluate: async (_fn, operation) => operation === "download-click-point"
+      ? { x: index, y: 30 } : { visible: true, ...candidate },
     dispose: async () => {},
   }));
   const result = await coordinateThreeMfAuthorization(page, { authorizationTimeout: 1000 });

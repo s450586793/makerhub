@@ -34,6 +34,11 @@ AUTHORIZATION_TIMEOUT_SECONDS = 90
 AUTO_VERIFY_TIMEOUT_SECONDS = 50
 AUTHORIZATION_BRIDGE_CLEANUP_MARGIN_SECONDS = 40
 AUTHORIZATION_TRANSIENT_RETRY_DELAYS_SECONDS = (2.0, 5.0)
+AUTHORIZATION_SETUP_ERROR_MARKERS = (
+    "cdp endpoint returned http 5",
+    "指纹浏览器返回 http 5",
+    "network.enable timed out",
+)
 PROFILE_RECOVERY_COOLDOWN_SECONDS = 60
 GLOBAL_PROFILE_PROXY_CACHE_SECONDS = 30 * 60
 CLOAKBROWSER_IDLE_SECONDS_ENV = "MAKERHUB_CLOAKBROWSER_IDLE_SECONDS"
@@ -1305,9 +1310,10 @@ def browser_authorize_3mf_download(
                 _clear_profile_recovery_attempt(running.id)
                 break
             except CloakBrowserError as exc:
+                # 只重试明确发生在点击前的连接初始化故障；超时、断连可能已消耗授权。
                 if (
                     attempt >= len(AUTHORIZATION_TRANSIENT_RETRY_DELAYS_SECONDS)
-                    or not _is_transient_profile_error(exc)
+                    or not any(marker in str(exc).lower() for marker in AUTHORIZATION_SETUP_ERROR_MARKERS)
                 ):
                     raise
                 _mark_profile_recovery_attempt(clean_profile_id)
