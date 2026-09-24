@@ -1677,6 +1677,34 @@ html[data-theme="dark"] .organizer-progress-popover {
   margin-top: 8px;
 }
 
+.settings-surface {
+  min-width: 0;
+}
+
+.settings-surface .settings-tabs {
+  max-width: 100%;
+  flex-wrap: wrap;
+  border-radius: 8px;
+}
+
+.settings-panel--system.is-active {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 28rem), 1fr));
+  align-items: start;
+  gap: 24px;
+  overflow-wrap: anywhere;
+}
+
+.settings-panel--system > section,
+.settings-panel--system .field-card {
+  min-width: 0;
+}
+
+.settings-panel--system .section-card__header {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
 .system-update-card {
   display: grid;
   gap: 12px;

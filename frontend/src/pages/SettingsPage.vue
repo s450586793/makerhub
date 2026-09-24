@@ -8,7 +8,7 @@
     </div>
   </section>
 
-  <section class="surface">
+  <section class="surface settings-surface">
     <div class="settings-tabs">
       <button
         v-for="item in tabs"
@@ -702,8 +702,8 @@
       </form>
     </div>
 
-    <div v-show="activeTab === 'system'" class="settings-panel is-active">
-      <section class="token-card system-update-card">
+    <div v-show="activeTab === 'system'" class="settings-panel settings-panel--system is-active">
+      <section class="system-update-card">
         <div class="section-card__header">
           <div>
             <span class="eyebrow">系统</span>
@@ -796,32 +796,32 @@
           <code v-if="!systemUpdate.compose_migration_required" class="system-update-code">{{ manualUpdateCommand }}</code>
         </div>
 
-        <section class="system-update-changelog">
-          <div class="section-card__header">
-            <div>
-              <span class="eyebrow">更新日志</span>
-              <h2>最近版本记录</h2>
-            </div>
-            <span class="count-pill">{{ changelogEntries.length }} 条</span>
-          </div>
-          <p class="archive-form__hint">{{ changelogSummaryText }}</p>
-          <div v-if="changelogEntries.length" class="system-update-changelog__list">
-            <article v-for="entry in changelogEntries" :key="`${entry.date}-${entry.version}`" class="field-card system-update-changelog__entry">
-              <div class="system-update-changelog__head">
-                <strong>{{ entry.version ? `v${entry.version}` : "更新记录" }}</strong>
-                <span>{{ entry.date || "-" }}</span>
-              </div>
-              <ul class="system-update-changelog__items">
-                <li v-for="item in entry.items || []" :key="item">{{ item }}</li>
-              </ul>
-            </article>
-          </div>
-          <p v-else class="empty-copy">暂时还没有读取到线上更新日志。</p>
-        </section>
-
         <div class="form-footer">
           <span class="form-status">{{ statuses.system_update || systemUpdate.message || "当前还没有进行中的网页更新任务。" }}</span>
         </div>
+      </section>
+
+      <section class="system-update-changelog">
+        <div class="section-card__header">
+          <div>
+            <span class="eyebrow">更新日志</span>
+            <h2>最近版本记录</h2>
+          </div>
+          <span class="count-pill">{{ changelogEntries.length }} 条</span>
+        </div>
+        <p class="archive-form__hint">{{ changelogSummaryText }}</p>
+        <div v-if="changelogEntries.length" class="system-update-changelog__list">
+          <article v-for="entry in changelogEntries" :key="`${entry.date}-${entry.version}`" class="field-card system-update-changelog__entry">
+            <div class="system-update-changelog__head">
+              <strong>{{ entry.version ? `v${entry.version}` : "更新记录" }}</strong>
+              <span>{{ entry.date || "-" }}</span>
+            </div>
+            <ul class="system-update-changelog__items">
+              <li v-for="item in entry.items || []" :key="item">{{ item }}</li>
+            </ul>
+          </article>
+        </div>
+        <p v-else class="empty-copy">暂时还没有读取到线上更新日志。</p>
       </section>
     </div>
 
