@@ -1,13 +1,4 @@
 <template>
-  <section class="surface surface--filters page-intro settings-page-intro app-page-toolbar">
-    <div class="app-page-toolbar__copy">
-      <span class="eyebrow">设置</span>
-      <div class="app-page-toolbar__title-row">
-        <h1>系统、本地整理与用户配置</h1>
-      </div>
-    </div>
-  </section>
-
   <section class="surface settings-surface">
     <div class="settings-tabs">
       <button

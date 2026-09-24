@@ -16,6 +16,32 @@
   background: var(--bg);
 }
 
+.shell-topbar--with-title {
+  min-height: 84px;
+}
+
+.shell-topbar__title {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 16px;
+}
+
+.shell-topbar__title .eyebrow {
+  flex: 0 0 auto;
+}
+
+.shell-topbar__title h1 {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-size: 22px;
+  line-height: 1.3;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
 .detail-page--makerworld-v2 .shell-topbar {
   min-height: 66px;
   background: #f7f7f7;
@@ -256,5 +282,15 @@ html[data-theme="dark"] .shell-topbar {
 @media (max-width: 600px) {
   .shell-topbar {
     gap: 8px;
+  }
+
+  .shell-topbar__title {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .shell-topbar__title h1 {
+    font-size: 18px;
   }
 }

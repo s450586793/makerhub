@@ -1669,14 +1669,6 @@ html[data-theme="dark"] .organizer-progress-popover {
   min-height: 20px;
 }
 
-.settings-page-intro {
-  padding-block: 22px;
-}
-
-.settings-page-intro h1 {
-  margin-top: 8px;
-}
-
 .settings-surface {
   min-width: 0;
 }

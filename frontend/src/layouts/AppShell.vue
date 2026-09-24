@@ -37,7 +37,7 @@
     </aside>
 
     <main class="page-shell page-shell--account-header">
-      <header class="shell-topbar">
+      <header class="shell-topbar" :class="{ 'shell-topbar--with-title': route.name === 'settings' }">
         <button
           v-if="!sidebarVisible"
           class="shell-topbar__nav"
@@ -48,6 +48,10 @@
         >
           <PanelLeft :size="20" aria-hidden="true" />
         </button>
+        <div v-if="route.name === 'settings'" class="shell-topbar__title">
+          <span class="eyebrow">设置</span>
+          <h1>系统、本地整理与用户配置</h1>
+        </div>
         <form v-if="route.name === 'model-detail'" class="shell-search" role="search" @submit.prevent="searchLibrary">
           <Search :size="18" aria-hidden="true" />
           <input v-model="searchQuery" type="search" aria-label="搜索模型库" placeholder="搜索模型、作者和标签">
