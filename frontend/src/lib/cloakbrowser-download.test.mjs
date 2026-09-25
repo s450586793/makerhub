@@ -88,4 +88,31 @@ test("3MF browser interactions use local fixtures without real download requests
     assert.equal((await authorize(page)).payload.code, "MAKERHUB_CROWDFUNDING");
     assert.equal(requests.length, 0);
   });
+
+  await t.test("Cloudflare interstitial returns a verification result without a download click", async (t) => {
+    const { page, requests } = await fixture(t, `
+      <title>请稍候…</title><form id="challenge-form">
+      正在进行安全验证。本网站使用安全服务防护恶意自动程序。</form>`);
+    const result = await authorize(page);
+    assert.equal(result.status_code, 403);
+    assert.equal(result.payload.code, "MAKERHUB_CLOUDFLARE");
+    assert.equal(requests.length, 0);
+  });
+
+  await t.test("a transient Cloudflare check may finish before pausing the task", async (t) => {
+    const { page, requests } = await fixture(t, `
+      <title>Just a moment...</title><form id="challenge-form">Checking your browser</form>`);
+    const pending = authorize(page);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await page.setContent(download);
+    assert.equal((await pending).payload.name, "fixture.3mf");
+    assert.equal(requests.length, 1);
+  });
+
+  await t.test("Cloudflare mentioned in a model description does not block downloads", async (t) => {
+    const { page, requests } = await fixture(t, `
+      <title>Example model</title><div class="rich_text_show">Cloudflare: Just a moment...</div>${download}`);
+    assert.equal((await authorize(page)).payload.name, "fixture.3mf");
+    assert.equal(requests.length, 1);
+  });
 });

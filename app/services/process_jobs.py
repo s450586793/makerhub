@@ -212,6 +212,7 @@ def _run_archive_model_entry(queue, payload: dict[str, Any]) -> None:
                 browser_three_mf_authorization=bool(payload.get("browser_three_mf_authorization")),
                 browser_profile_id=str(payload.get("browser_profile_id") or ""),
                 instance_ids=payload.get("instance_ids") if isinstance(payload.get("instance_ids"), list) else None,
+                three_mf_only=bool(payload.get("three_mf_only")),
             )
         _emit_finished(queue, payload, "result", result)
     except Exception as exc:
@@ -451,6 +452,7 @@ def run_archive_model_job(
     browser_three_mf_authorization: bool = False,
     browser_profile_id: str = "",
     instance_ids: Optional[list[str]] = None,
+    three_mf_only: bool = False,
 ) -> dict[str, Any]:
     with resource_slot("makerworld_page_api", detail=normalize_source_url(url)):
         proxy_payload = _proxy_config_payload(proxy_config)
@@ -478,6 +480,7 @@ def run_archive_model_job(
                     browser_three_mf_authorization=bool(browser_three_mf_authorization),
                     browser_profile_id=str(browser_profile_id or ""),
                     instance_ids=instance_ids,
+                    three_mf_only=three_mf_only,
                 )
         return _run_process_job(
             _run_archive_model_entry,
@@ -503,6 +506,7 @@ def run_archive_model_job(
                 "browser_three_mf_authorization": bool(browser_three_mf_authorization),
                 "browser_profile_id": str(browser_profile_id or ""),
                 "instance_ids": instance_ids,
+                "three_mf_only": three_mf_only,
             },
             progress_callback=progress_callback,
             final_progress_timeout_seconds=_final_progress_timeout_seconds(),

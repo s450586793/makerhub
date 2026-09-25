@@ -1283,12 +1283,8 @@ def browser_authorize_3mf_download(
     page_url = _browser_model_page_url(model_url, clean_platform, clean_instance_id)
 
     with _profile_operation(clean_platform, clean_profile_id, detail="click"):
-        running = CloakBrowserProfile(
-            id=clean_profile_id,
-            name=PROFILE_NAMES[clean_platform],
-            status="running",
-            cdp_url=f"{_configured_url()}/api/profiles/{clean_profile_id}/cdp",
-        )
+        # 补下载不再先抓模型资料，授权入口自己唤醒 profile；点击失败后不重启。
+        _profile, running, _launched = _ensure_running_profile(clean_platform, clean_profile_id)
         for attempt in range(len(AUTHORIZATION_TRANSIENT_RETRY_DELAYS_SECONDS) + 1):
             try:
                 bridge_payload = _bridge_payload(

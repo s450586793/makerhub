@@ -539,6 +539,10 @@ def _derive_archive_subtasks(item: dict[str, Any], existing_subtasks: Any = None
     message = str(item.get("message") or "").strip()
     task_status = normalize_runtime_status(item.get("status"), "queued")
     current_stage = _normalize_archive_stage(item.get("archive_stage")) or _infer_archive_stage(progress, message)
+    meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+    three_mf_only = bool(meta.get("missing_3mf_retry") or meta.get("three_mf_download"))
+    if three_mf_only and current_stage not in {"three_mf", "finalize"}:
+        current_stage = "three_mf"
     current_index = _subtask_index(current_stage)
     stage_progress = item.get("archive_stage_progress")
     explicit_stage_progress = stage_progress is not None and str(stage_progress).strip() != ""
@@ -551,6 +555,8 @@ def _derive_archive_subtasks(item: dict[str, Any], existing_subtasks: Any = None
     subtasks: list[dict[str, Any]] = []
     for index, definition in enumerate(ARCHIVE_SUBTASK_DEFINITIONS):
         subtask_type = str(definition["type"])
+        if three_mf_only and subtask_type not in {"three_mf", "finalize"}:
+            continue
         previous = existing.get(subtask_type, {})
         subtask = {
             "type": subtask_type,

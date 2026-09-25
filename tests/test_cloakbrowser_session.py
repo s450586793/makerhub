@@ -1424,7 +1424,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
             priority=100,
         )
 
-    def test_browser_3mf_authorization_reuses_known_cdp_without_profile_lookup(self):
+    def test_browser_3mf_authorization_starts_profile_once_before_cdp_retries(self):
         profile = cloakbrowser_session.CloakBrowserProfile(
             id="profile-cn",
             name="MakerHub CN",
@@ -1479,7 +1479,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
 
         self.assertEqual(result["status_code"], 200)
         self.assertEqual(bridge_mock.call_count, 3)
-        ensure_mock.assert_not_called()
+        ensure_mock.assert_called_once_with("cn", "profile-cn")
         self.assertEqual(
             sleep_mock.call_args_list,
             [
@@ -1488,7 +1488,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
             ],
         )
 
-    def test_browser_3mf_authorization_exhausts_direct_cdp_retries_without_profile_lookup(self):
+    def test_browser_3mf_authorization_exhausts_cdp_retries_without_restarting_profile(self):
         profile = cloakbrowser_session.CloakBrowserProfile(
             id="profile-cn",
             name="MakerHub CN",
@@ -1538,7 +1538,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
                     instance_id="123",
                 )
 
-        ensure_mock.assert_not_called()
+        ensure_mock.assert_called_once_with("cn", "profile-cn")
         self.assertEqual(bridge_mock.call_count, 3)
         self.assertEqual(sleep_mock.call_args_list, [call(2.0), call(5.0)])
 
@@ -1551,6 +1551,9 @@ class CloakBrowserSessionTest(unittest.TestCase):
         ):
             with self.subTest(message=message), \
                     patch.object(cloakbrowser_session, "resource_slot", return_value=nullcontext()), \
+                    patch.object(cloakbrowser_session, "_ensure_running_profile", return_value=(
+                        None, cloakbrowser_session.CloakBrowserProfile(id="profile-global", name="Global", status="running"), False,
+                    )), \
                     patch.object(cloakbrowser_session, "_run_bridge", side_effect=(
                         cloakbrowser_session.CloakBrowserBridgeError(message)
                     )) as bridge_mock, \

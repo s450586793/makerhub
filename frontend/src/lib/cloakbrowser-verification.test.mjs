@@ -372,6 +372,7 @@ function fakeAuthorizationPage(responses, lifecycle = []) {
     fetch: forbidden("fetch"),
     goto: forbidden("goto"),
     reload: forbidden("reload"),
+    evaluate: async () => false,
     waitForResponse: (matcher, options = {}) => {
       lifecycle.push("waiter");
       const response = queue.shift();

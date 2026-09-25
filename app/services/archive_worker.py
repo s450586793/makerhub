@@ -702,7 +702,8 @@ def _sync_account_health_for_archive_result(
         }
     classified_failure = _preserve_browser_confirmation_gate(platform, classified_failure)
     try:
-        if three_mf_authorization_succeeded and classified_failure is not None:
+        if (three_mf_authorization_succeeded and classified_failure is not None
+                and classified_failure["status"] != "cloudflare"):
             mark_account_ok(
                 platform,
                 source="three_mf_authorization",
@@ -712,7 +713,7 @@ def _sync_account_health_for_archive_result(
             )
             return None
         if classified_failure is not None:
-            if direct_verification_failure:
+            if direct_verification_failure and classified_failure["status"] != "cloudflare":
                 try:
                     current = get_account_health(platform)
                 except Exception:
@@ -4332,6 +4333,9 @@ class ArchiveTaskManager:
 
     def _run_single_task(self, task_id: str, url: str, meta: Optional[dict] = None) -> None:
         meta = meta if isinstance(meta, dict) else {}
+        missing_3mf_retry = bool(meta.get("missing_3mf_retry"))
+        three_mf_download_task = bool(meta.get("three_mf_download"))
+        asset_lightweight_task = missing_3mf_retry or three_mf_download_task
         config = self.store.load()
         browser_platform = normalize_makerworld_source(meta.get("source"), url)
         browser_account = next(
@@ -4343,7 +4347,8 @@ class ArchiveTaskManager:
             None,
         )
         browser_session_changed = False
-        if browser_account is not None and str(getattr(browser_account, "browser_profile_id", "") or "").strip():
+        if (not asset_lightweight_task and browser_account is not None
+                and str(getattr(browser_account, "browser_profile_id", "") or "").strip()):
             refreshed_account, refresh_error = self._refresh_browser_session_for_task(browser_platform)
             if refresh_error:
                 raise RuntimeError(refresh_error)
@@ -4352,11 +4357,9 @@ class ArchiveTaskManager:
             ) != parse_cookie_values(getattr(browser_account, "cookie", "") or "")
             config = self.store.load()
         cookie = _select_cookie(url, config)
-        if not cookie:
+        if not cookie and not asset_lightweight_task:
             raise RuntimeError("未找到可用登录态，请在设置页完成指纹浏览器登录或配置兼容 Cookie。")
 
-        missing_3mf_retry = bool(meta.get("missing_3mf_retry"))
-        three_mf_download_task = bool(meta.get("three_mf_download"))
         browser_platform = normalize_makerworld_source(meta.get("source"), url)
         browser_profile_id = next(
             (
@@ -4371,8 +4374,9 @@ class ArchiveTaskManager:
         )
         browser_session_recovery = bool(meta.get("browser_session_recovery")) or browser_session_changed
         instance_ids = _clean_instance_ids(meta.get("instance_ids"))
-        archive_instance_ids = instance_ids if three_mf_download_task else []
-        asset_lightweight_task = missing_3mf_retry or three_mf_download_task
+        if missing_3mf_retry and not instance_ids and meta.get("instance_id"):
+            instance_ids = _clean_instance_ids([meta["instance_id"]])
+        archive_instance_ids = instance_ids if asset_lightweight_task else []
         default_asset_download = not asset_lightweight_task
         download_assets = _meta_bool(meta, "download_assets", default_asset_download)
         download_comment_assets = _meta_bool(
@@ -4410,7 +4414,7 @@ class ArchiveTaskManager:
                 model_id=model_id,
                 status="running",
                 message=(
-                    "每日上限未恢复，正在刷新模型元数据并跳过 3MF 下载。"
+                    "3MF 下载暂未放行，保留已有归档资源。"
                     if skip_three_mf_fetch
                     else "正在尝试重新下载 3MF"
                 ),
@@ -4465,6 +4469,7 @@ class ArchiveTaskManager:
                     browser_three_mf_authorization=browser_three_mf_authorization,
                     browser_profile_id=browser_profile_id,
                     instance_ids=archive_instance_ids,
+                    three_mf_only=asset_lightweight_task,
                 )
 
         result = run_job()
@@ -4522,9 +4527,14 @@ class ArchiveTaskManager:
         account_platform = normalize_makerworld_source(meta.get("source"), url)
         account_model_url = resolved_model_url
         account_instance_id = str(meta.get("instance_id") or "").strip()
+        instance_stats = ((result.get("stats") or {}).get("instances") or {})
+        processed_ids = instance_stats.get("processed_instance_ids")
+        health_missing_items = missing_items
+        if asset_lightweight_task and isinstance(processed_ids, list):
+            health_missing_items = [item for item in missing_items if item["instance_id"] in processed_ids]
         cookie_stale = _is_cookie_stale_for_platform(self.store, account_platform, cookie)
         account_gate_failure = None
-        if cookie_stale and _account_health_failure_from_missing_items(missing_items) is not None:
+        if cookie_stale and _account_health_failure_from_missing_items(health_missing_items) is not None:
             _log_archive(
                 "stale_cookie_result_ignored",
                 "任务运行期间 Cookie 已更新，跳过旧 Cookie 失败状态写回。",
@@ -4539,7 +4549,7 @@ class ArchiveTaskManager:
                 model_url=account_model_url,
                 model_id=resolved_model_id,
                 instance_id=account_instance_id,
-                missing_items=missing_items,
+                missing_items=health_missing_items,
                 missing_3mf_retry=missing_3mf_retry,
                 browser_session_recovery=browser_session_recovery,
                 three_mf_authorization_succeeded=(
@@ -4553,7 +4563,7 @@ class ArchiveTaskManager:
                 message=account_gate_failure.get("detail") or "",
             )
             gate_state = str(account_gate_failure.get("status") or "").strip().lower()
-            if gate_state in {"auth_required", "cookie_invalid", "verification_required", "cloudflare"}:
+            if gate_state in {"auth_required", "cookie_invalid", "verification_required"}:
                 blocked_instance_id = str(account_gate_failure.get("instance_id") or account_instance_id).strip()
                 blocked_item = next(
                     (

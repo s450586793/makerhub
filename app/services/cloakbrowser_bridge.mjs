@@ -787,6 +787,9 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
     if (error?.code === "MAKERHUB_CROWDFUNDING") {
       return { status_code: 200, payload: { code: "MAKERHUB_CROWDFUNDING" } };
     }
+    if (error?.code === "MAKERHUB_CLOUDFLARE") {
+      return { status_code: 403, payload: { code: "MAKERHUB_CLOUDFLARE" } };
+    }
     throw error;
   } finally {
     firstWaiterController.abort();
@@ -796,7 +799,27 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
 
 async function findThreeMfDownloadButton(page, timeoutMs) {
   const deadline = Date.now() + Math.max(Number(timeoutMs || 30000), 15000);
+  let challengeSince = null;
   while (Date.now() < deadline) {
+    const cloudflare = await page.evaluate(() => {
+      const title = document.title.trim();
+      const challengeTitle = /^(?:just a moment|attention required|请稍候|请稍等|請稍候)/i.test(title);
+      const challengeMarkup = document.querySelector(
+        "#challenge-form, #challenge-running, #cf-challenge-running, script[src*='/cdn-cgi/challenge-platform/']",
+      );
+      return Boolean(challengeTitle && challengeMarkup);
+    });
+    if (cloudflare) {
+      challengeSince ??= Date.now();
+      if (Date.now() - challengeSince < 5000) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        continue;
+      }
+      const error = new Error("model page requires Cloudflare verification");
+      error.code = "MAKERHUB_CLOUDFLARE";
+      throw error;
+    }
+    challengeSince = null;
     const handles = await page.$$(
       "button, a, [role='button'], .primaryButton, [aria-label*='download' i], "
       + "[title*='download' i], [data-testid*='download' i], [class*='download' i]",

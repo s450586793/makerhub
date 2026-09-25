@@ -2188,7 +2188,8 @@ class Missing3mfTest(unittest.TestCase):
             items = _build_missing_3mf_items(meta_path, updated_meta, resolved_files={"matches": {}})
             self.assertEqual(len(items), 1)
             self.assertEqual(items[0]["instance_id"], "profile-1")
-            self.assertIn("MakerWorld 需要验证", items[0]["message"])
+            self.assertIn("Cloudflare", items[0]["message"])
+            self.assertIn("已验证", items[0]["message"])
 
     def test_rebuild_reports_only_new_three_mf_files_as_downloaded(self):
         with tempfile.TemporaryDirectory() as temp_dir:

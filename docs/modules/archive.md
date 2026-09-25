@@ -54,6 +54,13 @@
 - `batch_discovery.py` 仅保留发现入口的兼容 re-export。`legacy_archiver.py` 仍保留离线页面重建、归档目录整理、归档入口 facade，以及迁移期兼容和既有 monkeypatch 测试所需的旧控制面实现；生产调用与控制面编排入口已迁到 `makerworld_pipeline/`，不得再新增对 legacy 控制面实现的生产依赖。
 - `AdvancedRuntimeConfig.scraping_engine` 在 `v0.17.0` 中只用于读取旧 JSON 和接受旧客户端请求，运行时忽略该字段且不提供可切换的抓取引擎。
 
+### 3MF 补下载
+
+- `three_mf_only` 由 3MF 子任务和缺失重试传入隔离进程，读取已有 `meta.json`，保留未选中配置及全部非 3MF 资料。资料缺失或损坏时明确要求重新归档，不自动退回全量爬取。
+- 本地文件已存在则跳过；已有文件直链优先通过静态下载器重试。超时、429、5xx 保留原直链，401/403/404/410 清除失效地址，并在当轮最多重新授权一次。
+- 新授权地址在文件传输前原子写入 `meta.json`；无直链时才由授权入口唤醒 CB 并打开模型页，不直接重放可能消耗次数的授权接口。每日限额、随机间隔及并发限制继续生效。
+- 持续的 Cloudflare 中间验证页返回结构化 `MAKERHUB_CLOUDFLARE`，暂停对应站点的 3MF Gate；不套用单配置验证码的隔离放行，也不通过反复同步 Cookie 恢复。验证完成后沿用“已验证”流程。
+
 ## 数据和目录
 
 - Postgres/JSON state:

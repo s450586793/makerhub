@@ -17,6 +17,11 @@ from app.services import three_mf_pacing
 SUCCESS = {"status_code": 200, "payload": {"name": "demo.3mf", "url": "https://cdn.example.test/demo.3mf"}}
 
 
+def running_profile(platform, profile_id):
+    profile = cloakbrowser_session.CloakBrowserProfile(id=profile_id, name=platform, status="running")
+    return profile, profile, False
+
+
 @pytest.fixture
 def authorization_environment(tmp_path):
     health = {"cn": {"three_mf_gate": "open"}, "global": {"three_mf_gate": "open"}}
@@ -30,6 +35,7 @@ def authorization_environment(tmp_path):
         return health[platform]
 
     with ExitStack() as stack:
+        stack.enter_context(patch.object(cloakbrowser_session, "_ensure_running_profile", side_effect=running_profile))
         stack.enter_context(patch.object(cloakbrowser_session, "STATE_DIR", tmp_path))
         stack.enter_context(patch.object(resource_limiter, "STATE_DIR", tmp_path))
         stack.enter_context(patch.object(account_health, "get_account_health", side_effect=lambda platform: health[platform]))
@@ -110,6 +116,18 @@ def test_rate_limit_cools_down_only_affected_account(authorization_environment):
     assert authorization_environment["cn"]["three_mf_gate"] == "open"
 
 
+def test_cloudflare_interstitial_stops_next_authorization_immediately(authorization_environment):
+    with patch.object(cloakbrowser_session, "_run_bridge", return_value={
+        "status_code": 403, "payload": {"code": "MAKERHUB_CLOUDFLARE"},
+    }) as bridge:
+        assert authorize()["status_code"] == 403
+        assert authorize(instance_id="124")["status_code"] == 418
+    assert bridge.call_count == 1
+    assert authorization_environment["cn"]["three_mf_gate"] == "verification_required"
+    assert "Cloudflare" in authorization_environment["cn"]["three_mf_detail"]
+    assert authorization_environment["global"]["three_mf_gate"] == "open"
+
+
 def test_transport_error_does_not_set_verification_gate(authorization_environment):
     with patch.object(cloakbrowser_session, "_run_bridge", side_effect=cloakbrowser_session.CloakBrowserError("bridge failed")):
         with pytest.raises(cloakbrowser_session.CloakBrowserError, match="bridge failed"):
@@ -147,6 +165,7 @@ def _process_authorization(state_dir, ready, start, output):
         return dict(SUCCESS)
 
     with patch.object(account_health, "get_account_health", return_value={"three_mf_gate": "open"}), \
+            patch.object(cloakbrowser_session, "_ensure_running_profile", side_effect=running_profile), \
             patch.object(cloakbrowser_session, "_run_bridge", side_effect=bridge):
         ready.put(True)
         assert start.wait(15)

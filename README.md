@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.20.10`
+> 当前版本：`v0.20.11`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -363,6 +363,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-09-25 · v0.20.11
+
+- 3MF 补下载直接复用已保存资料，只处理缺失配置，任务进度不再显示图片、附件等重复等待。
+- 优先复用文件直链，明确失效后每轮最多重新授权一次；传输前保存新地址，减少重复授权。
+- 持续的 CF 验证页明确提示浏览器验证并暂停补下载，不再泛化为 HTTP 错误。
+
 ### 2026-09-25 · v0.20.10
 
 - 设置页标题与右上角账号头像同排，减少顶部留白。
@@ -373,14 +379,14 @@ npm --prefix frontend run build
 - 设置页“容器更新”和“更新日志”在宽屏并排，手机或窄窗口自动上下排列。
 - 更新按钮、状态提示及长文本适配窄栏，保持深浅色主题兼容。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-09-23 · v0.20.8
 
 - 下载控件排除搜索标签和导航链接，修复误点后授权一直超时的问题。
 - 避免下载点击中的浏览器 JavaScript 上下文错误；点击前失效控件有限重查，遮挡或禁用时不点击。
 - 授权响应超时、断连或监听过期后不盲目重复点击，减少无谓授权风险，保留现有并发、限额与账号状态规则。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-09-22 · v0.20.7
 

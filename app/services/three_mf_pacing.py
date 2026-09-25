@@ -145,9 +145,10 @@ class ThreeMfAuthorizationAttempt:
                 temporary.unlink(missing_ok=True)
             except OSError:
                 pass
-        # 只同步授权接口的明确验证/额度响应，普通网络错误不关闭账号。
-        if not authorized and (daily_limit or status == 418 or payload.get("captchaId")):
-            failure = "download_limited" if daily_limit else "verification_required"
+        # 明确的页面验证也在释放浏览器锁前暂停后续授权，避免其他任务继续点击。
+        cloudflare = payload.get("code") == "MAKERHUB_CLOUDFLARE"
+        if not authorized and (daily_limit or cloudflare or status == 418 or payload.get("captchaId")):
+            failure = "download_limited" if daily_limit else "cloudflare" if cloudflare else "verification_required"
             try:
                 account_health.update_three_mf_gate(
                     self.platform,

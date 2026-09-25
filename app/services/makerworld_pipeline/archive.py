@@ -48,6 +48,7 @@ from app.services.legacy_archiver import (
     _comment_model_root,
     _comment_resource_stats,
     _download_asset_with_fresh_session,
+    _download_three_mf_file,
     _emit_stage_progress,
     _extract_auth_token,
     _existing_media_ref,
@@ -145,6 +146,7 @@ from app.services.three_mf import (
     normalize_three_mf_failure_state,
 )
 from app.services.three_mf_quota import reserve_three_mf_download_slot
+from app.services.resource_limiter import resource_slot
 
 def fetch_html_with_browser(session: requests.Session, url: str, raw_cookie: str) -> Optional[str]:
     cookie_header = sanitize_cookie_header(raw_cookie) or _session_cookie_header(session)
@@ -1383,6 +1385,11 @@ def _browser_three_mf_authorization_failure(
     payload: Optional[dict] = None,
     source: str = "",
 ) -> dict:
+    if isinstance(payload, dict) and payload.get("code") == "MAKERHUB_CLOUDFLARE":
+        return {
+            "state": "cloudflare",
+            "message": describe_three_mf_failure("cloudflare", source=source),
+        }
     failure = _classify_3mf_fetch_failure(
         status_code=status_code,
         text=text,
@@ -1663,6 +1670,163 @@ def archive_dependencies_with_overrides(**overrides: Callable[..., Any]) -> Arch
     return replace(DEFAULT_ARCHIVE_DEPENDENCIES, **overrides)
 
 
+def _retry_archived_three_mf(
+    *, url: str, cookie: str, root: Path, logs_dir: Path,
+    existing_model_dir: str, instance_ids: Optional[list[str]],
+    skip_three_mf_fetch: bool, three_mf_skip_state: str, three_mf_skip_message: str,
+    three_mf_daily_limit_cn: int, three_mf_daily_limit_global: int,
+    browser_three_mf_authorization: bool, browser_profile_id: str,
+    three_mf_captcha_result_header: str, record_missing_3mf_log: bool,
+    dependencies: ArchiveDependencies, progress_callback=None, logger=None,
+) -> dict:
+    model_id = _parse_design_id(url)
+    root = root.resolve()
+    base_name, action = choose_archive_base_name(model_id, "model", root, existing_model_dir)
+    work_dir = (root / base_name).resolve()
+    if not work_dir.is_relative_to(root):
+        raise RuntimeError("本地归档目录无效，请重新归档模型。")
+    meta = load_existing_meta(work_dir)
+    instances = meta.get("instances")
+    if (
+        action != "updated" or not model_id or str(meta.get("id") or "") != str(model_id)
+        or not isinstance(instances, list)
+        or any(not isinstance(item, dict) or not (item.get("id") or item.get("instanceId")) for item in instances)
+        or (meta.get("url") and normalize_makerworld_source(url=meta["url"]) != normalize_makerworld_source(url=url))
+    ):
+        raise RuntimeError("本地归档资料缺失或损坏，请重新归档模型后再补下载 3MF。")
+
+    meta_path = work_dir / "meta.json"
+    instances_dir = work_dir / "instances"
+    ensure_dir(instances_dir)
+    targets = {str(value).strip() for value in (instance_ids or []) if str(value).strip()}
+    source = normalize_makerworld_source(url=url)
+    parsed = urlparse(url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    stats = dict(total=len(instances), payload_hint=0, existing_hint=0, api_fetch_attempts=0,
+                 api_fetch=0, skipped_due_limit=0, three_mf_downloaded=0, three_mf_existing=0,
+                 processed_instance_ids=[])
+    started = time.perf_counter()
+    paused = bool(skip_three_mf_fetch)
+    failure = {"state": three_mf_skip_state or "pending_download", "message": three_mf_skip_message}
+    existing_files = {path.name for path in _list_directory_entries(instances_dir) if path.is_file()}
+    reserved_names = {str(item.get("fileName")) for item in instances if item.get("fileName")}
+
+    def local_file_exists(inst):
+        name = str(inst.get("fileName") or "")
+        return bool(name and Path(name).name == name and (instances_dir / name).is_file())
+
+    def save_meta():
+        # 先保存已取得的直链，进程中断后仍能复用，不必重复消耗授权。
+        temporary = meta_path.with_name(f"meta.json.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            temporary.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(meta_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    with requests.Session() as session:
+        session.cookies.update(parse_cookies(cookie))
+        for index, inst in enumerate(instances):
+            inst_id = str(inst.get("id") or inst.get("instanceId"))
+            if targets and inst_id not in targets:
+                continue
+            stats["processed_instance_ids"].append(inst_id)
+            if local_file_exists(inst):
+                stats["three_mf_existing"] += 1
+                inst.update(downloadState="", downloadMessage="")
+                continue
+            if is_three_mf_download_prohibited(meta) or is_three_mf_download_prohibited(inst):
+                continue
+            emit_progress(progress_callback, 55 + int(index * 22 / max(len(instances), 1)),
+                          "复用本地归档资料，正在补下载 3MF", {"archive_stage": "three_mf"})
+            if paused:
+                inst.update(downloadState=failure["state"], downloadMessage=failure.get("message", ""))
+                stats["skipped_due_limit"] += 1
+                continue
+            cached_url = str(inst.get("downloadUrl") or "").strip()
+            if _looks_like_instance_api_url(cached_url):
+                cached_url = ""
+                inst["downloadUrl"] = ""
+            if cached_url:
+                stats["existing_hint"] += 1
+            authorized = False
+            for attempt in range(2):
+                file_url = str(inst.get("downloadUrl") or "").strip()
+                if not file_url:
+                    quota = dependencies.reserve_three_mf_download_slot(
+                        source=source, url=url,
+                        limit=three_mf_daily_limit_global if source == "global" else three_mf_daily_limit_cn,
+                        model_id=str(model_id), model_url=url, instance_id=inst_id,
+                    )
+                    if not quota.get("allowed", True):
+                        failure = {"state": "download_limited", "message": str(quota.get("message") or "")}
+                        paused = True
+                        stats["skipped_due_limit"] += 1
+                        inst.update(downloadState=failure["state"], downloadMessage=failure["message"])
+                        break
+                    stats["api_fetch_attempts"] += 1
+                    name, file_url, api_url, failure = dependencies.fetch_instance_3mf(
+                        session, inst_id, cookie, str(inst.get("apiUrl") or ""), origin=origin,
+                        captcha_result_header=three_mf_captcha_result_header,
+                        browser_authorization=browser_three_mf_authorization,
+                        browser_profile_id=browser_profile_id, model_page_url=url,
+                    )
+                    authorized = True
+                    inst.update(downloadUrl=file_url, apiUrl=api_url or inst.get("apiUrl", ""),
+                                downloadState="" if file_url else failure.get("state", "missing"),
+                                downloadMessage="" if file_url else failure.get("message", ""))
+                    if name:
+                        inst["name"] = name
+                    if not file_url:
+                        verification = failure.get("verification")
+                        if isinstance(verification, dict) and verification.get("captcha_id"):
+                            inst["captchaId"] = verification["captcha_id"]
+                            inst["verification"] = verification
+                        paused = _should_pause_three_mf_fetch(failure)
+                        if failure.get("reason") == "crowdfunding":
+                            meta["threeMfSkipReason"] = "crowdfunding"
+                        break
+                    stats["api_fetch"] += 1
+                    save_meta()
+                inst["fileName"] = choose_unique_instance_filename(
+                    inst, instances, instances_dir, inst.get("name") or "",
+                    reserved_names=reserved_names - {str(inst.get("fileName") or "")},
+                    existing_files=existing_files,
+                )
+                reserved_names.add(inst["fileName"])
+                try:
+                    with resource_slot("three_mf_download", detail=inst["fileName"]):
+                        _download_three_mf_file(file_url, instances_dir / inst["fileName"], logger=logger)
+                except Exception as exc:
+                    _mark_instance_3mf_download_failed(inst, exc, logger=logger)
+                    if isinstance(exc, AssetDownloadError) and exc.status_code in {401, 403, 404, 410}:
+                        inst["downloadUrl"] = ""
+                        save_meta()
+                        if not authorized and attempt == 0:
+                            continue
+                    break
+                inst.update(downloadState="", downloadMessage="")
+                inst.pop("captchaId", None)
+                inst.pop("verification", None)
+                stats["three_mf_downloaded"] += 1
+                break
+            save_meta()
+
+    missing = [inst for inst in instances if not local_file_exists(inst)
+               and not is_three_mf_download_prohibited(meta) and not is_three_mf_download_prohibited(inst)]
+    save_meta()
+    if missing and record_missing_3mf_log:
+        _record_missing_3mf_summary(logs_dir, base_name, missing, logger=logger)
+    stats["missing_3mf"] = len(missing)
+    emit_progress(progress_callback, 100, "3MF 补下载结果已落盘", {"archive_stage": "finalize"})
+    return {
+        "base_name": base_name, "work_dir": str(work_dir), "action": "updated", "model_id": model_id,
+        "instances": instances, "missing_3mf": missing,
+        "three_mf_skip_reason": "crowdfunding" if is_crowdfunding_model(meta) else "",
+        "stats": {"instances": stats, "comments": {}, "timings_ms": {"total": (time.perf_counter() - started) * 1000}},
+    }
+
+
 def _archive_model(
     url: str,
     cookie: str,
@@ -1686,6 +1850,7 @@ def _archive_model(
     browser_three_mf_authorization: bool = False,
     browser_profile_id: str = "",
     instance_ids: Optional[list[str]] = None,
+    three_mf_only: bool = False,
     _dependencies: Optional[ArchiveDependencies] = None,
 ):
     """
@@ -1693,6 +1858,17 @@ def _archive_model(
     返回: {base_name, work_dir, missing_3mf, action}
     """
     dependencies = _dependencies or _current_archive_dependencies()
+    if three_mf_only:
+        return _retry_archived_three_mf(
+            url=url, cookie=cookie, root=existing_root or download_dir, logs_dir=logs_dir,
+            existing_model_dir=existing_model_dir, instance_ids=instance_ids,
+            skip_three_mf_fetch=skip_three_mf_fetch, three_mf_skip_state=three_mf_skip_state,
+            three_mf_skip_message=three_mf_skip_message,
+            three_mf_daily_limit_cn=three_mf_daily_limit_cn, three_mf_daily_limit_global=three_mf_daily_limit_global,
+            browser_three_mf_authorization=browser_three_mf_authorization, browser_profile_id=browser_profile_id,
+            three_mf_captcha_result_header=three_mf_captcha_result_header, record_missing_3mf_log=record_missing_3mf_log,
+            dependencies=dependencies, progress_callback=progress_callback, logger=logger,
+        )
     archive_started_at = time.perf_counter()
     timings_ms: dict[str, float] = {}
     # 采集阶段
@@ -2411,6 +2587,7 @@ def archive_model(
     browser_three_mf_authorization: bool = False,
     browser_profile_id: str = "",
     instance_ids: Optional[list[str]] = None,
+    three_mf_only: bool = False,
 ):
     return _archive_model(
         url=url,
@@ -2435,6 +2612,7 @@ def archive_model(
         browser_three_mf_authorization=browser_three_mf_authorization,
         browser_profile_id=browser_profile_id,
         instance_ids=instance_ids,
+        three_mf_only=three_mf_only,
     )
 
 

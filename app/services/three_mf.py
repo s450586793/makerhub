@@ -243,7 +243,7 @@ def _default_three_mf_failure_message(state: str, source: str) -> str:
     if state == "verification_required":
         return "MakerWorld 需要验证，前往官网任意下载一个模型。"
     if state == "cloudflare":
-        return "MakerWorld 需要验证，前往官网任意下载一个模型。"
+        return "模型页面被 Cloudflare 安全验证拦截，请打开对应站点的指纹浏览器完成验证，再点击“已验证”继续。"
     if state == "auth_required":
         if source == "global":
             return "国际区下载 3MF 需要有效登录态；如果最近出现验证页，请更新 global Cookie / token，必要时补充 cf_clearance。"
