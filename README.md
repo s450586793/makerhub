@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.20.11`
+> 当前版本：`v0.20.12`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -363,6 +363,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-10-03 · v0.20.12
+
+- MakerWorld 3MF 修改后可按模型 ID 并入原模型，按文件 SHA-256 去重，保留原文件、来源配置 ID 和模型资料。
+- 本地版本以上传文件名区分；归档文件缺失或无法读取时，不再仅凭配置 ID 跳过上传。
+
 ### 2026-09-25 · v0.20.11
 
 - 3MF 补下载直接复用已保存资料，只处理缺失配置，任务进度不再显示图片、附件等重复等待。
@@ -374,13 +379,13 @@ npm --prefix frontend run build
 - 设置页标题与右上角账号头像同排，减少顶部留白。
 - 窄屏标题自动换行，保留导航和账号操作，兼容深浅色主题。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-09-24 · v0.20.9
 
 - 设置页“容器更新”和“更新日志”在宽屏并排，手机或窄窗口自动上下排列。
 - 更新按钮、状态提示及长文本适配窄栏，保持深浅色主题兼容。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-09-23 · v0.20.8
 

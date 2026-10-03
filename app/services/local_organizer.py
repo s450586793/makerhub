@@ -47,6 +47,7 @@ ORGANIZER_MEMORY_RELEASE_INTERVAL_SECONDS = 5 * 60
 ORGANIZER_RECYCLE_RSS_MIB_ENV = "MAKERHUB_ORGANIZER_RECYCLE_RSS_MIB"
 DEFAULT_ORGANIZER_RECYCLE_RSS_MIB = 768
 ORGANIZER_LIBRARY_INDEX_CACHE_PATH = STATE_DIR / "organizer_library_index.json"
+ORGANIZER_LIBRARY_INDEX_VERSION = 2
 ORGANIZER_HASH_CHUNK_SIZE_BYTES = 512 * 1024
 ORGANIZER_HASH_PAUSE_EVERY_BYTES = 4 * 1024 * 1024
 ORGANIZER_HASH_PAUSE_SECONDS = 0.02
@@ -823,7 +824,7 @@ class LocalOrganizerService:
             return
 
         analysis = self._inspect_3mf(source_path)
-        duplicate_match = library_index["configs"].get(str(analysis.get("config_fingerprint") or "")) if analysis else None
+        duplicate_match = self._find_duplicate_config(library_index, analysis) if analysis else None
         model_match = self._match_existing_model(library_index["models"], analysis) if analysis else None
         deleted_model_dirs = set(self.task_store.load_model_flags().get("deleted") or [])
 
@@ -1332,9 +1333,6 @@ class LocalOrganizerService:
         )
 
     def _derive_config_fingerprint(self, analysis: dict[str, Any]) -> str:
-        design_profile_id = str(analysis.get("design_profile_id") or "").strip()
-        if design_profile_id:
-            return f"design_profile:{design_profile_id}"
         file_hash = str(analysis.get("file_hash") or "").strip()
         if file_hash:
             return file_hash if ":" in file_hash else f"sha256:{file_hash}"
@@ -1344,8 +1342,9 @@ class LocalOrganizerService:
         metadata = self._parse_3mf_metadata(source_path)
         design_model_id = str(metadata.get("DesignModelId") or "").strip()
         design_profile_id = str(metadata.get("DesignProfileId") or "").strip()
-        file_hash = ""
-        if not design_profile_id:
+        if design_profile_id:
+            file_hash = self._sha256_file(source_path)
+        else:
             file_hash = self._zip_manifest_signature(source_path) or self._sha256_file(source_path)
         model_title = str(metadata.get("Title") or source_path.stem).strip() or source_path.stem
         profile_title = str(metadata.get("ProfileTitle") or model_title).strip() or model_title
@@ -1363,6 +1362,35 @@ class LocalOrganizerService:
         analysis["model_key"] = self._derive_model_key(analysis)
         analysis["config_fingerprint"] = self._derive_config_fingerprint(analysis)
         return analysis
+
+    def _find_duplicate_config(
+        self,
+        library_index: dict[str, dict[str, dict[str, Any]]],
+        analysis: dict[str, Any],
+    ) -> Optional[dict[str, Any]]:
+        configs = library_index["configs"]
+        fingerprint = str(analysis.get("config_fingerprint") or "")
+        matched = configs.get(fingerprint)
+        if matched:
+            return matched
+
+        profile_id = str(analysis.get("design_profile_id") or "").strip()
+        legacy_match = configs.get(f"design_profile:{profile_id}") if profile_id else None
+        if not legacy_match:
+            return None
+
+        # 旧归档仅记录来源 ID，首次遇到同源上传时再读取原文件核对内容。
+        file_name = str(legacy_match.get("file_name") or "").strip()
+        model_root = legacy_match.get("model_root")
+        if not isinstance(model_root, Path) or not file_name or Path(file_name).name != file_name:
+            return None
+        archived_path = model_root / "instances" / file_name
+        try:
+            archived_fingerprint = f"sha256:{self._sha256_file(archived_path)}"
+        except OSError:
+            return None
+        configs[archived_fingerprint] = legacy_match
+        return legacy_match if archived_fingerprint == fingerprint else None
 
     def _build_library_index(self, library_root: Path) -> dict[str, dict[str, dict[str, Any]]]:
         models: dict[str, dict[str, Any]] = {}
@@ -1458,6 +1486,8 @@ class LocalOrganizerService:
 
         if not isinstance(payload, dict):
             return None
+        if payload.get("version") != ORGANIZER_LIBRARY_INDEX_VERSION:
+            return None
         if str(payload.get("root") or "") != root_key:
             return None
 
@@ -1497,6 +1527,7 @@ class LocalOrganizerService:
         self._set_library_index_cache(root_key, library_index, cached_at=timestamp)
 
         payload = {
+            "version": ORGANIZER_LIBRARY_INDEX_VERSION,
             "root": root_key,
             "cached_at": timestamp,
             "models": {
@@ -1589,12 +1620,12 @@ class LocalOrganizerService:
             config_fingerprint = str(local_import.get("configFingerprint") or "").strip()
 
             key = ""
-            if profile_id:
-                key = f"design_profile:{profile_id}"
-            elif config_fingerprint:
-                key = config_fingerprint
-            elif file_hash:
+            if file_hash:
                 key = file_hash if ":" in file_hash else f"sha256:{file_hash}"
+            elif config_fingerprint and not config_fingerprint.startswith("design_profile:"):
+                key = config_fingerprint
+            elif profile_id:
+                key = f"design_profile:{profile_id}"
 
             if not key:
                 continue
@@ -1609,6 +1640,7 @@ class LocalOrganizerService:
                         "instance_title": str(inst.get("title") or inst.get("name") or inst.get("fileName") or ""),
                         "instance_id": str(inst.get("id") or ""),
                         "profile_id": profile_id,
+                        "file_name": str(inst.get("fileName") or inst.get("name") or ""),
                     },
                 )
             )
@@ -1619,7 +1651,7 @@ class LocalOrganizerService:
             top_hash = str(local_import.get("fileHash") or "").strip()
             if top_hash:
                 top_key = top_hash if ":" in top_hash else f"sha256:{top_hash}"
-        if top_key:
+        if top_key and not top_key.startswith("design_profile:"):
             entries.append(
                 (
                     top_key,
@@ -2144,6 +2176,14 @@ class LocalOrganizerService:
             or analysis.get("source_title")
             or target_file.stem
         ).strip() or target_file.stem
+        design_profile_id = str(analysis.get("design_profile_id") or "").strip()
+        local_version = bool(design_profile_id) and any(
+            str(item.get("profileId") or _coerce_dict(item.get("localImport")).get("designProfileId") or "").strip()
+            == design_profile_id
+            for item in instances if isinstance(item, dict)
+        )
+        if local_version:
+            instance_title = _clean_title_candidate(original_filename) or instance_title
 
         instances.append(
             {
@@ -2162,7 +2202,7 @@ class LocalOrganizerService:
                 "plates": [],
                 "pictures": gallery_items,
                 "instanceFilaments": [],
-                "summary": "本地补充导入的 3MF 配置。",
+                "summary": f"基于 MakerWorld 配置 {design_profile_id} 的本地版本。" if local_version else "本地补充导入的 3MF 配置。",
                 "summaryTranslated": "",
                 "name": target_file.name,
                 "fileName": target_file.name,

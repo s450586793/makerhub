@@ -1,6 +1,10 @@
+import hashlib
+import json
 import os
+import time
 import unittest
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -15,6 +19,9 @@ class FakeTaskStore:
 
     def load_organize_tasks(self):
         return dict(self.payload)
+
+    def load_model_flags(self):
+        return {"deleted": []}
 
     def save_organize_tasks(self, payload):
         self.payload = dict(payload)
@@ -44,6 +51,154 @@ class FakeTaskStore:
 
 
 class LocalOrganizerTest(unittest.TestCase):
+    def _write_makerworld_3mf(self, path, settings=b'{"scale": 1}', *, profile_id="456"):
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr(
+                "3D/3dmodel.model",
+                '<model><metadata name="DesignModelId">123</metadata>'
+                f'<metadata name="DesignProfileId">{profile_id}</metadata>'
+                '<metadata name="Title">Model A</metadata>'
+                '<metadata name="ProfileTitle">Original profile</metadata><resources /></model>',
+            )
+            archive.writestr("Metadata/project_settings.config", settings)
+
+    @contextmanager
+    def _makerworld_library(self, *, legacy_local=False, original_available=True):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_dir = root / "source"
+            source_dir.mkdir()
+            library_root = root / "archive"
+            model_root = library_root / "Model_A"
+            (model_root / "instances").mkdir(parents=True)
+            original_path = model_root / "instances" / "original.3mf"
+            self._write_makerworld_3mf(original_path)
+            original_bytes = original_path.read_bytes()
+            original_instance = {
+                "id": "456", "profileId": "456", "title": "Original profile", "fileName": "original.3mf",
+            }
+            meta = {
+                "id": "123", "title": "Model A", "source": "makerworld",
+                "url": "https://makerworld.com/en/models/123",
+                "author": {"name": "Original author"}, "summary": {"text": "Original description"},
+                "cover": "images/cover.png", "instances": [original_instance],
+            }
+            if legacy_local:
+                legacy_import = {"designProfileId": "456", "configFingerprint": "design_profile:456", "fileHash": ""}
+                original_instance["localImport"] = dict(legacy_import)
+                meta["localImport"] = {**legacy_import, "designModelId": "123"}
+            if not original_available:
+                original_path.unlink()
+            (model_root / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+            task_store = FakeTaskStore()
+            service = local_organizer.LocalOrganizerService(store=SimpleNamespace(), task_store=task_store)
+            with patch.object(local_organizer, "ARCHIVE_DIR", library_root), \
+                    patch.object(local_organizer, "ORGANIZER_LIBRARY_INDEX_CACHE_PATH", root / "index.json"), \
+                    patch.object(local_organizer, "_append_organizer_log"), \
+                    patch.object(local_organizer, "invalidate_archive_snapshot"), \
+                    patch.object(local_organizer, "upsert_archive_snapshot_model"), \
+                    patch.object(local_organizer, "_confirm_model_visible_in_snapshot", return_value=True):
+                yield service, task_store, source_dir, library_root, model_root, meta, original_bytes
+
+    def test_modified_makerworld_3mf_is_appended_and_duplicate_upload_is_skipped(self):
+        with self._makerworld_library() as (service, tasks, source, library, model, original_meta, original_bytes):
+            for filename, settings in [("hole-enlarged.3mf", b'{"scale": 2}'), ("petg-optimized.3mf", b'{"material": "PETG"}')]:
+                candidate = source / filename
+                self._write_makerworld_3mf(candidate, settings)
+                service.process_candidate(source_path=candidate, source_dir=source, library_root=library, move_files=False)
+                self.assertEqual(tasks.payload["items"][0]["status"], "success")
+
+            meta = json.loads((model / "meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(meta["instances"]), 3)
+            self.assertEqual(meta["instances"][0], original_meta["instances"][0])
+            for field in ("title", "source", "url", "author", "summary", "cover"):
+                self.assertEqual(meta[field], original_meta[field])
+            self.assertEqual((model / "instances" / "original.3mf").read_bytes(), original_bytes)
+            for instance, filename in zip(meta["instances"][1:], ("hole-enlarged.3mf", "petg-optimized.3mf")):
+                self.assertEqual(instance["title"], Path(filename).stem)
+                self.assertIn("本地", instance["summary"])
+                self.assertEqual((model / "instances" / instance["fileName"]).read_bytes(), (source / filename).read_bytes())
+                self.assertEqual(instance["localImport"]["designProfileId"], "456")
+                digest = hashlib.sha256((source / filename).read_bytes()).hexdigest()
+                self.assertEqual(instance["localImport"]["configFingerprint"], f"sha256:{digest}")
+
+            service.release_idle_memory(force=True)
+            duplicate = source / "renamed-copy.3mf"
+            duplicate.write_bytes((source / "hole-enlarged.3mf").read_bytes())
+            service.process_candidate(source_path=duplicate, source_dir=source, library_root=library, move_files=True)
+            self.assertEqual(tasks.payload["items"][0]["status"], "skipped")
+            self.assertFalse(duplicate.exists())
+            self.assertEqual(len(list((model / "instances").glob("*.3mf"))), 3)
+
+    def test_identical_makerworld_3mf_is_skipped_for_remote_and_legacy_local_archives(self):
+        for legacy_local in (False, True):
+            with self.subTest(legacy_local=legacy_local), self._makerworld_library(legacy_local=legacy_local) as fixture:
+                service, tasks, source, library, model, _, original_bytes = fixture
+                candidate = source / "renamed-original.3mf"
+                candidate.write_bytes(original_bytes)
+                service.process_candidate(source_path=candidate, source_dir=source, library_root=library, move_files=False)
+                self.assertEqual(tasks.payload["items"][0]["status"], "skipped")
+                self.assertEqual(len(list((model / "instances").glob("*.3mf"))), 1)
+
+    def test_missing_archived_3mf_does_not_prove_duplicate(self):
+        with self._makerworld_library(original_available=False) as fixture:
+            service, tasks, source, library, model, _, original_bytes = fixture
+            candidate = source / "recovered.3mf"
+            candidate.write_bytes(original_bytes)
+            service.process_candidate(source_path=candidate, source_dir=source, library_root=library, move_files=False)
+            self.assertEqual(tasks.payload["items"][0]["status"], "success")
+            self.assertEqual(len(list((model / "instances").glob("*.3mf"))), 1)
+
+    def test_modified_makerworld_3mf_merges_into_legacy_local_archive(self):
+        with self._makerworld_library(legacy_local=True) as fixture:
+            service, tasks, source, library, model, _, original_bytes = fixture
+            candidate = source / "modified.3mf"
+            self._write_makerworld_3mf(candidate, b'{"scale": 2}')
+            service.process_candidate(source_path=candidate, source_dir=source, library_root=library, move_files=False)
+            self.assertEqual(tasks.payload["items"][0]["status"], "success")
+            self.assertEqual(len(list((model / "instances").glob("*.3mf"))), 2)
+            self.assertEqual((model / "instances" / "original.3mf").read_bytes(), original_bytes)
+
+    def test_unreadable_archived_3mf_does_not_prove_duplicate(self):
+        with self._makerworld_library() as fixture:
+            service, tasks, source, library, model, _, original_bytes = fixture
+            candidate = source / "recovered.3mf"
+            candidate.write_bytes(original_bytes)
+            original_sha256 = service._sha256_file
+
+            def hash_readable_upload(path):
+                if path.parent == model / "instances":
+                    raise PermissionError("archive unavailable")
+                return original_sha256(path)
+
+            with patch.object(service, "_sha256_file", side_effect=hash_readable_upload):
+                service.process_candidate(source_path=candidate, source_dir=source, library_root=library, move_files=False)
+            self.assertEqual(tasks.payload["items"][0]["status"], "success")
+            self.assertEqual(len(list((model / "instances").glob("*.3mf"))), 2)
+
+    def test_modified_makerworld_3mf_respects_deleted_model_flag(self):
+        with self._makerworld_library() as fixture:
+            service, tasks, source, library, model, _, _ = fixture
+            candidate = source / "modified.3mf"
+            self._write_makerworld_3mf(candidate, b'{"scale": 2}')
+            with patch.object(tasks, "load_model_flags", return_value={"deleted": ["Model_A"]}):
+                service.process_candidate(source_path=candidate, source_dir=source, library_root=library, move_files=False)
+            self.assertEqual(tasks.payload["items"][0]["status"], "skipped")
+            self.assertEqual(len(list((model / "instances").glob("*.3mf"))), 1)
+
+    def test_legacy_library_index_cache_is_rebuilt_before_content_comparison(self):
+        with self._makerworld_library() as fixture:
+            service, tasks, source, library, model, _, _ = fixture
+            local_organizer.ORGANIZER_LIBRARY_INDEX_CACHE_PATH.write_text(json.dumps({
+                "root": library.resolve().as_posix(), "cached_at": time.time(), "models": {},
+                "configs": {"design_profile:456": {"model_dir": "Model_A", "model_root": model.as_posix()}},
+            }), encoding="utf-8")
+            candidate = source / "modified.3mf"
+            self._write_makerworld_3mf(candidate, b'{"scale": 2}')
+            service.process_candidate(source_path=candidate, source_dir=source, library_root=library, move_files=False)
+            self.assertEqual(tasks.payload["items"][0]["status"], "success")
+            self.assertEqual(len(list((model / "instances").glob("*.3mf"))), 2)
+
     def test_candidate_poll_only_saves_when_queue_changes(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
