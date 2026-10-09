@@ -32,7 +32,7 @@ from app.services.local_import_upload import (
 )
 from app.services.process_memory import process_rss_mib, release_process_memory
 from app.services.task_state import TaskStateStore, _normalize_organize_tasks
-from app.services.three_mf import parse_3mf_metadata
+from app.services.three_mf import normalize_makerworld_source, parse_3mf_metadata
 
 
 ORGANIZER_LOG_PATH = LOGS_DIR / "organizer.log"
@@ -47,7 +47,7 @@ ORGANIZER_MEMORY_RELEASE_INTERVAL_SECONDS = 5 * 60
 ORGANIZER_RECYCLE_RSS_MIB_ENV = "MAKERHUB_ORGANIZER_RECYCLE_RSS_MIB"
 DEFAULT_ORGANIZER_RECYCLE_RSS_MIB = 768
 ORGANIZER_LIBRARY_INDEX_CACHE_PATH = STATE_DIR / "organizer_library_index.json"
-ORGANIZER_LIBRARY_INDEX_VERSION = 2
+ORGANIZER_LIBRARY_INDEX_VERSION = 3
 ORGANIZER_HASH_CHUNK_SIZE_BYTES = 512 * 1024
 ORGANIZER_HASH_PAUSE_EVERY_BYTES = 4 * 1024 * 1024
 ORGANIZER_HASH_PAUSE_SECONDS = 0.02
@@ -1608,13 +1608,33 @@ class LocalOrganizerService:
                 return {**matched, "match_key": model_key}
         return None
 
+    def _instance_source_profile_id(self, meta: dict[str, Any], instance: dict[str, Any]) -> str:
+        local_import = _coerce_dict(instance.get("localImport"))
+        for value in (
+            instance.get("profileId"),
+            instance.get("profile_id"),
+            instance.get("profileID"),
+            local_import.get("designProfileId"),
+        ):
+            profile_id = str(value or "").strip()
+            if profile_id:
+                return profile_id
+
+        instance_id = str(instance.get("id") or "").strip()
+        if not instance_id.isascii() or not instance_id.isdigit() or int(instance_id) <= 0:
+            return ""
+        source = str(meta.get("source") or "").strip().lower()
+        if source == "makerworld" or normalize_makerworld_source(source=source, url=meta.get("url")):
+            return instance_id
+        return ""
+
     def _config_entries_from_meta(self, meta: dict[str, Any], model_root: Path) -> list[tuple[str, dict[str, Any]]]:
         entries: list[tuple[str, dict[str, Any]]] = []
         instances = meta.get("instances") if isinstance(meta.get("instances"), list) else []
         for inst in instances:
             if not isinstance(inst, dict):
                 continue
-            profile_id = str(inst.get("profileId") or inst.get("profile_id") or inst.get("profileID") or "").strip()
+            profile_id = self._instance_source_profile_id(meta, inst)
             local_import = _coerce_dict(inst.get("localImport"))
             file_hash = str(local_import.get("fileHash") or "").strip()
             config_fingerprint = str(local_import.get("configFingerprint") or "").strip()
@@ -2178,8 +2198,7 @@ class LocalOrganizerService:
         ).strip() or target_file.stem
         design_profile_id = str(analysis.get("design_profile_id") or "").strip()
         local_version = bool(design_profile_id) and any(
-            str(item.get("profileId") or _coerce_dict(item.get("localImport")).get("designProfileId") or "").strip()
-            == design_profile_id
+            self._instance_source_profile_id(meta, item) == design_profile_id
             for item in instances if isinstance(item, dict)
         )
         if local_version:

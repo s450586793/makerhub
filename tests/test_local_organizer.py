@@ -63,7 +63,7 @@ class LocalOrganizerTest(unittest.TestCase):
             archive.writestr("Metadata/project_settings.config", settings)
 
     @contextmanager
-    def _makerworld_library(self, *, legacy_local=False, original_available=True):
+    def _makerworld_library(self, *, legacy_local=False, original_available=True, instance_id_only=False):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             source_dir = root / "source"
@@ -77,6 +77,8 @@ class LocalOrganizerTest(unittest.TestCase):
             original_instance = {
                 "id": "456", "profileId": "456", "title": "Original profile", "fileName": "original.3mf",
             }
+            if instance_id_only:
+                original_instance.pop("profileId")
             meta = {
                 "id": "123", "title": "Model A", "source": "makerworld",
                 "url": "https://makerworld.com/en/models/123",
@@ -139,6 +141,104 @@ class LocalOrganizerTest(unittest.TestCase):
                 service.process_candidate(source_path=candidate, source_dir=source, library_root=library, move_files=False)
                 self.assertEqual(tasks.payload["items"][0]["status"], "skipped")
                 self.assertEqual(len(list((model / "instances").glob("*.3mf"))), 1)
+
+    def test_identical_makerworld_3mf_with_instance_id_only_is_skipped(self):
+        cases = [
+            ("mw_cn", "", 456, False),
+            ("mw_global", "", "456", True),
+            ("makerworld", "", "456", False),
+            ("", "https://makerworld.com.cn/zh/models/123", "456", True),
+        ]
+        for source_hint, url, instance_id, null_profile in cases:
+            with self.subTest(source=source_hint, null_profile=null_profile), \
+                    self._makerworld_library(instance_id_only=True) as fixture:
+                service, tasks, source, library, model, meta, original_bytes = fixture
+                meta.update(source=source_hint, url=url)
+                meta["instances"][0]["id"] = instance_id
+                if null_profile:
+                    meta["instances"][0]["profileId"] = None
+                (model / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+                candidate = source / "renamed-original.3mf"
+                candidate.write_bytes(original_bytes)
+
+                service.process_candidate(source_path=candidate, source_dir=source, library_root=library, move_files=False)
+
+                self.assertEqual(tasks.payload["items"][0]["status"], "skipped")
+                self.assertEqual(len(list((model / "instances").glob("*.3mf"))), 1)
+                self.assertEqual(json.loads((model / "meta.json").read_text(encoding="utf-8")), meta)
+
+    def test_modified_makerworld_3mf_with_instance_id_only_is_named_as_local_version(self):
+        with self._makerworld_library(instance_id_only=True) as fixture:
+            service, tasks, source, library, model, original_meta, original_bytes = fixture
+            candidate = source / "hole-enlarged.3mf"
+            self._write_makerworld_3mf(candidate, b'{"scale": 2}')
+
+            service.process_candidate(source_path=candidate, source_dir=source, library_root=library, move_files=False)
+
+            self.assertEqual(tasks.payload["items"][0]["status"], "success")
+            meta = json.loads((model / "meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(meta["instances"]), 2)
+            self.assertEqual(meta["instances"][0], original_meta["instances"][0])
+            instance = meta["instances"][1]
+            self.assertEqual(instance["title"], "hole-enlarged")
+            self.assertIn("本地版本", instance["summary"])
+            self.assertEqual(instance["profileId"], "456")
+            self.assertEqual(instance["localImport"]["designProfileId"], "456")
+            self.assertEqual((model / "instances" / "original.3mf").read_bytes(), original_bytes)
+            self.assertEqual((model / "instances" / instance["fileName"]).read_bytes(), candidate.read_bytes())
+            for field in ("title", "source", "url", "author", "summary", "cover"):
+                self.assertEqual(meta[field], original_meta[field])
+
+            duplicate = source / "renamed-modified.3mf"
+            duplicate.write_bytes(candidate.read_bytes())
+            restarted_service = local_organizer.LocalOrganizerService(store=SimpleNamespace(), task_store=tasks)
+            restarted_service.process_candidate(
+                source_path=duplicate, source_dir=source, library_root=library, move_files=False,
+            )
+            self.assertEqual(tasks.payload["items"][0]["status"], "skipped")
+            self.assertEqual(len(list((model / "instances").glob("*.3mf"))), 2)
+
+    def test_config_index_uses_source_profile_identity_not_local_instance_ids(self):
+        cases = [
+            ("local", {"id": "456"}, ""),
+            ("mw_cn", {"id": "local-456"}, ""),
+            ("mw_global", {"id": "local-edit-456"}, ""),
+            ("mw_cn", {"id": "0"}, ""),
+            ("mw_cn", {"id": "-456"}, ""),
+            ("mw_cn", {"id": "456", "profileId": "789"}, "789"),
+            ("mw_cn", {"id": "456", "profile_id": "789"}, "789"),
+            ("mw_cn", {"id": "456", "profileID": "789"}, "789"),
+            ("local", {"id": "local-1", "localImport": {"designProfileId": "456"}}, "456"),
+            ("mw_cn", {"id": "456", "localImport": {"designProfileId": "789"}}, "789"),
+        ]
+        service = local_organizer.LocalOrganizerService(store=SimpleNamespace(), task_store=FakeTaskStore())
+        for source_hint, instance, expected_profile in cases:
+            with self.subTest(source=source_hint, instance=instance):
+                entries = service._config_entries_from_meta(
+                    {"source": source_hint, "instances": [instance]}, Path("/archive/Model_A"),
+                )
+                self.assertEqual(
+                    [key for key, _ in entries],
+                    [f"design_profile:{expected_profile}"] if expected_profile else [],
+                )
+
+    def test_version_two_library_index_cache_is_rebuilt_for_id_only_archives(self):
+        with self._makerworld_library(instance_id_only=True) as fixture:
+            service, tasks, source, library, model, _, original_bytes = fixture
+            local_organizer.ORGANIZER_LIBRARY_INDEX_CACHE_PATH.write_text(json.dumps({
+                "version": 2, "root": library.resolve().as_posix(), "cached_at": time.time(),
+                "models": {"design_model:123": {
+                    "model_dir": "Model_A", "model_root": model.as_posix(), "title": "Model A",
+                }},
+                "configs": {},
+            }), encoding="utf-8")
+            candidate = source / "renamed-original.3mf"
+            candidate.write_bytes(original_bytes)
+
+            service.process_candidate(source_path=candidate, source_dir=source, library_root=library, move_files=False)
+
+            self.assertEqual(tasks.payload["items"][0]["status"], "skipped")
+            self.assertEqual(len(list((model / "instances").glob("*.3mf"))), 1)
 
     def test_missing_archived_3mf_does_not_prove_duplicate(self):
         with self._makerworld_library(original_available=False) as fixture:
