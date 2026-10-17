@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -11,6 +12,7 @@ import time
 import zipfile
 from pathlib import Path
 from typing import Any, Optional
+from uuid import uuid4
 
 from app.core.settings import ARCHIVE_DIR, LOGS_DIR, STATE_DIR
 from app.core.store import JsonStore
@@ -24,11 +26,14 @@ from app.services.catalog import (
 )
 from app.services.legacy_archiver import sanitize_filename
 from app.services.local_import_upload import (
+    ATTACHMENT_SUFFIXES,
     LOCAL_IMPORT_UPLOAD_SUBDIR,
     MODEL_SUFFIXES,
     PACKAGE_ARCHIVE_SUFFIXES,
+    TEXT_SUFFIXES,
     queue_local_path_package_import,
     run_queued_package_import_task,
+    stage_local_package_path,
 )
 from app.services.process_memory import process_rss_mib, release_process_memory
 from app.services.task_state import TaskStateStore, _normalize_organize_tasks
@@ -166,6 +171,16 @@ def _ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def _write_model_meta(model_root: Path, meta: dict[str, Any]) -> None:
+    meta_path = model_root / "meta.json"
+    temp_path = meta_path.with_name(f".{meta_path.name}.{uuid4().hex}.tmp")
+    try:
+        temp_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(meta_path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
 def _is_upload_fallback_name(value: Any) -> bool:
     text = Path(str(value or "").strip()).name
     if not text:
@@ -251,6 +266,8 @@ class LocalOrganizerService:
         self._daemon_process: Optional[subprocess.Popen[str]] = None
         self._worker_process: Optional[subprocess.Popen[str]] = None
         self._worker_source_path = ""
+        self._worker_task_id = ""
+        self._worker_process_group = False
         self._start_lock = threading.Lock()
         self._library_index_cache: Optional[dict[str, dict[str, dict[str, Any]]]] = None
         self._library_index_cache_root = ""
@@ -284,15 +301,12 @@ class LocalOrganizerService:
             self._daemon_process = None
 
         if self._worker_process and self._worker_process.poll() is None:
-            self._worker_process.terminate()
-            try:
-                self._worker_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._worker_process.kill()
-                self._worker_process.wait(timeout=5)
+            self._terminate_worker()
             _append_organizer_log("worker_stopped", source=self._worker_source_path)
         self._worker_process = None
         self._worker_source_path = ""
+        self._worker_task_id = ""
+        self._worker_process_group = False
 
     def run_forever(self) -> None:
         self._run_loop()
@@ -392,7 +406,7 @@ class LocalOrganizerService:
 
         package_task = self._next_package_import_task()
         if package_task:
-            self._process_package_import_task(package_task)
+            self._spawn_package_worker(package_task)
             return
 
         try:
@@ -417,7 +431,7 @@ class LocalOrganizerService:
 
         package_task = self._next_package_import_task()
         if package_task:
-            self._process_package_import_task(package_task)
+            self._spawn_package_worker(package_task)
             return
 
         candidates = self._iter_candidates(source_dir)
@@ -566,7 +580,7 @@ class LocalOrganizerService:
             if matched_keys.intersection({key for key in item_keys if key}):
                 continue
             status = str(item.get("status") or "").strip().lower()
-            if status in {"pending", "queued"}:
+            if status in {"pending", "queued"} and str(item.get("kind") or "") not in {"local_upload", "local_package_import"}:
                 continue
             history_items.append(item)
 
@@ -635,6 +649,14 @@ class LocalOrganizerService:
             staging_dir=staging_dir.as_posix(),
         )
         try:
+            if _coerce_dict(running_task.get("meta")).get("staging_prepared") is False:
+                stage_local_package_path(Path(str(task.get("original_source_path") or task.get("source_path") or "")), staging_dir=staging_dir)
+                running_task = {
+                    **running_task,
+                    "meta": {**_coerce_dict(running_task.get("meta")), "staging_prepared": True},
+                    "updated_at": _now_iso(),
+                }
+                self.task_store.upsert_organize_task(running_task, limit=ORGANIZER_TASK_LIMIT)
             result = run_queued_package_import_task(running_task, store=self.store, task_store=self.task_store)
             self._cleanup_finished_package_source(
                 running_task,
@@ -710,7 +732,15 @@ class LocalOrganizerService:
             str(item.get("source_path") or "").strip()
             for item in payload.get("items") or []
             if str(item.get("kind") or "").strip() == "local_package_import"
-            and str(item.get("status") or "").strip().lower() not in {"failed"}
+            and (
+                str(item.get("status") or "").strip().lower() != "failed"
+                or bool(_coerce_dict(item.get("meta")).get("retry_blocked"))
+            )
+        }
+        uploaded_tasks = {
+            str(item.get("source_path") or ""): item
+            for item in payload.get("items") or []
+            if str(item.get("kind") or "") == "local_upload"
         }
         for source_path in self._iter_package_candidates(source_dir):
             source_text = source_path.as_posix()
@@ -724,6 +754,7 @@ class LocalOrganizerService:
                     library_root=library_root,
                     move_files=candidate_move_files,
                     task_store=self.task_store,
+                    task_id=str((uploaded_tasks.get(source_text) or {}).get("id") or ""),
                 )
                 self._remove_local_upload_placeholders_for_source(source_path)
                 existing_sources.add(source_text)
@@ -885,12 +916,21 @@ class LocalOrganizerService:
                 and time.time() - self._worker_started_at >= ORGANIZER_WORKER_TIMEOUT_SECONDS
             ):
                 source_path_text = self._worker_source_path
-                try:
-                    process.kill()
-                    process.wait(timeout=5)
-                except Exception:
-                    pass
-                if source_path_text:
+                self._terminate_worker()
+                package_task = self._active_package_worker_task()
+                if package_task:
+                    self.task_store.upsert_organize_task(
+                        {
+                            **package_task,
+                            "status": "failed",
+                            "message": f"本地模型包整理超时（>{ORGANIZER_WORKER_TIMEOUT_SECONDS} 秒），源文件已保留，请检查文件后重新导入。",
+                            "progress": 0,
+                            "updated_at": _now_iso(),
+                            "meta": {**_coerce_dict(package_task.get("meta")), "retry_blocked": True},
+                        },
+                        limit=ORGANIZER_TASK_LIMIT,
+                    )
+                elif source_path_text:
                     source_path = Path(source_path_text)
                     timeout_fingerprint = self._fingerprint(source_path) if source_path.exists() else source_path_text
                     self.task_store.upsert_organize_task(
@@ -914,8 +954,26 @@ class LocalOrganizerService:
                 )
                 self._worker_process = None
                 self._worker_source_path = ""
+                self._worker_task_id = ""
+                self._worker_process_group = False
                 self._worker_started_at = 0.0
                 self._last_worker_finished_at = time.time()
+            elif self._worker_task_id:
+                task_id = self._worker_task_id
+                now_iso = _now_iso()
+
+                def _heartbeat(payload: dict[str, Any]) -> dict[str, Any]:
+                    items = []
+                    for item in payload.get("items") or []:
+                        if str(item.get("id") or "") == task_id and item.get("status") == "running":
+                            item = {
+                                **item, "updated_at": now_iso,
+                                "meta": {**_coerce_dict(item.get("meta")), "worker_heartbeat_at": now_iso},
+                            }
+                        items.append(item)
+                    return {**payload, "items": items}
+
+                self.task_store._update_organize_tasks(_heartbeat)
             return
         _append_organizer_log(
             "worker_exited",
@@ -923,10 +981,50 @@ class LocalOrganizerService:
             return_code=return_code,
         )
         self._recover_stale_running_task(source_path_text=self._worker_source_path, return_code=return_code)
+        if self._worker_process_group:
+            self._terminate_worker()
         self._worker_process = None
         self._worker_source_path = ""
+        self._worker_task_id = ""
+        self._worker_process_group = False
         self._worker_started_at = 0.0
         self._last_worker_finished_at = time.time()
+
+    def _active_package_worker_task(self) -> Optional[dict[str, Any]]:
+        if not self._worker_task_id:
+            return None
+        return next((
+            item for item in self.task_store.load_organize_tasks().get("items") or []
+            if str(item.get("id") or "") == self._worker_task_id
+        ), None)
+
+    def _terminate_worker(self) -> None:
+        process = self._worker_process
+        if process is None:
+            return
+        if self._worker_process_group and os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        elif process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            if self._worker_process_group and os.name == "posix":
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:
+                process.kill()
+            process.wait(timeout=5)
+        if self._worker_process_group and os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
     def _recover_stale_running_task(self, *, source_path_text: str, return_code: int) -> None:
         source_path_text = str(source_path_text or "").strip()
@@ -937,13 +1035,31 @@ class LocalOrganizerService:
         items = list(payload.get("items") or [])
         matched: Optional[dict[str, Any]] = None
         for item in items:
-            if str(item.get("source_path") or "").strip() == source_path_text:
+            if (
+                str(item.get("id") or "") == self._worker_task_id
+                if self._worker_task_id
+                else str(item.get("source_path") or "").strip() == source_path_text
+            ):
                 matched = item
                 break
 
         if not matched:
             return
         if str(matched.get("status") or "").strip().lower() != "running":
+            return
+
+        if str(matched.get("kind") or "") == "local_package_import":
+            self.task_store.upsert_organize_task(
+                {
+                    **matched,
+                    "status": "failed",
+                    "message": f"本地模型包 worker 已退出（exit={return_code}），源文件已保留，请检查文件后重新导入。",
+                    "progress": 0,
+                    "updated_at": _now_iso(),
+                    "meta": {**_coerce_dict(matched.get("meta")), "retry_blocked": True},
+                },
+                limit=ORGANIZER_TASK_LIMIT,
+            )
             return
 
         source_path = Path(source_path_text)
@@ -1061,6 +1177,7 @@ class LocalOrganizerService:
             text=True,
         )
         self._worker_source_path = source_path.as_posix()
+        self._worker_task_id = ""
         self._worker_started_at = time.time()
         _append_organizer_log(
             "worker_started",
@@ -1068,15 +1185,41 @@ class LocalOrganizerService:
             pid=self._worker_process.pid,
         )
 
+    def _spawn_package_worker(self, task: dict[str, Any]) -> None:
+        task_id = str(task.get("id") or "").strip()
+        if not task_id:
+            return
+        process_group = os.name == "posix"
+        process = subprocess.Popen(
+            [sys.executable, "-m", "app.services.local_organizer_worker", "--package-task-id", task_id],
+            cwd=Path(__file__).resolve().parents[2],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            start_new_session=process_group,
+        )
+        self._worker_process = process
+        self._worker_source_path = str(task.get("source_path") or "")
+        self._worker_task_id = task_id
+        self._worker_process_group = process_group
+        self._worker_started_at = time.time()
+        _append_organizer_log("worker_started", source=self._worker_source_path, task_id=task_id, pid=process.pid)
+
     def _iter_candidates(self, source_dir: Path) -> list[Path]:
         now = time.time()
         candidates: list[Path] = []
+        package_roots = {
+            Path(str(item.get("source_path"))).expanduser().resolve()
+            for item in self.task_store.load_organize_tasks().get("items") or []
+            if item.get("kind") == "local_package_import" and item.get("source_path")
+        }
         for root, dirnames, filenames in os.walk(source_dir):
             current_dir = Path(root)
             dirnames[:] = [
                 name
                 for name in dirnames
                 if not self._should_skip_scan_directory(current_dir / name, source_dir)
+                and (current_dir / name).resolve() not in package_roots
             ]
 
             for filename in filenames:
@@ -1152,6 +1295,8 @@ class LocalOrganizerService:
         has_non_3mf_model = False
         has_archive = False
         has_preview = False
+        has_three_mf = False
+        has_description_or_attachment = False
         try:
             for child in path.rglob("*"):
                 if child.is_symlink() or not child.is_file():
@@ -1159,13 +1304,17 @@ class LocalOrganizerService:
                 suffix = child.suffix.lower()
                 if suffix in MODEL_SUFFIXES and suffix != ".3mf":
                     has_non_3mf_model = True
+                elif suffix == ".3mf":
+                    has_three_mf = True
                 elif suffix in PACKAGE_ARCHIVE_SUFFIXES:
                     has_archive = True
                 elif suffix in PREVIEW_IMAGE_SUFFIXES:
                     has_preview = True
+                elif suffix in TEXT_SUFFIXES | ATTACHMENT_SUFFIXES:
+                    has_description_or_attachment = True
         except OSError:
             return False
-        return has_non_3mf_model or has_archive or has_preview
+        return has_non_3mf_model or has_archive or has_preview or (has_three_mf and has_description_or_attachment)
 
     def _path_is_old_enough(self, path: Path, now: float) -> bool:
         try:
@@ -1872,6 +2021,8 @@ class LocalOrganizerService:
 
         model_root: Optional[Path] = None
         target_file: Optional[Path] = None
+        metadata_committed = False
+        preview_paths: list[str] = []
 
         try:
             model_root = self._prepare_model_root(
@@ -1889,7 +2040,7 @@ class LocalOrganizerService:
             target_file = self._copy_or_move_file(
                 source_path,
                 instances_dir,
-                move_files=move_files,
+                move_files=False,
                 target_name=self._target_filename_for_analysis(source_path, analysis or {}),
             )
 
@@ -1944,16 +2095,18 @@ class LocalOrganizerService:
                 )
                 success_message = "本地 3MF 已整理完成。"
 
-            (model_root / "meta.json").write_text(
-                json.dumps(meta, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            _write_model_meta(model_root, meta)
+            metadata_committed = True
+            self._library_index_cache = None
+            ORGANIZER_LIBRARY_INDEX_CACHE_PATH.unlink(missing_ok=True)
             invalidate_archive_snapshot("local_organizer_success")
             model_dir = self._model_dir_string(model_root)
             upsert_archive_snapshot_model(model_dir, "local_organizer_success", broadcast=True)
             snapshot_ready = _confirm_model_visible_in_snapshot(model_dir)
             if not snapshot_ready:
                 raise RuntimeError("本地模型已写入，但列表快照刷新超时。请稍后刷新本地库。")
+            if move_files and self._fingerprint(source_path) == fingerprint:
+                source_path.unlink()
 
             self.task_store.upsert_organize_task(
                 {
@@ -1990,6 +2143,21 @@ class LocalOrganizerService:
                 "analysis": analysis or {},
             }
         except Exception as exc:
+            if not metadata_committed:
+                cleanup_files = ([target_file] if target_file else [])
+                if model_root:
+                    cleanup_files.extend(model_root / preview_path for preview_path in preview_paths)
+                for cleanup_file in cleanup_files:
+                    try:
+                        cleanup_file.unlink(missing_ok=True)
+                    except OSError:
+                        _append_organizer_log("rollback_cleanup_failed", path=str(cleanup_file))
+                if model_root:
+                    for directory in (model_root / "instances", model_root / "images", model_root):
+                        try:
+                            directory.rmdir()
+                        except OSError:
+                            pass
             self.task_store.upsert_organize_task(
                 {
                     "id": task_id,
@@ -2060,7 +2228,12 @@ class LocalOrganizerService:
         if move_files:
             shutil.move(str(source_path), str(target))
         else:
-            shutil.copy2(source_path, target)
+            temp_path = target.with_name(f".{target.name}.{uuid4().hex}.copying")
+            try:
+                shutil.copy2(source_path, temp_path)
+                temp_path.replace(target)
+            finally:
+                temp_path.unlink(missing_ok=True)
         return target
 
     def _display_title_for_analysis(self, source_path: Path, analysis: dict[str, Any]) -> str:
@@ -2172,10 +2345,10 @@ class LocalOrganizerService:
         meta_path = model_root / "meta.json"
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            meta = {}
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError("现有模型元数据读取失败，已保留原文件。") from exc
         if not isinstance(meta, dict):
-            meta = {}
+            raise RuntimeError("现有模型元数据格式错误，已保留原文件。")
 
         instances = meta.get("instances")
         if not isinstance(instances, list):

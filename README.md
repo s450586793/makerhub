@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.20.13`
+> 当前版本：`v0.20.14`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -363,6 +363,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-10-17 · v0.20.14
+
+- 修复本地导入失败后缺少源文件、无法重试的问题，完成元数据登记后再删除源文件。
+- `3MF + README` 文件夹保留模型包和说明文件，上传任务 ID 在后台接管后保持一致。
+- 模型包采用可超时回收的独立进程；修复同名旧任务误判完成，以及失败进度静默消失的问题。
+
 ### 2026-10-17 · v0.20.13
 
 - 指纹浏览器管理接口不再继承归档任务的业务代理，修复国际区手动下载正常、自动补档却返回 HTTP 502 的问题。
@@ -375,14 +381,14 @@ npm --prefix frontend run build
 - 兼容仅有实例 ID 的旧 MakerWorld 归档，正确去重和标识本地版本，自动重建旧整理索引缓存。
 - 同步浏览器登录态后不再因“检测中”阻塞真实补档，验证、每日限额和重试冷却继续生效。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-09-25 · v0.20.11
 
 - 3MF 补下载直接复用已保存资料，只处理缺失配置，任务进度不再显示图片、附件等重复等待。
 - 优先复用文件直链，明确失效后每轮最多重新授权一次；传输前保存新地址，减少重复授权。
 - 持续的 CF 验证页明确提示浏览器验证并暂停补下载，不再泛化为 HTTP 错误。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-09-25 · v0.20.10
 

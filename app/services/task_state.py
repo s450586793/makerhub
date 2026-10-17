@@ -893,11 +893,13 @@ def _normalize_local_import_payload(payload: Any) -> dict:
             files.append(file_item)
 
     uploaded_at = str(payload.get("uploaded_at") or payload.get("time") or "")
-    _apply_local_import_file_log_statuses(files, uploaded_at=uploaded_at)
+    started_at = str(payload.get("started_at") or uploaded_at)
+    _apply_local_import_file_log_statuses(files, uploaded_at=started_at)
 
     uploaded_count = _safe_int(payload.get("uploaded_count"), len(files))
     return {
         "uploaded_at": uploaded_at,
+        "started_at": started_at,
         "uploaded_count": max(uploaded_count, len(files)),
         "source_dir": str(payload.get("source_dir") or ""),
         "upload_dir": str(payload.get("upload_dir") or ""),

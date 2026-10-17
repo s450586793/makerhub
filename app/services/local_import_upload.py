@@ -43,6 +43,7 @@ LOCAL_IMPORT_SNAPSHOT_WAIT_SECONDS = 8
 LOCAL_IMPORT_MAX_ZIP_DEPTH = 3
 LOCAL_IMPORT_MAX_ARCHIVE_DEPTH = LOCAL_IMPORT_MAX_ZIP_DEPTH
 LOCAL_IMPORT_MAX_EXTRACTED_BYTES = MAX_LOCAL_IMPORT_UPLOAD_BYTES * 4
+LOCAL_IMPORT_RAR_TIMEOUT_SECONDS = 5 * 60
 ORGANIZER_LIBRARY_INDEX_CACHE_PATH = STATE_DIR / "organizer_library_index.json"
 LOCAL_IMPORT_GROUP_DOWNLOAD_DIR = "packages"
 
@@ -166,8 +167,9 @@ def _cleanup_stale_staging_dirs() -> None:
             continue
 
 
-def _new_staging_dir() -> Path:
-    _cleanup_stale_staging_dirs()
+def _new_staging_dir(*, cleanup_stale: bool = True) -> Path:
+    if cleanup_stale:
+        _cleanup_stale_staging_dirs()
     token = f"{int(time.time() * 1000)}-{os.getpid()}-{threading.get_ident()}-{uuid4().hex[:8]}"
     staging_dir = LOCAL_IMPORT_STAGING_DIR / token
     staging_dir.mkdir(parents=True, exist_ok=False)
@@ -392,13 +394,15 @@ def _copy_local_path_to_staging(source_path: Path, upload_root: Path, relative_p
     }
 
 
-def stage_local_package_path(source_path: Path) -> tuple[Path, list[dict[str, Any]]]:
+def stage_local_package_path(source_path: Path, *, staging_dir: Path | None = None) -> tuple[Path, list[dict[str, Any]]]:
     source_path = source_path.expanduser()
     if not source_path.exists():
         raise ValueError("本地导入源文件不存在。")
 
-    staging_dir = _new_staging_dir()
+    staging_dir = staging_dir or _new_staging_dir()
     upload_root = staging_dir / "uploads"
+    if upload_root.exists():
+        shutil.rmtree(upload_root)
     staged: list[dict[str, Any]] = []
     try:
         if source_path.is_dir():
@@ -560,13 +564,17 @@ def _extract_rar_with_bsdtar(rar_path: Path, destination: Path) -> None:
         raise RuntimeError("RAR 解包工具不可用")
 
     destination.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(
-        [executable, "-xf", str(rar_path), "-C", str(destination)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [executable, "-xf", str(rar_path), "-C", str(destination)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=LOCAL_IMPORT_RAR_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"RAR 解包超时（>{LOCAL_IMPORT_RAR_TIMEOUT_SECONDS} 秒）。") from exc
     if result.returncode != 0:
         message = " ".join((result.stderr or result.stdout or "").split()).strip()
         raise RuntimeError(message or "RAR 解包失败")
@@ -1188,13 +1196,15 @@ def _update_last_import(
     uploaded: list[dict[str, Any]],
     source_dir: str,
     upload_dir: str,
+    started_at: str = "",
 ) -> None:
-    current_tasks = task_store.load_organize_tasks()
-    task_store.save_organize_tasks(
-        {
+    uploaded_at = china_now_iso()
+    task_store._update_organize_tasks(
+        lambda current_tasks: {
             **current_tasks,
             "last_import": {
-                "uploaded_at": china_now_iso(),
+                "started_at": started_at or uploaded_at,
+                "uploaded_at": uploaded_at,
                 "uploaded_count": len(uploaded),
                 "source_dir": source_dir,
                 "upload_dir": upload_dir,
@@ -1293,6 +1303,7 @@ def _upsert_package_progress(
             "package_source": str(existing_task.get("package_source") or package_source),
             "package_title": str(existing_task.get("package_title") or title),
             "original_source_path": original_source_path,
+            "meta": existing_task.get("meta") if isinstance(existing_task.get("meta"), dict) else {},
         },
         limit=50,
     )
@@ -1304,6 +1315,7 @@ def _queue_package_import_files(
     store: JsonStore,
     task_store: TaskStateStore,
 ) -> dict[str, Any]:
+    started_at = china_now_iso()
     config = store.load()
     target_raw = str(config.organizer.target_dir or "").strip()
     if not target_raw:
@@ -1362,6 +1374,7 @@ def _queue_package_import_files(
         ],
         source_dir=source_dir_text,
         upload_dir=batch_dir.as_posix(),
+        started_at=started_at,
     )
     append_business_log(
         "organizer",
@@ -1400,9 +1413,11 @@ def queue_local_path_package_import(
     library_root: Path,
     move_files: bool,
     task_store: TaskStateStore,
+    task_id: str = "",
 ) -> dict[str, Any]:
-    staging_dir, staged = stage_local_package_path(source_path)
-    task_id = _package_task_id(staging_dir)
+    staging_dir = _new_staging_dir(cleanup_stale=False)
+    uploaded_task_id = task_id
+    task_id = task_id or _package_task_id(staging_dir)
     title = source_path.stem.strip() if source_path.is_file() else source_path.name.strip()
     title = title or "本地模型导入"
     try:
@@ -1421,7 +1436,7 @@ def queue_local_path_package_import(
             "model_dir": "",
             "status": "queued",
             "message": "已检测到本地模型包，等待后台整理。",
-            "progress": 10,
+            "progress": 35 if uploaded_task_id else 10,
             "updated_at": china_now_iso(),
             "move_files": move_files,
             "fingerprint": _package_task_fingerprint(task_id),
@@ -1431,6 +1446,7 @@ def queue_local_path_package_import(
             "package_source": package_source,
             "package_title": title,
             "original_source_path": source_path.as_posix(),
+            "meta": {"staging_prepared": False},
         },
         limit=50,
     )
@@ -1441,9 +1457,8 @@ def queue_local_path_package_import(
         title=title,
         source_path=source_path.as_posix(),
         task_id=task_id,
-        file_count=len(staged),
     )
-    return {"task_id": task_id, "title": title, "staging_dir": staging_dir.as_posix(), "file_count": len(staged)}
+    return {"task_id": task_id, "title": title, "staging_dir": staging_dir.as_posix()}
 
 
 def _upload_legacy_3mf_files(
@@ -1452,6 +1467,7 @@ def _upload_legacy_3mf_files(
     store: JsonStore,
     task_store: TaskStateStore,
 ) -> dict[str, Any]:
+    started_at = china_now_iso()
     config = store.load()
     source_raw = str(config.organizer.source_dir or "").strip()
     if not source_raw:
@@ -1506,6 +1522,7 @@ def _upload_legacy_3mf_files(
         uploaded_count=len(uploaded),
         source_dir=source_dir.as_posix(),
         upload_dir=upload_dir.as_posix(),
+        started_at=started_at,
         files=[item["file_name"] for item in uploaded],
     )
 
@@ -1514,6 +1531,7 @@ def _upload_legacy_3mf_files(
         uploaded=uploaded,
         source_dir=source_dir.as_posix(),
         upload_dir=upload_dir.as_posix(),
+        started_at=started_at,
     )
 
     return {
@@ -1593,7 +1611,15 @@ def _run_package_import_from_staging(
         )
         classified = _classify_package_files(expanded)
         if _is_pure_3mf_package(expanded, classified):
+            split_started_at = china_now_iso()
             uploaded_3mf = _stage_pure_3mf_package_for_legacy_scan(classified["models"], source_dir=source_dir)
+            _update_last_import(
+                task_store=task_store,
+                uploaded=uploaded_3mf,
+                source_dir=source_dir_text,
+                upload_dir=(source_dir / LOCAL_IMPORT_UPLOAD_SUBDIR).as_posix(),
+                started_at=split_started_at,
+            )
             _upsert_package_progress(
                 task_store=task_store,
                 task_id=task_id,
@@ -1607,12 +1633,6 @@ def _run_package_import_from_staging(
                 staging_dir=staging_dir,
                 snapshot_ready=True,
                 preserve_task_metadata=True,
-            )
-            _update_last_import(
-                task_store=task_store,
-                uploaded=uploaded_3mf,
-                source_dir=source_dir_text,
-                upload_dir=(source_dir / LOCAL_IMPORT_UPLOAD_SUBDIR).as_posix(),
             )
             append_business_log(
                 "organizer",

@@ -126,6 +126,12 @@ class LocalImportUploadTest(unittest.TestCase):
     def tearDown(self):
         self.db_state.__exit__(None, None, None)
 
+    def _run_package_cycle(self, service):
+        with patch.object(service, "_spawn_package_worker") as spawn:
+            service.run_once()
+        self.assertTrue(spawn.called)
+        service._process_package_import_task(spawn.call_args.args[0])
+
     def test_organizer_run_once_processes_queued_package_import(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
@@ -162,7 +168,7 @@ class LocalImportUploadTest(unittest.TestCase):
                     task_store=task_store,
                 )
                 service = local_organizer.LocalOrganizerService(store=store, task_store=task_store)
-                service.run_once()
+                self._run_package_cycle(service)
                 detail = catalog.get_model_detail("LOCAL_Demo")
 
             self.assertTrue(queued["queued"])
@@ -390,7 +396,7 @@ class LocalImportUploadTest(unittest.TestCase):
                 patch.object(local_organizer, "_append_organizer_log"), \
                 patch.object(catalog, "ARCHIVE_DIR", archive_root):
                 service = local_organizer.LocalOrganizerService(store=store, task_store=task_store)
-                service.run_once()
+                self._run_package_cycle(service)
                 detail = catalog.get_model_detail("LOCAL_扎古")
 
             self.assertIsNotNone(detail)
@@ -514,7 +520,7 @@ class LocalImportUploadTest(unittest.TestCase):
                 patch.object(local_organizer, "_append_organizer_log"), \
                 patch.object(catalog, "ARCHIVE_DIR", archive_root):
                 service = local_organizer.LocalOrganizerService(store=store, task_store=task_store)
-                service.run_once()
+                self._run_package_cycle(service)
                 detail = catalog.get_model_detail("LOCAL_混合模型")
 
             self.assertIsNotNone(detail)

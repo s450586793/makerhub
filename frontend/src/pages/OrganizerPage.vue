@@ -200,8 +200,13 @@ import { useRouter } from "vue-router";
 import SourceLibraryCard from "../components/SourceLibraryCard.vue";
 import { apiRequest, apiUploadRequest } from "../lib/api";
 import {
+  LOCAL_IMPORT_PENDING_GRACE_MS,
+  findCurrentLocalImportTask,
   localImportBatchIsFresh,
-  unmatchedLocalImportFailureCount,
+  localImportItemMatchesFile,
+  localImportUpdatedAfter as lastImportUpdatedAfter,
+  normalizeLocalImportStatus as normalizeImportStatus,
+  recentLocalImportStatus as recentImportStatusCounts,
 } from "../lib/localImportStatus";
 import { deletePageCache, deletePageCacheByPrefix, getPageCache, setPageCache } from "../lib/pageCache";
 import { createPagePerformanceTracker } from "../lib/performance";
@@ -300,6 +305,7 @@ const importUploadProgress = reactive({
 const organizerProgressOpen = ref(false);
 let organizerRefreshController = null;
 let organizerTaskRefreshController = null;
+let importPendingCheckTimer = null;
 
 const organizerTaskResource = createHydratedResource({
   load: ({ signal }) => apiRequest("/api/tasks/organize", { signal }),
@@ -417,7 +423,8 @@ const currentImportOrganizerTask = computed(() => (
   importUploadProgress.visible ? findCurrentImportOrganizerTask() : null
 ));
 const currentOrganizerTask = computed(() => (
-  currentImportOrganizerTask.value
+  (importUploadProgress.visible && importUploadProgress.phase === "failed" ? currentImportSyntheticTask() : null)
+    || currentImportOrganizerTask.value
     || (importUploadProgress.visible ? currentImportSyntheticTask() : null)
     || activeOrganizerTask.value
     || (hasRecentImportWork() ? recentImportSyntheticTask() : null)
@@ -500,7 +507,7 @@ const organizerProgressFooterText = computed(() => {
 const organizerProgressChips = computed(() => {
   const { uploadedCount, counts } = recentImportStatusCounts(organizerTasks.value);
   if (importUploadProgress.visible) {
-    const matchedTask = currentImportOrganizerTask.value;
+    const matchedTask = importUploadProgress.phase === "failed" ? null : currentImportOrganizerTask.value;
     return [
       { label: "总进度", value: `${Math.round(importUploadProgress.progress || 0)}%` },
       { label: "文件", value: importUploadProgress.fileCount || 0 },
@@ -543,13 +550,13 @@ const recentOrganizerRows = computed(() => {
 
   const lastImport = organizerTasks.value?.last_import;
   const importFiles = Array.isArray(lastImport?.files) ? lastImport.files : [];
-  const matchedImportTask = currentImportOrganizerTask.value;
+  const matchedImportTasks = recentImportStatusCounts(organizerTasks.value).matchedItems;
   const importFresh = importBatchStillFresh(lastImport);
   for (const file of importFiles) {
     if (rows.length >= 8) {
       break;
     }
-    if (matchedImportTask && organizerItemMatchesImport(matchedImportTask, fileIdentitySet([file]))) {
+    if (matchedImportTasks.some((task) => localImportItemMatchesFile(task, file, lastImport))) {
       continue;
     }
     const row = organizerTaskRow(
@@ -570,50 +577,6 @@ const recentOrganizerRows = computed(() => {
   return rows;
 });
 
-function fileIdentitySet(files) {
-  const identities = new Set();
-  for (const item of Array.isArray(files) ? files : []) {
-    const sourcePath = String(item?.source_path || "").trim();
-    const targetPath = String(item?.target_path || "").trim();
-    const fileName = String(item?.file_name || "").trim();
-    if (sourcePath) {
-      identities.add(`path:${sourcePath}`);
-      identities.add(`suffix:/${sourcePath.replace(/^\/+/, "")}`);
-    }
-    if (targetPath) {
-      identities.add(`path:${targetPath}`);
-      identities.add(`suffix:/${targetPath.replace(/^\/+/, "")}`);
-    }
-    if (fileName) {
-      identities.add(`name:${fileName}`);
-    }
-  }
-  return identities;
-}
-
-function organizerItemMatchesImport(item, identities) {
-  if (!identities.size) {
-    return false;
-  }
-  const sourcePath = String(item?.source_path || "").trim();
-  const targetPath = String(item?.target_path || "").trim();
-  const packageSource = String(item?.package_source || "").trim();
-  const fileName = String(item?.file_name || "").trim();
-  return (sourcePath && (identities.has(`path:${sourcePath}`) || identities.has(`suffix:/${sourcePath.replace(/^\/+/, "")}`)))
-    || (targetPath && (identities.has(`path:${targetPath}`) || identities.has(`suffix:/${targetPath.replace(/^\/+/, "")}`)))
-    || (packageSource && (identities.has(`path:${packageSource}`) || identities.has(`suffix:/${packageSource.replace(/^\/+/, "")}`)))
-    || (fileName && identities.has(`name:${fileName}`));
-}
-
-function normalizeImportStatus(status) {
-  const normalized = String(status || "").trim().toLowerCase();
-  if (normalized === "success" || normalized === "organized") return "success";
-  if (normalized === "skipped" || normalized === "duplicate_skipped" || normalized === "deleted_model_skipped") return "skipped";
-  if (normalized === "failed" || normalized === "error" || normalized === "organize_failed" || normalized === "worker_timeout") return "failed";
-  if (normalized === "running" || normalized === "pending" || normalized === "queued") return "pending";
-  return "";
-}
-
 function organizerStatusVariant(status) {
   const normalized = String(status || "").trim().toLowerCase();
   if (normalized === "running") return "running";
@@ -622,10 +585,6 @@ function organizerStatusVariant(status) {
   if (normalized === "skipped" || normalized === "duplicate_skipped" || normalized === "deleted_model_skipped") return "skipped";
   if (normalized === "failed" || normalized === "error" || normalized === "organize_failed" || normalized === "worker_timeout" || normalized === "duplicate_skip_failed") return "failed";
   return "idle";
-}
-
-function organizerStatusIsTerminal(status) {
-  return ["success", "skipped", "failed"].includes(organizerStatusVariant(status));
 }
 
 function organizerStatusLabel(status) {
@@ -687,41 +646,11 @@ function organizerItemTimestamp(item) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function organizerItemUpdatedAfter(item, timestamp) {
-  const itemTimestamp = organizerItemTimestamp(item);
-  return Number.isFinite(itemTimestamp) && itemTimestamp >= Number(timestamp || 0) - 1000;
-}
-
 function findCurrentImportOrganizerTask() {
   if (!importUploadProgress.visible) {
     return null;
   }
-  const currentId = String(importUploadProgress.id || "").trim();
-  const currentTitle = String(importUploadProgress.title || "").trim();
-  return sortedOrganizerItems.value.find((item) => {
-    const itemId = String(item?.id || "").trim();
-    const fingerprint = String(item?.fingerprint || "").trim();
-    if (
-      currentId
-      && (
-        itemId === currentId
-        || fingerprint === currentId
-        || fingerprint === `local-package:${currentId}`
-        || item?.package_source === `local-package:${currentId}`
-      )
-    ) {
-      return true;
-    }
-    if (!organizerItemUpdatedAfter(item, importUploadProgress.startedAt)) {
-      return false;
-    }
-    const itemTitle = String(item?.title || item?.file_name || "").trim();
-    if (currentTitle && itemTitle && (itemTitle === currentTitle || currentTitle.startsWith(itemTitle) || itemTitle.startsWith(currentTitle))) {
-      return true;
-    }
-    const itemName = String(item?.source_path || "").split("/").filter(Boolean).pop();
-    return currentTitle && itemName && currentTitle.includes(itemName);
-  }) || null;
+  return findCurrentLocalImportTask(organizerTasks.value, importUploadProgress);
 }
 
 function organizerTaskTitle(item) {
@@ -988,86 +917,6 @@ function importBatchStillFresh(lastImport) {
   return localImportBatchIsFresh(lastImport);
 }
 
-function findLastImportPackageTask(tasks) {
-  const lastImport = tasks?.last_import && typeof tasks.last_import === "object" ? tasks.last_import : null;
-  const uploadDir = String(lastImport?.upload_dir || "").trim();
-  if (!uploadDir) {
-    return null;
-  }
-  const matches = (Array.isArray(tasks?.items) ? tasks.items : []).filter((item) => (
-    (
-      String(item?.kind || "") === "local_package_import"
-      || String(item?.kind || "") === "local_upload"
-    )
-    && (
-      String(item?.staging_dir || "").trim() === uploadDir
-      || String(item?.source_path || "").trim() === uploadDir
-      || uploadDir.endsWith(`/${String(item?.package_source || "").trim().replace(/^\/+/, "")}`)
-    )
-  ));
-  return matches.sort((left, right) => organizerItemTimestamp(right) - organizerItemTimestamp(left))[0] || null;
-}
-
-function recentImportStatusCounts(tasks) {
-  const lastImport = tasks?.last_import && typeof tasks.last_import === "object" ? tasks.last_import : null;
-  if (!lastImport) {
-    return { uploadedCount: 0, counts: { success: 0, skipped: 0, failed: 0, pending: 0 }, matchedCount: 0 };
-  }
-  const allItems = Array.isArray(tasks?.items) ? tasks.items : [];
-  const importFiles = Array.isArray(lastImport?.files) ? lastImport.files : [];
-  const uploadedCount = Number(lastImport?.uploaded_count || importFiles.length || 0);
-  const packageTask = findLastImportPackageTask(tasks);
-  const packageVariant = organizerStatusVariant(packageTask?.status);
-  if (packageTask && organizerStatusIsTerminal(packageTask.status) && uploadedCount > 0) {
-    return {
-      uploadedCount,
-      counts: {
-        success: packageVariant === "success" ? uploadedCount : 0,
-        skipped: packageVariant === "skipped" ? uploadedCount : 0,
-        failed: packageVariant === "failed" ? uploadedCount : 0,
-        pending: 0,
-      },
-      matchedCount: uploadedCount,
-    };
-  }
-  const identities = fileIdentitySet(importFiles);
-  const batchItems = identities.size ? allItems.filter((item) => organizerItemMatchesImport(item, identities)) : [];
-  const summaryItems = batchItems.length ? batchItems : importFiles;
-  const counts = summaryItems.reduce(
-    (result, item) => {
-      countImportStatus(result, item?.status);
-      return result;
-    },
-    { success: 0, skipped: 0, failed: 0, pending: 0 }
-  );
-  const terminalImportFileCount = importFiles.filter((item) => (
-    ["success", "skipped", "failed"].includes(normalizeImportStatus(item?.status))
-  )).length;
-  const effectiveMatchedCount = Math.max(batchItems.length, terminalImportFileCount);
-  const unmatchedFailedCount = unmatchedLocalImportFailureCount({
-    lastImport,
-    uploadedCount,
-    matchedCount: effectiveMatchedCount,
-  });
-  if (unmatchedFailedCount > 0) {
-    counts.failed += unmatchedFailedCount;
-    if (!batchItems.length) {
-      counts.pending = 0;
-    }
-  }
-  return {
-    uploadedCount,
-    counts,
-    matchedCount: effectiveMatchedCount,
-    unmatchedFailedCount,
-  };
-}
-
-function lastImportUpdatedAfter(lastImport, timestamp) {
-  const uploadedAt = Date.parse(String(lastImport?.uploaded_at || ""));
-  return Number.isFinite(uploadedAt) && uploadedAt >= Number(timestamp || 0) - 1000;
-}
-
 function hasRecentImportWork() {
   const lastImport = organizerTasks.value?.last_import;
   if (!lastImport || !importBatchStillFresh(lastImport)) {
@@ -1080,37 +929,13 @@ function hasRecentImportWork() {
   return counts.pending > 0 || counts.success + counts.skipped + counts.failed < uploadedCount;
 }
 
-function hasBackendActiveOrganizeWork(tasks) {
-  if (Number(tasks?.running_count || 0) > 0 || Number(tasks?.queued_count || 0) > 0) {
-    return true;
-  }
-  return (Array.isArray(tasks?.items) ? tasks.items : []).some((item) => (
-    ["running", "queued"].includes(organizerStatusVariant(item?.status))
-  ));
-}
-
-function lastImportBatchIsTerminal(tasks) {
-  const lastImport = tasks?.last_import && typeof tasks.last_import === "object" ? tasks.last_import : null;
-  if (!lastImport) {
-    return false;
-  }
-  const { uploadedCount, counts } = recentImportStatusCounts(tasks);
-  if (uploadedCount <= 0 || counts.pending > 0) {
-    return false;
-  }
-  return counts.success + counts.skipped + counts.failed >= uploadedCount;
-}
-
 function buildLocalImportSummary(tasks) {
   const lastImport = tasks?.last_import && typeof tasks.last_import === "object" ? tasks.last_import : null;
   const allItems = Array.isArray(tasks?.items) ? tasks.items : [];
-  const importFiles = Array.isArray(lastImport?.files) ? lastImport.files : [];
-  const identities = fileIdentitySet(importFiles);
-  const batchItems = identities.size ? allItems.filter((item) => organizerItemMatchesImport(item, identities)) : [];
-  const summaryItems = lastImport ? batchItems : allItems;
   const recentCounts = lastImport ? recentImportStatusCounts(tasks) : null;
+  const summaryItems = recentCounts ? recentCounts.matchedItems : allItems;
   const uploadedCount = recentCounts?.uploadedCount ?? Number(lastImport?.uploaded_count || 0);
-  const matchedCount = recentCounts?.matchedCount ?? batchItems.length;
+  const matchedCount = recentCounts?.matchedCount ?? 0;
 
   const counts = recentCounts?.counts || summaryItems.reduce(
     (result, item) => {
@@ -1119,12 +944,6 @@ function buildLocalImportSummary(tasks) {
     },
     { success: 0, skipped: 0, failed: 0, pending: 0 }
   );
-
-  if (lastImport && !recentCounts && !batchItems.length) {
-    for (const file of importFiles) {
-      countImportStatus(counts, file?.status);
-    }
-  }
 
   if (uploadedCount > 0) {
     const finishedCount = counts.success + counts.skipped + counts.failed;
@@ -1184,6 +1003,7 @@ function startOrganizerRefreshController() {
 }
 
 function stopOrganizerRefreshController() {
+  clearImportPendingCheck();
   organizerTaskRefreshController?.dispose();
   organizerTaskRefreshController = null;
   if (organizerRefreshController) {
@@ -1236,6 +1056,7 @@ async function load({ silent = false } = {}) {
 }
 
 function reconcileImportUploadProgress() {
+  scheduleImportPendingCheck();
   if (!importUploadProgress.visible) {
     return;
   }
@@ -1243,42 +1064,44 @@ function reconcileImportUploadProgress() {
   const lastImport = organizerTasks.value?.last_import;
   const matchingTask = findCurrentImportOrganizerTask();
   const recentStatus = recentImportStatusCounts(tasks);
-  if (
-    lastImport
-    && lastImportUpdatedAfter(lastImport, importUploadProgress.startedAt)
-    && recentStatus.unmatchedFailedCount > 0
-    && !matchingTask
-  ) {
+  const isCurrentBatch = lastImport && lastImportUpdatedAfter(lastImport, importUploadProgress.startedAt);
+  const failedTask = isCurrentBatch ? recentStatus.failedTask : null;
+  if (failedTask || organizerStatusVariant(matchingTask?.status) === "failed" || (isCurrentBatch && recentStatus.outcome === "failed")) {
+    const failure = failedTask || (organizerStatusVariant(matchingTask?.status) === "failed" ? matchingTask : null);
     applyImportUploadProgress({
       phase: "failed",
       status: "failed",
       progress: Math.max(importUploadProgress.progress || 0, IMPORT_PROCESS_PROGRESS_START),
-      message: "后台未接收到上传文件，导入已失败，请重新上传。",
+      message: failure ? organizerTaskMessage(failure) : "后台未接收到部分上传文件，导入未完成，请检查源目录后重试。",
     });
     clearImportUploadProgressStorage();
     return;
   }
-  if (
-    lastImport
-    && lastImportUpdatedAfter(lastImport, importUploadProgress.startedAt)
-    && !hasBackendActiveOrganizeWork(tasks)
-    && lastImportBatchIsTerminal(tasks)
-    && (!matchingTask || organizerStatusVariant(matchingTask.status) !== "success" || matchingTask.snapshot_ready)
-  ) {
+  if (isCurrentBatch && recentStatus.outcome === "success") {
     resetImportUploadProgress();
     return;
   }
-  if (
-    lastImport
-    && lastImportUpdatedAfter(lastImport, importUploadProgress.startedAt)
-    && !hasRecentImportWork()
-    && importUploadProgress.phase === "syncing"
-    && (!matchingTask || organizerStatusVariant(matchingTask.status) !== "success" || matchingTask.snapshot_ready)
-  ) {
-    resetImportUploadProgress();
+  if (isCurrentBatch && recentStatus.outcome === "syncing") {
+    applyImportUploadProgress({
+      phase: "syncing",
+      status: "running",
+      progress: Math.max(importUploadProgress.progress || 0, combinedImportProgress(96)),
+      message: "本地整理已写入，正在刷新本地库列表。",
+    });
     return;
   }
   if (!matchingTask) {
+    if (isCurrentBatch && !importDialog.uploading && recentStatus.uploadedCount > 0) {
+      const finishedCount = recentStatus.counts.success + recentStatus.counts.skipped;
+      applyImportUploadProgress({
+        phase: "syncing",
+        status: "queued",
+        progress: Math.max(importUploadProgress.progress || 0, combinedImportProgress(100 * finishedCount / recentStatus.uploadedCount)),
+        message: finishedCount
+          ? `已完成 ${finishedCount} / ${recentStatus.uploadedCount} 项，等待继续整理。`
+          : "上传完成，等待后台本地整理。",
+      });
+    }
     return;
   }
   const variant = organizerStatusVariant(matchingTask.status);
@@ -1295,22 +1118,34 @@ function reconcileImportUploadProgress() {
     resetImportUploadProgress();
     return;
   }
-  if (variant === "failed") {
-    applyImportUploadProgress({
-      phase: "failed",
-      status: "failed",
-      progress: combinedImportProgress(organizerProgressPercent(matchingTask)),
-      message: organizerTaskMessage(matchingTask),
-    });
-    clearImportUploadProgressStorage();
-    return;
-  }
   applyImportUploadProgress({
     phase: "processing",
     status: matchingTask.status || "running",
     progress: Math.max(importUploadProgress.progress || 0, combinedImportProgress(organizerProgressPercent(matchingTask))),
     message: organizerTaskMessage(matchingTask),
   });
+}
+
+function clearImportPendingCheck() {
+  if (importPendingCheckTimer !== null) {
+    window.clearTimeout(importPendingCheckTimer);
+    importPendingCheckTimer = null;
+  }
+}
+
+function scheduleImportPendingCheck() {
+  clearImportPendingCheck();
+  const lastImport = organizerTasks.value?.last_import;
+  const uploadedAt = Date.parse(String(lastImport?.uploaded_at || ""));
+  const status = recentImportStatusCounts(organizerTasks.value);
+  if (!pageActive.value || !Number.isFinite(uploadedAt) || !importBatchStillFresh(lastImport)
+    || status.uploadedCount <= status.matchedCount) {
+    return;
+  }
+  importPendingCheckTimer = window.setTimeout(() => {
+    importPendingCheckTimer = null;
+    if (pageActive.value) void refreshOrganizerTasks();
+  }, Math.max(1, uploadedAt + LOCAL_IMPORT_PENDING_GRACE_MS - Date.now()));
 }
 
 function clearLibraryCachesAfterImport() {

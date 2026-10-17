@@ -7,11 +7,16 @@ from app.services.local_organizer import LocalOrganizerService, _append_organize
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="makerhub local organizer worker")
-    parser.add_argument("--source-path", required=True)
-    parser.add_argument("--source-dir", required=True)
-    parser.add_argument("--library-root", required=True)
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--source-path")
+    target.add_argument("--package-task-id")
+    parser.add_argument("--source-dir")
+    parser.add_argument("--library-root")
     parser.add_argument("--move-files", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.source_path and (not args.source_dir or not args.library_root):
+        parser.error("--source-dir and --library-root are required with --source-path")
+    return args
 
 
 def main() -> int:
@@ -22,11 +27,25 @@ def main() -> int:
     except OSError:
         pass
 
+    service = LocalOrganizerService()
+    if args.package_task_id:
+        task = next((
+            item for item in service.task_store.load_organize_tasks().get("items") or []
+            if str(item.get("id") or "") == args.package_task_id
+            and str(item.get("kind") or "") == "local_package_import"
+        ), None)
+        if not task or task.get("status") not in {"pending", "queued", "running"}:
+            return 1
+        service._process_package_import_task(task)
+        latest = next((
+            item for item in service.task_store.load_organize_tasks().get("items") or []
+            if str(item.get("id") or "") == args.package_task_id
+        ), {})
+        return 0 if latest.get("status") in {"success", "skipped"} else 1
+
     source_path = Path(args.source_path).expanduser()
     source_dir = Path(args.source_dir).expanduser()
     library_root = Path(args.library_root).expanduser()
-
-    service = LocalOrganizerService()
     try:
         service.process_candidate(
             source_path=source_path,
