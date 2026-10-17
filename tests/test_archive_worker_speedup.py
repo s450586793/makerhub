@@ -196,6 +196,54 @@ class ArchiveWorkerSpeedupTest(unittest.TestCase):
             detail="MakerWorld 每日下载上限暂停已过期，恢复 3MF 下载。",
         )
 
+    def test_three_mf_gate_allows_real_download_to_confirm_updated_cookie(self):
+        snapshot = {
+            "status": "network_error",
+            "reason": "scheduled_cookie_check",
+            "three_mf_gate": "unknown",
+            "three_mf_reason": "cookie_updated",
+            "three_mf_detail": "登录态已更新，正在检测 3MF 下载权限。",
+        }
+        with patch.object(archive_worker_module, "get_account_health", return_value=snapshot), \
+                patch.object(archive_worker_module, "open_three_mf_gate") as open_gate, \
+                patch.object(archive_worker_module, "mark_account_ok") as mark_ok:
+            result = archive_worker_module.three_mf_gate_for_url(
+                "https://makerworld.com/zh/models/2412113",
+                {"source": "global"},
+            )
+
+        self.assertTrue(result["open"])
+        self.assertEqual(result["state"], "unknown")
+        self.assertEqual(result["platform"], "global")
+        self.assertEqual(snapshot["three_mf_gate"], "unknown")
+        open_gate.assert_not_called()
+        mark_ok.assert_not_called()
+
+    def test_three_mf_gate_keeps_confirmed_or_unrelated_blocks_after_cookie_update(self):
+        cases = (
+            ("verification_required", "cookie_updated"),
+            ("cookie_invalid", "cookie_updated"),
+            ("daily_limit", "cookie_updated"),
+            ("unknown", ""),
+        )
+        for gate, reason in cases:
+            with self.subTest(gate=gate, reason=reason), \
+                    patch.object(archive_worker_module, "get_account_health", return_value={
+                        "three_mf_gate": gate,
+                        "three_mf_reason": reason,
+                    }), \
+                    patch.object(archive_worker_module, "_read_three_mf_limit_guard", return_value={"active": True}), \
+                    patch.object(archive_worker_module, "_is_three_mf_limit_guard_active_for_url", return_value=True), \
+                    patch.object(archive_worker_module, "open_three_mf_gate") as open_gate:
+                result = archive_worker_module.three_mf_gate_for_url(
+                    "https://makerworld.com/zh/models/2412113",
+                    {"source": "global"},
+                )
+
+            self.assertFalse(result["open"])
+            self.assertEqual(result["state"], gate)
+            open_gate.assert_not_called()
+
     def test_three_mf_gate_for_url_keeps_active_daily_limit_gate(self):
         guard = {
             "active": True,

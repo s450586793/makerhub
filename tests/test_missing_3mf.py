@@ -843,6 +843,54 @@ class Missing3mfTest(unittest.TestCase):
         manager.task_store.load_missing_3mf.assert_not_called()
         manager.retry_missing_3mf.assert_not_called()
 
+    def test_idle_missing_retry_confirms_updated_global_cookie_without_unblocking_cn(self):
+        manager = ArchiveTaskManager(background_enabled=False)
+        manager.task_store = SimpleNamespace(
+            load_archive_queue_compact=lambda **_kwargs: {"queued_count": 0, "running_count": 0},
+            load_missing_3mf=lambda: {
+                "items": [
+                    {
+                        "model_id": model_id,
+                        "model_url": f"https://{host}/zh/models/{model_id}",
+                        "source": source,
+                        "status": "http_error",
+                        "updated_at": updated_at,
+                    }
+                    for source, host, model_id, updated_at in (
+                        ("cn", "makerworld.com.cn", "cn-blocked", "2026-10-15T16:00:00+08:00"),
+                        ("global", "makerworld.com", "global-old", "2026-10-15T16:00:00+08:00"),
+                        ("global", "makerworld.com", "global-next", "2026-10-15T17:00:00+08:00"),
+                        ("global", "makerworld.com", "global-recent", "2026-10-17T09:59:00+08:00"),
+                    )
+                ],
+            },
+        )
+        manager.retry_missing_3mf = Mock(return_value={"accepted": True})
+        health = {
+            "cn": {"three_mf_gate": "verification_required", "three_mf_reason": "three_mf_download_failed"},
+            "global": {"three_mf_gate": "unknown", "three_mf_reason": "cookie_updated"},
+        }
+        with patch.object(archive_worker_module, "get_account_health", side_effect=health.__getitem__), \
+                patch.object(archive_worker_module, "append_business_log"):
+            result = manager.retry_idle_missing_3mf(
+                limit=4,
+                now=datetime.fromisoformat("2026-10-17T10:00:00+08:00"),
+            )
+
+        self.assertEqual(result["accepted_count"], 1)
+        self.assertEqual(result["attempted_count"], 1)
+        self.assertEqual(result["gated_count"], 1)
+        self.assertEqual(result["cooldown_count"], 1)
+        manager.retry_missing_3mf.assert_called_once_with(
+            model_url="https://makerworld.com/zh/models/global-old",
+            model_id="global-old",
+            source="global",
+            title="",
+            instance_id="",
+        )
+        self.assertEqual(health["global"]["three_mf_gate"], "unknown")
+        self.assertEqual(health["cn"]["three_mf_gate"], "verification_required")
+
     def test_retry_verification_missing_counts_merged_retry_as_queued(self):
         manager = ArchiveTaskManager()
         manager.task_store = SimpleNamespace(

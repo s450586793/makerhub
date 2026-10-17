@@ -886,6 +886,10 @@ def three_mf_gate_for_url(url: str, meta: Optional[dict[str, Any]] = None) -> di
     if gate in {"", "open", "ok"}:
         return {"open": True, "state": "open", "message": "", "platform": platform}
 
+    if gate == "unknown" and str(snapshot.get("three_mf_reason") or "").strip() == "cookie_updated":
+        # 登录态更新后的权限由真实补档确认，不能阻塞负责确认的下载任务。
+        return {"open": True, "state": "unknown", "message": "", "platform": platform}
+
     if gate == "daily_limit":
         limit_guard = _read_three_mf_limit_guard()
         if not _is_three_mf_limit_guard_active_for_url(url, limit_guard):
