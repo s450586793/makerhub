@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.20.12`
+> 当前版本：`v0.20.13`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -363,6 +363,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-10-17 · v0.20.13
+
+- 指纹浏览器管理接口不再继承归档任务的业务代理，修复国际区手动下载正常、自动补档却返回 HTTP 502 的问题。
+- 保留国际站浏览器出网代理、登录资料与下载验证、限额规则。
+
 ### 2026-10-17 · v0.20.12
 
 - MakerWorld 3MF 修改后可按模型 ID 并入原模型，按文件 SHA-256 去重，保留原文件、来源配置 ID 和模型资料。
@@ -376,13 +381,13 @@ npm --prefix frontend run build
 - 优先复用文件直链，明确失效后每轮最多重新授权一次；传输前保存新地址，减少重复授权。
 - 持续的 CF 验证页明确提示浏览器验证并暂停补下载，不再泛化为 HTTP 错误。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-09-25 · v0.20.10
 
 - 设置页标题与右上角账号头像同排，减少顶部留白。
 - 窄屏标题自动换行，保留导航和账号操作，兼容深浅色主题。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-09-24 · v0.20.9
 

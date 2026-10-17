@@ -251,13 +251,16 @@ def _request_headers() -> dict[str, str]:
 
 def _request(method: str, path: str, *, json_payload: dict[str, Any] | None = None) -> Any:
     try:
-        response = requests.request(
-            method,
-            f"{_configured_url()}{path}",
-            headers=_request_headers(),
-            json=json_payload,
-            timeout=_timeout_seconds(),
-        )
+        with requests.Session() as session:
+            # 浏览器管理接口不应继承 MakerWorld 任务的业务代理。
+            session.trust_env = False
+            response = session.request(
+                method,
+                f"{_configured_url()}{path}",
+                headers=_request_headers(),
+                json=json_payload,
+                timeout=_timeout_seconds(),
+            )
     except CloakBrowserError:
         raise
     except Exception as exc:

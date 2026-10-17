@@ -236,7 +236,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
             os.environ,
             {"MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080"},
             clear=True,
-        ), patch.object(cloakbrowser_session.requests, "request") as request_mock:
+        ), patch.object(cloakbrowser_session.requests.Session, "request") as request_mock:
             with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserUnavailable, "AUTH_TOKEN"):
                 cloakbrowser_session._request("GET", "/api/profiles")
 
@@ -252,13 +252,49 @@ class CloakBrowserSessionTest(unittest.TestCase):
                 "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
             },
             clear=True,
-        ), patch.object(cloakbrowser_session.requests, "request", return_value=response) as request_mock:
+        ), patch.object(cloakbrowser_session.requests.Session, "request", return_value=response) as request_mock:
             cloakbrowser_session._request("GET", "/api/profiles")
 
         self.assertEqual(
             request_mock.call_args.kwargs["headers"],
             {"Authorization": "Bearer secret-token"},
         )
+
+    def test_request_ignores_business_proxy_environment(self):
+        response = cloakbrowser_session.requests.Response()
+        response.status_code = 200
+        response._content = b'{"ok":true}'
+        for method in ("GET", "POST"):
+            with self.subTest(method=method), patch.dict(os.environ, {
+                "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+                "MAKERHUB_CLOAKBROWSER_TIMEOUT": "7",
+                "HTTP_PROXY": "http://business-proxy:7890",
+                "HTTPS_PROXY": "http://business-proxy:7890",
+                "ALL_PROXY": "http://business-proxy:7890",
+                "http_proxy": "http://business-proxy:7890",
+                "https_proxy": "http://business-proxy:7890",
+                "all_proxy": "http://business-proxy:7890",
+                "NO_PROXY": "",
+                "no_proxy": "",
+            }, clear=True), patch.object(
+                cloakbrowser_session.requests.Session, "send", autospec=True, return_value=response,
+            ) as send_mock:
+                before = dict(os.environ)
+
+                result = cloakbrowser_session._request(
+                    method, "/api/profiles", json_payload={"name": "MakerHub Global"},
+                )
+
+                self.assertEqual(result, {"ok": True})
+                send_mock.assert_called_once()
+                prepared = send_mock.call_args.args[1]
+                self.assertEqual(prepared.url, "http://cloakbrowser:8080/api/profiles")
+                self.assertEqual(prepared.method, method)
+                self.assertEqual(prepared.headers["Authorization"], "Bearer secret-token")
+                self.assertEqual(send_mock.call_args.kwargs["proxies"], {})
+                self.assertEqual(send_mock.call_args.kwargs["timeout"], 7)
+                self.assertEqual(dict(os.environ), before)
 
     def test_request_classifies_server_error_as_temporarily_unavailable(self):
         response = Mock(status_code=502, content=b"")
@@ -270,7 +306,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
                 "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
             },
             clear=True,
-        ), patch.object(cloakbrowser_session.requests, "request", return_value=response):
+        ), patch.object(cloakbrowser_session.requests.Session, "request", return_value=response):
             with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserUnavailable, "HTTP 502"):
                 cloakbrowser_session._request("GET", "/api/profiles/profile-cn")
 
