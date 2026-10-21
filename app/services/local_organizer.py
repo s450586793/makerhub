@@ -25,12 +25,14 @@ from app.services.catalog import (
     upsert_archive_snapshot_model,
 )
 from app.services.legacy_archiver import sanitize_filename
+from app.services.local_import_cleanup import staging_in_use
 from app.services.local_import_upload import (
     ATTACHMENT_SUFFIXES,
     LOCAL_IMPORT_UPLOAD_SUBDIR,
     MODEL_SUFFIXES,
     PACKAGE_ARCHIVE_SUFFIXES,
     TEXT_SUFFIXES,
+    _cleanup_stale_staging_dirs,
     queue_local_path_package_import,
     run_queued_package_import_task,
     stage_local_package_path,
@@ -42,6 +44,7 @@ from app.services.three_mf import normalize_makerworld_source, parse_3mf_metadat
 
 ORGANIZER_LOG_PATH = LOGS_DIR / "organizer.log"
 ORGANIZER_POLL_INTERVAL_SECONDS = 5
+ORGANIZER_IMPORT_CLEANUP_INTERVAL_SECONDS = 10 * 60
 ORGANIZER_COOLDOWN_AFTER_WORKER_SECONDS = 8
 ORGANIZER_MIN_FILE_AGE_SECONDS = 2
 ORGANIZER_TASK_LIMIT = 50
@@ -275,6 +278,7 @@ class LocalOrganizerService:
         self._worker_started_at = 0.0
         self._last_worker_finished_at = 0.0
         self._last_memory_release_at = 0.0
+        self._last_import_cleanup_at: float | None = None
 
     def start(self) -> None:
         with self._start_lock:
@@ -343,6 +347,7 @@ class LocalOrganizerService:
     def _run_loop(self) -> None:
         while True:
             try:
+                self._run_import_cleanup_if_due()
                 self.run_once()
             except Exception as exc:
                 _append_organizer_log("loop_error", error=str(exc))
@@ -362,6 +367,16 @@ class LocalOrganizerService:
                     )
                     return
             time.sleep(ORGANIZER_POLL_INTERVAL_SECONDS)
+
+    def _run_import_cleanup_if_due(self) -> None:
+        now = time.monotonic()
+        if (
+            self._last_import_cleanup_at is not None
+            and now - self._last_import_cleanup_at < ORGANIZER_IMPORT_CLEANUP_INTERVAL_SECONDS
+        ):
+            return
+        self._last_import_cleanup_at = now
+        _cleanup_stale_staging_dirs(self.task_store)
 
     def release_idle_memory(self, *, force: bool = False) -> bool:
         if self._worker_process and self._worker_process.poll() is None:
@@ -649,15 +664,16 @@ class LocalOrganizerService:
             staging_dir=staging_dir.as_posix(),
         )
         try:
-            if _coerce_dict(running_task.get("meta")).get("staging_prepared") is False:
-                stage_local_package_path(Path(str(task.get("original_source_path") or task.get("source_path") or "")), staging_dir=staging_dir)
-                running_task = {
-                    **running_task,
-                    "meta": {**_coerce_dict(running_task.get("meta")), "staging_prepared": True},
-                    "updated_at": _now_iso(),
-                }
-                self.task_store.upsert_organize_task(running_task, limit=ORGANIZER_TASK_LIMIT)
-            result = run_queued_package_import_task(running_task, store=self.store, task_store=self.task_store)
+            with staging_in_use(staging_dir):
+                if _coerce_dict(running_task.get("meta")).get("staging_prepared") is False:
+                    stage_local_package_path(Path(str(task.get("original_source_path") or task.get("source_path") or "")), staging_dir=staging_dir)
+                    running_task = {
+                        **running_task,
+                        "meta": {**_coerce_dict(running_task.get("meta")), "staging_prepared": True},
+                        "updated_at": _now_iso(),
+                    }
+                    self.task_store.upsert_organize_task(running_task, limit=ORGANIZER_TASK_LIMIT)
+                result = run_queued_package_import_task(running_task, store=self.store, task_store=self.task_store)
             self._cleanup_finished_package_source(
                 running_task,
                 duplicate=bool(isinstance(result, dict) and result.get("duplicate")),

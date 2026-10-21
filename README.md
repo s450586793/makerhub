@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.20.14`
+> 当前版本：`v0.20.15`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -363,6 +363,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-10-21 · v0.20.15
+
+- 本地导入暂存定期清理，保护排队、运行和可恢复任务，失败暂存按保留期回收。
+- 成功及重复导入后的暂存清理失败会记录日志并重试，完成模型登记和列表校验后才回收暂存。
+
 ### 2026-10-17 · v0.20.14
 
 - 修复本地导入失败后缺少源文件、无法重试的问题，完成元数据登记后再删除源文件。
@@ -374,15 +379,15 @@ npm --prefix frontend run build
 - 指纹浏览器管理接口不再继承归档任务的业务代理，修复国际区手动下载正常、自动补档却返回 HTTP 502 的问题。
 - 保留国际站浏览器出网代理、登录资料与下载验证、限额规则。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-10-17 · v0.20.12
 
 - MakerWorld 3MF 修改后可按模型 ID 并入原模型，按文件 SHA-256 去重，保留原文件、来源配置 ID 和模型资料。
 - 本地版本以上传文件名区分；归档文件缺失或无法读取时，不再仅凭配置 ID 跳过上传。
 - 兼容仅有实例 ID 的旧 MakerWorld 归档，正确去重和标识本地版本，自动重建旧整理索引缓存。
 - 同步浏览器登录态后不再因“检测中”阻塞真实补档，验证、每日限额和重试冷却继续生效。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-09-25 · v0.20.11
 

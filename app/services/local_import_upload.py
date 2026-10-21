@@ -23,6 +23,11 @@ from app.core.timezone import from_timestamp as china_from_timestamp, now_iso as
 from app.services.business_logs import append_business_log
 from app.services.catalog import get_archive_snapshot, invalidate_archive_snapshot, upsert_archive_snapshot_model
 from app.services.legacy_archiver import sanitize_filename
+from app.services.local_import_cleanup import (
+    cleanup_expired_import_staging,
+    cleanup_staging_dir,
+    staging_in_use,
+)
 from app.services.local_model_preview import (
     PACKAGE_INSTANCE_PREVIEW_VERSION,
     ensure_package_preview_images,
@@ -155,16 +160,11 @@ def _unique_directory(parent: Path, name: str) -> Path:
     return candidate
 
 
-def _cleanup_stale_staging_dirs() -> None:
-    if not LOCAL_IMPORT_STAGING_DIR.exists():
-        return
-    cutoff = time.time() - LOCAL_IMPORT_STAGING_TTL_SECONDS
-    for path in LOCAL_IMPORT_STAGING_DIR.iterdir():
-        try:
-            if path.is_dir() and path.stat().st_mtime < cutoff:
-                shutil.rmtree(path, ignore_errors=True)
-        except OSError:
-            continue
+def _cleanup_stale_staging_dirs(task_store: TaskStateStore | None = None) -> dict[str, int]:
+    return cleanup_expired_import_staging(
+        task_store=task_store or TaskStateStore(), root=LOCAL_IMPORT_STAGING_DIR,
+        ttl_seconds=LOCAL_IMPORT_STAGING_TTL_SECONDS,
+    )
 
 
 def _new_staging_dir(*, cleanup_stale: bool = True) -> Path:
@@ -400,6 +400,11 @@ def stage_local_package_path(source_path: Path, *, staging_dir: Path | None = No
         raise ValueError("本地导入源文件不存在。")
 
     staging_dir = staging_dir or _new_staging_dir()
+    with staging_in_use(staging_dir):
+        return _stage_local_package_path(source_path, staging_dir=staging_dir)
+
+
+def _stage_local_package_path(source_path: Path, *, staging_dir: Path) -> tuple[Path, list[dict[str, Any]]]:
     upload_root = staging_dir / "uploads"
     if upload_root.exists():
         shutil.rmtree(upload_root)
@@ -432,7 +437,7 @@ def stage_local_package_path(source_path: Path, *, staging_dir: Path | None = No
             raise ValueError("本地导入源内没有可导入的文件。")
         return staging_dir, staged
     except Exception:
-        shutil.rmtree(staging_dir, ignore_errors=True)
+        cleanup_staging_dir(staging_dir, root=LOCAL_IMPORT_STAGING_DIR)
         raise
 
 
@@ -1483,37 +1488,38 @@ def _upload_legacy_3mf_files(
     staging_dir = _new_staging_dir()
     staged: list[dict[str, Any]] = []
     uploaded: list[dict[str, Any]] = []
-    try:
-        for upload, filename in prepared:
-            staging_path = _unique_destination(staging_dir, filename)
-            size = _copy_upload_to_staging(upload, staging_path, filename)
-            staged.append(
-                {
-                    "file_name": filename,
-                    "staging_path": staging_path.as_posix(),
-                    "size": size,
-                }
-            )
+    with staging_in_use(staging_dir):
+        try:
+            for upload, filename in prepared:
+                staging_path = _unique_destination(staging_dir, filename)
+                size = _copy_upload_to_staging(upload, staging_path, filename)
+                staged.append(
+                    {
+                        "file_name": filename,
+                        "staging_path": staging_path.as_posix(),
+                        "size": size,
+                    }
+                )
 
-        for item in staged:
-            filename = str(item.get("file_name") or "model.3mf")
-            target_path = _unique_destination(upload_dir, filename)
-            _move_staged_file_to_target(Path(str(item.get("staging_path") or "")), target_path)
-            uploaded.append(
-                {
-                    "file_name": filename,
-                    "source_path": target_path.as_posix(),
-                    "size": int(item.get("size") or 0),
-                }
-            )
-    except Exception:
-        for item in uploaded:
-            Path(str(item.get("source_path") or "")).unlink(missing_ok=True)
-        for item in staged:
-            Path(str(item.get("staging_path") or "")).unlink(missing_ok=True)
-        raise
-    finally:
-        shutil.rmtree(staging_dir, ignore_errors=True)
+            for item in staged:
+                filename = str(item.get("file_name") or "model.3mf")
+                target_path = _unique_destination(upload_dir, filename)
+                _move_staged_file_to_target(Path(str(item.get("staging_path") or "")), target_path)
+                uploaded.append(
+                    {
+                        "file_name": filename,
+                        "source_path": target_path.as_posix(),
+                        "size": int(item.get("size") or 0),
+                    }
+                )
+        except Exception:
+            for item in uploaded:
+                Path(str(item.get("source_path") or "")).unlink(missing_ok=True)
+            for item in staged:
+                Path(str(item.get("staging_path") or "")).unlink(missing_ok=True)
+            raise
+        finally:
+            cleanup_staging_dir(staging_dir, root=LOCAL_IMPORT_STAGING_DIR)
 
     append_business_log(
         "organizer",
@@ -1564,7 +1570,6 @@ def _run_package_import_from_staging(
 
     source_dir_text = source_dir.as_posix() if str(source_dir) != "." else ""
     model_root: Path | None = None
-    cleanup_staging = False
     try:
         _upsert_package_progress(
             task_store=task_store,
@@ -1643,7 +1648,7 @@ def _run_package_import_from_staging(
                 file_count=len(uploaded_3mf),
                 package_source=package_source,
             )
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            cleanup_staging_dir(staging_dir, root=LOCAL_IMPORT_STAGING_DIR)
             return {
                 "success": True,
                 "mode": "3mf_split",
@@ -1699,7 +1704,7 @@ def _run_package_import_from_staging(
                 source_dir=source_dir_text,
                 upload_dir=staging_dir.as_posix(),
             )
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            cleanup_staging_dir(staging_dir, root=LOCAL_IMPORT_STAGING_DIR)
             return {
                 "success": False,
                 "mode": "package",
@@ -1802,7 +1807,6 @@ def _run_package_import_from_staging(
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         if preview_queued:
             mark_local_preview_queue_updated("local_package_import", model_dir=model_root.relative_to(ARCHIVE_DIR).as_posix())
-        cleanup_staging = True
     except Exception as exc:
         _upsert_package_progress(
             task_store=task_store,
@@ -1821,10 +1825,6 @@ def _run_package_import_from_staging(
         if model_root and model_root.exists():
             shutil.rmtree(model_root, ignore_errors=True)
         raise
-    finally:
-        if cleanup_staging:
-            shutil.rmtree(staging_dir, ignore_errors=True)
-
     model_dir = _model_root_string(model_root)
     uploaded = [
         {
@@ -1878,6 +1878,8 @@ def _run_package_import_from_staging(
         preserve_task_metadata=True,
     )
 
+    cleanup_staging_dir(staging_dir, root=LOCAL_IMPORT_STAGING_DIR)
+
     append_business_log(
         "organizer",
         "local_import_package_imported",
@@ -1922,14 +1924,15 @@ def run_queued_package_import_task(
     task_id = str(task.get("id") or "").strip() or _package_task_id(staging_dir)
     title = str(task.get("package_title") or task.get("title") or staging_dir.name).strip() or "本地模型导入"
     package_source = str(task.get("package_source") or task.get("source_path") or title).strip() or title
-    return _run_package_import_from_staging(
-        staging_dir=staging_dir,
-        task_id=task_id,
-        title=title,
-        package_source=package_source,
-        store=store or JsonStore(),
-        task_store=task_store or TaskStateStore(),
-    )
+    with staging_in_use(staging_dir):
+        return _run_package_import_from_staging(
+            staging_dir=staging_dir,
+            task_id=task_id,
+            title=title,
+            package_source=package_source,
+            store=store or JsonStore(),
+            task_store=task_store or TaskStateStore(),
+        )
 
 
 def upload_local_import_files(
