@@ -475,8 +475,10 @@ def _archive_url(relative_path: Path) -> str:
     return f"/archive/{quote(relative_path.as_posix(), safe='/')}"
 
 
-def _iter_local_candidates(model_root: Path, ref: str) -> list[Path]:
-    clean = ref.split("#", 1)[0].split("?", 1)[0].strip().lstrip("/")
+def _iter_local_candidates(model_root: Path, ref: str, *, literal: bool = False) -> list[Path]:
+    # 元数据保存原始文件名，HTML 引用才按 URL 解析查询参数和片段。
+    clean = ref if literal else ref.split("#", 1)[0].split("?", 1)[0]
+    clean = clean.strip().lstrip("/")
     if not clean:
         return []
 
@@ -497,11 +499,11 @@ def _iter_local_candidates(model_root: Path, ref: str) -> list[Path]:
     return candidates
 
 
-def _local_asset_url(model_root: Path, ref: str) -> Optional[str]:
+def _local_asset_url(model_root: Path, ref: str, *, literal: bool = False) -> Optional[str]:
     if not ref or ref.startswith(("http://", "https://", "data:", "//")):
         return None
 
-    candidates = _iter_local_candidates(model_root, ref)
+    candidates = _iter_local_candidates(model_root, ref, literal=literal)
     if not candidates:
         return None
 
@@ -519,7 +521,7 @@ def _existing_local_asset_url(model_root: Path, ref: str) -> Optional[str]:
     if not ref or ref.startswith(("http://", "https://", "data:", "//")):
         return None
 
-    candidates = _iter_local_candidates(model_root, ref)
+    candidates = _iter_local_candidates(model_root, ref, literal=True)
     if not candidates:
         return None
 
@@ -1010,7 +1012,7 @@ def _build_dashboard_subscriptions_light(config) -> dict[str, Any]:
 
 def _asset_url_from_item(model_root: Path, item: Any) -> Optional[str]:
     if isinstance(item, str):
-        return _local_asset_url(model_root, item) or _remote_asset_url(item)
+        return _local_asset_url(model_root, item, literal=True) or _remote_asset_url(item)
 
     if not isinstance(item, dict):
         return None
@@ -1027,7 +1029,7 @@ def _asset_url_from_item(model_root: Path, item: Any) -> Optional[str]:
     for key in local_keys:
         candidate = item.get(key)
         if isinstance(candidate, str):
-            local = _local_asset_url(model_root, candidate)
+            local = _local_asset_url(model_root, candidate, literal=True)
             if local:
                 return local
 
@@ -1636,7 +1638,7 @@ def _normalize_local_import_groups(meta: dict, model_root: Path) -> list[dict]:
         if not isinstance(group, dict):
             continue
         download_ref = str(group.get("downloadLocal") or "").strip()
-        download_url = _local_asset_url(model_root, download_ref) if download_ref else None
+        download_url = _local_asset_url(model_root, download_ref, literal=True) if download_ref else None
         model_files = group.get("modelFiles") if isinstance(group.get("modelFiles"), list) else []
         normalized.append(
             {

@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.20.15`
+> 当前版本：`v0.20.16`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -363,6 +363,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-10-22 · v0.20.16
+
+- 修复文件名含 `#`、`?` 时，本地模型详情缺失下载链接的问题。
+- 模型、图片、附件和模型包保留原始文件名，HTML 中的 URL 继续按查询参数和片段规则处理。
+
 ### 2026-10-21 · v0.20.15
 
 - 本地导入暂存定期清理，保护排队、运行和可恢复任务，失败暂存按保留期回收。
@@ -374,13 +379,13 @@ npm --prefix frontend run build
 - `3MF + README` 文件夹保留模型包和说明文件，上传任务 ID 在后台接管后保持一致。
 - 模型包采用可超时回收的独立进程；修复同名旧任务误判完成，以及失败进度静默消失的问题。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-10-17 · v0.20.13
 
 - 指纹浏览器管理接口不再继承归档任务的业务代理，修复国际区手动下载正常、自动补档却返回 HTTP 502 的问题。
 - 保留国际站浏览器出网代理、登录资料与下载验证、限额规则。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-10-17 · v0.20.12
 
