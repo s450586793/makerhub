@@ -48,7 +48,7 @@ from app.services.three_mf import (
     release_three_mf_inspect_cache,
     resolve_model_instance_files,
 )
-from app.services.local_model_preview import build_local_preview_state
+from app.services.local_model_preview import build_local_preview_state, local_model_metadata_slot
 
 
 SOURCE_LABELS = {
@@ -3018,16 +3018,22 @@ def get_model_detail(model_dir: str, include_detail: bool = True) -> Optional[di
         except (json.JSONDecodeError, OSError):
             raw_meta = {}
         if isinstance(raw_meta, dict) and _normalize_source(raw_meta, target.relative_to(ARCHIVE_DIR.resolve())) == "local":
-            preview_state = build_local_preview_state(raw_meta, target)
-            if preview_state.get("metadata_changed"):
-                raw_meta["update_time"] = china_now_iso()
-                meta_path.write_text(json.dumps(raw_meta, ensure_ascii=False, indent=2), encoding="utf-8")
-                if preview_state.get("needs_generation"):
-                    from app.services.local_preview_worker import mark_local_preview_queue_updated
+            with local_model_metadata_slot(target):
+                try:
+                    raw_meta = _read_json(meta_path)
+                except (json.JSONDecodeError, OSError):
+                    raw_meta = {}
+                if isinstance(raw_meta, dict) and _normalize_source(raw_meta, target.relative_to(ARCHIVE_DIR.resolve())) == "local":
+                    preview_state = build_local_preview_state(raw_meta, target)
+                    if preview_state.get("metadata_changed"):
+                        raw_meta["update_time"] = china_now_iso()
+                        meta_path.write_text(json.dumps(raw_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+                        if preview_state.get("needs_generation"):
+                            from app.services.local_preview_worker import mark_local_preview_queue_updated
 
-                    mark_local_preview_queue_updated("local_preview_queued_from_detail", model_dir=clean_model_dir)
-                invalidate_model_detail_cache(clean_model_dir)
-                invalidate_archive_snapshot("local_preview_state_updated_from_detail")
+                            mark_local_preview_queue_updated("local_preview_queued_from_detail", model_dir=clean_model_dir)
+                        invalidate_model_detail_cache(clean_model_dir)
+                        invalidate_archive_snapshot("local_preview_state_updated_from_detail")
 
     detail: Optional[dict]
     if include_detail:

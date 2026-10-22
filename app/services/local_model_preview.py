@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,7 @@ from typing import Any
 from app.core.settings import ARCHIVE_DIR
 from app.core.timezone import now_iso as china_now_iso
 from app.services.legacy_archiver import sanitize_filename
+from app.services.resource_limiter import resource_slot
 
 
 MODEL_PREVIEW_SUFFIXES = {".3mf", ".obj", ".stl"}
@@ -111,9 +113,77 @@ def _instance_key(item: dict[str, Any], index: int) -> str:
     return str(item.get("id") or item.get("profileId") or index + 1)
 
 
+def local_model_metadata_slot(model_root: Path):
+    return resource_slot(f"local_model_metadata:{model_root.resolve().as_posix()}")
+
+
+def image_cover_priority(item: Any) -> int:
+    if is_generated_preview_item(item):
+        return 100
+    if isinstance(item, dict):
+        names = [item.get(key) for key in ("originalName", "fileName", "relPath", "localName", "path")]
+    else:
+        names = [item]
+    name = " ".join(Path(str(value or "")).stem.lower() for value in names)
+    if re.search(r"(?:^|[^a-z])(?:instructions?|dimensions?|drawings?|diagram|sizing)(?:$|[^a-z])", name) or any(
+        word in name for word in ("尺寸", "说明", "步骤", "装配图", "工程图", "支撑")
+    ):
+        return 20
+    if re.search(r"(?:^|[^a-z])(?:cover|main|complete|assembled|finished|render|preview)(?:$|[^a-z])", name) or any(
+        word in name for word in ("成品", "整机", "全身", "渲染", "封面", "效果", "预览")
+    ):
+        return 0
+    return 10
+
+
+def has_manual_local_model_cover(meta: dict[str, Any]) -> bool:
+    local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
+    return bool(meta.get("cover")) and local_import.get("coverSelection") == "manual"
+
+
+def promote_local_model_cover(meta: dict[str, Any]) -> bool:
+    if has_manual_local_model_cover(meta):
+        return False
+    cover = meta.get("cover")
+    local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
+    # 既有原图没有选择来源标记时，保留可能由用户设定的封面。
+    if cover and not is_generated_preview_item(cover) and local_import.get("coverSelection") != "automatic":
+        return False
+    images = meta.get("designImages") if isinstance(meta.get("designImages"), list) else []
+    candidates = [item for item in images if _first_relative_file_ref([item])]
+    if not candidates:
+        return False
+    selected = min(candidates, key=image_cover_priority)
+    selected_ref = _first_relative_file_ref([selected])
+    if selected_ref == cover:
+        return False
+    meta["cover"] = selected_ref
+    meta["designImages"] = [selected, *(item for item in images if item is not selected)]
+    _local_import_meta(meta)["coverSelection"] = "automatic"
+    return True
+
+
+def _preview_instance_priority(item: dict[str, Any]) -> int:
+    name = Path(str(item.get("fileName") or item.get("name") or "")).stem.lower()
+    is_part = re.search(r"(?:^|[^a-z])(?:arm|leg|head|hand|bottom|base|section|part)(?:$|[^a-z])", name) or any(
+        word in name for word in ("零件", "底壳", "底座", "手臂", "躯干")
+    )
+    if is_part:
+        return 20
+    if re.search(r"(?:^|[^a-z])(?:complete|assembled|full|whole)(?:$|[^a-z])", name) or any(
+        word in name for word in ("整机", "完整", "整体", "合体", "组装完成")
+    ):
+        return 0
+    return 10
+
+
 def first_previewable_instance(meta: dict[str, Any], model_root: Path | None = None) -> dict[str, str]:
     instances = meta.get("instances") if isinstance(meta.get("instances"), list) else []
-    for index, item in enumerate(instances):
+    ordered_instances = sorted(
+        ((index, item) for index, item in enumerate(instances) if isinstance(item, dict)),
+        key=lambda indexed: _preview_instance_priority(indexed[1]),
+    )
+    for index, item in ordered_instances:
         if not isinstance(item, dict):
             continue
         file_name = Path(str(item.get("fileName") or item.get("name") or "")).name
@@ -165,20 +235,25 @@ def _has_current_three_preview(meta: dict[str, Any], model_root: Path) -> bool:
     )
 
 
+def mark_local_preview_not_needed(meta: dict[str, Any]) -> bool:
+    local_import = _local_import_meta(meta)
+    changed = False
+    if bool(local_import.get("previewNeedsGeneration")):
+        local_import["previewNeedsGeneration"] = False
+        changed = True
+    if str(local_import.get("previewStatus") or "").strip().lower() in {"pending", "running"}:
+        local_import["previewStatus"] = "skipped"
+        changed = True
+    return changed
+
+
 def _update_preview_pending_state(meta: dict[str, Any], *, model_root: Path | None = None) -> bool:
     if str(meta.get("source") or "").strip().lower() != "local":
         return False
     local_import = _local_import_meta(meta)
 
-    if meta_has_user_images(meta):
-        changed = False
-        if bool(local_import.get("previewNeedsGeneration")):
-            local_import["previewNeedsGeneration"] = False
-            changed = True
-        if str(local_import.get("previewStatus") or "").strip().lower() in {"pending", "running"}:
-            local_import["previewStatus"] = "skipped"
-            changed = True
-        return changed
+    if meta_has_user_images(meta) or has_manual_local_model_cover(meta):
+        return mark_local_preview_not_needed(meta)
 
     candidate = first_previewable_instance(meta, model_root=model_root)
     if not candidate:
@@ -202,7 +277,7 @@ def _update_preview_pending_state(meta: dict[str, Any], *, model_root: Path | No
             "previewVersion": PREVIEW_VERSION,
             "previewStatus": "success",
             "previewNeedsGeneration": False,
-            "previewSourceFileName": candidate.get("file_name") or "",
+            "previewSourceFileName": local_import.get("previewSourceFileName") or candidate.get("file_name") or "",
         }
         for key, value in updates.items():
             if local_import.get(key) != value:
@@ -257,7 +332,7 @@ def build_local_preview_state(meta: dict[str, Any], model_root: Path) -> dict[st
     has_current_preview = _has_current_three_preview(meta, model_root)
     uses_legacy_preview = meta_uses_legacy_generated_preview(meta)
     terminal = status in PREVIEW_TERMINAL_STATUSES and version >= PREVIEW_VERSION
-    needs_generation = bool(candidate) and not has_user_images and not terminal and (uses_legacy_preview or not has_current_preview)
+    needs_generation = bool(candidate) and not has_user_images and not has_manual_local_model_cover(meta) and not terminal and (uses_legacy_preview or not has_current_preview)
 
     if needs_generation and status not in {"pending", "running"}:
         status = "pending"
@@ -428,6 +503,14 @@ def apply_generated_preview_image(
     if len(image_bytes) > 8 * 1024 * 1024:
         raise ValueError("预览图过大。")
 
+    if has_manual_local_model_cover(meta) and is_generated_preview_item(meta.get("cover")):
+        cover_ref = _first_relative_file_ref([meta.get("cover")])
+        for item in meta.get("designImages") or []:
+            if cover_ref in _relative_file_refs(item):
+                return dict(item) if isinstance(item, dict) else {"relPath": cover_ref}
+        return {"relPath": cover_ref}
+
+    preserve_cover = has_manual_local_model_cover(meta) or meta_has_user_images(meta)
     _unlink_generated_preview_files(model_root, meta)
     images_dir = model_root / PREVIEW_REL_DIR
     images_dir.mkdir(parents=True, exist_ok=True)
@@ -458,8 +541,13 @@ def apply_generated_preview_image(
 
     existing_images = meta.get("designImages") if isinstance(meta.get("designImages"), list) else []
     user_images = [item for item in existing_images if not is_generated_preview_item(item)]
-    meta["cover"] = rel_path
-    meta["designImages"] = [image_item, *user_images]
+    if preserve_cover:
+        meta["designImages"] = [*user_images, image_item]
+        promote_local_model_cover(meta)
+    else:
+        meta["cover"] = rel_path
+        meta["designImages"] = [image_item, *user_images]
+        _local_import_meta(meta)["coverSelection"] = "automatic"
 
     target_instance = _target_preview_instance(
         meta,
@@ -535,7 +623,7 @@ def ensure_package_preview_images(
     for item in model_files:
         target_path = Path(str(item.get("target_path") or ""))
         item["preview_paths"] = _extract_three_mf_preview_images(target_path, images_dir)
-    return image_paths
+    return sorted(image_paths, key=image_cover_priority)
 
 
 def repair_package_instance_preview_images(model_root: Path, meta: dict[str, Any]) -> bool:

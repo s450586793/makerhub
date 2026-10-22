@@ -1,3 +1,7 @@
+import { frameModelPreviewObject } from "../../../app/services/model_preview_framing.mjs";
+
+export { frameModelPreviewObject };
+
 const DEFAULT_MODEL_PREVIEW_MAX_BYTES = 24 * 1024 * 1024;
 const SNAPSHOT_SIZE = 720;
 
@@ -132,41 +136,6 @@ export async function loadModelPreviewObject(THREE, fileUrl, fileName = "") {
     metalness: 0.04,
   });
   return new THREE.Mesh(geometry, material);
-}
-
-export function frameModelPreviewObject(THREE, object, camera, controls = null, grid = null) {
-  const box = new THREE.Box3().setFromObject(object);
-  const size = new THREE.Vector3();
-  const center = new THREE.Vector3();
-  box.getSize(size);
-  box.getCenter(center);
-  object.position.sub(center);
-
-  const maxDim = Math.max(size.x, size.y, size.z, 1);
-  const distance = maxDim * 1.7;
-  const near = Math.max(distance / 100, 0.01);
-  const far = Math.max(distance * 12, 1000);
-  camera.near = near;
-  camera.far = far;
-  camera.position.set(maxDim * 1.18, maxDim * 1.05, maxDim * 1.45);
-  camera.updateProjectionMatrix();
-
-  const target = new THREE.Vector3(0, 0, 0);
-  if (controls) {
-    controls.target.copy(target);
-    controls.minDistance = maxDim * 0.22;
-    controls.maxDistance = maxDim * 8;
-    controls.update();
-  }
-  if (grid) {
-    grid.scale.setScalar(maxDim / 10);
-    grid.position.y = -size.y / 2;
-  }
-  return {
-    position: camera.position.clone(),
-    target,
-    maxDim,
-  };
 }
 
 function createPreviewScene(THREE, { background = 0x111827, withGrid = true } = {}) {

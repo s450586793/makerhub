@@ -25,6 +25,10 @@ from app.services.local_model_preview import (
     apply_generated_preview_image,
     build_local_preview_state,
     first_previewable_instance,
+    has_manual_local_model_cover,
+    local_model_metadata_slot,
+    mark_local_preview_not_needed,
+    meta_has_user_images,
     record_generated_preview_failure,
 )
 
@@ -248,33 +252,34 @@ def find_pending_local_preview_model() -> tuple[Path, dict[str, Any], dict[str, 
         if not model_root.is_relative_to(archive_root) or model_root == archive_root:
             _ack_preview_job(job)
             continue
-        meta_path = model_root / "meta.json"
-        meta = _read_meta(meta_path)
-        if not meta or str(meta.get("source") or "").strip().lower() != "local":
-            _ack_preview_job(job)
-            continue
-        local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
-        persisted_status = str(local_import.get("previewStatus") or "").strip().lower()
-        explicitly_queued = bool(local_import.get("previewNeedsGeneration")) or persisted_status == "running"
-        if not explicitly_queued:
-            _ack_preview_job(job)
-            continue
-        state = build_local_preview_state(meta, model_root)
-        if state and _status(meta) == "running":
-            candidate = state.get("candidate") if isinstance(state.get("candidate"), dict) else {}
-            _mark_preview_pending(meta, candidate)
-            _write_meta(model_root, meta, reason="local_preview_stale_running")
+        with local_model_metadata_slot(model_root):
+            meta_path = model_root / "meta.json"
+            meta = _read_meta(meta_path)
+            if not meta or str(meta.get("source") or "").strip().lower() != "local":
+                _ack_preview_job(job)
+                continue
+            local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
+            persisted_status = str(local_import.get("previewStatus") or "").strip().lower()
+            explicitly_queued = bool(local_import.get("previewNeedsGeneration")) or persisted_status == "running"
+            if not explicitly_queued:
+                _ack_preview_job(job)
+                continue
             state = build_local_preview_state(meta, model_root)
-        if not state.get("needs_generation"):
-            _write_meta(model_root, meta, reason="local_preview_not_needed")
-            _ack_preview_job(job)
-            continue
-        candidate = state.get("candidate") if isinstance(state.get("candidate"), dict) else first_previewable_instance(meta, model_root)
-        if not candidate:
-            _ack_preview_job(job)
-            continue
-        candidate = {**candidate, "queue_job": job}
-        return model_root, meta, candidate
+            if state and _status(meta) == "running":
+                candidate = state.get("candidate") if isinstance(state.get("candidate"), dict) else {}
+                _mark_preview_pending(meta, candidate)
+                _write_meta(model_root, meta, reason="local_preview_stale_running")
+                state = build_local_preview_state(meta, model_root)
+            if not state.get("needs_generation"):
+                _write_meta(model_root, meta, reason="local_preview_not_needed")
+                _ack_preview_job(job)
+                continue
+            candidate = state.get("candidate") if isinstance(state.get("candidate"), dict) else first_previewable_instance(meta, model_root)
+            if not candidate:
+                _ack_preview_job(job)
+                continue
+            candidate = {**candidate, "queue_job": job}
+            return model_root, meta, candidate
     return None
 
 
@@ -290,69 +295,70 @@ def run_local_preview_generation_once() -> dict[str, Any]:
         return result
 
 
+def _skip_local_preview_for_selected_image(model_root: Path, meta: dict[str, Any]) -> bool:
+    if not meta_has_user_images(meta) and not has_manual_local_model_cover(meta):
+        return False
+    mark_local_preview_not_needed(meta)
+    _write_meta(model_root, meta, reason="local_preview_not_needed")
+    return True
+
+
 def _generate_local_preview(pending) -> dict[str, Any]:
     model_root, meta, candidate = pending
     model_dir = _model_dir(model_root)
     source_file_name = Path(str(candidate.get("file_name") or "")).name
     source_instance_key = str(candidate.get("instance_key") or "")
-    model_file = _candidate_path(model_root, candidate)
-    if model_file is None:
-        record_generated_preview_failure(
-            meta,
-            message="没有找到可用于生成封面的模型文件。",
-            status="unsupported",
-            source_file_name=source_file_name,
-            source_instance_key=source_instance_key,
-        )
-        _write_meta(model_root, meta, reason="local_preview_unsupported")
-        return {"processed": True, "status": "unsupported", "model_dir": model_dir}
+    with local_model_metadata_slot(model_root):
+        meta = _read_meta(model_root / "meta.json") or meta
+        if _skip_local_preview_for_selected_image(model_root, meta):
+            return {"processed": True, "status": "skipped", "model_dir": model_dir}
+        model_file = _candidate_path(model_root, candidate)
+        try:
+            file_size = int(model_file.stat().st_size) if model_file is not None else 0
+        except OSError:
+            file_size = 0
+        if model_file is None or file_size <= 0:
+            record_generated_preview_failure(
+                meta,
+                message="没有找到可用于生成封面的模型文件。" if model_file is None else "模型文件为空，已跳过自动封面生成。",
+                status="unsupported",
+                source_file_name=source_file_name,
+                source_instance_key=source_instance_key,
+            )
+            _write_meta(model_root, meta, reason="local_preview_unsupported" if model_file is None else "local_preview_empty_file")
+            return {"processed": True, "status": "unsupported", "model_dir": model_dir}
 
-    try:
-        file_size = int(model_file.stat().st_size)
-    except OSError:
-        file_size = 0
-    if file_size <= 0:
-        record_generated_preview_failure(
-            meta,
-            message="模型文件为空，已跳过自动封面生成。",
-            status="unsupported",
-            source_file_name=source_file_name,
-            source_instance_key=source_instance_key,
-        )
-        _write_meta(model_root, meta, reason="local_preview_empty_file")
-        return {"processed": True, "status": "unsupported", "model_dir": model_dir}
+        if file_size > int(LOCAL_PREVIEW_MAX_BYTES or 24 * 1024 * 1024):
+            record_generated_preview_failure(
+                meta,
+                message=f"模型文件超过自动封面上限 {int(LOCAL_PREVIEW_MAX_BYTES or 0) // 1024 // 1024 or 24} MB，已跳过。",
+                status="too_large",
+                source_file_name=source_file_name,
+                source_instance_key=source_instance_key,
+            )
+            _write_meta(model_root, meta, reason="local_preview_too_large")
+            append_business_log(
+                "model",
+                "local_model_preview_skipped",
+                "本地模型 Three.js 封面已跳过：文件过大。",
+                model_dir=model_dir,
+                source_file_name=source_file_name,
+                file_size=file_size,
+            )
+            return {"processed": True, "status": "too_large", "model_dir": model_dir}
 
-    if file_size > int(LOCAL_PREVIEW_MAX_BYTES or 24 * 1024 * 1024):
-        record_generated_preview_failure(
-            meta,
-            message=f"模型文件超过自动封面上限 {int(LOCAL_PREVIEW_MAX_BYTES or 0) // 1024 // 1024 or 24} MB，已跳过。",
-            status="too_large",
-            source_file_name=source_file_name,
-            source_instance_key=source_instance_key,
+        local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
+        local_import.update(
+            {
+                "previewStatus": "running",
+                "previewNeedsGeneration": True,
+                "previewStartedAt": china_now_iso(),
+                "previewSourceFileName": source_file_name,
+                "previewSourceInstanceKey": source_instance_key,
+            }
         )
-        _write_meta(model_root, meta, reason="local_preview_too_large")
-        append_business_log(
-            "model",
-            "local_model_preview_skipped",
-            "本地模型 Three.js 封面已跳过：文件过大。",
-            model_dir=model_dir,
-            source_file_name=source_file_name,
-            file_size=file_size,
-        )
-        return {"processed": True, "status": "too_large", "model_dir": model_dir}
-
-    local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
-    local_import.update(
-        {
-            "previewStatus": "running",
-            "previewNeedsGeneration": True,
-            "previewStartedAt": china_now_iso(),
-            "previewSourceFileName": source_file_name,
-            "previewSourceInstanceKey": source_instance_key,
-        }
-    )
-    meta["localImport"] = local_import
-    _write_meta(model_root, meta, reason="local_preview_started")
+        meta["localImport"] = local_import
+        _write_meta(model_root, meta, reason="local_preview_started")
     append_business_log(
         "model",
         "local_model_preview_started",
@@ -364,18 +370,21 @@ def _generate_local_preview(pending) -> dict[str, Any]:
 
     try:
         image_bytes = _render_preview_png(model_file, source_file_name)
-        if not _preview_job_is_current(candidate):
-            return {"processed": True, "status": "superseded", "model_dir": model_dir}
-        refreshed_meta = _read_meta(model_root / "meta.json") or meta
-        apply_generated_preview_image(
-            model_root=model_root,
-            meta=refreshed_meta,
-            image_bytes=image_bytes,
-            mime_type="image/png",
-            source_file_name=source_file_name,
-            source_instance_key=source_instance_key,
-        )
-        _write_meta(model_root, refreshed_meta, reason="local_preview_generated")
+        with local_model_metadata_slot(model_root):
+            if not _preview_job_is_current(candidate):
+                return {"processed": True, "status": "superseded", "model_dir": model_dir}
+            refreshed_meta = _read_meta(model_root / "meta.json") or meta
+            if _skip_local_preview_for_selected_image(model_root, refreshed_meta):
+                return {"processed": True, "status": "skipped", "model_dir": model_dir}
+            apply_generated_preview_image(
+                model_root=model_root,
+                meta=refreshed_meta,
+                image_bytes=image_bytes,
+                mime_type="image/png",
+                source_file_name=source_file_name,
+                source_instance_key=source_instance_key,
+            )
+            _write_meta(model_root, refreshed_meta, reason="local_preview_generated")
         append_business_log(
             "model",
             "local_model_preview_generated",
@@ -392,17 +401,20 @@ def _generate_local_preview(pending) -> dict[str, Any]:
         failure_status = "failed"
         message = str(exc) or "Three.js 预览图生成失败。"
 
-    if not _preview_job_is_current(candidate):
-        return {"processed": True, "status": "superseded", "model_dir": model_dir}
-    refreshed_meta = _read_meta(model_root / "meta.json") or meta
-    record_generated_preview_failure(
-        refreshed_meta,
-        message=message,
-        status=failure_status,
-        source_file_name=source_file_name,
-        source_instance_key=source_instance_key,
-    )
-    _write_meta(model_root, refreshed_meta, reason="local_preview_failed")
+    with local_model_metadata_slot(model_root):
+        if not _preview_job_is_current(candidate):
+            return {"processed": True, "status": "superseded", "model_dir": model_dir}
+        refreshed_meta = _read_meta(model_root / "meta.json") or meta
+        if _skip_local_preview_for_selected_image(model_root, refreshed_meta):
+            return {"processed": True, "status": "skipped", "model_dir": model_dir}
+        record_generated_preview_failure(
+            refreshed_meta,
+            message=message,
+            status=failure_status,
+            source_file_name=source_file_name,
+            source_instance_key=source_instance_key,
+        )
+        _write_meta(model_root, refreshed_meta, reason="local_preview_failed")
     append_business_log(
         "model",
         "local_model_preview_failed",

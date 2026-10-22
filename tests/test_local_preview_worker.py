@@ -163,6 +163,65 @@ class LocalPreviewWorkerTest(unittest.TestCase):
             self.assertEqual(meta["designImages"][0]["kind"], "generated_three_preview")
             self.assertEqual(detail["local_preview"]["status"], "success")
 
+    def test_worker_preserves_original_added_while_rendering(self):
+        for render_fails in (False, True):
+            with self.subTest(render_fails=render_fails), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                model = _write_model(root)
+
+                def render(*args):
+                    meta_path = model / "meta.json"
+                    meta = json.loads(meta_path.read_text())
+                    (model / "images" / "finished.png").write_bytes(b"original")
+                    meta["cover"] = "images/finished.png"
+                    meta["designImages"] = [{"relPath": "images/finished.png"}]
+                    meta_path.write_text(json.dumps(meta))
+                    if render_fails:
+                        raise RuntimeError("render failed after upload")
+                    return PNG_BYTES
+
+                with patch.object(local_preview_worker, "ARCHIVE_DIR", root), \
+                        patch.object(catalog, "ARCHIVE_DIR", root), \
+                        patch.object(local_preview_worker, "_render_preview_png", side_effect=render), \
+                        patch.object(local_preview_worker, "append_business_log"):
+                    local_preview_worker.mark_local_preview_queue_updated("test upload race", model_dir="LOCAL_Cube")
+                    result = local_preview_worker.run_local_preview_generation_once()
+
+                meta = json.loads((model / "meta.json").read_text())
+                self.assertEqual(result["status"], "skipped")
+                self.assertEqual(meta["cover"], "images/finished.png")
+                self.assertEqual(meta["designImages"], [{"relPath": "images/finished.png"}])
+                self.assertFalse(meta["localImport"]["previewNeedsGeneration"])
+                self.assertEqual(meta["localImport"]["previewStatus"], "skipped")
+                self.assertFalse((model / "images" / "three_preview_cube.png").exists())
+
+    def test_worker_preserves_generated_cover_manually_selected_while_rendering(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            model = _write_model(root)
+            ref = "images/stl_preview_chosen.svg"
+
+            def render(*args):
+                meta_path = model / "meta.json"
+                meta = json.loads(meta_path.read_text())
+                (model / ref).write_bytes(b"chosen")
+                meta["cover"] = ref
+                meta["designImages"] = [{"relPath": ref, "kind": "generated_stl_preview"}]
+                meta["localImport"]["coverSelection"] = "manual"
+                meta_path.write_text(json.dumps(meta))
+                return PNG_BYTES
+
+            with patch.object(local_preview_worker, "ARCHIVE_DIR", root), \
+                    patch.object(catalog, "ARCHIVE_DIR", root), \
+                    patch.object(local_preview_worker, "_render_preview_png", side_effect=render), \
+                    patch.object(local_preview_worker, "append_business_log"):
+                result = local_preview_worker.run_local_preview_generation_once()
+
+            meta = json.loads((model / "meta.json").read_text())
+            self.assertEqual(result["status"], "skipped")
+            self.assertEqual(meta["cover"], ref)
+            self.assertEqual((model / ref).read_bytes(), b"chosen")
+
     def test_worker_skips_too_large_pending_preview(self):
         with tempfile.TemporaryDirectory() as tmp:
             archive_root = Path(tmp).resolve()

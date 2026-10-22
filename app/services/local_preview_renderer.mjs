@@ -1,4 +1,6 @@
 import fs from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -14,6 +16,7 @@ const THREE_ADDONS_URL = pathToFileURL(path.join(FRONTEND_NODE_MODULES, "three",
 const STL_LOADER_URL = pathToFileURL(path.join(FRONTEND_NODE_MODULES, "three", "examples", "jsm", "loaders", "STLLoader.js")).href;
 const OBJ_LOADER_URL = pathToFileURL(path.join(FRONTEND_NODE_MODULES, "three", "examples", "jsm", "loaders", "OBJLoader.js")).href;
 const THREE_MF_LOADER_URL = pathToFileURL(path.join(FRONTEND_NODE_MODULES, "three", "examples", "jsm", "loaders", "3MFLoader.js")).href;
+const FRAMING_MODULE_URL = new URL("./model_preview_framing.mjs", import.meta.url).href;
 
 function parseArgs(argv) {
   const args = {};
@@ -64,8 +67,7 @@ function escapeScriptValue(value) {
   return JSON.stringify(String(value || ""));
 }
 
-function buildRendererHtml({ inputPath, inputName, outputPath, size }) {
-  const inputUrl = pathToFileURL(inputPath).href;
+function buildRendererHtml({ inputUrl, inputName, outputPath, size }) {
   const outputUrl = pathToFileURL(outputPath).href;
   return `<!doctype html>
 <html>
@@ -93,6 +95,7 @@ const inputName = ${escapeScriptValue(inputName)};
 const outputUrl = ${escapeScriptValue(outputUrl)};
 const size = ${Number(size) || 720};
 const THREE = await import(${escapeScriptValue(THREE_MODULE_URL)});
+const { frameModelPreviewObject } = await import(${escapeScriptValue(FRAMING_MODULE_URL)});
 
 function normalizeModelPreviewObject(object) {
   object.updateMatrixWorld(true);
@@ -149,26 +152,6 @@ async function loadObject() {
   return new THREE.Mesh(geometry, material);
 }
 
-function frameObject(object, camera, grid) {
-  const box = new THREE.Box3().setFromObject(object);
-  const modelSize = new THREE.Vector3();
-  const center = new THREE.Vector3();
-  box.getSize(modelSize);
-  box.getCenter(center);
-  object.position.sub(center);
-  const maxDim = Math.max(modelSize.x, modelSize.y, modelSize.z, 1);
-  const distance = maxDim * 1.7;
-  camera.near = Math.max(distance / 100, 0.01);
-  camera.far = Math.max(distance * 12, 1000);
-  camera.position.set(maxDim * 1.18, maxDim * 1.05, maxDim * 1.45);
-  camera.lookAt(0, 0, 0);
-  camera.updateProjectionMatrix();
-  if (grid) {
-    grid.scale.setScalar(maxDim / 10);
-    grid.position.y = -modelSize.y / 2;
-  }
-}
-
 async function writePng(dataUrl) {
   await window.__makerhubWriteBase64File(outputUrl, dataUrl.split(",", 2)[1] || "");
 }
@@ -203,7 +186,7 @@ try {
 
   const object = await loadObject();
   scene.add(object);
-  frameObject(object, camera, grid);
+  frameModelPreviewObject(THREE, object, camera, null, grid);
   renderer.render(scene, camera);
   await writePng(canvas.toDataURL("image/png", 0.92));
   window.__MAKERHUB_RENDER_RESULT__ = { ok: true };
@@ -228,26 +211,46 @@ async function main() {
   if (!inputPath || !outputPath) {
     throw new Error("Usage: local_preview_renderer.mjs --input <model> --output <png> [--name name]");
   }
-  await fs.access(inputPath);
+  const inputStat = await fs.stat(inputPath);
   const executablePath = await resolveChromiumExecutable();
   const htmlPath = path.join(path.dirname(outputPath), `.makerhub-preview-${Date.now()}-${Math.random().toString(16).slice(2)}.html`);
-  await fs.writeFile(htmlPath, buildRendererHtml({ inputPath, inputName, outputPath, size }), "utf8");
-
-  const browser = await puppeteer.launch({
-    executablePath,
-    headless: "new",
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--enable-webgl",
-      "--ignore-gpu-blocklist",
-      "--use-angle=swiftshader",
-      "--allow-file-access-from-files",
-      "--disable-web-security",
-    ],
+  // Three.js 的 FileLoader 使用 fetch，Chromium 不支持 fetch(file://)。
+  const inputServer = createServer((request, response) => {
+    if (request.url !== "/model" || request.method !== "GET") {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead(200, {
+      "Content-Type": "application/octet-stream",
+      "Content-Length": inputStat.size,
+    });
+    const stream = createReadStream(inputPath);
+    stream.on("error", (error) => response.destroy(error));
+    response.on("close", () => stream.destroy());
+    stream.pipe(response);
   });
+  let browser;
   try {
+    await new Promise((resolve, reject) => {
+      inputServer.once("error", reject);
+      inputServer.listen(0, "127.0.0.1", resolve);
+    });
+    const inputUrl = `http://127.0.0.1:${inputServer.address().port}/model`;
+    await fs.writeFile(htmlPath, buildRendererHtml({ inputUrl, inputName, outputPath, size }), "utf8");
+    browser = await puppeteer.launch({
+      executablePath,
+      headless: "new",
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--enable-webgl",
+        "--ignore-gpu-blocklist",
+        "--use-angle=swiftshader",
+        "--allow-file-access-from-files",
+        "--disable-web-security",
+      ],
+    });
     const page = await browser.newPage();
     await page.setViewport({ width: size, height: size, deviceScaleFactor: 1 });
     await page.exposeFunction("__makerhubWriteBase64File", async (targetUrl, base64Data) => {
@@ -262,7 +265,8 @@ async function main() {
       throw new Error(result?.message || "Three.js render failed");
     }
   } finally {
-    await browser.close();
+    await browser?.close();
+    await new Promise((resolve) => inputServer.close(resolve));
     await fs.rm(htmlPath, { force: true });
   }
 

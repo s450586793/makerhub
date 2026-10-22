@@ -2958,9 +2958,7 @@ html[data-theme="dark"] .system-update-progress.is-failed .system-update-progres
   aspect-ratio: 4 / 3;
   overflow: hidden;
   border-bottom: 0;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(15, 23, 42, 0.06)),
-    var(--cover-bg);
+  background: var(--cover-bg);
 }
 
 .gallery-card__cover img,
@@ -2969,13 +2967,7 @@ html[data-theme="dark"] .system-update-progress.is-failed .system-update-progres
   height: 100%;
   display: grid;
   place-items: center;
-  object-fit: cover;
-  transition: transform 0.28s ease;
-}
-
-.gallery-card:hover .gallery-card__cover img,
-.gallery-card:hover .gallery-card__cover .media-placeholder {
-  transform: scale(1.03);
+  object-fit: contain;
 }
 
 .gallery-card__cover-badges {

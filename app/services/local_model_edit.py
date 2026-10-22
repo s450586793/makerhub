@@ -7,6 +7,7 @@ import html
 import json
 import mimetypes
 import re
+from functools import wraps
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -19,7 +20,10 @@ from app.services.catalog import invalidate_archive_snapshot, invalidate_model_d
 from app.services.local_model_preview import (
     apply_generated_preview_image,
     build_local_preview_state,
+    local_model_metadata_slot,
+    mark_local_preview_not_needed,
     mark_local_preview_pending,
+    promote_local_model_cover,
     record_generated_preview_failure,
 )
 from app.services.local_preview_worker import mark_local_preview_queue_updated
@@ -50,7 +54,7 @@ def _safe_filename(filename: str, fallback: str = "file") -> str:
     return f"{safe_stem}{safe_suffix}"
 
 
-def _resolve_local_model_root(model_dir: str) -> tuple[Path, dict[str, Any]]:
+def _local_model_root(model_dir: str) -> Path:
     clean_value = str(model_dir or "").strip().strip("/")
     if not clean_value:
         raise ValueError("模型不存在。")
@@ -61,7 +65,12 @@ def _resolve_local_model_root(model_dir: str) -> tuple[Path, dict[str, Any]]:
         model_root.relative_to(archive_root)
     except ValueError as exc:
         raise ValueError("非法模型路径。") from exc
+    return model_root
 
+
+def _resolve_local_model_root(model_dir: str) -> tuple[Path, dict[str, Any]]:
+    model_root = _local_model_root(model_dir)
+    archive_root = ARCHIVE_DIR.resolve()
     meta_path = model_root / "meta.json"
     if not model_root.exists() or not model_root.is_dir() or not meta_path.exists():
         raise ValueError("模型不存在。")
@@ -75,7 +84,7 @@ def _resolve_local_model_root(model_dir: str) -> tuple[Path, dict[str, Any]]:
     try:
         relative_dir = model_root.relative_to(archive_root)
     except ValueError:
-        relative_dir = Path(clean_value)
+        relative_dir = Path(str(model_dir or "").strip().strip("/"))
     if source != "local" and (not relative_dir.parts or relative_dir.parts[0] != "local"):
         raise ValueError("只有本地导入模型支持编辑。")
     return model_root, meta
@@ -91,6 +100,15 @@ def _write_meta(model_root: Path, meta: dict[str, Any]) -> None:
     invalidate_model_detail_cache(model_dir)
     if not upsert_archive_snapshot_model(model_dir, "local_model_edited", broadcast=True):
         invalidate_archive_snapshot("local_model_edited")
+
+
+def _with_local_model_metadata_slot(function):
+    @wraps(function)
+    def locked(model_dir: str, *args, **kwargs):
+        model_root = _local_model_root(model_dir)
+        with local_model_metadata_slot(model_root):
+            return function(model_dir, *args, **kwargs)
+    return locked
 
 
 def _decode_preview_image_data(value: str) -> tuple[bytes, str]:
@@ -205,6 +223,7 @@ def _unlink_relative(model_root: Path, rel_path: str) -> None:
         target.unlink()
 
 
+@_with_local_model_metadata_slot
 def update_local_model_description(model_dir: str, description: str) -> dict[str, Any]:
     model_root, meta = _resolve_local_model_root(model_dir)
     clean_text = str(description or "").strip()
@@ -217,6 +236,7 @@ def update_local_model_description(model_dir: str, description: str) -> dict[str
     return {"description": clean_text}
 
 
+@_with_local_model_metadata_slot
 def update_local_model_metadata(model_dir: str, *, title: str, description: str) -> dict[str, Any]:
     model_root, meta = _resolve_local_model_root(model_dir)
     clean_title = str(title or "").strip()
@@ -233,6 +253,7 @@ def update_local_model_metadata(model_dir: str, *, title: str, description: str)
     return {"title": clean_title, "description": clean_text}
 
 
+@_with_local_model_metadata_slot
 def add_local_model_file(model_dir: str, upload: UploadFile, title: str = "") -> dict[str, Any]:
     model_root, meta = _resolve_local_model_root(model_dir)
     original_filename = _safe_filename(upload.filename or "", fallback="model.3mf")
@@ -296,6 +317,7 @@ def add_local_model_file(model_dir: str, upload: UploadFile, title: str = "") ->
     return entry
 
 
+@_with_local_model_metadata_slot
 def save_local_model_generated_preview(
     model_dir: str,
     *,
@@ -322,6 +344,7 @@ def save_local_model_generated_preview(
     }
 
 
+@_with_local_model_metadata_slot
 def save_local_model_generated_preview_failure(
     model_dir: str,
     *,
@@ -345,6 +368,7 @@ def save_local_model_generated_preview_failure(
     }
 
 
+@_with_local_model_metadata_slot
 def delete_local_model_file(model_dir: str, instance_key: str) -> dict[str, Any]:
     model_root, meta = _resolve_local_model_root(model_dir)
     target_key = str(instance_key or "").strip()
@@ -378,6 +402,7 @@ def delete_local_model_file(model_dir: str, instance_key: str) -> dict[str, Any]
     return removed
 
 
+@_with_local_model_metadata_slot
 def add_local_model_image(model_dir: str, upload: UploadFile) -> dict[str, Any]:
     model_root, meta = _resolve_local_model_root(model_dir)
     original_filename = _safe_filename(upload.filename or "", fallback="image.jpg")
@@ -400,8 +425,8 @@ def add_local_model_image(model_dir: str, upload: UploadFile) -> dict[str, Any]:
     images = meta.get("designImages") if isinstance(meta.get("designImages"), list) else []
     images.append(image_item)
     meta["designImages"] = images
-    if not meta.get("cover"):
-        meta["cover"] = rel_path
+    promote_local_model_cover(meta)
+    mark_local_preview_not_needed(meta)
     for instance in meta.get("instances") or []:
         if not isinstance(instance, dict):
             continue
@@ -414,7 +439,8 @@ def add_local_model_image(model_dir: str, upload: UploadFile) -> dict[str, Any]:
     return image_item
 
 
-def set_local_model_cover_image(model_dir: str, rel_path: str) -> dict[str, Any]:
+@_with_local_model_metadata_slot
+def set_local_model_cover_image(model_dir: str, rel_path: str, *, manual: bool = True) -> dict[str, Any]:
     model_root, meta = _resolve_local_model_root(model_dir)
     target_ref = str(rel_path or "").strip().lstrip("/")
     if not target_ref:
@@ -436,10 +462,15 @@ def set_local_model_cover_image(model_dir: str, rel_path: str) -> dict[str, Any]
     ordered_images = [selected_item, *remaining]
     meta["cover"] = target_ref
     meta["designImages"] = ordered_images
+    local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
+    local_import["coverSelection"] = "manual" if manual else "automatic"
+    meta["localImport"] = local_import
+    mark_local_preview_not_needed(meta)
     _write_meta(model_root, meta)
     return selected_item
 
 
+@_with_local_model_metadata_slot
 def delete_local_model_image(model_dir: str, rel_path: str) -> dict[str, Any]:
     model_root, meta = _resolve_local_model_root(model_dir)
     target_ref = str(rel_path or "").strip().lstrip("/")
@@ -460,6 +491,8 @@ def delete_local_model_image(model_dir: str, rel_path: str) -> dict[str, Any]:
     meta["designImages"] = images
     if target_ref in _relative_file_refs(meta.get("cover")):
         meta["cover"] = ""
+        local_import = meta.get("localImport") if isinstance(meta.get("localImport"), dict) else {}
+        local_import.pop("coverSelection", None)
     for instance in meta.get("instances") or []:
         if not isinstance(instance, dict):
             continue

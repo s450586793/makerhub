@@ -1,7 +1,9 @@
 import io
 import json
 import tempfile
+import threading
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -217,6 +219,221 @@ class LocalModelEditTest(unittest.TestCase):
             self.assertEqual(meta["instances"][1]["pictures"], [{"relPath": "images/head.png"}])
             self.assertTrue(detail["cover_url"].endswith("/LOCAL_Test/images/side.png"))
             self.assertTrue(detail["gallery"][0]["url"].endswith("/LOCAL_Test/images/side.png"))
+
+    def test_uploaded_original_replaces_automatic_cover_without_removing_source_preview(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            model = self._write_local_model(root)
+            meta_path = model / "meta.json"
+            meta = json.loads(meta_path.read_text())
+            preview_ref = "images/three_preview_body.png"
+            preview = {"relPath": preview_ref, "kind": "generated_three_preview", "generated": True,
+                       "sourceFileName": "body.stl", "sourceInstanceKey": "local-1"}
+            (model / preview_ref).write_bytes(b"generated")
+            meta.update({"cover": preview_ref, "designImages": [preview]})
+            meta["instances"][0].update({"thumbnailLocal": preview_ref, "pictures": [preview]})
+            meta_path.write_text(json.dumps(meta))
+
+            with patch.object(local_model_edit, "ARCHIVE_DIR", root):
+                local_model_edit.add_local_model_image("LOCAL_Test", _upload("finished.png", b"original", "image/png"))
+
+            updated = json.loads(meta_path.read_text())
+            self.assertEqual(updated["cover"], "images/finished.png")
+            self.assertEqual(updated["designImages"][0]["relPath"], "images/finished.png")
+            self.assertIn(preview, updated["designImages"])
+            self.assertEqual(updated["instances"][0]["thumbnailLocal"], preview_ref)
+            self.assertEqual(updated["instances"][0]["pictures"][0], preview)
+            self.assertTrue((model / preview_ref).is_file())
+
+    def test_upload_preserves_manually_selected_generated_cover(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            model = self._write_local_model(root)
+            meta_path = model / "meta.json"
+            meta = json.loads(meta_path.read_text())
+            preview_ref = "images/three_preview_body.png"
+            (model / preview_ref).write_bytes(b"generated")
+            meta["designImages"].append({"relPath": preview_ref, "kind": "generated_three_preview"})
+            meta_path.write_text(json.dumps(meta))
+
+            with patch.object(local_model_edit, "ARCHIVE_DIR", root):
+                local_model_edit.set_local_model_cover_image("LOCAL_Test", preview_ref)
+                local_model_edit.add_local_model_image("LOCAL_Test", _upload("finished.png", b"original", "image/png"))
+
+            updated = json.loads(meta_path.read_text())
+            self.assertEqual(updated["cover"], preview_ref)
+            self.assertEqual(updated["localImport"].get("coverSelection"), "manual")
+
+    def test_better_upload_replaces_automatic_instruction_cover(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            model = self._write_local_model(root)
+            meta_path = model / "meta.json"
+            meta = json.loads(meta_path.read_text())
+            meta.update({"cover": "", "designImages": []})
+            meta_path.write_text(json.dumps(meta))
+
+            with patch.object(local_model_edit, "ARCHIVE_DIR", root):
+                local_model_edit.add_local_model_image("LOCAL_Test", _upload("instructions.png", b"instructions", "image/png"))
+                local_model_edit.add_local_model_image("LOCAL_Test", _upload("finished.png", b"finished", "image/png"))
+                local_model_edit.add_local_model_image("LOCAL_Test", _upload("dimensions.png", b"dimensions", "image/png"))
+
+            updated = json.loads(meta_path.read_text())
+            self.assertEqual(updated["cover"], "images/finished.png")
+            self.assertEqual(updated["designImages"][0]["relPath"], "images/finished.png")
+
+    def test_generated_preview_does_not_replace_existing_original_cover(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            model = self._write_local_model(root)
+            with patch.object(local_model_edit, "ARCHIVE_DIR", root):
+                local_model_edit.save_local_model_generated_preview(
+                    "LOCAL_Test", image_data="data:image/png;base64,aW1hZ2U=",
+                    source_instance_key="local-1", source_file_name="body.stl",
+                )
+            updated = json.loads((model / "meta.json").read_text())
+            self.assertEqual(updated["cover"], "images/cover.jpg")
+            self.assertEqual(updated["designImages"][0]["relPath"], "images/cover.jpg")
+            generated = next(item for item in updated["designImages"] if item.get("generated"))
+            self.assertEqual(generated["sourceInstanceKey"], "local-1")
+            self.assertEqual(updated["instances"][0]["thumbnailLocal"], "images/cover.jpg")
+
+    def test_direct_preview_save_preserves_manually_selected_generated_image_and_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            model = self._write_local_model(root)
+            meta_path = model / "meta.json"
+            meta = json.loads(meta_path.read_text())
+            ref = "images/three_preview_body.png"
+            generated = {"relPath": ref, "kind": "generated_three_preview", "generated": True,
+                         "sourceFileName": "body.stl", "sourceInstanceKey": "local-1", "sha256": "kept"}
+            (model / ref).write_bytes(b"chosen-preview-bytes")
+            meta["designImages"].append(generated)
+            meta_path.write_text(json.dumps(meta))
+
+            with patch.object(local_model_edit, "ARCHIVE_DIR", root):
+                local_model_edit.set_local_model_cover_image("LOCAL_Test", ref)
+                before = json.loads(meta_path.read_text())
+                for file_name in ("body.stl", "other.stl"):
+                    local_model_edit.save_local_model_generated_preview(
+                        "LOCAL_Test", image_data="data:image/png;base64,aW1hZ2U=",
+                        source_instance_key="local-1", source_file_name=file_name,
+                    )
+                    updated = json.loads(meta_path.read_text())
+                    self.assertEqual(updated["cover"], ref)
+                    self.assertEqual(updated["designImages"], before["designImages"])
+                    self.assertEqual(updated["instances"], before["instances"])
+                    self.assertEqual(updated["localImport"], before["localImport"])
+                    self.assertEqual((model / ref).read_bytes(), b"chosen-preview-bytes")
+                    self.assertFalse((model / "images" / "three_preview_other.png").exists())
+
+    def test_detail_preview_repair_does_not_overwrite_concurrent_image_edits(self):
+        for edit_kind in ("upload", "manual_cover"):
+            with self.subTest(edit_kind=edit_kind), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                model = self._write_local_model(root)
+                meta_path = model / "meta.json"
+                meta = json.loads(meta_path.read_text())
+                meta["localImport"].update({"previewStatus": "running", "previewNeedsGeneration": True})
+                if edit_kind == "manual_cover":
+                    (model / "images" / "finished.png").write_bytes(b"finished")
+                    meta["designImages"].append({"relPath": "images/finished.png"})
+                meta_path.write_text(json.dumps(meta))
+
+                read_started = threading.Event()
+                resume_read = threading.Event()
+                edit_finished = threading.Event()
+                errors = []
+                build_preview_state = catalog.build_local_preview_state
+                intercepted = False
+
+                def pause_first_detail_build(raw_meta, model_root):
+                    nonlocal intercepted
+                    if threading.current_thread().name == "detail-preview-repair" and model_root == model and not intercepted:
+                        intercepted = True
+                        read_started.set()
+                        if not resume_read.wait(5):
+                            raise AssertionError("detail repair barrier timed out")
+                    return build_preview_state(raw_meta, model_root)
+
+                def load_detail():
+                    try:
+                        catalog.get_model_detail("LOCAL_Test")
+                    except BaseException as exc:
+                        errors.append(exc)
+
+                def edit_image():
+                    try:
+                        if edit_kind == "upload":
+                            local_model_edit.add_local_model_image("LOCAL_Test", _upload("finished.png", b"finished", "image/png"))
+                        else:
+                            local_model_edit.set_local_model_cover_image("LOCAL_Test", "images/finished.png")
+                    except BaseException as exc:
+                        errors.append(exc)
+                    finally:
+                        edit_finished.set()
+
+                with patch.object(local_model_edit, "ARCHIVE_DIR", root), \
+                        patch.object(catalog, "ARCHIVE_DIR", root), \
+                        patch.object(catalog, "build_local_preview_state", side_effect=pause_first_detail_build):
+                    detail_thread = threading.Thread(target=load_detail, name="detail-preview-repair")
+                    edit_thread = threading.Thread(target=edit_image, name="concurrent-image-edit")
+                    detail_thread.start()
+                    try:
+                        self.assertTrue(read_started.wait(5), "detail did not reach metadata read")
+                        edit_thread.start()
+                        edit_finished.wait(0.2)
+                    finally:
+                        resume_read.set()
+                        detail_thread.join(5)
+                        if edit_thread.ident is not None:
+                            edit_thread.join(5)
+                    self.assertFalse(detail_thread.is_alive())
+                    self.assertFalse(edit_thread.is_alive())
+                    self.assertEqual(errors, [])
+
+                updated = json.loads(meta_path.read_text())
+                self.assertIn("images/finished.png", [item["relPath"] for item in updated["designImages"]])
+                self.assertFalse(updated["localImport"]["previewNeedsGeneration"])
+                if edit_kind == "manual_cover":
+                    self.assertEqual(updated["cover"], "images/finished.png")
+                    self.assertEqual(updated["localImport"].get("coverSelection"), "manual")
+
+    def test_image_edit_does_not_extract_package_previews_or_rebind_instances(self):
+        for edit_kind in ("upload", "manual_cover"):
+            with self.subTest(edit_kind=edit_kind), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                model = self._write_local_model(root)
+                meta_path = model / "meta.json"
+                meta = json.loads(meta_path.read_text())
+                with zipfile.ZipFile(model / "instances" / "package.3mf", "w") as package:
+                    package.writestr("Metadata/thumbnail.png", b"embedded-preview")
+                meta["instances"].append({"id": "package", "fileName": "package.3mf",
+                                          "thumbnailLocal": "images/cover.jpg",
+                                          "pictures": [{"relPath": "images/cover.jpg"}]})
+                meta["localImport"].update({"package": True, "instancePreviewVersion": 0,
+                                            "previewStatus": "running", "previewNeedsGeneration": True})
+                if edit_kind == "manual_cover":
+                    (model / "images" / "finished.png").write_bytes(b"finished")
+                    meta["designImages"].append({"relPath": "images/finished.png"})
+                meta_path.write_text(json.dumps(meta))
+
+                with patch.object(local_model_edit, "ARCHIVE_DIR", root):
+                    if edit_kind == "upload":
+                        local_model_edit.add_local_model_image("LOCAL_Test", _upload("finished.png", b"finished", "image/png"))
+                    else:
+                        local_model_edit.set_local_model_cover_image("LOCAL_Test", "images/finished.png")
+
+                updated = json.loads(meta_path.read_text())
+                package_instance = updated["instances"][1]
+                self.assertEqual(package_instance["thumbnailLocal"], "images/cover.jpg")
+                expected_pictures = [{"relPath": "images/cover.jpg"}]
+                if edit_kind == "upload":
+                    expected_pictures.append({"relPath": "images/finished.png"})
+                self.assertEqual(package_instance["pictures"], expected_pictures)
+                self.assertEqual(sorted(path.name for path in (model / "images").iterdir()), ["cover.jpg", "finished.png"])
+                self.assertFalse(updated["localImport"]["previewNeedsGeneration"])
+                self.assertEqual(updated["localImport"]["previewStatus"], "skipped")
 
     def test_save_generated_three_preview_updates_cover_and_gallery(self):
         with tempfile.TemporaryDirectory() as tmp:

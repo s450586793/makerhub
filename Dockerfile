@@ -5,6 +5,7 @@ COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
 COPY app/static/css/app.css /app/static/css/app.css
+COPY app/services/model_preview_framing.mjs /app/services/model_preview_framing.mjs
 RUN npm run build
 RUN npm prune --omit=dev
 
