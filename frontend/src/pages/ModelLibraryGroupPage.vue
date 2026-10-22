@@ -221,6 +221,7 @@ const payload = ref({
   filtered_total: 0,
   total: 0,
   page: 1,
+  loaded_from_page: 1,
   page_size: PAGE_SIZE,
   has_more: false,
   tags: [],
@@ -238,6 +239,7 @@ const status = ref("");
 const deleting = ref(false);
 const loaded = ref(false);
 const loadingMore = ref(false);
+const needsRefresh = ref(false);
 const loadMoreTrigger = ref(null);
 const selectMode = ref(false);
 const selectedModelDirSet = ref(new Set());
@@ -463,6 +465,43 @@ function findModelCardElement(modelDir) {
     .find((element) => element?.dataset?.modelDir === target) || null;
 }
 
+function captureModelListAnchor(modelDir) {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const items = payload.value.items || [];
+  const index = items.findIndex((item) => item.model_dir === modelDir);
+  const candidates = [items[index + 1]?.model_dir, items[index - 1]?.model_dir, modelDir].filter(Boolean);
+  for (const candidate of candidates) {
+    const element = findModelCardElement(candidate);
+    if (element) {
+      return { modelDir: candidate, top: element.getBoundingClientRect().top, scrollY: window.scrollY };
+    }
+  }
+  return { modelDir: "", top: 0, scrollY: window.scrollY };
+}
+
+async function restoreModelListAnchor(anchor) {
+  if (!anchor || typeof window === "undefined") {
+    return;
+  }
+  await nextTick();
+  await new Promise((resolve) => {
+    window.requestAnimationFrame(() => {
+      const element = findModelCardElement(anchor.modelDir);
+      if (element) {
+        const delta = element.getBoundingClientRect().top - Number(anchor.top || 0);
+        if (Math.abs(delta) > 1) {
+          window.scrollBy({ top: delta, behavior: "auto" });
+        }
+      } else if (Number.isFinite(anchor.scrollY)) {
+        window.scrollTo({ top: anchor.scrollY, behavior: "auto" });
+      }
+      resolve();
+    });
+  });
+}
+
 async function scrollToRouteAnchor() {
   const anchor = routeAnchor();
   if (!anchor || typeof window === "undefined") {
@@ -497,62 +536,116 @@ async function load({ append = false } = {}) {
   }
   const abortController = append ? null : groupListAbortController;
 
-  const nextPage = append ? payload.value.page + 1 : routePage();
-  const response = await fetchPage(nextPage, { signal: abortController?.signal });
-  if (currentToken !== requestToken || (abortController && abortController !== groupListAbortController)) {
-    return;
-  }
-  view.value = response.view || view.value;
-  if (append) {
-    const mergedItems = mergeUniqueModelItems(payload.value.items, response.items || []);
-    payload.value = {
-      ...response,
-      items: mergedItems,
-      count: mergedItems.length,
-    };
-  } else {
-    payload.value = {
-      ...response,
-      count: (response.items || []).length,
-      page: nextPage,
-    };
-  }
-  loaded.value = true;
-  rememberGroupList();
-  await nextTick();
-  ensureObserver();
-  if (!append) {
-    await scrollToRouteAnchor();
-    if (groupListAbortController === abortController) {
+  try {
+    const nextPage = append ? payload.value.page + 1 : routePage();
+    const response = await fetchPage(nextPage, { signal: abortController?.signal });
+    if (currentToken !== requestToken || (abortController && abortController !== groupListAbortController)) {
+      return;
+    }
+    view.value = response.view || view.value;
+    if (append) {
+      const mergedItems = mergeUniqueModelItems(payload.value.items, response.items || []);
+      payload.value = {
+        ...response,
+        items: mergedItems,
+        count: mergedItems.length,
+        loaded_from_page: payload.value.loaded_from_page || 1,
+      };
+    } else {
+      payload.value = {
+        ...response,
+        count: (response.items || []).length,
+        page: nextPage,
+        loaded_from_page: nextPage,
+      };
+      needsRefresh.value = false;
+    }
+    loaded.value = true;
+    rememberGroupList();
+    await nextTick();
+    ensureObserver();
+    if (!append) {
+      await scrollToRouteAnchor();
+    }
+  } finally {
+    if (abortController && groupListAbortController === abortController) {
       groupListAbortController = null;
     }
   }
 }
 
 async function reloadVisiblePages() {
-  const pagesToLoad = Math.max(Number(payload.value.page) || 1, 1);
+  const pagesToLoad = Math.max(Math.floor(Number(payload.value.page) || 1), 1);
+  const pageSize = Math.max(Number(payload.value.page_size) || PAGE_SIZE, 1);
+  let firstPage = Math.max(1, Math.min(pagesToLoad, Number(payload.value.loaded_from_page)
+    || pagesToLoad - Math.max(Math.ceil(payload.value.items.length / pageSize), 1) + 1));
   const currentToken = ++requestToken;
+  groupListAbortController?.abort();
+  const abortController = new AbortController();
+  groupListAbortController = abortController;
+  loadingMore.value = false;
+  needsRefresh.value = true;
   syncFiltersFromRoute();
 
-  const response = await fetchPage(pagesToLoad);
+  try {
+    let response;
+    let items = [];
+    let lastPage = firstPage;
+    for (let page = firstPage; page <= pagesToLoad; page += 1) {
+      response = await fetchPage(page, { signal: abortController.signal });
+      if (currentToken !== requestToken || groupListAbortController !== abortController) {
+        return;
+      }
 
-  if (currentToken !== requestToken) {
-    return;
+      const lastAvailablePage = Math.max(1, Math.ceil(Number(response.filtered_total || 0)
+        / Math.max(Number(response.page_size) || pageSize, 1)));
+      if (!(response.items || []).length && page === firstPage && lastAvailablePage < page) {
+        firstPage = lastAvailablePage;
+        page = firstPage - 1;
+        continue;
+      }
+      items = mergeUniqueModelItems(items, response.items || []);
+      lastPage = page;
+      if (!response.has_more) {
+        break;
+      }
+    }
+
+    view.value = response.view || view.value;
+    payload.value = {
+      ...response,
+      items,
+      count: items.length,
+      page: lastPage,
+      loaded_from_page: firstPage,
+    };
+    needsRefresh.value = false;
+    rememberGroupList();
+  } finally {
+    if (groupListAbortController === abortController) {
+      groupListAbortController = null;
+      if (currentToken === requestToken && !needsRefresh.value) {
+        await nextTick();
+        ensureObserver();
+      }
+    }
   }
-
-  view.value = response.view || view.value;
-  payload.value = {
-    ...response,
-    count: (response.items || []).length,
-    page: pagesToLoad,
-  };
-  rememberGroupList();
-  await nextTick();
-  ensureObserver();
 }
 
 async function loadMore() {
-  if (loadingMore.value || !payload.value.has_more) {
+  if (deleting.value || groupListAbortController || loadingMore.value) {
+    return;
+  }
+  if (needsRefresh.value) {
+    try {
+      await reloadVisiblePages();
+      status.value = "列表已刷新。";
+    } catch (error) {
+      status.value = `列表刷新失败：${error instanceof Error ? error.message : "请稍后重试"}`;
+    }
+    return;
+  }
+  if (!payload.value.has_more) {
     return;
   }
   loadingMore.value = true;
@@ -901,9 +994,16 @@ async function togglePrinted(modelDir) {
 
 async function deleteOne(modelDir) {
   const model = findModel(modelDir);
-  if (!model) return;
+  if (!model || deleting.value) return;
   if (!window.confirm(`确认在 MakerHub 中删除并隐藏「${model.title || modelDir}」吗？`)) return;
 
+  const routeAtDelete = route.fullPath;
+  const scrollAnchor = captureModelListAnchor(modelDir);
+  requestToken += 1;
+  groupListAbortController?.abort();
+  groupListAbortController = null;
+  disconnectObserver();
+  loadingMore.value = false;
   deleting.value = true;
   status.value = "";
   try {
@@ -911,12 +1011,30 @@ async function deleteOne(modelDir) {
       method: "POST",
       body: { model_dirs: [modelDir] },
     });
+    if (!response.success) {
+      throw new Error(response.message || "没有标记任何模型。");
+    }
+    if (route.fullPath !== routeAtDelete) return;
     status.value = response.message || "模型已在 MakerHub 中删除并隐藏。";
-    await reloadVisiblePages();
+    try {
+      await reloadVisiblePages();
+      if (route.fullPath === routeAtDelete) {
+        await restoreModelListAnchor(scrollAnchor);
+      }
+    } catch (error) {
+      if (route.fullPath === routeAtDelete) {
+        status.value = `模型已删除并隐藏，列表刷新失败：${error instanceof Error ? error.message : "请稍后重试"}。下次加载时将重试。`;
+      }
+    }
   } catch (error) {
-    status.value = error instanceof Error ? error.message : "本地删除失败。";
+    if (route.fullPath === routeAtDelete) {
+      status.value = error instanceof Error ? error.message : "本地删除失败。";
+    }
   } finally {
     deleting.value = false;
+    if (route.fullPath === routeAtDelete) {
+      ensureObserver();
+    }
   }
 }
 
