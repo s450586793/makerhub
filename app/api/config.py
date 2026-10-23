@@ -4256,7 +4256,7 @@ async def upload_model_attachment(
         model_dir=resolved_model_dir,
         attachment_id=attachment.get("id"),
         attachment_name=attachment.get("name"),
-        category=category,
+        attachment_category=category,
     )
     return {
         "success": True,
