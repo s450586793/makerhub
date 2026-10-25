@@ -3785,7 +3785,7 @@ async function removeAttachment(attachment) {
 
 async function load() {
   const generation = ++detailLoadGeneration;
-  const requestedModel = apiModelDir.value;
+  const requestedModel = modelDir.value;
   const cached = getPageCache(detailCacheKey());
   const hasCachedDetail = Boolean(cached?.detail);
   loading.value = !hasCachedDetail;

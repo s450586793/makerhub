@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.20.18`
+> 当前版本：`v0.20.19`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -363,6 +363,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-10-26 · v0.20.19
+
+- 修复详情页点击“相关模型”后地址已变化、内容却仍显示上一模型的问题。
+- 连续跳转和浏览器前进后退时按目标链接加载，避免旧模型污染缓存。
+
 ### 2026-10-23 · v0.20.18
 
 - 修复来源模型列表加载多页后删除模型，前面的卡片消失并导致滚动位置跳动的问题。
@@ -373,13 +378,13 @@ npm --prefix frontend run build
 - 后补的本地原图自动替换生成占位封面，后台渲染保护手动封面及实例图片绑定；模型包优先采用成品图和完整模型预览。
 - 自动与交互预览按模型边界取景，卡片完整显示图片，取消悬停放大裁切，兼容深浅色主题。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-10-22 · v0.20.16
 
 - 修复文件名含 `#`、`?` 时，本地模型详情缺失下载链接的问题。
 - 模型、图片、附件和模型包保留原始文件名，HTML 中的 URL 继续按查询参数和片段规则处理。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-10-21 · v0.20.15
 
