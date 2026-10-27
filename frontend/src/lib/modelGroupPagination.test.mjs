@@ -47,7 +47,7 @@ function makeHarness({ items, page = 3, firstPage = 1, pageSize = 8, serverItems
     "payload", "view", "fetchPage", "syncFiltersFromRoute", "rememberGroupList", "nextTick",
     "ensureObserver", "disconnectObserver", "loadingMore", "PAGE_SIZE",
     "loaded", "routePage", "scrollToRouteAnchor", "findModel", "window", "apiRequest", "deleting", "status",
-    "captureModelListAnchor", "restoreModelListAnchor", "route", "needsRefresh",
+    "captureModelListAnchor", "restoreModelListAnchor", "route", "needsRefresh", "clearSelectedModels",
     `let requestToken = 0;
      let groupListAbortController = null;
      ${componentFunction("mergeUniqueModelItems", "routePage")}
@@ -69,6 +69,7 @@ function makeHarness({ items, page = 3, firstPage = 1, pageSize = 8, serverItems
     }, { value: false }, status,
     () => { events.push("capture-anchor"); return anchor; },
     async (value) => { assert.equal(value, anchor); events.push("restore-anchor"); }, route, needsRefresh,
+    noop,
   );
   return { ...methods, payload, calls, events, route, needsRefresh, status };
 }

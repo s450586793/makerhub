@@ -5072,6 +5072,7 @@ select:focus {
 
 .local-merge-suggestion {
   min-height: var(--space-8);
+  max-width: 100%;
   padding: 0 var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -5088,6 +5089,48 @@ select:focus {
 .local-merge-suggestion em {
   color: var(--brand-strong);
   font-style: normal;
+  flex-shrink: 0;
+}
+
+.local-merge-suggestion:hover,
+.local-merge-suggestion.is-active {
+  border-color: var(--brand-strong);
+  background: var(--brand-soft);
+}
+
+.local-merge-suggestion:focus-visible {
+  outline: 2px solid var(--brand-strong);
+  outline-offset: 2px;
+}
+
+.local-merge-suggestion > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.local-merge-filter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+
+.local-merge-filter__summary {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.local-merge-filter__hint {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.local-merge-filter .button {
+  min-height: var(--space-8);
+  padding: 0 var(--space-3);
+  font-size: var(--text-xs);
 }
 
 .local-merge-dialog__panel {

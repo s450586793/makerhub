@@ -1715,49 +1715,81 @@ def build_subscription_overview_payload(
     }
 
 
-def _local_merge_base_title(title: Any) -> str:
-    text = _normalize_text(title)
+def _local_merge_technical_name(value: Any) -> bool:
+    text = re.sub(r"\.(3mf|stl|step|stp|obj|zip|rar|7z)$", "", _normalize_text(value), flags=re.I).lower()
     if not text:
-        return ""
-    text = re.sub(r"\.(3mf|stl|step|obj)$", "", text, flags=re.I).strip()
-    separators = (" - ", "-", "－", "—", "–", "_", "｜", "|")
-    for separator in separators:
-        if separator not in text:
-            continue
-        head, tail = text.rsplit(separator, 1)
-        head = head.strip()
-        tail = tail.strip()
-        if len(head) >= 4 and 1 <= len(tail) <= 16:
-            return head
-    match = re.match(r"^(.{4,}?)(?:[（(【\[][^）)】\]]{1,16}[）)】\]])$", text)
-    if match:
-        return match.group(1).strip()
-    part_match = re.match(
-        r"^(.{4,}?)(?:"
-        r"part\s*[0-9a-z]+|p[0-9]+|"
-        r"第?[一二三四五六七八九十0-9]+[号#]?|"
-        r"头部?|身体|躯干|胸部|腰部|上半身|下半身|"
-        r"左(?:手|臂|腿|脚|翼|侧)|右(?:手|臂|腿|脚|翼|侧)|"
-        r"手臂|腿部?|脚部?|武器|剑|盾|底座|支架|配件|主体|外壳|零件|部件"
-        r")$",
-        text,
-        flags=re.I,
+        return True
+    if re.search(r"(?:^|[/\\])\.local-import", text):
+        return True
+    if re.fullmatch(r"download[-_]dirs(?:[-_].*)?", text):
+        return True
+    if re.fullmatch(r"(?:import[-_](?:uploads|staging)|local[-_]import)(?:[-_].*)?", text):
+        return True
+    if text in {"本地模型导入", "本地导入", "导入暂存", "导入暂存目录", "临时导入", "上传暂存"}:
+        return True
+    if re.fullmatch(r"[0-9a-f]{16,64}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", text):
+        return True
+    if re.fullmatch(
+        r"(?:19|20)[0-9]{2}[-_]?(?:0[1-9]|1[0-2])[-_]?(?:0[1-9]|[12][0-9]|3[01])"
+        r"(?:[ t_-]?(?:[01][0-9]|2[0-3])[-_:]?[0-5][0-9](?:[-_:]?[0-5][0-9])?)?", text,
+    ):
+        return True
+    return re.fullmatch(r"(?:hash|sha1|sha256|md5|uuid)(?:[-_: ][0-9a-f-]+)?", text) is not None
+
+
+def _local_merge_valid_design_id(value: str) -> bool:
+    # 明确标识为设计 ID 的正整数仍可信，不能按日期或纯十六进制来源名排除。
+    if re.fullmatch(r"[0-9]+", value):
+        return bool(value.strip("0"))
+    return (bool(value) and value.lower() not in {"none", "null", "unknown", "undefined"}
+            and not _local_merge_technical_name(value))
+
+
+def _local_merge_base_title(title: Any) -> str:
+    text = re.sub(r"\.(3mf|stl|step|stp|obj)$", "", _normalize_text(title), flags=re.I).strip()
+    # 只剥离明确的分件标记，普通副标题、版本名与括号备注不代表同一作品。
+    chinese_part = (
+        r"第[一二三四五六七八九十0-9]+(?:部分|部件|分件|号)|"
+        r"头部|身体|躯干|胸部|腰部|上半身|下半身|左(?:手|臂|腿|脚|翼|侧)|"
+        r"右(?:手|臂|腿|脚|翼|侧)|手臂|腿部|脚部|武器|底座|支架|配件|主体|外壳|零件|部件"
     )
-    if part_match:
-        return part_match.group(1).strip()
-    return ""
+    part = (
+        rf"part[\s_-]*(?:[0-9]+[a-z]?|[a-z])|p[0-9]+|{chinese_part}|"
+        r"head|body|torso|base|stand|left[ _-](?:arm|leg|hand|foot|wing)|right[ _-](?:arm|leg|hand|foot|wing)"
+    )
+    match = re.fullmatch(rf"(.{{4,}}?)(?:[\s\-－—–_｜|]+|[（(【\[])({part})[）)】\]]?", text, flags=re.I)
+    if not match:
+        match = re.fullmatch(rf"(.{{4,}}?)({chinese_part})", text)
+    base = match[1].strip(" -－—–_｜|") if match else ""
+    return base if len(base) >= 4 and not _local_merge_technical_name(base) else ""
+
+
+def _local_merge_model_key_title(model_key: str) -> str:
+    prefix, separator, value = model_key.partition(":")
+    if separator:
+        if prefix.lower() in {"hash", "file_hash", "sha1", "sha256", "md5", "uuid", "source", "source_path", "batch", "staging"}:
+            return ""
+        text = value.split("|", 1)[0].strip()
+    else:
+        text = model_key
+    if prefix.lower() == "design_model":
+        return f"模型 {text}" if _local_merge_valid_design_id(text) else ""
+    if text.lower() in {"0", "none", "null", "unknown", "undefined"} or _local_merge_technical_name(text):
+        return ""
+    return text
 
 
 def _local_merge_group_identity(model: dict[str, Any]) -> tuple[str, str]:
     local_import = model.get("local_import") if isinstance(model.get("local_import"), dict) else {}
     title_guess = _local_merge_base_title(model.get("title")) or str(model.get("title") or "")
     design_model_id = _normalize_text(local_import.get("design_model_id"))
-    if design_model_id:
-        return f"design_model:{design_model_id}", title_guess
+    if _local_merge_valid_design_id(design_model_id):
+        return f"design_model:{design_model_id}", (f"模型 {design_model_id}" if _local_merge_technical_name(title_guess) else title_guess)
 
     model_key = _normalize_text(local_import.get("model_key"))
-    if model_key:
-        return f"model_key:{model_key.lower()}", title_guess
+    key_title = _local_merge_model_key_title(model_key) if model_key else ""
+    if key_title:
+        return f"model_key:{model_key.lower()}", (key_title if _local_merge_technical_name(title_guess) else title_guess)
 
     base_title = _local_merge_base_title(model.get("title"))
     if not base_title:
@@ -1770,7 +1802,7 @@ def _local_merge_group_identity(model: dict[str, Any]) -> tuple[str, str]:
     return f"title:{normalized_key}", base_title
 
 
-def _build_local_merge_suggestions(items: list[dict]) -> list[dict[str, Any]]:
+def _build_local_merge_suggestions(items: list[dict], *, limit: int | None = 8) -> list[dict[str, Any]]:
     groups: dict[str, dict[str, Any]] = {}
     for model in items:
         if str(model.get("source") or "").strip().lower() != "local":
@@ -1812,7 +1844,11 @@ def _build_local_merge_suggestions(items: list[dict]) -> list[dict[str, Any]]:
             }
         )
     suggestions.sort(key=lambda item: (-int(item.get("count") or 0), str(item.get("title") or "")))
-    return suggestions[:8]
+    return suggestions if limit is None else suggestions[:limit]
+
+
+def _merge_group_metadata(group: Optional[dict]) -> Optional[dict]:
+    return {key: group[key] for key in ("key", "title", "count")} if group else None
 
 
 def _subset_models_payload(
@@ -1826,6 +1862,7 @@ def _subset_models_payload(
     page_size: int = 8,
     default_include_deleted: bool = False,
     preserve_input_order: bool = False,
+    merge_group: str = "",
 ) -> dict[str, Any]:
     normalized_query = q.strip().lower()
     normalized_tag = tag.strip().lower()
@@ -1839,6 +1876,12 @@ def _subset_models_payload(
         selected = [item for item in all_subset if item.get("local_flags", {}).get("deleted")]
     elif normalized_tag == "__source_deleted__":
         selected = [item for item in all_subset if item.get("subscription_flags", {}).get("deleted_on_source")]
+
+    merge_suggestions = _build_local_merge_suggestions(base_subset, limit=None)
+    active_merge_group = next((item for item in merge_suggestions if item["key"] == merge_group), None)
+    if merge_group:
+        members = set(active_merge_group["model_dirs"]) if active_merge_group else set()
+        selected = [item for item in selected if item.get("model_dir") in members]
 
     if normalized_query:
         selected = [
@@ -1874,7 +1917,6 @@ def _subset_models_payload(
     paged_items = selected[start:end]
     base_tags = _tags_from_items(base_subset)
     base_source_counts = _source_counts_from_items(base_subset)
-    merge_suggestions = _build_local_merge_suggestions(base_subset)
 
     return {
         "items": paged_items,
@@ -1886,12 +1928,14 @@ def _subset_models_payload(
         "has_more": end < total_filtered,
         "tags": base_tags,
         "source_counts": base_source_counts,
-        "merge_suggestions": merge_suggestions,
+        "merge_suggestions": merge_suggestions[:8],
+        "active_merge_group": _merge_group_metadata(active_merge_group),
         "filters": {
             "q": q,
             "source": normalized_source,
             "tag": tag,
             "sort": sort_key,
+            "merge_group": merge_group,
         },
     }
 
@@ -1906,11 +1950,12 @@ def build_source_group_models_payload(
     sort_key: str = "collectDate",
     page: int = 1,
     page_size: int = 8,
+    merge_group: str = "",
     store: Optional[JsonStore] = None,
     task_store: Optional[TaskStateStore] = None,
 ) -> Optional[dict[str, Any]]:
     indexed = _indexed_group_payload(source_key, source_type=source_type, q=q, source=source, tag=tag,
-                                     sort_key=sort_key, page=page, page_size=page_size, store=store)
+                                     sort_key=sort_key, page=page, page_size=page_size, merge_group=merge_group, store=store)
     if indexed is not None:
         return indexed
     groups, all_models, _ = _group_models(store=store, task_store=task_store)
@@ -1936,6 +1981,7 @@ def build_source_group_models_payload(
         page_size=page_size,
         default_include_deleted=str(group.get("key") or "") == "local_deleted",
         preserve_input_order=preserve_input_order,
+        merge_group=merge_group if group.get("kind") == "local" and source_key == "local-organizer" else "",
     )
     payload["filters"]["sort"] = sort_key
     payload["view"] = group
@@ -2021,7 +2067,7 @@ def _indexed_merge_suggestions(group: dict, revision: Any = None) -> list[dict]:
     candidates = query_group_merge_candidates(group)
     if candidates is None:
         return []
-    result = _build_local_merge_suggestions(candidates)
+    result = _build_local_merge_suggestions(candidates, limit=None)
     with _SOURCE_LIBRARY_GROUP_CACHE_LOCK:
         if len(_SOURCE_GROUP_MERGE_CACHE) >= 16:
             _SOURCE_GROUP_MERGE_CACHE.pop(next(iter(_SOURCE_GROUP_MERGE_CACHE)))
@@ -2041,14 +2087,27 @@ def _indexed_group_payload(source_key: str, *, source_type: str, store=None, **f
     group = (_indexed_group_definitions(store) or {}).get(source_key)
     if not _matches_group_route(group, source_type):
         return None
-    payload = query_group_models(group, **filters)
+    requested_merge_group = filters.pop("merge_group", "")
+    merge_group = requested_merge_group if group.get("kind") == "local" and source_key == "local-organizer" else ""
+    query_filters = dict(filters, page_size=0) if merge_group else filters
+    payload = query_group_models(group, **query_filters)
     if payload is None:
         return None
+    merge_suggestions = _indexed_merge_suggestions(group, payload.get("revision"))
+    active_merge_group = next((item for item in merge_suggestions if item["key"] == merge_group), None)
+    if merge_group:
+        members = active_merge_group["model_dirs"] if active_merge_group else []
+        payload = query_group_models(group, **filters, merge_model_dirs=members)
+        if payload is None:
+            return None
     summary = payload.pop("summary")
     _apply_subscription_flags(payload["items"])
     metadata = load_source_metadata_cache().get("items", {}).get(source_key, {})
     payload["view"] = _finalize_indexed_group(group, summary, metadata)
-    payload["merge_suggestions"] = _indexed_merge_suggestions(group, payload.pop("revision", None))
+    payload.pop("revision", None)
+    payload["merge_suggestions"] = merge_suggestions[:8]
+    payload["active_merge_group"] = _merge_group_metadata(active_merge_group)
+    payload.setdefault("filters", {})["merge_group"] = merge_group
     return payload
 
 

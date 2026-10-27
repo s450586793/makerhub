@@ -160,6 +160,44 @@ def test_group_sql_paginates_local_and_hidden_states(sql_catalog):
     assert source_group_index.query_group_models({"kind": "local"}, q="no match")["filtered_total"] == 0
 
 
+def test_local_merge_membership_intersects_filters_before_sql_pagination(sql_catalog):
+    from app.services import source_group_index
+    sql_catalog.execute("UPDATE archive_model_index SET likes = collect_ts * 10")
+    sql_catalog.execute("UPDATE archive_model_index SET tags = ARRAY['other'] WHERE model_dir = 'M3'")
+    members = ["M1", "M3", "M4", "M5", "M6", "M7"]
+    result = source_group_index.query_group_models(
+        {"kind": "local"}, merge_model_dirs=members, q="Model", tag="tool",
+        source="local", sort_key="likes", page=2, page_size=2,
+    )
+    assert result is not None
+    assert result["total"] == 5
+    assert result["source_counts"]["local"] == 5
+    assert result["filtered_total"] == 3
+    assert [item["model_dir"] for item in result["items"]] == ["M1"]
+    assert not result["has_more"]
+    assert source_group_index.query_group_models(
+        {"kind": "local"}, merge_model_dirs=members, source="global",
+    )["filtered_total"] == 0
+
+
+def test_empty_merge_membership_never_returns_the_full_sql_group(sql_catalog):
+    from app.services import source_group_index
+    result = source_group_index.query_group_models({"kind": "local"}, merge_model_dirs=[])
+    assert result is not None
+    assert result["items"] == []
+    assert result["filtered_total"] == 0
+    assert result["total"] == 5
+    assert not result["has_more"]
+    assert len(result["summary"]["preview_models"]) == 4
+
+
+def test_merge_membership_is_ignored_by_other_sql_state_scopes(sql_catalog):
+    from app.services import source_group_index
+    result = source_group_index.query_group_models({"kind": "local_deleted"}, merge_model_dirs=[])
+    assert result is not None
+    assert [item["model_dir"] for item in result["items"]] == ["M8", "M6"]
+
+
 def test_group_sql_preserves_source_order_fallback_and_scoped_tags(sql_catalog):
     from app.services import source_group_index
     sql_catalog.execute("UPDATE archive_model_index SET source = 'global'")

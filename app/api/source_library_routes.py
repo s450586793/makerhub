@@ -83,6 +83,7 @@ async def get_source_group_models(
     page: int = Query(1, ge=1, description="分页页码"),
     page_size: int = Query(8, ge=1, le=120, description="每页数量"),
     limit: int = Query(0, ge=0, le=2000, description="从第一页起一次返回的数量"),
+    merge_group: str = Query("", max_length=1000, description="本地整理疑似同一模型组的精确标识"),
 ):
     effective_page_size = limit if limit > 0 else page_size
     payload = await run_web_io(
@@ -95,6 +96,7 @@ async def get_source_group_models(
         sort_key=sort,
         page=1 if limit > 0 else page,
         page_size=effective_page_size,
+        merge_group=merge_group,
         store=store,
         task_store=task_state_store,
     )

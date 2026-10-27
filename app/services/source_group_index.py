@@ -79,12 +79,16 @@ def _ready() -> bool:
 def query_group_models(
     group: dict[str, Any], *, q: str = "", source: str = "all", tag: str = "",
     sort_key: str = "collectDate", page: int = 1, page_size: int = 8,
+    merge_model_dirs: list[str] | None = None,
 ) -> dict[str, Any] | None:
     try:
         if not _ready():
             return None
         cte, scope_params = _group_query(group, include_source_deleted=str(tag).strip().lower() == "__source_deleted__")
         condition, filter_params, normalized_source = index._archive_model_query_filters(q, source, tag)
+        if merge_model_dirs is not None and group.get("kind") == "local":
+            condition = f"({condition}) AND model_dir = ANY(%s::text[])"
+            filter_params = (*filter_params, merge_model_dirs)
         if group.get("kind") in {"source_deleted", "local_deleted"}:
             condition = condition.replace("NOT deleted", "TRUE")
         sort_column = {"publishDate": "publish_ts", "downloads": "downloads", "likes": "likes", "prints": "prints"}.get(sort_key, "collect_ts")

@@ -15,10 +15,10 @@
         </label>
         <label class="filter-field">
           <select v-model="filters.source" aria-label="来源筛选" @change="applyFiltersIfChanged">
-            <option value="all">全部 ({{ payload.source_counts.all || 0 }})</option>
-            <option value="cn">国内 ({{ payload.source_counts.cn || 0 }})</option>
-            <option value="global">国际 ({{ payload.source_counts.global || 0 }})</option>
-            <option value="local">本地 ({{ payload.source_counts.local || 0 }})</option>
+            <option value="all">全部 ({{ sourceCounts.all || 0 }})</option>
+            <option value="cn">国内 ({{ sourceCounts.cn || 0 }})</option>
+            <option value="global">国际 ({{ sourceCounts.global || 0 }})</option>
+            <option value="local">本地 ({{ sourceCounts.local || 0 }})</option>
           </select>
         </label>
         <div class="filter-field">
@@ -79,12 +79,24 @@
         v-for="suggestion in mergeSuggestions"
         :key="suggestion.key"
         class="local-merge-suggestion"
+        :class="{ 'is-active': activeMergeGroupKey === suggestion.key }"
+        :aria-pressed="activeMergeGroupKey === suggestion.key"
+        :disabled="merging"
         type="button"
+        title="查看这组模型"
         @click="applyMergeSuggestion(suggestion)"
       >
         <span>{{ suggestion.title }}</span>
         <em>{{ suggestion.count }} 个</em>
       </button>
+    </div>
+    <div v-if="activeMergeGroupKey" class="local-merge-filter" role="status">
+      <span class="local-merge-filter__summary">
+        正在查看：<strong>{{ activeMergeGroup?.title || "候选组" }}</strong>
+        · {{ payload.filtered_total || 0 }} 个模型
+      </span>
+      <span class="local-merge-filter__hint">核对后选择合并</span>
+      <button class="button button-secondary" type="button" :disabled="merging" @click="clearMergeSuggestion">返回全部</button>
     </div>
     <div class="library-group-hero__body">
       <div class="library-group-hero__copy">
@@ -126,8 +138,9 @@
   </div>
 
   <section v-else-if="loaded" class="surface empty-state">
-    <h2>这个分组里还没有模型</h2>
-    <p>当前筛选条件下没有命中结果。你可以重置条件，或者返回模型库首页查看其它来源卡片。</p>
+    <h2>{{ activeMergeGroupKey ? "当前候选组没有匹配的模型" : "这个分组里还没有模型" }}</h2>
+    <p v-if="activeMergeGroupKey">候选组可能已变化，或当前筛选没有匹配结果。可以调整筛选或返回全部。</p>
+    <p v-else>当前筛选条件下没有命中结果。你可以重置条件，或者返回模型库首页查看其它来源卡片。</p>
   </section>
 
   <section v-else class="surface empty-state">
@@ -233,6 +246,7 @@ const filters = reactive({
   source: "all",
   tag: "",
   sort: "collectDate",
+  mergeGroup: "",
 });
 const view = ref(null);
 const status = ref("");
@@ -283,6 +297,23 @@ const isLocalOrganizerGroup = computed(() => (
   && String(route.params.sourceType || "") === "local"
   && String(route.params.sourceKey || "") === "local-organizer"
 ));
+const activeMergeGroupKey = computed(() => (
+  isLocalOrganizerGroup.value && typeof route.query.merge_group === "string" ? route.query.merge_group.trim() : ""
+));
+const activeMergeGroup = computed(() => {
+  const active = payload.value.active_merge_group;
+  if (active?.key === activeMergeGroupKey.value) {
+    return active;
+  }
+  return mergeSuggestions.value.find((item) => item.key === activeMergeGroupKey.value) || null;
+});
+const sourceCounts = computed(() => {
+  if (!activeMergeGroupKey.value) {
+    return payload.value.source_counts;
+  }
+  const count = Number(activeMergeGroup.value?.count) || 0;
+  return { all: count, cn: 0, global: 0, local: count };
+});
 const canMergeLocalModels = computed(() => (
   isLocalOrganizerGroup.value
   && (
@@ -329,6 +360,7 @@ function syncFiltersFromRoute() {
   filters.source = typeof route.query.source === "string" ? route.query.source : "all";
   filters.tag = typeof route.query.tag === "string" ? route.query.tag : "";
   filters.sort = typeof route.query.sort === "string" ? route.query.sort : "collectDate";
+  filters.mergeGroup = activeMergeGroupKey.value;
 }
 
 function buildQuery(page = 1, options = {}) {
@@ -339,6 +371,7 @@ function buildQuery(page = 1, options = {}) {
   if (filters.source && filters.source !== "all") query.set("source", filters.source);
   if (filters.tag) query.set("tag", filters.tag);
   if (filters.sort && filters.sort !== "collectDate") query.set("sort", filters.sort);
+  if (filters.mergeGroup) query.set("merge_group", filters.mergeGroup);
   return query;
 }
 
@@ -349,6 +382,7 @@ function buildRouteQuery(options = {}) {
     source: filters.source !== "all" ? filters.source : undefined,
     tag: filters.tag || undefined,
     sort: filters.sort !== "collectDate" ? filters.sort : undefined,
+    merge_group: filters.mergeGroup || undefined,
   };
   const page = Number(options.page || 0);
   if (Number.isFinite(page) && page > 1) {
@@ -422,11 +456,13 @@ function groupListCacheKey(page = routePage()) {
   const source = typeof route.query.source === "string" ? route.query.source : "";
   const tag = typeof route.query.tag === "string" ? route.query.tag : "";
   const sort = typeof route.query.sort === "string" ? route.query.sort : "";
+  const mergeGroup = activeMergeGroupKey.value;
   if (navContext) query.set("nav_context", navContext);
   if (q) query.set("q", q);
   if (source && source !== "all") query.set("source", source);
   if (tag) query.set("tag", tag);
   if (sort && sort !== "collectDate") query.set("sort", sort);
+  if (mergeGroup) query.set("merge_group", mergeGroup);
   const safePage = Math.max(Number(page) || 1, 1);
   if (safePage > 1) query.set("page", String(Math.floor(safePage)));
   const suffix = query.toString();
@@ -531,8 +567,12 @@ async function load({ append = false } = {}) {
   const currentToken = ++requestToken;
   syncFiltersFromRoute();
   if (!append) {
+    clearSelectedModels();
+    loadingMore.value = false;
     groupListAbortController?.abort();
     groupListAbortController = new AbortController();
+  } else {
+    loadingMore.value = true;
   }
   const abortController = append ? null : groupListAbortController;
 
@@ -567,7 +607,15 @@ async function load({ append = false } = {}) {
     if (!append) {
       await scrollToRouteAnchor();
     }
+  } catch (error) {
+    if (currentToken !== requestToken || abortController?.signal.aborted || error?.name === "AbortError") {
+      return;
+    }
+    throw error;
   } finally {
+    if (append && currentToken === requestToken) {
+      loadingMore.value = false;
+    }
     if (abortController && groupListAbortController === abortController) {
       groupListAbortController = null;
     }
@@ -585,6 +633,7 @@ async function reloadVisiblePages() {
   groupListAbortController = abortController;
   loadingMore.value = false;
   needsRefresh.value = true;
+  clearSelectedModels();
   syncFiltersFromRoute();
 
   try {
@@ -621,6 +670,11 @@ async function reloadVisiblePages() {
     };
     needsRefresh.value = false;
     rememberGroupList();
+  } catch (error) {
+    if (currentToken !== requestToken || abortController.signal.aborted || error?.name === "AbortError") {
+      return;
+    }
+    throw error;
   } finally {
     if (groupListAbortController === abortController) {
       groupListAbortController = null;
@@ -648,11 +702,10 @@ async function loadMore() {
   if (!payload.value.has_more) {
     return;
   }
-  loadingMore.value = true;
   try {
     await load({ append: true });
-  } finally {
-    loadingMore.value = false;
+  } catch (error) {
+    status.value = error instanceof Error ? error.message : "加载更多模型失败。";
   }
 }
 
@@ -691,6 +744,7 @@ function applyFiltersIfChanged() {
     source: typeof route.query.source === "string" ? route.query.source : undefined,
     tag: typeof route.query.tag === "string" ? route.query.tag : undefined,
     sort: typeof route.query.sort === "string" ? route.query.sort : undefined,
+    merge_group: activeMergeGroupKey.value || undefined,
   };
 
   if (
@@ -699,6 +753,7 @@ function applyFiltersIfChanged() {
     && currentQuery.source === nextQuery.source
     && currentQuery.tag === nextQuery.tag
     && currentQuery.sort === nextQuery.sort
+    && currentQuery.merge_group === nextQuery.merge_group
   ) {
     return;
   }
@@ -707,7 +762,8 @@ function applyFiltersIfChanged() {
 }
 
 function resetFilters() {
-  Object.assign(filters, { q: "", source: "all", tag: "", sort: "collectDate" });
+  clearSelection();
+  Object.assign(filters, { q: "", source: "all", tag: "", sort: "collectDate", mergeGroup: "" });
   router.replace({ path: route.path, query: buildRouteQuery() });
 }
 
@@ -719,10 +775,15 @@ function isSelected(modelDir) {
   return selectedModelDirSet.value.has(String(modelDir || "").trim());
 }
 
-function clearSelection() {
+function clearSelectedModels() {
   selectedModelDirSet.value = new Set();
-  selectMode.value = false;
+  shareDialogVisible.value = false;
   resetMergeDialog();
+}
+
+function clearSelection() {
+  clearSelectedModels();
+  selectMode.value = false;
 }
 
 function toggleSelectMode() {
@@ -736,7 +797,7 @@ function toggleSelectMode() {
 
 function toggleSelected(modelDir) {
   const cleanModelDir = String(modelDir || "").trim();
-  if (!cleanModelDir) {
+  if (!cleanModelDir || deleting.value || merging.value || needsRefresh.value || groupListAbortController) {
     return;
   }
   const model = knownModelsByDir.value.get(cleanModelDir);
@@ -762,11 +823,14 @@ function toggleSelected(modelDir) {
 }
 
 function selectLoadedModels() {
+  if (deleting.value || merging.value || needsRefresh.value || groupListAbortController) {
+    return;
+  }
   const selectable = (payload.value.items || []).filter((item) => {
     if (!canMergeLocalModels.value) {
       return true;
     }
-    return String(item?.source || "").toLowerCase() === "local";
+    return String(item?.source || "").toLowerCase() === "local" && !item?.local_flags?.deleted;
   });
   selectedModelDirSet.value = new Set(
     selectable.map((item) => String(item?.model_dir || "").trim()).filter(Boolean),
@@ -830,16 +894,19 @@ function defaultMergeTitle() {
 }
 
 function applyMergeSuggestion(suggestion) {
-  const dirs = (suggestion.model_dirs || []).map((item) => String(item || "").trim()).filter(Boolean);
-  if (dirs.length < 2) {
+  const key = String(suggestion.key || "").trim();
+  if (!key || key === activeMergeGroupKey.value || merging.value) {
     return;
   }
-  selectMode.value = true;
-  selectedModelDirSet.value = new Set(dirs);
-  mergeDialog.targetModelDir = dirs[0];
-  mergeDialog.coverFromModelDir = dirs[0];
-  mergeDialog.title = String(suggestion.title || "").trim();
-  status.value = `已选择 ${dirs.length} 个疑似同一模型。`;
+  clearSelection();
+  filters.mergeGroup = key;
+  router.push({ path: route.path, query: buildRouteQuery() });
+}
+
+function clearMergeSuggestion() {
+  clearSelection();
+  filters.mergeGroup = "";
+  router.push({ path: route.path, query: buildRouteQuery() });
 }
 
 function openMergeDialog() {
@@ -876,9 +943,23 @@ function clearLibraryCachesAfterMerge() {
 }
 
 async function submitMerge() {
+  if (deleting.value || needsRefresh.value || groupListAbortController) {
+    status.value = "列表更新中，请稍后核对再合并。";
+    return;
+  }
+  const selectedDirs = selectedModelDirs.value;
+  const currentModels = new Map(payload.value.items.map((model) => [model.model_dir, model]));
+  if (selectedDirs.some((modelDir) => {
+    const model = currentModels.get(modelDir);
+    return !model || String(model.source || "").toLowerCase() !== "local" || model.local_flags?.deleted;
+  })) {
+    clearSelectedModels();
+    status.value = "所选模型已变化，请重新核对并选择。";
+    return;
+  }
   const targetModelDir = String(mergeDialog.targetModelDir || "").trim();
-  const sourceModelDirs = selectedModelDirs.value.filter((item) => item !== targetModelDir);
-  if (!targetModelDir || sourceModelDirs.length < 1) {
+  const sourceModelDirs = selectedDirs.filter((item) => item !== targetModelDir);
+  if (!selectedDirs.includes(targetModelDir) || sourceModelDirs.length < 1) {
     status.value = "请选择主模型和至少一个待合并模型。";
     return;
   }
@@ -891,7 +972,7 @@ async function submitMerge() {
         target_model_dir: targetModelDir,
         source_model_dirs: sourceModelDirs,
         title: mergeDialog.title,
-        cover_from_model_dir: mergeDialog.coverFromModelDir || targetModelDir,
+        cover_from_model_dir: selectedDirs.includes(mergeDialog.coverFromModelDir) ? mergeDialog.coverFromModelDir : targetModelDir,
       },
     });
     status.value = response.message || "本地模型已合并。";
@@ -1015,6 +1096,7 @@ async function deleteOne(modelDir) {
       throw new Error(response.message || "没有标记任何模型。");
     }
     if (route.fullPath !== routeAtDelete) return;
+    clearSelectedModels();
     status.value = response.message || "模型已在 MakerHub 中删除并隐藏。";
     try {
       await reloadVisiblePages();
@@ -1080,6 +1162,12 @@ watch(() => route.fullPath, () => {
   }
   status.value = "";
   clearSelection();
+  selectMode.value = Boolean(activeMergeGroupKey.value);
+  if (String(payload.value.filters?.merge_group || "") !== activeMergeGroupKey.value) {
+    disconnectObserver();
+    payload.value = { ...payload.value, items: [], count: 0, filtered_total: 0, has_more: false, page: 1, loaded_from_page: 1 };
+    loaded.value = false;
+  }
   void hydrateGroupListFromCache();
   void load({ append: false }).catch((error) => {
     status.value = error instanceof Error ? error.message : "模型列表加载失败。";
@@ -1089,6 +1177,7 @@ watch(() => route.fullPath, () => {
 
 onMounted(async () => {
   const perf = createPagePerformanceTracker({ page: "model_group", route: () => route.fullPath });
+  selectMode.value = Boolean(activeMergeGroupKey.value);
   await hydrateGroupListFromCache();
   try {
     await load({ append: false });
@@ -1102,6 +1191,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  requestToken += 1;
   groupListAbortController?.abort();
   groupListAbortController = null;
   disconnectObserver();
