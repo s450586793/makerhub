@@ -30,6 +30,7 @@ function fakeHandle({
   contains = () => true,
   viewportOffset = { x: 0, y: 0 },
   selectionRegion = "selection-a",
+  src = "",
   evaluate,
 } = {}) {
   const handle = {
@@ -46,6 +47,7 @@ function fakeHandle({
         return Boolean(region) && candidates.every((candidate) => candidate.selectionRegion === region);
       }
       if (argument === "viewport-offset") return viewportOffset;
+      if (argument === "frame-src") return src;
       if (argument?.action === "click") {
         if (Date.now() >= argument.deadline) return false;
         await click();
@@ -1393,7 +1395,7 @@ test("challenge discovery rejects a generic slider container as the drag handle"
 });
 
 test("challenge discovery recognizes visible Cloudflare iframe or a populated response", async () => {
-  const iframe = fakeHandle();
+  const iframe = fakeHandle({ src: "https://challenges.cloudflare.com/turnstile" });
   const iframeFrame = fakeFrame({
     one: (selector) => (selector.includes("challenges.cloudflare.com") ? iframe : null),
   });
@@ -1417,7 +1419,7 @@ test("challenge discovery recognizes visible Cloudflare iframe or a populated re
 });
 
 test("Turnstile discovery does not select an unrelated page checkbox", async () => {
-  const iframe = fakeHandle();
+  const iframe = fakeHandle({ src: "https://challenges.cloudflare.com/turnstile" });
   const unrelatedCheckbox = fakeHandle();
   const turnstileCheckbox = fakeHandle();
   const main = fakeFrame({
@@ -2746,8 +2748,8 @@ test("Turnstile clicks at most once per attempt without calling vision", async (
 
   assert.equal(result.completed, true);
   assert.equal(syntheticClicks, 0);
-  assert.deepEqual(inputEvents.map(({ type }) => type), [
-    "mouseMoved",
+  assert.ok(inputEvents.filter(({ type }) => type === "mouseMoved").length >= 8);
+  assert.deepEqual(inputEvents.filter(({ type }) => type !== "mouseMoved").map(({ type }) => type), [
     "mousePressed",
     "mouseReleased",
   ]);

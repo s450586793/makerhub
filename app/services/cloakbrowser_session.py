@@ -32,6 +32,7 @@ BRIDGE_SCRIPT = ROOT_DIR / "app" / "services" / "cloakbrowser_bridge.mjs"
 DEFAULT_TIMEOUT_SECONDS = 30
 AUTHORIZATION_TIMEOUT_SECONDS = 90
 AUTO_VERIFY_TIMEOUT_SECONDS = 50
+AUTO_VERIFY_MAX_ATTEMPTS = 2
 AUTHORIZATION_BRIDGE_CLEANUP_MARGIN_SECONDS = 40
 AUTHORIZATION_TRANSIENT_RETRY_DELAYS_SECONDS = (2.0, 5.0)
 AUTHORIZATION_SETUP_ERROR_MARKERS = (
@@ -1099,7 +1100,10 @@ def _bridge_payload(
         "platform": normalize_platform(platform) if platform else "",
         "navigation_timeout_ms": max(_timeout_seconds() * 1000, 15000),
         "authorization_timeout_ms": AUTHORIZATION_TIMEOUT_SECONDS * 1000,
-        "auto_verify_3mf": _env_bool("MAKERHUB_AUTO_VERIFY_3MF", False),
+        "auto_verify_3mf": _env_bool("MAKERHUB_AUTO_VERIFY_3MF", True),
+        "auto_verify_challenges": _env_bool("MAKERHUB_AUTO_VERIFY_CHALLENGES", True),
+        "verification_timeout_ms": AUTO_VERIFY_TIMEOUT_SECONDS * 1000,
+        "verification_max_attempts": AUTO_VERIFY_MAX_ATTEMPTS,
     }
 
 
@@ -1184,12 +1188,15 @@ def browser_fetch(
         )
         payload["headers"] = _safe_browser_fetch_headers(headers)
         payload["navigation_timeout_ms"] = operation_timeout * 1000
+        bridge_timeout = max(operation_timeout + 30, operation_timeout * 2)
+        if payload["auto_verify_challenges"]:
+            bridge_timeout += AUTO_VERIFY_TIMEOUT_SECONDS
         try:
             running, _restarted, result = _run_paced_bridge(
                 clean_platform,
                 running,
                 payload,
-                timeout_seconds=max(operation_timeout + 30, operation_timeout * 2),
+                timeout_seconds=bridge_timeout,
             )
         except CloakBrowserBridgeError:
             if not clean_profile_id:
@@ -1203,7 +1210,7 @@ def browser_fetch(
                 clean_platform,
                 running,
                 payload,
-                timeout_seconds=max(operation_timeout + 30, operation_timeout * 2),
+                timeout_seconds=bridge_timeout,
             )
 
     final_url = _validate_browser_fetch_url(str(result.get("url") or clean_url), clean_platform)
@@ -1221,7 +1228,7 @@ def browser_fetch(
         headers={
             str(name).lower(): str(value)[:1000]
             for name, value in response_headers.items()
-            if str(name).lower() in {"content-type", "retry-after", "location"}
+            if str(name).lower() in {"content-type", "retry-after", "location", "cf-mitigated"}
         },
     )
 

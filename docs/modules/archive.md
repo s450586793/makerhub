@@ -14,7 +14,7 @@
 - 不负责订阅调度本身；订阅只调用本模块发现和入队能力。
 - 不负责本地 zip/rar/STL 整理。
 - 不负责前端模型卡片布局。
-- 不保存 Cookie；只从配置读取对应站点 Cookie。
+- 不负责浏览器登录与 Cookie 持久化；已关联 profile 中的浏览器会话是控制面请求的登录态来源。
 
 ## 对外契约
 
@@ -49,6 +49,8 @@
 ### MakerWorld 传输边界
 
 - `makerworld_browser_client.py` 是服务层唯一允许调用 `browser_fetch()` 的客户端。MakerWorld 的页面和 JSON 控制面请求必须经由此客户端，供 `makerworld_pipeline/` 使用。
+- 页面和 JSON 请求在对应站点的同一 CloakBrowser profile、代理与任务页面内执行原生 `fetch`；验证通过后继续复用该页面和浏览器 Cookie，不更换 profile 或代理，也不注入旧登录态。
+- 页面前置 Cloudflare 自动验证默认开启：先等待原生通过，再有限尝试可见 Turnstile 复选框；每次操作共享 50 秒验证预算，每个可见验证最多尝试 2 次。通过后只允许恢复一次 GET，普通网络错误不得伪装成验证成功。
 - `makerworld_parsers/` 只负责 URL、HTML 和 JSON 载荷解析，不得依赖网络客户端或状态存储。
 - `AssetDownloader` 保持图片、附件和已取得签名直链 `3MF` 的 `requests` 流式下载通道；它不是控制面 BrowserTransport 的例外实现。
 - `batch_discovery.py` 仅保留发现入口的兼容 re-export。`legacy_archiver.py` 仍保留离线页面重建、归档目录整理、归档入口 facade，以及迁移期兼容和既有 monkeypatch 测试所需的旧控制面实现；生产调用与控制面编排入口已迁到 `makerworld_pipeline/`，不得再新增对 legacy 控制面实现的生产依赖。
@@ -59,6 +61,8 @@
 - `three_mf_only` 由 3MF 子任务和缺失重试传入隔离进程，读取已有 `meta.json`，保留未选中配置及全部非 3MF 资料。资料缺失或损坏时明确要求重新归档，不自动退回全量爬取。
 - 本地文件已存在则跳过；已有文件直链优先通过静态下载器重试。超时、429、5xx 保留原直链，401/403/404/410 清除失效地址，并在当轮最多重新授权一次。
 - 新授权地址在文件传输前原子写入 `meta.json`；无直链时才由授权入口唤醒 CB 并打开模型页，不直接重放可能消耗次数的授权接口。每日限额、随机间隔及并发限制继续生效。
+- 3MF 默认尝试已有 GeeTest 图标点选、按序点选和滑块验证，与前置 CF 共享单次操作的验证时长预算；验证流程不重复点击 Download，也不重放授权 POST。未知题型、识别不确定或失败保留人工验证流程，不保证通用图形验证码自动通过。
+- `MAKERHUB_AUTO_VERIFY_3MF=false` 可关闭 3MF 图形验证，`MAKERHUB_AUTO_VERIFY_CHALLENGES=false` 可关闭页面前置 CF 自动验证；两个开关默认均为 `true`，每次操作读取配置，显式关闭继续生效。
 - 持续的 Cloudflare 中间验证页返回结构化 `MAKERHUB_CLOUDFLARE`，暂停对应站点的 3MF Gate；不套用单配置验证码的隔离放行，也不通过反复同步 Cookie 恢复。验证完成后沿用“已验证”流程。
 
 ## 数据和目录

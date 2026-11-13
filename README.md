@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.20.20`
+> 当前版本：`v0.21.0`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -77,7 +77,8 @@ services:
       MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
       MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
       MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
-      MAKERHUB_AUTO_VERIFY_3MF: "${MAKERHUB_AUTO_VERIFY_3MF:-false}"
+      MAKERHUB_AUTO_VERIFY_3MF: "${MAKERHUB_AUTO_VERIFY_3MF:-true}"
+      MAKERHUB_AUTO_VERIFY_CHALLENGES: "${MAKERHUB_AUTO_VERIFY_CHALLENGES:-true}"
       MAKERHUB_TRUSTED_PROXIES: ${MAKERHUB_TRUSTED_PROXIES:-}
     volumes:
       - ${MAKERHUB_CONFIG_PATH:-./data/config}:/app/config
@@ -115,7 +116,8 @@ services:
       MAKERHUB_CLOAKBROWSER_AUTH_TOKEN: ${MAKERHUB_CLOAKBROWSER_AUTH_TOKEN:?set MAKERHUB_CLOAKBROWSER_AUTH_TOKEN in .env}
       MAKERHUB_CLOAKBROWSER_PUBLIC_URL: ${MAKERHUB_CLOAKBROWSER_PUBLIC_URL:-}
       MAKERHUB_CLOAKBROWSER_TIMEOUT: "30"
-      MAKERHUB_AUTO_VERIFY_3MF: "${MAKERHUB_AUTO_VERIFY_3MF:-false}"
+      MAKERHUB_AUTO_VERIFY_3MF: "${MAKERHUB_AUTO_VERIFY_3MF:-true}"
+      MAKERHUB_AUTO_VERIFY_CHALLENGES: "${MAKERHUB_AUTO_VERIFY_CHALLENGES:-true}"
       MAKERHUB_CLOAKBROWSER_IDLE_SECONDS: "${MAKERHUB_CLOAKBROWSER_IDLE_SECONDS:-1800}"
       MAKERHUB_CLOAKBROWSER_AUTOMATION_IDLE_SECONDS: "${MAKERHUB_CLOAKBROWSER_AUTOMATION_IDLE_SECONDS:-120}"
       MAKERHUB_WORKER_RECYCLE_RSS_MIB: "${MAKERHUB_WORKER_RECYCLE_RSS_MIB:-2048}"
@@ -274,13 +276,18 @@ App 和 Worker 始终共享 `MAKERHUB_CONFIG_PATH` 与 `MAKERHUB_ARCHIVE_PATH`�
 | `MAKERHUB_CLOAKBROWSER_DATA_PATH` | `./data/cloakbrowser` | 浏览器 profile 与会话目录 |
 | `MAKERHUB_CLOAKBROWSER_BIND_ADDRESS` | `127.0.0.1` | Manager 宿主机监听地址 |
 | `MAKERHUB_CLOAKBROWSER_PUBLIC_URL` | 空 | 用户浏览器能够访问的 Manager 地址 |
-| `MAKERHUB_AUTO_VERIFY_3MF` | `false` | 开启 3MF 页面自动验证；默认关闭，失败后人工回退 |
+| `MAKERHUB_AUTO_VERIFY_3MF` | `true` | 自动处理已支持的 3MF 图形验证；设为 `false` 关闭 |
+| `MAKERHUB_AUTO_VERIFY_CHALLENGES` | `true` | 自动处理页面前置 Cloudflare 验证；设为 `false` 关闭 |
 | `MAKERHUB_WORKER_RECYCLE_RSS_MIB` | `2048` | Worker 在安全任务间隙主动重启的 RSS 阈值（MiB） |
 | `MAKERHUB_WORKER_HARD_RECYCLE_RSS_MIB` | `4096` | Worker 可恢复重启的 RSS 硬上限（MiB） |
 | `MAKERHUB_ORGANIZER_RECYCLE_RSS_MIB` | `768` | 本地整理 daemon 的独立回收阈值（MiB） |
 | `MAKERHUB_TRUSTED_PROXIES` | 空 | 允许提供转发头的受控代理地址 |
 
 不要把 `MAKERHUB_TRUSTED_PROXIES` 设置为 `*`、`0.0.0.0/0` 或公网网段。默认不信任 `X-Forwarded-*` 请求头。
+
+页面和 API 抓取复用对应站点的同一浏览器 profile、代理与任务页面，通过页面原生 `fetch` 请求数据。Cloudflare 验证先等待原生通过，再有限尝试可见 Turnstile 复选框；3MF 保留已支持的 GeeTest 图标点选、按序点选和滑块处理。每次操作共享 50 秒验证预算，每个可见验证最多尝试 2 次；通过后 GET 最多恢复一次，不重复点击 Download。未知题型或验证失败仍需在指纹浏览器中人工完成，不保证通用图形验证码自动通过。
+
+已有 `.env` 中显式设置的 `false` 会继续生效。需要开启时改为 `true`，同步 Compose 后重建 App 和 Worker；两个开关可以分别关闭。
 
 ## 更新
 
@@ -363,6 +370,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-11-13 · v0.21.0
+
+- 页面和 API 改为在同一浏览器 profile、代理与任务页面内通过原生 `fetch` 抓取，Cloudflare 前置验证先等待再有限交互，通过后 GET 最多恢复一次。
+- 默认启用已支持的 3MF 图形验证，保留 GeeTest 图标、按序点选和滑块处理；未知或失败时人工完成，共享验证时长上限且不重复点击 Download。两个自动验证开关均可显式关闭。
+
 ### 2026-10-27 · v0.20.20
 
 - 点击“疑似同一模型”后只查看该组，核对后再手动选择合并，支持返回全部和保留筛选上下文。
@@ -373,13 +385,13 @@ npm --prefix frontend run build
 - 修复详情页点击“相关模型”后地址已变化、内容却仍显示上一模型的问题。
 - 连续跳转和浏览器前进后退时按目标链接加载，避免旧模型污染缓存。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-10-23 · v0.20.18
 
 - 修复来源模型列表加载多页后删除模型，前面的卡片消失并导致滚动位置跳动的问题。
 - 删除后保留已浏览范围和相邻卡片位置，重新核对分页边界，继续加载时避免遗漏或重复。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-10-22 · v0.20.17
 

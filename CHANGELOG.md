@@ -1,5 +1,11 @@
 # 更新说明
 
+## 2026-11-13 · v0.21.0
+
+- MakerWorld 页面和 JSON 控制面抓取改为在对应站点的同一 CloakBrowser profile、代理与任务页面内执行原生 `fetch`，保留浏览器 Cookie 与指纹；Cloudflare 前置验证先等待原生通过，再有限尝试可见 Turnstile 复选框，通过后 GET 最多恢复一次。
+- 页面 CF 与 3MF 自动验证默认开启，支持已有 GeeTest 图标点选、按序点选和滑块处理；每次操作共享 50 秒验证预算，每个可见验证最多尝试 2 次，不重复点击 Download。未知题型或验证失败仍需人工完成，不宣称通用图形验证码均可自动通过。
+- `MAKERHUB_AUTO_VERIFY_3MF` 与新增的 `MAKERHUB_AUTO_VERIFY_CHALLENGES` 均可显式设为 `false`；同步 `.env.example`、App/Worker Compose 配置和部署说明，保持国内国际隔离及共享 profile 生命周期。
+
 ## 2026-10-27 · v0.20.20
 
 - 本地整理的“疑似同一模型”改为查看候选组，点击后只展示组内模型，支持分页、筛选、返回全部和详情返回；逐个核对后手动选择合并，切换组、删除或刷新时清空旧勾选。

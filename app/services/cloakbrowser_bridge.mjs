@@ -15,16 +15,17 @@ import {
 import {
   attemptAutomaticVerification,
   AUTO_VERIFY_TIMEOUT_MS,
+  ensurePageVerification,
+  inspectPageVerificationState,
   sanitizeVerificationResult,
 } from "./cloakbrowser_verification.mjs";
+import { fetchInBusinessPage } from "./cloakbrowser_fetch.mjs";
 
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, "..", "..");
 const requireFromFrontend = createRequire(path.join(ROOT_DIR, "frontend", "node_modules", "package.json"));
 const puppeteer = requireFromFrontend("puppeteer-core");
-const BROWSER_FETCH_TOTAL_BUFFER_BYTES = 32 * 1024 * 1024;
-const BROWSER_FETCH_RESOURCE_BUFFER_BYTES = 24 * 1024 * 1024;
 const automationTargetRegistries = new WeakMap();
 
 async function readInput() {
@@ -291,208 +292,12 @@ export async function withTemporaryTarget(browser, context, { hidden }, callback
   }
 }
 
-async function withTemporaryCdpSession(browser, context, callback) {
-  return await withTemporaryTarget(browser, context, { hidden: true }, async (target) => {
-    const session = await target.createCDPSession();
-    try {
-      return await callback(session);
-    } finally {
-      await session.detach().catch(() => undefined);
-    }
-  });
-}
-
 async function withTemporaryPage(browser, context, callback) {
   return await withTemporaryTarget(browser, context, { hidden: false }, async (target) => {
     const page = await target.page();
     if (!page) throw new Error("temporary browser target did not expose a page");
     return await callback(page);
   });
-}
-
-function createCdpEventRecorder(session, eventName, predicate) {
-  const events = [];
-  const handler = (event) => {
-    if (predicate(event)) events.push(event);
-  };
-  session.on(eventName, handler);
-  return {
-    async wait(timeoutMs, timeoutMessage) {
-      const deadline = Date.now() + timeoutMs;
-      while (Date.now() < deadline) {
-        if (events.length) return events.shift();
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-      throw new Error(timeoutMessage);
-    },
-    stop() {
-      session.off(eventName, handler);
-    },
-  };
-}
-
-async function waitForCdpCondition(predicate, timeoutMs, timeoutMessage) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error(timeoutMessage);
-}
-
-function isCloudflareChallengeResponse(response) {
-  if (Number(response?.status_code || 0) !== 403) return false;
-  const text = String(response?.text || "").toLowerCase();
-  return [
-    "cf-chl-",
-    "challenge-platform",
-    "<title>just a moment",
-    "<title>请稍候",
-  ].some((marker) => text.includes(marker));
-}
-
-async function fetchVisibleBrowserResponse(browser, context, platform, targetUrl, timeoutMs) {
-  return await withTemporaryPage(browser, context, async (page) => {
-    const response = await page.goto(targetUrl, {
-      waitUntil: "domcontentloaded",
-      timeout: Math.max(Number(timeoutMs || 30000), 15000),
-    });
-    if (!response) throw new Error("browser fallback fetch did not return a response");
-    const finalUrl = page.url();
-    if (!isAllowedBrowserFetchUrl(finalUrl, platform)) {
-      throw new Error("browser fallback fetch redirected outside allowed domains");
-    }
-    const responseHeaders = response.headers();
-    const safeHeaders = {};
-    for (const name of ["content-type", "retry-after", "location"]) {
-      const value = cdpHeaderValue(responseHeaders, name);
-      if (value) safeHeaders[name] = value;
-    }
-    return {
-      status_code: response.status(),
-      url: finalUrl,
-      content_type: cdpHeaderValue(responseHeaders, "content-type"),
-      headers: safeHeaders,
-      text: await response.text(),
-    };
-  });
-}
-
-function cdpHeaderEntries(headers) {
-  return Object.entries(headers).map(([name, value]) => ({
-    name: String(name),
-    value: String(value),
-  }));
-}
-
-function cdpHeaderValue(headers, targetName) {
-  const cleanTarget = String(targetName || "").toLowerCase();
-  const entry = Object.entries(headers || {}).find(([name]) => name.toLowerCase() === cleanTarget);
-  return entry ? String(entry[1]) : "";
-}
-
-async function fetchBrowserResponse(browser, context, platform, targetUrl, headers, cookies, timeoutMs) {
-  if (!isAllowedBrowserFetchUrl(targetUrl, platform)) throw new Error("invalid browser fetch URL");
-  const cleanCookies = (Array.isArray(cookies) ? cookies : []).map(cleanCookie).filter(Boolean);
-  if (cleanCookies.length) await context.setCookie(...cleanCookies);
-  const result = await withTemporaryCdpSession(browser, context, async (session) => {
-    const profileCookies = (await context.cookies()).filter((item) => (
-      hostnameMatchesDomains(String(item?.domain || ""), platformDomains(platform))
-    ));
-    const cleanHeaders = headersWithBrowserAuth(cleanFetchHeaders(headers), profileCookies, targetUrl);
-    const navigationTimeout = Math.max(Number(timeoutMs || 30000), 15000);
-    const finishedRequests = new Set();
-    const failedRequests = new Map();
-    const interceptionTasks = new Set();
-    const responseRecorder = createCdpEventRecorder(
-      session,
-      "Network.responseReceived",
-      (event) => event.type === "Document",
-    );
-    const onLoadingFinished = (event) => finishedRequests.add(event.requestId);
-    const onLoadingFailed = (event) => failedRequests.set(event.requestId, event.errorText || "request failed");
-    const onRequestPaused = (event) => {
-      const task = (async () => {
-        if (
-          event.resourceType !== "Document"
-          || !isAllowedBrowserFetchUrl(event.request.url, platform)
-        ) {
-          await session.send("Fetch.failRequest", {
-            requestId: event.requestId,
-            errorReason: "BlockedByClient",
-          });
-          return;
-        }
-        await session.send("Fetch.continueRequest", {
-          requestId: event.requestId,
-          headers: cdpHeaderEntries({ ...event.request.headers, ...cleanHeaders }),
-        });
-      })();
-      interceptionTasks.add(task);
-      void task.catch(() => undefined).finally(() => interceptionTasks.delete(task));
-    };
-    session.on("Network.loadingFinished", onLoadingFinished);
-    session.on("Network.loadingFailed", onLoadingFailed);
-    session.on("Fetch.requestPaused", onRequestPaused);
-    try {
-      await session.send("Page.enable");
-      await session.send("Network.enable", {
-        maxTotalBufferSize: BROWSER_FETCH_TOTAL_BUFFER_BYTES,
-        maxResourceBufferSize: BROWSER_FETCH_RESOURCE_BUFFER_BYTES,
-        enableDurableMessages: true,
-      });
-      await session.send("Fetch.enable", {
-        patterns: [{ urlPattern: "*", requestStage: "Request" }],
-      });
-      const navigation = await session.send("Page.navigate", { url: targetUrl });
-      if (navigation.errorText) throw new Error(`browser fetch navigation failed: ${navigation.errorText}`);
-      const responseEvent = await responseRecorder.wait(
-        navigationTimeout,
-        "browser fetch did not return a response",
-      );
-      const requestId = responseEvent.requestId;
-      const finalUrl = String(responseEvent.response?.url || targetUrl);
-      if (!isAllowedBrowserFetchUrl(finalUrl, platform)) {
-        throw new Error("browser fetch redirected outside allowed domains");
-      }
-      await waitForCdpCondition(
-        () => finishedRequests.has(requestId) || failedRequests.has(requestId),
-        navigationTimeout,
-        "browser fetch response body timed out",
-      );
-      if (failedRequests.has(requestId)) {
-        throw new Error(`browser fetch request failed: ${failedRequests.get(requestId)}`);
-      }
-      const body = await session.send("Network.getResponseBody", { requestId });
-      const responseHeaders = responseEvent.response?.headers || {};
-      const safeHeaders = {};
-      for (const name of ["content-type", "retry-after", "location"]) {
-        const value = cdpHeaderValue(responseHeaders, name);
-        if (value) safeHeaders[name] = value;
-      }
-      return {
-        status_code: Number(responseEvent.response?.status || 0),
-        url: finalUrl,
-        content_type: cdpHeaderValue(responseHeaders, "content-type")
-          || String(responseEvent.response?.mimeType || ""),
-        headers: safeHeaders,
-        text: body.base64Encoded
-          ? Buffer.from(String(body.body || ""), "base64").toString("utf8")
-          : String(body.body || ""),
-      };
-    } finally {
-      responseRecorder.stop();
-      session.off("Network.loadingFinished", onLoadingFinished);
-      session.off("Network.loadingFailed", onLoadingFailed);
-      session.off("Fetch.requestPaused", onRequestPaused);
-      await Promise.allSettled([...interceptionTasks]);
-      await session.send("Fetch.disable").catch(() => undefined);
-    }
-  });
-  if (isMakerWorldUrl(targetUrl, platform) && isCloudflareChallengeResponse(result)) {
-    return await fetchVisibleBrowserResponse(browser, context, platform, targetUrl, timeoutMs);
-  }
-  return result;
 }
 
 function isThreeMfAuthorizationUrl(value) {
@@ -683,22 +488,60 @@ function downloadControl(page, handle) {
 export async function coordinateThreeMfAuthorization(page, options = {}) {
   const authorizationTimeout = Math.max(Number(options.authorizationTimeout || 90000), 1);
   const navigationTimeout = Math.max(Number(options.navigationTimeout || 30000), 1);
+  const requestedBudget = Number(options.verificationTimeoutMs ?? AUTO_VERIFY_TIMEOUT_MS);
+  const verificationBudget = Math.max(0, Math.min(
+    Number.isFinite(requestedBudget) ? requestedBudget : AUTO_VERIFY_TIMEOUT_MS,
+    AUTO_VERIFY_TIMEOUT_MS,
+  ));
+  const requestedAttempts = Number(options.verificationMaxAttempts ?? 2);
+  const verificationMaxAttempts = Number.isFinite(requestedAttempts)
+    ? Math.max(1, Math.min(2, Math.floor(requestedAttempts))) : 2;
+  let verificationConsumed = 0;
+  const remainingVerification = () => Math.max(0, Math.floor(verificationBudget - verificationConsumed));
+  const verifyPage = async () => {
+    options.assertPageAllowed?.();
+    const started = performance.now();
+    const adapter = options.pageVerificationAdapter || ensurePageVerification;
+    let state;
+    try {
+      state = await adapter(page, {
+        timeoutMs: Math.max(1, remainingVerification()),
+        maxAttempts: verificationMaxAttempts,
+        allowInteraction: options.inputAutoVerifyChallenges === true && remainingVerification() > 0,
+      });
+    } finally {
+      verificationConsumed += performance.now() - started;
+    }
+    options.assertPageAllowed?.();
+    if (!state.completed) {
+      const error = new Error("model page verification requires manual completion");
+      if (state.detected) {
+        error.code = state.kind === "cloudflare" ? "MAKERHUB_CLOUDFLARE" : "MAKERHUB_PAGE_VERIFICATION";
+      }
+      error.verification = sanitizeVerificationResult(state.verification);
+      throw error;
+    }
+  };
   const matcher = (response) => authorizationResponseMatches(response, options.instanceId);
   const firstWaiterController = new AbortController();
-  const firstResponseOutcome = authorizationResponseOutcome(page, matcher, {
-    timeout: authorizationTimeout,
-    signal: firstWaiterController.signal,
-  }).then((outcome) => {
-    if (outcome.error) firstWaiterController.abort(authorizationWaitError(outcome.error));
-    return outcome;
-  });
+  let firstResponseOutcome;
   try {
+    options.assertPageAllowed?.();
+    if (options.inputAutoVerifyChallenges !== undefined || options.pageVerificationAdapter) await verifyPage();
+    firstResponseOutcome = authorizationResponseOutcome(page, matcher, {
+      timeout: authorizationTimeout,
+      signal: firstWaiterController.signal,
+    }).then((outcome) => {
+      if (outcome.error) firstWaiterController.abort(authorizationWaitError(outcome.error));
+      return outcome;
+    });
     const findButton = options.findButton || findThreeMfDownloadButton;
     for (let attempt = 0; ; attempt += 1) {
       let button;
       try {
-        button = await findButton(page, navigationTimeout);
+        button = await findButton(page, navigationTimeout, { verifyPage });
         firstWaiterController.signal.throwIfAborted();
+        options.assertPageAllowed?.();
         await button.click({ delay: 20, signal: firstWaiterController.signal });
         break;
       } catch (error) {
@@ -712,10 +555,15 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
     }
     const firstOutcome = await firstResponseOutcome;
     if (!firstOutcome.response) throw authorizationWaitError(firstOutcome.error);
-    const secondWaiterController = options.inputAutoVerify ? new AbortController() : null;
+    const postVerificationStarted = performance.now();
+    const postVerificationBudget = remainingVerification();
+    const remainingPostVerification = () => Math.max(0,
+      Math.floor(postVerificationBudget - (performance.now() - postVerificationStarted)));
+    const secondWaiterController = options.inputAutoVerify && postVerificationBudget > 0
+      ? new AbortController() : null;
     const secondResponseOutcome = secondWaiterController
       ? authorizationResponseOutcome(page, matcher, {
-        timeout: AUTO_VERIFY_TIMEOUT_MS,
+        timeout: postVerificationBudget,
         signal: secondWaiterController.signal,
       })
       : null;
@@ -730,13 +578,21 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
       if (!options.inputAutoVerify || !isVerificationAuthorization(first)) {
         return { ...first, navigation_timed_out: Boolean(options.navigationTimedOut) };
       }
+      if (remainingPostVerification() <= 0) {
+        return {
+          ...first,
+          navigation_timed_out: Boolean(options.navigationTimedOut),
+          verification: sanitizeVerificationResult({ completed: false, reason: "timeout" }),
+        };
+      }
 
       const verificationAdapter = options.verificationAdapter || attemptAutomaticVerification;
       const verificationController = new AbortController();
       const verificationOutcome = Promise.resolve().then(async () => {
         try {
           return sanitizeVerificationResult(await verificationAdapter(page, {
-            timeoutMs: AUTO_VERIFY_TIMEOUT_MS,
+            timeoutMs: Math.max(1, remainingPostVerification()),
+            maxAttempts: verificationMaxAttempts,
             signal: verificationController.signal,
           }));
         } catch {
@@ -788,7 +644,14 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
       return { status_code: 200, payload: { code: "MAKERHUB_CROWDFUNDING" } };
     }
     if (error?.code === "MAKERHUB_CLOUDFLARE") {
-      return { status_code: 403, payload: { code: "MAKERHUB_CLOUDFLARE" } };
+      return {
+        status_code: 403,
+        payload: { code: "MAKERHUB_CLOUDFLARE" },
+        ...(error.verification ? { verification: error.verification } : {}),
+      };
+    }
+    if (error?.code === "MAKERHUB_PAGE_VERIFICATION") {
+      return { status_code: 418, payload: { code: "MAKERHUB_PAGE_VERIFICATION" }, verification: error.verification };
     }
     throw error;
   } finally {
@@ -797,9 +660,8 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
   }
 }
 
-async function findThreeMfDownloadButton(page, timeoutMs) {
-  const deadline = Date.now() + Math.max(Number(timeoutMs || 30000), 15000);
-  let challengeSince = null;
+async function findThreeMfDownloadButton(page, timeoutMs, { verifyPage } = {}) {
+  let deadline = Date.now() + Math.max(Number(timeoutMs || 30000), 15000);
   while (Date.now() < deadline) {
     const cloudflare = await page.evaluate(() => {
       const title = document.title.trim();
@@ -810,16 +672,11 @@ async function findThreeMfDownloadButton(page, timeoutMs) {
       return Boolean(challengeTitle && challengeMarkup);
     });
     if (cloudflare) {
-      challengeSince ??= Date.now();
-      if (Date.now() - challengeSince < 5000) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        continue;
-      }
-      const error = new Error("model page requires Cloudflare verification");
-      error.code = "MAKERHUB_CLOUDFLARE";
-      throw error;
+      const started = Date.now();
+      await verifyPage();
+      deadline += Date.now() - started;
+      continue;
     }
-    challengeSince = null;
     const handles = await page.$$(
       "button, a, [role='button'], .primaryButton, [aria-label*='download' i], "
       + "[title*='download' i], [data-testid*='download' i], [class*='download' i]",
@@ -913,6 +770,7 @@ async function clickAuthorization(
   navigationTimeoutMs,
   authorizationTimeoutMs,
   inputAutoVerify,
+  verificationOptions = {},
 ) {
   if (!isThreeMfAuthorizationUrl(targetUrl)) throw new Error("invalid 3MF authorization URL");
   if (!isMakerWorldModelUrl(modelUrl, platform)) throw new Error("invalid MakerWorld model page URL");
@@ -932,9 +790,11 @@ async function clickAuthorization(
       authorizationTimeout,
       navigationTimedOut,
       inputAutoVerify,
-      findButton: async () => {
-        const button = await findThreeMfDownloadButton(page, navigationTimeout);
-        return button;
+      ...verificationOptions,
+      assertPageAllowed: () => {
+        if (!isAllowedBrowserFetchUrl(page.url(), platform)) {
+          throw new Error("model page redirected outside allowed domains");
+        }
       },
     });
     return { ...authorization, navigation_timed_out: navigationTimedOut };
@@ -967,15 +827,29 @@ async function main() {
     if (input.action === "fetch" || input.action === "click") await cleanup;
     else await cleanup.catch(() => undefined);
     if (input.action === "fetch") {
-      const fetched = await fetchBrowserResponse(
+      const fetched = await fetchInBusinessPage({
         browser,
         context,
-        String(input.platform || "cn"),
-        String(input.target_url || ""),
-        input.headers,
-        input.cookies,
-        input.navigation_timeout_ms,
-      );
+        platform: normalizePlatform(input.platform),
+        targetUrl: String(input.target_url || ""),
+        headers: input.headers,
+        cookies: input.cookies,
+        timeoutMs: input.navigation_timeout_ms,
+        allowInteraction: input.auto_verify_challenges !== false,
+        verificationTimeoutMs: input.verification_timeout_ms,
+        verificationMaxAttempts: input.verification_max_attempts,
+      }, {
+        withTemporaryPage,
+        isAllowedBrowserFetchUrl,
+        cleanCookie,
+        cleanFetchHeaders,
+        headersWithBrowserAuth,
+        hostnameMatchesDomains,
+        platformDomains,
+        makerWorldHomeUrl,
+        inspectPageVerificationState,
+        ensurePageVerification,
+      });
       output = { ok: true, ...fetched };
       return;
     }
@@ -990,6 +864,11 @@ async function main() {
         input.navigation_timeout_ms,
         input.authorization_timeout_ms,
         input.auto_verify_3mf === true,
+        {
+          inputAutoVerifyChallenges: input.auto_verify_challenges !== false,
+          verificationTimeoutMs: input.verification_timeout_ms,
+          verificationMaxAttempts: input.verification_max_attempts,
+        },
       );
       output = { ok: true, ...authorization };
       return;

@@ -46,6 +46,7 @@ const SAFE_REASON_CODES = new Set([
   "image_width_invalid",
   "input_too_large",
   "interaction_failed",
+  "interaction_disabled",
   "json_invalid",
   "low_confidence",
   "mode_invalid",
@@ -729,11 +730,34 @@ async function geetestContainers(frame) {
   return handle ? [handle] : [];
 }
 
+function isTrustedTurnstileUrl(value) {
+  try {
+    const url = new URL(String(value));
+    return url.protocol === "https:" && url.hostname === "challenges.cloudflare.com"
+      && (!url.port || url.port === "443") && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
+async function trustedTurnstileIframe(iframe) {
+  if (!iframe) return false;
+  try {
+    const src = await iframe.evaluate((element, operation) => {
+      if (operation === "frame-src") return element.src;
+      return "";
+    }, "frame-src");
+    return isTrustedTurnstileUrl(src);
+  } catch {
+    return false;
+  }
+}
+
 async function findTurnstileCheckbox(frames, iframe = null) {
   const challengeFrames = [];
   try {
     const contentFrame = await iframe?.contentFrame?.();
-    if (contentFrame) challengeFrames.push(contentFrame);
+    if (contentFrame && isTrustedTurnstileUrl(contentFrame.url?.())) challengeFrames.push(contentFrame);
   } catch {}
   for (const frame of frames) {
     let frameUrl = "";
@@ -742,7 +766,7 @@ async function findTurnstileCheckbox(frames, iframe = null) {
     } catch {
       frameUrl = "";
     }
-    if (frameUrl.includes("challenges.cloudflare.com") && !challengeFrames.includes(frame)) {
+    if (isTrustedTurnstileUrl(frameUrl) && !challengeFrames.includes(frame)) {
       challengeFrames.push(frame);
     }
   }
@@ -822,7 +846,7 @@ export async function detectVerificationChallenge(page) {
     }
 
     const iframe = await safeQuery(frame, TURNSTILE_IFRAME_SELECTOR);
-    if (await isVisible(iframe)) {
+    if (await trustedTurnstileIframe(iframe) && await isVisible(iframe)) {
       return {
         provider: "turnstile",
         challenge_type: "checkbox",
@@ -1351,6 +1375,59 @@ async function trustedElementClick(page, handle, stage) {
   }
 }
 
+function validPointerBox(box) {
+  return Boolean(box) && ["x", "y", "width", "height"].every((key) => Number.isFinite(box[key]))
+    && box.x >= 0 && box.y >= 0 && box.width > 0 && box.height > 0;
+}
+
+async function trustedTurnstileClick(page, challenge, stage) {
+  const { signal } = stage;
+  let frameBox = null;
+  if (challenge.iframe) {
+    if (!await abortable(trustedTurnstileIframe(challenge.iframe), signal)
+      || !await abortable(isVisible(challenge.iframe), signal)) {
+      throw new VerificationError("checkbox_unavailable");
+    }
+    frameBox = await abortable(challenge.iframe.boundingBox(), signal);
+    if (!validPointerBox(frameBox)) throw new VerificationError("geometry_invalid");
+  }
+  let x;
+  let y;
+  if (challenge.checkbox && await abortable(isVisible(challenge.checkbox), signal)) {
+    const box = await abortable(challenge.checkbox.boundingBox(), signal);
+    if (!validPointerBox(box)) throw new VerificationError("geometry_invalid");
+    x = box.x + (box.width / 2);
+    y = box.y + (box.height / 2);
+  } else {
+    // 官方可见小部件的复选框可能位于 closed shadow DOM，限定在小部件内交互。
+    if (!frameBox || frameBox.width < 200 || frameBox.height < 50
+      || frameBox.width > 600 || frameBox.height > 150) {
+      throw new VerificationError("checkbox_unavailable");
+    }
+    x = frameBox.x + 30;
+    y = frameBox.y + (frameBox.height / 2);
+  }
+  if (frameBox && !(x >= frameBox.x && x <= frameBox.x + frameBox.width
+    && y >= frameBox.y && y <= frameBox.y + frameBox.height)) {
+    throw new VerificationError("geometry_invalid");
+  }
+  throwIfActionExpired(stage);
+  const mouse = await createMouseDriver(page, stage);
+  try {
+    const startX = Math.max(0, x - 40);
+    const startY = Math.max(0, y - 25);
+    for (let index = 0; index <= 12; index++) {
+      const progress = index / 12;
+      const eased = progress * progress * (3 - (2 * progress));
+      await mouse.move(startX + ((x - startX) * eased), startY + ((y - startY) * eased));
+    }
+    await mouse.down();
+    await mouse.up();
+  } finally {
+    await mouse.close();
+  }
+}
+
 async function solveSliderChallenge(page, challenge, options, visionRequest, stage) {
   const { signal } = stage;
   const settled = await Promise.allSettled([
@@ -1468,6 +1545,12 @@ async function waitForInitialChallenge(page, options, stage) {
   const sleep = options.sleep || ((delay) => new Promise((resolve) => setTimeout(resolve, delay)));
   do {
     throwIfActionExpired(stage);
+    // 页面级 CF 可能在挂载可交互小部件前自行放行，不能只等待 widget。
+    if (options.isInitialChallengeComplete
+      && await abortable(options.isInitialChallengeComplete(page), signal)) {
+      throwIfActionExpired(stage);
+      return null;
+    }
     const challenge = await abortable(detect(page), signal);
     throwIfActionExpired(stage);
     if (challenge) return challenge;
@@ -1560,7 +1643,8 @@ async function attemptWithinStage(page, options, stage) {
     attempts: 0,
     reason: "",
   };
-  for (let attempt = 1; attempt <= MAX_PROVIDER_ATTEMPTS; attempt += 1) {
+  const maxAttempts = boundedAttempts(options.maxAttempts);
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       throwIfActionExpired(stage);
     } catch (error) {
@@ -1580,13 +1664,13 @@ async function attemptWithinStage(page, options, stage) {
         }
         fingerprint = await abortable(fingerprintChallenge(challenge, stage), signal);
         throwIfActionExpired(stage);
-        if (!challenge.checkbox || !await abortable(isVisible(challenge.checkbox), signal)) {
+        if (!challenge.checkbox && !challenge.iframe) {
           summary.reason = "checkbox_unavailable";
           break;
         }
         summary.attempted = true;
         summary.attempts = attempt;
-        await trustedElementClick(page, challenge.checkbox, stage);
+        await trustedTurnstileClick(page, challenge, stage);
         interaction = { acted: true };
       } else if (challenge.challenge_type === "coordinate_click") {
         fingerprint = await abortable(fingerprintChallenge(challenge, stage), signal);
@@ -1650,7 +1734,7 @@ async function attemptWithinStage(page, options, stage) {
       summary.reason = "challenge_unchanged";
       break;
     }
-    if (attempt === MAX_PROVIDER_ATTEMPTS) {
+    if (attempt === maxAttempts) {
       summary.reason = "attempts_exhausted";
       break;
     }
@@ -1671,6 +1755,137 @@ export async function attemptAutomaticVerification(page, options = {}) {
   stage.page = page;
   try {
     return await attemptWithinStage(page, options, stage);
+  } finally {
+    stage.cleanup();
+  }
+}
+
+function boundedAttempts(value) {
+  const requested = Number(value ?? MAX_PROVIDER_ATTEMPTS);
+  return Number.isFinite(requested)
+    ? Math.max(1, Math.min(MAX_PROVIDER_ATTEMPTS, Math.floor(requested)))
+    : MAX_PROVIDER_ATTEMPTS;
+}
+
+// 只返回验证状态，不读取或传出验证码令牌、Cookie 或页面正文。
+export async function inspectPageVerificationState(page) {
+  return await page.evaluate(() => {
+    const visible = (element) => {
+      if (!element) return false;
+      const box = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return Number.isFinite(box.width) && Number.isFinite(box.height)
+        && box.width > 0 && box.height > 0 && style.display !== "none"
+        && style.visibility !== "hidden" && Number(style.opacity) !== 0;
+    };
+    const title = String(document.title || "").trim();
+    const challengeTitle = /^(?:just a moment|attention required|请稍候|请稍等|請稍候)/i.test(title);
+    const challengeMarkup = document.querySelector(
+      "#challenge-form, #challenge-running, #cf-challenge-running, script[src*='/cdn-cgi/challenge-platform/']",
+    );
+    if (challengeTitle && challengeMarkup) return { detected: true, kind: "cloudflare" };
+    for (const iframe of document.querySelectorAll("iframe[src]")) {
+      if (!visible(iframe)) continue;
+      try {
+        const url = new URL(iframe.src, location.href);
+        if (url.protocol === "https:" && url.hostname === "challenges.cloudflare.com"
+          && (!url.port || url.port === "443") && !url.username && !url.password) {
+          return { detected: true, kind: "cloudflare" };
+        }
+      } catch {}
+    }
+    for (const container of document.querySelectorAll(".geetest_box, .geetest_panel")) {
+      if (!visible(container)) continue;
+      const success = container.querySelector(
+        ".geetest_success_radar_tip, .geetest_success, [class*='geetest'][class*='success']",
+      );
+      if (!visible(success)) return { detected: true, kind: "geetest4" };
+    }
+    return { detected: false, kind: "none" };
+  });
+}
+
+// 先等待页面自然完成，再在同一截止时间内复用已有的有限验证流程。
+export async function ensurePageVerification(page, options = {}) {
+  const requestedTimeout = Number(options.timeoutMs ?? AUTO_VERIFY_TIMEOUT_MS);
+  const timeoutMs = Math.max(1, Math.min(
+    Number.isFinite(requestedTimeout) ? requestedTimeout : AUTO_VERIFY_TIMEOUT_MS,
+    AUTO_VERIFY_TIMEOUT_MS,
+  ));
+  const stage = createStageSignal(timeoutMs, options.signal);
+  stage.page = page;
+  const inspect = options.detectPageState || inspectPageVerificationState;
+  const sleep = options.sleep || ((delay) => new Promise((resolve) => setTimeout(resolve, delay)));
+  let detected = false;
+  let kind = "none";
+  let verification = sanitizeVerificationResult({ completed: true, reason: "no_challenge" });
+  const result = (completed, reason) => ({
+    detected,
+    completed,
+    manual_required: !completed && detected,
+    kind,
+    reason,
+    verification,
+  });
+  const inspectCurrent = async () => {
+    while (true) {
+      throwIfActionExpired(stage);
+      try {
+        const state = await abortable(inspect(page), stage.signal);
+        throwIfActionExpired(stage);
+        if (state?.detected && ["cloudflare", "geetest4"].includes(state.kind)) {
+          detected = true;
+          if (kind === "none") kind = state.kind;
+          return true;
+        }
+        return false;
+      } catch (error) {
+        if (!/execution context (?:was )?destroyed|cannot find context with specified id|execution context is not available in detached frame/i.test(String(error?.message || ""))) {
+          throw error;
+        }
+        throwIfActionExpired(stage);
+        await abortable(sleep(Math.min(POLL_INTERVAL_MS, stage.remainingAction())), stage.signal);
+      }
+    }
+  };
+  try {
+    if (!await inspectCurrent()) return result(true, "no_challenge");
+    verification = sanitizeVerificationResult({ reason: "no_challenge" });
+    const requestedPassiveWait = Number(options.passiveWaitMs ?? 5_000);
+    const passiveWaitMs = Math.max(0, Math.min(
+      Number.isFinite(requestedPassiveWait) ? requestedPassiveWait : 5_000,
+      stage.remainingAction(),
+    ));
+    const passiveDeadline = performance.now() + passiveWaitMs;
+    while (performance.now() < passiveDeadline) {
+      await abortable(sleep(Math.min(POLL_INTERVAL_MS, passiveDeadline - performance.now())), stage.signal);
+      if (!await inspectCurrent()) {
+        verification = sanitizeVerificationResult({ completed: true, reason: "completed" });
+        return result(true, "completed");
+      }
+    }
+    if (options.allowInteraction === false) {
+      verification = sanitizeVerificationResult({ reason: "interaction_disabled" });
+      return result(false, "interaction_disabled");
+    }
+    const solverOptions = {
+      ...options,
+      maxAttempts: boundedAttempts(options.maxAttempts),
+      signal: stage.signal,
+      timeoutMs: stage.remainingAction(),
+      isInitialChallengeComplete: async () => !await inspectCurrent(),
+      // 有 token 不等于整页放行；只在验证界面消失后允许后续请求。
+      isChallengeComplete: async () => !await inspectCurrent(),
+    };
+    verification = sanitizeVerificationResult(options.verificationAdapter
+      ? await abortable(options.verificationAdapter(page, solverOptions), stage.signal)
+      : await attemptWithinStage(page, solverOptions, stage));
+    if (!await inspectCurrent()) return result(true, "completed");
+    return result(false, verification.completed ? "challenge_unchanged" : verification.reason);
+  } catch (error) {
+    const reason = failureReason(error, stage.signal, "discovery_failed");
+    verification = sanitizeVerificationResult({ ...verification, completed: false, reason });
+    return result(false, verification.reason);
   } finally {
     stage.cleanup();
   }

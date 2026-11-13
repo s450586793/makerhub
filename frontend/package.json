@@ -1,7 +1,7 @@
 {
   "name": "makerhub-frontend",
   "private": true,
-  "version": "0.20.20",
+  "version": "0.21.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

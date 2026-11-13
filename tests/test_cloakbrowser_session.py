@@ -367,7 +367,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertIn("navigation_timed_out: navigationTimedOut", source)
         self.assertLess(
             source.index('error.name !== "TimeoutError"'),
-            source.index("const button = await findThreeMfDownloadButton"),
+            source.index("const authorization = await coordinateThreeMfAuthorization"),
         )
 
     def test_bridge_completes_official_login_confirmation_after_navigation(self):
@@ -452,8 +452,67 @@ class CloakBrowserSessionTest(unittest.TestCase):
             "x-bbl-captcha-result": "verified",
         })
         self.assertEqual(payload["cookies"][0]["name"], "token")
+        self.assertTrue(payload["auto_verify_challenges"])
+        self.assertEqual(payload["verification_timeout_ms"], 50000)
+        self.assertEqual(payload["verification_max_attempts"], 2)
+        self.assertEqual(bridge_mock.call_args.kwargs["timeout_seconds"], 110)
         ensure_mock.assert_not_called()
         launch_mock.assert_not_called()
+
+    def test_browser_fetch_preserves_challenge_header_and_filters_cookie_headers(self):
+        with patch.dict(os.environ, {
+            "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+            "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+        }, clear=True), patch.object(cloakbrowser_session, "resource_slot", return_value=nullcontext()), \
+                patch.object(cloakbrowser_session, "_run_bridge", return_value={
+                    "status_code": 503,
+                    "url": "https://api.bambulab.cn/v1/items",
+                    "content_type": "text/html",
+                    "text": "",
+                    "headers": {
+                        "CF-Mitigated": "challenge", "Set-Cookie": "session=secret",
+                        "Authorization": "secret", "Retry-After": "5",
+                    },
+                }):
+            result = cloakbrowser_session.browser_fetch(
+                "cn", "https://api.bambulab.cn/v1/items", profile_id="profile-cn",
+            )
+        self.assertEqual(result.status_code, 503)
+        self.assertEqual(result.headers, {"cf-mitigated": "challenge", "retry-after": "5"})
+
+    def test_browser_fetch_reads_auto_verify_flag_per_operation(self):
+        values = (
+            (None, True),
+            ("true", True),
+            ("false", False),
+            ("0", False),
+            ("off", False),
+        )
+        with patch.object(cloakbrowser_session, "resource_slot", return_value=nullcontext()), \
+                patch.object(cloakbrowser_session, "_run_bridge", return_value={
+                    "status_code": 503,
+                    "url": "https://makerworld.com.cn/api/test",
+                    "content_type": "text/plain",
+                    "text": "upstream unavailable",
+                }) as bridge_mock:
+            for value, expected in values:
+                env = {
+                    "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                    "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
+                }
+                if value is not None:
+                    env["MAKERHUB_AUTO_VERIFY_CHALLENGES"] = value
+                with self.subTest(value=value), patch.dict(os.environ, env, clear=True):
+                    result = cloakbrowser_session.browser_fetch(
+                        "cn", "https://makerworld.com.cn/api/test", profile_id="profile-cn",
+                    )
+                    payload = bridge_mock.call_args.args[0]
+                    self.assertIs(payload["auto_verify_challenges"], expected)
+                    self.assertEqual(payload["verification_timeout_ms"], 50000)
+                    self.assertEqual(payload["verification_max_attempts"], 2)
+                    self.assertEqual(result.status_code, 503)
+                    self.assertEqual(result.text, "upstream unavailable")
+                    self.assertEqual(bridge_mock.call_args.kwargs["timeout_seconds"], 110 if expected else 60)
 
     def test_browser_fetch_falls_back_to_profile_start_when_direct_cdp_connection_fails(self):
         profile = cloakbrowser_session.CloakBrowserProfile(
@@ -734,45 +793,19 @@ class CloakBrowserSessionTest(unittest.TestCase):
                     profile_id="profile-cn",
                 )
 
-    def test_bridge_falls_back_to_temporary_page_for_cloudflare_and_closes_targets_by_id(self):
+    def test_bridge_fetch_and_click_share_owned_temporary_pages(self):
         source = cloakbrowser_session.BRIDGE_SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn('if (input.action === "fetch")', source)
-        self.assertIn("async function fetchBrowserResponse", source)
+        self.assertIn('import { fetchInBusinessPage } from "./cloakbrowser_fetch.mjs"', source)
+        self.assertIn("const fetched = await fetchInBusinessPage({", source)
         helper_start = source.index("async function withTemporaryTarget")
-        helper_end = source.index("async function fetchBrowserResponse")
+        helper_end = source.index("function isThreeMfAuthorizationUrl")
         helper_source = source[helper_start:helper_end]
         self.assertIn('client.send("Target.createTarget"', helper_source)
-        self.assertIn("background: true", helper_source)
         self.assertIn('client.send("Target.closeTarget", { targetId })', helper_source)
-        self.assertIn("withTemporaryTarget(browser, context, { hidden: true }", helper_source)
-        self.assertIn("const session = await target.createCDPSession()", helper_source)
-        self.assertNotIn("await target.page()", helper_source[
-            helper_source.index("async function withTemporaryCdpSession"):
-            helper_source.index("async function withTemporaryPage")
-        ])
         self.assertIn("withTemporaryTarget(browser, context, { hidden: false }", helper_source)
-        fetch_start = source.index("async function fetchBrowserResponse")
-        fetch_end = source.index("function isThreeMfAuthorizationUrl")
-        fetch_source = source[fetch_start:fetch_end]
-        self.assertIn("withTemporaryCdpSession(browser, context, async (session) =>", fetch_source)
-        self.assertIn('session.send("Fetch.enable"', fetch_source)
-        self.assertIn('session.send("Page.navigate"', fetch_source)
-        self.assertIn('session.send("Network.getResponseBody"', fetch_source)
-        self.assertIn("maxTotalBufferSize: BROWSER_FETCH_TOTAL_BUFFER_BYTES", fetch_source)
-        self.assertIn("maxResourceBufferSize: BROWSER_FETCH_RESOURCE_BUFFER_BYTES", fetch_source)
-        self.assertIn("enableDurableMessages: true", fetch_source)
-        self.assertIn('event.resourceType !== "Document"', fetch_source)
-        self.assertIn("isCloudflareChallengeResponse(result)", fetch_source)
-        self.assertIn(
-            "fetchVisibleBrowserResponse(browser, context, platform, targetUrl, timeoutMs)",
-            fetch_source,
-        )
-        self.assertIn("withTemporaryPage(browser, context, async (page) =>", helper_source)
-        self.assertIn('waitUntil: "domcontentloaded"', helper_source)
-        self.assertNotIn("context.newPage()", fetch_source)
-        self.assertIn("const profileCookies = (await context.cookies()).filter", fetch_source)
-        self.assertNotIn("page.setExtraHTTPHeaders", fetch_source)
+        self.assertNotIn("context.newPage()", helper_source)
         click_start = source.index("async function clickAuthorization")
         click_end = source.index("async function main")
         click_source = source[click_start:click_end]
@@ -1452,7 +1485,10 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertNotIn("raw_cookie", bridge_payload)
         self.assertEqual(bridge_payload["navigation_timeout_ms"], 30000)
         self.assertEqual(bridge_payload["authorization_timeout_ms"], 90000)
-        self.assertFalse(bridge_payload["auto_verify_3mf"])
+        self.assertTrue(bridge_payload["auto_verify_3mf"])
+        self.assertTrue(bridge_payload["auto_verify_challenges"])
+        self.assertEqual(bridge_payload["verification_timeout_ms"], 50000)
+        self.assertEqual(bridge_payload["verification_max_attempts"], 2)
         self.assertEqual(bridge_mock.call_args.kwargs["timeout_seconds"], 210)
         resource_slot_mock.assert_called_once_with(
             "cloakbrowser_manager",
@@ -1621,25 +1657,29 @@ class CloakBrowserSessionTest(unittest.TestCase):
             "payload": {"captchaId": "captcha-123"},
         }
         values = (
-            ("true", True),
-            ("false", False),
-            ("0", False),
-            ("off", False),
-            (None, False),
+            (None, None, True, True),
+            ("true", None, True, True),
+            ("false", None, False, True),
+            ("0", "false", False, False),
+            ("off", "true", False, True),
+            (None, "off", True, False),
         )
 
         with patch.object(cloakbrowser_session, "resource_slot", create=True), \
                 patch.object(cloakbrowser_session, "ensure_profile", return_value=profile), \
                 patch.object(cloakbrowser_session, "launch_profile", return_value=(profile, False)), \
                 patch.object(cloakbrowser_session, "_run_bridge", return_value=bridge_result) as bridge_mock:
-            for value, expected in values:
+            for value, challenge_value, expected, challenge_expected in values:
                 env = {
                     "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
                     "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token",
                 }
                 if value is not None:
                     env["MAKERHUB_AUTO_VERIFY_3MF"] = value
-                with self.subTest(value=value), patch.dict(os.environ, env, clear=True):
+                if challenge_value is not None:
+                    env["MAKERHUB_AUTO_VERIFY_CHALLENGES"] = challenge_value
+                with self.subTest(value=value, challenge_value=challenge_value), \
+                        patch.dict(os.environ, env, clear=True):
                     cloakbrowser_session.browser_authorize_3mf_download(
                         "cn",
                         "https://api.bambulab.cn/v1/design-service/instance/123/f3mf",
@@ -1650,6 +1690,10 @@ class CloakBrowserSessionTest(unittest.TestCase):
                     self.assertIs(
                         bridge_mock.call_args.args[0]["auto_verify_3mf"],
                         expected,
+                    )
+                    self.assertIs(
+                        bridge_mock.call_args.args[0]["auto_verify_challenges"],
+                        challenge_expected,
                     )
 
     def test_browser_3mf_authorization_passes_dynamic_timeout_to_subprocess(self):

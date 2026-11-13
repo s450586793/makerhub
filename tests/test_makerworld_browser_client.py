@@ -84,6 +84,37 @@ class MakerWorldBrowserClientTest(unittest.TestCase):
         self.assertEqual(fetch.call_count, 1)
         self.assertEqual(self.clock, 100.0)
 
+    def test_cloudflare_503_is_not_retried_after_browser_verification_is_exhausted(self):
+        result = _fetch_result(
+            status_code=503,
+            text='<html><title>Just a moment...</title><form id="challenge-form"></form></html>',
+        )
+        with patch.object(client.JsonStore, "load", return_value=SimpleNamespace(cookies=[])), \
+                patch.object(client, "browser_fetch", return_value=result) as fetch:
+            response = client.makerworld_browser_get("https://makerworld.com.cn/zh/models/1")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(client._read_browser_retry("cn"), {})
+
+    def test_plain_503_still_retries_as_infrastructure_failure(self):
+        with patch.object(client.JsonStore, "load", return_value=SimpleNamespace(cookies=[])), \
+                patch.object(client, "browser_fetch", side_effect=[
+                    _fetch_result(status_code=503, text="Service unavailable"), _fetch_result(),
+                ]) as fetch:
+            response = client.makerworld_browser_get("https://makerworld.com.cn/zh/models/1")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(fetch.call_count, 2)
+
+    def test_cloudflare_header_prevents_retry_even_without_body_markers(self):
+        result = _fetch_result(status_code=503, text="<html>Verification required</html>")
+        result.headers["CF-Mitigated"] = "challenge"
+        with patch.object(client.JsonStore, "load", return_value=SimpleNamespace(cookies=[])), \
+                patch.object(client, "browser_fetch", return_value=result) as fetch:
+            response = client.makerworld_browser_get("https://api.bambulab.cn/v1/items")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(client._read_browser_retry("cn"), {})
+
     def test_backoff_survives_a_new_process_and_does_not_block_the_other_site(self):
         with patch.object(client.JsonStore, "load", return_value=SimpleNamespace(cookies=[])), \
                 patch.object(client, "browser_fetch", side_effect=CloakBrowserUnavailable("HTTP 502")):

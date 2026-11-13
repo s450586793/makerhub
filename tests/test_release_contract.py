@@ -321,7 +321,7 @@ class ReleaseDocumentationContractTest(unittest.TestCase):
 
 
 class AutomaticVerificationReleaseContractTest(unittest.TestCase):
-    def test_v017_rollout_keeps_automatic_verification_opt_in_and_smokes_opencv(self):
+    def test_automatic_verification_defaults_on_with_configurable_opt_out_and_smokes_opencv(self):
         env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
         compose_text = (ROOT_DIR / "compose.yaml").read_text(encoding="utf-8")
         compose = yaml.safe_load(compose_text)
@@ -334,19 +334,16 @@ class AutomaticVerificationReleaseContractTest(unittest.TestCase):
         readme = (ROOT_DIR / "README.md").read_text(encoding="utf-8")
         changelog = (ROOT_DIR / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertIn("MAKERHUB_AUTO_VERIFY_3MF=false", env_example)
-        self.assertEqual(
-            compose_text.count(
-                'MAKERHUB_AUTO_VERIFY_3MF: "${MAKERHUB_AUTO_VERIFY_3MF:-false}"'
-            ),
-            2,
-        )
-        for service_name in ("makerhub-app", "makerhub-worker"):
-            with self.subTest(service=service_name):
-                self.assertEqual(
-                    compose["services"][service_name]["environment"]["MAKERHUB_AUTO_VERIFY_3MF"],
-                    "${MAKERHUB_AUTO_VERIFY_3MF:-false}",
-                )
+        for flag in ("MAKERHUB_AUTO_VERIFY_3MF", "MAKERHUB_AUTO_VERIFY_CHALLENGES"):
+            with self.subTest(flag=flag):
+                self.assertIn(f"{flag}=true", env_example)
+                for service_name in ("makerhub-app", "makerhub-worker"):
+                    with self.subTest(service=service_name):
+                        self.assertEqual(
+                            compose["services"][service_name]["environment"][flag],
+                            "${" + flag + ":-true}",
+                        )
+                self.assertRegex(readme, rf"(?m)^\| `{flag}` \| `true` \| .*`false`.*$")
         self.assertIn("import cv2", smoke_command)
         self.assertIn("version('opencv-python-headless')", smoke_command)
         self.assertIn("solve_click_challenge", smoke_command)

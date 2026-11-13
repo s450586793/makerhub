@@ -21,6 +21,7 @@ from app.services.cloakbrowser_session import (
     browser_fetch,
 )
 from app.services.three_mf import normalize_makerworld_source
+from app.services.makerworld_parsers.model import is_cloudflare_challenge
 
 
 class MakerWorldBrowserError(RuntimeError):
@@ -234,8 +235,16 @@ def makerworld_browser_get(
                 if attempt == 0 and retryable:
                     continue
                 raise _safe_browser_error(exc) from exc
-            _record_browser_result(clean_platform, failed=result.status_code >= 500)
-            if result.status_code >= 500 and attempt == 0:
+            challenge_header = any(
+                name.lower() == "cf-mitigated" and str(value).lower() == "challenge"
+                for name, value in result.headers.items()
+            )
+            verification_response = challenge_header or (
+                "html" in result.content_type.lower() and is_cloudflare_challenge(result.text)
+            )
+            retryable_status = result.status_code >= 500 and not verification_response
+            _record_browser_result(clean_platform, failed=retryable_status)
+            if retryable_status and attempt == 0:
                 continue
             return MakerWorldBrowserResponse(
                 url=result.url,
