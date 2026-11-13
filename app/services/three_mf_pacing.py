@@ -51,12 +51,16 @@ def _authorization_interval() -> float:
 class ThreeMfAuthorizationAttempt:
     """调用方必须持有浏览器操作锁，覆盖读取、等待、请求和结果保存。"""
 
-    def __init__(self, platform: str, profile_id: str, state_dir: Path, *, model_url: str = "", instance_id: str = ""):
+    def __init__(
+        self, platform: str, profile_id: str, state_dir: Path, *,
+        model_url: str = "", instance_id: str = "", verification_probe: bool = False,
+    ):
         self.platform = platform
         digest = hashlib.sha256(f"{platform}:{profile_id}".encode()).hexdigest()[:24]
         self.path = state_dir / "three_mf_pacing" / f"{digest}.json"
         self.model_url = model_url
         self.instance_id = instance_id
+        self.verification_probe = verification_probe is True
         self.state: dict[str, Any] = {}
         self.response: dict[str, Any] | None = None
         self.request_started = False
@@ -64,7 +68,7 @@ class ThreeMfAuthorizationAttempt:
     def _blocked_response(self) -> dict[str, Any] | None:
         snapshot = account_health.get_account_health(self.platform)
         gate = snapshot.get("three_mf_gate")
-        if gate == "verification_required":
+        if gate == "verification_required" and not self.verification_probe:
             return {"status_code": 418, "payload": {"message": "verification required"}}
         if gate == "daily_limit" and str(snapshot.get("updated_at") or "").startswith(china_now().date().isoformat()):
             return {"status_code": 429, "payload": {"message": "Daily download limit reached"}}

@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.21.0`
+> 当前版本：`v0.21.1`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -370,6 +370,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-11-13 · v0.21.1
+
+- 旧的“需要浏览器确认”状态由空闲后台安排有限次真实授权复测，没有待处理队列时也可恢复；成功才解除暂停，失败保留人工入口。
+- 保留每日限额、请求间隔、429 冷却和手动暂停，复测预约持久保存，避免轮询和重启重复请求。
+
 ### 2026-11-13 · v0.21.0
 
 - 页面和 API 改为在同一浏览器 profile、代理与任务页面内通过原生 `fetch` 抓取，Cloudflare 前置验证先等待再有限交互，通过后 GET 最多恢复一次。
@@ -380,13 +385,13 @@ npm --prefix frontend run build
 - 点击“疑似同一模型”后只查看该组，核对后再手动选择合并，支持返回全部和保留筛选上下文。
 - 排除导入暂存名、哈希串等造成的误分组，切换组时清空旧勾选。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-10-26 · v0.20.19
 
 - 修复详情页点击“相关模型”后地址已变化、内容却仍显示上一模型的问题。
 - 连续跳转和浏览器前进后退时按目标链接加载，避免旧模型污染缓存。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-10-23 · v0.20.18
 

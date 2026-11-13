@@ -174,6 +174,80 @@ def test_worker_schedules_missing_3mf_retry_only_when_archive_queue_is_idle():
     manager.retry_idle_missing_3mf.assert_called_once_with(limit=4)
 
 
+def test_worker_rechecks_blocked_accounts_without_pending_downloads(monkeypatch):
+    manager = Mock()
+    recovery = Mock(return_value={"recovered_platforms": ["cn"], "attempted": 1})
+    monkeypatch.setattr(worker, "run_account_verification_recovery_once", recovery, raising=False)
+    config_store = object()
+
+    result = worker.run_worker_account_verification_recovery(
+        manager,
+        {"queued_count": 0, "running_count": 0, "queued": []},
+        store=config_store,
+    )
+
+    assert result["recovered_platforms"] == ["cn"]
+    recovery.assert_called_once_with(store=config_store)
+    manager.ensure_worker_for_pending.assert_called_once_with(force=True)
+
+
+def test_worker_does_not_probe_accounts_during_runnable_archive_work(monkeypatch):
+    recovery = Mock()
+    monkeypatch.setattr(worker, "run_account_verification_recovery_once", recovery, raising=False)
+    manager = Mock()
+
+    result = worker.run_worker_account_verification_recovery(
+        manager, {"queued_count": 1, "queued": [{"status": "queued"}]},
+    )
+
+    assert result["reason"] == "archive_queue_busy"
+    recovery.assert_not_called()
+    manager.ensure_worker_for_pending.assert_not_called()
+
+
+def test_worker_keeps_manual_pause_when_automatic_probe_does_not_recover(monkeypatch):
+    monkeypatch.setattr(worker, "run_account_verification_recovery_once", Mock(
+        return_value={"recovered_platforms": [], "attempted": 1},
+    ), raising=False)
+    manager = Mock()
+
+    result = worker.run_worker_account_verification_recovery(
+        manager, {"queued_count": 1, "queued": [{"status": "paused"}]},
+    )
+
+    assert result["recovered_platforms"] == []
+    manager.ensure_worker_for_pending.assert_not_called()
+
+
+def test_worker_probe_errors_leave_queue_unchanged_and_hide_private_details(monkeypatch):
+    monkeypatch.setattr(worker, "run_account_verification_recovery_once", Mock(
+        side_effect=RuntimeError("private browser token"),
+    ), raising=False)
+    log = Mock()
+    monkeypatch.setattr(worker, "append_business_log", log)
+    manager = Mock()
+
+    result = worker.run_worker_account_verification_recovery(manager, {})
+
+    assert result == {"recovered_platforms": [], "reason": "error"}
+    assert "private browser token" not in str(log.call_args)
+    manager.ensure_worker_for_pending.assert_not_called()
+
+
+def test_verified_account_bypasses_recent_maintenance_backoff(monkeypatch):
+    from app.services.archive_worker import ArchiveTaskManager
+
+    manager = ArchiveTaskManager(background_enabled=False)
+    manager._last_pending_maintenance_at = worker.time.monotonic()
+    paused = {"queued_count": 1, "queued": [{"status": "paused"}]}
+    resumed = {"queued_count": 1, "queued": [{"status": "queued"}]}
+    manager.task_store = SimpleNamespace()
+    monkeypatch.setattr(manager, "_repair_queue_before_worker_start", lambda **kwargs: paused)
+    monkeypatch.setattr(manager, "_recover_verification_paused_tasks", lambda queue: resumed)
+
+    assert manager.ensure_worker_for_pending(force=True) == resumed
+
+
 @pytest.fixture
 def worker_runtime(monkeypatch):
     pending = {"id": "pending-1", "status": "paused"}
@@ -203,6 +277,7 @@ def worker_runtime(monkeypatch):
     monkeypatch.setattr(worker, "stop_idle_profiles", lambda: {"stopped_count": 0})
     monkeypatch.setattr(worker, "run_worker_memory_maintenance", lambda *_: {"recycle": False})
     monkeypatch.setattr(worker, "run_worker_idle_missing_3mf_retry", lambda *_: {"accepted": False})
+    monkeypatch.setattr(worker, "run_worker_account_verification_recovery", lambda *_, **kwargs: {"recovered_platforms": []})
     return SimpleNamespace(manager=manager, stop=stop, pending=pending, queue=queue)
 
 

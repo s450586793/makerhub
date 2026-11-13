@@ -1415,6 +1415,58 @@ class CloakBrowserSessionTest(unittest.TestCase):
 
         stop_mock.assert_not_called()
 
+    def test_authorization_dispatch_hook_rejection_does_not_write_pacing_or_send(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(id="profile-cn", name="CN", status="running")
+        payload = {"target_url": "https://makerworld.com.cn/api/v1/design-service/instance/123/f3mf", "verification_probe": True}
+        pacing = three_mf_pacing.ThreeMfAuthorizationAttempt("cn", profile.id, cloakbrowser_session.STATE_DIR)
+        with patch.object(cloakbrowser_session, "_run_bridge") as bridge:
+            _profile, _restarted, result = cloakbrowser_session._run_paced_bridge(
+                "cn", profile, payload, timeout_seconds=30, before_dispatch=lambda: False,
+            )
+        self.assertEqual(result["status_code"], 0)
+        self.assertFalse(pacing.path.exists())
+        bridge.assert_not_called()
+
+    def test_authorization_dispatch_hook_exception_does_not_write_pacing(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(id="profile-cn", name="CN", status="running")
+        payload = {"target_url": "https://makerworld.com.cn/api/v1/design-service/instance/123/f3mf", "verification_probe": True}
+        pacing = three_mf_pacing.ThreeMfAuthorizationAttempt("cn", profile.id, cloakbrowser_session.STATE_DIR)
+        with patch.object(cloakbrowser_session, "_run_bridge") as bridge, self.assertRaisesRegex(RuntimeError, "claim failed"):
+            cloakbrowser_session._run_paced_bridge(
+                "cn", profile, payload, timeout_seconds=30, before_dispatch=Mock(side_effect=RuntimeError("claim failed")),
+            )
+        self.assertFalse(pacing.path.exists())
+        bridge.assert_not_called()
+
+    def test_authorization_dispatch_hook_runs_under_profile_lock_once_across_setup_retry(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(id="profile-cn", name="CN", status="running")
+        events = []
+
+        @contextmanager
+        def profile_lock(*args, **kwargs):
+            events.append("locked")
+            yield
+            events.append("released")
+
+        def claim():
+            events.append("claim")
+            return True
+
+        def bridge(*args, **kwargs):
+            events.append("bridge")
+            if events.count("bridge") == 1:
+                raise cloakbrowser_session.CloakBrowserBridgeError("CDP endpoint returned HTTP 502")
+            return {"status_code": 200, "payload": {"url": "https://download.example.test/part.3mf"}}
+
+        with patch.object(cloakbrowser_session, "_profile_operation", side_effect=profile_lock), patch.object(cloakbrowser_session, "_ensure_running_profile", return_value=(profile, profile, False)), patch.object(cloakbrowser_session, "_run_bridge", side_effect=bridge), patch.object(cloakbrowser_session.time, "sleep"), patch.dict(os.environ, {"MAKERHUB_CLOAKBROWSER_URL": "http://browser.test", "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "test-secret"}):
+            result = cloakbrowser_session.browser_authorize_3mf_download(
+                "cn", "https://makerworld.com.cn/api/v1/design-service/instance/123/f3mf",
+                profile_id="profile-cn", model_url="https://makerworld.com.cn/zh/models/456", instance_id="123",
+                verification_probe=True, before_dispatch=claim,
+            )
+        self.assertEqual(result["status_code"], 200)
+        self.assertEqual(events, ["locked", "claim", "bridge", "bridge", "released"])
+
     def test_browser_3mf_authorization_uses_target_page_click_without_cookie_payload(self):
         profile = cloakbrowser_session.CloakBrowserProfile(id="profile-cn", name="MakerHub CN")
         running = cloakbrowser_session.CloakBrowserProfile(

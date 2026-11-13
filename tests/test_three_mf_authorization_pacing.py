@@ -49,7 +49,7 @@ def authorization_environment(tmp_path):
         yield health
 
 
-def authorize(platform="cn", instance_id="123"):
+def authorize(platform="cn", instance_id="123", **kwargs):
     domain = "cn" if platform == "cn" else "com"
     return cloakbrowser_session.browser_authorize_3mf_download(
         platform,
@@ -57,6 +57,7 @@ def authorize(platform="cn", instance_id="123"):
         profile_id=f"profile-{platform}",
         model_url=f"https://makerworld.com{'.cn' if platform == 'cn' else ''}/zh/models/456",
         instance_id=instance_id,
+        **kwargs,
     )
 
 
@@ -96,6 +97,83 @@ def test_explicit_verification_stops_queued_authorizations_until_confirmed(autho
     authorization_environment["cn"] = {"three_mf_gate": "open"}
     with patch.object(cloakbrowser_session, "_run_bridge", return_value=dict(SUCCESS)):
         assert authorize()["status_code"] == 200
+
+
+def test_verification_probe_reaches_bridge_without_opening_saved_gate(authorization_environment):
+    authorization_environment["cn"] = {"three_mf_gate": "verification_required", "three_mf_detail": "old challenge"}
+    before = dict(authorization_environment["cn"])
+
+    with patch.object(cloakbrowser_session, "_run_bridge", return_value=dict(SUCCESS)) as bridge:
+        assert authorize()["status_code"] == 418
+        bridge.assert_not_called()
+        assert authorize(verification_probe=True)["status_code"] == 200
+        bridge.assert_called_once()
+        assert authorize(instance_id="124")["status_code"] == 418
+
+    assert authorization_environment["cn"] == before
+
+
+@pytest.mark.parametrize("probe", [False, None, 1, "true"])
+def test_verification_probe_only_accepts_explicit_true(authorization_environment, probe):
+    authorization_environment["cn"] = {"three_mf_gate": "verification_required"}
+    with patch.object(cloakbrowser_session, "_run_bridge") as bridge:
+        assert authorize(verification_probe=probe)["status_code"] == 418
+    bridge.assert_not_called()
+
+
+def test_verification_probe_preserves_current_daily_quota_gate(authorization_environment):
+    authorization_environment["cn"] = {
+        "three_mf_gate": "daily_limit", "updated_at": three_mf_pacing.china_now().isoformat(),
+    }
+    with patch.object(cloakbrowser_session, "_run_bridge") as bridge:
+        result = authorize(verification_probe=True)
+    assert result["status_code"] == 429
+    assert "Daily download limit" in result["payload"]["message"]
+    bridge.assert_not_called()
+
+
+def test_verification_probe_preserves_saved_rate_limit_cooldown(authorization_environment):
+    with patch.object(cloakbrowser_session, "_run_bridge", return_value={
+        "status_code": 429, "payload": {"message": "Too Many Requests"}, "headers": {"retry-after": "120"},
+    }) as bridge:
+        assert authorize()["status_code"] == 429
+        authorization_environment["cn"] = {"three_mf_gate": "verification_required"}
+        assert authorize(verification_probe=True)["status_code"] == 429
+    bridge.assert_called_once()
+    assert authorization_environment["cn"]["three_mf_gate"] == "verification_required"
+
+
+def test_verification_probes_share_profile_lock_and_authorization_gap(authorization_environment):
+    authorization_environment["cn"] = {"three_mf_gate": "verification_required"}
+    calls = []
+
+    def bridge(*args, **kwargs):
+        started = time.monotonic()
+        time.sleep(0.05)
+        calls.append((started, time.monotonic()))
+        return dict(SUCCESS)
+
+    with patch.object(cloakbrowser_session, "_run_bridge", side_effect=bridge):
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            results = list(pool.map(lambda number: authorize(instance_id=str(number), verification_probe=True), range(3)))
+
+    assert all(result["status_code"] == 200 for result in results)
+    assert len(calls) == 3
+    assert all(current[0] - previous[1] >= 0.05 for previous, current in zip(calls, calls[1:]))
+    assert authorization_environment["cn"]["three_mf_gate"] == "verification_required"
+
+
+@pytest.mark.parametrize("message, expected_calls", [
+    ("bridge failed", 1), ("3MF authorization timed out.", 1), ("Network.enable timed out.", 3),
+])
+def test_verification_probe_propagates_bridge_errors_without_opening_gate(authorization_environment, message, expected_calls):
+    authorization_environment["cn"] = {"three_mf_gate": "verification_required"}
+    with patch.object(cloakbrowser_session, "_run_bridge", side_effect=cloakbrowser_session.CloakBrowserBridgeError(message)) as bridge, \
+            patch.object(cloakbrowser_session, "AUTHORIZATION_TRANSIENT_RETRY_DELAYS_SECONDS", (0, 0)):
+        with pytest.raises(cloakbrowser_session.CloakBrowserBridgeError, match=message):
+            authorize(verification_probe=True)
+    assert bridge.call_count == expected_calls
+    assert authorization_environment["cn"]["three_mf_gate"] == "verification_required"
 
 
 def test_rate_limit_cools_down_only_affected_account(authorization_environment):
@@ -235,6 +313,20 @@ def test_gate_is_rechecked_after_waiting(tmp_path, authorization_environment):
     with patch.object(three_mf_pacing, "time", SimpleNamespace(time=lambda: 1000, sleep=verification_during_wait)):
         with three_mf_pacing.ThreeMfAuthorizationAttempt("cn", "profile-cn", tmp_path) as attempt:
             assert attempt.response["status_code"] == 418
+            assert attempt.request_started is False
+
+
+def test_verification_probe_rechecks_daily_quota_after_waiting(tmp_path, authorization_environment):
+    authorization_environment["cn"] = {"three_mf_gate": "verification_required"}
+
+    def daily_quota_during_wait(delay):
+        authorization_environment["cn"] = {
+            "three_mf_gate": "daily_limit", "updated_at": three_mf_pacing.china_now().isoformat(),
+        }
+
+    with patch.object(three_mf_pacing, "time", SimpleNamespace(time=lambda: 1000, sleep=daily_quota_during_wait)):
+        with three_mf_pacing.ThreeMfAuthorizationAttempt("cn", "profile-cn", tmp_path, verification_probe=True) as attempt:
+            assert attempt.response["status_code"] == 429
             assert attempt.request_started is False
 
 

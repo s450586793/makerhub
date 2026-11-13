@@ -22,6 +22,7 @@ if not WORKER_HEALTHCHECK_MODE:
     from app.core.settings import LOCAL_PREVIEW_POLL_SECONDS, PROCESS_ROLE, ensure_app_dirs
     from app.core.store import JsonStore
     from app.services.account_cookie_maintenance import run_account_cookie_maintenance_once
+    from app.services.account_verification_recovery import run_account_verification_recovery_once
     from app.services.archive_worker import ArchiveTaskManager
     from app.services.archive_model_index_rebuild import (
         read_archive_model_index_rebuild_status,
@@ -175,6 +176,31 @@ def run_worker_idle_missing_3mf_retry(
             error=str(exc)[:240],
         )
         return {"accepted": False, "reason": "error", "error": str(exc)[:240]}
+
+
+def run_worker_account_verification_recovery(
+    archive_manager,
+    archive_queue: dict,
+    *,
+    store=None,
+) -> dict:
+    if archive_queue_has_runnable_work(archive_queue):
+        return {"recovered_platforms": [], "reason": "archive_queue_busy"}
+    try:
+        result = run_account_verification_recovery_once(store=store)
+        if result.get("recovered_platforms"):
+            return {**result, "archive_queue": archive_manager.ensure_worker_for_pending(force=True)}
+        return result
+    except DatabaseUnavailable:
+        raise
+    except Exception:
+        append_business_log(
+            "settings",
+            "account_verification_recovery_failed",
+            "站点验证自动复测失败，保留当前暂停状态。",
+            level="warning",
+        )
+        return {"recovered_platforms": [], "reason": "error"}
 
 
 def _run_database_maintenance() -> dict:
@@ -390,6 +416,11 @@ def main() -> int:
                         )
                 if now - last_auto_missing_3mf_retry >= AUTO_MISSING_3MF_RETRY_INTERVAL_SECONDS:
                     last_auto_missing_3mf_retry = now
+                    verification_result = run_worker_account_verification_recovery(
+                        archive_manager, archive_queue, store=store,
+                    )
+                    if verification_result.get("recovered_platforms"):
+                        archive_queue = verification_result["archive_queue"]
                     retry_result = run_worker_idle_missing_3mf_retry(archive_manager, archive_queue)
                     if retry_result.get("accepted"):
                         archive_queue = task_store.load_archive_queue_compact(item_limit=1)

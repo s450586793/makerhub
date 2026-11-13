@@ -3642,8 +3642,8 @@ class ArchiveTaskManager:
         self._schedule_browser_recovery_for_legacy_cookie_invalid_gates(queue, gate_by_platform)
         return queue
 
-    def ensure_worker_for_pending(self) -> dict:
-        if self._pending_maintenance_is_recent():
+    def ensure_worker_for_pending(self, *, force: bool = False) -> dict:
+        if not force and self._pending_maintenance_is_recent():
             queue = self._load_pending_queue_compact()
             if int(queue.get("queued_count") or 0) > 0:
                 self._refresh_blocked_queue_backoff(queue)

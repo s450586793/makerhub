@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import time
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote, urlparse
 
 import requests
@@ -1113,6 +1113,7 @@ def _run_paced_bridge(
     payload: dict[str, Any],
     *,
     timeout_seconds: int,
+    before_dispatch: Callable[[], bool] | None = None,
 ) -> tuple[CloakBrowserProfile, bool, dict[str, Any]]:
     if not _is_browser_three_mf_authorization_url(payload.get("target_url", ""), platform):
         return _run_bridge_with_profile_recovery(
@@ -1121,6 +1122,7 @@ def _run_paced_bridge(
     with ThreeMfAuthorizationAttempt(
         platform, running.id, STATE_DIR,
         model_url=payload.get("model_url", ""), instance_id=payload.get("instance_id", ""),
+        verification_probe=payload.get("verification_probe") is True,
     ) as attempt:
         if attempt.response is not None:
             return running, False, {
@@ -1128,6 +1130,12 @@ def _run_paced_bridge(
                 "text": json.dumps(attempt.response.get("payload") or {}),
                 "content_type": "application/json",
             }
+        if before_dispatch is not None:
+            # 预约只在 profile 锁与节奏检查通过后执行；本地拒绝不记录一次授权。
+            attempt.request_started = False
+            if not before_dispatch():
+                return running, False, {"status_code": 0, "payload": {"code": "MAKERHUB_LOCAL_DEFERRED"}}
+            attempt.request_started = True
         running, restarted, result = _run_bridge_with_profile_recovery(
             platform, running, payload, timeout_seconds=timeout_seconds, allow_profile_restart=False,
         )
@@ -1276,11 +1284,14 @@ def browser_authorize_3mf_download(
     profile_id: str,
     model_url: str = "",
     instance_id: str = "",
+    verification_probe: bool = False,
+    before_dispatch: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Use the saved browser profile to click one model instance's 3MF action.
 
     The bridge only returns a sanitized download payload. Browser cookies and tokens
     remain inside the profile and are never passed back to the archive request.
+    An explicit verification probe may test a saved challenge gate without clearing it.
     """
     clean_platform = normalize_platform(platform)
     clean_profile_id = str(profile_id or "").strip()
@@ -1291,6 +1302,15 @@ def browser_authorize_3mf_download(
     if not _is_browser_three_mf_authorization_url(clean_api_url, clean_platform):
         raise CloakBrowserError("3MF 浏览器授权地址无效。")
     page_url = _browser_model_page_url(model_url, clean_platform, clean_instance_id)
+    dispatch_reserved = False
+
+    def reserve_dispatch() -> bool:
+        nonlocal dispatch_reserved
+        if not dispatch_reserved:
+            if before_dispatch is not None and not before_dispatch():
+                return False
+            dispatch_reserved = True
+        return True
 
     with _profile_operation(clean_platform, clean_profile_id, detail="click"):
         # 补下载不再先抓模型资料，授权入口自己唤醒 profile；点击失败后不重启。
@@ -1305,6 +1325,8 @@ def browser_authorize_3mf_download(
                     instance_id=clean_instance_id,
                     platform=clean_platform,
                 )
+                # 仅复测旧验证暂停；每日额度、限流冷却和 profile 锁仍由原路径约束。
+                bridge_payload["verification_probe"] = verification_probe is True
                 running, _restarted, result = _run_paced_bridge(
                     clean_platform,
                     running,
@@ -1312,6 +1334,7 @@ def browser_authorize_3mf_download(
                     timeout_seconds=_authorization_bridge_timeout_seconds(
                         bridge_payload["navigation_timeout_ms"]
                     ),
+                    **({"before_dispatch": reserve_dispatch} if before_dispatch is not None else {}),
                 )
                 _clear_profile_recovery_attempt(running.id)
                 break
