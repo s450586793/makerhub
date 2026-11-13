@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.21.6`
+> 当前版本：`v0.21.7`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -370,6 +370,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-11-13 · v0.21.7
+
+- 缺失 3MF 任务的“处理账号验证”进入账号设置，使用关联浏览器完成人工登录或验证，再同步会话并等待下载状态检查。
+- 源页面保留为查看入口，提示明确区分会话同步与下载状态检查。
+
 ### 2026-11-13 · v0.21.6
 
 - 修复跨域下载授权被 `OPTIONS` 预检响应抢先匹配，导致验证码通过后仍误报失败的问题。
@@ -382,13 +387,13 @@ npm --prefix frontend run build
 - 保留来源、可见位置、超时、次数与取消检查，验证未完成时不误报成功。
 - 授权复测保留脱敏的验证阶段和结果摘要，便于区分页面验证与下载接口验证失败。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-11-13 · v0.21.4
 
 - 浏览器登录同步增加真实登录检查，匿名首页不再误报同步成功。
 - ticket 登录未完成时，有限尝试官方登录确认并复用页面验证处理；手动同步也核对真实登录态，仍需登录或验证时保留失败。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-11-13 · v0.21.3
 

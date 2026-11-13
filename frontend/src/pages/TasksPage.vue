@@ -352,13 +352,20 @@
           </span>
           <span>
             <span class="missing-actions">
-            <a
+            <RouterLink
               v-if="needsManualVerification(item)"
               class="button button-primary button-small"
+              to="/settings?tab=accounts"
+              :title="missingActionHint(item)"
+            >
+              处理账号验证
+            </RouterLink>
+            <a
+              v-if="needsManualVerification(item)"
+              class="button button-secondary button-small"
               :href="missingVerificationHref(item)"
               target="_blank"
               rel="noreferrer noopener"
-              @click="missingStatus = missingActionHint(item)"
             >
               访问源页面
             </a>
@@ -542,12 +549,12 @@ function missingVerificationHref(item) {
 function missingActionHint(item) {
   const status = String(item?.status || "").toLowerCase();
   if (status === "cloudflare") {
-    return "请完成 Cloudflare 校验或补充 cf_clearance 后回到 MakerHub 重试。";
+    return "请在账号设置打开对应站点的关联浏览器，人工完成 Cloudflare 校验后点击“从浏览器同步”，再等待下载状态检查。";
   }
   if (status === "auth_required" || status === "cookie_invalid") {
-    return "请更新对应站点 Cookie / token 后回到 MakerHub 重试。";
+    return "请在账号设置打开对应站点的关联浏览器，完成登录后点击“从浏览器同步”，再等待下载状态检查。";
   }
-  return "请在 MakerWorld 完成验证后回到 MakerHub 重试。";
+  return "请在账号设置打开对应站点的关联浏览器，人工完成站点验证后点击“从浏览器同步”，再等待下载状态检查。";
 }
 
 function missingDetailPath(item) {
