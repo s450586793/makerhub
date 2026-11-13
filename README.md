@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.21.3`
+> 当前版本：`v0.21.4`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -370,6 +370,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-11-13 · v0.21.4
+
+- 浏览器登录同步增加真实登录检查，匿名首页不再误报同步成功。
+- ticket 登录未完成时，有限尝试官方登录确认并复用页面验证处理；手动同步也核对真实登录态，仍需登录或验证时保留失败。
+
 ### 2026-11-13 · v0.21.3
 
 - 复测先读取网页当前配置，跳过已删除的旧配置，下载前再次核对实际选中项。
@@ -380,13 +385,13 @@ npm --prefix frontend run build
 - 已因验证阻断的排队任务不再挡住自动复测，成功后继续原任务。
 - 使用归档调度器的真实可运行状态判断空闲，保留正常归档和手动暂停的优先级。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-11-13 · v0.21.1
 
 - 旧的“需要浏览器确认”状态由空闲后台安排有限次真实授权复测，没有待处理队列时也可恢复；成功才解除暂停，失败保留人工入口。
 - 保留每日限额、请求间隔、429 冷却和手动暂停，复测预约持久保存，避免轮询和重启重复请求。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-11-13 · v0.21.0
 

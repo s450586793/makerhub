@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -1078,6 +1079,47 @@ def _cookie_header_from_snapshot(snapshot: dict[str, Any], platform: str) -> str
     return sanitize_cookie_header("; ".join(f"{key}={value}" for key, value in values.items()))
 
 
+def _authenticated_makerworld_cookie(snapshot: dict[str, Any], platform: str) -> str:
+    if snapshot.get("authenticated") is not True:
+        return ""
+    clean_platform = normalize_platform(platform)
+    expected_host = urlparse(PLATFORM_ORIGINS[clean_platform]).hostname
+    try:
+        current = urlparse(str(snapshot.get("current_url") or ""))
+        if (current.scheme != "https" or current.hostname != expected_host
+                or current.port not in {None, 443} or current.username or current.password
+                or current.path.rstrip("/").lower() == "/api/sign-in/ticket"):
+            return ""
+    except ValueError:
+        return ""
+    current_path = current.path or "/"
+    cookies = snapshot.get("cookies") if isinstance(snapshot.get("cookies"), list) else []
+    valid_cookies = []
+    token_present = False
+    now = time.time()
+    for item in cookies:
+        if not isinstance(item, dict):
+            continue
+        domain = str(item.get("domain") or "").strip().lower().lstrip(".")
+        name, value = item.get("name"), item.get("value")
+        if domain != expected_host or not isinstance(name, str) or not isinstance(value, str) or not value.strip():
+            continue
+        expires = item.get("expires", -1)
+        if (type(expires) not in {int, float} or not math.isfinite(expires)
+                or (expires != -1 and expires <= now)):
+            continue
+        path = str(item.get("path") or "/")
+        if not path.startswith("/") or not (current_path == path or (
+                current_path.startswith(path) and (path.endswith("/") or current_path[len(path):].startswith("/")))):
+            continue
+        valid_cookies.append(item)
+        if name in {"token", "access_token", "accessToken"}:
+            token_present = True
+    if not token_present:
+        return ""
+    return _cookie_header_from_snapshot({"cookies": valid_cookies}, clean_platform)
+
+
 def _bridge_payload(
     profile_id: str,
     *,
@@ -1315,7 +1357,7 @@ def _preflight_download_fields(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def browser_prepare_3mf_download(platform: str, *, profile_id: str, model_url: str) -> dict[str, Any]:
-    """读取当前模型与浏览器登录态，不点击下载或自动操作验证。"""
+    """读取模型与登录态，按配置处理页面验证，不发起下载授权。"""
     clean_platform = normalize_platform(platform)
     clean_profile_id = str(profile_id or "").strip()
     if not clean_profile_id:
@@ -1326,8 +1368,13 @@ def browser_prepare_3mf_download(platform: str, *, profile_id: str, model_url: s
     with _profile_operation(clean_platform, clean_profile_id, detail="fetch"):
         _profile, running, _launched = _ensure_running_profile(clean_platform, clean_profile_id)
         payload = _bridge_payload(running.id, action="prepare_3mf", model_url=page_url, platform=clean_platform)
-        payload.update(auto_verify_3mf=False, auto_verify_challenges=False)
-        result = _run_bridge(payload, timeout_seconds=max(_timeout_seconds() + 30, 45))
+        payload["auto_verify_3mf"] = False
+        bridge_timeout = (
+            (payload["navigation_timeout_ms"] + 999) // 1000
+            + AUTO_VERIFY_TIMEOUT_SECONDS
+            + AUTHORIZATION_BRIDGE_CLEANUP_MARGIN_SECONDS
+        )
+        result = _run_bridge(payload, timeout_seconds=bridge_timeout)
     preflight = result.get("preflight") if isinstance(result.get("preflight"), dict) else {}
     reasons = {"ready", "auth_required", "verification_required", "model_unavailable", "model_mismatch", "instances_unavailable", "preflight_failed"}
     raw_reason = preflight.get("reason")
@@ -1480,17 +1527,14 @@ def synchronize_browser_session(
                     cookies=browser_cookie_items(raw_cookie, clean_platform, structured_items),
                     target_url=target_url,
                     platform=clean_platform,
-                )
+                ),
+                timeout_seconds=90,
             )
             launched_here = launched_here or restarted
             current_url = str(snapshot.get("current_url") or "")
-            current_host = (urlparse(current_url).hostname or "").lower()
-            makerworld_domain = PLATFORM_DOMAINS[clean_platform][0]
-            if not ticket_url:
-                raise CloakBrowserError("未获取到 MakerWorld 登录 ticket，需要在指纹浏览器中确认登录。")
-            if not current_host.endswith(makerworld_domain):
-                raise CloakBrowserError("MakerWorld ticket 未完成站点登录，需要在指纹浏览器中确认。")
-            cookie = _cookie_header_from_snapshot(snapshot, clean_platform) or sanitize_cookie_header(raw_cookie)
+            cookie = _authenticated_makerworld_cookie(snapshot, clean_platform)
+            if not cookie:
+                raise CloakBrowserError("未确认 MakerWorld 站点已登录，需要在指纹浏览器中完成登录后重试。")
             return CloakBrowserSessionResult(
                 profile_id=running.id,
                 cookie=cookie,
@@ -1535,7 +1579,7 @@ def prepare_browser_login(
         launched_here = launched_here or restarted
         return CloakBrowserSessionResult(
             profile_id=running.id,
-            cookie=_cookie_header_from_snapshot(snapshot, clean_platform),
+            cookie=_authenticated_makerworld_cookie(snapshot, clean_platform),
             current_url=str(snapshot.get("current_url") or ""),
             public_url=cloakbrowser_public_url(),
             launched_here=launched_here,
@@ -1560,7 +1604,7 @@ def collect_browser_session(platform: str, profile_id: str) -> CloakBrowserSessi
         launched_here = launched_here or restarted
         return CloakBrowserSessionResult(
             profile_id=running.id,
-            cookie=_cookie_header_from_snapshot(snapshot, clean_platform),
+            cookie=_authenticated_makerworld_cookie(snapshot, clean_platform),
             current_url=str(snapshot.get("current_url") or ""),
             public_url=cloakbrowser_public_url(),
             launched_here=launched_here,

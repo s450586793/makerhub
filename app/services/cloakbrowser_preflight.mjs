@@ -143,7 +143,14 @@ export async function prepareThreeMfDownload(input, dependencies) {
   try {
     return await dependencies.withTemporaryPage(browser, context, async (page) => {
       const guard = await installThreeMfAuthorizationGuard(page, { platform, readOnly: true });
-      releaseGuard = guard.dispose;
+      const verificationController = new AbortController();
+      const cancelVerification = () => verificationController.abort();
+      guard.signal.addEventListener("abort", cancelVerification, { once: true });
+      releaseGuard = async () => {
+        verificationController.abort();
+        guard.signal.removeEventListener("abort", cancelVerification);
+        await guard.dispose();
+      };
       try {
         await page.goto(target.model_url, { waitUntil: "domcontentloaded",
           timeout: Math.max(1000, Math.min(Number(input.navigationTimeoutMs) || 30000, 120000)) });
@@ -152,7 +159,17 @@ export async function prepareThreeMfDownload(input, dependencies) {
       }
       if (!modelTarget(page.url(), platform)) return failed("model_mismatch");
       const verify = dependencies.ensurePageVerification || ensurePageVerification;
-      const verification = await verify(page, { timeoutMs: 5000, passiveWaitMs: 5000, allowInteraction: false, maxAttempts: 1 });
+      const allowInteraction = input.autoVerifyChallenges !== false;
+      const verificationTimeoutMs = allowInteraction
+        ? Math.max(1, Math.min(Number(input.verificationTimeoutMs) || 50000, 50000)) : 5000;
+      const verification = await verify(page, {
+        timeoutMs: verificationTimeoutMs,
+        passiveWaitMs: Math.min(5000, verificationTimeoutMs),
+        allowInteraction,
+        maxAttempts: allowInteraction ? Math.max(1, Math.min(Math.floor(Number(input.verificationMaxAttempts) || 2), 2)) : 1,
+        signal: verificationController.signal,
+      });
+      if (guard.signal.aborted) return failed("preflight_failed");
       if (!verification.completed) return failed("verification_required", {
         verification: sanitizeVerificationResult(verification.verification),
       });
@@ -161,7 +178,7 @@ export async function prepareThreeMfDownload(input, dependencies) {
       const cookies = (await context.cookies()).filter((cookie) => (
         !Number.isFinite(cookie.expires) || cookie.expires <= 0 || cookie.expires > Date.now() / 1000
       ));
-      const authenticated = hasMakerWorldSessionCookie(cookies, platform) && !state.login_visible;
+      const authenticated = hasMakerWorldSessionCookie(cookies, platform, new URL(page.url()).pathname) && !state.login_visible;
       return { ready: authenticated, reason: authenticated ? "ready" : "auth_required", authenticated, model: state.model };
     });
   } catch {

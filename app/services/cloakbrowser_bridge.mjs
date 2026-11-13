@@ -6,11 +6,14 @@ import { fileURLToPath } from "node:url";
 import {
   browserAuthTokenForUrl,
   completeBambuLoginConfirmation,
+  completeMakerWorldTicketSession,
   hasMakerWorldSessionCookie,
   isBambuLoginConfirmationUrl,
+  isMakerWorldTicketUrl,
   isMakerWorldUrl,
   makerWorldHomeUrl,
   normalizePlatform,
+  readMakerWorldAuthenticationState,
 } from "./cloakbrowser_login.mjs";
 import {
   attemptAutomaticVerification,
@@ -851,6 +854,9 @@ async function main() {
       const preflight = await prepareThreeMfDownload({
         browser, context, platform: normalizePlatform(input.platform),
         modelUrl: String(input.model_url || ""), navigationTimeoutMs: input.navigation_timeout_ms,
+        autoVerifyChallenges: input.auto_verify_challenges !== false,
+        verificationTimeoutMs: input.verification_timeout_ms,
+        verificationMaxAttempts: input.verification_max_attempts,
       }, { withTemporaryPage });
       output = { ok: true, preflight };
       return;
@@ -902,13 +908,15 @@ async function main() {
       output = { ok: true, ...authorization };
       return;
     }
+    const platform = normalizePlatform(input.platform);
+    const ticketSeed = input.action === "seed" && isMakerWorldTicketUrl(input.target_url, platform);
+    const loginDeadline = Date.now() + 50000;
     if (input.action === "seed") {
       const cookies = (Array.isArray(input.cookies) ? input.cookies : []).map(cleanCookie).filter(Boolean);
       if (cookies.length) await context.setCookie(...cookies);
     }
     const pages = await context.pages();
     const page = pages[0] || await context.newPage();
-    const platform = normalizePlatform(input.platform);
     const isLoginAction = input.action === "login" || input.action === "sync";
     const makerWorldSessionReady = isLoginAction
       && hasMakerWorldSessionCookie(await context.cookies(), platform);
@@ -922,7 +930,18 @@ async function main() {
       || !/^https?:\/\//i.test(currentUrl)
       || (makerWorldSessionReady && !isMakerWorldUrl(currentUrl, platform))
     );
-    if (shouldNavigate) {
+    let loginState;
+    if (ticketSeed) {
+      loginState = await completeMakerWorldTicketSession(context, page, platform, {
+        targetUrl,
+        navigationTimeoutMs: input.navigation_timeout_ms,
+        deadlineMs: loginDeadline,
+        autoVerifyChallenges: input.auto_verify_challenges !== false,
+        verificationTimeoutMs: input.verification_timeout_ms,
+        verificationMaxAttempts: input.verification_max_attempts,
+      });
+      if (loginState.authentication_reason === "navigation_failed") navigationError = "MakerWorld login navigation failed.";
+    } else if (shouldNavigate) {
       try {
         await page.goto(targetUrl, {
           waitUntil: "domcontentloaded",
@@ -941,6 +960,7 @@ async function main() {
         input.navigation_timeout_ms,
       );
     }
+    loginState ||= { ...await readMakerWorldAuthenticationState(context, page, platform), login_fallback_attempted: false };
     const currentPages = await context.pages();
     const storage = [];
     for (const currentPage of currentPages) {
@@ -953,6 +973,7 @@ async function main() {
       cookies: await context.cookies(),
       storage,
       navigation_error: navigationError,
+      ...loginState,
     };
   } finally {
     const operationFinished = performance.now();

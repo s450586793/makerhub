@@ -1124,6 +1124,79 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertEqual(session.headers["Authorization"], "Bearer access")
         session.close.assert_called_once()
 
+    def _synchronize_browser_snapshot(self, snapshot, *, platform="global", ticket_url="https://makerworld.com/ticket"):
+        running = cloakbrowser_session.CloakBrowserProfile(id="profile-sync", name="MakerHub Sync", status="running")
+        with patch.object(cloakbrowser_session, "_profile_operation", return_value=nullcontext()), \
+                patch.object(cloakbrowser_session, "_ensure_running_profile", return_value=(running, running, False)), \
+                patch.object(cloakbrowser_session, "makerworld_ticket_url", return_value=ticket_url), \
+                patch.object(cloakbrowser_session, "_run_bridge_with_profile_recovery", return_value=(running, False, snapshot)) as bridge, \
+                patch.dict(os.environ, {"MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                    "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token"}):
+            result = cloakbrowser_session.synchronize_browser_session(
+                platform, "token=original-api-token", profile_id=running.id, stop_when_done=False,
+            )
+        return result, bridge
+
+    def test_synchronize_browser_session_rejects_anonymous_makerworld_page(self):
+        for authenticated in (False, None, "true", 1):
+            with self.subTest(authenticated=authenticated):
+                snapshot = {"ok": True, "authenticated": authenticated, "authentication_reason": "auth_required",
+                    "current_url": "https://makerworld.com/en", "cookies": [
+                        {"name": "token", "value": "bambu-session", "domain": ".bambulab.com"},
+                        {"name": "token", "value": "", "domain": ".makerworld.com"}], "storage": []}
+                with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserError, "登录"):
+                    self._synchronize_browser_snapshot(snapshot)
+
+    def test_synchronize_browser_session_requires_dom_login_confirmation_even_with_makerworld_token(self):
+        for authenticated in (False, None, "true", 1):
+            with self.subTest(authenticated=authenticated):
+                snapshot = {"ok": True, "authenticated": authenticated, "authentication_reason": "auth_required",
+                    "current_url": "https://makerworld.com/en", "cookies": [
+                        {"name": "token", "value": "makerworld-session", "domain": ".makerworld.com"}]}
+                with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserError, "登录"):
+                    self._synchronize_browser_snapshot(snapshot)
+
+    def test_synchronize_browser_session_rejects_missing_expired_and_wrong_scope_tokens(self):
+        cases = [[], [{"name": "cf_clearance", "value": "clear", "domain": ".makerworld.com"}]]
+        for domain in (".bambulab.com", ".makerworld.com.cn", ".notmakerworld.com", ".makerworld.com.evil.test", "com", ""):
+            cases.append([{"name": "token", "value": "not-a-makerworld-session", "domain": domain}])
+        for expires in (time.time() - 1, 0, -2, "not-a-number", True, float("inf"), float("nan"), None):
+            cases.append([{"name": "token", "value": "expired-or-invalid", "domain": ".makerworld.com", "expires": expires}])
+        cases.extend([[{"name": "token", "value": value, "domain": ".makerworld.com"}] for value in ("", " ", None, 123)])
+        cases.append([{"name": "token", "value": "wrong-path", "domain": ".makerworld.com", "path": "/private"}])
+        cases.append([{"name": "token", "value": "wrong-path", "domain": ".makerworld.com", "path": "/en//"}])
+        for cookies in cases:
+            with self.subTest(cookies=cookies):
+                snapshot = {"ok": True, "authenticated": True, "authentication_reason": "ready",
+                    "current_url": "https://makerworld.com/en/page", "cookies": cookies,
+                    "storage": [{"origin": "https://makerworld.com", "local": {"accessToken": "storage-token"}}]}
+                with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserError, "登录"):
+                    self._synchronize_browser_snapshot(snapshot)
+
+    def test_synchronize_browser_session_rejects_non_makerworld_origin_and_callback(self):
+        for current_url in ("https://notmakerworld.com/en", "https://makerworld.com.evil.test/en",
+                "http://makerworld.com/en", "https://makerworld.com:444/en", "https://user@makerworld.com/en",
+                "https://bambulab.com/en", "https://makerworld.com.cn/en", "https://makerworld.com/api/sign-in/ticket?ticket=private"):
+            with self.subTest(current_url=current_url):
+                snapshot = {"ok": True, "authenticated": True, "authentication_reason": "ready", "current_url": current_url,
+                    "cookies": [{"name": "token", "value": "makerworld-session", "domain": ".makerworld.com"}]}
+                with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserError, "登录"):
+                    self._synchronize_browser_snapshot(snapshot)
+
+    def test_synchronize_browser_session_accepts_confirmed_makerworld_session_without_ticket(self):
+        for platform, origin in (("cn", "makerworld.com.cn"), ("global", "makerworld.com")):
+            with self.subTest(platform=platform):
+                snapshot = {"ok": True, "authenticated": True, "authentication_reason": "ready", "login_fallback_attempted": True,
+                    "current_url": f"https://{origin}/en", "cookies": [
+                        {"name": "token", "value": "makerworld-session", "domain": f".{origin}", "path": "/", "expires": time.time() + 60},
+                        {"name": "token", "value": "bambu-session", "domain": ".bambulab.com"},
+                        {"name": "expired", "value": "old", "domain": f".{origin}", "expires": time.time() - 1}],
+                    "storage": [{"origin": f"https://{origin}", "local": {"refreshToken": "storage-private"}}]}
+                result, bridge = self._synchronize_browser_snapshot(snapshot, platform=platform, ticket_url="")
+                self.assertEqual(result.cookie, "token=makerworld-session")
+                self.assertEqual(bridge.call_args.kwargs["timeout_seconds"], 90)
+                self.assertEqual(bridge.call_args.args[2]["action"], "seed")
+
     def test_synchronize_browser_session_seeds_snapshot_and_stops_newly_launched_profile(self):
         profile = cloakbrowser_session.CloakBrowserProfile(id="profile-cn", name="MakerHub CN")
         running = cloakbrowser_session.CloakBrowserProfile(
@@ -1134,6 +1207,8 @@ class CloakBrowserSessionTest(unittest.TestCase):
         )
         snapshot = {
             "ok": True,
+            "authenticated": True,
+            "authentication_reason": "ready",
             "current_url": "https://makerworld.com.cn/zh",
             "cookies": [{"name": "token", "value": "browser-token", "domain": ".makerworld.com.cn"}],
             "storage": [],
@@ -1162,7 +1237,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertEqual(bridge_mock.call_args.args[0]["action"], "seed")
         stop_mock.assert_called_once_with("profile-cn")
 
-    def test_synchronize_browser_session_requires_ticket_for_automatic_login(self):
+    def test_synchronize_browser_session_requires_confirmed_login_and_stops_launched_profile(self):
         profile = cloakbrowser_session.CloakBrowserProfile(id="profile-cn", name="MakerHub CN")
         running = cloakbrowser_session.CloakBrowserProfile(id="profile-cn", name="MakerHub CN", status="running")
         with patch.object(cloakbrowser_session, "ensure_profile", return_value=profile), \
@@ -1187,7 +1262,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
                     },
                     clear=False,
                 ):
-            with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserError, "ticket"):
+            with self.assertRaisesRegex(cloakbrowser_session.CloakBrowserError, "登录"):
                 cloakbrowser_session.synchronize_browser_session("cn", "token=api-token")
 
         stop_mock.assert_called_once_with("profile-cn")
@@ -1220,11 +1295,73 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertEqual(bridge_payload["platform"], "cn")
         stop_mock.assert_not_called()
 
+    def _interactive_browser_snapshot(self, snapshot, *, action, platform="global"):
+        running = cloakbrowser_session.CloakBrowserProfile(id="profile-manual", name="MakerHub Manual", status="running")
+        with patch.object(cloakbrowser_session, "_profile_operation", return_value=nullcontext()), \
+                patch.object(cloakbrowser_session, "_ensure_running_profile", return_value=(running, running, True)), \
+                patch.object(cloakbrowser_session, "makerworld_ticket_url", return_value="https://makerworld.com/ticket" if action == "seed" else ""), \
+                patch.object(cloakbrowser_session, "_run_bridge_with_profile_recovery", return_value=(running, False, snapshot)) as bridge, \
+                patch.object(cloakbrowser_session, "stop_profile") as stop, \
+                patch.dict(os.environ, {"MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                    "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "secret-token"}):
+            if action == "sync":
+                result = cloakbrowser_session.collect_browser_session(platform, running.id)
+            else:
+                result = cloakbrowser_session.prepare_browser_login(
+                    platform, "token=original-api-token" if action == "seed" else "", profile_id=running.id,
+                )
+        self.assertEqual(result.profile_id, running.id)
+        self.assertTrue(result.launched_here)
+        self.assertEqual(bridge.call_args.args[2]["action"], action)
+        stop.assert_not_called()
+        return result
+
+    def test_interactive_browser_session_keeps_anonymous_login_available_for_polling(self):
+        for action in ("login", "seed", "sync"):
+            for authenticated in (False, None, "true", 1):
+                with self.subTest(action=action, authenticated=authenticated):
+                    snapshot = {"ok": True, "authenticated": authenticated, "authentication_reason": "auth_required",
+                        "current_url": "https://makerworld.com/en", "cookies": [
+                            {"name": "token", "value": "bambu-session", "domain": ".bambulab.com"},
+                            {"name": "token", "value": "unconfirmed-makerworld", "domain": ".makerworld.com"}],
+                        "storage": [{"origin": "https://makerworld.com", "local": {"token": "storage-private"}}]}
+                    result = self._interactive_browser_snapshot(snapshot, action=action)
+                    self.assertEqual(result.cookie, "")
+                    self.assertEqual(result.current_url, snapshot["current_url"])
+
+    def test_interactive_browser_session_rejects_bambu_storage_and_invalid_makerworld_tokens(self):
+        cases = [[], [{"name": "token", "value": "bambu-session", "domain": ".bambulab.com"}],
+            [{"name": "token", "value": "", "domain": ".makerworld.com"}],
+            [{"name": "token", "value": "expired", "domain": ".makerworld.com", "expires": time.time() - 1}],
+            [{"name": "token", "value": "wrong-platform", "domain": ".makerworld.com.cn"}],
+            [{"name": "token", "value": "wrong-path", "domain": ".makerworld.com", "path": "/private"}]]
+        for action in ("login", "seed", "sync"):
+            for cookies in cases:
+                with self.subTest(action=action, cookies=cookies):
+                    snapshot = {"ok": True, "authenticated": True, "authentication_reason": "ready",
+                        "current_url": "https://makerworld.com/en", "cookies": cookies,
+                        "storage": [{"origin": "https://makerworld.com", "local": {"token": "storage-private"}}]}
+                    self.assertEqual(self._interactive_browser_snapshot(snapshot, action=action).cookie, "")
+
+    def test_interactive_browser_session_exports_only_confirmed_makerworld_cookies(self):
+        for action in ("login", "seed", "sync"):
+            for platform, origin in (("cn", "makerworld.com.cn"), ("global", "makerworld.com")):
+                with self.subTest(action=action, platform=platform):
+                    snapshot = {"ok": True, "authenticated": True, "authentication_reason": "ready",
+                        "current_url": f"https://{origin}/en", "cookies": [
+                            {"name": "token", "value": "makerworld-session", "domain": f".{origin}"},
+                            {"name": "token", "value": "bambu-session", "domain": ".bambulab.com"},
+                            {"name": "expired", "value": "old", "domain": f".{origin}", "expires": time.time() - 1}],
+                        "storage": [{"origin": f"https://{origin}", "local": {"refreshToken": "storage-private"}}]}
+                    result = self._interactive_browser_snapshot(snapshot, action=action, platform=platform)
+                    self.assertEqual(result.cookie, "token=makerworld-session")
+
     def test_collect_browser_session_navigates_blank_profile_to_platform_home(self):
         profile = cloakbrowser_session.CloakBrowserProfile(id="profile-cn", name="MakerHub CN")
         running = cloakbrowser_session.CloakBrowserProfile(id="profile-cn", name="MakerHub CN", status="running")
         snapshot = {
             "ok": True,
+            "authenticated": True,
             "current_url": "https://makerworld.com.cn/zh",
             "cookies": [{"name": "token", "value": "browser-token", "domain": ".makerworld.com.cn"}],
             "storage": [],
@@ -1258,6 +1395,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
         )
         snapshot = {
             "ok": True,
+            "authenticated": True,
             "current_url": "https://makerworld.com.cn/zh",
             "cookies": [{"name": "token", "value": "recovered", "domain": ".makerworld.com.cn"}],
             "storage": [],
@@ -1437,7 +1575,8 @@ class CloakBrowserSessionTest(unittest.TestCase):
                 patch.object(cloakbrowser_session, "_ensure_running_profile", return_value=(profile, profile, False)), \
                 patch.object(cloakbrowser_session, "_run_bridge", return_value=bridge_result) as bridge, \
                 patch.object(cloakbrowser_session, "_run_paced_bridge") as paced, \
-                patch.dict(os.environ, {"MAKERHUB_CLOAKBROWSER_URL": "http://browser.test", "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "test-secret"}):
+                patch.dict(os.environ, {"MAKERHUB_CLOAKBROWSER_URL": "http://browser.test", "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "test-secret",
+                    "MAKERHUB_AUTO_VERIFY_CHALLENGES": "true"}):
             result = cloakbrowser_session.browser_prepare_3mf_download(
                 "cn", profile_id="profile-cn", model_url="https://makerworld.com.cn/en/models/123?token=private#profileId-456",
             )
@@ -1449,12 +1588,60 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertEqual(payload["cookies"], [])
         self.assertEqual(payload["instance_id"], "")
         self.assertIs(payload["auto_verify_3mf"], False)
-        self.assertIs(payload["auto_verify_challenges"], False)
+        self.assertIs(payload["auto_verify_challenges"], True)
         self.assertTrue(result["ready"])
         self.assertEqual(result["model"]["model_url"], "https://makerworld.com.cn/en/models/123")
         self.assertEqual(result["model"]["instances"][0]["id"], "456")
         self.assertEqual(result["model"]["instances"][0]["paidSetting"], {"crowdfunding": True})
         self.assertNotIn("private", str(result))
+
+    def test_prepare_3mf_honors_page_challenge_setting_without_authorization(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(id="profile-global", name="Global", status="running")
+        with patch.object(cloakbrowser_session, "_profile_operation", return_value=nullcontext()), \
+                patch.object(cloakbrowser_session, "_ensure_running_profile", return_value=(profile, profile, False)), \
+                patch.object(cloakbrowser_session, "_run_bridge", return_value={"preflight": {"reason": "verification_required"}}) as bridge, \
+                patch.object(cloakbrowser_session, "_run_paced_bridge") as paced, \
+                patch.object(cloakbrowser_session, "ThreeMfAuthorizationAttempt") as authorization_attempt, \
+                patch.object(cloakbrowser_session, "browser_authorize_3mf_download") as authorize:
+            for setting, enabled in ((None, True), ("true", True), ("false", False)):
+                for navigation_seconds in (5, 30, 120):
+                    env = {"MAKERHUB_CLOAKBROWSER_URL": "http://browser.test",
+                        "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "test-secret", "MAKERHUB_AUTO_VERIFY_3MF": "true",
+                        "MAKERHUB_CLOAKBROWSER_TIMEOUT": str(navigation_seconds)}
+                    if setting is not None:
+                        env["MAKERHUB_AUTO_VERIFY_CHALLENGES"] = setting
+                    with self.subTest(setting=setting, navigation_seconds=navigation_seconds), patch.dict(os.environ, env, clear=True):
+                        result = cloakbrowser_session.browser_prepare_3mf_download(
+                            "global", profile_id=profile.id, model_url="https://makerworld.com/en/models/123",
+                        )
+                        payload = bridge.call_args.args[0]
+                        self.assertIs(payload["auto_verify_challenges"], enabled)
+                        self.assertIs(payload["auto_verify_3mf"], False)
+                        self.assertEqual(payload["verification_timeout_ms"], 50000)
+                        self.assertEqual(payload["verification_max_attempts"], 2)
+                        self.assertEqual(payload["action"], "prepare_3mf")
+                        self.assertEqual(payload["target_url"], "")
+                        self.assertEqual(payload["instance_id"], "")
+                        timeout_seconds = bridge.call_args.kwargs["timeout_seconds"]
+                        self.assertGreaterEqual(timeout_seconds, payload["navigation_timeout_ms"] / 1000 + 50 + 10)
+                        self.assertFalse(result["ready"])
+                        self.assertEqual(result["reason"], "verification_required")
+            paced.assert_not_called()
+            authorization_attempt.assert_not_called()
+            authorize.assert_not_called()
+
+    def test_prepare_3mf_passes_full_verification_budget_to_subprocess(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(id="profile-global", name="Global", status="running")
+        process = Mock(returncode=0, stdout='{"ok":true,"preflight":{"reason":"verification_required"}}', stderr="")
+        with patch.object(cloakbrowser_session, "_profile_operation", return_value=nullcontext()), \
+                patch.object(cloakbrowser_session, "_ensure_running_profile", return_value=(profile, profile, False)), \
+                patch.object(cloakbrowser_session.subprocess, "run", return_value=process) as run, \
+                patch.dict(os.environ, {"MAKERHUB_CLOAKBROWSER_URL": "http://browser.test",
+                    "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "test-secret", "MAKERHUB_CLOAKBROWSER_TIMEOUT": "120"}, clear=True):
+            cloakbrowser_session.browser_prepare_3mf_download(
+                "global", profile_id=profile.id, model_url="https://makerworld.com/en/models/123",
+            )
+        self.assertGreaterEqual(run.call_args.kwargs["timeout"], 120 + 50 + 10)
 
     def test_prepare_3mf_rejects_wrong_origin_and_invalid_profile_before_navigation(self):
         with patch.object(cloakbrowser_session, "_run_bridge") as bridge:

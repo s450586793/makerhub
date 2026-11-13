@@ -55,7 +55,7 @@ test("preflight uses live three-instance data and never revives the stale fourth
   const prepare = helper("prepareThreeMfDownload");
   const { page, context } = fixture();
   let closed = false;
-  const preflight = await prepare({ platform: "cn", modelUrl, context }, {
+  const preflight = await prepare({ platform: "cn", modelUrl, context, autoVerifyChallenges: false }, {
     withTemporaryPage: async (_browser, _context, callback) => {
       try { return await callback(page); }
       finally { closed = true; }
@@ -72,6 +72,48 @@ test("preflight uses live three-instance data and never revives the stale fourth
   assert.equal(preflight.model.instances.some((item) => item.id === "3584010"), false);
   assert.equal(closed, true);
   assert.equal(JSON.stringify(preflight).includes("private"), false);
+});
+
+test("enabled preflight verification shares the existing bounded solver while blocking authorization requests", async () => {
+  const prepare = helper("prepareThreeMfDownload");
+  const { page, context } = fixture();
+  let navigations = 0;
+  let blocked = 0;
+  let forwarded = 0;
+  const navigate = page.goto;
+  page.goto = async (...args) => { navigations++; await navigate(...args); };
+  const result = await prepare({ platform: "cn", modelUrl, context }, {
+    withTemporaryPage: async (_browser, _context, callback) => callback(page),
+    ensurePageVerification: async (_page, options) => {
+      assert.equal(options.allowInteraction, true);
+      assert.equal(options.timeoutMs, 50000);
+      assert.equal(options.maxAttempts, 2);
+      for (const path of ["/api/v1/design-service/instance/2658384/f3mf", "/private-fixture.3mf"]) {
+        page.emit("request", { url: () => `https://makerworld.com.cn${path}`,
+          abort: async () => { blocked++; }, continue: async () => { forwarded++; } });
+      }
+      return { completed: true, verification: { attempted: true, attempts: 1 } };
+    },
+  });
+  assert.equal(result.ready, true);
+  assert.equal(blocked, 2);
+  assert.equal(forwarded, 0);
+  assert.equal(navigations, 1);
+});
+
+test("preflight verification budgets stay bounded when explicitly configured", async () => {
+  const prepare = helper("prepareThreeMfDownload");
+  const { page, context } = fixture();
+  const result = await prepare({ platform: "cn", modelUrl, context, autoVerifyChallenges: true,
+    verificationTimeoutMs: 90000, verificationMaxAttempts: 9 }, {
+    withTemporaryPage: async (_browser, _context, callback) => callback(page),
+    ensurePageVerification: async (_page, options) => {
+      assert.equal(options.timeoutMs, 50000);
+      assert.equal(options.maxAttempts, 2);
+      return { completed: false, verification: { attempted: true, attempts: 2, reason: "attempts_exhausted" } };
+    },
+  });
+  assert.equal(result.reason, "verification_required");
 });
 
 test("preflight rejects both absent session cookies and a visible login action", async () => {
@@ -113,10 +155,10 @@ test("preflight bounds instances and projects only download restriction semantic
   assert.equal(JSON.stringify(result).includes("private"), false);
 });
 
-test("preflight does not solve a challenge and returns only bounded verification", async () => {
+test("disabled preflight verification stays passive and returns only bounded verification", async () => {
   const prepare = helper("prepareThreeMfDownload");
   const { page, context } = fixture();
-  const result = await prepare({ platform: "cn", modelUrl, context }, {
+  const result = await prepare({ platform: "cn", modelUrl, context, autoVerifyChallenges: false }, {
     withTemporaryPage: async (_browser, _context, callback) => callback(page),
     ensurePageVerification: async (_page, options) => {
       assert.equal(options.allowInteraction, false);
@@ -263,6 +305,31 @@ test("preflight and target checks use real Chromium DOM with local fixtures", {
     assert.equal(result.ready, true);
     assert.deepEqual(result.model.instances.map((item) => item.id), ["2658384", "2658379", "2658388"]);
     assert.equal(JSON.stringify(result).includes("private"), false);
+  });
+
+  await t.test("enabled verification cannot send a real 3MF authorization request", async () => {
+    const page = await localPage(hydration);
+    const context = page.browserContext();
+    await context.setCookie({ name: "token", value: "private-cookie-token", domain: ".makerworld.com.cn", path: "/", secure: true });
+    page.goto = async () => null;
+    let blocked = false;
+    const result = await helpers.prepareThreeMfDownload({ context, platform: "cn", modelUrl, autoVerifyChallenges: true }, {
+      withTemporaryPage: async (_browser, _context, callback) => {
+        try { return await callback(page); }
+        finally { await page.close(); }
+      },
+      ensurePageVerification: async (_page, options) => {
+        assert.equal(options.allowInteraction, true);
+        assert.equal(options.maxAttempts, 2);
+        blocked = await page.evaluate(async () => {
+          try { await fetch("/api/v1/design-service/instance/2658384/f3mf"); return false; }
+          catch { return true; }
+        });
+        return { completed: true, verification: { attempted: true, attempts: 1 } };
+      },
+    });
+    assert.equal(result.ready, true);
+    assert.equal(blocked, true);
   });
 
   await t.test("missing target and fallback hash both stop before real download input", async () => {

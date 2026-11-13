@@ -93,7 +93,8 @@ class CloakBrowserManualWakeTest(unittest.TestCase):
 
     def test_running_profile_can_sync_during_cooldown_without_restart(self):
         cb._mark_profile_recovery_attempt("profile-global")
-        snapshot = {"cookies": [{"name": "token", "value": "current", "domain": ".makerworld.com"}], "storage": []}
+        snapshot = {"authenticated": True, "current_url": "https://makerworld.com/en",
+            "cookies": [{"name": "token", "value": "current", "domain": ".makerworld.com"}], "storage": []}
         with patch.object(cb, "_run_bridge", return_value=snapshot) as bridge:
             result = cb.collect_browser_session("global", "profile-global")
 
