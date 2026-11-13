@@ -207,6 +207,71 @@ class AccountVerificationRecoveryTest(unittest.TestCase):
         self.assertEqual(result["items"][0]["reason"], "target_unavailable")
         self.assertNotIn("private-token", json.dumps(self.state))
 
+    def test_page_verification_response_persists_only_whitelisted_diagnostics(self):
+        self.response = {"status_code": 418, "payload": {
+            "code": "MAKERHUB_PAGE_VERIFICATION", "message": "private-response",
+            "captchaId": "private-captcha", "token": "private-payload-token",
+        }, "verification": {"attempted": True, "completed": False, "provider": "turnstile",
+            "challenge_type": "checkbox", "attempts": 2, "reason": "timeout", "confidence": 0.876,
+            "url": "https://private.example.test/?token=private-url", "error": "private-error",
+        }}
+        result = self.run_recovery()
+        fingerprint = self.module._fingerprint(self.config.cookies[0])
+        attempt = self.state[self.module.ACCOUNT_VERIFICATION_RECOVERY_STATE_KEY]["platforms"]["cn"]["attempts"][fingerprint]
+        expected = {"page_verification_response": True, "captcha_present": True, "signed_url_present": False,
+            "verification": {"attempted": True, "completed": False, "provider": "turnstile",
+                "challenge_type": "checkbox", "attempts": 2, "reason": "timeout", "confidence": 0.88}}
+        self.assertEqual(attempt["diagnostics"], expected)
+        self.assertEqual(result["items"][0]["diagnostics"], expected)
+        self.assertEqual(attempt["reason"], "verification_required")
+        serialized = json.dumps({"result": result, "state": self.state})
+        for secret in ("private-response", "private-captcha", "private-payload-token", "private-url", "private-error"):
+            self.assertNotIn(secret, serialized)
+        self.assertEqual((len(self.requests), len(self.reservations)), (1, 1))
+        self.assertEqual(self.state["account_health"]["cn"]["three_mf_gate"], "verification_required")
+
+    def test_success_diagnostics_keep_download_address_private(self):
+        self.response["verification"] = {"attempted": True, "completed": True, "provider": "turnstile",
+            "challenge_type": "checkbox", "attempts": 1, "reason": "completed", "confidence": 1}
+        result = self.run_recovery()
+        self.assertEqual(result["recovered_platforms"], ["cn"])
+        diagnostics = result["items"][0]["diagnostics"]
+        self.assertEqual({key: diagnostics[key] for key in ("page_verification_response", "captcha_present", "signed_url_present")},
+                         {"page_verification_response": False, "captcha_present": False, "signed_url_present": True})
+        self.assertEqual(diagnostics["verification"]["challenge_type"], "checkbox")
+        self.assertTrue(diagnostics["verification"]["completed"])
+        self.assertNotIn("private-signature", json.dumps({"state": self.state, "result": result}))
+
+    def test_missing_verification_contract_is_not_reported_as_failed_verification(self):
+        for index, verification in enumerate((None, {}, "private-verification", ["private-verification"])):
+            with self.subTest(verification=verification):
+                self.response = {"status_code": 418, "payload": {"captcha_id": "private-captcha"}, "verification": verification}
+                self.config.cookies[0].cookie = f"token=diagnostic-{index}"
+                diagnostics = self.run_recovery()["items"][0]["diagnostics"]
+                self.assertEqual(diagnostics, {"page_verification_response": False, "captcha_present": True, "signed_url_present": False})
+
+    def test_untrusted_verification_fields_are_normalized_without_stringification(self):
+        self.response = {"status_code": 418, "payload": {"code": "MAKERHUB_PAGE_VERIFICATION-private", "captchaId": {},
+            "data": {"url": "https://download.example.test/models/123?signature=private-signature"}},
+            "verification": {"attempted": "private-token", "completed": 1, "provider": {"token": "private-token"},
+                "challenge_type": ["checkbox"], "attempts": True, "reason": "private-error", "confidence": float("nan"),
+                "captchaId": "private-captcha", "payload": {"token": "private-token"}}}
+        diagnostics = self.run_recovery()["items"][0]["diagnostics"]
+        self.assertEqual(diagnostics, {"page_verification_response": False, "captcha_present": False, "signed_url_present": False,
+            "verification": {"attempted": False, "completed": False, "provider": "unknown", "challenge_type": "unknown",
+                "attempts": 0, "reason": "unknown", "confidence": 0.0}})
+        self.assertNotIn("private-", json.dumps(diagnostics))
+
+    def test_verification_diagnostic_numbers_are_bounded(self):
+        for index, (attempts, confidence, expected_attempts, expected_confidence) in enumerate((
+                (-1, -1, 0, 0.0), (float("inf"), float("inf"), 0, 0.0),
+                (1000, 3, 99, 1.0), (1.9, 0.125, 1, 0.12), ("2", True, 0, 0.0))):
+            with self.subTest(attempts=attempts, confidence=confidence):
+                self.response = {"status_code": 418, "payload": {}, "verification": {"attempts": attempts, "confidence": confidence}}
+                self.config.cookies[0].cookie = f"token=diagnostic-{index}"
+                fields = self.run_recovery()["items"][0]["diagnostics"]["verification"]
+                self.assertEqual((fields["attempts"], fields["confidence"]), (expected_attempts, expected_confidence))
+
     def test_runnable_queue_skips_preflight_and_new_work_prevents_dispatch(self):
         with patch.object(self.module, "browser_prepare_3mf_download", side_effect=self.prepare) as prepare:
             result = self.module.run_account_verification_recovery_once(store=self.store, can_probe=lambda: False)
@@ -457,8 +522,11 @@ class AccountVerificationRecoveryTest(unittest.TestCase):
             raise RuntimeError("token=private-token https://host/file?signature=private-signature")
 
         with patch.object(self.module, "browser_authorize_3mf_download", side_effect=sent_then_failed):
-            self.run_recovery()
+            result = self.run_recovery()
         self.run_recovery()
+        self.assertNotIn("diagnostics", result["items"][0])
+        fingerprint = self.module._fingerprint(self.config.cookies[0])
+        self.assertNotIn("diagnostics", self.state[self.module.ACCOUNT_VERIFICATION_RECOVERY_STATE_KEY]["platforms"]["cn"]["attempts"][fingerprint])
         self.assertEqual(self.requests, [])
         self.assertNotIn("private-token", json.dumps(self.state))
         self.assertNotIn("private-signature", json.dumps(self.state))

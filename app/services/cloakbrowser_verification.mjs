@@ -753,6 +753,115 @@ async function trustedTurnstileIframe(iframe) {
   }
 }
 
+async function withVerificationCdpSession(page, stage, callback) {
+  if (typeof page.createCDPSession !== "function") return null;
+  const signal = stage?.signal;
+  throwIfAborted(signal);
+  const attaching = Promise.resolve().then(() => page.createCDPSession());
+  void attaching.then((session) => {
+    if (signal?.aborted) return session.detach().catch(() => undefined);
+    return undefined;
+  }, () => undefined);
+  let session;
+  try {
+    session = await abortable(attaching, signal);
+    const send = async (method, params, cleanup = false) => {
+      if (!cleanup) throwIfAborted(signal);
+      const remaining = stage ? (cleanup ? stage.remainingHard() : stage.remainingAction()) : 1000;
+      if (remaining <= 0) throw new VerificationError("timeout");
+      const command = session.send(method, params, { timeout: Math.max(1, remaining) });
+      return cleanup && stage ? await cleanupOperation(command, stage) : await abortable(command, signal);
+    };
+    return await callback(send);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new VerificationError("discovery_failed");
+  } finally {
+    if (session) {
+      let timer;
+      try {
+        await Promise.race([
+          session.detach().catch(() => undefined),
+          new Promise((resolve) => { timer = setTimeout(resolve, Math.min(1000, stage?.remainingHard() ?? 1000)); }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  }
+}
+
+async function cdpTurnstileFrameState(send, backendNodeId) {
+  const { object } = await send("DOM.resolveNode", { backendNodeId });
+  if (!object?.objectId) throw new VerificationError("discovery_failed");
+  try {
+    const result = await send("Runtime.callFunctionOn", {
+      objectId: object.objectId,
+      returnByValue: true,
+      functionDeclaration: `function () {
+        if (this.tagName !== 'IFRAME' || !this.isConnected) return null;
+        let trusted = false;
+        try {
+          const url = new URL(this.src);
+          trusted = url.protocol === 'https:' && url.hostname === 'challenges.cloudflare.com'
+            && (!url.port || url.port === '443') && !url.username && !url.password;
+        } catch {}
+        const rect = this.getBoundingClientRect();
+        const style = getComputedStyle(this);
+        const visible = rect.width > 0 && rect.height > 0 && style.display !== 'none'
+          && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0
+          && (!this.checkVisibility || this.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
+        return { trusted, visible, box: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+          scrollX: window.scrollX, scrollY: window.scrollY };
+      }`,
+    });
+    const state = result.result?.value;
+    if (result.exceptionDetails || !state || typeof state.trusted !== "boolean" || typeof state.visible !== "boolean"
+      || !state.box || !["x", "y", "width", "height"].every((key) => Number.isFinite(state.box[key]))
+      || !Number.isFinite(state.scrollX) || !Number.isFinite(state.scrollY)) {
+      throw new VerificationError("discovery_failed");
+    }
+    return state;
+  } finally {
+    await send("Runtime.releaseObject", { objectId: object.objectId }, true).catch(() => undefined);
+  }
+}
+
+async function findClosedShadowTurnstile(page, stage) {
+  return await withVerificationCdpSession(page, stage, async (send) => {
+    const { root } = await send("DOM.getDocument", { depth: -1, pierce: true });
+    if (!root) throw new VerificationError("discovery_failed");
+    const pending = [root];
+    while (pending.length) {
+      throwIfAborted(stage?.signal);
+      const node = pending.pop();
+      if (node.nodeName === "IFRAME" && node.backendNodeId) {
+        const attributes = node.attributes || [];
+        const srcIndex = attributes.findIndex((name, index) => index % 2 === 0 && name === "src");
+        if (srcIndex >= 0 && isTrustedTurnstileUrl(attributes[srcIndex + 1])) {
+          const state = await cdpTurnstileFrameState(send, node.backendNodeId);
+          if (state?.trusted && state.visible && validPointerBox(state.box)) {
+            return { provider: "turnstile", challenge_type: "checkbox",
+              cdpIframe: { page, backendNodeId: node.backendNodeId } };
+          }
+        }
+      }
+      pending.push(...(node.children || []), ...(node.shadowRoots || []));
+      if (node.contentDocument) pending.push(node.contentDocument);
+    }
+    return null;
+  });
+}
+
+async function readClosedShadowTurnstile(challenge, stage) {
+  const iframe = challenge.cdpIframe;
+  const state = await withVerificationCdpSession(iframe.page, stage,
+    (send) => cdpTurnstileFrameState(send, iframe.backendNodeId));
+  if (!state?.trusted || !state.visible) throw new VerificationError("checkbox_unavailable");
+  if (!validPointerBox(state.box)) throw new VerificationError("geometry_invalid");
+  return state;
+}
+
 async function findTurnstileCheckbox(frames, iframe = null) {
   const challengeFrames = [];
   try {
@@ -777,7 +886,7 @@ async function findTurnstileCheckbox(frames, iframe = null) {
   return null;
 }
 
-export async function detectVerificationChallenge(page) {
+export async function detectVerificationChallenge(page, stage) {
   const mainFrame = page.mainFrame();
   const frames = [];
   for (const frame of [mainFrame, ...(page.frames() || [])]) {
@@ -857,7 +966,8 @@ export async function detectVerificationChallenge(page) {
       };
     }
   }
-  return null;
+  // OOPIF 位于 closed shadow root 时，Puppeteer 的普通 selector 和 frame 列表可能都不包含它。
+  return await findClosedShadowTurnstile(page, stage);
 }
 
 async function screenshotBuffer(handle, signal) {
@@ -1053,6 +1163,14 @@ async function defaultFingerprintChallenge(challenge, stage = {}) {
   const { signal } = stage;
   const hash = createHash("sha256");
   hash.update(`${challenge?.provider || "unknown"}:${challenge?.challenge_type || "unknown"}:`);
+  if (challenge?.cdpIframe) {
+    const state = await readClosedShadowTurnstile(challenge, stage);
+    const image = await abortable(challenge.cdpIframe.page.screenshot({ type: "png", captureBeyondViewport: false,
+      clip: { ...state.box, x: state.box.x + state.scrollX, y: state.box.y + state.scrollY } }), signal);
+    throwIfAborted(signal);
+    hash.update(image);
+    return hash.digest("hex");
+  }
   if (challenge?.challenge_type === "slider") {
     hash.update(await hidePieceAndCaptureBackground(challenge, stage));
   } else {
@@ -1073,7 +1191,8 @@ async function defaultFingerprintChallenge(challenge, stage = {}) {
   return hash.digest("hex");
 }
 
-async function defaultChallengeComplete(_page, challenge) {
+async function defaultChallengeComplete(page, challenge, stage) {
+  if (challenge?.cdpIframe) return !(await inspectPageVerificationState(page, stage)).detected;
   if (challenge?.provider === "turnstile" && await elementValue(challenge.response)) return true;
   if (challenge?.provider !== "geetest4" || !challenge.frame) return false;
   return Boolean(await firstVisible(challenge.frame, [
@@ -1383,7 +1502,9 @@ function validPointerBox(box) {
 async function trustedTurnstileClick(page, challenge, stage) {
   const { signal } = stage;
   let frameBox = null;
-  if (challenge.iframe) {
+  if (challenge.cdpIframe) {
+    frameBox = (await readClosedShadowTurnstile(challenge, stage)).box;
+  } else if (challenge.iframe) {
     if (!await abortable(trustedTurnstileIframe(challenge.iframe), signal)
       || !await abortable(isVisible(challenge.iframe), signal)) {
       throw new VerificationError("checkbox_unavailable");
@@ -1420,6 +1541,12 @@ async function trustedTurnstileClick(page, challenge, stage) {
       const progress = index / 12;
       const eased = progress * progress * (3 - (2 * progress));
       await mouse.move(startX + ((x - startX) * eased), startY + ((y - startY) * eased));
+    }
+    if (challenge.cdpIframe) {
+      const currentBox = (await readClosedShadowTurnstile(challenge, stage)).box;
+      if (["x", "y", "width", "height"].some((key) => Math.abs(currentBox[key] - frameBox[key]) > 0.5)) {
+        throw new VerificationError("geometry_invalid");
+      }
     }
     await mouse.down();
     await mouse.up();
@@ -1519,7 +1646,8 @@ async function solveSliderChallenge(page, challenge, options, visionRequest, sta
   return { acted: true, confidence: result.confidence };
 }
 
-async function turnstileResponseReady(page, challenge, options, signal) {
+async function turnstileResponseReady(page, challenge, options, stage) {
+  const { signal } = stage;
   const complete = options.isChallengeComplete || defaultChallengeComplete;
   const waitMs = Math.max(0, Math.min(
     Number(options.turnstileResponseWaitMs ?? DEFAULT_TURNSTILE_WAIT_MS) || 0,
@@ -1527,7 +1655,7 @@ async function turnstileResponseReady(page, challenge, options, signal) {
   ));
   const waitDeadline = performance.now() + waitMs;
   do {
-    if (await abortable(complete(page, challenge), signal)) return true;
+    if (await abortable(complete(page, challenge, stage), signal)) return true;
     if (performance.now() >= waitDeadline) break;
     await abortable(
       (options.sleep || ((delay) => new Promise((resolve) => setTimeout(resolve, delay))))(
@@ -1551,7 +1679,7 @@ async function waitForInitialChallenge(page, options, stage) {
       throwIfActionExpired(stage);
       return null;
     }
-    const challenge = await abortable(detect(page), signal);
+    const challenge = await abortable(detect(page, stage), signal);
     throwIfActionExpired(stage);
     if (challenge) return challenge;
     const remaining = stage.remainingAction();
@@ -1575,16 +1703,16 @@ async function waitForOutcome(page, challenge, fingerprint, options, stage) {
   try {
     do {
       throwIfActionExpired(stage);
-      const latestComplete = await abortable(complete(page, latestChallenge), signal);
+      const latestComplete = await abortable(complete(page, latestChallenge, stage), signal);
       throwIfActionExpired(stage);
       if (latestComplete) {
         return { completed: true, changed: false, challenge: latestChallenge };
       }
-      const current = await abortable(detect(page), signal);
+      const current = await abortable(detect(page, stage), signal);
       throwIfActionExpired(stage);
       if (current) {
         latestChallenge = current;
-        const currentComplete = await abortable(complete(page, current), signal);
+        const currentComplete = await abortable(complete(page, current, stage), signal);
         throwIfActionExpired(stage);
         if (currentComplete) {
           return { completed: true, changed: false, challenge: current };
@@ -1655,7 +1783,7 @@ async function attemptWithinStage(page, options, stage) {
     let interaction;
     try {
       if (challenge.provider === "turnstile") {
-        const responseReady = await turnstileResponseReady(page, challenge, options, signal);
+        const responseReady = await turnstileResponseReady(page, challenge, options, stage);
         throwIfActionExpired(stage);
         if (responseReady) {
           summary.completed = true;
@@ -1664,7 +1792,7 @@ async function attemptWithinStage(page, options, stage) {
         }
         fingerprint = await abortable(fingerprintChallenge(challenge, stage), signal);
         throwIfActionExpired(stage);
-        if (!challenge.checkbox && !challenge.iframe) {
+        if (!challenge.checkbox && !challenge.iframe && !challenge.cdpIframe) {
           summary.reason = "checkbox_unavailable";
           break;
         }
@@ -1768,8 +1896,8 @@ function boundedAttempts(value) {
 }
 
 // 只返回验证状态，不读取或传出验证码令牌、Cookie 或页面正文。
-export async function inspectPageVerificationState(page) {
-  return await page.evaluate(() => {
+export async function inspectPageVerificationState(page, stage) {
+  const state = await page.evaluate(() => {
     const visible = (element) => {
       if (!element) return false;
       const box = element.getBoundingClientRect();
@@ -1803,6 +1931,9 @@ export async function inspectPageVerificationState(page) {
     }
     return { detected: false, kind: "none" };
   });
+  if (state.detected) return state;
+  return await findClosedShadowTurnstile(page, stage)
+    ? { detected: true, kind: "cloudflare" } : state;
 }
 
 // 先等待页面自然完成，再在同一截止时间内复用已有的有限验证流程。
@@ -1831,7 +1962,7 @@ export async function ensurePageVerification(page, options = {}) {
     while (true) {
       throwIfActionExpired(stage);
       try {
-        const state = await abortable(inspect(page), stage.signal);
+        const state = await abortable(inspect(page, stage), stage.signal);
         throwIfActionExpired(stage);
         if (state?.detected && ["cloudflare", "geetest4"].includes(state.kind)) {
           detected = true;

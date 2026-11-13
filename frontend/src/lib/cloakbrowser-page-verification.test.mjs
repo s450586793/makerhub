@@ -211,7 +211,15 @@ function turnstileFixture({ frameUrl, frameBox = { x: 100, y: 60, width: 300, he
       mainFrame: () => main,
       frames: () => [main, child],
       createCDPSession: async () => ({
-        send: async (_method, event) => { events.push(event); },
+        send: async (method, event) => {
+          if (method === "DOM.getDocument") {
+            return { root: { nodeId: 1, backendNodeId: 1, nodeType: 9,
+              nodeName: "#document", localName: "", nodeValue: "", children: [] } };
+          }
+          assert.equal(method, "Input.dispatchMouseEvent");
+          events.push(event);
+          return {};
+        },
         detach: async () => {},
       }),
     },

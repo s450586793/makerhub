@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.21.4`
+> 当前版本：`v0.21.5`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -370,6 +370,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-11-13 · v0.21.5
+
+- 修复封闭 Shadow DOM 中的 Cloudflare 验证组件漏检，页面可见的官方复选框可通过 CDP 定位。
+- 保留来源、可见位置、超时、次数与取消检查，验证未完成时不误报成功。
+- 授权复测保留脱敏的验证阶段和结果摘要，便于区分页面验证与下载接口验证失败。
+
 ### 2026-11-13 · v0.21.4
 
 - 浏览器登录同步增加真实登录检查，匿名首页不再误报同步成功。
@@ -380,13 +386,13 @@ npm --prefix frontend run build
 - 复测先读取网页当前配置，跳过已删除的旧配置，下载前再次核对实际选中项。
 - 浏览器掉登录时使用已保存账号同步一次；预检失败不占下载额度，保留冷却与脱敏诊断。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-11-13 · v0.21.2
 
 - 已因验证阻断的排队任务不再挡住自动复测，成功后继续原任务。
 - 使用归档调度器的真实可运行状态判断空闲，保留正常归档和手动暂停的优先级。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-11-13 · v0.21.1
 

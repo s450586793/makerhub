@@ -22,7 +22,7 @@ from app.services.cloakbrowser_session import (
     synchronize_browser_session,
 )
 from app.services.cookie_utils import extract_auth_token, sanitize_cookie_header
-from app.services.legacy_archiver import _extract_instance_download
+from app.services.legacy_archiver import _extract_instance_download, _normalized_auto_verification_diagnostics
 from app.services.state_contracts import ACCOUNT_HEALTH_STATE_KEY, ARCHIVE_QUEUE_STATE_KEY, MISSING_3MF_STATE_KEY, THREE_MF_DAILY_QUOTA_STATE_KEY
 from app.services.state_events import publish_state_event
 from app.services.three_mf import is_three_mf_download_prohibited
@@ -293,11 +293,14 @@ def _cancel_unsent_claim(platform: str, fingerprint: str, claim_id: str) -> None
     update_database_json_state(ACCOUNT_VERIFICATION_RECOVERY_STATE_KEY, {"platforms": {}}, cancel)
 
 
-def _record_result(platform: str, fingerprint: str, status: str, *, status_code: int = 0, reason: str = "authorization_failed") -> None:
+def _record_result(platform: str, fingerprint: str, status: str, *, status_code: int = 0,
+                   reason: str = "authorization_failed", diagnostics: dict[str, Any] | None = None) -> None:
     def record(current):
         attempt = _attempts(current, platform).get(fingerprint)
         if isinstance(attempt, dict):
             attempt.update(status=status, phase="dispatch", reason=reason, status_code=status_code, completed_at=china_now_iso())
+            if diagnostics:
+                attempt["diagnostics"] = diagnostics
         return current
 
     update_database_json_state(ACCOUNT_VERIFICATION_RECOVERY_STATE_KEY, {"platforms": {}}, record)
@@ -363,6 +366,22 @@ def _valid_download(payload: Any) -> bool:
                     and (parsed.path.lower().endswith(".3mf") or signed))
     except (TypeError, ValueError, AttributeError):
         return False
+
+
+def _authorization_diagnostics(response: dict[str, Any]) -> dict[str, Any]:
+    payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
+    diagnostics = {
+        "page_verification_response": payload.get("code") == "MAKERHUB_PAGE_VERIFICATION",
+        "captcha_present": any(isinstance(payload.get(key), str) and bool(payload[key].strip())
+                               for key in ("captchaId", "captcha_id", "captchaID")),
+        "signed_url_present": _valid_download(payload),
+    }
+    # 缺失的 verification 不代表验证失败；只持久化既有白名单归一化结果。
+    if isinstance(response.get("verification"), dict) and response["verification"]:
+        verification = _normalized_auto_verification_diagnostics(response["verification"])
+        diagnostics["verification"] = {"attempted": verification["attempted"], "completed": verification["completed"],
+                                       **verification["fields"]}
+    return diagnostics
 
 
 def run_account_verification_recovery_once(
@@ -476,11 +495,13 @@ def run_account_verification_recovery_once(
         status = "failed"
         status_code = 0
         reason = "authorization_failed"
+        diagnostics = {}
         try:
             api_url = f"https://{_PLATFORM_HOSTS[platform]}/api/v1/design-service/instance/{target['instance_id']}/f3mf?type=download&fileType=3mf"
             response = browser_authorize_3mf_download(platform, api_url, profile_id=account.browser_profile_id,
                                                      model_url=target["model_url"], instance_id=target["instance_id"],
                                                      verification_probe=True, before_dispatch=before_dispatch)
+            diagnostics = _authorization_diagnostics(response)
             status_code = int(response.get("status_code") or 0)
             payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
             if status_code == 401:
@@ -507,9 +528,12 @@ def run_account_verification_recovery_once(
             continue
         if status != "recovered":
             result["failed"] += 1
-        result["items"].append({"platform": platform, "status": status, "phase": "dispatch", "reason": reason, "status_code": status_code})
+        item = {"platform": platform, "status": status, "phase": "dispatch", "reason": reason, "status_code": status_code}
+        if diagnostics:
+            item["diagnostics"] = diagnostics
+        result["items"].append(item)
         try:
-            _record_result(platform, fingerprint, status, status_code=status_code, reason=reason)
+            _record_result(platform, fingerprint, status, status_code=status_code, reason=reason, diagnostics=diagnostics)
         except Exception:
             # 预约已持久化，即使结果写入失败，后续轮询也不能重复授权。
             pass
