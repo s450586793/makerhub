@@ -135,6 +135,27 @@ def test_retry_obeys_verification_gate_without_downloading(saved_model):
     assert result["missing_3mf"][0]["downloadState"] == "cloudflare"
 
 
+def test_retry_preserves_source_deleted_profile_without_authorization_or_transfer(saved_model):
+    model, before = saved_model
+    before["instances"][0]["sourceDeleted"] = True
+    (model / "meta.json").write_text(json.dumps(before), encoding="utf-8")
+    with (
+        patch("app.services.makerworld_pipeline.archive._download_three_mf_file", side_effect=AssertionError("removed upstream"), create=True) as transfer,
+        patch("app.services.makerworld_pipeline.archive.fetch_instance_3mf", side_effect=AssertionError("removed upstream")) as authorize,
+        patch("app.services.makerworld_pipeline.archive.reserve_three_mf_download_slot", side_effect=AssertionError("no download quota for removed profile")) as reserve,
+    ):
+        result = run_retry(model)
+
+    after = json.loads((model / "meta.json").read_text())
+    assert after["instances"][0] == before["instances"][0]
+    assert (model / "instances" / "saved.3mf").read_bytes() == b"saved-3mf"
+    assert result["missing_3mf"] == []
+    assert result["stats"]["instances"]["api_fetch_attempts"] == 0
+    transfer.assert_not_called()
+    authorize.assert_not_called()
+    reserve.assert_not_called()
+
+
 @pytest.mark.parametrize("flag", ["missing_3mf_retry", "three_mf_download"])
 def test_retry_queue_only_shows_download_and_finalize_stages(flag):
     queue = _normalize_archive_queue({"queued": [{

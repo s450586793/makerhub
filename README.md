@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.21.7`
+> 当前版本：`v0.21.8`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -370,6 +370,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-11-14 · v0.21.8
+
+- 等待账号验证或重新登录、无法执行的纯 3MF 排队任务不再阻塞源端刷新，国内站和国际站分别判断。
+- 保留正常归档、运行任务、账号恢复任务和本地整理优先级，不清除验证状态或消耗下载额度。
+- 已由源端刷新确认删除的打印配置保留归档，停止无效补下载；重新上架后恢复检查。
+
 ### 2026-11-13 · v0.21.7
 
 - 缺失 3MF 任务的“处理账号验证”进入账号设置，使用关联浏览器完成人工登录或验证，再同步会话并等待下载状态检查。
@@ -381,14 +387,14 @@ npm --prefix frontend run build
 - 国际站登录回跳在原超时内等待文档加载完成，避免页面稍慢就被误判为未登录。
 - 授权诊断区分前置预算耗尽与后置验证码处理已启动，继续保护下载地址和账号凭据。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-11-13 · v0.21.5
 
 - 修复封闭 Shadow DOM 中的 Cloudflare 验证组件漏检，页面可见的官方复选框可通过 CDP 定位。
 - 保留来源、可见位置、超时、次数与取消检查，验证未完成时不误报成功。
 - 授权复测保留脱敏的验证阶段和结果摘要，便于区分页面验证与下载接口验证失败。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-11-13 · v0.21.4
 

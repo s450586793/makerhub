@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from app.core.store import JsonStore
 from app.api import remote_refresh_routes
+from app.services import account_health
 from app.services import remote_refresh
 from app.services.remote_refresh import RemoteRefreshManager
 import app.services.task_state as task_state_module
@@ -546,6 +547,140 @@ class RemoteRefreshManagerTest(unittest.TestCase):
         )
 
         self.assertEqual(self.manager._service_busy_reason(), "")
+
+    def test_service_busy_reason_ignores_downloads_blocked_by_account_gate(self):
+        for gate in ("verification_required", "cloudflare", "auth_required", "cookie_invalid", "network_error"):
+            with self.subTest(gate=gate):
+                self.task_store.save_archive_queue(
+                    {
+                        "active": [],
+                        "queued": [
+                            {
+                                "id": f"download-{index}",
+                                "status": "queued" if index == 1 else "pending",
+                                "url": f"https://makerworld.com.cn/zh/models/{index}",
+                                "meta": {flag: True, "source": "cn"},
+                            }
+                            for index, flag in enumerate(("three_mf_download", "missing_3mf_retry"), start=1)
+                        ],
+                    }
+                )
+                before = self.task_store.load_archive_queue()
+                with patch.object(
+                    account_health,
+                    "load_database_json_state",
+                    return_value={"cn": {"three_mf_gate": gate}},
+                ) as load_health:
+                    reason = self.manager._service_busy_reason()
+
+                self.assertEqual(reason, "")
+                self.assertEqual(load_health.call_count, 1)
+                self.assertEqual(self.task_store.load_archive_queue(), before)
+
+    def test_service_busy_reason_checks_both_platforms_and_preserves_runnable_work(self):
+        blocked = {
+            "id": "blocked-cn",
+            "status": "queued",
+            "url": "https://makerworld.com.cn/zh/models/1",
+            "meta": {"missing_3mf_retry": True, "source": "cn"},
+        }
+        for global_gate, expected in (("cookie_invalid", ""), ("open", "archive_queue_busy")):
+            with self.subTest(global_gate=global_gate):
+                self.task_store.save_archive_queue(
+                    {
+                        "active": [],
+                        "queued": [
+                            blocked,
+                            {
+                                "id": "global-download",
+                                "status": "queued",
+                                "url": "https://makerworld.com/zh/models/2",
+                                "meta": {"three_mf_download": True},
+                            },
+                        ],
+                    }
+                )
+                with patch.object(
+                    account_health,
+                    "load_database_json_state",
+                    return_value={
+                        "cn": {"three_mf_gate": "verification_required"},
+                        "global": {"three_mf_gate": global_gate},
+                    },
+                ):
+                    self.assertEqual(self.manager._service_busy_reason(), expected)
+
+    def test_service_busy_reason_keeps_metadata_recovery_and_running_tasks_busy(self):
+        blocked = {
+            "id": "blocked-cn",
+            "status": "queued",
+            "url": "https://makerworld.com.cn/zh/models/1",
+            "meta": {"missing_3mf_retry": True, "source": "cn"},
+        }
+        for status, meta in (
+            ("queued", {}),
+            ("queued", {"missing_3mf_retry": True, "browser_session_recovery": True}),
+            ("running", {"three_mf_download": True}),
+        ):
+            with self.subTest(status=status, meta=meta):
+                self.task_store.save_archive_queue(
+                    {
+                        "active": [],
+                        "queued": [
+                            blocked,
+                            {
+                                "id": "runnable-cn",
+                                "status": status,
+                                "url": "https://makerworld.com.cn/zh/models/2",
+                                "meta": meta,
+                            },
+                        ],
+                    }
+                )
+                with patch.object(
+                    account_health,
+                    "load_database_json_state",
+                    return_value={"cn": {"three_mf_gate": "verification_required"}},
+                ):
+                    self.assertEqual(self.manager._service_busy_reason(), "archive_queue_busy")
+
+    def test_service_busy_reason_keeps_unconfirmed_download_permissions_busy(self):
+        self.task_store.save_archive_queue(
+            {
+                "active": [],
+                "queued": [{
+                    "id": "download-cn",
+                    "status": "queued",
+                    "url": "https://makerworld.com.cn/zh/models/1",
+                    "meta": {"three_mf_download": True},
+                }],
+            }
+        )
+        for gate in ("open", "unknown", "daily_limit"):
+            with self.subTest(gate=gate), patch.object(
+                account_health,
+                "load_database_json_state",
+                return_value={"cn": {"three_mf_gate": gate, "three_mf_reason": "cookie_updated"}},
+            ):
+                self.assertEqual(self.manager._service_busy_reason(), "archive_queue_busy")
+        with patch.object(account_health, "load_database_json_state", side_effect=RuntimeError("unavailable")):
+            self.assertEqual(self.manager._service_busy_reason(), "archive_queue_busy")
+
+    def test_service_busy_reason_still_prioritizes_local_organizer_after_gated_downloads(self):
+        self.task_store.save_archive_queue(
+            {
+                "active": [],
+                "queued": [{
+                    "id": "download-cn",
+                    "status": "queued",
+                    "url": "https://makerworld.com.cn/zh/models/1",
+                    "meta": {"three_mf_download": True},
+                }],
+            }
+        )
+        with patch.object(account_health, "load_database_json_state", return_value={"cn": {"three_mf_gate": "verification_required"}}), \
+                patch.object(self.task_store, "load_organize_tasks", return_value={"items": [{"status": "queued"}]}):
+            self.assertEqual(self.manager._service_busy_reason(), "local_organizer_busy")
 
     def test_tick_resumes_active_run_before_future_schedule(self):
         self.task_store.patch_remote_refresh_state(

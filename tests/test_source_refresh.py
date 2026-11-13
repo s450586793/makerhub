@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.core.store import JsonStore
+from app.services import account_health
 from app.services import remote_refresh
 from app.services import source_refresh
 from app.services import source_refresh_jobs
@@ -121,6 +122,67 @@ class SourceRefreshTaskManagerTest(unittest.TestCase):
         self.assertEqual(archive_queue["queued_count"], 1)
         self.assertEqual(source_runs["active_run"], {})
         self.assertEqual(result["state"]["last_defer_reason"], "archive_queue_busy")
+
+    def test_manual_trigger_runs_while_download_queue_waits_for_account_verification(self):
+        self.task_store.save_archive_queue(
+            {
+                "active": [],
+                "queued": [{
+                    "id": "download-cn",
+                    "url": "https://makerworld.com.cn/zh/models/1",
+                    "status": "queued",
+                    "meta": {"missing_3mf_retry": True, "source": "cn"},
+                }],
+            }
+        )
+        self.manager._start_batch_async = lambda _config, *, resume=False: True
+        before = self.task_store.load_archive_queue()
+
+        with patch.object(
+            account_health,
+            "load_database_json_state",
+            return_value={"cn": {"three_mf_gate": "verification_required"}},
+        ):
+            result = self.manager.trigger_manual_refresh()
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["mode"], "new")
+        self.assertEqual(self.task_store.load_archive_queue(), before)
+
+    def test_tick_resumes_deferred_refresh_while_download_waits_for_account_verification(self):
+        self.task_store.save_archive_queue(
+            {
+                "active": [],
+                "queued": [{
+                    "id": "download-cn",
+                    "url": "https://makerworld.com.cn/zh/models/1",
+                    "status": "queued",
+                    "meta": {"missing_3mf_retry": True, "source": "cn"},
+                }],
+            }
+        )
+        self.task_store.patch_remote_refresh_state(
+            status="deferred",
+            running=False,
+            next_run_at="2099-01-01T00:00:00+08:00",
+            scheduled_cron="0 0 * * *",
+            last_defer_reason="archive_queue_busy",
+            active_run={"batch_id": "blocked-run", "status": "deferred", "candidate_total": 200},
+        )
+        resumed = []
+        self.manager._resume_active_run_if_possible = lambda _config: resumed.append(True) or True
+        self.manager._run_batch = lambda _config: self.fail("the existing refresh batch must resume")
+        before = self.task_store.load_archive_queue()
+
+        with patch.object(
+            account_health,
+            "load_database_json_state",
+            return_value={"cn": {"three_mf_gate": "verification_required"}},
+        ):
+            self.manager._tick()
+
+        self.assertEqual(resumed, [True])
+        self.assertEqual(self.task_store.load_archive_queue(), before)
 
     def test_disabled_scheduler_does_not_resume_an_interrupted_batch(self):
         config = self.store.load()

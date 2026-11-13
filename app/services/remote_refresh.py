@@ -16,10 +16,12 @@ from croniter import CroniterBadCronError, croniter
 from app.core.settings import ARCHIVE_DIR, BACKGROUND_TASKS_ENABLED, LOGS_DIR, STATE_DIR
 from app.core.store import JsonStore
 from app.core.timezone import ensure_timezone, from_timestamp as china_from_timestamp, now as china_now, now_iso as china_now_iso, parse_datetime
+from app.services.account_health import get_account_health
 from app.services.cookie_utils import sanitize_cookie_header
 from app.services.archive_worker import (
     _activate_three_mf_limit_guard,
     _is_three_mf_limit_guard_active_for_url,
+    _is_three_mf_only_task,
     _read_three_mf_limit_guard,
     _three_mf_limit_message,
     detect_archive_mode,
@@ -1938,10 +1940,26 @@ class RemoteRefreshManager:
     def _service_busy_reason(self) -> str:
         queue = self.task_store.load_archive_queue()
         stale_archive_queue_detected = False
+        gate_by_platform: dict[str, str] = {}
         for item in queue.get("queued") or []:
             if not isinstance(item, dict):
                 continue
             status = normalize_runtime_status(item.get("status"), "queued")
+            if status == "queued" and _is_three_mf_only_task(item):
+                meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+                if not bool(meta.get("browser_session_recovery")):
+                    url = normalize_source_url(str(meta.get("model_url") or item.get("url") or item.get("title") or ""))
+                    platform = normalize_makerworld_source(meta.get("source"), url)
+                    if platform in {"cn", "global"}:
+                        if platform not in gate_by_platform:
+                            try:
+                                health = get_account_health(platform)
+                                gate_by_platform[platform] = str(health.get("three_mf_gate") or "open").strip().lower()
+                            except Exception:
+                                gate_by_platform[platform] = "unknown"
+                        # 仅忽略已确认被账号状态挡住的下载；未知权限和恢复探针仍优先执行。
+                        if gate_by_platform[platform] in {"verification_required", "cloudflare", "auth_required", "cookie_invalid", "network_error"}:
+                            continue
             if status in {"queued", "running"}:
                 return "archive_queue_busy"
         for item in queue.get("active") or []:

@@ -209,6 +209,9 @@ def is_crowdfunding_model(payload: Any) -> bool:
 def is_three_mf_download_prohibited(payload: Any) -> bool:
     if not isinstance(payload, dict):
         return False
+    # 源端刷新确认已删除的配置仅保留归档，不再补下载或消耗下载额度。
+    if payload.get("sourceDeleted") is True:
+        return True
     if is_crowdfunding_model(payload):
         return True
     if payload.get("threeMfDownloadAllowed") is False:

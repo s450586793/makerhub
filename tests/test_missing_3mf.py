@@ -22,7 +22,7 @@ from app.services.legacy_archiver import (
     rebuild_once,
 )
 from app.services.archive_worker import ArchiveTaskManager
-from app.services.remote_refresh import _build_missing_3mf_items
+from app.services.remote_refresh import _build_missing_3mf_items, _merge_instances
 from app.services.task_state import _normalize_missing_3mf
 
 
@@ -141,6 +141,40 @@ class Missing3mfTest(unittest.TestCase):
             items = _build_missing_3mf_items(meta_path, meta, resolved_files={"matches": {}})
 
         self.assertEqual(items, [])
+
+    def test_source_removed_profile_is_preserved_without_becoming_a_missing_download(self):
+        old_profile = {
+            "id": "old-profile", "title": "Removed profile", "downloadState": "http_error",
+            "downloadMessage": "上游返回 HTTP 409。", "fileName": "old.3mf",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "instances").mkdir()
+            saved = root / "instances" / "saved.3mf"
+            saved.write_bytes(b"saved-profile")
+            current = {"id": "current-profile", "fileName": "saved.3mf", "downloadUrl": "https://cdn.example.test/saved.3mf"}
+            merged, removed = _merge_instances([old_profile, current], [current], "2026-11-14T01:00:00+08:00")
+            meta = {"id": "123", "url": "https://makerworld.com/en/models/123", "instances": merged}
+
+            self.assertEqual(removed, 1)
+            retained = next(item for item in merged if item["id"] == "old-profile")
+            self.assertTrue(retained["sourceDeleted"])
+            self.assertEqual(retained["downloadState"], "http_error")
+            self.assertEqual(_build_missing_3mf_items(root / "meta.json", meta), [])
+            self.assertEqual(_missing_3mf_instances(merged, root, require_local_file=True), [])
+            self.assertEqual(saved.read_bytes(), b"saved-profile")
+
+    def test_source_restored_profile_can_become_a_missing_download_again(self):
+        deleted = {"id": "profile", "sourceDeleted": True, "downloadState": "http_error"}
+        merged, removed = _merge_instances([deleted], [{"id": "profile"}], "2026-11-14T01:00:00+08:00")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            meta = {"id": "123", "url": "https://makerworld.com/en/models/123", "instances": merged}
+            items = _build_missing_3mf_items(root / "meta.json", meta)
+
+        self.assertEqual(removed, 0)
+        self.assertFalse(merged[0]["sourceDeleted"])
+        self.assertEqual([item["instance_id"] for item in items], ["profile"])
 
     def test_normalize_infers_verification_status_from_message(self):
         payload = {
