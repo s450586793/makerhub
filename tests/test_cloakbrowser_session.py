@@ -1427,6 +1427,59 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertFalse(pacing.path.exists())
         bridge.assert_not_called()
 
+    def test_prepare_3mf_loads_public_page_under_profile_lock_without_authorization(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(id="profile-cn", name="CN", status="running")
+        bridge_result = {"ok": True, "preflight": {"ready": True, "authenticated": True, "reason": "ready", "model": {
+            "model_id": "123", "model_url": "https://makerworld.com.cn/en/models/123?token=private#secret", "cookie": "private-cookie",
+            "instances": [{"id": 456, "profileId": "999", "download_url": "https://download.test/?signature=private", "paidSetting": {"crowdfunding": True, "token": "private"}}],
+        }, "cookie": "private-cookie"}}
+        with patch.object(cloakbrowser_session, "_profile_operation", return_value=nullcontext()) as operation, \
+                patch.object(cloakbrowser_session, "_ensure_running_profile", return_value=(profile, profile, False)), \
+                patch.object(cloakbrowser_session, "_run_bridge", return_value=bridge_result) as bridge, \
+                patch.object(cloakbrowser_session, "_run_paced_bridge") as paced, \
+                patch.dict(os.environ, {"MAKERHUB_CLOAKBROWSER_URL": "http://browser.test", "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "test-secret"}):
+            result = cloakbrowser_session.browser_prepare_3mf_download(
+                "cn", profile_id="profile-cn", model_url="https://makerworld.com.cn/en/models/123?token=private#profileId-456",
+            )
+        operation.assert_called_once_with("cn", "profile-cn", detail="fetch")
+        paced.assert_not_called()
+        payload = bridge.call_args.args[0]
+        self.assertEqual(payload["action"], "prepare_3mf")
+        self.assertEqual(payload["model_url"], "https://makerworld.com.cn/en/models/123")
+        self.assertEqual(payload["cookies"], [])
+        self.assertEqual(payload["instance_id"], "")
+        self.assertIs(payload["auto_verify_3mf"], False)
+        self.assertIs(payload["auto_verify_challenges"], False)
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["model"]["model_url"], "https://makerworld.com.cn/en/models/123")
+        self.assertEqual(result["model"]["instances"][0]["id"], "456")
+        self.assertEqual(result["model"]["instances"][0]["paidSetting"], {"crowdfunding": True})
+        self.assertNotIn("private", str(result))
+
+    def test_prepare_3mf_rejects_wrong_origin_and_invalid_profile_before_navigation(self):
+        with patch.object(cloakbrowser_session, "_run_bridge") as bridge:
+            for model_url in ("http://makerworld.com.cn/models/123", "https://makerworld.com/models/123",
+                              "https://makerworld.com.cn.evil/models/123", "https://user@makerworld.com.cn/models/123",
+                              "https://makerworld.com.cn:8443/models/123", "https://makerworld.com.cn/api/models/123"):
+                with self.subTest(model_url=model_url), self.assertRaises(cloakbrowser_session.CloakBrowserError):
+                    cloakbrowser_session.browser_prepare_3mf_download("cn", profile_id="profile-cn", model_url=model_url)
+            with self.assertRaises(cloakbrowser_session.CloakBrowserUnavailable):
+                cloakbrowser_session.browser_prepare_3mf_download("cn", profile_id="", model_url="https://makerworld.com.cn/models/123")
+        bridge.assert_not_called()
+
+    def test_prepare_3mf_requires_strict_fresh_authenticated_contract(self):
+        profile = cloakbrowser_session.CloakBrowserProfile(id="profile-global", name="Global", status="running")
+        with patch.object(cloakbrowser_session, "_profile_operation", return_value=nullcontext()), \
+                patch.object(cloakbrowser_session, "_ensure_running_profile", return_value=(profile, profile, False)), \
+                patch.object(cloakbrowser_session, "_run_bridge", return_value={"ok": True, "preflight": {
+                    "ready": "true", "authenticated": "true", "reason": "token=private", "model": {"model_url": "https://evil.test/models/123", "model_id": "123", "instances": [{"id": "456"}]},
+                }}), patch.dict(os.environ, {"MAKERHUB_CLOAKBROWSER_URL": "http://browser.test", "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "test-secret"}):
+            result = cloakbrowser_session.browser_prepare_3mf_download("global", profile_id="profile-global", model_url="https://makerworld.com/models/123")
+        self.assertFalse(result["ready"])
+        self.assertFalse(result["authenticated"])
+        self.assertEqual(result["reason"], "preflight_failed")
+        self.assertIsNone(result["model"])
+
     def test_authorization_dispatch_hook_exception_does_not_write_pacing(self):
         profile = cloakbrowser_session.CloakBrowserProfile(id="profile-cn", name="CN", status="running")
         payload = {"target_url": "https://makerworld.com.cn/api/v1/design-service/instance/123/f3mf", "verification_probe": True}

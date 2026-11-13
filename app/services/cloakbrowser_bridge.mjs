@@ -20,6 +20,11 @@ import {
   sanitizeVerificationResult,
 } from "./cloakbrowser_verification.mjs";
 import { fetchInBusinessPage } from "./cloakbrowser_fetch.mjs";
+import {
+  assertThreeMfTarget,
+  installThreeMfAuthorizationGuard,
+  prepareThreeMfDownload,
+} from "./cloakbrowser_preflight.mjs";
 
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -407,6 +412,7 @@ function authorizationResponseOutcome(page, matcher, options) {
 }
 
 function authorizationWaitError(error) {
+  if (["MAKERHUB_TARGET_UNAVAILABLE", "MAKERHUB_TARGET_MISMATCH"].includes(error?.code)) return error;
   const timedOut = error?.name === "TimeoutError" || /timed?\s*out/i.test(String(error?.message || ""));
   return new Error(timedOut
     ? "3MF authorization response timed out"
@@ -524,10 +530,14 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
   };
   const matcher = (response) => authorizationResponseMatches(response, options.instanceId);
   const firstWaiterController = new AbortController();
+  const abortForTarget = () => firstWaiterController.abort(options.authorizationGuardSignal.reason);
+  options.authorizationGuardSignal?.addEventListener("abort", abortForTarget, { once: true });
   let firstResponseOutcome;
   try {
     options.assertPageAllowed?.();
     if (options.inputAutoVerifyChallenges !== undefined || options.pageVerificationAdapter) await verifyPage();
+    await options.assertTargetReady?.();
+    options.authorizationGuardSignal?.throwIfAborted();
     firstResponseOutcome = authorizationResponseOutcome(page, matcher, {
       timeout: authorizationTimeout,
       signal: firstWaiterController.signal,
@@ -542,6 +552,8 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
         button = await findButton(page, navigationTimeout, { verifyPage });
         firstWaiterController.signal.throwIfAborted();
         options.assertPageAllowed?.();
+        await options.assertTargetReady?.();
+        options.authorizationGuardSignal?.throwIfAborted();
         await button.click({ delay: 20, signal: firstWaiterController.signal });
         break;
       } catch (error) {
@@ -640,6 +652,9 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
       if (secondResponseOutcome) await secondResponseOutcome;
     }
   } catch (error) {
+    if (["MAKERHUB_TARGET_UNAVAILABLE", "MAKERHUB_TARGET_MISMATCH"].includes(error?.code)) {
+      return { status_code: 409, payload: { code: error.code } };
+    }
     if (error?.code === "MAKERHUB_CROWDFUNDING") {
       return { status_code: 200, payload: { code: "MAKERHUB_CROWDFUNDING" } };
     }
@@ -655,6 +670,7 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
     }
     throw error;
   } finally {
+    options.authorizationGuardSignal?.removeEventListener("abort", abortForTarget);
     firstWaiterController.abort();
     await firstResponseOutcome;
   }
@@ -776,7 +792,10 @@ async function clickAuthorization(
   if (!isMakerWorldModelUrl(modelUrl, platform)) throw new Error("invalid MakerWorld model page URL");
   const navigationTimeout = Math.max(Number(navigationTimeoutMs || 30000), 15000);
   const authorizationTimeout = Math.max(Number(authorizationTimeoutMs || 90000), navigationTimeout);
+  let releaseGuard = async () => {};
   return await withTemporaryPage(browser, context, async (page) => {
+    const guard = await installThreeMfAuthorizationGuard(page, { platform, instanceId });
+    releaseGuard = guard.dispose;
     let navigationTimedOut = false;
     try {
       await page.goto(modelUrl, { waitUntil: "domcontentloaded", timeout: navigationTimeout });
@@ -791,6 +810,8 @@ async function clickAuthorization(
       navigationTimedOut,
       inputAutoVerify,
       ...verificationOptions,
+      authorizationGuardSignal: guard.signal,
+      assertTargetReady: () => assertThreeMfTarget(page, { platform, modelUrl, instanceId }),
       assertPageAllowed: () => {
         if (!isAllowedBrowserFetchUrl(page.url(), platform)) {
           throw new Error("model page redirected outside allowed domains");
@@ -798,7 +819,7 @@ async function clickAuthorization(
       },
     });
     return { ...authorization, navigation_timed_out: navigationTimedOut };
-  });
+  }).finally(() => releaseGuard());
 }
 
 async function main() {
@@ -824,8 +845,16 @@ async function main() {
     const contexts = browser.browserContexts();
     const context = contexts[0] || browser.defaultBrowserContext();
     const cleanup = cleanupStaleAutomationTargets(browser, context, input.automation_targets_path);
-    if (input.action === "fetch" || input.action === "click") await cleanup;
+    if (["fetch", "click", "prepare_3mf"].includes(input.action)) await cleanup;
     else await cleanup.catch(() => undefined);
+    if (input.action === "prepare_3mf") {
+      const preflight = await prepareThreeMfDownload({
+        browser, context, platform: normalizePlatform(input.platform),
+        modelUrl: String(input.model_url || ""), navigationTimeoutMs: input.navigation_timeout_ms,
+      }, { withTemporaryPage });
+      output = { ok: true, preflight };
+      return;
+    }
     if (input.action === "fetch") {
       const fetched = await fetchInBusinessPage({
         browser,

@@ -38,7 +38,7 @@ def log_browser_bridge_timing(payload: dict, timings: dict, *, total_ms: float, 
         append_business_log_async(
             "performance", "browser_bridge_timing", "指纹浏览器操作耗时。",
             platform=payload.get("platform") if payload.get("platform") in {"cn", "global"} else "unknown",
-            action=payload.get("action") if payload.get("action") in {"fetch", "click", "seed", "sync", "login", "snapshot"} else "unknown",
+            action=payload.get("action") if payload.get("action") in {"fetch", "click", "prepare_3mf", "seed", "sync", "login", "snapshot"} else "unknown",
             total_ms=round(total_ms, 1), failed=failed, **fields,
         )
     except Exception:

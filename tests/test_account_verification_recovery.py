@@ -5,6 +5,7 @@ import threading
 import tempfile
 import time
 import unittest
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
@@ -30,6 +31,8 @@ class AccountVerificationRecoveryTest(unittest.TestCase):
         self.blockers = {"active": False, "manual": False}
         self.missing = None
         self.index = {"items": []}
+        self.now = "2026-11-13T17:00:00+08:00"
+        self.preflight = None
         self.response = {"status_code": 200, "payload": {"data": {"url": "https://download.example.test/file.3mf?signature=private-signature"}}}
         self.patches = [
             patch.object(self.module, "cloakbrowser_configured", return_value=True, create=True),
@@ -39,9 +42,11 @@ class AccountVerificationRecoveryTest(unittest.TestCase):
             patch.object(self.module, "_missing_candidate", side_effect=lambda platform: copy.deepcopy(self.missing)),
             patch.object(self.module, "query_archive_model_index", side_effect=lambda **kwargs: copy.deepcopy(self.index)),
             patch.object(self.module, "browser_authorize_3mf_download", side_effect=self.authorize),
+            patch.object(self.module, "browser_prepare_3mf_download", side_effect=self.prepare, create=True),
+            patch.object(self.module, "synchronize_browser_session", create=True),
             patch.object(self.module, "reserve_three_mf_download_slot", side_effect=self.reserve),
             patch.object(self.module, "publish_state_event"),
-            patch.object(self.module, "china_now_iso", return_value="2026-11-13T17:00:00+08:00"),
+            patch.object(self.module, "china_now_iso", side_effect=lambda: self.now),
             patch.dict("os.environ", {"MAKERHUB_AUTO_VERIFY_3MF": "true", "MAKERHUB_AUTO_VERIFY_CHALLENGES": "true"}),
         ]
         for item in self.patches:
@@ -78,6 +83,16 @@ class AccountVerificationRecoveryTest(unittest.TestCase):
         self.reservations.append(kwargs)
         return {"allowed": True}
 
+    def prepare(self, platform, **kwargs):
+        if self.preflight is not None:
+            return copy.deepcopy(self.preflight)
+        return {"ready": True, "reason": "ready", "authenticated": True, "model": {
+            "model_id": "123", "model_url": kwargs["model_url"], "instances": [{"id": "456"}, {"id": "789"}],
+        }}
+
+    def advance_preflight(self):
+        self.now = (datetime.fromisoformat(self.now) + timedelta(minutes=16)).isoformat()
+
     def run_recovery(self):
         return self.module.run_account_verification_recovery_once(store=self.store)
 
@@ -91,6 +106,118 @@ class AccountVerificationRecoveryTest(unittest.TestCase):
         serialized = json.dumps({"result": result, "state": self.state})
         self.assertNotIn("private-token", serialized)
         self.assertNotIn("private-signature", serialized)
+
+    def test_stale_instance_is_replaced_only_with_legal_fresh_instance_of_same_model(self):
+        self.preflight = {"ready": True, "reason": "ready", "authenticated": True, "model": {
+            "model_id": "123", "model_url": "https://makerworld.com.cn/en/models/123", "instances": [
+                {"id": "777", "paidSetting": {"crowdfunding": True}}, {"id": "789"}, {"id": "999"},
+            ],
+        }}
+        self.assertEqual(self.run_recovery()["recovered_platforms"], ["cn"])
+        self.assertEqual(self.requests[0]["instance_id"], "789")
+        self.assertEqual(self.reservations[0]["instance_id"], "789")
+
+    def test_fresh_model_mismatch_or_prohibition_cannot_dispatch(self):
+        for changes in ({"model_id": "999"}, {"model_url": "https://makerworld.com/en/models/123"},
+                        {"threeMfDownloadAllowed": False}, {"instances": [{"id": "456", "license": "SDFL-PPO"}]},
+                        {"instances": []}):
+            with self.subTest(changes=changes):
+                self.advance_preflight()
+                self.preflight = {"ready": True, "reason": "ready", "authenticated": True, "model": {
+                    "model_id": "123", "model_url": "https://makerworld.com.cn/en/models/123", "instances": [{"id": "456"}], **changes,
+                }}
+                self.assertEqual(self.run_recovery()["attempted"], 0)
+        self.assertEqual(self.requests, [])
+        self.assertEqual(self.reservations, [])
+
+    def test_logged_out_profile_is_synced_once_then_rechecked_before_claim(self):
+        logged_out = {"ready": False, "authenticated": False, "reason": "auth_required", "model": None}
+        ready = self.prepare("cn", model_url=self.snapshot("cn")["model_url"])
+        def sync_before_dispatch(*args, **kwargs):
+            self.assertEqual(self.reservations, [])
+            self.assertNotIn(self.module.ACCOUNT_VERIFICATION_RECOVERY_STATE_KEY, self.state)
+        with patch.object(self.module, "browser_prepare_3mf_download", side_effect=[logged_out, ready]) as prepare, \
+                patch.object(self.module, "synchronize_browser_session", side_effect=sync_before_dispatch) as sync:
+            self.assertEqual(self.run_recovery()["recovered_platforms"], ["cn"])
+        self.assertEqual(prepare.call_count, 2)
+        sync.assert_called_once_with("cn", self.config.cookies[0].cookie, profile_id="profile-cn", proxy_config=self.config.proxy, stop_when_done=False)
+        self.assertEqual(len(self.reservations), 1)
+
+    def test_still_logged_out_does_not_claim_and_login_is_throttled_across_runs(self):
+        self.preflight = {"ready": False, "authenticated": False, "reason": "auth_required", "model": None}
+        with patch.object(self.module, "synchronize_browser_session") as sync, \
+                patch.object(self.module, "browser_prepare_3mf_download", side_effect=self.prepare) as prepare:
+            first = self.run_recovery()
+            self.run_recovery()
+            self.assertEqual(sync.call_count, 1)
+            self.assertEqual(prepare.call_count, 2)
+        self.assertEqual(first["items"][0]["reason"], "auth_required")
+        self.assertEqual(self.requests, [])
+        self.assertEqual(self.reservations, [])
+        self.assertNotIn(self.module.ACCOUNT_VERIFICATION_RECOVERY_STATE_KEY, self.state)
+        self.advance_preflight()
+        self.preflight = None
+        self.assertEqual(self.run_recovery()["recovered_platforms"], ["cn"])
+
+    def test_preflight_or_login_failure_is_sanitized_and_has_independent_cooldown(self):
+        for phase in ("preflight", "synchronize"):
+            with self.subTest(phase=phase):
+                self.advance_preflight()
+                self.preflight = {"ready": False, "authenticated": False, "reason": "auth_required", "model": None}
+                target = "browser_prepare_3mf_download" if phase == "preflight" else "synchronize_browser_session"
+                with patch.object(self.module, target, side_effect=RuntimeError("token=private-token ?signature=private-signature")) as failing:
+                    result = self.run_recovery()
+                    self.run_recovery()
+                    self.assertEqual(failing.call_count, 1)
+                self.assertEqual(result["items"][0]["phase"], phase)
+                self.assertEqual(result["items"][0]["reason"], "auth_required" if phase == "synchronize" else "preflight_failed")
+        self.assertEqual(self.requests, [])
+        self.assertEqual(self.reservations, [])
+        self.assertNotIn(self.module.ACCOUNT_VERIFICATION_RECOVERY_STATE_KEY, self.state)
+        self.assertNotIn("private-token", json.dumps(self.state))
+        self.assertNotIn("private-signature", json.dumps(self.state))
+
+    def test_failed_preflight_cooldown_is_independent_per_platform_and_login(self):
+        self.state["account_health"]["global"] = self.snapshot("global")
+        self.config.cookies.append(CookiePair(platform="global", cookie="token=global-private-token", browser_profile_id="profile-global"))
+        def prepare(platform, **kwargs):
+            if platform == "cn" and self.config.cookies[0].cookie.startswith("token=private-token"):
+                return {"ready": False, "authenticated": True, "reason": "instances_unavailable", "model": None}
+            return self.prepare(platform, **kwargs)
+        with patch.object(self.module, "browser_prepare_3mf_download", side_effect=prepare):
+            self.assertEqual(self.run_recovery()["recovered_platforms"], ["global"])
+            self.config.cookies[0].cookie = "token=replaced-token"
+            self.assertEqual(self.run_recovery()["recovered_platforms"], ["cn"])
+
+    def test_existing_dispatch_attempt_is_never_reset_or_preflighted(self):
+        fingerprint = self.module._fingerprint(self.config.cookies[0])
+        recorded = {"status": "failed", "status_code": 403, "claimed_at": "old"}
+        self.state[self.module.ACCOUNT_VERIFICATION_RECOVERY_STATE_KEY] = {"platforms": {"cn": {"attempts": {fingerprint: recorded}}}}
+        with patch.object(self.module, "browser_prepare_3mf_download") as prepare:
+            self.run_recovery()
+        prepare.assert_not_called()
+        self.assertEqual(self.state[self.module.ACCOUNT_VERIFICATION_RECOVERY_STATE_KEY]["platforms"]["cn"]["attempts"][fingerprint], recorded)
+
+    def test_dispatch_failure_persists_only_safe_phase_reason_and_status(self):
+        self.response = {"status_code": 409, "payload": {"code": "MAKERHUB_TARGET_UNAVAILABLE", "message": "token=private-token"}}
+        result = self.run_recovery()
+        fingerprint = self.module._fingerprint(self.config.cookies[0])
+        attempt = self.state[self.module.ACCOUNT_VERIFICATION_RECOVERY_STATE_KEY]["platforms"]["cn"]["attempts"][fingerprint]
+        self.assertEqual((attempt["phase"], attempt["reason"], attempt["status_code"]), ("dispatch", "target_unavailable", 409))
+        self.assertEqual(result["items"][0]["reason"], "target_unavailable")
+        self.assertNotIn("private-token", json.dumps(self.state))
+
+    def test_runnable_queue_skips_preflight_and_new_work_prevents_dispatch(self):
+        with patch.object(self.module, "browser_prepare_3mf_download", side_effect=self.prepare) as prepare:
+            result = self.module.run_account_verification_recovery_once(store=self.store, can_probe=lambda: False)
+            self.assertEqual(result["attempted"], 0)
+            prepare.assert_not_called()
+        def became_busy(*args, **kwargs):
+            self.blockers["active"] = True
+            return self.prepare(*args, **kwargs)
+        with patch.object(self.module, "browser_prepare_3mf_download", side_effect=became_busy):
+            self.assertEqual(self.run_recovery()["attempted"], 0)
+        self.assertEqual(self.reservations, [])
 
     def test_empty_200_and_completed_challenge_do_not_clear_gate(self):
         self.response = {"status_code": 200, "payload": {}, "verification": {"completed": True}}
@@ -260,6 +387,7 @@ class AccountVerificationRecoveryTest(unittest.TestCase):
         with patch.object(self.module, "reserve_three_mf_download_slot", return_value={"allowed": False}):
             self.assertEqual(self.run_recovery()["attempted"], 0)
         self.assertEqual(self.requests, [])
+        self.advance_preflight()
         self.assertEqual(self.run_recovery()["recovered_platforms"], ["cn"])
         self.assertEqual(self.reservations[0]["limit"], 0)
 
@@ -349,6 +477,7 @@ class AccountVerificationRecoveryTest(unittest.TestCase):
                 self.assertNotIn(self.module.ACCOUNT_VERIFICATION_RECOVERY_STATE_KEY, self.state)
                 self.assertEqual(bridge.call_count, 0)
                 pacing.path.write_text(json.dumps({"cooldown_until": 0, "next_allowed_at": 0}))
+                self.advance_preflight()
                 self.assertEqual(self.run_recovery()["recovered_platforms"], ["cn"])
                 self.assertEqual(bridge.call_count, 1)
 
@@ -357,6 +486,7 @@ class AccountVerificationRecoveryTest(unittest.TestCase):
             self.assertEqual(self.run_recovery()["attempted"], 0)
         self.assertEqual(self.reservations, [])
         self.assertNotIn(self.module.ACCOUNT_VERIFICATION_RECOVERY_STATE_KEY, self.state)
+        self.advance_preflight()
         self.assertEqual(self.run_recovery()["recovered_platforms"], ["cn"])
 
     def test_new_manual_pause_before_dispatch_does_not_spend_attempt(self):

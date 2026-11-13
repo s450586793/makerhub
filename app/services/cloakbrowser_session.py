@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import time
 from typing import Any, Callable
@@ -1275,6 +1276,83 @@ def _browser_model_page_url(model_url: str, platform: str, instance_id: str) -> 
         raise CloakBrowserError("3MF 对应的模型页面不属于当前平台。")
     base_url = parsed._replace(fragment="").geturl()
     return f"{base_url}#profileId-{clean_instance_id}" if clean_instance_id else base_url
+
+
+def _preflight_model_url(model_url: Any, platform: str) -> str:
+    try:
+        parsed = urlparse(str(model_url or "").strip())
+        expected_host = "makerworld.com.cn" if platform == "cn" else "makerworld.com"
+        if (parsed.scheme != "https" or parsed.hostname != expected_host or parsed.username or parsed.password
+                or parsed.port not in {None, 443} or not re.match(r"^/(?:[a-z]{2}(?:-[a-z]{2})?/)?models/[1-9][0-9]*(?:[-/]|$)", parsed.path, re.IGNORECASE)):
+            return ""
+        return parsed._replace(netloc=expected_host, query="", fragment="", params="").geturl()
+    except (TypeError, ValueError):
+        return ""
+
+
+def _preflight_download_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    # 只保留既有禁下载判断需要的语义，不向调用方返回页面正文或任意嵌套资料。
+    result: dict[str, Any] = {}
+    if isinstance(payload.get("threeMfDownloadAllowed"), bool):
+        result["threeMfDownloadAllowed"] = payload["threeMfDownloadAllowed"]
+    if payload.get("threeMfSkipReason") == "crowdfunding":
+        result["threeMfSkipReason"] = "crowdfunding"
+    if str(payload.get("downloadState") or "").lower() == "not_downloadable":
+        result["downloadState"] = "not_downloadable"
+    paid = payload.get("paidSetting")
+    if isinstance(paid, dict) and str(paid.get("crowdfunding") or "").lower() in {"true", "1"}:
+        result["paidSetting"] = {"crowdfunding": True}
+    crowdfunding = payload.get("crowdfundingInfo")
+    if isinstance(crowdfunding, dict) and re.fullmatch(r"[1-9][0-9]*", str(crowdfunding.get("projectId") or "")):
+        result["crowdfundingInfo"] = {"projectId": str(crowdfunding["projectId"])}
+    for key in ("license", "licenseName", "licenseDescriptionInfo"):
+        value = payload.get(key)
+        text = " ".join(str(value.get(field) or "") for field in ("title", "content", "description")) if isinstance(value, dict) else str(value or "")
+        lowered = text.lower()
+        if "sdfl-ppo" in lowered or "platform print only" in lowered:
+            result[key] = "SDFL-PPO"
+    return result
+
+
+def browser_prepare_3mf_download(platform: str, *, profile_id: str, model_url: str) -> dict[str, Any]:
+    """读取当前模型与浏览器登录态，不点击下载或自动操作验证。"""
+    clean_platform = normalize_platform(platform)
+    clean_profile_id = str(profile_id or "").strip()
+    if not clean_profile_id:
+        raise CloakBrowserUnavailable("当前平台未关联指纹浏览器 profile。")
+    page_url = _preflight_model_url(model_url, clean_platform)
+    if not page_url:
+        raise CloakBrowserError("3MF 对应的模型页面不属于当前平台。")
+    with _profile_operation(clean_platform, clean_profile_id, detail="fetch"):
+        _profile, running, _launched = _ensure_running_profile(clean_platform, clean_profile_id)
+        payload = _bridge_payload(running.id, action="prepare_3mf", model_url=page_url, platform=clean_platform)
+        payload.update(auto_verify_3mf=False, auto_verify_challenges=False)
+        result = _run_bridge(payload, timeout_seconds=max(_timeout_seconds() + 30, 45))
+    preflight = result.get("preflight") if isinstance(result.get("preflight"), dict) else {}
+    reasons = {"ready", "auth_required", "verification_required", "model_unavailable", "model_mismatch", "instances_unavailable", "preflight_failed"}
+    raw_reason = preflight.get("reason")
+    reason = raw_reason if isinstance(raw_reason, str) and raw_reason in reasons else "preflight_failed"
+    model = preflight.get("model")
+    normalized_model = None
+    if isinstance(model, dict):
+        canonical_url = _preflight_model_url(model.get("model_url"), clean_platform)
+        model_id = str(model.get("model_id") or "")
+        match = re.search(r"/models/([1-9][0-9]*)(?:[-/]|$)", canonical_url)
+        if match and model_id == match.group(1):
+            instances = []
+            for item in model.get("instances", [])[:100] if isinstance(model.get("instances"), list) else []:
+                if not isinstance(item, dict):
+                    continue
+                instance = _preflight_download_fields(item)
+                for key in ("id", "instanceId", "profileId"):
+                    value = str(item.get(key) or "")
+                    if re.fullmatch(r"[1-9][0-9]*", value):
+                        instance[key] = value
+                if any(key in instance for key in ("id", "instanceId", "profileId")):
+                    instances.append(instance)
+            normalized_model = {"model_id": model_id, "model_url": canonical_url, "instances": instances, **_preflight_download_fields(model)}
+    return {"ready": preflight.get("ready") is True and preflight.get("authenticated") is True and normalized_model is not None and reason == "ready",
+            "authenticated": preflight.get("authenticated") is True, "reason": reason, "model": normalized_model}
 
 
 def browser_authorize_3mf_download(

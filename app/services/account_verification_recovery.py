@@ -5,6 +5,7 @@ import json
 import os
 import re
 import uuid
+from datetime import datetime, timedelta
 from typing import Any, Callable
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
@@ -14,7 +15,12 @@ from app.core.settings import APP_VERSION
 from app.core.store import JsonStore
 from app.core.timezone import now_iso as china_now_iso
 from app.services.archive_model_index import query_archive_model_index
-from app.services.cloakbrowser_session import browser_authorize_3mf_download, cloakbrowser_configured
+from app.services.cloakbrowser_session import (
+    browser_authorize_3mf_download,
+    browser_prepare_3mf_download,
+    cloakbrowser_configured,
+    synchronize_browser_session,
+)
 from app.services.cookie_utils import extract_auth_token, sanitize_cookie_header
 from app.services.legacy_archiver import _extract_instance_download
 from app.services.state_contracts import ACCOUNT_HEALTH_STATE_KEY, ARCHIVE_QUEUE_STATE_KEY, MISSING_3MF_STATE_KEY, THREE_MF_DAILY_QUOTA_STATE_KEY
@@ -24,6 +30,9 @@ from app.services.three_mf_quota import reserve_three_mf_download_slot
 
 
 ACCOUNT_VERIFICATION_RECOVERY_STATE_KEY = "account_verification_recovery"
+ACCOUNT_VERIFICATION_PREFLIGHT_STATE_KEY = "account_verification_recovery_preflight"
+_PREFLIGHT_COOLDOWN_SECONDS = 15 * 60
+_PREFLIGHT_REASONS = {"ready", "auth_required", "verification_required", "model_unavailable", "model_mismatch", "instances_unavailable", "preflight_failed"}
 _PLATFORM_HOSTS = {"cn": "makerworld.com.cn", "global": "makerworld.com"}
 _GATE_FIELDS = ("three_mf_gate", "three_mf_reason", "three_mf_detail", "model_url", "model_id", "instance_id")
 _UNSAFE_STATUSES = {"daily_limit", "download_limited", "cookie_invalid", "auth_required", "manual", "paused"}
@@ -53,7 +62,7 @@ def _target(platform: str, item: Any, *, instance: dict[str, Any] | None = None)
             return None
     except ValueError:
         return None
-    match = re.search(r"/(?:[a-z]{2}/)?models/([1-9][0-9]*)(?:[-/]|$)", parsed.path)
+    match = re.search(r"^/(?:[a-z]{2}(?:-[a-z]{2})?/)?models/([1-9][0-9]*)(?:[-/]|$)", parsed.path, re.IGNORECASE)
     if not match:
         return None
     instance_data = instance if instance is not None else item
@@ -190,6 +199,71 @@ def _attempts(state: dict[str, Any], platform: str) -> dict[str, Any]:
     return current.get("attempts") if isinstance(current.get("attempts"), dict) else {}
 
 
+def _preflight_checks(state: dict[str, Any], platform: str) -> dict[str, Any]:
+    platforms = state.get("platforms") if isinstance(state.get("platforms"), dict) else {}
+    current = platforms.get(platform) if isinstance(platforms.get(platform), dict) else {}
+    return current.get("checks") if isinstance(current.get("checks"), dict) else {}
+
+
+def _preflight_due(state: dict[str, Any], platform: str, fingerprint: str, now: str) -> bool:
+    check = _preflight_checks(state, platform).get(fingerprint)
+    if not isinstance(check, dict):
+        return True
+    try:
+        return datetime.fromisoformat(str(check.get("retry_after"))) <= datetime.fromisoformat(now)
+    except (ValueError, TypeError):
+        # 无法确认旧预约是否已过期时保持关闭，不进行可能重复的浏览器操作。
+        return False
+
+
+def _reserve_preflight(platform: str, fingerprint: str, now: str) -> str:
+    check_id = uuid.uuid4().hex
+    reserved = False
+
+    def reserve(current):
+        nonlocal reserved
+        if not _preflight_due(current, platform, fingerprint, now):
+            return current
+        checks = current.setdefault("platforms", {}).setdefault(platform, {}).setdefault("checks", {})
+        checks[fingerprint] = {"check_id": check_id, "status": "preparing", "phase": "preflight",
+                               "reason": "preflight_failed", "status_code": 0, "started_at": now,
+                               "retry_after": (datetime.fromisoformat(now) + timedelta(seconds=_PREFLIGHT_COOLDOWN_SECONDS)).isoformat()}
+        reserved = True
+        return current
+
+    update_database_json_state(ACCOUNT_VERIFICATION_PREFLIGHT_STATE_KEY, {"platforms": {}}, reserve)
+    return check_id if reserved else ""
+
+
+def _record_preflight(platform: str, fingerprint: str, check_id: str, *, phase: str, reason: str) -> None:
+    def record(current):
+        check = _preflight_checks(current, platform).get(fingerprint)
+        if isinstance(check, dict) and check.get("check_id") == check_id:
+            check.update(status="ready" if reason == "ready" else "deferred", phase=phase, reason=reason,
+                         status_code=0, completed_at=china_now_iso())
+        return current
+
+    update_database_json_state(ACCOUNT_VERIFICATION_PREFLIGHT_STATE_KEY, {"platforms": {}}, record)
+
+
+def _fresh_target(platform: str, requested: dict[str, str], preflight: Any) -> dict[str, str] | None:
+    if not isinstance(preflight, dict) or preflight.get("ready") is not True or preflight.get("authenticated") is not True:
+        return None
+    model = preflight.get("model")
+    if not isinstance(model, dict) or str(model.get("model_id") or "") != requested["model_id"]:
+        return None
+    targets = []
+    for instance in model.get("instances", []) if isinstance(model.get("instances"), list) else []:
+        if isinstance(instance, dict):
+            target = _target(platform, model, instance=instance)
+            if target and target["model_id"] == requested["model_id"]:
+                if target["instance_id"] == requested["instance_id"]:
+                    return target
+                targets.append(target)
+    # 仅恢复复测可以选择同模型的首个合法新配置；普通归档仍按指定配置下载。
+    return targets[0] if targets else None
+
+
 def _claim(platform: str, fingerprint: str, now: str) -> str:
     claimed = False
     claim_id = uuid.uuid4().hex
@@ -219,11 +293,11 @@ def _cancel_unsent_claim(platform: str, fingerprint: str, claim_id: str) -> None
     update_database_json_state(ACCOUNT_VERIFICATION_RECOVERY_STATE_KEY, {"platforms": {}}, cancel)
 
 
-def _record_result(platform: str, fingerprint: str, status: str, *, status_code: int = 0) -> None:
+def _record_result(platform: str, fingerprint: str, status: str, *, status_code: int = 0, reason: str = "authorization_failed") -> None:
     def record(current):
         attempt = _attempts(current, platform).get(fingerprint)
         if isinstance(attempt, dict):
-            attempt.update(status=status, status_code=status_code, completed_at=china_now_iso())
+            attempt.update(status=status, phase="dispatch", reason=reason, status_code=status_code, completed_at=china_now_iso())
         return current
 
     update_database_json_state(ACCOUNT_VERIFICATION_RECOVERY_STATE_KEY, {"platforms": {}}, record)
@@ -301,6 +375,7 @@ def run_account_verification_recovery_once(
     config = config_store.load()
     snapshots = load_database_json_state_without_initialization(ACCOUNT_HEALTH_STATE_KEY, {})
     state = load_database_json_state_without_initialization(ACCOUNT_VERIFICATION_RECOVERY_STATE_KEY, {"platforms": {}})
+    preflight_state = load_database_json_state_without_initialization(ACCOUNT_VERIFICATION_PREFLIGHT_STATE_KEY, {"platforms": {}})
     quota = load_database_json_state_without_initialization(THREE_MF_DAILY_QUOTA_STATE_KEY, {"items": {}})
     now = china_now_iso()
     for platform in ("cn", "global"):
@@ -312,6 +387,8 @@ def run_account_verification_recovery_once(
             continue
         fingerprint = _fingerprint(account)
         if fingerprint in _attempts(state, platform):
+            continue
+        if not _preflight_due(preflight_state, platform, fingerprint, now):
             continue
         limit = int(getattr(config.three_mf_limits, f"{platform}_daily_limit"))
         daily = (quota.get("items") or {}).get(platform, {})
@@ -328,6 +405,42 @@ def run_account_verification_recovery_once(
                 continue
         except Exception:
             # 读取或预约失败时不能发送可能消耗下载额度的请求。
+            continue
+        phase = "preflight"
+        reason = "preflight_failed"
+        check_id = ""
+        try:
+            check_id = _reserve_preflight(platform, fingerprint, now)
+            if not check_id:
+                continue
+            preflight = browser_prepare_3mf_download(platform, profile_id=account.browser_profile_id, model_url=target["model_url"])
+            if preflight.get("authenticated") is False and preflight.get("reason") == "auth_required":
+                phase = "synchronize"
+                reason = "auth_required"
+                if (_auto_verify_enabled() and cloakbrowser_configured() and _same_login(config_store, account)
+                        and not any(_queue_blockers(platform).values())
+                        and (can_probe is None or can_probe() is True)):
+                    synchronize_browser_session(platform, account.cookie, profile_id=account.browser_profile_id,
+                                                proxy_config=config.proxy, stop_when_done=False)
+                    phase = "preflight"
+                    preflight = browser_prepare_3mf_download(platform, profile_id=account.browser_profile_id, model_url=target["model_url"])
+            fresh_target = _fresh_target(platform, target, preflight)
+            if fresh_target:
+                target = fresh_target
+                reason = "ready"
+            else:
+                raw_reason = preflight.get("reason")
+                reason = raw_reason if isinstance(raw_reason, str) and raw_reason in _PREFLIGHT_REASONS and raw_reason != "ready" else "model_unavailable"
+            _record_preflight(platform, fingerprint, check_id, phase=phase, reason=reason)
+        except Exception:
+            reason = "auth_required" if phase == "synchronize" else "preflight_failed"
+            if check_id:
+                try:
+                    _record_preflight(platform, fingerprint, check_id, phase=phase, reason=reason)
+                except Exception:
+                    pass
+        if reason != "ready":
+            result["items"].append({"platform": platform, "status": "deferred", "phase": phase, "reason": reason, "status_code": 0})
             continue
         dispatch_prepared = False
 
@@ -362,17 +475,30 @@ def run_account_verification_recovery_once(
 
         status = "failed"
         status_code = 0
+        reason = "authorization_failed"
         try:
             api_url = f"https://{_PLATFORM_HOSTS[platform]}/api/v1/design-service/instance/{target['instance_id']}/f3mf?type=download&fileType=3mf"
             response = browser_authorize_3mf_download(platform, api_url, profile_id=account.browser_profile_id,
                                                      model_url=target["model_url"], instance_id=target["instance_id"],
                                                      verification_probe=True, before_dispatch=before_dispatch)
             status_code = int(response.get("status_code") or 0)
+            payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
+            if status_code == 401:
+                reason = "auth_required"
+            elif status_code == 429:
+                reason = "rate_limited"
+            elif status_code == 418:
+                reason = "verification_required"
+            elif status_code == 409 and payload.get("code") in {"MAKERHUB_TARGET_UNAVAILABLE", "MAKERHUB_TARGET_MISMATCH"}:
+                reason = "target_unavailable" if payload["code"] == "MAKERHUB_TARGET_UNAVAILABLE" else "target_mismatch"
+            elif 200 <= status_code < 300:
+                reason = "state_changed" if _valid_download(payload) else "invalid_download"
             if (dispatch_prepared and 200 <= status_code < 300 and _valid_download(response.get("payload"))
                     and _same_login(config_store, account) and not any(_queue_blockers(platform).values())
                     and _sync_verified_browser(config_store, account) and _same_login(config_store, account)
                     and _clear_verified_gate(platform, snapshot, target)):
                 status = "recovered"
+                reason = "authorized"
                 result["recovered_platforms"].append(platform)
         except Exception:
             # 不持久化异常文本、响应内容或直链，避免暴露认证信息。
@@ -381,9 +507,9 @@ def run_account_verification_recovery_once(
             continue
         if status != "recovered":
             result["failed"] += 1
-        result["items"].append({"platform": platform, "status": status, "status_code": status_code})
+        result["items"].append({"platform": platform, "status": status, "phase": "dispatch", "reason": reason, "status_code": status_code})
         try:
-            _record_result(platform, fingerprint, status, status_code=status_code)
+            _record_result(platform, fingerprint, status, status_code=status_code, reason=reason)
         except Exception:
             # 预约已持久化，即使结果写入失败，后续轮询也不能重复授权。
             pass

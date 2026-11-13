@@ -1,18 +1,22 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from app.services import performance
 
 
-def test_browser_timing_logs_only_allowed_fields_and_never_credentials():
+@pytest.mark.parametrize("action", ["fetch", "prepare_3mf"])
+def test_browser_timing_logs_only_allowed_fields_and_never_credentials(action):
     with patch.object(performance, "append_business_log_async") as log:
         performance.log_browser_bridge_timing(
-            {"platform": "global", "action": "fetch", "auth_token": "private", "target_url": "https://example.com/?token=private"},
+            {"platform": "global", "action": action, "auth_token": "private", "target_url": "https://example.com/?token=private"},
             {"connect_ms": 400, "operation_ms": 2200, "bridge_ms": 2700, "cookie": "private"},
             total_ms=2900, failed=False,
         )
     log.assert_called_once()
     fields = log.call_args.kwargs
+    assert fields["action"] == action
     assert fields["outside_bridge_ms"] == 200
     assert fields["connect_ms"] == 400
     assert "private" not in str(log.call_args)
