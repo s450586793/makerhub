@@ -2163,16 +2163,25 @@ test("slider rejects a right-edge trajectory whose overshoot leaves the track", 
   assert.deepEqual(inputEvents, []);
 });
 
-test("timed out vision results never trigger a late click", async () => {
+test("timed out vision results never trigger a late click", { timeout: 5000 }, async () => {
+  const controller = new AbortController();
   let resolveVision;
+  let visionStarted;
+  const started = new Promise((resolve) => { visionStarted = resolve; });
   let clicks = 0;
   const challenge = clickChallenge(async () => { clicks += 1; });
   const verification = attemptAutomaticVerification({}, {
+    signal: controller.signal,
     detectChallenge: async () => challenge,
-    visionRequest: async () => new Promise((resolve) => { resolveVision = resolve; }),
-    timeoutMs: 10,
+    visionRequest: async () => new Promise((resolve) => {
+      resolveVision = resolve;
+      visionStarted();
+    }),
+    timeoutMs: 1000,
   });
 
+  await Promise.race([started, verification.then(() => assert.fail("vision did not start"))]);
+  controller.abort(Object.assign(new Error("timeout"), { reason: "timeout" }));
   const result = await verification;
   resolveVision({ ok: true, candidate_index: 1, confidence: 0.9 });
   await new Promise((resolve) => setImmediate(resolve));
@@ -2233,8 +2242,11 @@ test("a hanging screenshot cannot start vision or click after return", async () 
   assert.equal(clicks, 0);
 });
 
-test("timed out slider vision never starts a late drag", async () => {
+test("timed out slider vision never starts a late drag", { timeout: 5000 }, async () => {
+  const controller = new AbortController();
   let resolveVision;
+  let visionStarted;
+  const started = new Promise((resolve) => { visionStarted = resolve; });
   let mouseEvents = 0;
   const page = fakeInputPage({ dispatch: async () => { mouseEvents += 1; } });
   const challenge = {
@@ -2254,12 +2266,18 @@ test("timed out slider vision never starts a late drag", async () => {
     }),
   };
   const verification = attemptAutomaticVerification(page, {
+    signal: controller.signal,
     detectChallenge: async () => challenge,
     fingerprintChallenge: async () => "slider-late",
-    visionRequest: async () => new Promise((resolve) => { resolveVision = resolve; }),
-    timeoutMs: 10,
+    visionRequest: async () => new Promise((resolve) => {
+      resolveVision = resolve;
+      visionStarted();
+    }),
+    timeoutMs: 1000,
   });
 
+  await Promise.race([started, verification.then(() => assert.fail("vision did not start"))]);
+  controller.abort(Object.assign(new Error("timeout"), { reason: "timeout" }));
   const result = await verification;
   resolveVision({ ok: true, distance_css: 100, confidence: 0.9 });
   await new Promise((resolve) => setImmediate(resolve));

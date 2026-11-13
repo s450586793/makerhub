@@ -3714,6 +3714,25 @@ class ArchiveTaskManager:
         self._last_pending_maintenance_at = time.monotonic()
         return queue
 
+    def can_probe_account_verification(self) -> bool:
+        try:
+            queue = self.task_store.load_archive_queue()
+            if not isinstance(queue, dict):
+                return False
+            active = queue.get("active")
+            queued = queue.get("queued")
+            if not isinstance(active, list) or not isinstance(queued, list):
+                return False
+            if active or int(queue.get("running_count") or 0) > 0:
+                return False
+            if (queue.get("queued_truncated") or int(queue.get("queued_count") or 0) > len(queued)
+                    or any(not isinstance(item, dict) for item in queued)):
+                return False
+            # queued 可能正在等待浏览器确认，是否可执行必须复用归档调度规则。
+            return self._next_executable_task(queue) is None
+        except Exception:
+            return False
+
     def _has_blocked_pending_tasks(self) -> bool:
         queue = self.task_store.load_archive_queue()
         pending_items = [

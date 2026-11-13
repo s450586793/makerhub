@@ -5,7 +5,7 @@ import json
 import os
 import re
 import uuid
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from app.core.database import database_connection
@@ -107,7 +107,7 @@ def _queue_blockers(platform: str) -> dict[str, bool]:
                     || (CASE WHEN jsonb_typeof(value -> 'queued') = 'array' THEN value -> 'queued' ELSE '[]'::jsonb END)
                 ) AS item
             )
-            SELECT EXISTS(SELECT 1 FROM tasks WHERE lower(COALESCE(item ->> 'status', '')) IN ('running', 'resuming', 'queued', 'pending')) AS active,
+            SELECT EXISTS(SELECT 1 FROM tasks WHERE lower(COALESCE(item ->> 'status', '')) IN ('running', 'resuming')) AS active,
                    EXISTS(SELECT 1 FROM tasks
                        WHERE lower(COALESCE(item ->> 'status', '')) = 'paused'
                          AND lower(COALESCE(item ->> 'blocked_reason', '')) = 'manual'
@@ -291,7 +291,9 @@ def _valid_download(payload: Any) -> bool:
         return False
 
 
-def run_account_verification_recovery_once(*, store: JsonStore | None = None) -> dict[str, Any]:
+def run_account_verification_recovery_once(
+    *, store: JsonStore | None = None, can_probe: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
     result: dict[str, Any] = {"attempted": 0, "failed": 0, "recovered_platforms": [], "items": []}
     if not _auto_verify_enabled() or not cloakbrowser_configured():
         return result
@@ -316,6 +318,8 @@ def run_account_verification_recovery_once(*, store: JsonStore | None = None) ->
         if limit > 0 and daily.get("date") == now[:10] and int(daily.get("used") or 0) >= limit:
             continue
         try:
+            if can_probe is not None and can_probe() is not True:
+                continue
             blockers = _queue_blockers(platform)
             if blockers.get("active") or blockers.get("manual"):
                 continue
@@ -331,6 +335,8 @@ def run_account_verification_recovery_once(*, store: JsonStore | None = None) ->
             nonlocal dispatch_prepared
             if dispatch_prepared:
                 return True
+            if can_probe is not None and can_probe() is not True:
+                return False
             if not _auto_verify_enabled() or not cloakbrowser_configured() or not _same_login(config_store, account):
                 return False
             latest = load_database_json_state_without_initialization(ACCOUNT_HEALTH_STATE_KEY, {}).get(platform, {})

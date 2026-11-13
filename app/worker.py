@@ -184,10 +184,13 @@ def run_worker_account_verification_recovery(
     *,
     store=None,
 ) -> dict:
-    if archive_queue_has_runnable_work(archive_queue):
+    if int((archive_queue or {}).get("running_count") or 0) > 0:
         return {"recovered_platforms": [], "reason": "archive_queue_busy"}
     try:
-        result = run_account_verification_recovery_once(store=store)
+        can_probe = getattr(archive_manager, "can_probe_account_verification", None)
+        if not callable(can_probe) or can_probe() is not True:
+            return {"recovered_platforms": [], "reason": "archive_queue_busy"}
+        result = run_account_verification_recovery_once(store=store, can_probe=can_probe)
         if result.get("recovered_platforms"):
             return {**result, "archive_queue": archive_manager.ensure_worker_for_pending(force=True)}
         return result

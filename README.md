@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.21.1`
+> 当前版本：`v0.21.2`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -370,6 +370,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-11-13 · v0.21.2
+
+- 已因验证阻断的排队任务不再挡住自动复测，成功后继续原任务。
+- 使用归档调度器的真实可运行状态判断空闲，保留正常归档和手动暂停的优先级。
+
 ### 2026-11-13 · v0.21.1
 
 - 旧的“需要浏览器确认”状态由空闲后台安排有限次真实授权复测，没有待处理队列时也可恢复；成功才解除暂停，失败保留人工入口。
@@ -380,13 +385,13 @@ npm --prefix frontend run build
 - 页面和 API 改为在同一浏览器 profile、代理与任务页面内通过原生 `fetch` 抓取，Cloudflare 前置验证先等待再有限交互，通过后 GET 最多恢复一次。
 - 默认启用已支持的 3MF 图形验证，保留 GeeTest 图标、按序点选和滑块处理；未知或失败时人工完成，共享验证时长上限且不重复点击 Download。两个自动验证开关均可显式关闭。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-10-27 · v0.20.20
 
 - 点击“疑似同一模型”后只查看该组，核对后再手动选择合并，支持返回全部和保留筛选上下文。
 - 排除导入暂存名、哈希串等造成的误分组，切换组时清空旧勾选。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-10-26 · v0.20.19
 

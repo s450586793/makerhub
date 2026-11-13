@@ -176,6 +176,7 @@ def test_worker_schedules_missing_3mf_retry_only_when_archive_queue_is_idle():
 
 def test_worker_rechecks_blocked_accounts_without_pending_downloads(monkeypatch):
     manager = Mock()
+    manager.can_probe_account_verification.return_value = True
     recovery = Mock(return_value={"recovered_platforms": ["cn"], "attempted": 1})
     monkeypatch.setattr(worker, "run_account_verification_recovery_once", recovery, raising=False)
     config_store = object()
@@ -187,7 +188,7 @@ def test_worker_rechecks_blocked_accounts_without_pending_downloads(monkeypatch)
     )
 
     assert result["recovered_platforms"] == ["cn"]
-    recovery.assert_called_once_with(store=config_store)
+    recovery.assert_called_once_with(store=config_store, can_probe=manager.can_probe_account_verification)
     manager.ensure_worker_for_pending.assert_called_once_with(force=True)
 
 
@@ -195,6 +196,7 @@ def test_worker_does_not_probe_accounts_during_runnable_archive_work(monkeypatch
     recovery = Mock()
     monkeypatch.setattr(worker, "run_account_verification_recovery_once", recovery, raising=False)
     manager = Mock()
+    manager.can_probe_account_verification.return_value = False
 
     result = worker.run_worker_account_verification_recovery(
         manager, {"queued_count": 1, "queued": [{"status": "queued"}]},
@@ -210,6 +212,7 @@ def test_worker_keeps_manual_pause_when_automatic_probe_does_not_recover(monkeyp
         return_value={"recovered_platforms": [], "attempted": 1},
     ), raising=False)
     manager = Mock()
+    manager.can_probe_account_verification.return_value = True
 
     result = worker.run_worker_account_verification_recovery(
         manager, {"queued_count": 1, "queued": [{"status": "paused"}]},
@@ -226,12 +229,37 @@ def test_worker_probe_errors_leave_queue_unchanged_and_hide_private_details(monk
     log = Mock()
     monkeypatch.setattr(worker, "append_business_log", log)
     manager = Mock()
+    manager.can_probe_account_verification.return_value = True
 
     result = worker.run_worker_account_verification_recovery(manager, {})
 
     assert result == {"recovered_platforms": [], "reason": "error"}
     assert "private browser token" not in str(log.call_args)
     manager.ensure_worker_for_pending.assert_not_called()
+
+
+def test_worker_probes_when_queued_work_is_waiting_for_verification(monkeypatch):
+    manager = SimpleNamespace(can_probe_account_verification=lambda: True)
+    recovery = Mock(return_value={"recovered_platforms": []})
+    monkeypatch.setattr(worker, "run_account_verification_recovery_once", recovery)
+
+    result = worker.run_worker_account_verification_recovery(
+        manager, {"queued_count": 1, "running_count": 0, "queued": [{"status": "queued"}]},
+    )
+
+    assert result["recovered_platforms"] == []
+    recovery.assert_called_once_with(store=None, can_probe=manager.can_probe_account_verification)
+
+
+def test_worker_does_not_probe_when_latest_queue_cannot_be_verified(monkeypatch):
+    recovery = Mock()
+    monkeypatch.setattr(worker, "run_account_verification_recovery_once", recovery)
+    manager = SimpleNamespace(can_probe_account_verification=Mock(side_effect=RuntimeError("queue unavailable")))
+
+    result = worker.run_worker_account_verification_recovery(manager, {})
+
+    assert result["recovered_platforms"] == []
+    recovery.assert_not_called()
 
 
 def test_verified_account_bypasses_recent_maintenance_backoff(monkeypatch):

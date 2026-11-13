@@ -44,6 +44,42 @@ class ArchiveWorkerBrowserRecoveryTest(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    def test_account_probe_allows_queued_three_mf_task_blocked_by_verification(self):
+        manager, _store = self._manager_with_cookie("token=test")
+        item = {"status": "queued", "url": "https://makerworld.com.cn/zh/models/123", "meta": {"missing_3mf_retry": True, "source": "cn"}}
+        manager.task_store = SimpleNamespace(load_archive_queue=lambda: {"active": [], "queued": [item], "queued_count": 1, "running_count": 0})
+        with patch.object(archive_worker_module, "three_mf_gate_for_url", return_value={"open": False, "state": "verification_required", "platform": "cn"}):
+            self.assertTrue(manager.can_probe_account_verification())
+
+    def test_account_probe_keeps_normal_queued_archive_work_first(self):
+        manager, _store = self._manager_with_cookie("token=test")
+        item = {"status": "queued", "mode": "single_model", "url": "https://makerworld.com.cn/zh/models/3158142", "meta": {"model_url": "https://makerworld.com.cn/zh/models/3158142"}}
+        manager.task_store = SimpleNamespace(load_archive_queue=lambda: {"active": [], "queued": [item], "queued_count": 1, "running_count": 0})
+        with patch.object(archive_worker_module, "three_mf_gate_for_url", return_value={"open": False, "state": "verification_required", "platform": "cn"}):
+            self.assertFalse(manager.can_probe_account_verification())
+
+    def test_account_probe_rechecks_entire_queue_after_blocked_first_item(self):
+        manager, _store = self._manager_with_cookie("token=test")
+        blocked = {"status": "queued", "url": "https://makerworld.com.cn/zh/models/123", "meta": {"missing_3mf_retry": True, "source": "cn"}}
+        runnable = {"status": "queued", "url": "https://makerworld.com.cn/zh/models/456", "meta": {}}
+        manager.task_store = SimpleNamespace(load_archive_queue=lambda: {"active": [], "queued": [blocked, runnable], "queued_count": 2, "running_count": 0})
+        with patch.object(archive_worker_module, "three_mf_gate_for_url", return_value={"open": False, "state": "verification_required", "platform": "cn"}):
+            self.assertFalse(manager.can_probe_account_verification())
+
+    def test_account_probe_waits_for_browser_blocked_queue_and_skips_unknown_state(self):
+        manager, store = self._manager_with_cookie("token=test")
+        config = store.load()
+        config.cookies[0].browser_status = "action_required"
+        store.save(config)
+        item = {"status": "queued", "url": "https://makerworld.com.cn/zh/models/123", "meta": {}}
+        queue = {"active": [], "queued": [item], "queued_count": 1, "running_count": 0}
+        manager.task_store = SimpleNamespace(load_archive_queue=lambda: queue)
+        self.assertTrue(manager.can_probe_account_verification())
+        queue["active"] = [{"status": "running"}]
+        self.assertFalse(manager.can_probe_account_verification())
+        queue.update(active=[], queued_truncated=True)
+        self.assertFalse(manager.can_probe_account_verification())
+
     def test_same_browser_session_marks_gate_as_browser_confirmation_without_retry(self):
         manager, store = self._manager_with_cookie("token=same; refreshToken=refresh; cf_clearance=clear")
         browser_result = CloakBrowserSessionResult(

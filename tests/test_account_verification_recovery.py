@@ -369,6 +369,14 @@ class AccountVerificationRecoveryTest(unittest.TestCase):
         self.assertEqual(self.requests, [])
         self.assertEqual(self.reservations, [])
 
+    def test_latest_runnable_queue_before_dispatch_does_not_spend_attempt(self):
+        allowed = iter((True, False))
+        result = self.module.run_account_verification_recovery_once(store=self.store, can_probe=lambda: next(allowed))
+        self.assertEqual(result["attempted"], 0)
+        self.assertEqual(self.requests, [])
+        self.assertEqual(self.reservations, [])
+        self.assertNotIn(self.module.ACCOUNT_VERIFICATION_RECOVERY_STATE_KEY, self.state)
+
 
 if __name__ == "__main__":
     unittest.main()
