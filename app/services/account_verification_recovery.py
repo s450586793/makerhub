@@ -19,6 +19,7 @@ from app.services.cloakbrowser_session import (
     browser_authorize_3mf_download,
     browser_prepare_3mf_download,
     cloakbrowser_configured,
+    normalize_authorization_diagnostics,
     synchronize_browser_session,
 )
 from app.services.cookie_utils import extract_auth_token, sanitize_cookie_header
@@ -381,6 +382,9 @@ def _authorization_diagnostics(response: dict[str, Any]) -> dict[str, Any]:
         verification = _normalized_auto_verification_diagnostics(response["verification"])
         diagnostics["verification"] = {"attempted": verification["attempted"], "completed": verification["completed"],
                                        **verification["fields"]}
+    authorization = normalize_authorization_diagnostics(response.get("authorization_diagnostics"))
+    if authorization:
+        diagnostics["authorization"] = authorization
     return diagnostics
 
 

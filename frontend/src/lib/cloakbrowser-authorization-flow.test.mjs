@@ -3,20 +3,28 @@ import { test } from "node:test";
 
 import { coordinateThreeMfAuthorization } from "../../../app/services/cloakbrowser_bridge.mjs";
 
-function authorizationFixture({ captcha = false } = {}) {
+function authorizationFixture({ captcha = false, secondResponse = null } = {}) {
   const calls = { clicks: 0, waiters: [], order: [] };
   const response = {
     url: () => "https://api.bambulab.cn/v1/design-service/instance/123/f3mf",
+    request: () => ({ method: () => "GET" }),
     status: () => captcha ? 418 : 200,
     text: async () => JSON.stringify(captcha
       ? { captchaId: "fixture-captcha" }
       : { name: "fixture.3mf", url: "https://download.example.test/fixture.3mf" }),
   };
   const page = {
-    waitForResponse: (_matcher, options) => {
+    waitForResponse: (matcher, options) => {
       calls.order.push("waiter");
       calls.waiters.push(options);
-      if (calls.waiters.length === 1) return Promise.resolve(response);
+      if (calls.waiters.length === 1) {
+        assert.equal(matcher(response), true);
+        return Promise.resolve(response);
+      }
+      if (secondResponse) {
+        assert.equal(matcher(secondResponse), true);
+        return Promise.resolve(secondResponse);
+      }
       return new Promise((_resolve, reject) => {
         options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
       });
@@ -35,6 +43,44 @@ function authorizationFixture({ captcha = false } = {}) {
   return { page, options, calls };
 }
 
+test("authorization response matching accepts only GET and POST business requests", async () => {
+  const { page, options } = authorizationFixture();
+  const waitForResponse = page.waitForResponse;
+  let matcher;
+  page.waitForResponse = (responseMatcher, waiterOptions) => {
+    matcher = responseMatcher;
+    return waitForResponse(responseMatcher, waiterOptions);
+  };
+  assert.equal((await coordinateThreeMfAuthorization(page, {
+    ...options, inputAutoVerify: false,
+    pageVerificationAdapter: async () => ({ detected: false, completed: true, kind: "none" }),
+  })).status_code, 200);
+  const response = { url: () => "https://api.bambulab.cn/v1/design-service/instance/123/f3mf" };
+  for (const method of ["GET", "POST"]) {
+    assert.equal(matcher({ ...response, request: () => ({ method: () => method }) }), true, method);
+  }
+  for (const method of ["OPTIONS", "HEAD", "PUT", "PATCH", "DELETE", "TRACE", "CONNECT", "get", "", null, undefined, 1]) {
+    assert.equal(matcher({ ...response, request: () => ({ method: () => method }) }), false, String(method));
+  }
+  const unavailableRequests = [
+    { name: "missing request", response },
+    { name: "null request", response: { ...response, request: () => null } },
+    { name: "missing method", response: { ...response, request: () => ({}) } },
+    { name: "throwing request", response: { ...response, request: () => { throw new Error("request unavailable"); } } },
+    { name: "throwing method", response: { ...response, request: () => ({ method: () => { throw new Error("method unavailable"); } }) } },
+  ];
+  for (const unavailable of unavailableRequests) {
+    assert.equal(matcher(unavailable.response), false, unavailable.name);
+  }
+  for (const url of [
+    "https://api.bambulab.cn/v1/design-service/instance/456/f3mf",
+    "https://untrusted.example.test/v1/design-service/instance/123/f3mf",
+    "https://api.bambulab.cn/v1/design-service/instance/123/other",
+  ]) {
+    assert.equal(matcher({ url: () => url, request: () => ({ method: () => "GET" }) }), false, url);
+  }
+});
+
 test("3MF preflight finishes before arming authorization and clicks Download only once", async () => {
   const { page, options, calls } = authorizationFixture();
   const result = await coordinateThreeMfAuthorization(page, {
@@ -50,6 +96,8 @@ test("3MF preflight finishes before arming authorization and clicks Download onl
   assert.equal(calls.order[0], "preflight");
   assert.equal(calls.clicks, 1);
   assert.equal(result.status_code, 200);
+  assert.equal(result.authorization_diagnostics.stage, "not_required");
+  assert.equal(result.authorization_diagnostics.post_verification_adapter_started, false);
 });
 
 test("3MF unresolved preflight returns manual Cloudflare state without authorization", async () => {
@@ -66,6 +114,8 @@ test("3MF unresolved preflight returns manual Cloudflare state without authoriza
   assert.equal(calls.clicks, 0);
   assert.equal(calls.waiters.length, 0);
   assert.equal(result.verification.completed, false);
+  assert.equal(result.authorization_diagnostics.stage, "preflight");
+  assert.equal(result.authorization_diagnostics.post_verification_adapter_started, false);
 });
 
 test("disabling preflight interaction preserves passive checks independently of 3MF verification", async () => {
@@ -104,6 +154,10 @@ test("preflight and post-click verification share one time budget", async () => 
   assert.ok(calls.waiters[1].timeout <= 75);
   assert.equal(calls.clicks, 1);
   assert.equal(result.status_code, 418);
+  assert.equal(result.authorization_diagnostics.stage, "post_verification");
+  assert.equal(result.authorization_diagnostics.post_verification_adapter_started, true);
+  assert.equal(result.authorization_diagnostics.post_verification_budget_ms, adapterBudget);
+  assert.ok(result.authorization_diagnostics.preflight_verification_ms >= 30);
 });
 
 test("an exhausted preflight budget cannot start a second verification stage", async () => {
@@ -120,6 +174,115 @@ test("an exhausted preflight budget cannot start a second verification stage", a
   assert.equal(result.status_code, 418);
   assert.equal(result.verification.completed, false);
   assert.equal(result.verification.reason, "timeout");
+  assert.equal(calls.clicks, 1);
+  assert.deepEqual(result.authorization_diagnostics, {
+    preflight_verification_ms: result.authorization_diagnostics.preflight_verification_ms,
+    post_verification_budget_ms: 0,
+    post_verification_adapter_started: false,
+    stage: "post_budget_exhausted",
+  });
+  assert.ok(result.authorization_diagnostics.preflight_verification_ms >= 15);
+});
+
+test("an unrecognized post-click challenge is distinct from an exhausted preflight budget", async () => {
+  const { page, options, calls } = authorizationFixture({ captcha: true });
+  const frame = { $: async () => null, $$: async () => [] };
+  page.mainFrame = () => frame;
+  page.frames = () => [frame];
+  const result = await coordinateThreeMfAuthorization(page, {
+    ...options,
+    verificationTimeoutMs: 120,
+    pageVerificationAdapter: async () => ({ detected: false, completed: true, kind: "none" }),
+  });
+  assert.deepEqual(result.verification, {
+    attempted: false, completed: false, provider: "unknown", challenge_type: "unknown", attempts: 0, reason: "timeout",
+  });
+  assert.equal(result.authorization_diagnostics.stage, "post_verification");
+  assert.equal(result.authorization_diagnostics.post_verification_adapter_started, true);
+  assert.ok(result.authorization_diagnostics.post_verification_budget_ms > 0);
+  assert.ok(result.authorization_diagnostics.post_verification_budget_ms <= 120);
+  assert.equal(calls.clicks, 1);
+  assert.equal(result.status_code, 418);
+  assert.equal(Object.hasOwn(result.payload, "url"), false);
+});
+
+test("disabled post-click verification never claims that its adapter started", async () => {
+  const { page, options, calls } = authorizationFixture({ captcha: true });
+  const result = await coordinateThreeMfAuthorization(page, {
+    ...options,
+    inputAutoVerify: false,
+    pageVerificationAdapter: async () => ({ detected: false, completed: true, kind: "none" }),
+    verificationAdapter: async () => assert.fail("post-click verification is disabled"),
+  });
+  assert.equal(result.status_code, 418);
+  assert.equal(result.authorization_diagnostics.stage, "verification_disabled");
+  assert.equal(result.authorization_diagnostics.post_verification_budget_ms, 0);
+  assert.equal(result.authorization_diagnostics.post_verification_adapter_started, false);
+  assert.equal(calls.clicks, 1);
+});
+
+test("authorization diagnostics retain only bounded internal fields without expanding verification limits", async () => {
+  for (const [requestedAttempts, expectedAttempts] of [[99, 2], [-4, 1]]) {
+    const { page, options, calls } = authorizationFixture({ captcha: true });
+    let postBudget;
+    const result = await coordinateThreeMfAuthorization(page, {
+      ...options,
+      verificationTimeoutMs: 1_000_000,
+      verificationMaxAttempts: requestedAttempts,
+      pageVerificationAdapter: async (_page, { timeoutMs, maxAttempts }) => {
+        assert.ok(timeoutMs <= 50_000);
+        assert.equal(maxAttempts, expectedAttempts);
+        return { detected: false, completed: true, kind: "none", token: "must-not-leak" };
+      },
+      verificationAdapter: async (_page, { timeoutMs, maxAttempts }) => {
+        assert.ok(timeoutMs > 0 && timeoutMs <= 50_000);
+        assert.equal(maxAttempts, expectedAttempts);
+        postBudget = timeoutMs;
+        return { attempted: false, completed: false, reason: "timeout", token: "must-not-leak" };
+      },
+    });
+    const diagnostics = result.authorization_diagnostics;
+    assert.deepEqual(Object.keys(diagnostics).sort(), ["post_verification_adapter_started",
+      "post_verification_budget_ms", "preflight_verification_ms", "stage"]);
+    assert.ok(Number.isInteger(diagnostics.preflight_verification_ms));
+    assert.ok(diagnostics.preflight_verification_ms >= 0 && diagnostics.preflight_verification_ms <= 50_000);
+    assert.equal(diagnostics.post_verification_budget_ms, postBudget);
+    assert.equal(diagnostics.post_verification_adapter_started, true);
+    assert.equal(diagnostics.stage, "post_verification");
+    assert.equal(JSON.stringify(result).includes("must-not-leak"), false);
+    assert.equal(calls.clicks, 1);
+    assert.equal(Object.hasOwn(result.payload, "url"), false);
+  }
+});
+
+test("a page-generated signed response still cancels the adapter and records its actual start", async () => {
+  const secondResponse = {
+    url: () => "https://api.bambulab.cn/v1/design-service/instance/123/f3mf",
+    request: () => ({ method: () => "GET" }),
+    status: () => 200,
+    text: async () => {
+      await new Promise(resolve => setTimeout(resolve, 5));
+      return JSON.stringify({ name: "fixture.3mf", url: "https://download.example.test/fixture.3mf" });
+    },
+  };
+  const { page, options, calls } = authorizationFixture({ captcha: true, secondResponse });
+  let cancelled = false;
+  const result = await coordinateThreeMfAuthorization(page, {
+    ...options,
+    pageVerificationAdapter: async () => ({ detected: false, completed: true, kind: "none" }),
+    verificationAdapter: async (_page, { signal }) => await new Promise(resolve => {
+      signal.addEventListener("abort", () => {
+        cancelled = true;
+        resolve({ attempted: false, completed: false, reason: "aborted" });
+      }, { once: true });
+    }),
+  });
+  assert.equal(cancelled, true);
+  assert.equal(result.status_code, 200);
+  assert.equal(result.payload.url, "https://download.example.test/fixture.3mf");
+  assert.equal(result.verification.completed, true);
+  assert.equal(result.authorization_diagnostics.stage, "page_response");
+  assert.equal(result.authorization_diagnostics.post_verification_adapter_started, true);
   assert.equal(calls.clicks, 1);
 });
 

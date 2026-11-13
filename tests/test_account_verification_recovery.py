@@ -242,6 +242,47 @@ class AccountVerificationRecoveryTest(unittest.TestCase):
         self.assertTrue(diagnostics["verification"]["completed"])
         self.assertNotIn("private-signature", json.dumps({"state": self.state, "result": result}))
 
+    def test_authorization_stages_distinguish_exhausted_budget_from_running_detector(self):
+        for index, (stage, consumed, remaining, started) in enumerate((
+                ("post_budget_exhausted", 50000, 0, False),
+                ("post_verification", 150, 49850, True))):
+            with self.subTest(stage=stage):
+                fields = {"stage": stage, "preflight_verification_ms": consumed,
+                          "post_verification_budget_ms": remaining,
+                          "post_verification_adapter_started": started}
+                self.response = {"status_code": 418, "payload": {"captchaId": "private-captcha"},
+                                 "authorization_diagnostics": {**fields, "token": "private-token"}}
+                self.config.cookies[0].cookie = f"token=stage-diagnostic-{index}"
+                result = self.run_recovery()
+                fingerprint = self.module._fingerprint(self.config.cookies[0])
+                attempt = self.state[self.module.ACCOUNT_VERIFICATION_RECOVERY_STATE_KEY]["platforms"]["cn"]["attempts"][fingerprint]
+                self.assertEqual(result["items"][0]["diagnostics"]["authorization"], fields)
+                self.assertEqual(attempt["diagnostics"]["authorization"], fields)
+                self.assertEqual(attempt["status"], "failed")
+                self.assertEqual(self.state["account_health"]["cn"]["three_mf_gate"], "verification_required")
+                self.assertEqual((len(self.requests), len(self.reservations)), (index + 1, index + 1))
+                self.assertNotIn("private-", json.dumps({"result": result, "state": self.state}))
+
+    def test_authorization_stage_diagnostics_reject_invalid_fields_without_stringification(self):
+        for index, fields in enumerate((None, {}, "private-token", ["private-token"],
+                {"stage": "private-token", "preflight_verification_ms": True,
+                 "post_verification_budget_ms": "500", "post_verification_adapter_started": 1,
+                 "token": "private-token"},
+                {"stage": {}, "preflight_verification_ms": float("nan"),
+                 "post_verification_budget_ms": float("inf")})):
+            with self.subTest(fields=fields):
+                self.response = {"status_code": 418, "payload": {}, "authorization_diagnostics": fields}
+                self.config.cookies[0].cookie = f"token=invalid-stage-diagnostic-{index}"
+                diagnostics = self.run_recovery()["items"][0]["diagnostics"]
+                self.assertNotIn("authorization", diagnostics)
+
+    def test_authorization_stage_diagnostic_milliseconds_are_bounded(self):
+        self.response = {"status_code": 418, "payload": {}, "authorization_diagnostics": {
+            "preflight_verification_ms": -(10 ** 400), "post_verification_budget_ms": 10 ** 400}}
+        diagnostics = self.run_recovery()["items"][0]["diagnostics"]
+        self.assertEqual(diagnostics["authorization"], {
+            "preflight_verification_ms": 0, "post_verification_budget_ms": 50000})
+
     def test_missing_verification_contract_is_not_reported_as_failed_verification(self):
         for index, verification in enumerate((None, {}, "private-verification", ["private-verification"])):
             with self.subTest(verification=verification):

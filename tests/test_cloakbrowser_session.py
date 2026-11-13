@@ -1718,6 +1718,13 @@ class CloakBrowserSessionTest(unittest.TestCase):
             "ok": True,
             "status_code": 200,
             "payload": {"name": "part.3mf", "url": "https://download.example.test/part.3mf"},
+            "authorization_diagnostics": {
+                "preflight_verification_ms": 125,
+                "post_verification_budget_ms": 49875,
+                "post_verification_adapter_started": True,
+                "stage": "page_response",
+                "token": "must-not-leak",
+            },
             "verification": {
                 "attempted": True,
                 "completed": True,
@@ -1753,6 +1760,12 @@ class CloakBrowserSessionTest(unittest.TestCase):
 
         self.assertEqual(result["status_code"], 200)
         self.assertEqual(result["payload"]["name"], "part.3mf")
+        self.assertEqual(result["authorization_diagnostics"], {
+            "preflight_verification_ms": 125,
+            "post_verification_budget_ms": 49875,
+            "post_verification_adapter_started": True,
+            "stage": "page_response",
+        })
         self.assertEqual(
             result["verification"],
             {

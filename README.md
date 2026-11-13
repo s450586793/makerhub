@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.21.5`
+> 当前版本：`v0.21.6`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -370,6 +370,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-11-13 · v0.21.6
+
+- 修复跨域下载授权被 `OPTIONS` 预检响应抢先匹配，导致验证码通过后仍误报失败的问题。
+- 国际站登录回跳在原超时内等待文档加载完成，避免页面稍慢就被误判为未登录。
+- 授权诊断区分前置预算耗尽与后置验证码处理已启动，继续保护下载地址和账号凭据。
+
 ### 2026-11-13 · v0.21.5
 
 - 修复封闭 Shadow DOM 中的 Cloudflare 验证组件漏检，页面可见的官方复选框可通过 CDP 定位。
@@ -381,13 +387,13 @@ npm --prefix frontend run build
 - 浏览器登录同步增加真实登录检查，匿名首页不再误报同步成功。
 - ticket 登录未完成时，有限尝试官方登录确认并复用页面验证处理；手动同步也核对真实登录态，仍需登录或验证时保留失败。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-11-13 · v0.21.3
 
 - 复测先读取网页当前配置，跳过已删除的旧配置，下载前再次核对实际选中项。
 - 浏览器掉登录时使用已保存账号同步一次；预检失败不占下载额度，保留冷却与脱敏诊断。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-11-13 · v0.21.2
 

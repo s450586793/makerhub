@@ -345,9 +345,17 @@ function sanitizedAuthorizationPayload(payload, text) {
 }
 
 function authorizationResponseMatches(response, instanceId) {
-  if (!isThreeMfAuthorizationUrl(response.url())) return false;
-  const matched = response.url().match(/\/instance\/(\d+)\/f3mf/i);
-  return !instanceId || matched?.[1] === String(instanceId);
+  try {
+    // CORS 预检响应不能抢先消耗网页实际生成的下载授权。
+    const method = response.request().method();
+    if (method !== "GET" && method !== "POST") return false;
+    const url = response.url();
+    if (!isThreeMfAuthorizationUrl(url)) return false;
+    const matched = url.match(/\/instance\/(\d+)\/f3mf/i);
+    return !instanceId || matched?.[1] === String(instanceId);
+  } catch {
+    return false;
+  }
 }
 
 export async function readAuthorizationResponse(response) {
@@ -507,6 +515,18 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
     ? Math.max(1, Math.min(2, Math.floor(requestedAttempts))) : 2;
   let verificationConsumed = 0;
   const remainingVerification = () => Math.max(0, Math.floor(verificationBudget - verificationConsumed));
+  const authorizationDiagnostics = {
+    post_verification_budget_ms: 0,
+    post_verification_adapter_started: false,
+    stage: "preflight",
+  };
+  const withDiagnostics = (response) => ({
+    ...response,
+    authorization_diagnostics: {
+      preflight_verification_ms: Math.min(AUTO_VERIFY_TIMEOUT_MS, Math.max(0, Math.round(verificationConsumed))),
+      ...authorizationDiagnostics,
+    },
+  });
   const verifyPage = async () => {
     options.assertPageAllowed?.();
     const started = performance.now();
@@ -591,22 +611,28 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
     try {
       const first = await readAuthorizationResponse(firstOutcome.response);
       if (!options.inputAutoVerify || !isVerificationAuthorization(first)) {
-        return { ...first, navigation_timed_out: Boolean(options.navigationTimedOut) };
+        authorizationDiagnostics.stage = isVerificationAuthorization(first) ? "verification_disabled" : "not_required";
+        return withDiagnostics({ ...first, navigation_timed_out: Boolean(options.navigationTimedOut) });
       }
       if (remainingPostVerification() <= 0) {
-        return {
+        authorizationDiagnostics.stage = "post_budget_exhausted";
+        return withDiagnostics({
           ...first,
           navigation_timed_out: Boolean(options.navigationTimedOut),
           verification: sanitizeVerificationResult({ completed: false, reason: "timeout" }),
-        };
+        });
       }
 
       const verificationAdapter = options.verificationAdapter || attemptAutomaticVerification;
       const verificationController = new AbortController();
       const verificationOutcome = Promise.resolve().then(async () => {
         try {
+          const timeoutMs = Math.max(1, remainingPostVerification());
+          authorizationDiagnostics.post_verification_budget_ms = timeoutMs;
+          authorizationDiagnostics.post_verification_adapter_started = true;
+          authorizationDiagnostics.stage = "post_verification";
           return sanitizeVerificationResult(await verificationAdapter(page, {
-            timeoutMs: Math.max(1, remainingPostVerification()),
+            timeoutMs,
             maxAttempts: verificationMaxAttempts,
             signal: verificationController.signal,
           }));
@@ -639,17 +665,18 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
           reason: "completed",
         });
         finalResponse = winner.response;
+        authorizationDiagnostics.stage = "page_response";
       } else {
         verification = winner.verification;
         finalResponse = verification.completed
           ? (await secondParsedResponse) || first
           : first;
       }
-      return {
+      return withDiagnostics({
         ...finalResponse,
         navigation_timed_out: Boolean(options.navigationTimedOut),
         verification,
-      };
+      });
     } finally {
       secondWaiterController?.abort();
       if (secondResponseOutcome) await secondResponseOutcome;
@@ -662,14 +689,14 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
       return { status_code: 200, payload: { code: "MAKERHUB_CROWDFUNDING" } };
     }
     if (error?.code === "MAKERHUB_CLOUDFLARE") {
-      return {
+      return withDiagnostics({
         status_code: 403,
         payload: { code: "MAKERHUB_CLOUDFLARE" },
         ...(error.verification ? { verification: error.verification } : {}),
-      };
+      });
     }
     if (error?.code === "MAKERHUB_PAGE_VERIFICATION") {
-      return { status_code: 418, payload: { code: "MAKERHUB_PAGE_VERIFICATION" }, verification: error.verification };
+      return withDiagnostics({ status_code: 418, payload: { code: "MAKERHUB_PAGE_VERIFICATION" }, verification: error.verification });
     }
     throw error;
   } finally {

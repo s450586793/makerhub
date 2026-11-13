@@ -1402,6 +1402,24 @@ def browser_prepare_3mf_download(platform: str, *, profile_id: str, model_url: s
             "authenticated": preflight.get("authenticated") is True, "reason": reason, "model": normalized_model}
 
 
+def normalize_authorization_diagnostics(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    result = {}
+    stages = {"preflight", "not_required", "verification_disabled", "post_budget_exhausted",
+              "post_verification", "page_response"}
+    if isinstance(value.get("stage"), str) and value["stage"] in stages:
+        result["stage"] = value["stage"]
+    for key in ("preflight_verification_ms", "post_verification_budget_ms"):
+        duration = value.get(key)
+        if type(duration) is int or (type(duration) is float and math.isfinite(duration)):
+            result[key] = max(0, min(AUTO_VERIFY_TIMEOUT_SECONDS * 1000, int(duration)))
+    started = value.get("post_verification_adapter_started")
+    if type(started) is bool:
+        result["post_verification_adapter_started"] = started
+    return result
+
+
 def browser_authorize_3mf_download(
     platform: str,
     api_url: str,
@@ -1479,6 +1497,7 @@ def browser_authorize_3mf_download(
         status_code = 0
     payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
     verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
+    authorization_diagnostics = normalize_authorization_diagnostics(result.get("authorization_diagnostics"))
     return {
         "status_code": max(status_code, 0),
         "payload": payload,
@@ -1496,6 +1515,7 @@ def browser_authorize_3mf_download(
             )
             if key in verification
         },
+        **({"authorization_diagnostics": authorization_diagnostics} if authorization_diagnostics else {}),
     }
 
 

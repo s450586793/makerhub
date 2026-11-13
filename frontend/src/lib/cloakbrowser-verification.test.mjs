@@ -354,9 +354,11 @@ function fakeAuthorizationResponse({
   rawText,
   textError,
   url = "https://api.bambulab.cn/v1/design-service/instance/123/f3mf",
+  method = "GET",
 } = {}) {
   return {
     status: () => status,
+    request: () => ({ method: () => method }),
     text: async () => {
       if (textError) throw textError;
       return rawText ?? JSON.stringify(payload);

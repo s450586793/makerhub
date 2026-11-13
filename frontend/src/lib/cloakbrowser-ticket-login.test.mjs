@@ -11,9 +11,10 @@ function helper(name) {
   return helpers[name];
 }
 
-function fixture({ mode = "confirmation", authenticated = false, challenge = false, challengeAfterContinue = false } = {}) {
+function fixture({ mode = "confirmation", authenticated = false, challenge = false, challengeAfterContinue = false, landingLoadMs = 0 } = {}) {
   let url = "https://makerworld.com/en";
   let state = authenticated ? "authenticated" : "anonymous";
+  let documentReadyAt = 0;
   let challengeVisible = challenge;
   let clicks = 0;
   const navigations = [];
@@ -28,6 +29,12 @@ function fixture({ mode = "confirmation", authenticated = false, challenge = fal
       navigations.push(target);
       url = target.startsWith("https://makerworld.com/api/sign-in/ticket") ? "https://makerworld.com/en" : target;
       state = target.startsWith("https://bambulab.com/") ? mode : state;
+      if (state === "automatic_redirect") {
+        url = "https://makerworld.com/en";
+        state = "authenticated";
+        cookies[1].value = "makerworld-fixture-token";
+        documentReadyAt = Date.now() + landingLoadMs;
+      }
     },
     evaluate: async (fn, input) => {
       const buttons = state === "confirmation" ? [button("Sign Out"), button("Continue", () => {
@@ -38,7 +45,8 @@ function fixture({ mode = "confirmation", authenticated = false, challenge = fal
         cookies[1].value = "makerworld-fixture-token";
       })] : state === "anonymous" ? [button("Log In")] : [];
       const document = {
-        title: challengeVisible ? "Just a moment" : "MakerWorld", body: {}, readyState: "complete",
+        title: challengeVisible ? "Just a moment" : "MakerWorld", body: {},
+        readyState: Date.now() < documentReadyAt ? "interactive" : "complete",
         querySelector: (selector) => selector.includes("#challenge-form") && challengeVisible ? {}
           : selector.startsWith("input") && state === "form" ? {} : null,
         querySelectorAll: (selector) => selector.includes("button") ? buttons : [],
@@ -122,6 +130,32 @@ test("ordinary Bambu sign-in forms remain available without submitting credentia
   assert.equal(result.authenticated, false);
   assert.equal(result.authentication_reason, "auth_required");
   assert.equal(result.login_fallback_attempted, true);
+  assert.equal(current.navigations.length, 2);
+  assert.equal(current.clicks(), 0);
+});
+
+test("ticket fallback waits for an automatically redirected MakerWorld document within the existing deadline", async () => {
+  const current = fixture({ mode: "automatic_redirect", landingLoadMs: 650 });
+  const result = await helper("completeMakerWorldTicketSession")(current.context, current.page, "global", {
+    targetUrl: ticketUrl, timeoutMs: 3000,
+  });
+  assert.equal(result.authenticated, true);
+  assert.equal(result.authentication_reason, "ready");
+  assert.equal(result.login_fallback_attempted, true);
+  assert.equal(current.navigations.length, 2);
+  assert.equal(current.clicks(), 0);
+});
+
+test("waiting for the redirected MakerWorld document cannot extend the shared deadline or restart SSO", async () => {
+  const current = fixture({ mode: "automatic_redirect", landingLoadMs: 10000 });
+  const started = performance.now();
+  const result = await helper("completeMakerWorldTicketSession")(current.context, current.page, "global", {
+    targetUrl: ticketUrl, timeoutMs: 1400,
+  });
+  assert.equal(result.authenticated, false);
+  assert.equal(result.authentication_reason, "navigation_failed");
+  assert.equal(result.login_fallback_attempted, true);
+  assert.ok(performance.now() - started < 1800);
   assert.equal(current.navigations.length, 2);
   assert.equal(current.clicks(), 0);
 });

@@ -206,6 +206,15 @@ export async function completeMakerWorldTicketSession(context, page, platform, o
     }
     await settle(250);
     if (!await verifyPage()) return failed("verification_required", true);
+    // SSO 可先跳回站点再完成文档加载；仍在同一登录期限内等待严格认证前提。
+    while (isMakerWorldUrl(page.url(), platform)) {
+      if (/^\/api\/sign-in\/ticket\/?$/i.test(new URL(page.url()).pathname)) break;
+      const loaded = await bounded(() => page.evaluate(() => (
+        Boolean(document.body) && document.readyState === "complete"
+      )));
+      if (loaded) break;
+      await settle(100);
+    }
     state = await bounded(() => readMakerWorldAuthenticationState(context, page, platform));
     return { ...state, login_fallback_attempted: true };
   } catch {
