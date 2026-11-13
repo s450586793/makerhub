@@ -40,6 +40,56 @@ test("fetch URL identity normalizes uppercase hosts, default TLS ports, dot segm
   assert.equal(result.url, "https://makerworld.com/api/items");
 });
 
+test("Bambu model metadata uses the matching MakerWorld API without remapping authorization or unknown URLs", async (t) => {
+  const cases = [
+    ["cn", "https://api.bambulab.cn/v1/design-service/design/2938071?lang=zh&tag=a&tag=b#ignored",
+      "https://makerworld.com.cn/api/v1/design-service/design/2938071?lang=zh&tag=a&tag=b"],
+    ["global", "https://API.BAMBULAB.COM:443/v1/design-service/design/123/detail?source=web",
+      "https://makerworld.com/api/v1/design-service/design/123/detail?source=web"],
+    ["cn", "https://api.bambulab.com/v1/design-service/design/123"],
+    ["global", "https://api.bambulab.cn/v1/design-service/design/123"],
+    ["cn", "http://api.bambulab.cn/v1/design-service/design/123"],
+    ["cn", "https://api.bambulab.cn:8443/v1/design-service/design/123"],
+    ["cn", "https://user:private@api.bambulab.cn/v1/design-service/design/123"],
+    ["cn", "https://api.bambulab.cn.outside.test/v1/design-service/design/123"],
+    ["cn", "https://api.bambulab.cn/v1/design-service/design/123/f3mf"],
+    ["cn", "https://api.bambulab.cn/v1/design-service/instance/123/f3mf?type=download"],
+    ["cn", "https://api.bambulab.cn/v1/design-service/design/123/detail/../f3mf"],
+    ["cn", "https://api.bambulab.cn/v1/design-service/design/not-a-model"],
+    ["cn", "https://api.bambulab.cn/v1/design-service/design/123%2Fdetail"],
+    ["cn", "https://api.bambulab.cn/v1/user-service/my/profile"],
+    ["cn", "https://api.bambulab.cn/api/sign-in/ticket"],
+    ["cn", "https://makerworld.com.cn/api/v1/design-service/design/123"],
+  ];
+  for (const [platform, targetUrl, expected] of cases) {
+    await t.test(`${platform}: ${new URL(targetUrl).host}${new URL(targetUrl).pathname}`, async () => {
+      let pageUrl;
+      const session = { on() {}, off() {}, detach: async () => {},
+        send: async (method) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "main" } } } : {},
+      };
+      const page = {
+        target: () => ({ createCDPSession: async () => session }),
+        goto: async (url) => { pageUrl = url; return {}; },
+        url: () => pageUrl,
+        evaluate: async (_script, options) => ({ status_code: 200, url: options.url,
+          content_type: "application/json", text: "{}" }),
+      };
+      const result = await fetchInBusinessPage({ platform, context: { cookies: async () => [] }, targetUrl }, {
+        withTemporaryPage: async (_browser, _context, callback) => callback(page),
+        isAllowedBrowserFetchUrl: () => true,
+        cleanCookie: (cookie) => cookie, cleanFetchHeaders: () => ({}),
+        headersWithBrowserAuth: (headers) => headers,
+        hostnameMatchesDomains: () => true, platformDomains: () => [],
+        makerWorldHomeUrl: () => `https://${platform === "cn" ? "makerworld.com.cn" : "makerworld.com"}/zh`,
+        inspectPageVerificationState: async () => ({ detected: false }),
+      });
+      const normalized = new URL(targetUrl);
+      normalized.hash = "";
+      assert.equal(result.url, expected || normalized.href);
+    });
+  }
+});
+
 const executablePath = process.env.MAKERHUB_TEST_CHROMIUM;
 
 test("business-page GET uses local HTTP fixtures without external requests", {
@@ -169,6 +219,47 @@ test("business-page GET uses local HTTP fixtures without external requests", {
     }
   });
 
+  await t.test("a business-page redirect outside the allowlist remains blocked", async () => {
+    let outsideRequests = 0;
+    const outside = http.createServer((_request, response) => {
+      outsideRequests += 1;
+      response.end("must remain blocked");
+    });
+    await new Promise((resolve) => outside.listen(0, "127.0.0.1", resolve));
+    try {
+      routes.set("/business-redirect", (_request, response) => {
+        response.writeHead(302, { location: `http://127.0.0.1:${outside.address().port}/outside` });
+        response.end();
+      });
+      await assert.rejects(fetchInBusinessPage(input, { ...dependencies,
+        makerWorldHomeUrl: () => `${origin}/business-redirect`,
+      }));
+      assert.equal(outsideRequests, 0);
+      assert.equal(ownedPages.at(-1).isClosed(), true);
+    } finally {
+      await new Promise((resolve) => outside.close(resolve));
+    }
+  });
+
+  await t.test("a page changing to an outside origin cannot return a successful metadata result", async () => {
+    routes.set("/api/items", json({ metadata: true }));
+    await assert.rejects(fetchInBusinessPage(input, { ...dependencies,
+      withTemporaryPage: async (_browser, _context, callback) => {
+        const page = await context.newPage();
+        ownedPages.push(page);
+        const originalEvaluate = page.evaluate.bind(page);
+        page.evaluate = async (...args) => {
+          const result = await originalEvaluate(...args);
+          page.url = () => "https://outside.test/changed";
+          return result;
+        };
+        try { return await callback(page); }
+        finally { await page.close(); }
+      },
+    }), /outside allowed domains/);
+    assert.equal(ownedPages.at(-1).isClosed(), true);
+  });
+
   await t.test("allowlisted redirects still return the complete final response", async () => {
     routes.set("/api/items", (_request, response) => {
       response.writeHead(302, { location: "/api/final" });
@@ -210,6 +301,77 @@ test("business-page GET uses local HTTP fixtures without external requests", {
       assert.deepEqual(apiMethods, ["GET"]);
     } finally {
       await new Promise((resolve) => api.close(resolve));
+    }
+  });
+
+  await t.test("Bambu model metadata avoids a rejected cross-origin preflight through the same-site API", async () => {
+    requests.length = 0;
+    const externalRequests = [];
+    routes.set("/api/v1/design-service/design/2938071", json({ model: 2938071 }));
+    const deps = { ...dependencies,
+      isAllowedBrowserFetchUrl: (value) => [origin, "https://api.bambulab.cn"].includes(new URL(value).origin),
+      withTemporaryPage: async (_browser, _context, callback) => {
+        const page = await context.newPage();
+        ownedPages.push(page);
+        await page.setRequestInterception(true);
+        page.on("request", (request) => {
+          if (new URL(request.url()).origin === origin) void request.continue();
+          else { externalRequests.push(request.url()); void request.abort(); }
+        });
+        try { return await callback(page); }
+        finally { await page.close(); }
+      },
+    };
+    const result = await fetchInBusinessPage({ ...input,
+      targetUrl: "https://api.bambulab.cn/v1/design-service/design/2938071?lang=zh",
+      headers: { authorization: "Bearer fixture", token: "fixture" },
+    }, deps);
+    assert.deepEqual(JSON.parse(result.text), { model: 2938071 });
+    const metadata = requests.filter((request) => request.url.startsWith("/api/v1/design-service/design/"));
+    assert.deepEqual(metadata.map((request) => request.method), ["GET"]);
+    assert.equal(metadata[0].url, "/api/v1/design-service/design/2938071?lang=zh");
+    assert.equal(metadata[0].headers.referer, `${origin}/business`);
+    assert.equal(metadata[0].headers.authorization, "Bearer fixture");
+    assert.deepEqual(externalRequests, []);
+    assert.equal(ownedPages.at(-1).isClosed(), true);
+    assert.equal(manualPage.isClosed(), false);
+  });
+
+  await t.test("blocked background telemetry cannot turn a successful metadata GET into a redirect failure", async () => {
+    let outsideRequests = 0;
+    const outside = http.createServer((_request, response) => {
+      outsideRequests += 1;
+      response.end("must remain blocked");
+    });
+    await new Promise((resolve) => outside.listen(0, "127.0.0.1", resolve));
+    try {
+      routes.set("/api/items", (_request, response) => {
+        setTimeout(() => {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end('{"metadata":true}');
+        }, 50);
+      });
+      const result = await fetchInBusinessPage(input, { ...dependencies,
+        withTemporaryPage: async (_browser, _context, callback) => {
+          const page = await context.newPage();
+          ownedPages.push(page);
+          await page.evaluateOnNewDocument((telemetryUrl) => {
+            const originalFetch = window.fetch.bind(window);
+            window.fetch = (url, options) => {
+              if (String(url).endsWith("/api/items")) void originalFetch(telemetryUrl).catch(() => {});
+              return originalFetch(url, options);
+            };
+          }, `http://127.0.0.1:${outside.address().port}/telemetry`);
+          try { return await callback(page); }
+          finally { await page.close(); }
+        },
+      });
+      assert.equal(result.status_code, 200);
+      assert.deepEqual(JSON.parse(result.text), { metadata: true });
+      assert.equal(outsideRequests, 0);
+      assert.equal(ownedPages.at(-1).isClosed(), true);
+    } finally {
+      await new Promise((resolve) => outside.close(resolve));
     }
   });
 

@@ -29,6 +29,17 @@ function isCloudflareResponse(response) {
   );
 }
 
+function modelMetadataUrl(target, businessUrl, platform) {
+  const apiHost = { cn: "api.bambulab.cn", global: "api.bambulab.com" }[platform];
+  if (target.protocol !== "https:" || target.hostname !== apiHost || target.port
+    || target.username || target.password
+    || !/^\/v1\/design-service\/design\/\d+(?:\/detail)?\/?$/.test(target.pathname)) return target.href;
+  // Bambu API 的跨域预检不支持网页来源；模型详情使用站点已有的同源只读接口。
+  const sameOrigin = new URL(`/api${target.pathname}`, businessUrl);
+  sameOrigin.search = target.search;
+  return sameOrigin.href;
+}
+
 // 这里只接收任务自己创建的标签页；标签归属登记和关闭由调用者的 helper 保证。
 export async function fetchInBusinessPage(input, dependencies) {
   const {
@@ -43,9 +54,10 @@ export async function fetchInBusinessPage(input, dependencies) {
   if (!isAllowedBrowserFetchUrl(rawTargetUrl, platform)) throw new Error("invalid browser fetch URL");
   const normalizedTarget = new URL(rawTargetUrl);
   normalizedTarget.hash = "";
-  const targetUrl = normalizedTarget.href;
   const businessUrl = makerWorldHomeUrl(platform);
   if (!isAllowedBrowserFetchUrl(businessUrl, platform)) throw new Error("invalid browser business URL");
+  const targetUrl = modelMetadataUrl(normalizedTarget, businessUrl, platform);
+  if (!isAllowedBrowserFetchUrl(targetUrl, platform)) throw new Error("invalid browser fetch URL");
   const requestTimeout = positiveMilliseconds(input.timeoutMs, 30000);
   const verificationTimeout = Math.min(50000, positiveMilliseconds(input.verificationTimeoutMs, 50000));
   const defaultTotalTimeout = requestTimeout + Math.min(verificationTimeout, allowInteraction ? 50000 : 10000);
@@ -119,7 +131,8 @@ export async function fetchInBusinessPage(input, dependencies) {
         if ((apiChain || mainNavigation || managedFetch) && (
           !isAllowedBrowserFetchUrl(event.request.url, platform) || invalidRedirect
         )) {
-          blockedRequest = true;
+          // 外域遥测仍然拦截，但不能把无关的后台请求当作目标接口重定向失败。
+          if (apiChain || mainNavigation) blockedRequest = true;
           await session.send("Fetch.failRequest", { requestId: event.requestId, errorReason: "BlockedByClient" });
           return;
         }
