@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import ExitStack
 import os
 import tempfile
 import threading
@@ -197,7 +198,7 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(current.browser_status, "synced")
             self.assertIn("cf_clearance=verified", current.cookie)
 
-    async def test_store_browser_session_adopts_different_browser_account(self):
+    async def test_store_browser_session_defers_new_browser_account_identity_to_background_test(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")
             config = store.load()
@@ -205,6 +206,7 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
                 platform="global",
                 cookie="token=old",
                 account_id="account-a",
+                status="ok",
                 browser_profile_id="profile-global",
             )
             config.cookies = [target]
@@ -216,11 +218,11 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
                         config_api,
                         "online_account_metadata_from_cookie",
                         return_value={"account_id": "account-b", "status": "ok"},
-                    ), \
+                    ) as metadata_mock, \
                     patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms") as retry_mock, \
                     patch.object(config_api.subscription_manager, "request_cookie_source_sync"), \
                     patch.object(config_api, "_retry_verification_missing_3mf_for_platforms"), \
-                    patch.object(config_api, "_schedule_online_account_cookie_test"), \
+                    patch.object(config_api, "_schedule_online_account_cookie_test") as test_mock, \
                     patch.object(config_api, "_mark_online_account_checking"), \
                     patch.object(config_api, "append_business_log"), \
                     patch.object(config_api, "publish_state_event"):
@@ -229,8 +231,11 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             current = saved.cookies[0]
             self.assertTrue(applied)
             self.assertEqual(current.cookie, "token=other")
-            self.assertEqual(current.account_id, "account-b")
+            self.assertEqual(current.account_id, "account-a")
+            self.assertEqual(current.status, "checking")
             self.assertEqual(current.browser_status, "synced")
+            metadata_mock.assert_not_called()
+            test_mock.assert_called_once_with("global", current, saved.proxy)
             retry_mock.assert_called_once_with({"global"})
 
     async def test_store_browser_session_adopts_browser_cookie_when_identity_lookup_is_unavailable(self):
@@ -408,13 +413,15 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(saved.browser_synced_at, "2026-07-26T03:00:00+08:00")
             self.assertIn("后台启动任务", saved.browser_message)
 
-    async def test_manual_browser_sync_keeps_health_responsive_during_account_probe(self):
+    async def test_manual_browser_sync_returns_before_background_account_metadata_finishes(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = JsonStore(Path(tmp) / "config.json")
             config = store.load()
             config.cookies = [CookiePair(
                 platform="global",
                 cookie="token=old",
+                account_id="account-old",
+                status="ok",
                 browser_profile_id="profile-global",
             )]
             store.save(config)
@@ -424,40 +431,54 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             )
             probe_started = threading.Event()
             release_probe = threading.Event()
-            health_responded = threading.Event()
-            responsive_during_probe = []
+            background_finished = threading.Event()
+            background_threads = []
 
             def probe_metadata(**_kwargs):
                 probe_started.set()
-                release_probe.wait(timeout=5)
-                return {"account_id": "account-global", "status": "ok", "message": "ok"}
+                release_probe.wait(timeout=10)
+                return {
+                    "account_id": "account-global",
+                    "display_name": "Browser account",
+                    "status": "ok",
+                    "last_tested_at": "2026-11-14T18:00:00+08:00",
+                }
 
-            def guard_probe():
-                # 即使事件循环被同步网络调用堵住，也能释放测试并记录失败。
-                started = probe_started.wait(timeout=5)
-                responsive_during_probe.append(started and health_responded.wait(timeout=2))
-                release_probe.set()
+            def publish_event(_topic, _event, payload):
+                if payload.get("reason") == "online_account_test_completed":
+                    background_threads.append(threading.current_thread())
+                    background_finished.set()
 
             app = FastAPI()
             app.include_router(config_api.router)
             app.include_router(system_api.router)
-            guard = threading.Thread(target=guard_probe, daemon=True)
-
-            with patch.object(config_api, "store", store), \
-                    patch.object(config_api, "_require_session_auth"), \
-                    patch.object(config_api, "collect_browser_session", return_value=result), \
-                    patch.object(config_api, "online_account_metadata_from_cookie", side_effect=probe_metadata), \
-                    patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms"), \
-                    patch.object(config_api.subscription_manager, "request_cookie_source_sync"), \
-                    patch.object(config_api, "_retry_verification_missing_3mf_for_platforms"), \
-                    patch.object(config_api, "_schedule_online_account_cookie_test"), \
-                    patch.object(config_api, "_mark_online_account_checking"), \
-                    patch.object(config_api, "_public_config_payload", side_effect=_public_payload), \
-                    patch.object(config_api, "append_business_log"), \
-                    patch.object(config_api, "publish_state_event"), \
-                    patch.object(system_api.database, "database_status", return_value={"available": True}):
+            with ExitStack() as stack:
+                for owner, name, options in (
+                    (config_api, "store", {"new": store}),
+                    (config_api, "_require_session_auth", {}),
+                    (config_api, "collect_browser_session", {"return_value": result}),
+                    (config_api, "_run_online_account_cookie_test", {"return_value": {"ok": True, "message": "账号可用。"}}),
+                    (config_api, "get_account_health", {"return_value": {}}),
+                    (config_api.subscription_manager, "retry_error_subscriptions_for_platforms", {}),
+                    (config_api.subscription_manager, "request_cookie_source_sync", {}),
+                    (config_api, "_retry_verification_missing_3mf_for_platforms", {}),
+                    (config_api, "_mark_online_account_checking", {}),
+                    (config_api, "ONLINE_ACCOUNT_TEST_RUNNING", {"new": set()}),
+                    (config_api, "ONLINE_ACCOUNT_TEST_PENDING", {"new": {}}),
+                    (config_api, "ONLINE_ACCOUNT_TEST_ACTIVE_COOKIE", {"new": {}}),
+                    (config_api, "_public_config_payload", {"side_effect": _public_payload}),
+                    (config_api, "append_business_log", {}),
+                    (config_api, "publish_state_event", {"side_effect": publish_event}),
+                    (system_api.database, "database_status", {"return_value": {"available": True}}),
+                ):
+                    stack.enter_context(patch.object(owner, name, **options))
+                metadata_mock = stack.enter_context(patch.object(
+                    config_api, "online_account_metadata_from_cookie", side_effect=probe_metadata,
+                ))
+                health_mock = stack.enter_context(patch.object(
+                    config_api, "update_account_health", return_value={"status": "ok"},
+                ))
                 async with AsyncClient(transport=ASGITransport(app=app), base_url="http://makerhub.test") as client:
-                    guard.start()
                     sync_request = asyncio.create_task(
                         client.post("/api/config/online-accounts/global/browser/sync")
                     )
@@ -466,16 +487,37 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
                         health = await asyncio.wait_for(client.get("/api/public/health/ready"), timeout=1)
                         self.assertEqual(health.status_code, 200)
                         self.assertTrue(health.json()["ready"])
-                        health_responded.set()
+                        # 资料读取仍阻塞时，同步响应和新 Cookie 必须已经可用。
+                        response = await asyncio.wait_for(asyncio.shield(sync_request), timeout=2)
+                        self.assertEqual(response.status_code, 200)
+                        self.assertTrue(response.json()["browser_session"]["applied"])
+                        self.assertEqual(response.json()["browser_session"]["status"], "synced")
+                        current = store.load().cookies[0]
+                        self.assertEqual(current.cookie, "token=new")
+                        self.assertEqual(current.browser_status, "synced")
+                        self.assertEqual(current.status, "checking")
+                        self.assertEqual(current.account_id, "account-old")
+                        self.assertFalse(background_finished.is_set())
+                        health_mock.assert_not_called()
                     finally:
                         release_probe.set()
-                        response = await asyncio.wait_for(sync_request, timeout=5)
-                        await asyncio.to_thread(guard.join, 5)
+                        await asyncio.wait_for(sync_request, timeout=5)
+                        self.assertTrue(await asyncio.to_thread(background_finished.wait, 5))
+                        for thread in background_threads:
+                            await asyncio.to_thread(thread.join, 5)
 
-            self.assertEqual(responsive_during_probe, [True])
-            self.assertEqual(response.status_code, 200)
-            self.assertTrue(response.json()["browser_session"]["applied"])
-            self.assertEqual(store.load().cookies[0].cookie, "token=new")
+                metadata_mock.assert_called_once_with(
+                    platform="global", username="", cookie="token=new", proxy_config=config.proxy,
+                )
+                health_mock.assert_called_once()
+
+            current = store.load().cookies[0]
+            self.assertEqual(current.cookie, "token=new")
+            self.assertEqual(current.browser_status, "synced")
+            self.assertEqual(current.account_id, "account-global")
+            self.assertEqual(current.display_name, "Browser account")
+            self.assertEqual(current.status, "ok")
+            self.assertEqual(current.last_tested_at, "2026-11-14T18:00:00+08:00")
 
     async def test_manual_browser_sync_preserves_synced_status_during_temporary_outage(self):
         with tempfile.TemporaryDirectory() as tmp:

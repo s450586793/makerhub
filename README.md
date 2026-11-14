@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.21.11`
+> 当前版本：`v0.21.12`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -370,6 +370,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-11-14 · v0.21.12
+
+- 浏览器登录态先保存，再由现有后台测试更新资料和检查认证，避免首次同步或切换账号时重复读取资料造成长时间等待。
+- 后台检查完成前显示检查中，会话已保存不再误报为账号检查已通过。
+
 ### 2026-11-14 · v0.21.11
 
 - 修复浏览器登录同步读取账号资料时阻塞 API，导致页面无响应和健康检查超时的问题；等待期间页面继续响应。
@@ -379,13 +384,13 @@ npm --prefix frontend run build
 - 修复国际站已登录后，账号健康检查仍因跨域预检失败而报错的问题。
 - 国际站消息计数和个人偏好检查使用已核实的 MakerWorld 同源只读接口。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-11-14 · v0.21.9
 
 - 修复登录时的 `CSRF error: bad_signature`：浏览器会话导入不再将站点的 CSRF Cookie 复制到其他登录域。
 - 修复旧登录 token 遮住新会话后出现的“未知错误”；无域认证 token 仅迁移到 MakerWorld，带域 Cookie 保留原作用域和安全属性。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-11-14 · v0.21.8
 

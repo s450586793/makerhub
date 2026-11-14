@@ -2489,14 +2489,7 @@ def _store_browser_session_result(
         return config, False
 
     changed = candidate_cookie != sanitize_cookie_header(current.cookie)
-    account_metadata: dict[str, str] = {}
-    current_token = extract_auth_token(current.cookie)
     candidate_token = extract_auth_token(candidate_cookie)
-    same_auth_identity = bool(
-        current_token
-        and candidate_token
-        and hmac.compare_digest(current_token, candidate_token)
-    )
     if not candidate_token:
         login_required_message = "指纹浏览器尚未登录 MakerWorld，请在浏览器内完成登录后再同步。"
         metadata = _browser_status_metadata(
@@ -2540,18 +2533,15 @@ def _store_browser_session_result(
         )
         return saved, False
 
-    if changed and not same_auth_identity:
-        try:
-            account_metadata = online_account_metadata_from_cookie(
-                platform=platform,
-                username=current.username,
-                cookie=candidate_cookie,
-                proxy_config=proxy_config,
-            )
-        except Exception:
-            account_metadata = {}
-
-    metadata = _preserve_account_profile_metadata(account_metadata, current)
+    browser_session_recovered = bool(
+        current_profile_id
+        and str(current.browser_status or "").strip().lower() != "synced"
+    )
+    # 资料读取交给已有后台账号测试，同步保存不等待外部网络。
+    metadata = _preserve_account_profile_metadata({}, current)
+    if changed or browser_session_recovered:
+        metadata["status"] = "checking"
+        metadata["message"] = _checking_online_account_test_result(platform)["message"]
     timestamp = _now_iso()
     metadata.update(
         _browser_status_metadata(
@@ -2573,10 +2563,6 @@ def _store_browser_session_result(
     config.cookies = _upsert_cookie_pair(config.cookies, next_pair)
     saved = store.save(config)
 
-    browser_session_recovered = bool(
-        current_profile_id
-        and str(current.browser_status or "").strip().lower() != "synced"
-    )
     if changed or browser_session_recovered:
         _mark_online_account_checking(platform, source="cloakbrowser_sync")
         subscription_manager.retry_error_subscriptions_for_platforms({platform})
