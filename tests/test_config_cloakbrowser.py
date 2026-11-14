@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from fastapi import FastAPI
+from httpx2 import ASGITransport, AsyncClient
+
 from app.api import config as config_api
+from app.api import system as system_api
 from app.core.store import JsonStore
 from app.schemas.models import CookiePair, OnlineAccountLoginRequest
 from app.services.cloakbrowser_session import (
@@ -401,6 +407,75 @@ class ConfigCloakBrowserTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(saved.browser_status, "synced")
             self.assertEqual(saved.browser_synced_at, "2026-07-26T03:00:00+08:00")
             self.assertIn("后台启动任务", saved.browser_message)
+
+    async def test_manual_browser_sync_keeps_health_responsive_during_account_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonStore(Path(tmp) / "config.json")
+            config = store.load()
+            config.cookies = [CookiePair(
+                platform="global",
+                cookie="token=old",
+                browser_profile_id="profile-global",
+            )]
+            store.save(config)
+            result = CloakBrowserSessionResult(
+                profile_id="profile-global",
+                cookie="token=new",
+            )
+            probe_started = threading.Event()
+            release_probe = threading.Event()
+            health_responded = threading.Event()
+            responsive_during_probe = []
+
+            def probe_metadata(**_kwargs):
+                probe_started.set()
+                release_probe.wait(timeout=5)
+                return {"account_id": "account-global", "status": "ok", "message": "ok"}
+
+            def guard_probe():
+                # 即使事件循环被同步网络调用堵住，也能释放测试并记录失败。
+                started = probe_started.wait(timeout=5)
+                responsive_during_probe.append(started and health_responded.wait(timeout=2))
+                release_probe.set()
+
+            app = FastAPI()
+            app.include_router(config_api.router)
+            app.include_router(system_api.router)
+            guard = threading.Thread(target=guard_probe, daemon=True)
+
+            with patch.object(config_api, "store", store), \
+                    patch.object(config_api, "_require_session_auth"), \
+                    patch.object(config_api, "collect_browser_session", return_value=result), \
+                    patch.object(config_api, "online_account_metadata_from_cookie", side_effect=probe_metadata), \
+                    patch.object(config_api.subscription_manager, "retry_error_subscriptions_for_platforms"), \
+                    patch.object(config_api.subscription_manager, "request_cookie_source_sync"), \
+                    patch.object(config_api, "_retry_verification_missing_3mf_for_platforms"), \
+                    patch.object(config_api, "_schedule_online_account_cookie_test"), \
+                    patch.object(config_api, "_mark_online_account_checking"), \
+                    patch.object(config_api, "_public_config_payload", side_effect=_public_payload), \
+                    patch.object(config_api, "append_business_log"), \
+                    patch.object(config_api, "publish_state_event"), \
+                    patch.object(system_api.database, "database_status", return_value={"available": True}):
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://makerhub.test") as client:
+                    guard.start()
+                    sync_request = asyncio.create_task(
+                        client.post("/api/config/online-accounts/global/browser/sync")
+                    )
+                    try:
+                        self.assertTrue(await asyncio.to_thread(probe_started.wait, 5))
+                        health = await asyncio.wait_for(client.get("/api/public/health/ready"), timeout=1)
+                        self.assertEqual(health.status_code, 200)
+                        self.assertTrue(health.json()["ready"])
+                        health_responded.set()
+                    finally:
+                        release_probe.set()
+                        response = await asyncio.wait_for(sync_request, timeout=5)
+                        await asyncio.to_thread(guard.join, 5)
+
+            self.assertEqual(responsive_during_probe, [True])
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.json()["browser_session"]["applied"])
+            self.assertEqual(store.load().cookies[0].cookie, "token=new")
 
     async def test_manual_browser_sync_preserves_synced_status_during_temporary_outage(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -3885,7 +3885,13 @@ async def sync_config_online_account_browser(platform: str, request: Request):
             clean_platform,
             target.browser_profile_id,
         )
-        saved, applied = _store_browser_session_result(clean_platform, target, result, config.proxy)
+        saved, applied = await run_task_api(
+            _store_browser_session_result,
+            clean_platform,
+            target,
+            result,
+            config.proxy,
+        )
     except CloakBrowserUnavailable as exc:
         _save_browser_status(
             clean_platform,
