@@ -60,6 +60,17 @@ function ensureStateEventSource() {
       console.error("状态事件解析失败", error);
       return;
     }
+    if (event.type === "ready") {
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        return;
+      }
+      for (const subscriber of subscribers.values()) {
+        if (typeof subscriber.onReady === "function") {
+          subscriber.onReady({ ...payload, type: "ready" });
+        }
+      }
+      return;
+    }
     const numericEventId = Number(payload.id || event.lastEventId || 0);
     if (Number.isFinite(numericEventId) && numericEventId > lastEventId) {
       lastEventId = numericEventId;
@@ -73,6 +84,7 @@ function ensureStateEventSource() {
     }
   };
 
+  eventSource.addEventListener("ready", dispatch);
   eventSource.addEventListener("state.changed", dispatch);
   eventSource.addEventListener("archive.completed", dispatch);
   eventSource.addEventListener("archive.failed", dispatch);
@@ -100,17 +112,17 @@ function closeStateEventSource() {
   }
 }
 
-export function subscribeStateEvents(handler, scopes = []) {
+export function subscribeStateEvents(handler, scopes = [], options = {}) {
   if (typeof handler !== "function") {
     return () => {};
   }
-  subscriberId += 1;
-  subscribers.set(subscriberId, { handler, scopes: normalizeScopes(scopes) });
+  const currentSubscriberId = ++subscriberId;
+  subscribers.set(currentSubscriberId, { handler, scopes: normalizeScopes(scopes), onReady: options.onReady });
   rebuildStateEventSource();
   ensureStateEventSource();
 
   return () => {
-    subscribers.delete(subscriberId);
+    subscribers.delete(currentSubscriberId);
     rebuildStateEventSource();
     if (!subscribers.size) {
       closeStateEventSource();
@@ -141,7 +153,9 @@ export function subscribeStateRefresh(scopes, callback, options = {}) {
     document.addEventListener("visibilitychange", onVisibilityChange);
   }
 
-  const unsubscribe = subscribeStateEvents((event) => scheduler.handleEvent(event), scopes);
+  const unsubscribe = subscribeStateEvents((event) => scheduler.handleEvent(event), scopes, {
+    onReady: options.onReady,
+  });
 
   return () => {
     unsubscribe();

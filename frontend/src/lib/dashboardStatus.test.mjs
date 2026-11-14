@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { parse as babelParse } from "@babel/parser";
+import { parse } from "@vue/compiler-sfc";
+import { computed, ref } from "vue";
 
+import * as dashboardStatus from "./dashboardStatus.js";
+import * as browserSession from "./browserSession.js";
+import { createHydratedResource } from "./useHydratedResource.js";
 import {
   dashboardStatusAction,
   dashboardStatusActions,
@@ -10,6 +17,256 @@ import {
   normalizeRuntimeStatusLabel,
   runtimeTaskAction,
 } from "./dashboardStatus.js";
+
+const dashboardSource = readFileSync(new URL("../pages/DashboardPage.vue", import.meta.url), "utf8");
+const dashboardScript = parse(dashboardSource).descriptor.scriptSetup.content;
+const dashboardAst = babelParse(dashboardScript, { sourceType: "module" });
+const dashboardSetup = dashboardAst.program.body
+  .filter((node) => node.type !== "ImportDeclaration")
+  .map((node) => dashboardScript.slice(node.start, node.end)).join("\n");
+
+const browserAction = {
+  kind: "api", label: "打开指纹浏览器", endpoint: "/api/config/online-accounts/global/browser/open",
+  method: "POST", opens_browser: true,
+};
+const verifiedAction = {
+  kind: "api", label: "已验证", endpoint: "/api/tasks/missing-3mf/verification-verified",
+  method: "POST", body: { platform: "global" },
+};
+
+function sourceCard(recovered = false) {
+  return {
+    key: "global", title: "国际站", state: recovered ? "ok" : "verification_required",
+    account_status: recovered ? "ok" : "verification_required",
+    three_mf_gate: recovered ? "open" : "verification_required",
+    status: recovered ? "可归档" : "需要浏览器确认", checks: [],
+    actions: recovered ? [browserAction] : [browserAction, verifiedAction],
+  };
+}
+
+function snapshot(card = sourceCard()) {
+  return { system_status: [card], stats: [], task_summary: {} };
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function dashboardPage({ read = () => snapshot(), act = async () => ({ message: "操作已完成。" }) } = {}) {
+  let mounted;
+  let unmounted;
+  let subscription;
+  let subscribed = false;
+  const dependencies = {
+    ...dashboardStatus,
+    ...browserSession,
+    ref, computed, createHydratedResource,
+    onMounted: (callback) => { mounted = callback; },
+    onBeforeUnmount: (callback) => { unmounted = callback; },
+    apiRequest: (endpoint, options) => endpoint === "/api/dashboard/light" ? read(options) : act(endpoint, options),
+    createPagePerformanceTracker: () => ({ markDataReady() {}, finish() {} }),
+    formatServerDateTime: (value) => value,
+    subscribeStateRefresh: (_scopes, callback, options = {}) => {
+      subscription = { callback, options };
+      subscribed = true;
+      return () => { subscribed = false; };
+    },
+    window: {
+      location: { protocol: "http:", hostname: "makerhub.test" },
+      open: () => ({ closed: false, location: { replace() {} }, close() {} }),
+    },
+    document: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    console: { error() {} },
+  };
+  const page = new Function(...Object.keys(dependencies), dashboardSetup + `
+    return { load, loading, payload, runStatusAction, statusActionMessage, isStatusActionBusy };
+  `)(...Object.values(dependencies));
+  return {
+    ...page,
+    mount: () => mounted(),
+    unmount: () => unmounted(),
+    changed: () => { if (subscribed) subscription.callback(); },
+    ready: () => { if (subscribed) subscription.options.onReady?.(); },
+  };
+}
+
+async function flushDashboard() {
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+test("dashboard feedback disappears when its action is removed after recovery", async () => {
+  let current = snapshot();
+  const page = dashboardPage({ read: () => current, act: async () => { throw new Error("HTTP 502"); } });
+  await page.mount();
+  await page.runStatusAction(sourceCard(), verifiedAction);
+  await flushDashboard();
+  assert.equal(page.statusActionMessage(sourceCard()), "HTTP 502");
+  current = snapshot(sourceCard(true));
+  await page.load();
+  assert.equal(page.statusActionMessage(current.system_status[0]), "");
+});
+
+test("dashboard keeps a valid action failure and pending state across unchanged health refreshes", async () => {
+  const action = deferred();
+  const page = dashboardPage({ act: () => action.promise });
+  await page.mount();
+  const running = page.runStatusAction(sourceCard(), browserAction);
+  await page.load();
+  assert.equal(page.isStatusActionBusy(sourceCard(), browserAction), true);
+  action.reject(new Error("HTTP 502"));
+  await running;
+  await page.load();
+  assert.equal(page.statusActionMessage(sourceCard(), browserAction), "HTTP 502");
+  assert.equal(page.isStatusActionBusy(sourceCard(), browserAction), false);
+});
+
+test("dashboard ignores a late action failure after the same browser action recovers", async () => {
+  let current = snapshot();
+  const action = deferred();
+  const page = dashboardPage({ read: () => current, act: () => action.promise });
+  await page.mount();
+  const running = page.runStatusAction(sourceCard(), browserAction);
+  current = snapshot(sourceCard(true));
+  await page.load();
+  action.reject(new Error("HTTP 502"));
+  await running;
+  await flushDashboard();
+  assert.equal(page.statusActionMessage(current.system_status[0]), "");
+  assert.equal(page.isStatusActionBusy(current.system_status[0], browserAction), false);
+});
+
+test("dashboard card shows the later successful action instead of an earlier action error", async () => {
+  const page = dashboardPage({ act: async (endpoint) => {
+    if (endpoint === verifiedAction.endpoint) throw new Error("HTTP 502");
+    return { message: "浏览器已打开。" };
+  } });
+  await page.mount();
+  await page.runStatusAction(sourceCard(), verifiedAction);
+  await flushDashboard();
+  await page.runStatusAction(sourceCard(), browserAction);
+  await flushDashboard();
+  assert.equal(page.statusActionMessage(sourceCard()), "浏览器已打开。");
+  assert.equal(page.statusActionMessage(sourceCard(), verifiedAction), "HTTP 502");
+});
+
+test("dashboard card shows the latest failure while retaining earlier valid action feedback", async () => {
+  const page = dashboardPage({ act: async (endpoint) => {
+    throw new Error(endpoint === browserAction.endpoint ? "浏览器启动失败。" : "验证提交失败。");
+  } });
+  await page.mount();
+  await page.runStatusAction(sourceCard(), browserAction);
+  await flushDashboard();
+  await page.runStatusAction(sourceCard(), verifiedAction);
+  await flushDashboard();
+  assert.equal(page.statusActionMessage(sourceCard()), "验证提交失败。");
+  assert.equal(page.statusActionMessage(sourceCard(), browserAction), "浏览器启动失败。");
+});
+
+test("dashboard shows a pending action failure when it finishes after another action succeeds", async () => {
+  const verification = deferred();
+  const page = dashboardPage({ act: (endpoint) => endpoint === verifiedAction.endpoint
+    ? verification.promise : Promise.resolve({ message: "浏览器已打开。" }) });
+  await page.mount();
+  const running = page.runStatusAction(sourceCard(), verifiedAction);
+  await page.runStatusAction(sourceCard(), browserAction);
+  await flushDashboard();
+  assert.equal(page.isStatusActionBusy(sourceCard(), verifiedAction), true);
+  assert.equal(page.statusActionMessage(sourceCard()), "浏览器已打开。");
+  verification.reject(new Error("验证提交失败。"));
+  await running;
+  await flushDashboard();
+  assert.equal(page.statusActionMessage(sourceCard()), "验证提交失败。");
+  assert.equal(page.statusActionMessage(sourceCard(), browserAction), "浏览器已打开。");
+});
+
+test("dashboard action completion preserves failures on another source card", async () => {
+  const cnAction = { ...browserAction, endpoint: "/api/config/online-accounts/cn/browser/open" };
+  const cnCard = { ...sourceCard(), key: "cn", title: "国内站", actions: [cnAction] };
+  const page = dashboardPage({
+    read: () => ({ system_status: [sourceCard(), cnCard] }),
+    act: async (endpoint) => {
+      if (endpoint === cnAction.endpoint) throw new Error("国内站浏览器启动失败。");
+      return { message: "国际站浏览器已打开。" };
+    },
+  });
+  await page.mount();
+  await page.runStatusAction(cnCard, cnAction);
+  await flushDashboard();
+  await page.runStatusAction(sourceCard(), browserAction);
+  await flushDashboard();
+  assert.equal(page.statusActionMessage(sourceCard()), "国际站浏览器已打开。");
+  assert.equal(page.statusActionMessage(cnCard), "国内站浏览器启动失败。");
+});
+
+test("dashboard refreshes backend status after an action fails", async () => {
+  let current = snapshot();
+  const page = dashboardPage({ read: () => current, act: async () => {
+    current = snapshot(sourceCard(true));
+    throw new Error("HTTP 502");
+  } });
+  await page.mount();
+  await page.runStatusAction(sourceCard(), verifiedAction);
+  await flushDashboard();
+  assert.equal(page.payload.value.system_status[0].status, "可归档");
+  assert.equal(page.statusActionMessage(page.payload.value.system_status[0]), "");
+});
+
+test("dashboard subscribes before the first response so a concurrent recovery is retained", async () => {
+  const first = deferred();
+  let initial = true;
+  const page = dashboardPage({ read: () => {
+    if (initial) {
+      initial = false;
+      return first.promise;
+    }
+    return snapshot(sourceCard(true));
+  } });
+  const mounting = page.mount();
+  page.changed();
+  await flushDashboard();
+  first.resolve(snapshot());
+  await mounting;
+  assert.equal(page.payload.value.system_status[0].status, "可归档");
+});
+
+test("dashboard refreshes after SSE readiness closes the initial connection gap", async () => {
+  let current = snapshot();
+  const page = dashboardPage({ read: () => current });
+  await page.mount();
+  current = snapshot(sourceCard(true));
+  page.ready();
+  assert.equal(page.loading.value, false);
+  await flushDashboard();
+  assert.equal(page.payload.value.system_status[0].status, "可归档");
+});
+
+test("dashboard keeps the initial skeleton until the ready refresh completes after aborting the first request", async () => {
+  const first = deferred();
+  const recovery = deferred();
+  let initial = true;
+  const page = dashboardPage({ read: ({ signal }) => {
+    if (initial) {
+      initial = false;
+      signal.addEventListener("abort", () => first.reject(Object.assign(new Error("Aborted"), { name: "AbortError" })));
+      return first.promise;
+    }
+    return recovery.promise;
+  } });
+  const mounting = page.mount();
+  page.ready();
+  await mounting;
+  assert.equal(page.loading.value, true);
+  recovery.resolve(snapshot(sourceCard(true)));
+  await flushDashboard();
+  assert.equal(page.loading.value, false);
+  assert.equal(page.payload.value.system_status[0].status, "可归档");
+});
 
 test("dashboard source health card body is not an external link", () => {
   const card = {

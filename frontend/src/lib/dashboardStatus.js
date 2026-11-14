@@ -63,6 +63,41 @@ export function dashboardStatusAction(item) {
   return dashboardStatusActions(item)[0] || null;
 }
 
+export function dashboardStatusActionKey(item, action = {}) {
+  return [
+    item?.key || item?.title || "status",
+    action.kind || "",
+    action.endpoint || action.href || action.to || action.label || "",
+  ].join(":");
+}
+
+export function dashboardStatusActionContext(item = {}) {
+  return JSON.stringify([item.state || "", item.account_status || "", item.three_mf_gate || ""]);
+}
+
+export function reconcileDashboardStatusActionState(state = {}, items = []) {
+  const currentActions = new Map();
+  for (const item of Array.isArray(items) ? items : []) {
+    for (const action of dashboardStatusActions(item)) {
+      currentActions.set(dashboardStatusActionKey(item, action), dashboardStatusActionContext(item));
+    }
+  }
+  return Object.fromEntries(Object.entries(state).filter(([key, value]) => (
+    currentActions.has(key) && (value?.busy || value?.context === currentActions.get(key))
+  )));
+}
+
+export function dashboardStatusActionMessage(state = {}, item, action) {
+  const actions = dashboardStatusActions(item);
+  const currentActions = action
+    ? actions.filter((current) => dashboardStatusActionKey(item, current) === dashboardStatusActionKey(item, action))
+    : actions;
+  const latest = currentActions.map((current) => state[dashboardStatusActionKey(item, current)])
+    .filter((value) => value?.message)
+    .sort((first, second) => (second.sequence || 0) - (first.sequence || 0))[0];
+  return latest?.message || "";
+}
+
 export function shouldShowDashboardStatusDetail(item = {}) {
   if (!item?.detail) {
     return false;

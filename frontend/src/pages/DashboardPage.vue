@@ -325,9 +325,13 @@ import { RouterLink } from "vue-router";
 
 import { apiRequest } from "../lib/api";
 import {
+  dashboardStatusActionContext,
+  dashboardStatusActionKey,
+  dashboardStatusActionMessage,
   dashboardStatusActions,
   dashboardStatusElementKind,
   getSourceRefreshDisplayTotals,
+  reconcileDashboardStatusActionState,
   shouldShowDashboardStatusDetail,
   sourceRefreshActiveRun,
   sourceRefreshDeferText,
@@ -407,6 +411,7 @@ const payload = ref({
   },
 });
 const statusActionState = ref({});
+let statusActionSequence = 0;
 
 const automation = computed(() => payload.value?.automation_overview || defaultAutomationOverview);
 const latestFailureItem = computed(() => payload.value?.task_summary?.recent_failures?.[0] || null);
@@ -468,7 +473,13 @@ let refreshWhenVisible = false;
 
 const dashboardResource = createHydratedResource({
   load: ({ signal }) => apiRequest("/api/dashboard/light", { signal }),
+  onLoading: (isLoading) => {
+    if (!isLoading) {
+      loading.value = false;
+    }
+  },
   onData: (response) => {
+    statusActionState.value = reconcileDashboardStatusActionState(statusActionState.value, response?.system_status);
     payload.value = response;
   },
 });
@@ -481,36 +492,15 @@ async function load({ initial = false } = {}) {
     await dashboardResource.load();
   } catch (error) {
     console.error("首页数据刷新失败", error);
-  } finally {
-    loading.value = false;
   }
 }
 
-function statusActionKey(item, action = {}) {
-  return [
-    item?.key || item?.title || "status",
-    action.kind || "",
-    action.endpoint || action.href || action.to || action.label || "",
-  ].join(":");
-}
-
-function statusActionMessage(item, action = {}) {
-  const key = statusActionKey(item, action);
-  if (statusActionState.value[key]?.message) {
-    return statusActionState.value[key].message;
-  }
-  if (action && (action.kind || action.endpoint || action.href || action.to || action.label)) {
-    return "";
-  }
-  const prefix = `${item?.key || item?.title || "status"}:`;
-  const entry = Object.entries(statusActionState.value).find(([entryKey, value]) => (
-    entryKey.startsWith(prefix) && value?.message
-  ));
-  return entry?.[1]?.message || "";
+function statusActionMessage(item, action) {
+  return dashboardStatusActionMessage(statusActionState.value, item, action);
 }
 
 function isStatusActionBusy(item, action) {
-  return Boolean(statusActionState.value[statusActionKey(item, action)]?.busy);
+  return Boolean(statusActionState.value[dashboardStatusActionKey(item, action)]?.busy);
 }
 
 async function runStatusAction(item, action) {
@@ -521,10 +511,11 @@ async function runStatusAction(item, action) {
   const popup = opensBrowser && typeof window !== "undefined"
     ? window.open("about:blank", "_blank")
     : null;
-  const key = statusActionKey(item, action);
+  const key = dashboardStatusActionKey(item, action);
+  const context = dashboardStatusActionContext(item);
   statusActionState.value = {
     ...statusActionState.value,
-    [key]: { busy: true, message: "" },
+    [key]: { busy: true, message: "", context },
   };
   try {
     const result = await apiRequest(action.endpoint, {
@@ -537,25 +528,30 @@ async function runStatusAction(item, action) {
         throw new Error("浏览器阻止打开指纹浏览器，请允许弹出窗口后重试。");
       }
     }
-    statusActionState.value = {
+    statusActionState.value = reconcileDashboardStatusActionState({
       ...statusActionState.value,
       [key]: {
         busy: false,
         message: result?.browser_session?.message || result?.message || "重试已提交。",
+        context,
+        sequence: ++statusActionSequence,
       },
-    };
-    void load();
+    }, payload.value.system_status);
   } catch (error) {
     if (popup) {
       popup.close();
     }
-    statusActionState.value = {
+    statusActionState.value = reconcileDashboardStatusActionState({
       ...statusActionState.value,
       [key]: {
         busy: false,
         message: error instanceof Error ? error.message : "操作提交失败。",
+        context,
+        sequence: ++statusActionSequence,
       },
-    };
+    }, payload.value.system_status);
+  } finally {
+    void load();
   }
 }
 
@@ -597,9 +593,6 @@ function subscriptionStatusLabel(item) {
 
 onMounted(async () => {
   const perf = createPagePerformanceTracker({ page: "dashboard" });
-  await load({ initial: true });
-  perf.markDataReady();
-  void perf.finish();
   unsubscribeStateRefresh = subscribeStateRefresh(
     [
       "archive_queue",
@@ -613,8 +606,12 @@ onMounted(async () => {
       "dashboard",
     ],
     handleArchiveCompleted,
+    { onReady: handleArchiveCompleted },
   );
   document.addEventListener("visibilitychange", handleVisibilityChange);
+  await load({ initial: true });
+  perf.markDataReady();
+  void perf.finish();
 });
 
 onBeforeUnmount(() => {
