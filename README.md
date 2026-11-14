@@ -373,7 +373,7 @@ npm --prefix frontend run build
 ### 2026-11-14 · v0.21.9
 
 - 修复登录时的 `CSRF error: bad_signature`：浏览器会话导入不再将站点的 CSRF Cookie 复制到其他登录域。
-- 带域 Cookie 保留原作用域和安全属性；无域 Cookie 仅迁移明确的认证 token。
+- 修复旧登录 token 遮住新会话后出现的“未知错误”；无域认证 token 仅迁移到 MakerWorld，带域 Cookie 保留原作用域和安全属性。
 
 ### 2026-11-14 · v0.21.8
 

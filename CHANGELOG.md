@@ -3,7 +3,8 @@
 ## 2026-11-14 · v0.21.9
 
 - 修复浏览器会话导入将 MakerWorld 的 CSRF Cookie 复制到 Bambu 登录域，导致登录接口返回 `CSRF error: bad_signature` 的问题。
-- 无域 Cookie 仅迁移明确的认证 token；带域 Cookie 保留原作用域和安全属性，避免在其他站点生成同名副本。
+- 修复旧父域登录 token 遮住 Bambu 新登录会话，导致验证码完成后卡住或显示“未知错误”的问题；无域认证 token 仅迁移到对应 MakerWorld 域，不再复制到 Bambu。
+- 带域 Cookie 保留原作用域和安全属性，避免在其他站点生成同名副本；官方 ticket 交换继续使用 Bearer 认证。
 
 ## 2026-11-14 · v0.21.8
 

@@ -916,22 +916,22 @@ def _run_bridge_with_profile_recovery(
 
 def _cookie_items_from_header(raw_cookie: str, platform: str) -> list[dict[str, Any]]:
     clean_platform = normalize_platform(platform)
+    makerworld_domain = urlparse(PLATFORM_ORIGINS[clean_platform]).hostname
     values = parse_cookie_values(raw_cookie)
     items: list[dict[str, Any]] = []
     for name, value in values.items():
-        # 原始 Cookie header 不含来源域，不能复制 CSRF、会话或挑战等站点绑定 Cookie。
+        # 账号 Cookie header 仅用于 MakerWorld，不能复制到 Bambu 登录站点。
         if name not in UNSCOPED_AUTH_COOKIE_NAMES:
             continue
-        for domain in PLATFORM_DOMAINS[clean_platform]:
-            items.append(
-                {
-                    "name": name,
-                    "value": value,
-                    "domain": f".{domain}",
-                    "path": "/",
-                    "secure": True,
-                }
-            )
+        items.append(
+            {
+                "name": name,
+                "value": value,
+                "domain": f".{makerworld_domain}",
+                "path": "/",
+                "secure": True,
+            }
+        )
     return items
 
 

@@ -1053,7 +1053,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
 
         launch_mock.assert_not_called()
 
-    def test_browser_cookie_items_preserve_structured_domain_and_expand_tokens(self):
+    def test_browser_cookie_items_preserve_structured_bambu_scope_and_seed_makerworld_tokens(self):
         items = cloakbrowser_session.browser_cookie_items(
             "token=access; refreshToken=refresh",
             "cn",
@@ -1063,8 +1063,9 @@ class CloakBrowserSessionTest(unittest.TestCase):
         keys = {(item["name"], item.get("domain")) for item in items}
         self.assertIn(("bbl_device_id", ".bambulab.cn"), keys)
         self.assertIn(("token", ".makerworld.com.cn"), keys)
-        self.assertIn(("token", ".bambulab.cn"), keys)
+        self.assertNotIn(("token", ".bambulab.cn"), keys)
         self.assertIn(("refreshToken", ".makerworld.com.cn"), keys)
+        self.assertNotIn(("refreshToken", ".bambulab.cn"), keys)
 
     def test_browser_cookie_items_reject_domain_suffix_lookalike(self):
         items = cloakbrowser_session.browser_cookie_items(
@@ -1083,8 +1084,8 @@ class CloakBrowserSessionTest(unittest.TestCase):
             "bbl_session=session; bbl_device_id=device; cf_clearance=clear; __cf_bm=challenge"
         )
         for platform, domains in (
-            ("cn", {".makerworld.com.cn", ".bambulab.cn"}),
-            ("global", {".makerworld.com", ".bambulab.com"}),
+            ("cn", {".makerworld.com.cn"}),
+            ("global", {".makerworld.com"}),
         ):
             with self.subTest(platform=platform):
                 items = cloakbrowser_session.browser_cookie_items(raw_cookie, platform)
@@ -1093,8 +1094,22 @@ class CloakBrowserSessionTest(unittest.TestCase):
                     {item["name"] for item in items},
                     {"token", "access_token", "accessToken", "refreshToken", "refresh_token"},
                 )
-                self.assertEqual(len(items), 10)
+                self.assertEqual(len(items), 5)
                 self.assertEqual({item["domain"] for item in items}, domains)
+
+    def test_browser_cookie_items_keep_explicit_bambu_auth_cookies(self):
+        items = cloakbrowser_session.browser_cookie_items(
+            "token=flattened; refreshToken=makerworld-refresh",
+            "global",
+            [{"name": "token", "value": "bambu-token", "domain": "bambulab.com", "path": "/",
+              "httpOnly": True, "sameSite": "Lax", "expires": 1_900_000_000}],
+        )
+
+        self.assertEqual(items, [
+            {"name": "token", "value": "bambu-token", "domain": "bambulab.com", "path": "/",
+             "secure": True, "httpOnly": True, "sameSite": "Lax", "expires": 1_900_000_000},
+            {"name": "refreshToken", "value": "makerworld-refresh", "domain": ".makerworld.com", "path": "/", "secure": True},
+        ])
 
     def test_browser_cookie_items_keep_structured_auth_scope_without_raw_copies(self):
         items = cloakbrowser_session.browser_cookie_items(
@@ -1116,7 +1131,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
         )
         self.assertEqual(
             {item["domain"] for item in items if item["name"] == "refreshToken"},
-            {".makerworld.com", ".bambulab.com"},
+            {".makerworld.com"},
         )
 
     def test_browser_cookie_items_preserve_structured_cookie_restrictions(self):
@@ -1163,7 +1178,7 @@ class CloakBrowserSessionTest(unittest.TestCase):
 
                 self.assertNotIn("sameSite", items[0])
 
-    def test_apply_cookie_header_to_session_keeps_unscoped_csrf_out_of_both_sites(self):
+    def test_apply_cookie_header_to_session_sends_raw_auth_only_to_makerworld(self):
         for platform, origins in (
             ("cn", ("https://makerworld.com.cn", "https://bambulab.cn")),
             ("global", ("https://makerworld.com", "https://bambulab.com")),
@@ -1175,9 +1190,12 @@ class CloakBrowserSessionTest(unittest.TestCase):
                     platform,
                 )
 
-                for origin in origins:
+                makerworld_origin, bambu_origin = origins
+                outgoing = session.prepare_request(cloakbrowser_session.requests.Request("GET", f"{makerworld_origin}/api/sign-in/ticket"))
+                self.assertEqual(outgoing.headers["Cookie"], "token=access; refreshToken=refresh")
+                for origin in (bambu_origin, bambu_origin.replace("https://", "https://api.")):
                     outgoing = session.prepare_request(cloakbrowser_session.requests.Request("GET", f"{origin}/api/sign-in/ticket"))
-                    self.assertEqual(outgoing.headers["Cookie"], "token=access; refreshToken=refresh")
+                    self.assertNotIn("Cookie", outgoing.headers)
 
     def test_cookie_header_from_snapshot_reads_browser_and_storage_tokens(self):
         snapshot = {
@@ -1227,6 +1245,35 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.assertIn("ticket=ticket-value", url)
         self.assertEqual(session.headers["Authorization"], "Bearer access")
         session.close.assert_called_once()
+
+    def test_makerworld_ticket_request_uses_bearer_without_bambu_cookie_cloning(self):
+        for platform, bambu_host, makerworld_host in (
+            ("cn", "api.bambulab.cn", "makerworld.com.cn"),
+            ("global", "api.bambulab.com", "makerworld.com"),
+        ):
+            with self.subTest(platform=platform):
+                requests = []
+
+                def send(request, **_kwargs):
+                    requests.append(request)
+                    response = cloakbrowser_session.requests.Response()
+                    response.status_code = 200
+                    response._content = b'{"ticket":"official-ticket"}'
+                    response.url = request.url
+                    return response
+
+                with patch.object(cloakbrowser_session.requests.Session, "send", side_effect=send):
+                    url = cloakbrowser_session.makerworld_ticket_url(
+                        platform,
+                        "token=makerworld-access; refreshToken=makerworld-refresh; bbl_csrf_token=makerworld-csrf",
+                    )
+
+                self.assertEqual(len(requests), 1)
+                self.assertEqual(requests[0].url, f"https://{bambu_host}/v1/user-service/user/ticket")
+                self.assertEqual(requests[0].headers["Authorization"], "Bearer makerworld-access")
+                self.assertNotIn("Cookie", requests[0].headers)
+                self.assertTrue(url.startswith(f"https://{makerworld_host}/api/sign-in/ticket?"))
+                self.assertIn("ticket=official-ticket", url)
 
     def _synchronize_browser_snapshot(self, snapshot, *, platform="global", ticket_url="https://makerworld.com/ticket"):
         running = cloakbrowser_session.CloakBrowserProfile(id="profile-sync", name="MakerHub Sync", status="running")
