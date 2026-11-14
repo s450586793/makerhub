@@ -86,6 +86,7 @@ PLATFORM_DOMAINS = {
     "cn": ("makerworld.com.cn", "bambulab.cn"),
     "global": ("makerworld.com", "bambulab.com"),
 }
+UNSCOPED_AUTH_COOKIE_NAMES = frozenset({"token", "access_token", "accessToken", "refreshToken", "refresh_token"})
 ALLOWED_BROWSER_FETCH_HEADERS = {
     "accept",
     "accept-language",
@@ -918,6 +919,9 @@ def _cookie_items_from_header(raw_cookie: str, platform: str) -> list[dict[str, 
     values = parse_cookie_values(raw_cookie)
     items: list[dict[str, Any]] = []
     for name, value in values.items():
+        # 原始 Cookie header 不含来源域，不能复制 CSRF、会话或挑战等站点绑定 Cookie。
+        if name not in UNSCOPED_AUTH_COOKIE_NAMES:
+            continue
         for domain in PLATFORM_DOMAINS[clean_platform]:
             items.append(
                 {
@@ -955,6 +959,14 @@ def _normalize_structured_cookie_items(items: list[dict[str, Any]] | None, platf
             cookie["domain"] = domain
         else:
             cookie["url"] = PLATFORM_ORIGINS[clean_platform]
+        if isinstance(item.get("httpOnly"), bool):
+            cookie["httpOnly"] = item["httpOnly"]
+        same_site = item.get("sameSite")
+        if isinstance(same_site, str) and same_site in {"Strict", "Lax", "None"}:
+            cookie["sameSite"] = same_site
+        expires = item.get("expires")
+        if type(expires) in {int, float} and math.isfinite(expires):
+            cookie["expires"] = expires
         normalized.append(cookie)
     return normalized
 
@@ -965,23 +977,21 @@ def browser_cookie_items(
     structured_items: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     items = _normalize_structured_cookie_items(structured_items, platform)
-    seen = {(item.get("name"), item.get("domain"), item.get("url")) for item in items}
+    structured_names = {item["name"] for item in items}
     for item in _cookie_items_from_header(raw_cookie, platform):
-        key = (item.get("name"), item.get("domain"), item.get("url"))
-        if key not in seen:
+        if item["name"] not in structured_names:
             items.append(item)
-            seen.add(key)
     return items
 
 
 def _apply_cookie_header_to_session(session: requests.Session, raw_cookie: str, platform: str) -> None:
-    clean_platform = normalize_platform(platform)
-    for name, value in parse_cookie_values(raw_cookie).items():
-        for domain in PLATFORM_DOMAINS[clean_platform]:
-            try:
-                session.cookies.set(name, value, domain=f".{domain}", path="/")
-            except Exception:
-                continue
+    for item in _cookie_items_from_header(raw_cookie, platform):
+        try:
+            session.cookies.set(
+                item["name"], item["value"], domain=item["domain"], path=item["path"], secure=item["secure"],
+            )
+        except Exception:
+            continue
 
 
 def makerworld_ticket_url(

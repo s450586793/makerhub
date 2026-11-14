@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.21.8`
+> 当前版本：`v0.21.9`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -370,6 +370,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-11-14 · v0.21.9
+
+- 修复登录时的 `CSRF error: bad_signature`：浏览器会话导入不再将站点的 CSRF Cookie 复制到其他登录域。
+- 带域 Cookie 保留原作用域和安全属性；无域 Cookie 仅迁移明确的认证 token。
+
 ### 2026-11-14 · v0.21.8
 
 - 模型详情改用各站点的同源元数据接口，修复跨域预检失败及无关遥测导致的成功请求误报。
@@ -382,14 +387,14 @@ npm --prefix frontend run build
 - 缺失 3MF 任务的“处理账号验证”进入账号设置，使用关联浏览器完成人工登录或验证，再同步会话并等待下载状态检查。
 - 源页面保留为查看入口，提示明确区分会话同步与下载状态检查。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-11-13 · v0.21.6
 
 - 修复跨域下载授权被 `OPTIONS` 预检响应抢先匹配，导致验证码通过后仍误报失败的问题。
 - 国际站登录回跳在原超时内等待文档加载完成，避免页面稍慢就被误判为未登录。
 - 授权诊断区分前置预算耗尽与后置验证码处理已启动，继续保护下载地址和账号凭据。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-11-13 · v0.21.5
 

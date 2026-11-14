@@ -1075,6 +1075,110 @@ class CloakBrowserSessionTest(unittest.TestCase):
 
         self.assertEqual(items, [])
 
+    def test_browser_cookie_items_do_not_seed_unscoped_site_bound_cookies(self):
+        raw_cookie = (
+            "token=access; access_token=access-underscore; accessToken=access-camel; "
+            "refreshToken=refresh; refresh_token=refresh-underscore; "
+            "bbl_csrf_token=makerworld-csrf; csrf_token=csrf; session=session; "
+            "bbl_session=session; bbl_device_id=device; cf_clearance=clear; __cf_bm=challenge"
+        )
+        for platform, domains in (
+            ("cn", {".makerworld.com.cn", ".bambulab.cn"}),
+            ("global", {".makerworld.com", ".bambulab.com"}),
+        ):
+            with self.subTest(platform=platform):
+                items = cloakbrowser_session.browser_cookie_items(raw_cookie, platform)
+
+                self.assertEqual(
+                    {item["name"] for item in items},
+                    {"token", "access_token", "accessToken", "refreshToken", "refresh_token"},
+                )
+                self.assertEqual(len(items), 10)
+                self.assertEqual({item["domain"] for item in items}, domains)
+
+    def test_browser_cookie_items_keep_structured_auth_scope_without_raw_copies(self):
+        items = cloakbrowser_session.browser_cookie_items(
+            "token=flattened; refreshToken=refresh; bbl_csrf_token=flattened-csrf",
+            "global",
+            [
+                {"name": "token", "value": "makerworld-token", "domain": "makerworld.com", "path": "/zh"},
+                {"name": "bbl_csrf_token", "value": "bambu-csrf", "domain": ".bambulab.com", "path": "/"},
+            ],
+        )
+
+        self.assertEqual(
+            [item for item in items if item["name"] == "token"],
+            [{"name": "token", "value": "makerworld-token", "domain": "makerworld.com", "path": "/zh", "secure": True}],
+        )
+        self.assertEqual(
+            [item for item in items if item["name"] == "bbl_csrf_token"],
+            [{"name": "bbl_csrf_token", "value": "bambu-csrf", "domain": ".bambulab.com", "path": "/", "secure": True}],
+        )
+        self.assertEqual(
+            {item["domain"] for item in items if item["name"] == "refreshToken"},
+            {".makerworld.com", ".bambulab.com"},
+        )
+
+    def test_browser_cookie_items_preserve_structured_cookie_restrictions(self):
+        for http_only, same_site, expires in (
+            (True, "Strict", 1_900_000_000.5),
+            (False, "Lax", -1),
+            (True, "None", 0),
+        ):
+            with self.subTest(http_only=http_only, same_site=same_site, expires=expires):
+                items = cloakbrowser_session.browser_cookie_items(
+                    "",
+                    "global",
+                    [{"name": "bbl_csrf_token", "value": "signed-csrf", "domain": ".bambulab.com", "path": "/api",
+                      "secure": True, "httpOnly": http_only, "sameSite": same_site, "expires": expires}],
+                )
+
+                self.assertEqual(items, [{
+                    "name": "bbl_csrf_token", "value": "signed-csrf", "domain": ".bambulab.com", "path": "/api",
+                    "secure": True, "httpOnly": http_only, "sameSite": same_site, "expires": expires,
+                }])
+
+    def test_browser_cookie_items_only_preserve_valid_cookie_attributes(self):
+        for expires in ("1900000000", True, float("nan"), float("inf")):
+            with self.subTest(expires=expires):
+                items = cloakbrowser_session.browser_cookie_items(
+                    "",
+                    "cn",
+                    [{"name": "token", "value": "access", "domain": ".makerworld.com.cn",
+                      "httpOnly": "false", "sameSite": "invalid", "expires": expires}],
+                )
+
+                self.assertNotIn("httpOnly", items[0])
+                self.assertNotIn("sameSite", items[0])
+                self.assertNotIn("expires", items[0])
+
+    def test_browser_cookie_items_ignore_non_string_same_site(self):
+        for same_site in (None, [], {}, True):
+            with self.subTest(same_site=same_site):
+                items = cloakbrowser_session.browser_cookie_items(
+                    "",
+                    "cn",
+                    [{"name": "token", "value": "access", "domain": ".makerworld.com.cn", "sameSite": same_site}],
+                )
+
+                self.assertNotIn("sameSite", items[0])
+
+    def test_apply_cookie_header_to_session_keeps_unscoped_csrf_out_of_both_sites(self):
+        for platform, origins in (
+            ("cn", ("https://makerworld.com.cn", "https://bambulab.cn")),
+            ("global", ("https://makerworld.com", "https://bambulab.com")),
+        ):
+            with self.subTest(platform=platform), cloakbrowser_session.requests.Session() as session:
+                cloakbrowser_session._apply_cookie_header_to_session(
+                    session,
+                    "token=access; refreshToken=refresh; bbl_csrf_token=csrf; session=site-session; cf_clearance=clear",
+                    platform,
+                )
+
+                for origin in origins:
+                    outgoing = session.prepare_request(cloakbrowser_session.requests.Request("GET", f"{origin}/api/sign-in/ticket"))
+                    self.assertEqual(outgoing.headers["Cookie"], "token=access; refreshToken=refresh")
+
     def test_cookie_header_from_snapshot_reads_browser_and_storage_tokens(self):
         snapshot = {
             "cookies": [
