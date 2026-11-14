@@ -29,12 +29,16 @@ function isCloudflareResponse(response) {
   );
 }
 
-function modelMetadataUrl(target, businessUrl, platform) {
+function sameOriginApiUrl(target, businessUrl, platform) {
   const apiHost = { cn: "api.bambulab.cn", global: "api.bambulab.com" }[platform];
   if (target.protocol !== "https:" || target.hostname !== apiHost || target.port
-    || target.username || target.password
-    || !/^\/v1\/design-service\/design\/\d+(?:\/detail)?\/?$/.test(target.pathname)) return target.href;
-  // Bambu API 的跨域预检不支持网页来源；模型详情使用站点已有的同源只读接口。
+    || target.username || target.password) return target.href;
+  const modelMetadata = /^\/v1\/design-service\/design\/\d+(?:\/detail)?\/?$/.test(target.pathname);
+  const globalAccountProbe = platform === "global" && [
+    "/v1/user-service/my/message/count", "/v1/design-user-service/my/preference",
+  ].includes(target.pathname);
+  if (!modelMetadata && !globalAccountProbe) return target.href;
+  // Bambu API 跨域预检不支持网页来源；仅使用已核实的同源只读接口。
   const sameOrigin = new URL(`/api${target.pathname}`, businessUrl);
   sameOrigin.search = target.search;
   return sameOrigin.href;
@@ -56,7 +60,7 @@ export async function fetchInBusinessPage(input, dependencies) {
   normalizedTarget.hash = "";
   const businessUrl = makerWorldHomeUrl(platform);
   if (!isAllowedBrowserFetchUrl(businessUrl, platform)) throw new Error("invalid browser business URL");
-  const targetUrl = modelMetadataUrl(normalizedTarget, businessUrl, platform);
+  const targetUrl = sameOriginApiUrl(normalizedTarget, businessUrl, platform);
   if (!isAllowedBrowserFetchUrl(targetUrl, platform)) throw new Error("invalid browser fetch URL");
   const requestTimeout = positiveMilliseconds(input.timeoutMs, 30000);
   const verificationTimeout = Math.min(50000, positiveMilliseconds(input.verificationTimeoutMs, 50000));

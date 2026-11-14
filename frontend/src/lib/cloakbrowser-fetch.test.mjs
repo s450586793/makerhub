@@ -40,12 +40,42 @@ test("fetch URL identity normalizes uppercase hosts, default TLS ports, dot segm
   assert.equal(result.url, "https://makerworld.com/api/items");
 });
 
-test("Bambu model metadata uses the matching MakerWorld API without remapping authorization or unknown URLs", async (t) => {
+test("Bambu model metadata and verified global account probes use only their matching MakerWorld APIs", async (t) => {
   const cases = [
     ["cn", "https://api.bambulab.cn/v1/design-service/design/2938071?lang=zh&tag=a&tag=b#ignored",
       "https://makerworld.com.cn/api/v1/design-service/design/2938071?lang=zh&tag=a&tag=b"],
     ["global", "https://API.BAMBULAB.COM:443/v1/design-service/design/123/detail?source=web",
       "https://makerworld.com/api/v1/design-service/design/123/detail?source=web"],
+    ["global", "https://api.bambulab.com/v1/user-service/my/message/count?lang=en&tag=a&tag=b#ignored",
+      "https://makerworld.com/api/v1/user-service/my/message/count?lang=en&tag=a&tag=b"],
+    ["global", "https://API.BAMBULAB.COM:443/v1/design-user-service/my/preference?value=a%2Fb",
+      "https://makerworld.com/api/v1/design-user-service/my/preference?value=a%2Fb"],
+    ["global", "https://api.bambulab.com/v1/user-service/my/../my/message/count",
+      "https://makerworld.com/api/v1/user-service/my/message/count"],
+    ["cn", "https://api.bambulab.cn/v1/user-service/my/message/count"],
+    ["cn", "https://api.bambulab.cn/v1/design-user-service/my/preference"],
+    ["cn", "https://api.bambulab.com/v1/user-service/my/message/count"],
+    ["cn", "https://api.bambulab.com/v1/design-user-service/my/preference"],
+    ["global", "https://api.bambulab.cn/v1/user-service/my/message/count"],
+    ["global", "https://api.bambulab.cn/v1/design-user-service/my/preference"],
+    ["global", "http://api.bambulab.com/v1/user-service/my/message/count"],
+    ["global", "https://api.bambulab.com:8443/v1/design-user-service/my/preference"],
+    ["global", "https://user:private@api.bambulab.com/v1/user-service/my/message/count"],
+    ["global", "https://private@api.bambulab.com/v1/design-user-service/my/preference"],
+    ["global", "https://api.bambulab.com.outside.test/v1/user-service/my/message/count"],
+    ["global", "https://api.bambulab.com/v1/user-service/my/message/count/"],
+    ["global", "https://api.bambulab.com/v1/design-user-service/my/preference/"],
+    ["global", "https://api.bambulab.com/v1/user-service/my/message/count/extra"],
+    ["global", "https://api.bambulab.com/v1/user-service/my/message/counter"],
+    ["global", "https://api.bambulab.com/v1/user-service/my/message/%63ount"],
+    ["global", "https://api.bambulab.com/v1/user-service/my/message%2Fcount"],
+    ["global", "https://api.bambulab.com/v1/design-user-service/my/Preference"],
+    ["global", "https://api.bambulab.com/v1/user-service/my/profile"],
+    ["global", "https://api.bambulab.com/v1/user-service/my/message/count/../profile"],
+    ["global", "https://api.bambulab.com/v1/design-service/instance/123/f3mf?type=download"],
+    ["global", "https://api.bambulab.com/api/sign-in/ticket"],
+    ["global", "https://api.bambulab.com/api/v1/user-service/my/message/count"],
+    ["global", "https://makerworld.com/api/v1/user-service/my/message/count?source=web"],
     ["cn", "https://api.bambulab.com/v1/design-service/design/123"],
     ["global", "https://api.bambulab.cn/v1/design-service/design/123"],
     ["cn", "http://api.bambulab.cn/v1/design-service/design/123"],
@@ -64,6 +94,7 @@ test("Bambu model metadata uses the matching MakerWorld API without remapping au
   for (const [platform, targetUrl, expected] of cases) {
     await t.test(`${platform}: ${new URL(targetUrl).host}${new URL(targetUrl).pathname}`, async () => {
       let pageUrl;
+      const authUrls = [];
       const session = { on() {}, off() {}, detach: async () => {},
         send: async (method) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "main" } } } : {},
       };
@@ -78,7 +109,7 @@ test("Bambu model metadata uses the matching MakerWorld API without remapping au
         withTemporaryPage: async (_browser, _context, callback) => callback(page),
         isAllowedBrowserFetchUrl: () => true,
         cleanCookie: (cookie) => cookie, cleanFetchHeaders: () => ({}),
-        headersWithBrowserAuth: (headers) => headers,
+        headersWithBrowserAuth: (headers, _cookies, url) => { authUrls.push(url); return headers; },
         hostnameMatchesDomains: () => true, platformDomains: () => [],
         makerWorldHomeUrl: () => `https://${platform === "cn" ? "makerworld.com.cn" : "makerworld.com"}/zh`,
         inspectPageVerificationState: async () => ({ detected: false }),
@@ -86,6 +117,7 @@ test("Bambu model metadata uses the matching MakerWorld API without remapping au
       const normalized = new URL(targetUrl);
       normalized.hash = "";
       assert.equal(result.url, expected || normalized.href);
+      assert.deepEqual(authUrls, [expected || normalized.href]);
     });
   }
 });
@@ -335,6 +367,51 @@ test("business-page GET uses local HTTP fixtures without external requests", {
     assert.deepEqual(externalRequests, []);
     assert.equal(ownedPages.at(-1).isClosed(), true);
     assert.equal(manualPage.isClosed(), false);
+  });
+
+  await t.test("verified global account probes use same-page GET without cross-origin preflight or auth-error retries", async () => {
+    const externalRequests = [];
+    const authUrls = [];
+    const deps = { ...dependencies,
+      isAllowedBrowserFetchUrl: (value) => [origin, "https://api.bambulab.com"].includes(new URL(value).origin),
+      headersWithBrowserAuth: (headers, _cookies, url) => { authUrls.push(url); return headers; },
+      ensurePageVerification: async () => { throw new Error("ordinary account response must not trigger verification"); },
+      withTemporaryPage: async (_browser, _context, callback) => {
+        const page = await context.newPage();
+        ownedPages.push(page);
+        await page.setRequestInterception(true);
+        page.on("request", (request) => {
+          if (new URL(request.url()).origin === origin) void request.continue();
+          else { externalRequests.push({ url: request.url(), method: request.method() }); void request.abort(); }
+        });
+        try { return await callback(page); }
+        finally { await page.close(); }
+      },
+    };
+    for (const path of ["/v1/user-service/my/message/count", "/v1/design-user-service/my/preference"]) {
+      for (const status of [200, 401, 403]) {
+        requests.length = 0;
+        authUrls.length = 0;
+        routes.set(`/api${path}`, json({ account: true, status }, status));
+        const query = "?lang=en&tag=a&tag=b";
+        const result = await fetchInBusinessPage({ ...input, platform: "global",
+          targetUrl: `https://api.bambulab.com${path}${query}`,
+          headers: { authorization: "Bearer fixture", token: "fixture" },
+        }, deps);
+        assert.equal(result.status_code, status);
+        assert.deepEqual(JSON.parse(result.text), { account: true, status });
+        assert.equal(result.url, `${origin}/api${path}${query}`);
+        assert.deepEqual(authUrls, [result.url]);
+        const account = requests.filter((request) => request.url === `/api${path}${query}`);
+        assert.deepEqual(account.map((request) => request.method), ["GET"]);
+        assert.equal(account[0].headers.authorization, "Bearer fixture");
+        assert.equal(account[0].headers.token, "fixture");
+        assert.equal(account[0].headers.referer, `${origin}/business`);
+        assert.deepEqual(externalRequests, []);
+        assert.equal(ownedPages.at(-1).isClosed(), true);
+        assert.equal(manualPage.isClosed(), false);
+      }
+    }
   });
 
   await t.test("blocked background telemetry cannot turn a successful metadata GET into a redirect failure", async () => {
