@@ -706,7 +706,7 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
   }
 }
 
-async function findThreeMfDownloadButton(page, timeoutMs, { verifyPage } = {}) {
+export async function findThreeMfDownloadButton(page, timeoutMs, { verifyPage } = {}) {
   let deadline = Date.now() + Math.max(Number(timeoutMs || 30000), 15000);
   while (Date.now() < deadline) {
     const cloudflare = await page.evaluate(() => {

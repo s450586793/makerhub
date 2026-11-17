@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 
 from app.api.auth import router as auth_router
+from app.api.account_verification_routes import router as account_verification_router
 from app.api.dependencies import store as global_store
 from app.api.config import crawler as config_crawler
 from app.api.config import local_organizer
@@ -38,6 +39,7 @@ from app.core.settings import (
 from app.core.api_permissions import api_token_permission_for_request
 from app.core.database import close_database_pool
 from app.services.auth import AuthManager, ensure_secure_admin_credential
+from app.services.account_manual_verification import manual_verification_manager
 from app.services.business_logs import append_business_log, shutdown_business_log_writer
 from app.services.performance import log_api_request_if_needed
 from app.services.request_threads import run_web_io, shutdown_request_threads
@@ -162,6 +164,7 @@ async def resume_archive_queue() -> None:
 
 @app.on_event("shutdown")
 async def shutdown_thread_pools() -> None:
+    manual_verification_manager.shutdown()
     local_organizer.stop()
     shutdown_business_log_writer()
     shutdown_request_threads()
@@ -262,6 +265,7 @@ app.include_router(web_router)
 app.include_router(auth_router)
 app.include_router(system_router)
 app.include_router(config_router)
+app.include_router(account_verification_router)
 app.include_router(logs_router)
 app.include_router(models_router)
 app.include_router(performance_router)

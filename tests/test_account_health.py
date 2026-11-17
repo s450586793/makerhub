@@ -244,7 +244,7 @@ class AccountHealthServiceTest(unittest.TestCase):
             "opens_browser": True,
         }])
 
-    def test_snapshot_to_source_card_exposes_verified_retry_actions(self):
+    def test_snapshot_to_source_card_opens_manual_verification(self):
         card = account_health.snapshot_to_source_card(
             "global",
             {
@@ -260,20 +260,15 @@ class AccountHealthServiceTest(unittest.TestCase):
         self.assertEqual(card["state"], "verification_required")
         self.assertEqual(card["status"], "需要浏览器确认")
         self.assertEqual(card["detail"], "国际站需要在浏览器完成验证后继续归档。")
-        self.assertEqual(card["action_label"], "打开官网")
+        self.assertEqual(card["action_label"], "去验证")
         self.assertEqual(card["url"], "https://makerworld.com")
         self.assertEqual(card["actions"], [
             {
-                "kind": "external",
-                "label": "打开官网",
-                "href": "https://makerworld.com",
-            },
-            {
                 "kind": "api",
-                "label": "已验证",
-                "endpoint": "/api/tasks/missing-3mf/verification-verified",
+                "label": "去验证",
+                "endpoint": "/api/config/online-accounts/global/verification",
                 "method": "POST",
-                "body": {"platform": "global"},
+                "opens_verification": True,
             },
         ])
 
@@ -283,8 +278,9 @@ class AccountHealthServiceTest(unittest.TestCase):
             {"platform": "cn", "status": "verification_required"},
         )
 
-        self.assertEqual(card["actions"][0]["href"], "https://makerworld.com.cn")
-        self.assertEqual(card["actions"][1]["body"], {"platform": "cn"})
+        self.assertEqual(card["actions"][0]["endpoint"], "/api/config/online-accounts/cn/verification")
+        self.assertEqual(len(card["actions"]), 1)
+        self.assertTrue(card["actions"][0]["opens_verification"])
 
     def test_snapshot_to_source_card_uses_planned_status_copy(self):
         cases = [

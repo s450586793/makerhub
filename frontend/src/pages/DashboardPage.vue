@@ -316,6 +316,13 @@
         </div>
       </section>
     </template>
+    <AccountVerificationDialog
+      :visible="verificationDialog.visible"
+      :action="verificationDialog.action"
+      :platform="verificationDialog.platform"
+      @close="closeVerificationDialog"
+      @completed="handleVerificationCompleted"
+    />
   </div>
 </template>
 
@@ -323,6 +330,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
 
+import AccountVerificationDialog from "../components/AccountVerificationDialog.vue";
 import { apiRequest } from "../lib/api";
 import {
   dashboardStatusActionContext,
@@ -411,6 +419,7 @@ const payload = ref({
   },
 });
 const statusActionState = ref({});
+const verificationDialog = ref({ visible: false, action: {}, platform: "", item: {} });
 let statusActionSequence = 0;
 
 const automation = computed(() => payload.value?.automation_overview || defaultAutomationOverview);
@@ -507,6 +516,12 @@ async function runStatusAction(item, action) {
   if (!action?.endpoint || isStatusActionBusy(item, action)) {
     return;
   }
+  if (action.opens_verification) {
+    if (!verificationDialog.value.visible || verificationDialog.value.action.endpoint !== action.endpoint) {
+      verificationDialog.value = { visible: true, action, platform: item.key || "", item };
+    }
+    return;
+  }
   const opensBrowser = Boolean(action.opens_browser);
   const popup = opensBrowser && typeof window !== "undefined"
     ? window.open("about:blank", "_blank")
@@ -553,6 +568,28 @@ async function runStatusAction(item, action) {
   } finally {
     void load();
   }
+}
+
+function closeVerificationDialog() {
+  verificationDialog.value = { ...verificationDialog.value, visible: false };
+  void load();
+}
+
+function handleVerificationCompleted(result) {
+  if (result?.completed !== true || !verificationDialog.value.visible) return;
+  if (result.platform && result.platform !== verificationDialog.value.platform) return;
+  const { item, action } = verificationDialog.value;
+  const key = dashboardStatusActionKey(item, action);
+  statusActionState.value = {
+    ...statusActionState.value,
+    [key]: {
+      busy: false,
+      message: result.message || "验证已完成。",
+      context: dashboardStatusActionContext(item),
+      sequence: ++statusActionSequence,
+    },
+  };
+  void load();
 }
 
 function handleArchiveCompleted() {

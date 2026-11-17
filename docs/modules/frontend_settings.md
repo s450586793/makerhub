@@ -44,11 +44,13 @@
 - `ModelCard.vue`
 - `SourceLibraryCard.vue`
 - `ShareDialog.vue`
+- `AccountVerificationDialog.vue`：首页两站的人工验证画面与输入。
 - `ThemeSegment.vue`
 
 ## 数据和目录
 
 - 前端构建产物：`frontend/dist/`
+- 账号人工验证：`frontend/src/lib/manualVerification.js` 串行转发会话画面、输入、完成和取消；会话由 `app/services/account_manual_verification.py` 持有，不能仅凭用户点击完成解除下载验证。
 - FastAPI 静态分发：`app/api/web.py` 和 `app/main.py`
 - 旧模板/静态文件仍存在于 `app/templates/`、`app/static/`，但新功能优先改 Vue。
 

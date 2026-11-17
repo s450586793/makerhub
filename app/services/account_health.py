@@ -415,18 +415,14 @@ def snapshot_to_source_card(
         "opens_browser": True,
     } if clean_browser_url else None
     if operational["state"] == "verification_required":
+        card["action_label"] = "去验证"
         card["actions"] = [
-            browser_open_action or {
-                "kind": "external",
-                "label": action_label,
-                "href": action_url,
-            },
             {
                 "kind": "api",
-                "label": "已验证",
-                "endpoint": "/api/tasks/missing-3mf/verification-verified",
+                "label": "去验证",
+                "endpoint": f"/api/config/online-accounts/{normalized_platform}/verification",
                 "method": "POST",
-                "body": {"platform": normalized_platform},
+                "opens_verification": True,
             },
         ]
     elif browser_open_action:

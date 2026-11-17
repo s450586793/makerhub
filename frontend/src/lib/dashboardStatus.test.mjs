@@ -58,7 +58,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function dashboardPage({ read = () => snapshot(), act = async () => ({ message: "操作已完成。" }) } = {}) {
+function dashboardPage({ read = () => snapshot(), act = async () => ({ message: "操作已完成。" }), openBrowser = () => ({ closed: false, location: { replace() {} }, close() {} }) } = {}) {
   let mounted;
   let unmounted;
   let subscription;
@@ -79,13 +79,13 @@ function dashboardPage({ read = () => snapshot(), act = async () => ({ message: 
     },
     window: {
       location: { protocol: "http:", hostname: "makerhub.test" },
-      open: () => ({ closed: false, location: { replace() {} }, close() {} }),
+      open: openBrowser,
     },
     document: { hidden: false, addEventListener() {}, removeEventListener() {} },
     console: { error() {} },
   };
   const page = new Function(...Object.keys(dependencies), dashboardSetup + `
-    return { load, loading, payload, runStatusAction, statusActionMessage, isStatusActionBusy };
+    return { load, loading, payload, runStatusAction, statusActionMessage, isStatusActionBusy, verificationDialog, closeVerificationDialog, handleVerificationCompleted };
   `)(...Object.values(dependencies));
   return {
     ...page,
@@ -99,6 +99,55 @@ function dashboardPage({ read = () => snapshot(), act = async () => ({ message: 
 async function flushDashboard() {
   await new Promise((resolve) => setImmediate(resolve));
 }
+
+test("dashboard opens manual verification inside its dialog without opening another browser or submitting twice", async () => {
+  const requests = [];
+  const action = { kind: "api", label: "去验证", endpoint: "/api/config/online-accounts/global/verification", opens_verification: true };
+  const card = { ...sourceCard(), actions: [action] };
+  const page = dashboardPage({
+    read: () => snapshot(card),
+    act: async (...args) => requests.push(args),
+    openBrowser: () => assert.fail("manual verification must stay in the MakerHub dialog"),
+  });
+  await page.mount();
+  const normalized = dashboardStatusActions(card)[0];
+  assert.equal(normalized.opens_verification, true);
+  await page.runStatusAction(card, normalized);
+  const firstDialog = page.verificationDialog.value;
+  await page.runStatusAction(card, normalized);
+  assert.equal(page.verificationDialog.value, firstDialog);
+  assert.equal(page.verificationDialog.value.visible, true);
+  assert.equal(page.verificationDialog.value.platform, "global");
+  assert.equal(page.verificationDialog.value.action.endpoint, action.endpoint);
+  assert.equal(requests.length, 0);
+  page.closeVerificationDialog();
+  assert.equal(page.verificationDialog.value.visible, false);
+});
+
+test("dashboard verification dialog switches platform and accepts only confirmed completion", async () => {
+  let reads = 0;
+  const globalAction = { kind: "api", label: "去验证", endpoint: "/api/config/online-accounts/global/verification", opens_verification: true };
+  const globalCard = { ...sourceCard(), actions: [globalAction] };
+  const cnAction = { ...globalAction, endpoint: globalAction.endpoint.replace("/global/", "/cn/") };
+  const cnCard = { ...globalCard, key: "cn", actions: [cnAction] };
+  const page = dashboardPage({ read: () => { reads++; return { system_status: [globalCard, cnCard] }; } });
+  await page.mount();
+  await page.runStatusAction(globalCard, globalAction);
+  await page.runStatusAction(cnCard, cnAction);
+  assert.equal(page.verificationDialog.value.platform, "cn");
+  const before = reads;
+  page.handleVerificationCompleted({ status: "authorized", completed: false });
+  assert.equal(reads, before);
+  assert.equal(page.statusActionMessage(cnCard), "");
+  page.handleVerificationCompleted({ completed: true, message: "下载授权已恢复。" });
+  await flushDashboard();
+  assert.equal(page.statusActionMessage(cnCard), "下载授权已恢复。");
+  assert.equal(page.statusActionMessage(globalCard), "");
+  assert.ok(reads > before);
+  page.closeVerificationDialog();
+  page.handleVerificationCompleted({ completed: true, message: "晚到结果。" });
+  assert.equal(page.statusActionMessage(cnCard), "下载授权已恢复。");
+});
 
 test("dashboard feedback disappears when its action is removed after recovery", async () => {
   let current = snapshot();

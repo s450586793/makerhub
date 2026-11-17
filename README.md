@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.21.13`
+> 当前版本：`v0.22.0`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -370,6 +370,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-11-17 · v0.22.0
+
+- 首页两站“去验证”直接打开人工验证弹窗，支持点选、拖动、滚动和文字输入。
+- 使用关联浏览器的同一验证页面，真实下载授权通过后继续归档，保留额度、请求间隔和手动暂停限制。
+- 关闭或过期自动清理验证窗口；重新登录账号后需先在设置同步。
+
 ### 2026-11-14 · v0.21.13
 
 - 首页账号恢复后清理过期操作错误，同一卡片显示当前操作反馈；失败后也重新核对状态。
@@ -380,12 +386,12 @@ npm --prefix frontend run build
 - 浏览器登录态先保存，再由现有后台测试更新资料和检查认证，避免首次同步或切换账号时重复读取资料造成长时间等待。
 - 后台检查完成前显示检查中，会话已保存不再误报为账号检查已通过。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-11-14 · v0.21.11
 
 - 修复浏览器登录同步读取账号资料时阻塞 API，导致页面无响应和健康检查超时的问题；等待期间页面继续响应。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-11-14 · v0.21.10
 
