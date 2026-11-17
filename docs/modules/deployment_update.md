@@ -35,6 +35,14 @@
 - `DockerSocketClient`
 - `normalize_runtime_resource_config()`
 
+### 宿主机持续监控
+
+- `scripts/makerhub_monitor.py` 为已有冻结部署提供 `check`、`run`、`stop` 入口，使用 root 所有、权限为 `0600` 的独立配置。它复用已核验原脚本的容器身份、HTTP、Worker 心跳和共享锁检查。
+- 持续检查只覆盖 MakerHub 本身及其 Postgres / CloakBrowser 依赖。其他应用的目录增删、容器更新不应成为停止 MakerHub 的条件；整机迁移时冻结的目录清单不得用于持续运行门禁。
+- 自身数据挂载以文件系统 UUID、类型、子卷根、目录 inode 和读写状态识别。Btrfs 的 `st_dev` 可能随重启变化，仅作观测值。
+- 新监控应使用独立 systemd unit，依赖 Docker 和自身实际挂载。切换时停用旧 MakerHub 监控，保留历史脚本与证明，不再依赖旧的整机目录清单门禁。
+- `stop` 在依赖不健康或数据挂载异常时仍能执行，但必须先验证监控 PID、命令行、cgroup 与精确容器身份，只停止所属 App / Worker。
+
 ## 数据和目录
 
 - 文件:
@@ -67,6 +75,12 @@
 
 ```bash
 .venv/bin/python -m unittest tests.test_self_update tests.test_github_changelog
+```
+
+宿主机监控改动后运行：
+
+```bash
+.venv/bin/python -m pytest -q tests/test_makerhub_monitor.py tests/test_release_contract.py
 ```
 
 compose 或入口脚本改动后，至少检查：
