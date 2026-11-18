@@ -1,14 +1,18 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { parse as babelParse } from "@babel/parser";
-import { parse } from "@vue/compiler-sfc";
+import { compileScript, compileStyle, parse } from "@vue/compiler-sfc";
+import puppeteer from "puppeteer-core";
 import { computed, nextTick, ref } from "vue";
 
 import { verificationImageUrl, verificationKeyboardInput, verificationPointerPoint } from "./manualVerification.js";
 
 const source = readFileSync(new URL("../components/AccountVerificationDialog.vue", import.meta.url), "utf8");
-const script = parse(source).descriptor.scriptSetup.content;
+const descriptor = parse(source).descriptor;
+const script = descriptor.scriptSetup.content;
 const setup = babelParse(script, { sourceType: "module" }).program.body
   .filter((node) => node.type !== "ImportDeclaration")
   .map((node) => script.slice(node.start, node.end)).join("\n");
@@ -147,4 +151,104 @@ test("Escape and unmount close the remote session, while composition Escape is i
   assert.deepEqual(page.emitted, [["close"]]);
   page.unmount();
   assert.deepEqual(page.calls, [{ operation: "close" }, { operation: "close" }]);
+});
+
+test("verification dialog stays compact and scrolls tall screenshots on desktop and mobile", {
+  skip: !process.env.MAKERHUB_TEST_CHROMIUM && "Set MAKERHUB_TEST_CHROMIUM to run Chromium integration tests",
+}, async (t) => {
+  const browser = await puppeteer.launch({ executablePath: process.env.MAKERHUB_TEST_CHROMIUM,
+    headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+  t.after(() => browser.close());
+  const compiled = compileScript(descriptor, { id: "verification-layout", inlineTemplate: true }).content;
+  const nodes = babelParse(compiled, { sourceType: "module" }).program.body;
+  const vueImports = nodes.filter((node) => node.type === "ImportDeclaration" && node.source.value === "vue")
+    .flatMap((node) => node.specifiers.map((item) => `${item.imported.name}: ${item.local.name}`)).join(", ");
+  const component = nodes.filter((node) => node.type !== "ImportDeclaration")
+    .map((node) => compiled.slice(node.start, node.end)).join("\n").replace("export default", "const Dialog =");
+  const styles = [
+    readFileSync(new URL("../../../app/static/css/app.css", import.meta.url), "utf8"),
+    readFileSync(new URL("../style.css", import.meta.url), "utf8").replace(/^@import[^;]+;/gm, ""),
+    compileStyle({ source: descriptor.styles[0].content, id: "data-v-verification-layout", scoped: true }).code,
+  ].join("\n");
+  const screenshotDir = process.env.MAKERHUB_DIALOG_SCREENSHOT_DIR;
+  if (screenshotDir) mkdirSync(screenshotDir, { recursive: true });
+
+  for (const { name, width, height, theme } of [
+    { name: "desktop-light", width: 1440, height: 1000, theme: "light" },
+    { name: "mobile-dark", width: 390, height: 844, theme: "dark" },
+    { name: "mobile-short", width: 390, height: 360, theme: "light" },
+  ]) {
+    const page = await browser.newPage();
+    t.after(() => page.close().catch(() => {}));
+    await page.setViewport({ width, height });
+    await page.setContent(`<!doctype html><html data-theme="${theme}"><head><style>${styles}</style></head><body><div id="fixture"></div></body></html>`);
+    await page.addScriptTag({ path: fileURLToPath(new URL("../../node_modules/vue/dist/vue.global.prod.js", import.meta.url)) });
+    await page.addScriptTag({ content: `
+      const { ${vueImports} } = Vue;
+      const verificationImageUrl = ${verificationImageUrl.toString()};
+      const verificationKeyboardInput = ${verificationKeyboardInput.toString()};
+      const verificationPointerPoint = ${verificationPointerPoint.toString()};
+      const apiRequest = () => { throw new Error("networking is mocked for layout verification"); };
+      const createManualVerificationController = ({ onChange }) => {
+        window.setDialogState = onChange;
+        return { open() { onChange({ loading: true, completed: false }); }, close() {}, refresh() {}, sendEvents() {}, finish() {} };
+      };
+      ${component}
+      Dialog.__scopeId = "data-v-verification-layout";
+      Vue.createApp({ render: () => Vue.h(Dialog, { visible: true, platform: "cn" }) }).mount("#fixture");
+    ` });
+    await page.waitForSelector(".account-verification-dialog__viewport");
+    const loading = await page.$eval(".account-verification-dialog__panel", (panel) => ({
+      width: panel.getBoundingClientRect().width, height: panel.getBoundingClientRect().height,
+      viewportHeight: panel.querySelector(".account-verification-dialog__viewport").getBoundingClientRect().height,
+      closeFocused: document.activeElement.textContent === "关闭",
+    }));
+    assert.ok(loading.width <= 680 && loading.width <= width - 16, `${name}: compact panel width`);
+    assert.ok(loading.height < 300, `${name}: loading must not reserve a large browser canvas`);
+    assert.ok(loading.viewportHeight <= 90, `${name}: compact loading placeholder`);
+    assert.equal(loading.closeFocused, true, `${name}: close stays keyboard-accessible`);
+    if (screenshotDir && name !== "mobile-short") await page.screenshot({ path: join(screenshotDir, `${name}-loading.png`) });
+    await page.evaluate(() => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 1200;
+      canvas.height = 1800;
+      const context = canvas.getContext("2d");
+      context.fillStyle = "#f8faf9";
+      context.fillRect(0, 0, 1200, 1800);
+      context.fillStyle = "#17251e";
+      context.font = "32px sans-serif";
+      context.fillText("Verification page", 30, 60);
+      context.strokeRect(36, 150, 500, 200);
+      window.setDialogState({ session_id: "layout", platform: "cn", status: "challenge", loading: false,
+        completed: false, width: 1200, height: 1800, image: canvas.toDataURL("image/jpeg").split(",")[1] });
+    });
+    await page.waitForFunction(() => document.querySelector(".account-verification-dialog__viewport img")?.naturalWidth === 1200);
+    const loaded = await page.$eval(".account-verification-dialog__panel", (panel) => {
+      const viewport = panel.querySelector(".account-verification-dialog__viewport");
+      const image = viewport.querySelector("img");
+      const bounds = panel.getBoundingClientRect();
+      return { width: bounds.width, top: bounds.top, bottom: bounds.bottom,
+        imageWidth: image.getBoundingClientRect().width, imageHeight: image.getBoundingClientRect().height,
+        scrollHeight: viewport.scrollHeight, viewportHeight: viewport.clientHeight,
+        footerBottom: panel.querySelector("footer").getBoundingClientRect().bottom,
+        background: getComputedStyle(panel).backgroundColor, color: getComputedStyle(panel).color };
+    });
+    assert.ok(loaded.width <= 680, `${name}: image must not enlarge the panel`);
+    assert.ok(Math.abs(loaded.imageWidth / loaded.imageHeight - 2 / 3) < 0.001, `${name}: preserve screenshot proportions`);
+    assert.ok(loaded.scrollHeight > loaded.viewportHeight, `${name}: tall pages scroll instead of shrinking to fit height`);
+    assert.ok(loaded.top >= 8 && loaded.bottom <= height - 8, `${name}: panel fits the screen`);
+    assert.ok(loaded.footerBottom <= loaded.bottom, `${name}: action buttons stay visible`);
+    assert.notEqual(loaded.background, loaded.color, `${name}: theme keeps readable text`);
+    if (screenshotDir) await page.screenshot({ path: join(screenshotDir, `${name}-loaded.png`) });
+    await page.$$eval(".account-verification-dialog__zoom button", (buttons) => buttons[2].click());
+    await page.waitForFunction((baseWidth) => {
+      const image = document.querySelector(".account-verification-dialog__viewport img");
+      return image && Math.abs(image.getBoundingClientRect().width - baseWidth * 2) < 1;
+    }, {}, loaded.imageWidth);
+    assert.ok(await page.$eval(".account-verification-dialog__viewport", (viewport) => viewport.scrollWidth > viewport.clientWidth), `${name}: zoom retains horizontal scrolling`);
+    await page.evaluate(() => window.setDialogState({ status: "failed", loading: false, completed: false,
+      message: "浏览器仍忙，请稍后重新打开验证。", image: "" }));
+    await page.waitForFunction(() => document.querySelector(".account-verification-dialog__viewport")?.textContent.includes("验证页面未能加载。"));
+    assert.ok(await page.$eval(".account-verification-dialog__actions", (footer) => footer.textContent.includes("重新打开")), `${name}: a failed wait offers a retry`);
+  }
 });

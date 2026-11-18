@@ -5,6 +5,7 @@ import re
 import threading
 import time
 from collections import deque
+from concurrent.futures import CancelledError
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
@@ -46,6 +47,19 @@ _GLOBAL_SLOT_POLL_SECONDS = 0.05
 _PUBLISHED_RESOURCE_LIMITS: dict[str, int] = {}
 
 
+def _check_wait(name: str, deadline: Optional[float], cancel_event) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise CancelledError(f"Waiting for resource {name} was cancelled")
+    if deadline is not None and time.monotonic() >= deadline:
+        raise TimeoutError(f"Timed out waiting for resource {name}")
+
+
+def _wait_interval(deadline: Optional[float], interval: float) -> float:
+    if deadline is None:
+        return interval
+    return max(min(interval, deadline - time.monotonic()), 0.0)
+
+
 def _clamp_limit(name: str, value: Any) -> int:
     minimum, maximum = _RESOURCE_LIMIT_BOUNDS.get(name, (1, 64))
     try:
@@ -82,7 +96,7 @@ class _ResourceGate:
         with self._condition:
             return self.capacity
 
-    def acquire(self, *, priority: int = 0) -> float:
+    def acquire(self, *, priority: int = 0, deadline: Optional[float] = None, cancel_event=None) -> float:
         started_at = time.perf_counter()
         owner_id = threading.get_ident()
         try:
@@ -90,6 +104,7 @@ class _ResourceGate:
         except (TypeError, ValueError):
             clean_priority = 0
         with self._condition:
+            _check_wait(self.name, deadline, cancel_event)
             owner_depth = self._owners.get(owner_id, 0)
             if owner_depth > 0:
                 self._owners[owner_id] = owner_depth + 1
@@ -100,11 +115,15 @@ class _ResourceGate:
             waiter = (clean_priority, ticket)
             self._waiters.append(waiter)
             try:
-                while self.active >= self.capacity or max(
-                    self._waiters,
-                    key=lambda item: (item[0], -item[1]),
-                ) != waiter:
-                    self._condition.wait(timeout=1)
+                while True:
+                    _check_wait(self.name, deadline, cancel_event)
+                    if self.active < self.capacity and max(
+                        self._waiters,
+                        key=lambda item: (item[0], -item[1]),
+                    ) == waiter:
+                        break
+                    interval = _GLOBAL_SLOT_POLL_SECONDS if cancel_event is not None else 1.0
+                    self._condition.wait(timeout=_wait_interval(deadline, interval))
                 self._waiters.remove(waiter)
                 self.active += 1
                 self._owners[owner_id] = 1
@@ -233,7 +252,12 @@ def _try_acquire_global_slot(name: str, capacity: int):
     control_path = slot_dir / "capacity.control"
     control_lock = (slot_dir / "capacity.lock").open("a+", encoding="utf-8")
     try:
-        fcntl.flock(control_lock.fileno(), fcntl.LOCK_EX)
+        try:
+            fcntl.flock(control_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EAGAIN):
+                return None
+            raise
         shared_capacity, valid = _read_control_capacity(control_path, 1)
         if not valid:
             shared_capacity = 1
@@ -257,14 +281,64 @@ def _try_acquire_global_slot(name: str, capacity: int):
         control_lock.close()
 
 
-def _acquire_global_slot(name: str, gate: _ResourceGate):
+def _acquire_global_slot(
+    name: str,
+    gate: _ResourceGate,
+    *,
+    priority: int = 0,
+    deadline: Optional[float] = None,
+    cancel_event=None,
+):
     if fcntl is None:
         return None
-    while True:
-        handle = _try_acquire_global_slot(name, gate.current_capacity())
-        if handle is not None:
-            return handle
-        time.sleep(_GLOBAL_SLOT_POLL_SECONDS)
+    slot_dir = _resource_slot_directory(name)
+    slot_dir.mkdir(parents=True, exist_ok=True)
+    priority_handle = (slot_dir / "priority.waiters.lock").open("a+", encoding="utf-8")
+    handle = None
+    try:
+        try:
+            urgent = int(priority) > 0
+        except (TypeError, ValueError):
+            urgent = False
+        priority_announced = False
+        while True:
+            _check_wait(name, deadline, cancel_event)
+            may_acquire = priority_announced
+            if not may_acquire:
+                # 优先标记仅在本地 gate 已到手后持有，避免同进程普通等待者被反锁。
+                # 普通任务用短暂独占锁检查标记，人工等待用共享锁声明优先。
+                try:
+                    priority_mode = fcntl.LOCK_SH if urgent else fcntl.LOCK_EX
+                    fcntl.flock(priority_handle.fileno(), priority_mode | fcntl.LOCK_NB)
+                    may_acquire = True
+                    priority_announced = urgent
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                        raise
+            if may_acquire:
+                try:
+                    handle = _try_acquire_global_slot(name, gate.current_capacity())
+                finally:
+                    if not urgent:
+                        fcntl.flock(priority_handle.fileno(), fcntl.LOCK_UN)
+                if handle is not None:
+                    _check_wait(name, deadline, cancel_event)
+                    return handle
+            interval = _wait_interval(deadline, _GLOBAL_SLOT_POLL_SECONDS)
+            if cancel_event is not None:
+                cancel_event.wait(interval)
+            else:
+                time.sleep(interval)
+    except BaseException:
+        failed_handle, handle = handle, None
+        _release_global_slot(failed_handle)
+        raise
+    finally:
+        try:
+            _release_global_slot(priority_handle)
+        except BaseException:
+            _release_global_slot(handle)
+            raise
 
 
 def _release_global_slot(handle) -> None:
@@ -322,17 +396,27 @@ def resource_slot(
     *,
     detail: str = "",
     priority: int = 0,
+    timeout_seconds: Optional[float] = None,
+    cancel_event: Optional[threading.Event] = None,
     log_wait: Optional[Callable[..., None]] = None,
     warn_after_ms: float = 250.0,
 ):
     gate = _gate_for(name)
     started_at = time.perf_counter()
+    deadline = None if timeout_seconds is None else time.monotonic() + max(float(timeout_seconds), 0.0)
     reentrant = gate.is_owned_by_current_thread()
-    gate.acquire(priority=priority)
+    gate.acquire(priority=priority, deadline=deadline, cancel_event=cancel_event)
     global_handle = None
     try:
         if not reentrant:
-            global_handle = _acquire_global_slot(name, gate)
+            global_handle = _acquire_global_slot(
+                name,
+                gate,
+                priority=priority,
+                deadline=deadline,
+                cancel_event=cancel_event,
+            )
+        _check_wait(name, deadline, cancel_event)
         wait_ms = (time.perf_counter() - started_at) * 1000
         gate.record_wait(wait_ms)
         if wait_ms >= warn_after_ms and callable(log_wait):
@@ -348,8 +432,10 @@ def resource_slot(
                 pass
         yield wait_ms
     finally:
-        _release_global_slot(global_handle)
-        gate.release()
+        try:
+            _release_global_slot(global_handle)
+        finally:
+            gate.release()
 
 
 def resource_snapshot() -> dict[str, dict[str, Any]]:

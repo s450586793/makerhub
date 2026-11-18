@@ -6,6 +6,7 @@ import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer-core";
 
 import {
@@ -103,6 +104,7 @@ test("manual Chromium page preserves wrong-answer retries and closes only its ow
   timeout: 30000,
 }, async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "makerhub-manual-test-"));
+  const bridgeScript = fileURLToPath(new URL("../../../app/services/cloakbrowser_manual.mjs", import.meta.url));
   let browser;
   let server;
   let manual;
@@ -184,12 +186,16 @@ test("manual Chromium page preserves wrong-answer retries and closes only its ow
     assert.equal((await context.pages()).length, originalPages.length);
     manual = null;
 
-    child = spawn(process.execPath, [path.resolve("app/services/cloakbrowser_manual.mjs")], { stdio: ["pipe", "pipe", "pipe"] });
+    child = spawn(process.execPath, [bridgeScript], { stdio: ["pipe", "pipe", "pipe"] });
+    let bridgeError = "";
+    child.stderr.setEncoding("utf8").on("data", value => { bridgeError = (bridgeError + value).slice(-2048); });
     const replies = createInterface({ input: child.stdout });
     const iterator = replies[Symbol.asyncIterator]();
     const command = async payload => {
       child.stdin.write(JSON.stringify(payload) + "\n");
-      return JSON.parse((await iterator.next()).value);
+      const reply = await iterator.next();
+      assert.equal(reply.done, false, `Manual bridge closed before replying: ${bridgeError}`);
+      return JSON.parse(reply.value);
     };
     const endpoint = new URL(browser.wsEndpoint());
     await command({ action: "init", auth_token: "fixture", cdp_url: `http://${endpoint.host}`, platform: "cn", model_url: "https://makerworld.com.cn/zh", lifetime_ms: 10000 });
@@ -198,7 +204,7 @@ test("manual Chromium page preserves wrong-answer retries and closes only its ow
     await new Promise(resolve => child.once("exit", resolve));
     assert.equal((await context.pages()).length, originalPages.length, "SIGTERM cleans the manual page while preserving the profile");
 
-    child = spawn(process.execPath, [path.resolve("app/services/cloakbrowser_manual.mjs")], { stdio: ["pipe", "pipe", "pipe"] });
+    child = spawn(process.execPath, [bridgeScript], { stdio: ["pipe", "pipe", "pipe"] });
     const stopDuringInitialization = target => { if (target.type() === "page") child.kill("SIGTERM"); };
     browser.on("targetcreated", stopDuringInitialization);
     try {

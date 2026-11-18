@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 from contextlib import ExitStack
-from concurrent.futures import Future, TimeoutError as FutureTimeout
+from concurrent.futures import CancelledError, Future, TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from datetime import timedelta
 import hashlib
@@ -41,6 +41,7 @@ from app.services.three_mf_quota import reserve_three_mf_download_slot
 
 MANUAL_BRIDGE_SCRIPT = ROOT_DIR / "app" / "services" / "cloakbrowser_manual.mjs"
 SESSION_SECONDS = 10 * 60
+BROWSER_WAIT_SECONDS = 60
 _TERMINAL_STATUSES = {"completed", "cancelled", "expired", "failed"}
 _MAX_REPLY_BYTES = 10 * 1024 * 1024
 
@@ -266,6 +267,8 @@ class ManualVerificationManager:
             return session.public()
         if session.status in _TERMINAL_STATUSES:
             return session.public()
+        if action == "frame" and session.status in {"waiting", "starting"} and not session.image:
+            return session.public()
         future: Future = Future()
         try:
             session.commands.put_nowait((action, events or [], future))
@@ -446,11 +449,20 @@ class ManualVerificationManager:
         operation = ExitStack()
         pending_future = None
         try:
-            operation.enter_context(browser._profile_operation(session.platform, session.account.browser_profile_id, detail="prepare-login"))
+            with session.lock:
+                if session.stopped.is_set() or time.monotonic() >= session.deadline:
+                    return
+                session.update(status="waiting", message="正在等待浏览器任务结束，随后打开验证页面。")
+            operation.enter_context(browser._profile_operation(
+                session.platform, session.account.browser_profile_id, detail="prepare-login",
+                timeout_seconds=min(BROWSER_WAIT_SECONDS, max(0, session.deadline - time.monotonic())),
+                cancel_event=session.stopped,
+            ))
             with session.lock:
                 session.entered.set()
                 if session.stopped.is_set() or time.monotonic() >= session.deadline:
                     return
+                session.update(status="starting", message="正在连接验证浏览器。")
             if not _same_login(self.store, session.account):
                 raise ManualVerificationError("账号已变化，请重新打开验证窗口。")
             if _queue_blockers(session.platform).get("active"):
@@ -498,6 +510,17 @@ class ManualVerificationManager:
                         session.update(message="请先在画面中完成验证，下载权限确认后会自动继续。")
                 future.set_result(session.public())
                 pending_future = None
+        except CancelledError:
+            with session.lock:
+                if session.status not in _TERMINAL_STATUSES:
+                    session.update(status="cancelled", message="验证窗口已关闭。")
+        except TimeoutError:
+            with session.lock:
+                if session.status not in _TERMINAL_STATUSES:
+                    if time.monotonic() >= session.deadline:
+                        session.update(status="expired", message="验证窗口已过期，请重新打开。")
+                    else:
+                        session.update(status="failed", message="浏览器仍忙，请稍后重新打开验证。")
         except ManualVerificationError as exc:
             with session.lock:
                 if session.status not in _TERMINAL_STATUSES:

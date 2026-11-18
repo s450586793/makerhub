@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import threading
 import time
 from typing import Any, Callable
 from urllib.parse import quote, urlparse
@@ -538,14 +539,27 @@ def _clear_profile_activity(platform: str) -> None:
 
 
 @contextmanager
-def _profile_operation(platform: str, profile_id: str = "", *, detail: str):
+def _profile_operation(
+    platform: str,
+    profile_id: str = "",
+    *,
+    detail: str,
+    timeout_seconds: float | None = None,
+    cancel_event: threading.Event | None = None,
+):
     clean_platform = normalize_platform(platform)
     touch_profile_activity(clean_platform, detail=detail)
+    wait_options = {}
+    if timeout_seconds is not None:
+        wait_options["timeout_seconds"] = timeout_seconds
+    if cancel_event is not None:
+        wait_options["cancel_event"] = cancel_event
     try:
         with resource_slot(
             _profile_resource_name(clean_platform, profile_id),
             detail=detail,
-            priority=100 if detail == "click" else 0,
+            priority=100 if detail in {"click", "prepare-login"} else 0,
+            **wait_options,
         ):
             touch_profile_activity(clean_platform, detail=detail)
             yield

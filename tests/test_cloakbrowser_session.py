@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import contextmanager, nullcontext
@@ -170,6 +171,19 @@ class CloakBrowserSessionTest(unittest.TestCase):
             detail = cloakbrowser_session.profile_activity_detail("global")
 
         self.assertEqual(detail, "fetch")
+
+    def test_manual_profile_operation_prioritizes_and_bounds_browser_wait(self):
+        stopped = threading.Event()
+        with patch.object(cloakbrowser_session, "touch_profile_activity"), \
+                patch.object(cloakbrowser_session, "resource_slot", return_value=nullcontext()) as slot:
+            with cloakbrowser_session._profile_operation(
+                "cn", "profile-cn", detail="prepare-login", timeout_seconds=20, cancel_event=stopped,
+            ):
+                pass
+        slot.assert_called_once_with(
+            "cloakbrowser_manager", detail="prepare-login", priority=100,
+            timeout_seconds=20, cancel_event=stopped,
+        )
 
     def test_profile_resource_name_is_shared_across_profiles_and_platforms(self):
         self.assertEqual(

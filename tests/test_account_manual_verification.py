@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from concurrent.futures import Future
+from concurrent.futures import Future, TimeoutError as FutureTimeout
 from contextlib import contextmanager
 import copy
 from pathlib import Path
@@ -390,6 +390,76 @@ class AccountManualVerificationTest(unittest.TestCase):
         self.assertTrue(session.done.is_set())
         self.assertEqual(future.result()["status"], "completed")
         self.assertFalse(any("cookie" in kwargs for _args, kwargs in bridge.command.call_args_list))
+
+    def test_browser_wait_timeout_reports_busy_and_releases_manual_lease(self):
+        session = self.session(target=False)
+
+        @contextmanager
+        def occupied_browser(*args, **kwargs):
+            self.assertEqual(session.status, "waiting")
+            self.assertIn("等待", session.message)
+            self.assertIs(kwargs.get("cancel_event"), session.stopped)
+            self.assertGreater(kwargs.get("timeout_seconds", 0), 0)
+            self.assertLessEqual(kwargs["timeout_seconds"], 60)
+            raise TimeoutError("fixture occupied browser")
+            yield
+
+        with patch.object(manual.browser, "_profile_operation", side_effect=occupied_browser), \
+                patch.object(manual, "_ManualBridge") as bridge:
+            self.manager._worker(session)
+        self.assertEqual(session.status, "failed")
+        self.assertIn("浏览器仍忙", session.message)
+        self.assertTrue(session.done.is_set())
+        session.lease.close.assert_called_once()
+        bridge.assert_not_called()
+
+    def test_cancelled_browser_wait_exits_without_starting_a_late_window(self):
+        from app.services import resource_limiter
+
+        session = self.session(target=False)
+        thread = threading.Thread(target=self.manager._worker, args=(session,), daemon=True)
+        with patch.object(resource_limiter, "STATE_DIR", Path(self.temp.name)), \
+                patch.object(resource_limiter, "_GATES", {}), \
+                patch.object(manual.browser, "STATE_DIR", Path(self.temp.name)), \
+                patch.object(manual, "_ManualBridge") as bridge, \
+                resource_limiter.resource_slot("cloakbrowser_manager"):
+            thread.start()
+            try:
+                deadline = time.monotonic() + 1
+                while resource_limiter.resource_snapshot()["cloakbrowser_manager"]["waiting"] == 0 and thread.is_alive() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(session.status, "waiting")
+                self.manager.execute("cn", session.session_id, "owner-one", "close")
+                thread.join(timeout=1)
+                self.assertFalse(thread.is_alive(), "closing must cancel the occupied browser wait")
+                self.assertEqual(session.status, "cancelled")
+                bridge.assert_not_called()
+            finally:
+                session.stopped.set()
+        thread.join(timeout=1)
+
+    def test_waiting_frame_returns_progress_without_waiting_for_browser_initialization(self):
+        session = self.session(target=False)
+        session.update(status="waiting", message="正在等待浏览器任务结束。")
+        result = Future()
+
+        def frame():
+            result.set_result(self.manager.execute("cn", session.session_id, "owner-one", "frame"))
+
+        thread = threading.Thread(target=frame, daemon=True)
+        thread.start()
+        try:
+            try:
+                payload = result.result(timeout=0.5)
+            except FutureTimeout:
+                self.fail("waiting frame must report progress immediately")
+            self.assertEqual(payload["status"], "waiting")
+            self.assertTrue(session.commands.empty())
+        finally:
+            while not session.commands.empty():
+                _action, _events, future = session.commands.get_nowait()
+                future.set_result(session.public())
+            thread.join(timeout=1)
 
     def test_worker_keeps_human_challenge_open_then_resumes_after_real_authorization(self):
         session = self.session()

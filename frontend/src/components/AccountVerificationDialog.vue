@@ -41,7 +41,7 @@
         <div
           ref="viewport"
           class="account-verification-dialog__viewport"
-          :class="{ 'is-interactive': canInteract, 'is-zoomed': zoom > 1, 'is-panning': panMode }"
+          :class="{ 'has-image': imageUrl, 'is-interactive': canInteract, 'is-zoomed': zoom > 1, 'is-panning': panMode }"
           tabindex="0"
           :aria-label="panMode ? '拖动以移动验证画面' : '远程验证页面，可点击、拖动、滚动和输入文字'"
           :aria-busy="state.loading || state.finishing"
@@ -65,7 +65,7 @@
             draggable="false"
             @dragstart.prevent
           >
-          <span v-else>{{ state.error ? "验证页面未能加载。" : "正在加载验证页面…" }}</span>
+          <span v-else>{{ state.error || ['error', 'failed', 'cancelled', 'expired'].includes(state.status) ? "验证页面未能加载。" : "正在加载验证页面…" }}</span>
         </div>
 
         <p v-if="state.error || inputError" class="form-status is-error account-verification-dialog__error" role="alert">{{ inputError || state.error }}</p>
@@ -325,8 +325,9 @@ onBeforeUnmount(() => {
 .account-verification-dialog__panel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  width: min(1080px, 100%);
+  gap: 10px;
+  width: min(680px, 100%);
+  min-width: 0;
   max-height: calc(100dvh - 32px);
   overflow-y: auto;
   padding: 16px;
@@ -366,20 +367,28 @@ onBeforeUnmount(() => {
   margin: 0;
   font-size: 13px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .account-verification-dialog__viewport {
   display: flex;
-  flex: 1 0 auto;
+  flex: 0 1 auto;
   align-items: center;
   justify-content: center;
-  min-height: 180px;
-  overflow: hidden;
+  min-width: 0;
+  min-height: 88px;
+  max-height: min(480px, 56dvh);
+  overflow: auto;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface-soft);
   color: var(--muted);
   touch-action: none;
+}
+
+.account-verification-dialog__viewport.has-image {
+  align-items: flex-start;
+  min-height: 0;
 }
 
 .account-verification-dialog__viewport:focus-visible {
@@ -394,8 +403,6 @@ onBeforeUnmount(() => {
 .account-verification-dialog__viewport.is-zoomed {
   align-items: flex-start;
   justify-content: flex-start;
-  max-height: 62dvh;
-  overflow: auto;
 }
 
 .account-verification-dialog__viewport.is-panning {
@@ -407,7 +414,7 @@ onBeforeUnmount(() => {
   width: auto;
   height: auto;
   max-width: 100%;
-  max-height: 62dvh;
+  flex-shrink: 0;
   object-fit: contain;
   user-select: none;
   -webkit-user-drag: none;
@@ -424,6 +431,7 @@ onBeforeUnmount(() => {
 
 .account-verification-dialog__actions {
   justify-content: flex-end;
+  gap: 8px;
 }
 
 @media (max-width: 600px) {
@@ -436,8 +444,8 @@ onBeforeUnmount(() => {
     padding: 12px;
   }
 
-  .account-verification-dialog__viewport img {
-    max-height: 56dvh;
+  .account-verification-dialog__viewport {
+    max-height: 48dvh;
   }
 }
 </style>
