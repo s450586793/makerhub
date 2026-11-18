@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import CancelledError
 from datetime import timezone
 from email.utils import parsedate_to_datetime
 import hashlib
@@ -8,6 +9,7 @@ import logging
 import math
 import os
 from pathlib import Path
+import threading
 import time
 from typing import Any
 
@@ -53,7 +55,8 @@ class ThreeMfAuthorizationAttempt:
 
     def __init__(
         self, platform: str, profile_id: str, state_dir: Path, *,
-        model_url: str = "", instance_id: str = "", verification_probe: bool = False,
+        model_url: str = "", instance_id: str = "", verification_probe: bool = False, update_gate: bool = True,
+        cancel_event: threading.Event | None = None,
     ):
         self.platform = platform
         digest = hashlib.sha256(f"{platform}:{profile_id}".encode()).hexdigest()[:24]
@@ -61,6 +64,8 @@ class ThreeMfAuthorizationAttempt:
         self.model_url = model_url
         self.instance_id = instance_id
         self.verification_probe = verification_probe is True
+        self.update_gate = update_gate is True
+        self.cancel_event = cancel_event
         self.state: dict[str, Any] = {}
         self.response: dict[str, Any] | None = None
         self.request_started = False
@@ -92,13 +97,20 @@ class ThreeMfAuthorizationAttempt:
                 "headers": {"retry-after": str(math.ceil(remaining))},
             }
             return self
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise CancelledError()
         wait = min(max(_finite_seconds(self.state.get("next_allowed_at")) - now, 0.0), 120.0)
         if not self.state:
             wait = _authorization_interval()
         if wait > 0:
             logger.info("3MF authorization pacing: platform=%s wait_seconds=%.2f", self.platform, wait)
-            time.sleep(wait)
+            if self.cancel_event is None:
+                time.sleep(wait)
+            elif self.cancel_event.wait(wait):
+                raise CancelledError()
         self.response = self._blocked_response()
+        if self.response is None and self.cancel_event is not None and self.cancel_event.is_set():
+            raise CancelledError()
         self.request_started = self.response is None
         return self
 
@@ -151,7 +163,7 @@ class ThreeMfAuthorizationAttempt:
                 pass
         # 明确的页面验证也在释放浏览器锁前暂停后续授权，避免其他任务继续点击。
         cloudflare = payload.get("code") == "MAKERHUB_CLOUDFLARE"
-        if not authorized and (daily_limit or cloudflare or status == 418 or payload.get("captchaId")):
+        if self.update_gate and not authorized and (daily_limit or cloudflare or status == 418 or payload.get("captchaId")):
             failure = "download_limited" if daily_limit else "cloudflare" if cloudflare else "verification_required"
             try:
                 account_health.update_three_mf_gate(

@@ -50,7 +50,7 @@ DEFAULT_CLOAKBROWSER_IDLE_SECONDS = 30 * 60
 CLOAKBROWSER_AUTOMATION_IDLE_SECONDS_ENV = "MAKERHUB_CLOAKBROWSER_AUTOMATION_IDLE_SECONDS"
 DEFAULT_CLOAKBROWSER_AUTOMATION_IDLE_SECONDS = 2 * 60
 MANAGED_PROFILE_LAUNCH_ARGS = ("--disable-gpu",)
-AUTOMATION_ACTIVITY_DETAILS = frozenset({"fetch"})
+AUTOMATION_ACTIVITY_DETAILS = frozenset({"fetch", "captcha"})
 TRANSIENT_BRIDGE_ERROR_MARKERS = (
     "超时",
     "timeout",
@@ -558,7 +558,7 @@ def _profile_operation(
         with resource_slot(
             _profile_resource_name(clean_platform, profile_id),
             detail=detail,
-            priority=100 if detail in {"click", "prepare-login"} else 0,
+            priority=100 if detail in {"click", "prepare-login", "captcha"} else 0,
             **wait_options,
         ):
             touch_profile_activity(clean_platform, detail=detail)
@@ -1219,6 +1219,7 @@ def browser_fetch(
     headers: dict[str, str] | None = None,
     cookie_items: list[dict[str, Any]] | None = None,
     timeout_seconds: int | None = None,
+    authorization_managed: bool = False,
 ) -> CloakBrowserFetchResult:
     clean_platform = normalize_platform(platform)
     clean_url = _validate_browser_fetch_url(url, clean_platform)
@@ -1228,6 +1229,11 @@ def browser_fetch(
         operation_timeout = _timeout_seconds()
     operation_timeout = max(min(operation_timeout, 180), 5)
     clean_profile_id = str(profile_id or "").strip()
+    if type(authorization_managed) is not bool or (authorization_managed and (
+        not clean_profile_id or not _is_browser_three_mf_authorization_url(clean_url, clean_platform)
+        or not re.fullmatch(r"/(?:api/)?v1/design-service/instance/[1-9][0-9]*/f3mf/?", urlparse(clean_url).path)
+    )):
+        raise CloakBrowserError("托管授权仅支持已关联浏览器的 3MF 下载地址。")
 
     with _profile_operation(clean_platform, clean_profile_id, detail="fetch"):
         managed_proxy = _managed_profile_proxy(clean_platform, proxy_config)
@@ -1266,27 +1272,31 @@ def browser_fetch(
         bridge_timeout = max(operation_timeout + 30, operation_timeout * 2)
         if payload["auto_verify_challenges"]:
             bridge_timeout += AUTO_VERIFY_TIMEOUT_SECONDS
-        try:
-            running, _restarted, result = _run_paced_bridge(
-                clean_platform,
-                running,
-                payload,
-                timeout_seconds=bridge_timeout,
-            )
-        except CloakBrowserBridgeError:
-            if not clean_profile_id:
-                raise
-            _profile, running, _launched_here = _ensure_running_profile(
-                clean_platform,
-                clean_profile_id,
-            )
-            payload["cdp_url"] = f"{_configured_url()}/api/profiles/{running.id}/cdp"
-            running, _restarted, result = _run_paced_bridge(
-                clean_platform,
-                running,
-                payload,
-                timeout_seconds=bridge_timeout,
-            )
+        if authorization_managed:
+            # 调用方已持有 profile 锁并负责节奏和额度；请求发出后不重试或重启。
+            result = _run_bridge(payload, timeout_seconds=bridge_timeout)
+        else:
+            try:
+                running, _restarted, result = _run_paced_bridge(
+                    clean_platform,
+                    running,
+                    payload,
+                    timeout_seconds=bridge_timeout,
+                )
+            except CloakBrowserBridgeError:
+                if not clean_profile_id:
+                    raise
+                _profile, running, _launched_here = _ensure_running_profile(
+                    clean_platform,
+                    clean_profile_id,
+                )
+                payload["cdp_url"] = f"{_configured_url()}/api/profiles/{running.id}/cdp"
+                running, _restarted, result = _run_paced_bridge(
+                    clean_platform,
+                    running,
+                    payload,
+                    timeout_seconds=bridge_timeout,
+                )
 
     final_url = _validate_browser_fetch_url(str(result.get("url") or clean_url), clean_platform)
     try:

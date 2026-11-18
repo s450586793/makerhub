@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { createManualVerificationController, verificationImageUrl, verificationKeyboardInput, verificationPointerPoint } from "./manualVerification.js";
+import { createManualVerificationController } from "./manualVerification.js";
 
 const endpoint = "/api/config/online-accounts/cn/verification";
-const session = (patch = {}) => ({ session_id: "manual_cn", platform: "cn", status: "challenge", message: "请完成验证。", image: "aQ==", width: 1200, height: 800, completed: false, ...patch });
+const challenge = (patch = {}) => ({ challenge_id: "challenge-1", captcha_id: "captcha-1", ...patch });
+const proof = { captcha_id: "captcha-1", lot_number: "lot", pass_token: "token", gen_time: "123", captcha_output: "output" };
+const session = (patch = {}) => ({ session_id: "manual_cn", platform: "cn", status: "challenge", message: "请完成验证。", completed: false, challenge: challenge(), ...patch });
 
 function deferred() {
   let resolve;
@@ -13,83 +15,99 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-async function flush() {
-  await new Promise((resolve) => setImmediate(resolve));
-}
+async function flush() { await new Promise((resolve) => setImmediate(resolve)); }
 
-function harness(respond = async () => session()) {
+function harness(respond = async () => session(), options = {}) {
   const calls = [];
   const changes = [];
   const completed = [];
   const timers = new Map();
+  const signals = [];
   let timerId = 0;
   const controller = createManualVerificationController({
     request: async (path, options) => {
-      calls.push({ path, ...options });
+      const { signal, ...visibleOptions } = options;
+      calls.push({ path, ...visibleOptions }); signals.push(signal);
       return respond(path, options);
     },
     onChange: (value) => changes.push(value),
     onComplete: (value) => completed.push(value),
-    schedule: (callback) => { timers.set(++timerId, callback); return timerId; },
+    schedule: (callback, delay) => { callback.delay = delay; timers.set(++timerId, callback); return timerId; },
     unschedule: (id) => timers.delete(id),
+    ...options,
   });
-  return { controller, calls, changes, completed, timers, state: () => changes.at(-1) };
+  function tick(delay) {
+    const timer = [...timers].find(([, callback]) => callback.delay === delay);
+    assert.ok(timer, `expected pending timer with delay ${delay}`);
+    timers.delete(timer[0]); timer[1]();
+  }
+  return { controller, calls, changes, completed, timers, signals, tick, state: () => changes.at(-1) };
 }
 
-test("manual verification maps a scaled image to viewport coordinates and clamps captured drags", () => {
-  const bounds = { left: 20, top: 50, width: 600, height: 400 };
-  assert.deepEqual(verificationPointerPoint({ clientX: 320, clientY: 250 }, bounds, 1200, 800), { x: 600, y: 400 });
-  assert.deepEqual(verificationPointerPoint({ clientX: -20, clientY: 900 }, bounds, 1200, 800), { x: 0, y: 799 });
-  assert.equal(verificationPointerPoint({ clientX: NaN, clientY: 0 }, bounds, 1200, 800), null);
-  assert.equal(verificationPointerPoint({ clientX: 0, clientY: 0 }, { ...bounds, width: 0 }, 1200, 800), null);
-});
-
-test("manual verification renders only inline JPEG data and rejects external image URLs", () => {
-  assert.equal(verificationImageUrl("aQ=="), "data:image/jpeg;base64,aQ==");
-  for (const value of ["https://example.test/image", "javascript:alert(1)", "data:image/svg+xml;base64,aQ==", "<img>", ""]) {
-    assert.equal(verificationImageUrl(value), "");
-  }
-});
-
-test("remote keyboard input preserves typed characters, shortcuts and navigation without forwarding composition", () => {
-  assert.deepEqual(verificationKeyboardInput({ key: "A", shiftKey: true }), { type: "text", text: "A" });
-  assert.deepEqual(verificationKeyboardInput({ key: "中" }), { type: "text", text: "中" });
-  assert.deepEqual(verificationKeyboardInput({ key: "a", ctrlKey: true }), { type: "key", key: "Control+a" });
-  assert.deepEqual(verificationKeyboardInput({ key: "Tab", shiftKey: true }), { type: "key", key: "Shift+Tab" });
-  assert.deepEqual(verificationKeyboardInput({ key: "Backspace" }), { type: "key", key: "Backspace" });
-  for (const event of [{ key: "Process" }, { key: "Dead" }, { key: "Shift", shiftKey: true }, { key: "Escape" }, { key: "a", isComposing: true }]) {
-    assert.equal(verificationKeyboardInput(event), null);
-  }
-});
-
-test("opening a session publishes its challenge and polls a single frame at a time", async () => {
-  const frame = deferred();
-  const page = harness(async (path) => path.endsWith("/frame") ? frame.promise : session());
+test("a ready challenge waits for SDK callbacks without image or status polling", async () => {
+  const page = harness();
   await page.controller.open({ endpoint });
-  assert.equal(page.state().image, "aQ==");
+  assert.equal(page.state().challenge.challenge_id, "challenge-1");
+  assert.equal(page.state().loading, false);
+  assert.equal(page.timers.size, 0);
+  assert.deepEqual(page.calls, [{ path: endpoint, method: "POST", body: {} }]);
+  await page.controller.close();
+});
+
+test("preparing and verifying poll a single lightweight GET and stop when the challenge is ready", async () => {
+  const status = deferred();
+  const page = harness(async (path) => path === endpoint ? session({ status: "preparing", challenge: null }) : status.promise);
+  await page.controller.open({ endpoint });
   assert.equal(page.timers.size, 1);
   const first = page.controller.refresh();
   const second = page.controller.refresh();
   await flush();
-  assert.equal(page.calls.filter((call) => call.path.endsWith("/frame")).length, 1);
-  assert.equal(page.timers.size, 0);
-  frame.resolve(session({ image: "bQ==" }));
+  assert.deepEqual(page.calls.at(-1), { path: `${endpoint}/manual_cn`, method: "GET" });
+  assert.equal(page.calls.length, 2);
+  status.resolve(session());
   await Promise.all([first, second]);
-  assert.equal(page.state().image, "bQ==");
-  assert.equal(page.timers.size, 1);
+  assert.equal(page.timers.size, 0);
   await page.controller.close();
 });
 
-test("a missing initial image loads a frame immediately", async () => {
-  const page = harness(async (path) => path === endpoint ? session({ image: "" }) : session());
+test("SDK success submits the official proof once and only server completion emits success", async () => {
+  const submitted = deferred();
+  let checked = false;
+  const page = harness(async (path) => {
+    if (path.endsWith("/complete")) return submitted.promise;
+    return checked ? session({ status: "completed", completed: true, challenge: null }) : session();
+  });
   await page.controller.open({ endpoint });
-  assert.deepEqual(page.calls.map((call) => call.path), [endpoint, `${endpoint}/manual_cn/frame`]);
-  assert.equal(page.state().loading, false);
-  assert.equal(page.state().image, "aQ==");
+  const first = page.controller.complete("challenge-1", proof);
+  const duplicate = page.controller.complete("challenge-1", proof);
+  await flush();
+  assert.equal(page.calls.filter((call) => call.path.endsWith("/complete")).length, 1);
+  assert.deepEqual(page.calls.at(-1).body, { challenge_id: "challenge-1", proof });
+  assert.equal(page.completed.length, 0);
+  submitted.resolve(session({ status: "verifying", challenge: null }));
+  await Promise.all([first, duplicate]);
+  assert.equal(page.timers.size, 1);
+  checked = true;
+  await page.controller.refresh();
+  assert.equal(page.completed.length, 1);
+  assert.equal(page.timers.size, 0);
+  await page.controller.complete("challenge-1", proof);
+  assert.equal(page.completed.length, 1);
   await page.controller.close();
 });
 
-test("canceling while create is pending deletes the late-created session without publishing it", async () => {
+test("a replaced challenge rejects stale SDK callbacks", async () => {
+  const page = harness(async (_path, options) => options.method === "GET" ? session({ challenge: challenge({ challenge_id: "challenge-2" }) }) : session());
+  await page.controller.open({ endpoint });
+  await page.controller.refresh();
+  await page.controller.complete("challenge-1", proof);
+  assert.equal(page.calls.some((call) => call.path.endsWith("/complete")), false);
+  await page.controller.complete("challenge-2", proof);
+  assert.equal(page.calls.filter((call) => call.path.endsWith("/complete")).length, 1);
+  await page.controller.close();
+});
+
+test("closing during create deletes the late session without publishing or mounting its challenge", async () => {
   const creation = deferred();
   const page = harness(async (path) => path === endpoint ? creation.promise : {});
   const opening = page.controller.open({ endpoint });
@@ -97,172 +115,200 @@ test("canceling while create is pending deletes the late-created session without
   const closing = page.controller.close();
   const count = page.changes.length;
   creation.resolve(session());
-  await opening;
-  await closing;
+  await Promise.all([opening, closing]);
+  await flush();
   assert.equal(page.changes.length, count);
   assert.deepEqual(page.calls.at(-1), { path: `${endpoint}/manual_cn`, method: "DELETE" });
   assert.equal(page.timers.size, 0);
 });
 
-test("switching platforms invalidates late responses and cleans the old session", async () => {
-  const cn = deferred();
-  const globalEndpoint = endpoint.replace("/cn/", "/global/");
-  const page = harness(async (path) => path === endpoint ? cn.promise : path === globalEndpoint ? session({ session_id: "manual_global", platform: "global" }) : {});
-  const first = page.controller.open({ endpoint });
-  await flush();
-  const second = page.controller.open({ endpoint: globalEndpoint });
-  await flush();
-  assert.equal(page.calls.some((call) => call.path === globalEndpoint), false);
-  cn.resolve(session());
-  await first;
-  await second;
-  assert.equal(page.state().platform, "global");
-  assert.equal(page.state().session_id, "manual_global");
-  assert.ok(page.calls.some((call) => call.method === "DELETE" && call.path === `${endpoint}/manual_cn`));
-  await page.controller.close();
-});
-
-test("reopening waits for the previous session deletion to release its browser lease", async () => {
+test("switching platforms waits for old cleanup and ignores late proof responses", async () => {
+  const submitted = deferred();
   const deletion = deferred();
-  const page = harness(async (_path, options) => options.method === "DELETE" ? deletion.promise : session());
-  await page.controller.open({ endpoint });
-  const second = page.controller.open({ endpoint });
-  await flush();
-  assert.equal(page.calls.filter((call) => call.path === endpoint).length, 1);
-  deletion.resolve({});
-  await second;
-  assert.equal(page.calls.filter((call) => call.path === endpoint).length, 2);
-  await page.controller.close();
-});
-
-test("closing invalidates in-flight frames and cannot emit a late success", async () => {
-  const frame = deferred();
-  const page = harness(async (path) => path.endsWith("/frame") ? frame.promise : session());
-  await page.controller.open({ endpoint });
-  const loading = page.controller.refresh();
-  await flush();
-  await page.controller.close();
-  const count = page.changes.length;
-  frame.resolve(session({ completed: true }));
-  await loading;
-  assert.equal(page.changes.length, count);
-  assert.equal(page.completed.length, 0);
-  assert.equal(page.timers.size, 0);
-});
-
-test("drag input stays ordered across requests and finish waits for the final pointer release", async () => {
-  const firstInput = deferred();
-  let inputs = 0;
-  const page = harness(async (path) => {
-    if (path.endsWith("/input") && inputs++ === 0) return firstInput.promise;
-    return session({ completed: path.endsWith("/finish") });
+  const globalEndpoint = endpoint.replace("/cn/", "/global/");
+  const page = harness(async (path, options) => {
+    if (path.endsWith("/complete")) return submitted.promise;
+    if (options.method === "DELETE" && path.startsWith(endpoint)) return deletion.promise;
+    return path === globalEndpoint ? session({ session_id: "manual_global", platform: "global" }) : session();
   });
   await page.controller.open({ endpoint });
-  const down = page.controller.sendEvents([{ type: "pointerdown", x: 20, y: 30 }]);
+  const submit = page.controller.complete("challenge-1", proof);
   await flush();
-  page.controller.sendEvents([{ type: "pointermove", x: 40, y: 30, delay_ms: 16 }]);
-  page.controller.sendEvents([{ type: "pointermove", x: 70, y: 30, delay_ms: 20 }]);
-  page.controller.sendEvents([{ type: "pointerup", x: 70, y: 30, delay_ms: 25 }]);
-  const finishing = page.controller.finish();
+  const switching = page.controller.open({ endpoint: globalEndpoint });
   await flush();
-  assert.equal(page.calls.filter((call) => call.path.endsWith("/input")).length, 1);
-  assert.equal(page.calls.some((call) => call.path.endsWith("/finish")), false);
-  firstInput.resolve(session());
-  await down;
-  await finishing;
-  const operations = page.calls.filter((call) => call.path.endsWith("/input") || call.path.endsWith("/finish"));
-  assert.deepEqual(operations.map((call) => call.path.split("/").at(-1)), ["input", "input", "finish"]);
-  assert.deepEqual(operations[1].body.events, [{ type: "pointermove", x: 40, y: 30, delay_ms: 16 }, { type: "pointermove", x: 70, y: 30, delay_ms: 20 }, { type: "pointerup", x: 70, y: 30, delay_ms: 25 }]);
-  assert.equal(page.completed.length, 1);
-  await page.controller.close();
-});
-
-test("input batches are bounded while keeping all text and key events", async () => {
-  const page = harness();
-  await page.controller.open({ endpoint });
-  const events = Array.from({ length: 177 }, (_, index) => ({ type: "text", text: String(index) }));
-  await page.controller.sendEvents(events);
-  const batches = page.calls.filter((call) => call.path.endsWith("/input")).map((call) => call.body.events);
-  assert.deepEqual(batches.map((batch) => batch.length), [80, 80, 17]);
-  assert.deepEqual(batches.flat(), events);
-  await page.controller.close();
-});
-
-test("an overloaded drag buffer remains bounded and retains its final release", async () => {
-  const input = deferred();
-  let count = 0;
-  const page = harness(async (path) => path.endsWith("/input") && count++ === 0 ? input.promise : session());
-  await page.controller.open({ endpoint });
-  const sending = page.controller.sendEvents([{ type: "pointerdown", x: 0, y: 20, delay_ms: 0 }]);
-  await flush();
-  page.controller.sendEvents(Array.from({ length: 900 }, (_, x) => ({ type: "pointermove", x, y: 20, delay_ms: 16 })));
-  page.controller.sendEvents([{ type: "pointerup", x: 900, y: 20, delay_ms: 16 }]);
-  input.resolve(session());
-  await sending;
-  const buffered = page.calls.filter((call) => call.path.endsWith("/input")).slice(1).flatMap((call) => call.body.events);
-  assert.equal(buffered.length, 600);
-  assert.equal(buffered.at(-1).type, "pointerup");
-  assert.ok(buffered.slice(0, -1).every((event, index, items) => index === 0 || event.x > items[index - 1].x));
-  await page.controller.close();
-});
-
-test("verification success requires the server completed flag and is emitted once", async () => {
-  let confirmed = false;
-  const page = harness(async () => session({ status: "authorized", completed: confirmed }));
-  await page.controller.open({ endpoint });
-  await page.controller.finish();
-  assert.equal(page.completed.length, 0);
-  assert.equal(page.state().completed, false);
-  confirmed = true;
-  await page.controller.refresh();
-  await page.controller.finish();
-  assert.equal(page.completed.length, 1);
-  assert.equal(page.timers.size, 0);
-  await page.controller.close();
-});
-
-test("mismatched sessions and invalid entry points are rejected", async () => {
-  const page = harness(async () => session({ platform: "global" }));
-  await page.controller.open({ endpoint });
-  assert.equal(page.state().status, "error");
-  assert.match(page.state().error, /会话不匹配/);
+  assert.equal(page.calls.some((call) => call.path === globalEndpoint), false);
+  deletion.resolve({});
+  await switching;
+  submitted.resolve(session({ status: "completed", completed: true }));
+  await submit;
+  assert.equal(page.state().platform, "global");
   assert.equal(page.completed.length, 0);
   await page.controller.close();
-  const calls = page.calls.length;
-  await page.controller.open({ endpoint: "https://example.test/verification" });
-  assert.equal(page.calls.length, calls);
-  assert.match(page.state().error, /入口无效/);
-  await page.controller.close();
 });
 
-test("transient frame errors keep the current image and allow polling to recover", async () => {
-  let fail = true;
+test("terminal and failed requests stop polling and allow a fresh session", async () => {
+  for (const status of ["failed", "cancelled", "expired"]) {
+    const page = harness(async () => session({ status, challenge: null }));
+    await page.controller.open({ endpoint });
+    assert.equal(page.state().loading, false);
+    assert.equal(page.timers.size, 0);
+    await page.controller.complete("challenge-1", proof);
+    assert.equal(page.calls.length, 1);
+    await page.controller.close();
+  }
   const page = harness(async (path) => {
-    if (path.endsWith("/frame") && fail) throw new Error("HTTP 502");
+    if (path.endsWith("/complete")) throw new Error("验证已过期，请重试。");
     return session();
   });
   await page.controller.open({ endpoint });
-  await page.controller.refresh();
-  assert.equal(page.state().image, "aQ==");
-  assert.equal(page.state().error, "HTTP 502");
-  assert.equal(page.timers.size, 1);
-  fail = false;
-  await page.controller.refresh();
+  await page.controller.complete("challenge-1", proof);
+  assert.equal(page.state().status, "failed");
+  assert.match(page.state().error, /已过期/);
+  assert.equal(page.timers.size, 0);
+  await page.controller.open({ endpoint });
+  assert.equal(page.state().status, "challenge");
   assert.equal(page.state().error, "");
   await page.controller.close();
 });
 
-test("canceling after input begins drops queued events and releases the session", async () => {
-  const input = deferred();
-  const page = harness(async (path) => path.endsWith("/input") ? input.promise : session());
-  await page.controller.open({ endpoint });
-  const sending = page.controller.sendEvents([{ type: "pointerdown", x: 10, y: 20 }]);
+test("invalid endpoints and mismatched responses fail without exposing a challenge", async () => {
+  const invalid = harness();
+  await invalid.controller.open({ endpoint: "https://evil.test/verification" });
+  assert.equal(invalid.calls.length, 0);
+  assert.equal(invalid.state().status, "failed");
+  const mismatch = harness(async () => session({ platform: "global" }));
+  await mismatch.controller.open({ endpoint });
+  assert.equal(mismatch.state().status, "failed");
+  assert.equal(mismatch.state().challenge, null);
+  await mismatch.controller.close();
+});
+
+test("a hung create is cancelled on close so reopening can proceed and late distinct sessions are cleaned", async () => {
+  const creation = deferred();
+  let creates = 0;
+  const page = harness(async (path) => path === endpoint && creates++ === 0 ? creation.promise : session({ session_id: "new_session" }));
+  const opening = page.controller.open({ endpoint });
   await flush();
-  page.controller.sendEvents([{ type: "pointerup", x: 10, y: 20 }]);
+  assert.equal(page.signals[0]?.aborted, false);
+  const closing = page.controller.close();
+  await flush();
+  assert.equal(page.signals[0].aborted, true);
+  await closing;
+  await page.controller.open({ endpoint });
+  assert.equal(page.state().session_id, "new_session");
+  creation.resolve(session({ session_id: "late_session" }));
+  await opening;
+  await flush();
+  assert.ok(page.calls.some((call) => call.path === `${endpoint}/late_session` && call.method === "DELETE"));
+  assert.equal(page.state().session_id, "new_session");
   await page.controller.close();
-  input.resolve(session());
-  await sending;
-  assert.equal(page.calls.filter((call) => call.path.endsWith("/input")).length, 1);
-  assert.equal(page.calls.at(-1).method, "DELETE");
+  assert.equal(page.timers.size, 0);
+});
+
+test("create timeout reports retry without replay and late cleanup never deletes a newer reused session", async () => {
+  const creation = deferred();
+  let creates = 0;
+  const page = harness(async (path) => path === endpoint && creates++ === 0 ? creation.promise : session({ session_id: "shared_session" }), { requestTimeout: 15000 });
+  const opening = page.controller.open({ endpoint });
+  await flush();
+  page.tick(15000);
+  await opening;
+  assert.equal(page.state().status, "failed");
+  assert.match(page.state().error, /超时.*重试/);
+  assert.equal(creates, 1);
+  await page.controller.open({ endpoint });
+  creation.resolve(session({ session_id: "shared_session" }));
+  await flush();
+  assert.equal(page.calls.some((call) => call.method === "DELETE"), false);
+  assert.equal(page.state().session_id, "shared_session");
+  await page.controller.close();
+});
+
+test("late create cannot delete an active replacement while its session id is still unknown", async () => {
+  const first = deferred();
+  const second = deferred();
+  let creates = 0;
+  const page = harness(async (path) => path === endpoint ? (++creates === 1 ? first.promise : second.promise) : {});
+  const opening = page.controller.open({ endpoint });
+  await flush();
+  await page.controller.close();
+  const replacement = page.controller.open({ endpoint });
+  await flush();
+  first.resolve(session({ session_id: "shared_session" }));
+  await opening;
+  await flush();
+  assert.equal(page.calls.some((call) => call.method === "DELETE"), false);
+  second.resolve(session({ session_id: "shared_session" }));
+  await replacement;
+  assert.equal(page.state().session_id, "shared_session");
+  await page.controller.close();
+});
+
+test("hung status and proof requests time out without accepting late success or replaying proof", async () => {
+  for (const operation of ["status", "proof"]) {
+    const pending = deferred();
+    const page = harness(async (path, options) => path.endsWith("/complete") || options.method === "GET" ? pending.promise : session());
+    await page.controller.open({ endpoint });
+    const request = operation === "status" ? page.controller.refresh() : page.controller.complete("challenge-1", proof);
+    await flush();
+    page.tick(15000);
+    await request;
+    assert.equal(page.state().status, "failed");
+    assert.match(page.state().error, /超时.*重试/);
+    assert.equal(page.signals[1].aborted, true);
+    pending.resolve(session({ status: "completed", completed: true, challenge: null }));
+    await flush();
+    assert.equal(page.completed.length, 0);
+    await page.controller.complete("challenge-1", proof);
+    assert.equal(page.calls.length, 2);
+    await page.controller.close();
+    assert.equal(page.timers.size, 0);
+  }
+});
+
+test("a hung DELETE has a finite deadline and cannot permanently block reopening", async () => {
+  const deletion = deferred();
+  const page = harness(async (_path, options) => options.method === "DELETE" ? deletion.promise : session());
+  await page.controller.open({ endpoint });
+  const closing = page.controller.close();
+  await flush();
+  const reopened = page.controller.open({ endpoint });
+  await flush();
+  assert.equal(page.calls.filter((call) => call.path === endpoint).length, 1);
+  page.tick(15000);
+  await Promise.all([closing, reopened]);
+  assert.equal(page.calls.filter((call) => call.path === endpoint).length, 2);
+  assert.equal(page.signals[1].aborted, true);
+  const finalClose = page.controller.close();
+  await flush();
+  page.tick(15000);
+  await finalClose;
+  assert.equal(page.timers.size, 0);
+});
+
+test("a late cleanup already dispatched before reopening is awaited with a finite deadline", async () => {
+  const creation = deferred();
+  const deletion = deferred();
+  let creates = 0;
+  const page = harness(async (path, options) => {
+    if (options.method === "DELETE") return deletion.promise;
+    return path === endpoint && creates++ === 0 ? creation.promise : session({ session_id: "replacement" });
+  });
+  const opening = page.controller.open({ endpoint });
+  await flush();
+  await page.controller.close();
+  creation.resolve(session({ session_id: "late_session" }));
+  await opening;
+  await flush();
+  assert.ok(page.calls.some((call) => call.method === "DELETE"));
+  const reopening = page.controller.open({ endpoint });
+  await flush();
+  assert.equal(creates, 1);
+  page.tick(15000);
+  await reopening;
+  assert.equal(creates, 2);
+  assert.equal(page.state().session_id, "replacement");
+  deletion.resolve({});
+  await page.controller.close();
   assert.equal(page.timers.size, 0);
 });

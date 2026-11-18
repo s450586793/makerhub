@@ -1,7 +1,8 @@
 import json
 import os
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from contextlib import ExitStack
 from multiprocessing import get_context
 from pathlib import Path
@@ -304,6 +305,140 @@ def test_cooldown_increases_and_success_restores_normal_pacing(tmp_path, authori
 ])
 def test_retry_after_accepts_seconds_and_http_dates(value, expected):
     assert three_mf_pacing._retry_after_seconds(value, 1000) == expected
+
+
+@pytest.mark.parametrize("response", [
+    {"status_code": 418, "payload": {"captchaId": "private-captcha"}},
+    {"status_code": 403, "payload": {"code": "MAKERHUB_CLOUDFLARE"}},
+    {"status_code": 429, "payload": {"message": "Daily download limit reached"}},
+])
+def test_manual_attempt_can_preserve_bound_gate_while_persisting_pacing(tmp_path, authorization_environment, response):
+    authorization_environment["cn"] = {"three_mf_gate": "verification_required", "three_mf_detail": "bound challenge"}
+    original = dict(authorization_environment["cn"])
+    with three_mf_pacing.ThreeMfAuthorizationAttempt(
+        "cn", "profile-cn", tmp_path, verification_probe=True, update_gate=False,
+    ) as attempt:
+        assert attempt.response is None
+        attempt.response = response
+    state = json.loads(attempt.path.read_text())
+    assert state["next_allowed_at"] > 0
+    assert authorization_environment["cn"] == original
+
+
+def test_manual_attempt_preserves_gate_without_bypassing_rate_limit_cooldown(tmp_path, authorization_environment):
+    authorization_environment["cn"] = {"three_mf_gate": "verification_required", "three_mf_detail": "bound challenge"}
+    with three_mf_pacing.ThreeMfAuthorizationAttempt(
+        "cn", "profile-cn", tmp_path, verification_probe=True, update_gate=False,
+    ) as attempt:
+        attempt.response = {"status_code": 429, "headers": {"retry-after": "120"}}
+    state = json.loads(attempt.path.read_text())
+    assert state["cooldown_until"] > time.time() + 110
+    with three_mf_pacing.ThreeMfAuthorizationAttempt(
+        "cn", "profile-cn", tmp_path, verification_probe=True, update_gate=False,
+    ) as blocked:
+        assert blocked.response["status_code"] == 429
+        assert blocked.request_started is False
+
+
+def test_cancelled_manual_attempt_skips_wait_request_and_state_changes(tmp_path, authorization_environment):
+    cancel = threading.Event()
+    cancel.set()
+    with patch.object(three_mf_pacing.time, "sleep") as sleep, \
+            patch.object(account_health, "update_three_mf_gate") as gate:
+        attempt = three_mf_pacing.ThreeMfAuthorizationAttempt("cn", "profile-cn", tmp_path, cancel_event=cancel)
+        with pytest.raises(CancelledError), attempt:
+            pytest.fail("cancelled attempt must not reach the request body")
+    assert attempt.request_started is False
+    assert not attempt.path.exists()
+    sleep.assert_not_called()
+    gate.assert_not_called()
+
+
+def test_manual_close_interrupts_long_pacing_wait_without_rewriting_state(tmp_path, authorization_environment):
+    cancel, waiting = threading.Event(), threading.Event()
+    attempt = three_mf_pacing.ThreeMfAuthorizationAttempt("cn", "profile-cn", tmp_path, cancel_event=cancel)
+    attempt.path.parent.mkdir(parents=True)
+    original = json.dumps({"next_allowed_at": time.time() + 120, "rate_limit_count": 2})
+    attempt.path.write_text(original)
+    wait_for_cancel = cancel.wait
+
+    def wait(timeout):
+        waiting.set()
+        return wait_for_cancel(timeout)
+
+    def enter():
+        with attempt:
+            pytest.fail("closed verification must not send an authorization request")
+
+    with patch.object(cancel, "wait", side_effect=wait) as paced_wait, \
+            patch.object(three_mf_pacing.time, "sleep", side_effect=AssertionError("manual pacing must be interruptible")), \
+            patch.object(account_health, "update_three_mf_gate") as gate, \
+            ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(enter)
+        try:
+            assert waiting.wait(1), "manual attempt did not enter its pacing wait"
+            cancel.set()
+            with pytest.raises(CancelledError):
+                pending.result(timeout=1)
+        finally:
+            cancel.set()
+    assert 100 < paced_wait.call_args.args[0] <= 120
+    assert attempt.request_started is False
+    assert attempt.path.read_text() == original
+    gate.assert_not_called()
+
+
+def test_manual_attempt_rechecks_cancel_after_wait_returns(tmp_path, authorization_environment):
+    cancel = threading.Event()
+
+    def wait(timeout):
+        cancel.set()
+        return False
+
+    attempt = three_mf_pacing.ThreeMfAuthorizationAttempt("cn", "profile-cn", tmp_path, cancel_event=cancel)
+    with patch.object(cancel, "wait", side_effect=wait), \
+            patch.object(account_health, "update_three_mf_gate") as gate:
+        with pytest.raises(CancelledError), attempt:
+            pytest.fail("late cancellation must precede the request body")
+    assert attempt.request_started is False
+    assert not attempt.path.exists()
+    gate.assert_not_called()
+
+
+@pytest.mark.parametrize("blocker", ["verification", "daily", "cooldown"])
+def test_blocked_manual_attempt_can_return_without_network_even_when_cancelled(tmp_path, authorization_environment, blocker):
+    cancel = threading.Event()
+    cancel.set()
+    attempt = three_mf_pacing.ThreeMfAuthorizationAttempt("cn", "profile-cn", tmp_path, cancel_event=cancel)
+    original = None
+    if blocker == "verification":
+        authorization_environment["cn"] = {"three_mf_gate": "verification_required"}
+    elif blocker == "daily":
+        authorization_environment["cn"] = {"three_mf_gate": "daily_limit", "updated_at": three_mf_pacing.china_now().isoformat()}
+    else:
+        attempt.path.parent.mkdir(parents=True)
+        original = json.dumps({"cooldown_until": time.time() + 120})
+        attempt.path.write_text(original)
+    with patch.object(cancel, "wait") as wait, patch.object(account_health, "update_three_mf_gate") as gate:
+        with attempt:
+            assert attempt.response["status_code"] == (418 if blocker == "verification" else 429)
+            assert attempt.request_started is False
+    wait.assert_not_called()
+    gate.assert_not_called()
+    if original:
+        assert attempt.path.read_text() == original
+    else:
+        assert not attempt.path.exists()
+
+
+def test_default_authorization_pacing_preserves_existing_sleep(tmp_path, authorization_environment):
+    with patch.object(three_mf_pacing, "_authorization_interval", return_value=7.5), \
+            patch.object(three_mf_pacing.time, "sleep") as sleep:
+        with three_mf_pacing.ThreeMfAuthorizationAttempt("cn", "profile-cn", tmp_path) as attempt:
+            assert attempt.request_started is True
+            attempt.response = dict(SUCCESS)
+    sleep.assert_called_once_with(7.5)
+    assert json.loads(attempt.path.read_text())["next_allowed_at"] > time.time()
 
 
 def test_gate_is_rechecked_after_waiting(tmp_path, authorization_environment):

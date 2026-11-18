@@ -9,6 +9,7 @@ from app.services import makerworld_browser_client as client
 from app.services import resource_limiter
 from app.services.cloakbrowser_session import (
     CloakBrowserBridgeError,
+    CloakBrowserError,
     CloakBrowserFetchResult,
     CloakBrowserUnavailable,
 )
@@ -56,6 +57,89 @@ class MakerWorldBrowserClientTest(unittest.TestCase):
 
     def advance_clock(self, seconds):
         self.clock += seconds
+
+    def test_managed_authorization_uses_exact_profile_without_outer_retry_or_lock(self):
+        url = "https://makerworld.com.cn/api/v1/design-service/instance/456/f3mf?type=download&fileType=3mf"
+        proxy = object()
+        result = _fetch_result(url=url, content_type="application/json", text='{"captchaId":"public-id"}')
+        result.headers["retry-after"] = "30"
+        with patch.object(client, "_linked_profile") as linked_profile, \
+                patch.object(client, "resource_slot") as slot, \
+                patch.object(client, "_wait_browser_retry") as wait, \
+                patch.object(client, "_record_browser_result") as record, \
+                patch.object(client, "browser_fetch", return_value=result) as fetch:
+            response = client.makerworld_browser_managed_authorization(
+                "cn", url, profile_id="profile-cn", proxy_config=proxy,
+                headers={
+                    "Accept": "application/json",
+                    "x-bbl-captcha-result": "official-proof",
+                    "Authorization": "Bearer stale",
+                    "Cookie": "token=stale",
+                    "User-Agent": "stale-fingerprint",
+                },
+            )
+        fetch.assert_called_once_with(
+            "cn", url, profile_id="profile-cn", proxy_config=proxy,
+            headers={"Accept": "application/json", "x-bbl-captcha-result": "official-proof"},
+            timeout_seconds=30, authorization_managed=True,
+        )
+        linked_profile.assert_not_called()
+        slot.assert_not_called()
+        wait.assert_not_called()
+        record.assert_not_called()
+        self.assertEqual(response, client.MakerWorldBrowserResponse(
+            url=result.url, status_code=result.status_code, content_type=result.content_type,
+            text=result.text, profile_id="profile-cn", headers=result.headers,
+        ))
+        self.assertIsNot(response.headers, result.headers)
+
+    def test_managed_authorization_preserves_non_success_response_without_retry(self):
+        for status in (418, 503):
+            with self.subTest(status=status), patch.object(client, "browser_fetch", return_value=_fetch_result(
+                status_code=status, content_type="application/json", text='{"code":"blocked"}',
+            )) as fetch:
+                response = client.makerworld_browser_managed_authorization(
+                    "global", "https://makerworld.com/api/v1/design-service/instance/456/f3mf",
+                    profile_id="profile-global", timeout_seconds=20,
+                )
+                self.assertEqual(response.status_code, status)
+                self.assertEqual(fetch.call_count, 1)
+                self.assertEqual(fetch.call_args.kwargs["profile_id"], "profile-global")
+                self.assertEqual(fetch.call_args.kwargs["timeout_seconds"], 20)
+                self.assertEqual(client._read_browser_retry("global"), {})
+
+    def test_managed_authorization_transport_errors_are_single_and_redacted(self):
+        cases = (
+            (CloakBrowserBridgeError("timeout https://makerworld.com/?token=private"), "CloakBrowser 请求超时。"),
+            (CloakBrowserUnavailable("HTTP 502 cookie=private"), "CloakBrowser 返回 HTTP 502。"),
+            (CloakBrowserBridgeError("connection closed cookie=private"), "CloakBrowser 连接中断。"),
+            (CloakBrowserUnavailable("private failure"), "CloakBrowser 服务暂时不可用。"),
+            (CloakBrowserError("private failure"), "CloakBrowser 请求失败。"),
+        )
+        for error, expected in cases:
+            with self.subTest(error=expected), \
+                    patch.object(client, "browser_fetch", side_effect=error) as fetch, \
+                    patch.object(client, "_wait_browser_retry") as wait, \
+                    patch.object(client, "_record_browser_result") as record:
+                with self.assertRaises(client.MakerWorldBrowserError) as raised:
+                    client.makerworld_browser_managed_authorization(
+                        "cn", "https://makerworld.com.cn/api/v1/design-service/instance/456/f3mf",
+                        profile_id="profile-cn",
+                    )
+                self.assertEqual(str(raised.exception), expected)
+                self.assertTrue(raised.exception.__suppress_context__)
+                fetch.assert_called_once()
+                wait.assert_not_called()
+                record.assert_not_called()
+
+    def test_managed_authorization_requires_explicit_platform_and_profile(self):
+        for platform, profile in (("other", "profile-cn"), ("", "profile-cn"), ("cn", ""), ("cn", "  "), ("cn", None)):
+            with self.subTest(platform=platform, profile=profile), patch.object(client, "browser_fetch") as fetch:
+                with self.assertRaises(client.MakerWorldBrowserError):
+                    client.makerworld_browser_managed_authorization(
+                        platform, "https://makerworld.com.cn/api/v1/design-service/instance/456/f3mf", profile_id=profile,
+                    )
+                fetch.assert_not_called()
 
     def test_transient_failures_back_off_across_requests_and_reset_after_success(self):
         calls = []

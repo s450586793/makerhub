@@ -1,25 +1,34 @@
 from __future__ import annotations
 
 import base64
-from concurrent.futures import Future, TimeoutError as FutureTimeout
 from contextlib import contextmanager
 import copy
+import json
 from pathlib import Path
 import tempfile
-import threading
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 
-from fastapi import HTTPException
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
-from pydantic import ValidationError
 
 from app.api import account_verification_routes as routes
 from app.schemas.models import CookiePair
 from app.services import account_manual_verification as manual
+
+
+CAPTCHA_ID = "00000000000000000000000000000001"
+CHALLENGE_NONCE = "a" * 32
+PROOF = {
+    "captcha_id": CAPTCHA_ID,
+    "lot_number": "00000000000000000000000000000002",
+    "pass_token": "fixture-pass-token",
+    "gen_time": "1795000000",
+    "captcha_output": "fixture-captcha-output",
+}
+ENDPOINT = "/api/config/online-accounts/cn/verification"
 
 
 class _Store:
@@ -34,8 +43,8 @@ class _Store:
     def load(self):
         return copy.deepcopy(self.config)
 
-    def update(self, update):
-        self.config = update(self.load())
+    def update(self, mutator):
+        self.config = mutator(self.load())
         return self.load()
 
 
@@ -46,493 +55,481 @@ class AccountManualVerificationTest(unittest.TestCase):
         self.store = _Store()
         self.manager = manual.ManualVerificationManager(self.store, state_dir=Path(self.temp.name))
         self.snapshot = {
-            "status": "ok", "three_mf_gate": "verification_required", "three_mf_reason": "challenge",
-            "three_mf_detail": "verify", "model_url": "https://makerworld.com.cn/zh/models/123",
-            "model_id": "123", "instance_id": "456",
+            "platform": "cn", "status": "ok", "three_mf_gate": "verification_required",
+            "three_mf_reason": "challenge", "three_mf_detail": "verify",
+            "model_url": "https://makerworld.com.cn/zh/models/123", "model_id": "123", "instance_id": "456",
         }
         self.target = {key: self.snapshot[key] for key in ("model_url", "model_id", "instance_id")}
+        self.preflight = {
+            "ready": True, "reason": "ready", "authenticated": True,
+            "model": {"model_id": "123", "model_url": self.target["model_url"], "instances": [{"id": "456"}]},
+        }
+        self.blockers = {"active": False, "manual": False}
+        self.pending = []
+        self.operation_depth = 0
+        self.operation_exits = 0
+        self.attempts = []
+        self.mocks = {}
+        patches = {
+            "configured": patch.object(manual.browser, "cloakbrowser_configured", return_value=True),
+            "health": patch.object(manual, "get_account_health", side_effect=lambda *_: copy.deepcopy(self.snapshot)),
+            "target": patch.object(manual, "_find_target", side_effect=lambda *_: copy.deepcopy(self.target)),
+            "blockers": patch.object(manual, "_queue_blockers", side_effect=lambda *_: dict(self.blockers)),
+            "operation": patch.object(manual.browser, "_profile_operation", side_effect=self.operation),
+            "collect": patch.object(manual.browser, "collect_browser_session", return_value=SimpleNamespace(cookie="token=saved; cf_clearance=fixture-clearance")),
+            "preflight": patch.object(manual.browser, "browser_prepare_3mf_download", side_effect=lambda *a, **kw: copy.deepcopy(self.preflight)),
+            "fetch": patch.object(manual, "fetch_authorization", return_value=self.challenge_response(), create=True),
+            "quota": patch.object(manual, "reserve_three_mf_download_slot", return_value={"allowed": True}),
+            "attempt": patch.object(manual, "ThreeMfAuthorizationAttempt", side_effect=self.authorization_attempt),
+            "clear": patch.object(manual, "_clear_verified_gate", return_value=True),
+            "publish": patch.object(manual, "publish_state_event"),
+            "worker": patch("app.api.dependencies.crawler.manager.ensure_worker_for_pending"),
+            "thread": patch.object(manual.threading.Thread, "start", autospec=True, side_effect=lambda thread: self.pending.append(thread)),
+        }
+        for key, item in patches.items():
+            self.mocks[key] = item.start()
+            self.addCleanup(item.stop)
 
-    def session(self, *, target=True):
-        session = manual._Session(
-            "session-one", "cn", self.manager._owner("owner-one"), self.store.load().cookies[0],
-            copy.deepcopy(self.snapshot), copy.deepcopy(self.target) if target else {}, "future",
-            time.monotonic() + 60, lease=Mock(),
+    def authorization_attempt(self, *args, **kwargs):
+        attempt = MagicMock()
+        attempt.__enter__.return_value = attempt
+        attempt.response = None
+        attempt.request_started = False
+        self.attempts.append(attempt)
+        return attempt
+
+    @contextmanager
+    def operation(self, *args, **kwargs):
+        self.operation_depth += 1
+        try:
+            yield
+        finally:
+            self.operation_depth -= 1
+            self.operation_exits += 1
+
+    @staticmethod
+    def challenge_response(captcha_id=CAPTCHA_ID):
+        return {"status_code": 418, "payload": {"captchaId": captcha_id}, "headers": {}}
+
+    @staticmethod
+    def success_response():
+        return {"status_code": 200, "payload": {"name": "model.3mf", "url": "https://download.example.test/model.3mf?signature=fixture-signed-url"}, "headers": {}}
+
+    def run_next(self):
+        self.assertTrue(self.pending, "expected a queued verification operation")
+        thread = self.pending.pop(0)
+        thread._target(*thread._args, **thread._kwargs)
+
+    def create_challenge(self):
+        result = self.manager.create("cn", "owner-one")
+        self.assertEqual(result["status"], "preparing")
+        self.run_next()
+        result = self.status(result["session_id"])
+        self.assertEqual(result["status"], "challenge", result)
+        return result
+
+    def status(self, session_id):
+        return self.manager.execute("cn", session_id, "owner-one", "status")
+
+    def complete(self, result, *, proof=None, challenge_id=None):
+        return self.manager.execute(
+            "cn", result["session_id"], "owner-one", "complete",
+            challenge_id=result["challenge"]["challenge_id"] if challenge_id is None else challenge_id,
+            proof=copy.deepcopy(PROOF) if proof is None else proof,
         )
-        self.manager.sessions[session.session_id] = session
-        return session
-
-    def browser_snapshot(self, token="saved"):
-        return {"authenticated": True, "current_url": self.target["model_url"],
-                "cookies": [{"name": "token", "value": token, "domain": "makerworld.com.cn", "path": "/", "expires": -1},
-                            {"name": "cf_clearance", "value": "private-clearance", "domain": "makerworld.com.cn", "path": "/", "expires": -1}]}
-
-    def test_public_response_never_contains_credentials_or_internal_browser_state(self):
-        session = self.session()
-        image = base64.b64encode(b"\xff\xd8\xfftest").decode()
-        self.manager._safe_frame(session, {"status": "challenge", "image": image, "width": 800, "height": 600,
-                                          "cookie": "secret", "auth_token": "secret", "snapshot": self.browser_snapshot(),
-                                          "cdp_url": "private", "message": "secret"})
-        payload = session.public()
-        self.assertEqual(set(payload), {"session_id", "platform", "status", "message", "image", "width", "height", "expires_at", "completed"})
-        self.assertNotIn("secret", str(payload))
-        self.assertEqual(payload["image"], image)
-
-    def test_image_requires_valid_jpeg_and_bounded_geometry(self):
-        session = self.session()
-        for image, width in (("not-base64", 800), (base64.b64encode(b"not-jpeg").decode(), 800),
-                             (base64.b64encode(b"\xff\xd8\xff").decode(), 99999)):
-            self.manager._safe_frame(session, {"image": image, "width": width, "height": 600})
-            self.assertEqual(session.image, "")
-
-    def test_cancel_while_frame_is_decoding_cannot_be_overwritten_by_late_browser_status(self):
-        session = self.session()
-        decoding, release = threading.Event(), threading.Event()
-        decode = base64.b64decode
-        finished = Future()
-
-        def blocked_decode(*args, **kwargs):
-            decoding.set()
-            self.assertTrue(release.wait(timeout=2))
-            return decode(*args, **kwargs)
-
-        def receive_frame():
-            try:
-                self.manager._safe_frame(session, {"status": "authorizing", "image": base64.b64encode(b"\xff\xd8\xfftest").decode(),
-                                                  "width": 800, "height": 600})
-                finished.set_result(True)
-            except Exception as exc:
-                finished.set_exception(exc)
-
-        with patch.object(manual.base64, "b64decode", side_effect=blocked_decode):
-            thread = threading.Thread(target=receive_frame)
-            thread.start()
-            try:
-                self.assertTrue(decoding.wait(timeout=2))
-                self.assertEqual(self.manager.execute("cn", session.session_id, "owner-one", "close")["status"], "cancelled")
-            finally:
-                release.set()
-                thread.join(timeout=2)
-            self.assertTrue(finished.result(timeout=1))
-            self.assertEqual(session.status, "cancelled")
-            self.assertEqual(session.message, "验证窗口已关闭。")
-            self.assertEqual(session.image, "")
-
-    def test_owner_and_platform_cannot_access_another_session(self):
-        self.session()
-        for platform, owner in (("cn", "other-owner"), ("global", "owner-one")):
-            with self.assertRaises(manual.ManualVerificationError) as raised:
-                self.manager.execute(platform, "session-one", owner, "frame")
-            self.assertEqual(raised.exception.status_code, 404)
 
     def test_create_is_deduplicated_for_owner_and_rejects_other_owner(self):
-        with patch.object(manual.browser, "cloakbrowser_configured", return_value=True), \
-                patch.object(manual, "get_account_health", return_value=self.snapshot), \
-                patch.object(manual, "_find_target", return_value=self.target), \
-                patch.object(manual, "_queue_blockers", return_value={}), \
-                patch.object(manual.threading.Thread, "start"):
-            first = self.manager.create("cn", "owner-one")
-            second = self.manager.create("cn", "owner-one")
-            self.assertEqual(first["session_id"], second["session_id"])
-            with self.assertRaises(manual.ManualVerificationError):
-                self.manager.create("cn", "owner-two")
-            self.manager.execute("cn", first["session_id"], "owner-one", "close")
+        first = self.manager.create("cn", "owner-one")
+        second = self.manager.create("cn", "owner-one")
+        self.assertEqual(first["session_id"], second["session_id"])
+        self.assertEqual(len(self.pending), 1)
+        with self.assertRaises(manual.ManualVerificationError):
+            self.manager.create("cn", "owner-two")
+        self.mocks["fetch"].assert_not_called()
 
-    def test_active_archive_rejects_creation_before_acquiring_browser_slot(self):
-        with patch.object(manual.browser, "cloakbrowser_configured", return_value=True), \
-                patch.object(manual, "_queue_blockers", return_value={"active": True}), \
-                patch.object(manual.browser, "_profile_operation") as operation, \
-                patch.object(manual.threading.Thread, "start") as start:
-            with self.assertRaises(manual.ManualVerificationError) as raised:
-                self.manager.create("cn", "owner-one")
-            self.assertIn("归档任务正在运行", str(raised.exception))
-            operation.assert_not_called()
-            start.assert_not_called()
+    def test_public_challenge_has_only_widget_config_and_releases_browser_and_pacing(self):
+        result = self.create_challenge()
+        self.assertEqual(set(result), {"session_id", "platform", "status", "message", "expires_at", "completed", "challenge"})
+        self.assertEqual(result["challenge"]["captcha_id"], CAPTCHA_ID)
+        self.assertTrue(result["challenge"]["challenge_id"])
+        self.assertFalse(result["completed"])
+        self.assertEqual(self.operation_depth, 0)
+        self.assertGreater(self.operation_exits, 0)
+        self.attempts[0].__exit__.assert_called_once()
+        serialized = json.dumps(result)
+        for private in ("saved", "fixture-clearance", "cdp", "fixture-signed-url", "fixture-pass-token", "image", "width", "height"):
+            self.assertNotIn(private, serialized)
+        self.mocks["clear"].assert_not_called()
+        self.assertEqual(self.mocks["quota"].call_count, 1)
+        self.assertTrue(self.mocks["attempt"].call_args.kwargs["verification_probe"])
+        self.assertFalse(self.mocks["attempt"].call_args.kwargs["update_gate"])
 
-    def test_cancel_before_browser_slot_releases_lease_and_allows_reopening(self):
-        session = self.session()
-        result = self.manager.execute("cn", session.session_id, "owner-one", "close")
-        self.assertEqual(result["status"], "cancelled")
-        session.lease.close.assert_called_once()
-        self.assertTrue(session.done.is_set())
-        self.assertEqual(self.manager.execute("cn", session.session_id, "owner-one", "finish")["status"], "cancelled")
+    def test_status_does_not_start_operations_or_consume_more_quota(self):
+        result = self.create_challenge()
+        for _ in range(3):
+            self.assertEqual(self.status(result["session_id"])["challenge"], result["challenge"])
+        self.assertFalse(self.pending)
+        self.assertEqual(self.mocks["fetch"].call_count, 1)
+        self.assertEqual(self.mocks["quota"].call_count, 1)
 
-    def test_expired_session_cannot_receive_input(self):
-        session = self.session()
-        session.deadline = time.monotonic() - 1
-        result = self.manager.execute("cn", session.session_id, "owner-one", "input", events=[{"type": "text", "text": "ignored"}])
-        self.assertEqual(result["status"], "expired")
-        self.assertTrue(session.commands.empty())
-        self.assertTrue(session.done.is_set())
+    def test_valid_proof_resumes_exact_target_once_and_does_not_reserve_again(self):
+        result = self.create_challenge()
+        self.mocks["fetch"].return_value = self.success_response()
+        with patch.object(self.manager, "_sync_cookie", return_value=True) as sync:
+            self.assertEqual(self.complete(result)["status"], "verifying")
+            self.assertEqual(self.complete(result)["status"], "verifying")
+            self.assertEqual(len(self.pending), 1)
+            self.run_next()
+            finished = self.status(result["session_id"])
+            self.assertEqual(finished["status"], "completed", finished)
+            self.assertTrue(finished["completed"])
+            self.assertIsNone(finished["challenge"])
+            self.complete(result)
+            self.assertFalse(self.pending)
+            sync.assert_called_once()
+        self.assertEqual(self.mocks["fetch"].call_count, 2)
+        self.assertEqual(self.mocks["quota"].call_count, 1)
+        args, kwargs = self.mocks["fetch"].call_args
+        self.assertEqual(args, ("cn", "profile-cn", self.target))
+        self.assertEqual(json.loads(base64.b64decode(kwargs["proof_header"])), PROOF)
+        self.mocks["clear"].assert_called_once_with("cn", self.snapshot, self.target)
+        self.assertNotIn("fixture-signed-url", json.dumps(finished))
+        self.assertNotIn("fixture-captcha-output", json.dumps(finished))
+        self.manager.create("cn", "owner-two")
 
-    def test_cross_process_manual_lease_cannot_be_stolen(self):
-        first = self.manager._lease()
-        try:
-            other = manual.ManualVerificationManager(self.store, state_dir=Path(self.temp.name))
-            with self.assertRaises(manual.ManualVerificationError):
-                other._lease()
-        finally:
-            first.close()
-        self.manager._lease().close()
+    def test_initial_real_authorization_can_complete_without_challenge(self):
+        self.mocks["fetch"].return_value = self.success_response()
+        with patch.object(self.manager, "_sync_cookie", return_value=True):
+            result = self.manager.create("cn", "owner-one")
+            self.run_next()
+            result = self.status(result["session_id"])
+        self.assertEqual(result["status"], "completed", result)
+        self.assertIsNone(result["challenge"])
+        self.mocks["clear"].assert_called_once()
+        self.assertEqual(self.mocks["fetch"].call_count, 1)
 
-    def test_dispatch_checks_pause_and_quota_before_authorizing(self):
-        session = self.session()
-        session.bridge = Mock()
-        output = {"status": "ready", "preflight": {}}
-        attempt = MagicMock(response=None)
-        with patch.object(manual, "_fresh_target", return_value=self.target), \
-                patch.object(manual, "get_account_health", return_value=self.snapshot), \
-                patch.object(manual, "_queue_blockers", return_value={"manual": True}), \
-                patch.object(manual, "reserve_three_mf_download_slot") as quota:
-            self.assertIsNone(self.manager._dispatch(session, output))
-            quota.assert_not_called()
-            session.bridge.command.assert_not_called()
-        with patch.object(manual, "_fresh_target", return_value=self.target), \
-                patch.object(manual, "get_account_health", return_value=self.snapshot), \
-                patch.object(manual, "_queue_blockers", return_value={"active": False, "manual": False}), \
-                patch.object(manual, "ThreeMfAuthorizationAttempt", return_value=attempt), \
-                patch.object(manual, "reserve_three_mf_download_slot", return_value={"allowed": False}):
-            self.assertIsNone(self.manager._dispatch(session, output))
-            session.bridge.command.assert_not_called()
-            self.assertFalse(session.dispatched)
-            self.assertFalse(attempt.request_started)
-            self.manager._safe_frame(session, {"status": "ready"})
-            self.assertIn("今日", session.message)
+    def test_success_syncs_same_account_cookie_only_after_download_permission(self):
+        result = self.create_challenge()
+        self.assertEqual(self.store.load().cookies[0].cookie, "token=saved")
+        self.mocks["fetch"].return_value = self.success_response()
+        self.complete(result)
+        self.run_next()
+        self.assertEqual(self.status(result["session_id"])["status"], "completed")
+        account = self.store.load().cookies[0]
+        self.assertEqual(account.cookie, "token=saved; cf_clearance=fixture-clearance")
+        self.assertEqual(account.browser_status, "synced")
+        self.assertTrue(account.browser_synced_at)
+        self.mocks["worker"].assert_called_once_with(force=True)
 
-    def test_dispatch_reserves_once_and_does_not_accept_changed_instance(self):
-        session = self.session()
-        session.bridge = Mock()
-        session.bridge.command.return_value = {"status": "authorizing"}
-        attempt = MagicMock(response=None)
-        with patch.object(manual, "_fresh_target", return_value=self.target), \
-                patch.object(manual, "get_account_health", return_value=self.snapshot), \
-                patch.object(manual, "_queue_blockers", return_value={}), \
-                patch.object(manual, "ThreeMfAuthorizationAttempt", return_value=attempt), \
-                patch.object(manual, "reserve_three_mf_download_slot", return_value={"allowed": True}) as quota:
-            self.assertIs(self.manager._dispatch(session, {"status": "ready", "preflight": {}}), attempt)
-            self.assertIsNone(self.manager._dispatch(session, {"status": "ready", "preflight": {}}))
-            self.assertEqual(quota.call_count, 1)
-            session.bridge.command.assert_called_once_with("authorize")
-        other = self.session()
-        with patch.object(manual, "_fresh_target", return_value={**self.target, "instance_id": "999"}):
-            self.assertIsNone(self.manager._dispatch(other, {"status": "ready"}))
+    def test_failed_proof_rotates_nonce_and_does_not_reserve_again(self):
+        result = self.create_challenge()
+        self.complete(result)
+        self.run_next()
+        refreshed = self.status(result["session_id"])
+        self.assertEqual(refreshed["status"], "challenge", refreshed)
+        self.assertNotEqual(refreshed["challenge"]["challenge_id"], result["challenge"]["challenge_id"])
+        with self.assertRaises(manual.ManualVerificationError):
+            self.complete(result)
+        self.assertFalse(self.pending)
+        self.assertEqual(self.mocks["fetch"].call_count, 2)
+        self.assertEqual(self.mocks["quota"].call_count, 1)
+        self.mocks["clear"].assert_not_called()
 
-    def test_authorization_requires_valid_response_same_account_and_successful_sync(self):
-        for response, snapshot, sync in (
-            ({"status_code": 418, "payload": {}}, self.browser_snapshot(), True),
-            ({"status_code": 200, "payload": {}}, self.browser_snapshot(), True),
-            ({"status_code": 200, "payload": {"url": "https://files.test/model.3mf"}}, self.browser_snapshot("other-account"), True),
-            ({"status_code": 200, "payload": {"url": "https://files.test/model.3mf"}}, self.browser_snapshot(), False),
-        ):
-            with self.subTest(response=response, sync=sync):
-                session = self.session()
-                session.dispatched = True
-                with patch.object(manual, "_queue_blockers", return_value={}), \
-                        patch.object(self.manager, "_sync_snapshot", return_value=sync), \
-                        patch.object(manual, "_clear_verified_gate") as clear:
-                    with self.assertRaises(manual.ManualVerificationError):
-                        self.manager._complete_authorization(session, {"status": "authorized", "authorization": response, "snapshot": snapshot}, Mock())
-                    clear.assert_not_called()
-
-    def test_cancelled_or_expired_session_cannot_reopen_gate_from_late_success(self):
-        for expired in (False, True):
-            session = self.session()
-            session.dispatched = True
-            if expired:
-                session.deadline = time.monotonic() - 1
-            else:
-                session.stopped.set()
-            with patch.object(manual, "_clear_verified_gate") as clear:
-                self.assertFalse(self.manager._complete_authorization(
-                    session, {"status": "authorized", "snapshot": self.browser_snapshot(),
-                              "authorization": {"status_code": 200, "payload": {"url": "https://files.test/model.3mf"}}}, Mock(),
-                ))
-                clear.assert_not_called()
-
-    def test_cancel_during_snapshot_sync_wins_for_download_and_page_only_sessions(self):
-        for has_target in (True, False):
-            with self.subTest(has_target=has_target):
-                session = self.session(target=has_target)
-                session.dispatched = has_target
-                syncing, release = threading.Event(), threading.Event()
-                result = Future()
-
-                def sync(*args, **kwargs):
-                    syncing.set()
-                    self.assertTrue(release.wait(timeout=2))
-                    return True
-
-                output = {"status": "authorized" if has_target else "page_ready", "snapshot": self.browser_snapshot(),
-                          "authorization": {"status_code": 200, "payload": {"url": "https://files.test/model.3mf"}}}
-
-                def complete():
-                    try:
-                        value = (self.manager._complete_authorization(session, output, Mock()) if has_target
-                                 else self.manager._finish_page(session, output))
-                        result.set_result(value)
-                    except Exception as exc:
-                        result.set_exception(exc)
-
-                with patch.object(manual, "_queue_blockers", return_value={}), \
-                        patch.object(self.manager, "_sync_snapshot", side_effect=sync), \
-                        patch.object(manual, "_clear_verified_gate") as clear, \
-                        patch("app.api.dependencies.crawler.manager.ensure_worker_for_pending") as resume:
-                    thread = threading.Thread(target=complete)
-                    thread.start()
-                    try:
-                        self.assertTrue(syncing.wait(timeout=2))
-                        self.assertEqual(self.manager.execute("cn", session.session_id, "owner-one", "close")["status"], "cancelled")
-                    finally:
-                        release.set()
-                        thread.join(timeout=2)
-                    self.assertFalse(result.result(timeout=1))
-                    self.assertEqual(session.status, "cancelled")
-                    clear.assert_not_called()
-                    resume.assert_not_called()
-
-    def test_authorization_commit_serializes_cancel_until_gate_and_completion_are_saved(self):
-        session = self.session()
-        session.dispatched = True
-        session.entered.set()
-        session.done.set()
-        clearing, release, cancelling, cancelled = (threading.Event() for _ in range(4))
-        result, cancel_result = Future(), Future()
-
-        def clear(*args):
-            clearing.set()
-            self.assertTrue(release.wait(timeout=2))
-            return True
-
-        def complete():
-            try:
-                result.set_result(self.manager._complete_authorization(
-                    session, {"status": "authorized", "snapshot": self.browser_snapshot(),
-                              "authorization": {"status_code": 200, "payload": {"url": "https://files.test/model.3mf"}}}, Mock(),
-                ))
-            except Exception as exc:
-                result.set_exception(exc)
-
-        def cancel():
-            cancelling.set()
-            try:
-                cancel_result.set_result(self.manager.execute("cn", session.session_id, "owner-one", "close"))
-            except Exception as exc:
-                cancel_result.set_exception(exc)
-            finally:
-                cancelled.set()
-
-        with patch.object(manual, "_queue_blockers", return_value={}), \
-                patch.object(self.manager, "_sync_snapshot", return_value=True), \
-                patch.object(manual, "_clear_verified_gate", side_effect=clear), \
-                patch("app.api.dependencies.crawler.manager.ensure_worker_for_pending") as resume:
-            completion_thread = threading.Thread(target=complete)
-            cancel_thread = threading.Thread(target=cancel)
-            completion_thread.start()
-            try:
-                self.assertTrue(clearing.wait(timeout=2))
-                cancel_thread.start()
-                self.assertTrue(cancelling.wait(timeout=2))
-                self.assertFalse(cancelled.wait(timeout=0.05))
-            finally:
-                release.set()
-                completion_thread.join(timeout=2)
-                if cancel_thread.ident is not None:
-                    cancel_thread.join(timeout=2)
-            self.assertTrue(result.result(timeout=1))
-            self.assertEqual(cancel_result.result(timeout=1)["status"], "completed")
-            self.assertFalse(session.stopped.is_set())
-            resume.assert_called_once_with(force=True)
-
-    def test_true_authorization_syncs_cookie_before_opening_gate_and_resuming(self):
-        session = self.session()
-        session.dispatched = True
-        order = []
-        output = {"status": "authorized", "authorization": {"status_code": 200, "payload": {"url": "https://files.test/model.3mf"}},
-                  "snapshot": self.browser_snapshot()}
-        with patch.object(manual, "_queue_blockers", return_value={}), \
-                patch.object(manual, "publish_state_event"), \
-                patch.object(manual, "_clear_verified_gate", side_effect=lambda *args: order.append("clear") or True), \
-                patch("app.api.dependencies.crawler.manager.ensure_worker_for_pending", side_effect=lambda **kwargs: order.append("resume")):
-            self.assertTrue(self.manager._complete_authorization(session, output, Mock()))
-        self.assertIn("cf_clearance=private-clearance", self.store.config.cookies[0].cookie)
-        self.assertTrue(session.completed)
-        self.assertEqual(order, ["clear", "resume"])
-        self.assertEqual(self.manager.execute("cn", session.session_id, "owner-one", "finish")["status"], "completed")
-
-    def test_worker_closes_only_own_bridge_and_pacing_before_releasing_profile_lock(self):
-        session = self.session(target=False)
-        future = Future()
-        session.commands.put(("finish", [], future))
-        events = []
-
-        @contextmanager
-        def operation(*args, **kwargs):
-            events.append("locked")
-            try:
-                yield
-            finally:
-                events.append("unlocked")
-
-        bridge = Mock()
-        bridge.command.return_value = {"status": "page_ready", "snapshot": self.browser_snapshot()}
-        bridge.close.side_effect = lambda: events.append("closed")
-        with patch.object(manual.browser, "_profile_operation", side_effect=operation), \
-                patch.object(manual.browser, "_request", return_value={"id": "profile-cn", "name": "MakerHub CN", "status": "running"}), \
-                patch.object(manual.browser, "launch_profile", side_effect=lambda profile: (profile, False)), \
-                patch.object(manual.browser, "_configured_url", return_value="http://browser.internal"), \
-                patch.object(manual.browser, "_auth_token", return_value="private-browser-token"), \
-                patch.object(manual.browser, "touch_profile_activity"), \
-                patch.object(manual, "_ManualBridge", return_value=bridge), \
-                patch.object(manual, "_queue_blockers", return_value={}), \
-                patch.object(manual, "publish_state_event"), \
-                patch("app.api.config._schedule_online_account_cookie_test"):
-            self.manager._worker(session)
-        self.assertEqual(events, ["locked", "closed", "unlocked"])
-        self.assertTrue(session.done.is_set())
-        self.assertEqual(future.result()["status"], "completed")
-        self.assertFalse(any("cookie" in kwargs for _args, kwargs in bridge.command.call_args_list))
-
-    def test_browser_wait_timeout_reports_busy_and_releases_manual_lease(self):
-        session = self.session(target=False)
-
-        @contextmanager
-        def occupied_browser(*args, **kwargs):
-            self.assertEqual(session.status, "waiting")
-            self.assertIn("等待", session.message)
-            self.assertIs(kwargs.get("cancel_event"), session.stopped)
-            self.assertGreater(kwargs.get("timeout_seconds", 0), 0)
-            self.assertLessEqual(kwargs["timeout_seconds"], 60)
-            raise TimeoutError("fixture occupied browser")
-            yield
-
-        with patch.object(manual.browser, "_profile_operation", side_effect=occupied_browser), \
-                patch.object(manual, "_ManualBridge") as bridge:
-            self.manager._worker(session)
-        self.assertEqual(session.status, "failed")
-        self.assertIn("浏览器仍忙", session.message)
-        self.assertTrue(session.done.is_set())
-        session.lease.close.assert_called_once()
-        bridge.assert_not_called()
-
-    def test_cancelled_browser_wait_exits_without_starting_a_late_window(self):
-        from app.services import resource_limiter
-
-        session = self.session(target=False)
-        thread = threading.Thread(target=self.manager._worker, args=(session,), daemon=True)
-        with patch.object(resource_limiter, "STATE_DIR", Path(self.temp.name)), \
-                patch.object(resource_limiter, "_GATES", {}), \
-                patch.object(manual.browser, "STATE_DIR", Path(self.temp.name)), \
-                patch.object(manual, "_ManualBridge") as bridge, \
-                resource_limiter.resource_slot("cloakbrowser_manager"):
-            thread.start()
-            try:
-                deadline = time.monotonic() + 1
-                while resource_limiter.resource_snapshot()["cloakbrowser_manager"]["waiting"] == 0 and thread.is_alive() and time.monotonic() < deadline:
-                    time.sleep(0.01)
-                self.assertEqual(session.status, "waiting")
-                self.manager.execute("cn", session.session_id, "owner-one", "close")
-                thread.join(timeout=1)
-                self.assertFalse(thread.is_alive(), "closing must cancel the occupied browser wait")
-                self.assertEqual(session.status, "cancelled")
-                bridge.assert_not_called()
-            finally:
-                session.stopped.set()
-        thread.join(timeout=1)
-
-    def test_waiting_frame_returns_progress_without_waiting_for_browser_initialization(self):
-        session = self.session(target=False)
-        session.update(status="waiting", message="正在等待浏览器任务结束。")
-        result = Future()
-
-        def frame():
-            result.set_result(self.manager.execute("cn", session.session_id, "owner-one", "frame"))
-
-        thread = threading.Thread(target=frame, daemon=True)
-        thread.start()
-        try:
-            try:
-                payload = result.result(timeout=0.5)
-            except FutureTimeout:
-                self.fail("waiting frame must report progress immediately")
-            self.assertEqual(payload["status"], "waiting")
-            self.assertTrue(session.commands.empty())
-        finally:
-            while not session.commands.empty():
-                _action, _events, future = session.commands.get_nowait()
-                future.set_result(session.public())
-            thread.join(timeout=1)
-
-    def test_worker_keeps_human_challenge_open_then_resumes_after_real_authorization(self):
-        session = self.session()
-        input_done, frame_done = Future(), Future()
-        pointer = [{"type": "pointerdown", "x": 120, "y": 90}, {"type": "pointerup", "x": 120, "y": 90}]
-        session.commands.put(("input", pointer, input_done))
-        session.commands.put(("frame", [], frame_done))
-        order = []
-        attempt = MagicMock(response=None)
-        attempt.__exit__.side_effect = lambda *args: order.append("pacing")
-
-        @contextmanager
-        def operation(*args, **kwargs):
-            order.append("locked")
-            try:
-                yield
-            finally:
-                order.append("unlocked")
-
-        def command(action, **payload):
-            if action == "init":
-                self.assertNotIn("cookies", payload)
-                return {"status": "ready", "preflight": {}}
-            if action == "authorize":
-                return {"status": "authorizing"}
-            if action == "input":
-                self.assertEqual(payload["events"], pointer)
-                return {"status": "challenge", "authorization": {"status_code": 418, "payload": {"captchaId": "private-id"}}}
-            self.assertEqual(action, "frame")
-            self.assertEqual(payload, {})
-            return {"status": "authorized", "snapshot": self.browser_snapshot(),
-                    "authorization": {"status_code": 200, "payload": {"url": "https://files.test/model.3mf"}}}
-
-        bridge = Mock()
-        bridge.command.side_effect = command
-        bridge.close.side_effect = lambda: order.append("closed")
-        with patch.object(manual.browser, "_profile_operation", side_effect=operation), \
-                patch.object(manual.browser, "_request", return_value={"id": "profile-cn", "name": "MakerHub CN", "status": "running"}), \
-                patch.object(manual.browser, "launch_profile", side_effect=lambda profile: (profile, False)), \
-                patch.object(manual.browser, "_configured_url", return_value="http://browser.internal"), \
-                patch.object(manual.browser, "_auth_token", return_value="private-browser-token"), \
-                patch.object(manual.browser, "touch_profile_activity"), \
-                patch.object(manual, "_ManualBridge", return_value=bridge), \
-                patch.object(manual, "_fresh_target", return_value=self.target), \
-                patch.object(manual, "get_account_health", return_value=self.snapshot), \
-                patch.object(manual, "_queue_blockers", return_value={}), \
-                patch.object(manual, "ThreeMfAuthorizationAttempt", return_value=attempt), \
-                patch.object(manual, "reserve_three_mf_download_slot", return_value={"allowed": True}) as quota, \
-                patch.object(manual, "_clear_verified_gate", return_value=True) as clear, \
-                patch.object(manual, "publish_state_event"), \
-                patch("app.api.dependencies.crawler.manager.ensure_worker_for_pending") as resume:
-            self.manager._worker(session)
-        self.assertEqual(input_done.result()["status"], "challenge")
-        self.assertEqual(frame_done.result()["status"], "completed")
-        self.assertEqual(attempt.response["status_code"], 200)
-        self.assertEqual(order, ["locked", "closed", "pacing", "unlocked"])
-        quota.assert_called_once()
-        clear.assert_called_once()
-        resume.assert_called_once_with(force=True)
-
-    def test_changed_health_or_account_never_dispatches(self):
-        for snapshot, mutate in (({**self.snapshot, "three_mf_reason": "new-gate"}, False), (self.snapshot, True)):
-            session = self.session()
-            if mutate:
-                self.store.config.cookies[0].cookie = "token=changed"
-            with patch.object(manual, "_fresh_target", return_value=self.target), \
-                    patch.object(manual, "get_account_health", return_value=snapshot), \
-                    patch.object(manual, "reserve_three_mf_download_slot") as quota:
+    def test_unknown_nonce_or_invalid_proof_never_dispatches(self):
+        result = self.create_challenge()
+        for proof in ({}, {**PROOF, "captcha_id": "00000000000000000000000000000009"},
+                      {**PROOF, "gen_time": "not-a-time"}, {**PROOF, "captcha_output": ""},
+                      {**PROOF, "unexpected": "not-permitted"}):
+            with self.subTest(proof=proof):
                 with self.assertRaises(manual.ManualVerificationError):
-                    self.manager._dispatch(session, {"status": "ready"})
-                quota.assert_not_called()
+                    self.complete(result, proof=proof)
+        with self.assertRaises(manual.ManualVerificationError):
+            self.complete(result, challenge_id="unknown-challenge")
+        self.assertFalse(self.pending)
+        self.assertEqual(self.mocks["fetch"].call_count, 1)
+        self.mocks["clear"].assert_not_called()
 
-    def test_http_input_preserves_events_and_rejects_invalid_data(self):
+    def test_owner_and_platform_cannot_access_another_session(self):
+        result = self.create_challenge()
+        for platform, owner in (("cn", "other-owner"), ("global", "owner-one")):
+            for action in ("status", "complete", "close"):
+                with self.subTest(platform=platform, owner=owner, action=action):
+                    with self.assertRaises(manual.ManualVerificationError) as raised:
+                        self.manager.execute(platform, result["session_id"], owner, action)
+                    self.assertEqual(raised.exception.status_code, 404)
+        self.assertEqual(self.status(result["session_id"])["status"], "challenge")
+
+    def test_cancel_before_preparation_prevents_browser_and_download_requests(self):
+        result = self.manager.create("cn", "owner-one")
+        cancelled = self.manager.execute("cn", result["session_id"], "owner-one", "close")
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.run_next()
+        self.assertEqual(self.status(result["session_id"])["status"], "cancelled")
+        self.mocks["collect"].assert_not_called()
+        self.mocks["fetch"].assert_not_called()
+        self.mocks["quota"].assert_not_called()
+        self.manager.create("cn", "owner-two")
+
+    def test_cancel_after_challenge_releases_lease_and_cannot_be_completed(self):
+        result = self.create_challenge()
+        closed = self.manager.execute("cn", result["session_id"], "owner-one", "close")
+        self.assertEqual(closed["status"], "cancelled")
+        self.assertIsNone(closed["challenge"])
+        self.assertEqual(self.complete(result)["status"], "cancelled")
+        self.assertFalse(self.pending)
+        self.manager.create("cn", "owner-two")
+        self.assertEqual(self.mocks["fetch"].call_count, 1)
+
+    def test_cancel_during_authorization_cannot_clear_gate_after_late_success(self):
+        result = self.create_challenge()
+        def success_after_cancel(*args, **kwargs):
+            self.manager.execute("cn", result["session_id"], "owner-one", "close")
+            return self.success_response()
+        self.mocks["fetch"].side_effect = success_after_cancel
+        with patch.object(self.manager, "_sync_cookie", return_value=True) as sync:
+            self.complete(result)
+            self.run_next()
+            sync.assert_not_called()
+        self.assertEqual(self.status(result["session_id"])["status"], "cancelled")
+        self.mocks["clear"].assert_not_called()
+
+    def test_expiration_blocks_proof_and_releases_manual_lease(self):
+        result = self.create_challenge()
+        self.manager.sessions[result["session_id"]].deadline = time.monotonic() - 1
+        expired = self.complete(result)
+        self.assertEqual(expired["status"], "expired")
+        self.assertIsNone(expired["challenge"])
+        self.assertFalse(self.pending)
+        self.manager.create("cn", "owner-two")
+        self.assertEqual(self.mocks["fetch"].call_count, 1)
+
+    def test_background_expiry_releases_lease_without_browser_or_waiting_thread(self):
+        result = self.create_challenge()
+        self.manager.sessions[result["session_id"]].deadline = time.monotonic() - 1
+        previous_fetches = self.mocks["fetch"].call_count
+        previous_threads = self.mocks["thread"].call_count
+        self.manager.prune_expired()
+        self.assertEqual(self.mocks["fetch"].call_count, previous_fetches)
+        self.assertEqual(self.mocks["thread"].call_count, previous_threads)
+        self.assertFalse(self.pending)
+        other = manual.ManualVerificationManager(self.store, state_dir=Path(self.temp.name))
+        self.assertEqual(other.create("cn", "owner-two")["status"], "preparing")
+        self.run_next()
+        other.shutdown()
+
+    def test_cross_process_lease_prevents_other_manager_from_opening_session(self):
+        result = self.create_challenge()
+        other = manual.ManualVerificationManager(self.store, state_dir=Path(self.temp.name))
+        with self.assertRaises(manual.ManualVerificationError):
+            other.create("cn", "owner-two")
+        self.manager.execute("cn", result["session_id"], "owner-one", "close")
+        self.assertEqual(other.create("cn", "owner-two")["status"], "preparing")
+        other.shutdown()
+
+    def test_active_archive_or_manual_pause_prevents_creation(self):
+        for blocker in ("active", "manual"):
+            with self.subTest(blocker=blocker):
+                self.blockers[blocker] = True
+                with self.assertRaises(manual.ManualVerificationError):
+                    self.manager.create("cn", "owner-one")
+                self.blockers[blocker] = False
+        self.assertFalse(self.pending)
+        self.mocks["operation"].assert_not_called()
+        self.mocks["quota"].assert_not_called()
+
+    def test_open_or_missing_gate_rejects_probe_before_browser_or_quota(self):
+        for gate in ("open", ""):
+            with self.subTest(gate=gate):
+                self.snapshot["three_mf_gate"] = gate
+                with self.assertRaises(manual.ManualVerificationError):
+                    self.manager.create("cn", "owner-one")
+        self.assertFalse(self.pending)
+        self.mocks["operation"].assert_not_called()
+        self.mocks["fetch"].assert_not_called()
+        self.mocks["quota"].assert_not_called()
+
+    def test_new_manual_pause_or_active_archive_blocks_continuation(self):
+        for blocker in ("active", "manual"):
+            with self.subTest(blocker=blocker):
+                result = self.create_challenge()
+                before = self.mocks["fetch"].call_count
+                self.blockers[blocker] = True
+                try:
+                    try:
+                        self.complete(result)
+                    except manual.ManualVerificationError:
+                        pass
+                    while self.pending:
+                        self.run_next()
+                    self.assertEqual(self.mocks["fetch"].call_count, before)
+                    self.mocks["clear"].assert_not_called()
+                finally:
+                    self.blockers[blocker] = False
+                    self.manager.execute("cn", result["session_id"], "owner-one", "close")
+
+    def test_changed_account_prevents_initial_authorization(self):
+        result = self.manager.create("cn", "owner-one")
+        self.store.config.cookies[0].cookie = "token=different-account"
+        self.run_next()
+        self.assertEqual(self.status(result["session_id"])["status"], "failed")
+        self.mocks["fetch"].assert_not_called()
+        self.mocks["quota"].assert_not_called()
+
+    def test_browser_account_mismatch_prevents_authorization(self):
+        self.mocks["collect"].return_value = SimpleNamespace(cookie="token=different-account")
+        result = self.manager.create("cn", "owner-one")
+        self.run_next()
+        self.assertEqual(self.status(result["session_id"])["status"], "failed")
+        self.mocks["fetch"].assert_not_called()
+        self.mocks["quota"].assert_not_called()
+
+    def test_changed_account_blocks_existing_challenge(self):
+        result = self.create_challenge()
+        self.store.config.cookies[0].cookie = "token=different-account"
+        try:
+            self.complete(result)
+        except manual.ManualVerificationError:
+            pass
+        while self.pending:
+            self.run_next()
+        self.assertEqual(self.mocks["fetch"].call_count, 1)
+        self.mocks["clear"].assert_not_called()
+
+    def test_browser_account_changed_during_fetch_cannot_unlock(self):
+        self.mocks["collect"].side_effect = [
+            SimpleNamespace(cookie="token=saved"), SimpleNamespace(cookie="token=saved"),
+            SimpleNamespace(cookie="token=different-account"),
+        ]
+        self.mocks["fetch"].return_value = self.success_response()
+        with patch.object(self.manager, "_sync_cookie", return_value=True) as sync:
+            result = self.manager.create("cn", "owner-one")
+            self.run_next()
+            sync.assert_not_called()
+        self.assertEqual(self.status(result["session_id"])["status"], "failed")
+        self.mocks["clear"].assert_not_called()
+
+    def test_gate_or_pause_changed_during_request_preserves_current_state(self):
+        result = self.create_challenge()
+        def success_after_gate_change(*args, **kwargs):
+            self.snapshot["three_mf_gate"] = "download_limited"
+            self.blockers["manual"] = True
+            return self.success_response()
+        self.mocks["fetch"].side_effect = success_after_gate_change
+        with patch.object(self.manager, "_sync_cookie", return_value=True) as sync:
+            self.complete(result)
+            self.run_next()
+            sync.assert_not_called()
+        self.assertEqual(self.status(result["session_id"])["status"], "failed")
+        self.mocks["clear"].assert_not_called()
+
+    def test_expiration_during_request_rejects_late_success(self):
+        result = self.create_challenge()
+        def success_after_expiry(*args, **kwargs):
+            self.manager.sessions[result["session_id"]].deadline = time.monotonic() - 1
+            return self.success_response()
+        self.mocks["fetch"].side_effect = success_after_expiry
+        with patch.object(self.manager, "_sync_cookie", return_value=True) as sync:
+            self.complete(result)
+            self.run_next()
+            sync.assert_not_called()
+        self.assertEqual(self.status(result["session_id"])["status"], "expired")
+        self.mocks["clear"].assert_not_called()
+
+    def test_quota_denial_does_not_send_authorization_request(self):
+        self.mocks["quota"].return_value = {"allowed": False}
+        result = self.manager.create("cn", "owner-one")
+        self.run_next()
+        self.assertEqual(self.status(result["session_id"])["status"], "failed")
+        self.mocks["fetch"].assert_not_called()
+        self.mocks["clear"].assert_not_called()
+
+    def test_browser_slot_timeout_is_retryable_and_does_not_consume_quota(self):
+        self.mocks["operation"].side_effect = TimeoutError
+        result = self.manager.create("cn", "owner-one")
+        self.run_next()
+        result = self.status(result["session_id"])
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("浏览器仍忙", result["message"])
+        self.mocks["fetch"].assert_not_called()
+        self.mocks["quota"].assert_not_called()
+        self.manager.create("cn", "owner-two")
+
+    def test_changed_instance_is_not_silently_authorized(self):
+        self.preflight["model"]["instances"] = [{"id": "789"}]
+        result = self.manager.create("cn", "owner-one")
+        self.run_next()
+        self.assertEqual(self.status(result["session_id"])["status"], "failed")
+        self.mocks["fetch"].assert_not_called()
+        self.mocks["quota"].assert_not_called()
+
+    def test_untrusted_challenge_servers_fail_without_exposing_external_config(self):
+        self.mocks["fetch"].return_value = {"status_code": 418, "payload": {
+            "captchaId": CAPTCHA_ID, "apiServers": ["untrusted.example.test"],
+        }}
+        result = self.manager.create("cn", "owner-one")
+        self.run_next()
+        result = self.status(result["session_id"])
+        self.assertEqual(result["status"], "failed")
+        self.assertIsNone(result["challenge"])
+        self.assertNotIn("untrusted.example", json.dumps(result))
+        self.mocks["clear"].assert_not_called()
+
+    def test_unready_or_unauthenticated_preflight_does_not_consume_quota(self):
+        for preflight in ({"ready": False, "authenticated": True, "reason": "page_verification_required"},
+                          {"ready": False, "authenticated": False, "reason": "auth_required"},
+                          {**self.preflight, "model": {"model_id": "999", "model_url": self.target["model_url"], "instances": [{"id": "456"}]}}):
+            with self.subTest(preflight=preflight):
+                self.preflight = preflight
+                result = self.manager.create("cn", "owner-one")
+                self.run_next()
+                self.assertEqual(self.status(result["session_id"])["status"], "failed")
+        self.mocks["quota"].assert_not_called()
+        self.mocks["fetch"].assert_not_called()
+
+    def test_unsigned_or_missing_download_cannot_unlock(self):
+        result = self.create_challenge()
+        self.mocks["fetch"].return_value = {"status_code": 200, "payload": {"url": self.target["model_url"]}}
+        with patch.object(self.manager, "_sync_cookie", return_value=True) as sync:
+            self.complete(result)
+            self.run_next()
+            sync.assert_not_called()
+        self.assertEqual(self.status(result["session_id"])["status"], "failed")
+        self.mocks["clear"].assert_not_called()
+
+    def test_cookie_sync_failure_preserves_gate(self):
+        result = self.create_challenge()
+        self.mocks["fetch"].return_value = self.success_response()
+        with patch.object(self.manager, "_sync_cookie", return_value=False):
+            self.complete(result)
+            self.run_next()
+        self.assertEqual(self.status(result["session_id"])["status"], "failed")
+        self.mocks["clear"].assert_not_called()
+
+    def test_gate_compare_and_swap_failure_cannot_claim_completed(self):
+        result = self.create_challenge()
+        self.mocks["fetch"].return_value = self.success_response()
+        self.mocks["clear"].return_value = False
+        with patch.object(self.manager, "_sync_cookie", return_value=True):
+            self.complete(result)
+            self.run_next()
+        self.assertEqual(self.status(result["session_id"])["status"], "failed")
+
+    def test_backend_exception_is_redacted_and_does_not_leave_session_busy(self):
+        self.mocks["fetch"].side_effect = RuntimeError("private-token and private-upstream-url")
+        result = self.manager.create("cn", "owner-one")
+        self.run_next()
+        result = self.status(result["session_id"])
+        self.assertEqual(result["status"], "failed")
+        self.assertNotIn("private", json.dumps(result))
+        self.assertEqual(self.operation_depth, 0)
+        self.manager.create("cn", "owner-two")
+
+
+class AccountManualVerificationRoutesTest(unittest.TestCase):
+    def setUp(self):
+        self.store = _Store()
+
+    def client(self):
         app = FastAPI()
         app.include_router(routes.router)
 
@@ -541,25 +538,46 @@ class AccountManualVerificationTest(unittest.TestCase):
             request.state.auth_identity = {"kind": "session", "username": "admin", "session_id": "private-owner"}
             return await call_next(request)
 
+        return TestClient(app)
+
+    def test_http_complete_preserves_bound_nonce_and_proof(self):
+        with patch.object(routes, "store", self.store), \
+                patch.object(routes.manual_verification_manager, "execute", return_value={"status": "verifying"}) as execute:
+            response = self.client().post(f"{ENDPOINT}/session-one/complete", json={"challenge_id": CHALLENGE_NONCE, "proof": PROOF})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(execute.call_args.args, ("cn", "session-one", "private-owner", "complete"))
+            self.assertEqual(execute.call_args.kwargs, {"challenge_id": CHALLENGE_NONCE, "proof": PROOF})
+
+    def test_http_status_is_read_only_get_and_close_is_delete(self):
         with patch.object(routes, "store", self.store), \
                 patch.object(routes.manual_verification_manager, "execute", return_value={"status": "challenge"}) as execute:
-            client = TestClient(app)
-            response = client.post("/api/config/online-accounts/cn/verification/session-one/input",
-                                   json={"events": [{"type": "text", "text": "verification answer"}]})
-            self.assertEqual(response.status_code, 200)
-            args, kwargs = execute.call_args
-            self.assertEqual(args, ("cn", "session-one", "private-owner", "input"))
-            self.assertEqual(kwargs["events"][0]["text"], "verification answer")
-            self.assertEqual(client.post("/api/config/online-accounts/cn/verification/session-one/input",
-                                         json={"events": [{"type": "pointerdown", "x": -1}]}).status_code, 422)
+            client = self.client()
+            self.assertEqual(client.get(f"{ENDPOINT}/session-one").status_code, 200)
+            self.assertEqual(execute.call_args.args, ("cn", "session-one", "private-owner", "status"))
+            self.assertEqual(client.delete(f"{ENDPOINT}/session-one").status_code, 200)
+            self.assertEqual(execute.call_args.args, ("cn", "session-one", "private-owner", "close"))
 
-    def test_input_schema_rejects_non_finite_coordinates_and_large_batches(self):
-        for events in ([{"type": "pointerdown", "x": float("nan")}],
-                       [{"type": "text", "text": "x" * 2001}], [{"type": "unknown"}],
-                       [{"type": "pointermove"}] * 81, [{"type": "pointermove", "delay_ms": 51}],
-                       [{"type": "pointermove", "delay_ms": -1}]):
-            with self.assertRaises(ValidationError):
-                routes.VerificationInput(events=events)
+    def test_old_remote_browser_input_frame_and_finish_endpoints_are_removed(self):
+        with patch.object(routes, "store", self.store), patch.object(routes.manual_verification_manager, "execute") as execute:
+            client = self.client()
+            for action in ("input", "frame", "finish"):
+                with self.subTest(action=action):
+                    self.assertEqual(client.post(f"{ENDPOINT}/session-one/{action}", json={"events": []}).status_code, 404)
+            execute.assert_not_called()
+
+    def test_http_complete_rejects_unexpected_fields_and_oversized_values(self):
+        invalid = [
+            {}, {"challenge_id": "", "proof": PROOF}, {"challenge_id": "x" * 1000, "proof": PROOF},
+            {"challenge_id": CHALLENGE_NONCE, "proof": PROOF, "script_url": "https://untrusted.example/script.js"},
+            {"challenge_id": CHALLENGE_NONCE, "proof": {**PROOF, "unexpected": "field"}},
+            {"challenge_id": CHALLENGE_NONCE, "proof": {**PROOF, "captcha_output": "x" * 100000}},
+        ]
+        with patch.object(routes, "store", self.store), patch.object(routes.manual_verification_manager, "execute") as execute:
+            client = self.client()
+            for payload in invalid:
+                with self.subTest(keys=list(payload)):
+                    self.assertEqual(client.post(f"{ENDPOINT}/session-one/complete", json=payload).status_code, 422)
+            execute.assert_not_called()
 
     def test_routes_require_admin_session_and_reject_api_token(self):
         with patch.object(routes, "store", self.store):
@@ -572,25 +590,38 @@ class AccountManualVerificationTest(unittest.TestCase):
             request = SimpleNamespace(state=SimpleNamespace(auth_identity={"kind": "session", "username": "admin", "session_id": "private"}))
             self.assertEqual(routes._owner(request), "private")
 
-    def test_registered_main_route_requires_same_origin_session_and_rejects_api_tokens(self):
+    def test_http_manager_error_keeps_its_public_status_code(self):
+        with patch.object(routes, "store", self.store), \
+                patch.object(routes.manual_verification_manager, "execute", side_effect=manual.ManualVerificationError("验证码已失效。", 409)):
+            response = self.client().get(f"{ENDPOINT}/session-one")
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json(), {"detail": "验证码已失效。"})
+
+    def test_registered_mutations_require_same_origin_and_reject_api_tokens(self):
         from app import main as main_app
 
         client = TestClient(main_app.app)
         identity = {"kind": "session", "username": "admin", "session_id": "private-owner"}
         with patch.object(routes, "store", self.store), \
                 patch.object(main_app.auth_manager, "resolve_request_auth", return_value=identity), \
-                patch.object(routes.manual_verification_manager, "create", return_value={"status": "starting"}) as create:
-            endpoint = "/api/config/online-accounts/cn/verification"
-            self.assertEqual(client.post(endpoint).status_code, 403)
-            self.assertEqual(client.post(endpoint, headers={"Origin": "https://other.test"}).status_code, 403)
-            create.assert_not_called()
-            self.assertEqual(client.post(endpoint, headers={"Origin": "http://testserver"}).status_code, 200)
-            create.assert_called_once_with("cn", "private-owner")
+                patch.object(routes.manual_verification_manager, "create", return_value={"status": "preparing"}) as create, \
+                patch.object(routes.manual_verification_manager, "execute", return_value={"status": "verifying"}) as execute:
+            for method, endpoint, body in (("post", ENDPOINT, None),
+                                            ("post", f"{ENDPOINT}/session-one/complete", {"challenge_id": CHALLENGE_NONCE, "proof": PROOF}),
+                                            ("delete", f"{ENDPOINT}/session-one", None)):
+                with self.subTest(method=method, endpoint=endpoint):
+                    options = {"json": body} if body is not None else {}
+                    self.assertEqual(client.request(method, endpoint, **options).status_code, 403)
+                    self.assertEqual(client.request(method, endpoint, headers={"Origin": "https://other.test"}, **options).status_code, 403)
+                    self.assertEqual(client.request(method, endpoint, headers={"Origin": "http://testserver"}, **options).status_code, 200)
+            self.assertEqual(create.call_count, 1)
+            self.assertEqual(execute.call_count, 2)
         with patch.object(routes, "store", self.store), \
                 patch.object(main_app.auth_manager, "resolve_request_auth", return_value={"kind": "token", "username": ""}), \
-                patch.object(routes.manual_verification_manager, "create") as create:
-            self.assertEqual(client.post(endpoint, headers={"Origin": "http://testserver"}).status_code, 403)
-            create.assert_not_called()
+                patch.object(routes.manual_verification_manager, "execute") as execute:
+            response = client.post(f"{ENDPOINT}/session-one/complete", headers={"Origin": "http://testserver"}, json={"challenge_id": CHALLENGE_NONCE, "proof": PROOF})
+            self.assertEqual(response.status_code, 403)
+            execute.assert_not_called()
 
 
 if __name__ == "__main__":

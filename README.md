@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.22.3`
+> 当前版本：`v0.23.0`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -370,6 +370,12 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-11-18 · v0.23.0
+
+- 首页与归档任务的“去验证”改为 MW 官方图形验证码弹窗，在当前浏览器完成解题并自动提交，无需远程整页画面。
+- 用户解题期间释放后台临时页签和浏览器操作锁，关闭或过期清理会话；保留 CF 自动处理、额度、请求间隔和暂停保护。
+- 验证结果由后端确认真实下载权限后才恢复归档，重复回调不重复预约下载额度。
+
 ### 2026-11-18 · v0.22.3
 
 - 修复人工验证被后台浏览器任务长期阻塞的问题，增加人工操作优先、等待进度、取消与超时提示。
@@ -382,13 +388,13 @@ npm --prefix frontend run build
 - 使用关联浏览器的同一验证页面，真实下载授权通过后继续归档，保留额度、请求间隔和手动暂停限制。
 - 关闭或过期自动清理验证窗口；重新登录账号后需先在设置同步。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-11-14 · v0.21.13
 
 - 首页账号恢复后清理过期操作错误，同一卡片显示当前操作反馈；失败后也重新核对状态。
 - 实时状态连接建立或重连后刷新首页，避免漏掉首次加载期间的状态变化。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-11-14 · v0.21.12
 

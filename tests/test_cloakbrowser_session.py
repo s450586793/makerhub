@@ -47,6 +47,58 @@ class CloakBrowserSessionTest(unittest.TestCase):
         self.enterContext(patch.object(account_health, "get_account_health", return_value={"three_mf_gate": "open"}))
         self.enterContext(patch.object(three_mf_pacing, "_authorization_interval", return_value=0))
 
+    def test_managed_authorization_fetch_uses_one_bridge_without_nested_pacing(self):
+        endpoint = "https://makerworld.com.cn/api/v1/design-service/instance/123/f3mf?type=download&fileType=3mf"
+        with patch.dict(os.environ, {"MAKERHUB_CLOAKBROWSER_URL": "http://browser.test", "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "fixture"}, clear=False), \
+                patch.object(cloakbrowser_session, "_profile_operation", return_value=nullcontext()), \
+                patch.object(cloakbrowser_session, "_run_paced_bridge") as paced, \
+                patch.object(cloakbrowser_session, "_run_bridge", return_value={
+                    "status_code": 418, "text": '{"captchaId":"fixture"}', "url": endpoint,
+                    "content_type": "application/json",
+                }) as bridge:
+            result = cloakbrowser_session.browser_fetch("cn", endpoint, profile_id="profile-cn", authorization_managed=True)
+        self.assertEqual(result.status_code, 418)
+        self.assertEqual(bridge.call_args.args[0]["action"], "fetch")
+        self.assertTrue(bridge.call_args.args[0]["auto_verify_challenges"])
+        bridge.assert_called_once()
+        paced.assert_not_called()
+
+    def test_managed_authorization_bridge_failure_never_restarts_or_retries(self):
+        endpoint = "https://makerworld.com.cn/api/v1/design-service/instance/123/f3mf"
+        with patch.dict(os.environ, {"MAKERHUB_CLOAKBROWSER_URL": "http://browser.test", "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "fixture"}, clear=False), \
+                patch.object(cloakbrowser_session, "_profile_operation", return_value=nullcontext()), \
+                patch.object(cloakbrowser_session, "_run_bridge", side_effect=cloakbrowser_session.CloakBrowserBridgeError("timeout")) as bridge, \
+                patch.object(cloakbrowser_session, "_ensure_running_profile") as ensure:
+            with self.assertRaises(cloakbrowser_session.CloakBrowserBridgeError):
+                cloakbrowser_session.browser_fetch("cn", endpoint, profile_id="profile-cn", authorization_managed=True)
+        bridge.assert_called_once()
+        ensure.assert_not_called()
+
+    def test_managed_authorization_mode_requires_linked_profile_and_exact_authorization_url(self):
+        for endpoint, profile_id in (
+            ("https://makerworld.com.cn/zh/models/1", "profile-cn"),
+            ("https://makerworld.com.cn/api/v1/design-service/instance/123/f3mf", ""),
+            ("https://makerworld.com.cn/api/v1/design-service/instance/not-id/f3mf", "profile-cn"),
+            ("https://makerworld.com.cn/api/v1/design-service/instance/123/other/f3mf", "profile-cn"),
+        ):
+            with self.subTest(endpoint=endpoint, profile_id=profile_id), \
+                    patch.object(cloakbrowser_session, "_profile_operation") as operation:
+                with self.assertRaises(cloakbrowser_session.CloakBrowserError):
+                    cloakbrowser_session.browser_fetch("cn", endpoint, profile_id=profile_id, authorization_managed=True)
+                operation.assert_not_called()
+
+    def test_default_authorization_fetch_keeps_existing_paced_bridge(self):
+        endpoint = "https://makerworld.com.cn/api/v1/design-service/instance/123/f3mf"
+        profile = cloakbrowser_session.CloakBrowserProfile(id="profile-cn", name="cn", status="running")
+        with patch.dict(os.environ, {"MAKERHUB_CLOAKBROWSER_URL": "http://browser.test", "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "fixture"}, clear=False), \
+                patch.object(cloakbrowser_session, "_profile_operation", return_value=nullcontext()), \
+                patch.object(cloakbrowser_session, "_run_paced_bridge", return_value=(profile, False, {
+                    "status_code": 418, "text": "{}", "url": endpoint, "content_type": "application/json",
+                })) as paced:
+            result = cloakbrowser_session.browser_fetch("cn", endpoint, profile_id="profile-cn")
+        self.assertEqual(result.status_code, 418)
+        paced.assert_called_once()
+
     def test_stop_idle_profiles_only_stops_expired_running_profile(self):
         profiles = [
             {"id": "profile-cn", "name": "MakerHub CN", "status": "running"},
@@ -184,6 +236,66 @@ class CloakBrowserSessionTest(unittest.TestCase):
             "cloakbrowser_manager", detail="prepare-login", priority=100,
             timeout_seconds=20, cancel_event=stopped,
         )
+
+    def test_captcha_profile_operation_prioritizes_and_bounds_browser_wait(self):
+        stopped = threading.Event()
+        with patch.object(cloakbrowser_session, "resource_slot", return_value=nullcontext()) as slot:
+            with cloakbrowser_session._profile_operation(
+                "cn", "profile-cn", detail="captcha", timeout_seconds=20, cancel_event=stopped,
+            ):
+                pass
+        slot.assert_called_once_with(
+            "cloakbrowser_manager", detail="captcha", priority=100,
+            timeout_seconds=20, cancel_event=stopped,
+        )
+        self.assertFalse(cloakbrowser_session._profile_activity_path("cn", manual=True).exists())
+
+    def test_captcha_operation_restores_short_idle_after_nested_collect_and_fetch(self):
+        profile = {"id": "profile-cn", "name": "MakerHub CN", "status": "running"}
+        with patch.dict(os.environ, {
+                    "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                    "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "fixture",
+                    "MAKERHUB_CLOAKBROWSER_AUTOMATION_IDLE_SECONDS": "",
+                }, clear=False), \
+                patch.object(cloakbrowser_session, "resource_slot", return_value=nullcontext()), \
+                patch.object(cloakbrowser_session, "_request", side_effect=[[profile], profile]), \
+                patch.object(cloakbrowser_session, "stop_profile") as stop:
+            with cloakbrowser_session._profile_operation("cn", "profile-cn", detail="captcha"):
+                with cloakbrowser_session._profile_operation("cn", "profile-cn", detail="collect"):
+                    pass
+                with cloakbrowser_session._profile_operation("cn", "profile-cn", detail="fetch"):
+                    pass
+            self.assertEqual(cloakbrowser_session.profile_activity_detail("cn"), "captcha")
+            self.assertFalse(cloakbrowser_session._profile_activity_path("cn", manual=True).exists())
+            result = cloakbrowser_session.stop_idle_profiles(idle_seconds=1800, now=time.time() + 121)
+        self.assertEqual(result["automation_idle_seconds"], 120)
+        self.assertEqual(result["stopped_profiles"], ["profile-cn"])
+        stop.assert_called_once_with("profile-cn")
+
+    def test_captcha_operation_preserves_another_manual_login_window_activity(self):
+        profile = {"id": "profile-cn", "name": "MakerHub CN", "status": "running"}
+        cloakbrowser_session.touch_profile_activity("cn", now=time.time() - 300, detail="prepare-login")
+        manual_path = cloakbrowser_session._profile_activity_path("cn", manual=True)
+        original_activity = manual_path.stat().st_mtime
+        with patch.dict(os.environ, {
+                    "MAKERHUB_CLOAKBROWSER_URL": "http://cloakbrowser:8080",
+                    "MAKERHUB_CLOAKBROWSER_AUTH_TOKEN": "fixture",
+                }, clear=False), \
+                patch.object(cloakbrowser_session, "resource_slot", return_value=nullcontext()), \
+                patch.object(cloakbrowser_session, "_request", return_value=[profile]), \
+                patch.object(cloakbrowser_session, "stop_profile") as stop:
+            with cloakbrowser_session._profile_operation("cn", "profile-cn", detail="captcha"):
+                with cloakbrowser_session._profile_operation("cn", "profile-cn", detail="collect"):
+                    pass
+                with cloakbrowser_session._profile_operation("cn", "profile-cn", detail="fetch"):
+                    pass
+            self.assertEqual(manual_path.stat().st_mtime, original_activity)
+            result = cloakbrowser_session.stop_idle_profiles(
+                idle_seconds=1800, automation_idle_seconds=120, now=time.time() + 121,
+            )
+        self.assertEqual(result["stopped_profiles"], [])
+        self.assertEqual(manual_path.stat().st_mtime, original_activity)
+        stop.assert_not_called()
 
     def test_profile_resource_name_is_shared_across_profiles_and_platforms(self):
         self.assertEqual(

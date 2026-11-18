@@ -1,3 +1,5 @@
+import asyncio
+from contextlib import suppress
 import time
 from urllib.parse import quote, urlparse
 
@@ -139,6 +141,7 @@ async def resume_archive_queue() -> None:
         print(f"[makerhub] admin bootstrap password file: {credential_result.bootstrap_path}", flush=True)
     mark_update_started_after_restart()
     start_state_event_listener()
+    app.state.verification_cleanup_task = asyncio.create_task(_expire_manual_verifications())
     queue = {"recovered_count": 0, "queued_count": 0}
     if BACKGROUND_TASKS_ENABLED:
         queue = config_crawler.manager.resume_pending_tasks()
@@ -162,8 +165,19 @@ async def resume_archive_queue() -> None:
         print(f"[makerhub] archive queue resumed queued={queued_count} recovered_active={recovered_count}", flush=True)
 
 
+async def _expire_manual_verifications() -> None:
+    while True:
+        await asyncio.sleep(30)
+        await run_web_io(manual_verification_manager.prune_expired)
+
+
 @app.on_event("shutdown")
 async def shutdown_thread_pools() -> None:
+    task = getattr(app.state, "verification_cleanup_task", None)
+    if task is not None:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
     manual_verification_manager.shutdown()
     local_organizer.stop()
     shutdown_business_log_writer()

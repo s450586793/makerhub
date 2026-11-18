@@ -194,6 +194,42 @@ def _safe_browser_error(exc: CloakBrowserError) -> MakerWorldBrowserError:
     return MakerWorldBrowserError("CloakBrowser 请求失败。")
 
 
+def makerworld_browser_managed_authorization(
+    platform: str,
+    target_url: str,
+    *,
+    profile_id: str,
+    headers: dict[str, str] | None = None,
+    proxy_config: Any = None,
+    timeout_seconds: int | None = 30,
+) -> MakerWorldBrowserResponse:
+    """单发已由调用方管理锁、节奏与配额的授权请求，不重选 profile 或重试。"""
+    if platform not in {"cn", "global"}:
+        raise MakerWorldBrowserError("无法识别 MakerWorld 请求所属平台。")
+    if not isinstance(profile_id, str) or not profile_id.strip():
+        raise MakerWorldBrowserError("MakerWorld 验证请求缺少关联浏览器配置。")
+    try:
+        result = browser_fetch(
+            platform,
+            target_url,
+            profile_id=profile_id,
+            proxy_config=proxy_config,
+            headers=_headers_for_profile(headers, linked=True),
+            timeout_seconds=timeout_seconds,
+            authorization_managed=True,
+        )
+    except CloakBrowserError as exc:
+        raise _safe_browser_error(exc) from None
+    return MakerWorldBrowserResponse(
+        url=result.url,
+        status_code=result.status_code,
+        content_type=result.content_type,
+        text=result.text,
+        profile_id=result.profile_id,
+        headers=dict(result.headers),
+    )
+
+
 def makerworld_browser_get(
     url: str,
     *,

@@ -1,41 +1,12 @@
-export function verificationImageUrl(image = "") {
-  const value = String(image || "").trim();
-  return value && /^[A-Za-z0-9+/]+={0,2}$/.test(value)
-    ? `data:image/jpeg;base64,${value}`
-    : "";
-}
+const WAITING_STATUSES = new Set(["preparing", "verifying"]);
+const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled", "expired"]);
 
-export function verificationPointerPoint(event, bounds, width, height) {
-  const values = [event?.clientX, event?.clientY, bounds?.left, bounds?.top, bounds?.width, bounds?.height, width, height];
-  if (!values.every(Number.isFinite) || bounds.width <= 0 || bounds.height <= 0 || width <= 0 || height <= 0) return null;
-  return {
-    x: Math.max(0, Math.min(width - 1, (event.clientX - bounds.left) * width / bounds.width)),
-    y: Math.max(0, Math.min(height - 1, (event.clientY - bounds.top) * height / bounds.height)),
-  };
-}
-
-const REMOTE_KEYS = new Set(["Enter", "Tab", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
-
-export function verificationKeyboardInput(event = {}) {
-  const key = String(event.key || "");
-  if (event.isComposing || !key || ["Dead", "Process", "Unidentified"].includes(key)) return null;
-  const modifiers = [
-    event.ctrlKey && "Control", event.metaKey && "Meta", event.altKey && "Alt", event.shiftKey && "Shift",
-  ].filter(Boolean);
-  if (!event.ctrlKey && !event.metaKey && !event.altKey && Array.from(key).length === 1) {
-    return { type: "text", text: key };
-  }
-  if (!REMOTE_KEYS.has(key) && !(Array.from(key).length === 1 && modifiers.length)) return null;
-  return { type: "key", key: [...modifiers, key].join("+") };
-}
-
-export function createManualVerificationController({ request, onChange = () => {}, onComplete = () => {}, pollInterval = 900, schedule = setTimeout, unschedule = clearTimeout } = {}) {
+export function createManualVerificationController({ request, onChange = () => {}, onComplete = () => {}, pollInterval = 1000, requestTimeout = 15000, schedule = setTimeout, unschedule = clearTimeout } = {}) {
   let current = null;
   let cleanup = Promise.resolve();
+  const deadline = Number.isFinite(requestTimeout) && requestTimeout > 0 ? requestTimeout : 15000;
 
-  function active(session) {
-    return current === session && !session.closed;
-  }
+  function active(session) { return current === session && !session.closed; }
 
   function publish(session, patch) {
     if (!active(session)) return;
@@ -48,13 +19,11 @@ export function createManualVerificationController({ request, onChange = () => {
     session.timer = null;
   }
 
-  function terminal(session) {
-    return session.state.completed || ["error", "failed", "cancelled", "expired"].includes(session.state.status);
-  }
+  function terminal(session) { return session.state.completed || TERMINAL_STATUSES.has(session.state.status); }
 
   function poll(session) {
     clearPoll(session);
-    if (!active(session) || !session.id || terminal(session) || session.state.finishing || session.inputPromise) return;
+    if (!active(session) || !session.id || terminal(session) || !WAITING_STATUSES.has(session.state.status) || session.submitPromise) return;
     session.timer = schedule(() => {
       session.timer = null;
       void refresh(session);
@@ -64,16 +33,16 @@ export function createManualVerificationController({ request, onChange = () => {
   function apply(session, payload = {}) {
     if (!active(session)) return;
     if (payload.session_id !== session.id || payload.platform !== session.platform) {
-      publish(session, { status: "error" });
       throw new Error("验证会话不匹配，请关闭后重试。");
+    }
+    if (![...WAITING_STATUSES, ...TERMINAL_STATUSES, "challenge"].includes(payload.status)) {
+      throw new Error("验证状态无效，请重新打开验证。");
     }
     publish(session, {
       ...payload,
-      loading: !(payload.image || session.state.image || payload.completed === true || ["error", "failed", "cancelled", "expired"].includes(payload.status)),
+      loading: WAITING_STATUSES.has(payload.status),
       error: "",
-      image: payload.image || session.state.image,
-      width: payload.width || session.state.width,
-      height: payload.height || session.state.height,
+      challenge: payload.status === "challenge" ? payload.challenge || null : null,
       completed: payload.completed === true,
     });
     if (session.state.completed && !session.notified) {
@@ -84,26 +53,71 @@ export function createManualVerificationController({ request, onChange = () => {
   }
 
   function report(session, error) {
-    publish(session, { loading: false, error: error instanceof Error ? error.message : "验证窗口暂时不可用，请重试。" });
+    clearPoll(session);
+    publish(session, { loading: false, status: "failed", challenge: null, error: error instanceof Error ? error.message : "验证窗口暂时不可用，请重试。" });
   }
 
-  function enqueue(session, operation) {
-    const pending = session.queue.catch(() => {}).then(async () => {
-      if (!active(session) || terminal(session)) return;
-      return operation();
+  function requestWithDeadline(session, path, options, onLateResponse) {
+    const abort = typeof AbortController === "function" ? new AbortController() : null;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let timer = null;
+      function finish() {
+        settled = true;
+        if (timer !== null) unschedule(timer);
+        session?.requests.delete(cancel);
+      }
+      function cancel() {
+        if (settled) return;
+        finish();
+        abort?.abort();
+        const error = new Error("验证请求已取消。");
+        error.name = "AbortError";
+        reject(error);
+      }
+      session?.requests.add(cancel);
+      timer = schedule(() => {
+        if (settled) return;
+        finish();
+        abort?.abort();
+        reject(new Error("验证请求超时，请重试。"));
+      }, deadline);
+      Promise.resolve().then(() => {
+        if (settled) return;
+        return request(path, { ...options, ...(abort ? { signal: abort.signal } : {}) });
+      }).then((payload) => {
+        if (settled) {
+          if (payload && onLateResponse) onLateResponse(payload);
+          return;
+        }
+        finish();
+        resolve(payload);
+      }, (error) => {
+        if (settled) return;
+        finish();
+        reject(error);
+      }).catch(() => {
+        // 迟到会话仅做尽力清理，服务端仍按有效期回收。
+      });
     });
-    session.queue = pending;
-    return pending;
   }
 
   function discard(session, id = session.id) {
     if (!id) return Promise.resolve();
+    // 新会话可能复用了旧请求在服务端创建的 ID，不能删除它正在使用的会话。
+    if (current && current !== session && active(current) && current.endpoint === session.endpoint && (!current.id || current.id === id)) return Promise.resolve();
     if (!session.discardPromise) {
-      session.discardPromise = Promise.resolve().then(() => request(`${session.endpoint}/${encodeURIComponent(id)}`, { method: "DELETE" })).catch(() => {
-        // 服务端会按会话有效期回收，关闭窗口不因网络故障被阻塞。
+      session.discardPromise = requestWithDeadline(null, `${session.endpoint}/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {
+        // 服务端按有效期回收，网络故障不阻塞关闭。
       });
+      cleanup = Promise.all([cleanup, session.discardPromise]).then(() => undefined);
     }
     return session.discardPromise;
+  }
+
+  function lateCreated(session, payload) {
+    session.id = String(payload?.session_id || "");
+    void discard(session);
   }
 
   function close() {
@@ -111,15 +125,9 @@ export function createManualVerificationController({ request, onChange = () => {
     if (!session) return cleanup;
     current = null;
     session.closed = true;
-    session.buffer.length = 0;
     clearPoll(session);
-    cleanup = cleanup.then(async () => {
-      if (!session.id && session.createPromise) {
-        const payload = await session.createPromise.catch(() => null);
-        session.id = String(payload?.session_id || "");
-      }
-      await discard(session);
-    });
+    for (const cancel of [...session.requests]) cancel();
+    void discard(session);
     return cleanup;
   }
 
@@ -128,99 +136,66 @@ export function createManualVerificationController({ request, onChange = () => {
     const endpoint = String(action.endpoint || "").replace(/\/$/, "");
     const match = endpoint.match(/^\/api\/config\/online-accounts\/(cn|global)\/verification$/);
     const session = {
-      endpoint, platform: match?.[1] || "", id: "", closed: false, queue: Promise.resolve(),
-      timer: null, framePromise: null, inputPromise: null, createPromise: null, discardPromise: null, buffer: [], notified: false,
-      state: { loading: true, finishing: false, status: "loading", message: "正在打开验证页面。", error: "", image: "", width: 0, height: 0, completed: false },
+      endpoint, platform: match?.[1] || "", id: "", closed: false,
+      timer: null, statusPromise: null, submitPromise: null, createPromise: null, discardPromise: null, requests: new Set(), submitted: new Set(), notified: false,
+      state: { loading: true, status: "preparing", message: "正在准备验证码。", error: "", challenge: null, completed: false },
     };
     current = session;
     publish(session, {});
     if (!match) {
-      publish(session, { loading: false, status: "error", error: "验证入口无效，请刷新首页后重试。" });
+      report(session, new Error("验证入口无效，请刷新首页后重试。"));
       return;
     }
     try {
       await closing;
       if (!active(session)) return;
-      session.createPromise = request(endpoint, { method: "POST", body: action.body || {} });
+      session.createPromise = requestWithDeadline(session, endpoint, { method: "POST", body: action.body || {} }, (payload) => lateCreated(session, payload));
       const payload = await session.createPromise;
       session.id = String(payload?.session_id || "");
       if (!active(session)) {
-        await discard(session);
+        lateCreated(session, payload);
         return;
       }
       if (!session.id) throw new Error("未能创建验证会话，请重试。");
       apply(session, payload);
-      if (!session.state.image && !terminal(session)) await refresh(session);
-      else poll(session);
-    } catch (error) {
-      report(session, error);
-      publish(session, { status: "error" });
-    }
+      poll(session);
+    } catch (error) { report(session, error); }
   }
 
   function refresh(session = current) {
     if (!session || !active(session) || !session.id || terminal(session)) return Promise.resolve();
-    if (session.framePromise) return session.framePromise;
+    if (session.statusPromise) return session.statusPromise;
     clearPoll(session);
-    session.framePromise = enqueue(session, async () => {
-      const payload = await request(`${session.endpoint}/${encodeURIComponent(session.id)}/frame`, { method: "POST" });
+    session.statusPromise = Promise.resolve().then(async () => {
+      if (!active(session)) return;
+      const payload = await requestWithDeadline(session, `${session.endpoint}/${encodeURIComponent(session.id)}`, { method: "GET" });
       apply(session, payload);
     }).catch((error) => report(session, error)).finally(() => {
-      session.framePromise = null;
+      session.statusPromise = null;
       poll(session);
     });
-    return session.framePromise;
+    return session.statusPromise;
   }
 
-  function sendEvents(events = []) {
+  function complete(challengeId, proof) {
     const session = current;
-    if (!session || !session.id || !active(session) || terminal(session) || session.state.finishing) return Promise.resolve();
+    if (!session || !active(session) || !session.id || terminal(session) || session.state.status !== "challenge"
+      || session.state.challenge?.challenge_id !== challengeId || session.submitted.has(challengeId)) return Promise.resolve();
+    session.submitted.add(challengeId);
     clearPoll(session);
-    for (const event of events) {
-      if (session.buffer.length >= 600) {
-        const move = session.buffer.findIndex((pending) => pending.type === "pointermove");
-        if (move !== -1) session.buffer.splice(move, 1);
-        else if (event.type !== "pointerup") {
-          report(session, new Error("操作积压，请等待当前操作完成后重试。"));
-          continue;
-        }
-      }
-      session.buffer.push(event);
-    }
-    if (session.inputPromise) return session.inputPromise;
-    session.inputPromise = enqueue(session, async () => {
-      while (active(session) && session.buffer.length && !terminal(session)) {
-        const batch = session.buffer.splice(0, 80);
-        const payload = await request(`${session.endpoint}/${encodeURIComponent(session.id)}/input`, { method: "POST", body: { events: batch } });
-        apply(session, payload);
-      }
-    }).catch((error) => {
-      session.buffer.length = 0;
-      report(session, error);
-    }).finally(() => {
-      session.inputPromise = null;
-      if (active(session)) void refresh(session);
-    });
-    return session.inputPromise;
-  }
-
-  async function finish() {
-    const session = current;
-    if (!session || !session.id || !active(session) || terminal(session) || session.state.finishing) return;
-    clearPoll(session);
-    publish(session, { finishing: true, error: "" });
-    try {
-      await enqueue(session, async () => {
-        const payload = await request(`${session.endpoint}/${encodeURIComponent(session.id)}/finish`, { method: "POST" });
-        apply(session, payload);
+    publish(session, { loading: true, status: "verifying", challenge: null, message: "正在确认验证结果。", error: "" });
+    session.submitPromise = Promise.resolve().then(async () => {
+      if (!active(session)) return;
+      const payload = await requestWithDeadline(session, `${session.endpoint}/${encodeURIComponent(session.id)}/complete`, {
+        method: "POST", body: { challenge_id: challengeId, proof },
       });
-    } catch (error) {
-      report(session, error);
-    } finally {
-      publish(session, { finishing: false });
+      apply(session, payload);
+    }).catch((error) => report(session, error)).finally(() => {
+      session.submitPromise = null;
       poll(session);
-    }
+    });
+    return session.submitPromise;
   }
 
-  return { open, close, refresh: () => refresh(), sendEvents, finish };
+  return { open, close, refresh: () => refresh(), complete };
 }
