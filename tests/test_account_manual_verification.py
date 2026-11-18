@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from app.api import account_verification_routes as routes
 from app.schemas.models import CookiePair
 from app.services import account_manual_verification as manual
+from app.services.cloakbrowser_session import CloakBrowserSessionResult
 
 
 CAPTCHA_ID = "00000000000000000000000000000001"
@@ -76,7 +77,7 @@ class AccountManualVerificationTest(unittest.TestCase):
             "target": patch.object(manual, "_find_target", side_effect=lambda *_: copy.deepcopy(self.target)),
             "blockers": patch.object(manual, "_queue_blockers", side_effect=lambda *_: dict(self.blockers)),
             "operation": patch.object(manual.browser, "_profile_operation", side_effect=self.operation),
-            "collect": patch.object(manual.browser, "collect_browser_session", return_value=SimpleNamespace(cookie="token=saved; cf_clearance=fixture-clearance")),
+            "collect": patch.object(manual.browser, "collect_browser_session", return_value=CloakBrowserSessionResult(profile_id="profile-cn", cookie="token=saved; cf_clearance=fixture-clearance")),
             "preflight": patch.object(manual.browser, "browser_prepare_3mf_download", side_effect=lambda *a, **kw: copy.deepcopy(self.preflight)),
             "fetch": patch.object(manual, "fetch_authorization", return_value=self.challenge_response(), create=True),
             "quota": patch.object(manual, "reserve_three_mf_download_slot", return_value={"allowed": True}),
@@ -220,6 +221,46 @@ class AccountManualVerificationTest(unittest.TestCase):
         self.assertEqual(account.browser_status, "synced")
         self.assertTrue(account.browser_synced_at)
         self.mocks["worker"].assert_called_once_with(force=True)
+
+    def test_fresh_global_login_clears_stale_error_while_challenge_stays_pending(self):
+        self.store.config.cookies = [CookiePair(
+            platform="global", cookie="token=saved", browser_profile_id="profile-global",
+            browser_status="action_required", browser_message="old login failure",
+        )]
+        self.snapshot.update(platform="global", model_url="https://makerworld.com/en/models/123")
+        self.target["model_url"] = self.snapshot["model_url"]
+        self.preflight["model"]["model_url"] = self.snapshot["model_url"]
+        self.mocks["collect"].return_value = CloakBrowserSessionResult(
+            profile_id="profile-global", cookie="token=saved; cf_clearance=fresh",
+            current_url="https://makerworld.com/en",
+        )
+        health_before = copy.deepcopy(self.snapshot)
+
+        result = self.manager.create("global", "owner-one")
+        self.run_next()
+        result = self.manager.execute("global", result["session_id"], "owner-one", "status")
+
+        self.assertEqual(result["status"], "challenge", result)
+        account = self.store.load().cookies[0]
+        self.assertEqual(account.browser_status, "synced")
+        self.assertTrue(account.browser_synced_at)
+        self.assertNotEqual(account.browser_message, "old login failure")
+        self.assertEqual(account.cookie, "token=saved")
+        self.assertEqual(self.snapshot, health_before)
+        self.mocks["clear"].assert_not_called()
+        self.mocks["worker"].assert_not_called()
+
+        self.manager.execute(
+            "global", result["session_id"], "owner-one", "complete",
+            challenge_id=result["challenge"]["challenge_id"], proof=copy.deepcopy(PROOF),
+        )
+        self.run_next()
+        continued = self.manager.execute("global", result["session_id"], "owner-one", "status")
+        self.assertEqual(continued["status"], "challenge", continued)
+        self.assertEqual(self.mocks["quota"].call_count, 1)
+        self.assertEqual(self.snapshot, health_before)
+        self.mocks["clear"].assert_not_called()
+        self.mocks["worker"].assert_not_called()
 
     def test_failed_proof_rotates_nonce_and_does_not_reserve_again(self):
         result = self.create_challenge()
@@ -376,10 +417,23 @@ class AccountManualVerificationTest(unittest.TestCase):
         self.mocks["quota"].assert_not_called()
 
     def test_browser_account_mismatch_prevents_authorization(self):
-        self.mocks["collect"].return_value = SimpleNamespace(cookie="token=different-account")
+        self.mocks["collect"].return_value = CloakBrowserSessionResult(profile_id="profile-cn", cookie="token=different-account")
         result = self.manager.create("cn", "owner-one")
         self.run_next()
         self.assertEqual(self.status(result["session_id"])["status"], "failed")
+        self.mocks["fetch"].assert_not_called()
+        self.mocks["quota"].assert_not_called()
+
+    def test_browser_profile_mismatch_with_same_token_preserves_stale_error(self):
+        self.store.config.cookies[0].browser_status = "action_required"
+        self.store.config.cookies[0].browser_message = "old login failure"
+        self.mocks["collect"].return_value = CloakBrowserSessionResult(
+            profile_id="another-profile", cookie="token=saved",
+        )
+        result = self.manager.create("cn", "owner-one")
+        self.run_next()
+        self.assertEqual(self.status(result["session_id"])["status"], "failed")
+        self.assertEqual(self.store.load().cookies[0].browser_status, "action_required")
         self.mocks["fetch"].assert_not_called()
         self.mocks["quota"].assert_not_called()
 
@@ -397,8 +451,9 @@ class AccountManualVerificationTest(unittest.TestCase):
 
     def test_browser_account_changed_during_fetch_cannot_unlock(self):
         self.mocks["collect"].side_effect = [
-            SimpleNamespace(cookie="token=saved"), SimpleNamespace(cookie="token=saved"),
-            SimpleNamespace(cookie="token=different-account"),
+            CloakBrowserSessionResult(profile_id="profile-cn", cookie="token=saved"),
+            CloakBrowserSessionResult(profile_id="profile-cn", cookie="token=saved"),
+            CloakBrowserSessionResult(profile_id="profile-cn", cookie="token=different-account"),
         ]
         self.mocks["fetch"].return_value = self.success_response()
         with patch.object(self.manager, "_sync_cookie", return_value=True) as sync:

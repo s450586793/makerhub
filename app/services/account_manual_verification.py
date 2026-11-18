@@ -25,6 +25,7 @@ from app.services.account_verification_recovery import (
     _UNSAFE_STATUSES,
     _valid_download,
 )
+from app.services.browser_session_confirmation import confirm_browser_session
 from app.services.cookie_utils import extract_auth_token, sanitize_cookie_header
 from app.services.makerworld_captcha import challenge_config, encode_proof, fetch_authorization
 from app.services.state_events import publish_state_event
@@ -236,10 +237,15 @@ class ManualVerificationManager:
             raise ManualVerificationError("归档任务正在运行或已手动暂停，当前暂停状态已保留。")
 
     def _identity(self, session: _Session) -> str:
-        cookie = browser.collect_browser_session(session.platform, session.account.browser_profile_id).cookie
+        result = browser.collect_browser_session(session.platform, session.account.browser_profile_id)
+        cookie = result.cookie
         token = extract_auth_token(cookie)
-        if not token or token != extract_auth_token(session.account.cookie):
+        if (result.profile_id != session.account.browser_profile_id
+                or not token or token != extract_auth_token(session.account.cookie)):
             raise ManualVerificationError("浏览器登录态已变化，请先在设置中同步账号，再重新验证。")
+        if confirm_browser_session(self.store, session.platform, session.account, result):
+            session.account.browser_status = "synced"
+            publish_state_event("online_accounts", "state.changed", {"platform": session.platform, "status": "synced"})
         return cookie
 
     def _sync_cookie(self, session: _Session, cookie: str) -> bool:

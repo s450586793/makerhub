@@ -143,6 +143,42 @@ class AccountVerificationRecoveryTest(unittest.TestCase):
         sync.assert_called_once_with("cn", self.config.cookies[0].cookie, profile_id="profile-cn", proxy_config=self.config.proxy, stop_when_done=False)
         self.assertEqual(len(self.reservations), 1)
 
+    def test_strict_sync_clears_stale_error_without_clearing_download_verification(self):
+        for platform in ("cn", "global"):
+            with self.subTest(platform=platform):
+                account = CookiePair(
+                    platform=platform, cookie="token=private-token; cf_clearance=old",
+                    browser_profile_id=f"profile-{platform}", browser_status="action_required",
+                    browser_message="old login failure",
+                )
+                self.config.cookies = [account]
+                self.state = {
+                    "account_health": {platform: self.snapshot(platform)},
+                    "three_mf_daily_quota": {"items": {}},
+                }
+                health_before = copy.deepcopy(self.state["account_health"])
+                logged_out = {"ready": False, "authenticated": False, "reason": "auth_required", "model": None}
+                pending = {"ready": False, "authenticated": False, "reason": "verification_required", "model": None}
+                origin = "https://makerworld.com" if platform == "global" else "https://makerworld.com.cn"
+                confirmed = cloakbrowser_session.CloakBrowserSessionResult(
+                    profile_id=f"profile-{platform}", cookie="token=private-token; cf_clearance=fresh",
+                    current_url=f"{origin}/en",
+                )
+                with patch.object(self.module, "browser_prepare_3mf_download", side_effect=[logged_out, pending]), \
+                        patch.object(self.module, "synchronize_browser_session", return_value=confirmed):
+                    result = self.run_recovery()
+
+                current = self.config.cookies[0]
+                self.assertEqual(current.browser_status, "synced")
+                self.assertTrue(current.browser_synced_at)
+                self.assertNotEqual(current.browser_message, "old login failure")
+                self.assertEqual(current.cookie, "token=private-token; cf_clearance=old")
+                self.assertEqual(result["attempted"], 0)
+                self.assertEqual(result["items"][0]["reason"], "verification_required")
+                self.assertEqual(self.state["account_health"], health_before)
+                self.assertEqual(self.requests, [])
+                self.assertEqual(self.reservations, [])
+
     def test_still_logged_out_does_not_claim_and_login_is_throttled_across_runs(self):
         self.preflight = {"ready": False, "authenticated": False, "reason": "auth_required", "model": None}
         with patch.object(self.module, "synchronize_browser_session") as sync, \

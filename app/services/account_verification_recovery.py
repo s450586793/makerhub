@@ -15,6 +15,7 @@ from app.core.settings import APP_VERSION
 from app.core.store import JsonStore
 from app.core.timezone import now_iso as china_now_iso
 from app.services.archive_model_index import query_archive_model_index
+from app.services.browser_session_confirmation import confirm_browser_session
 from app.services.cloakbrowser_session import (
     browser_authorize_3mf_download,
     browser_prepare_3mf_download,
@@ -443,8 +444,12 @@ def run_account_verification_recovery_once(
                 if (_auto_verify_enabled() and cloakbrowser_configured() and _same_login(config_store, account)
                         and not any(_queue_blockers(platform).values())
                         and (can_probe is None or can_probe() is True)):
-                    synchronize_browser_session(platform, account.cookie, profile_id=account.browser_profile_id,
-                                                proxy_config=config.proxy, stop_when_done=False)
+                    synchronized = synchronize_browser_session(
+                        platform, account.cookie, profile_id=account.browser_profile_id,
+                        proxy_config=config.proxy, stop_when_done=False,
+                    )
+                    if confirm_browser_session(config_store, platform, account, synchronized):
+                        publish_state_event("online_accounts", "state.changed", {"platform": platform, "status": "synced"})
                     phase = "preflight"
                     preflight = browser_prepare_3mf_download(platform, profile_id=account.browser_profile_id, model_url=target["model_url"])
             fresh_target = _fresh_target(platform, target, preflight)

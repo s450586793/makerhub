@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.23.0`
+> 当前版本：`v0.23.1`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -370,6 +370,11 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-11-18 · v0.23.1
+
+- 修复浏览器已确认登录后仍显示旧登录错误的问题，及时更新自动恢复及人工验证码准备阶段的账号提示。
+- 保留下载验证状态及账号变更保护，真实下载授权通过后才继续归档。
+
 ### 2026-11-18 · v0.23.0
 
 - 首页与归档任务的“去验证”改为 MW 官方图形验证码弹窗，在当前浏览器完成解题并自动提交，无需远程整页画面。
@@ -381,15 +386,15 @@ npm --prefix frontend run build
 - 修复人工验证被后台浏览器任务长期阻塞的问题，增加人工操作优先、等待进度、取消与超时提示。
 - 弹窗默认宽度缩至 680px，减小加载占位，保留长画面滚动及手机、短屏适配。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-11-18 · v0.22.2
 
 - 首页两站“去验证”直接打开人工验证弹窗，支持点选、拖动、滚动和文字输入。
 - 归档队列因验证暂停时保留弹窗入口，不再使用旧的“已验证”恢复按钮。
 - 使用关联浏览器的同一验证页面，真实下载授权通过后继续归档，保留额度、请求间隔和手动暂停限制。
 - 关闭或过期自动清理验证窗口；重新登录账号后需先在设置同步。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-11-14 · v0.21.13
 
