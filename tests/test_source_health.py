@@ -79,20 +79,15 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(card_map["cn"]["status"], "需要浏览器确认")
         self.assertEqual(card_map["cn"]["detail"], "国内站需要在浏览器完成验证后继续归档。")
         self.assertEqual(card_map["cn"]["source"], "probe")
-        self.assertEqual(card_map["cn"].get("action_label"), "打开官网")
+        self.assertEqual(card_map["cn"].get("action_label"), "去验证")
         self.assertEqual(card_map["cn"].get("url"), "https://makerworld.com.cn")
         self.assertEqual(card_map["cn"]["actions"], [
             {
-                "kind": "external",
-                "label": "打开官网",
-                "href": "https://makerworld.com.cn",
-            },
-            {
                 "kind": "api",
-                "label": "已验证",
-                "endpoint": "/api/tasks/missing-3mf/verification-verified",
+                "label": "去验证",
+                "endpoint": "/api/config/online-accounts/cn/verification",
                 "method": "POST",
-                "body": {"platform": "cn"},
+                "opens_verification": True,
             },
         ])
         self.assertNotIn("route", card_map["cn"])
@@ -103,7 +98,7 @@ class SourceHealthCardsTest(unittest.TestCase):
     def test_browser_managed_source_card_opens_cloakbrowser_login_flow(self):
         self._set_account_health(
             cn={
-                "status": "verification_required",
+                "status": "cookie_invalid",
                 "source": "probe",
                 "updated_at": "2026-07-28T10:00:00+08:00",
             }
@@ -126,16 +121,48 @@ class SourceHealthCardsTest(unittest.TestCase):
         card_map = {item["key"]: item for item in cards}
         self.assertEqual(card_map["cn"]["action_label"], "打开指纹浏览器")
         self.assertEqual(card_map["cn"]["url"], "https://llq.ace-station.top:1111")
-        self.assertEqual(card_map["cn"]["actions"][0], {
+        self.assertEqual(card_map["cn"]["actions"], [{
             "kind": "api",
             "label": "打开指纹浏览器",
             "endpoint": "/api/config/online-accounts/cn/browser/open",
             "method": "POST",
             "opens_browser": True,
-        })
-        self.assertEqual(card_map["cn"]["actions"][1]["label"], "已验证")
+        }])
         self.assertEqual(card_map["global"]["action_label"], "打开官网")
         self.assertEqual(card_map["global"]["url"], "https://makerworld.com")
+
+    def test_browser_managed_verification_cards_open_manual_verification(self):
+        self._set_account_health(
+            cn={"status": "verification_required", "source": "probe"},
+            global_={"status": "verification_required", "source": "probe"},
+        )
+
+        class Config:
+            cookies = [
+                SimpleNamespace(platform="cn", browser_profile_id="profile-cn"),
+                SimpleNamespace(platform="global", browser_profile_id="profile-global"),
+            ]
+            proxy = None
+
+        with patch.dict(
+            os.environ,
+            {"MAKERHUB_CLOAKBROWSER_PUBLIC_URL": "https://llq.ace-station.top:1111/"},
+            clear=False,
+        ):
+            cards = source_health.build_source_health_cards(Config(), [])
+
+        for card in cards:
+            with self.subTest(platform=card["key"]):
+                self.assertEqual(card["state"], "verification_required")
+                self.assertEqual(card["action_label"], "去验证")
+                self.assertEqual(card["url"], "https://llq.ace-station.top:1111")
+                self.assertEqual(card["actions"], [{
+                    "kind": "api",
+                    "label": "去验证",
+                    "endpoint": f"/api/config/online-accounts/{card['key']}/verification",
+                    "method": "POST",
+                    "opens_verification": True,
+                }])
 
     def test_missing_3mf_verification_does_not_override_account_health_ok_snapshot(self):
         self._set_account_health(

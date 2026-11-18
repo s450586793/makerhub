@@ -20,6 +20,15 @@ def digest(value):
     return hashlib.sha256(value).hexdigest()
 
 
+def stat_with(info, **changes):
+    # 保留完整 stat_result，避免权限模拟破坏文件读取、pytest 捕获及临时目录管理。
+    fields = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+    fields.update(changes)
+    names = ("st_mode", "st_ino", "st_dev", "st_nlink", "st_uid",
+             "st_gid", "st_size", "st_atime", "st_mtime", "st_ctime")
+    return os.stat_result([fields[name] for name in names], fields)
+
+
 @pytest.fixture
 def monitor():
     assert SCRIPT.exists(), "The scoped MakerHub monitor has not been implemented"
@@ -32,11 +41,12 @@ def monitor():
 @pytest.fixture
 def runtime(tmp_path, monkeypatch, monitor):
     # 模拟仅主机权限；所有业务文件、目录及内容核验仍使用真实临时文件。
+    monkeypatch.setattr(monitor, "os", SimpleNamespace(**vars(os)))
     original_fstat = os.fstat
 
     def root_fstat(fd):
         value = original_fstat(fd)
-        return SimpleNamespace(st_mode=value.st_mode, st_uid=0)
+        return stat_with(value, st_uid=0)
 
     monkeypatch.setattr(monitor.os, "geteuid", lambda: 0)
     monkeypatch.setattr(monitor.os, "fstat", root_fstat)
@@ -98,6 +108,19 @@ def runtime(tmp_path, monkeypatch, monitor):
     context.legacy.stop = Mock()
     return SimpleNamespace(context=context, config=config, save=save, rows=rows, docker=docker,
                            path=config_path, root=root, tmp=tmp_path)
+
+
+def test_runtime_permission_mock_preserves_file_metadata(monitor, runtime):
+    assert monitor.os is not os
+    with runtime.path.open("rb") as source:
+        real = os.fstat(source.fileno())
+        mocked = monitor.os.fstat(source.fileno())
+        assert isinstance(mocked, os.stat_result)
+        assert mocked.st_uid == 0
+        assert mocked.st_size == real.st_size
+        assert mocked.st_mtime_ns == real.st_mtime_ns
+        assert tuple(mocked)[4] == 0
+        assert source.read() == runtime.path.read_bytes()
 
 
 def test_unrelated_directory_and_container_changes_do_not_stop_makerhub(monitor, runtime):
@@ -166,8 +189,7 @@ def test_reboot_device_number_change_keeps_stable_filesystem_identity(monitor, r
 
     def changed_device(path, *args, **kwargs):
         info = original_stat(path, *args, **kwargs)
-        return SimpleNamespace(st_mode=info.st_mode, st_uid=info.st_uid,
-                               st_dev=info.st_dev + 100, st_ino=info.st_ino)
+        return stat_with(info, st_dev=info.st_dev + 100)
 
     monkeypatch.setattr(Path, "stat", changed_device)
     monitor.scoped_gate(runtime.context)
@@ -247,13 +269,14 @@ def process(monitor, runtime, monkeypatch):
 
     def root_stat(path, *args, **kwargs):
         info = original_stat(path, *args, **kwargs)
-        return SimpleNamespace(st_uid=0) if path == proc else info
+        return stat_with(info, st_uid=0) if path == proc else info
 
     monkeypatch.setattr(Path, "stat", root_stat)
-    monkeypatch.setattr(monitor.os, "pidfd_open", Mock(return_value=777))
+    monkeypatch.setattr(monitor.os, "pidfd_open", Mock(return_value=777), raising=False)
     monkeypatch.setattr(monitor.os, "close", Mock())
+    monkeypatch.setattr(monitor, "signal", SimpleNamespace(**vars(signal)))
     signal_send = Mock()
-    monkeypatch.setattr(monitor.signal, "pidfd_send_signal", signal_send)
+    monkeypatch.setattr(monitor.signal, "pidfd_send_signal", signal_send, raising=False)
     monkeypatch.setattr(monitor, "load_context", lambda path: runtime.context)
     return SimpleNamespace(path=proc, signal_send=signal_send)
 
