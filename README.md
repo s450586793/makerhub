@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.22.1`
+> 当前版本：`v0.22.2`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -370,9 +370,10 @@ npm --prefix frontend run build
 
 ## 更新记录
 
-### 2026-11-18 · v0.22.1
+### 2026-11-18 · v0.22.2
 
 - 首页两站“去验证”直接打开人工验证弹窗，支持点选、拖动、滚动和文字输入。
+- 归档队列因验证暂停时保留弹窗入口，不再使用旧的“已验证”恢复按钮。
 - 使用关联浏览器的同一验证页面，真实下载授权通过后继续归档，保留额度、请求间隔和手动暂停限制。
 - 关闭或过期自动清理验证窗口；重新登录账号后需先在设置同步。
 

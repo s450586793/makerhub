@@ -119,6 +119,7 @@ class SourceHealthCardsTest(unittest.TestCase):
             cards = source_health.build_source_health_cards(Config(), [])
 
         card_map = {item["key"]: item for item in cards}
+        self.assertEqual(card_map["cn"]["state"], "cookie_invalid")
         self.assertEqual(card_map["cn"]["action_label"], "打开指纹浏览器")
         self.assertEqual(card_map["cn"]["url"], "https://llq.ace-station.top:1111")
         self.assertEqual(card_map["cn"]["actions"], [{
@@ -974,39 +975,62 @@ class SourceHealthCardsTest(unittest.TestCase):
         self.assertEqual(card_map["cn"]["updated_at"], "2026-06-12T10:20:00+08:00")
         self.assertEqual(card_map["cn"]["checks"], [])
 
-    def test_paused_archive_verification_tasks_override_normal_card_and_keep_recovery_action(self):
-        self._set_account_health(
-            cn={
-                "status": "ok",
-                "source": "scheduled_cookie_check",
-                "detail": "国内站账号可用，Cookie 已保存。",
-            }
-        )
-
+    def test_paused_archive_verification_tasks_offer_one_manual_verification_action(self):
         class Config:
             cookies = []
             proxy = None
 
-        cards = source_health.build_source_health_cards(
-            Config(),
-            [],
-            verification_paused_by_platform={"cn": 3, "global": 0},
-        )
+        for status in ("ok", "verification_required", "cookie_invalid"):
+            for browser_managed in (False, True):
+                self._set_account_health(
+                    cn={"status": status, "source": "scheduled_cookie_check"},
+                    global_={"status": status, "source": "scheduled_cookie_check"},
+                )
+                config = Config()
+                if browser_managed:
+                    config.cookies = [
+                        SimpleNamespace(platform=platform, browser_profile_id=f"profile-{platform}")
+                        for platform in ("cn", "global")
+                    ]
+                with patch.dict(
+                    os.environ,
+                    {"MAKERHUB_CLOAKBROWSER_PUBLIC_URL": "https://llq.example.test:1111/"},
+                    clear=False,
+                ):
+                    cards = source_health.build_source_health_cards(
+                        config,
+                        [],
+                        verification_paused_by_platform={"cn": 3, "global": 2},
+                    )
 
-        card = {item["key"]: item for item in cards}["cn"]
-        self.assertEqual(card["account_status"], "ok")
-        self.assertEqual(card["state"], "verification_required")
-        self.assertEqual(card["status"], "等待浏览器验证")
-        self.assertEqual(card["tone"], "warning")
-        self.assertEqual(card["verification_paused_count"], 3)
-        self.assertEqual(card["detail"], "国内站有 3 个 3MF 任务等待浏览器验证。")
-        self.assertEqual(card["actions"][-1], {
-            "kind": "api",
-            "label": "已验证，继续归档",
-            "endpoint": "/api/tasks/missing-3mf/verification-verified",
-            "method": "POST",
-            "body": {"platform": "cn"},
-        })
+                for card in cards:
+                    platform = card["key"]
+                    count = 3 if platform == "cn" else 2
+                    title = "国内站" if platform == "cn" else "国际站"
+                    with self.subTest(status=status, browser_managed=browser_managed, platform=platform):
+                        self.assertEqual(card["account_status"], status)
+                        self.assertEqual(card["state"], "verification_required")
+                        self.assertEqual(card["status"], "等待浏览器验证")
+                        self.assertEqual(card["tone"], "warning")
+                        self.assertEqual(card["verification_paused_count"], count)
+                        self.assertEqual(card["detail"], f"{title}有 {count} 个 3MF 任务等待浏览器验证。")
+                        self.assertEqual(card["action_label"], "去验证")
+                        expected_actions = [{
+                            "kind": "api",
+                            "label": "去验证",
+                            "endpoint": f"/api/config/online-accounts/{platform}/verification",
+                            "method": "POST",
+                            "opens_verification": True,
+                        }]
+                        if browser_managed and status != "verification_required":
+                            expected_actions.append({
+                                "kind": "api",
+                                "label": "打开指纹浏览器",
+                                "endpoint": f"/api/config/online-accounts/{platform}/browser/open",
+                                "method": "POST",
+                                "opens_browser": True,
+                            })
+                        self.assertEqual(card["actions"], expected_actions)
 
 class InlineExecutor:
     def __init__(self, *args, **kwargs):

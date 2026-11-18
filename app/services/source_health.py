@@ -964,30 +964,24 @@ def build_source_health_cards(
             return card
 
         title = str(card.get("title") or SOURCE_HEALTH_LABELS.get(platform) or platform)
+        verification_endpoint = f"/api/config/online-accounts/{platform}/verification"
         existing_actions = [
             dict(action)
             for action in (card.get("actions") or [])
             if isinstance(action, dict)
-        ]
-        if not existing_actions:
-            if card.get("action_label") and card.get("url"):
-                existing_actions.append(
-                    {
-                        "kind": "external",
-                        "label": str(card["action_label"]),
-                        "href": str(card["url"]),
-                    }
-                )
-        if not any(str(action.get("endpoint") or "") == "/api/tasks/missing-3mf/verification-verified" for action in existing_actions):
-            existing_actions.append(
-                {
-                    "kind": "api",
-                    "label": "已验证，继续归档",
-                    "endpoint": "/api/tasks/missing-3mf/verification-verified",
-                    "method": "POST",
-                    "body": {"platform": platform},
-                }
+            and not action.get("opens_verification")
+            and str(action.get("endpoint") or "") not in (
+                verification_endpoint,
+                "/api/tasks/missing-3mf/verification-verified",
             )
+        ]
+        verification_action = {
+            "kind": "api",
+            "label": "去验证",
+            "endpoint": verification_endpoint,
+            "method": "POST",
+            "opens_verification": True,
+        }
         card.update(
             {
                 "state": "verification_required",
@@ -995,7 +989,8 @@ def build_source_health_cards(
                 "tone": "warning",
                 "detail": f"{title}有 {count} 个 3MF 任务等待浏览器验证。",
                 "verification_paused_count": count,
-                "actions": existing_actions,
+                "action_label": "去验证",
+                "actions": [verification_action, *existing_actions],
             }
         )
         return card
