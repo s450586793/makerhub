@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.23.1`
+> 当前版本：`v0.23.2`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -370,6 +370,10 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-11-19 · v0.23.2
+
+- 修复验证码题图缩得过小的问题，等待弹窗获得实际尺寸后再初始化，手机窄屏完整显示。
+
 ### 2026-11-18 · v0.23.1
 
 - 修复浏览器已确认登录后仍显示旧登录错误的问题，及时更新自动恢复及人工验证码准备阶段的账号提示。
@@ -381,13 +385,13 @@ npm --prefix frontend run build
 - 用户解题期间释放后台临时页签和浏览器操作锁，关闭或过期清理会话；保留 CF 自动处理、额度、请求间隔和暂停保护。
 - 验证结果由后端确认真实下载权限后才恢复归档，重复回调不重复预约下载额度。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-11-18 · v0.22.3
 
 - 修复人工验证被后台浏览器任务长期阻塞的问题，增加人工操作优先、等待进度、取消与超时提示。
 - 弹窗默认宽度缩至 680px，减小加载占位，保留长画面滚动及手机、短屏适配。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-11-18 · v0.22.2
 

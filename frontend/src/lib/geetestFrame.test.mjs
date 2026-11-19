@@ -104,7 +104,67 @@ test("untrusted SDK servers and malformed challenge configuration are rejected",
   page.host.destroy();
 });
 
-test("official SDK actually reaches ready in an opaque iframe without access to the application origin", {
+test("a hidden frame waits for layout and displays a full-size challenge when revealed", {
+  skip: !process.env.MAKERHUB_TEST_CHROMIUM && "Set MAKERHUB_TEST_CHROMIUM to run Chromium integration tests",
+  timeout: 30000,
+}, async (t) => {
+  const server = createServer((_request, response) => {
+    response.setHeader("Content-Type", "text/html");
+    response.end('<!doctype html><html><head><style>iframe{display:block;width:100%;height:100%;border:0}</style></head><body><div id="captcha" style="display:none;height:440px"></div></body></html>');
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const browser = await puppeteer.launch({ executablePath: process.env.MAKERHUB_TEST_CHROMIUM,
+    headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+  t.after(() => browser.close());
+  const source = readFileSync(new URL("./geetestFrame.js", import.meta.url), "utf8").replace("export function createGeetestFrame", "function createGeetestFrame");
+  for (const width of [384, 278]) {
+    const page = await browser.newPage();
+    t.after(() => page.close().catch(() => {}));
+    await page.setRequestInterception(true);
+    page.on("request", (request) => {
+      if (request.url() !== "https://static.geetest.com/v4/gt4.js") { void request.continue(); return; }
+      void request.respond({ contentType: "application/javascript", body: `
+        window.sdkScriptLoaded = true;
+        window.initGeetest4 = (config, ready) => {
+          const box = document.createElement("div");
+          box.className = "geetest_box";
+          box.style.cssText = "width:" + (340 * config.rem) + "px;height:" + (386 * config.rem) + "px";
+          document.querySelector("#captcha").appendChild(box);
+          ready({ onReady(fn) { queueMicrotask(fn); }, onSuccess() {}, onError() {}, onClose() {}, showCaptcha() {} });
+        };
+      ` });
+    });
+    await page.goto(`http://127.0.0.1:${server.address().port}`);
+    await page.addScriptTag({ content: source + "\nwindow.createGeetestFrame = createGeetestFrame;" });
+    await page.evaluate(({ width, challenge }) => {
+      const container = document.querySelector("#captcha");
+      container.style.width = width + "px";
+      window.sdkEvents = [];
+      window.sdkHost = window.createGeetestFrame({ container, challenge,
+        onReady: () => window.sdkEvents.push("ready"), onError: (message) => window.sdkEvents.push(message) });
+    }, { width, challenge });
+    const frame = page.frames().find((value) => value.parentFrame() === page.mainFrame());
+    await frame.waitForFunction(() => window.sdkScriptLoaded === true, { polling: 50, timeout: 5000 });
+    assert.deepEqual(await page.evaluate(() => window.sdkEvents), [], "hidden layout must not initialize a tiny challenge");
+    await page.$eval("#captcha", (element) => { element.style.display = "block"; });
+    await page.waitForFunction(() => window.sdkEvents.length > 0);
+    assert.deepEqual(await page.evaluate(() => window.sdkEvents), ["ready"]);
+    const bounds = await frame.$eval(".geetest_box", (element) => ({ width: element.getBoundingClientRect().width, height: element.getBoundingClientRect().height }));
+    assert.ok(bounds.width >= width * 0.85, `${width}px container: challenge uses the available width`);
+    assert.ok(bounds.width <= width && bounds.height <= 440, "challenge stays inside the frame");
+    await page.evaluate(() => window.sdkHost.destroy());
+    assert.equal(await page.$("iframe"), null);
+    await page.close();
+  }
+});
+
+for (const { name, config } of [
+  { name: "official-demo", config: { captcha_id: "54088bb07d2df3c46b79f80300b0abbe" } },
+  { name: "makerworld", config: { captcha_id: "dbebe0fd427a657ff2cc126106718105",
+    api_servers: ["gcaptcha4.geetest.com", "gcaptcha4.geevisit.com", "gcaptcha4.gsensebot.com"],
+    static_servers: ["static.geetest.com", "static.geevisit.com"] } },
+]) test(`official SDK actually reaches ready in an opaque iframe without access to the application origin (${name})`, {
   skip: (!process.env.MAKERHUB_TEST_CHROMIUM || !process.env.MAKERHUB_TEST_GEETEST) && "Set MAKERHUB_TEST_CHROMIUM and MAKERHUB_TEST_GEETEST for the live SDK check",
   timeout: 60000,
 }, async (t) => {
@@ -124,13 +184,13 @@ test("official SDK actually reaches ready in an opaque iframe without access to 
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   const source = readFileSync(new URL("./geetestFrame.js", import.meta.url), "utf8").replace("export function createGeetestFrame", "function createGeetestFrame");
   await page.addScriptTag({ content: source + "\nwindow.createGeetestFrame = createGeetestFrame;" });
-  await page.evaluate(() => {
+  await page.evaluate(({ name, config }) => {
     window.sdkEvents = [];
     window.sdkHost = window.createGeetestFrame({ container: document.querySelector("#captcha"),
-      challenge: { challenge_id: "official-demo", captcha_id: "54088bb07d2df3c46b79f80300b0abbe" },
+      challenge: { challenge_id: name, ...config },
       onReady: () => window.sdkEvents.push("ready"), onSuccess: () => window.sdkEvents.push("success"),
       onError: (message) => window.sdkEvents.push(message), onClose: () => window.sdkEvents.push("close") });
-  });
+  }, { name, config });
   await page.waitForFunction(() => window.sdkEvents.length > 0, { timeout: 40000 });
   const events = await page.evaluate(() => window.sdkEvents);
   assert.equal(events[0], "ready", `official SDK event: ${JSON.stringify(events)}`);
@@ -151,10 +211,11 @@ test("official SDK actually reaches ready in an opaque iframe without access to 
   const bounds = await frame.$eval(".geetest_box", (element) => {
     const { x, y, width, height } = element.getBoundingClientRect(); return { x, y, width, height };
   });
+  assert.ok(bounds.width >= 240, "official challenge stays large enough to operate on a narrow phone");
   assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 278, "official challenge fits a 320px phone's inner panel");
   assert.ok(bounds.y >= 0 && bounds.y + bounds.height <= 440, "official challenge fits the iframe height");
   assert.deepEqual(failures, [], "official SDK resources and scripts load without errors");
-  if (process.env.MAKERHUB_GEETEST_SCREENSHOT) await page.screenshot({ path: process.env.MAKERHUB_GEETEST_SCREENSHOT });
+  if (process.env.MAKERHUB_GEETEST_SCREENSHOT) await page.screenshot({ path: process.env.MAKERHUB_GEETEST_SCREENSHOT.replace(/\.png$/, `-${name}.png`) });
   await page.evaluate(() => window.sdkHost.destroy());
   assert.equal(await page.$("iframe"), null);
 });

@@ -145,6 +145,23 @@ test("official captcha dialog stays compact in light, dark, mobile and short scr
   const styles = [readFileSync(new URL("../../../app/static/css/app.css", import.meta.url), "utf8"),
     readFileSync(new URL("../style.css", import.meta.url), "utf8").replace(/^@import[^;]+;/gm, ""),
     compileStyle({ source: descriptor.styles[0].content, id: "data-v-verification-layout", scoped: true }).code].join("\n");
+  const frameSource = readFileSync(new URL("./geetestFrame.js", import.meta.url), "utf8")
+    .replace("export function createGeetestFrame", "function createGeetestFrame");
+  const sdkFixture = `
+    window.initGeetest4 = (options, ready) => {
+      const scale = options.rem === undefined ? 1 : options.rem;
+      const style = document.createElement("style");
+      style.textContent = "#captcha{display:grid;place-items:center}.geetest_box{display:flex;flex-direction:column;gap:12px;box-sizing:border-box;overflow:hidden;background:#e8ece8;color:#17251e}.geetest_window{display:block;flex:1;min-height:0;width:100%}.geetest_slider{box-sizing:border-box;flex:0 0 32px;width:100%;margin:0}";
+      document.head.appendChild(style);
+      const box = document.createElement("section");
+      box.className = "geetest_box";
+      box.style.width = (340 * scale) + "px";
+      box.style.height = (386 * scale) + "px";
+      box.innerHTML = '<svg class="geetest_window" viewBox="0 0 340 320" role="img" aria-label="验证码题图"><rect width="340" height="320" fill="#bcd6c5"/><path d="M0 260 90 140 160 220 250 90 340 230V320H0Z" fill="#467c65"/><circle cx="76" cy="70" r="28" fill="#f4d890"/></svg><input class="geetest_slider" type="range" min="0" max="100" value="0" aria-label="拖动滑块">';
+      document.querySelector("#captcha").appendChild(box);
+      ready({ onReady(fn) { queueMicrotask(fn); }, onSuccess() {}, onError() {}, onClose() {}, showCaptcha() {} });
+    };
+  `;
   const screenshotDir = process.env.MAKERHUB_DIALOG_SCREENSHOT_DIR;
   if (screenshotDir) mkdirSync(screenshotDir, { recursive: true });
   for (const { name, width, height, theme } of [
@@ -156,6 +173,14 @@ test("official captcha dialog stays compact in light, dark, mobile and short scr
     const page = await browser.newPage();
     t.after(() => page.close().catch(() => {}));
     await page.setViewport({ width, height });
+    await page.setRequestInterception(true);
+    page.on("request", (request) => {
+      if (request.url() === "https://static.geetest.com/v4/gt4.js") {
+        void request.respond({ contentType: "application/javascript", body: sdkFixture });
+      } else {
+        void request.abort();
+      }
+    });
     await page.setContent(`<!doctype html><html data-theme="${theme}"><head><style>${styles}</style></head><body><button id="origin">去验证</button><div id="fixture"></div></body></html>`);
     await page.focus("#origin");
     await page.addScriptTag({ path: fileURLToPath(new URL("../../node_modules/vue/dist/vue.global.prod.js", import.meta.url)) });
@@ -166,13 +191,7 @@ test("official captcha dialog stays compact in light, dark, mobile and short scr
         window.setDialogState = onChange;
         return { open() { onChange({ status: "preparing", loading: true, completed: false, challenge: null }); }, close() {}, complete() {} };
       };
-      const createGeetestFrame = ({ container, onReady }) => {
-        const frame = document.createElement("iframe");
-        frame.className = "account-verification-dialog__frame";
-        frame.title = "MakerWorld 验证码";
-        frame.srcdoc = '<style>html,body{margin:0;height:100%;display:grid;place-items:center;font:14px system-ui}div{width:280px;height:280px;background:#e8ece8;color:#17251e;text-align:center}</style><div>Official captcha fixture</div>';
-        container.appendChild(frame); onReady(); return { destroy() { frame.remove(); } };
-      };
+      ${frameSource}
       ${component}
       Dialog.__scopeId = "data-v-verification-layout";
       Vue.createApp({ render: () => Vue.h(Dialog, { visible: true, platform: "cn" }) }).mount("#fixture");
@@ -186,15 +205,29 @@ test("official captcha dialog stays compact in light, dark, mobile and short scr
     assert.ok(loading.height < 230, `${name}: no reserved browser canvas`);
     assert.equal(loading.closeFocused, true);
     await page.evaluate((challenge) => window.setDialogState({ session_id: "layout", platform: "cn", status: "challenge",
-      loading: false, completed: false, challenge }), challenge);
+      loading: false, completed: false, challenge }), { ...challenge, captcha_id: "11111111111111111111111111111111" });
     await page.waitForSelector("iframe");
+    const frame = page.frames().find((value) => value.parentFrame() === page.mainFrame());
+    assert.ok(frame, `${name}: isolated captcha frame exists`);
+    await frame.waitForSelector(".geetest_box");
+    await page.waitForFunction(() => document.querySelector(".account-verification-dialog__captcha")?.getAttribute("aria-busy") === "false");
     const loaded = await page.$eval(".account-verification-dialog__panel", (panel) => {
       const bounds = panel.getBoundingClientRect();
       return { width: bounds.width, top: bounds.top, bottom: bounds.bottom, scrollable: panel.scrollHeight > panel.clientHeight,
         frameWidth: panel.querySelector("iframe").getBoundingClientRect().width,
         background: getComputedStyle(panel).backgroundColor, color: getComputedStyle(panel).color };
     });
-    assert.ok(loaded.width <= 420 && loaded.frameWidth <= loaded.width, `${name}: iframe fits panel`);
+    assert.ok(loaded.width <= 420 && loaded.frameWidth > 0 && loaded.frameWidth <= loaded.width, `${name}: iframe has a measurable width and fits panel`);
+    const captcha = await frame.$eval(".geetest_box", (box) => ({
+      width: box.getBoundingClientRect().width,
+      imageWidth: box.querySelector(".geetest_window").getBoundingClientRect().width,
+    }));
+    assert.ok(captcha.width >= loaded.frameWidth * 0.85 && captcha.width <= loaded.frameWidth, `${name}: challenge uses the available width`);
+    assert.ok(captcha.imageWidth >= captcha.width * 0.85, `${name}: challenge image remains readable`);
+    if (width <= 390) assert.ok(captcha.width >= 240, `${name}: mobile challenge is not reduced to a thumbnail`);
+    await frame.focus(".geetest_slider");
+    await page.keyboard.press("ArrowRight");
+    assert.ok(await frame.$eval(".geetest_slider", (slider) => Number(slider.value)) > 0, `${name}: captcha slider accepts keyboard input`);
     assert.ok(loaded.top >= 8 && loaded.bottom <= height - 8, `${name}: fits viewport`);
     assert.notEqual(loaded.background, loaded.color, `${name}: theme is readable`);
     if (height === 360) assert.equal(loaded.scrollable, true, `${name}: short screens can scroll entire challenge`);

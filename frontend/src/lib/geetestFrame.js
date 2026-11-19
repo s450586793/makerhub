@@ -36,14 +36,22 @@ function frameDocument(config, nonce) {
   script.onerror = () => send("error");
   script.onload = () => {
     try {
-      // 使用 SDK 官方的整体缩放参数，使窄屏仍能完整展示题框。
-      const rem = Math.min(1, Math.max(0.1, (window.innerWidth - 16) / 340));
-      window.initGeetest4({ ...settings.config, rem, onError: () => send("error") }, (captcha) => {
-        captcha.onReady(() => { send("ready"); captcha.showCaptcha(); });
-        captcha.onSuccess(() => send("success", { proof: captcha.getValidate() }));
-        captcha.onError(() => send("error"));
-        captcha.onClose(() => send("close"));
+      // 等待 iframe 获得可见尺寸，避免隐藏时把题图永久缩成十分之一。
+      const observer = new ResizeObserver(([entry]) => {
+        const { width, height } = entry.contentRect;
+        if (width <= 16 || height <= 0) return;
+        observer.disconnect();
+        try {
+          const rem = Math.min(1, (width - 16) / 340);
+          window.initGeetest4({ ...settings.config, rem, onError: () => send("error") }, (captcha) => {
+            captcha.onReady(() => { send("ready"); captcha.showCaptcha(); });
+            captcha.onSuccess(() => send("success", { proof: captcha.getValidate() }));
+            captcha.onError(() => send("error"));
+            captcha.onClose(() => send("close"));
+          });
+        } catch { send("error"); }
       });
+      observer.observe(document.documentElement);
     } catch { send("error"); }
   };
   document.head.appendChild(script);
