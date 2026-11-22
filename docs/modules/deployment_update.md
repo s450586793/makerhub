@@ -35,13 +35,18 @@
 - `DockerSocketClient`
 - `normalize_runtime_resource_config()`
 
-### 宿主机持续监控
+### 默认部署与历史监控兼容
 
-- `scripts/makerhub_monitor.py` 为已有冻结部署提供 `check`、`run`、`stop` 入口，使用 root 所有、权限为 `0600` 的独立配置。它复用已核验原脚本的容器身份、HTTP、Worker 心跳和共享锁检查。
-- 持续检查只覆盖 MakerHub 本身及其 Postgres / CloakBrowser 依赖。其他应用的目录增删、容器更新不应成为停止 MakerHub 的条件；整机迁移时冻结的目录清单不得用于持续运行门禁。
-- 自身数据挂载以文件系统 UUID、类型、子卷根、目录 inode 和读写状态识别。Btrfs 的 `st_dev` 可能随重启变化，仅作观测值。
-- 新监控应使用独立 systemd unit，依赖 Docker 和自身实际挂载。切换时停用旧 MakerHub 监控，保留历史脚本与证明，不再依赖旧的整机目录清单门禁。
-- `stop` 在依赖不健康或数据挂载异常时仍能执行，但必须先验证监控 PID、命令行、cgroup 与精确容器身份，只停止所属 App / Worker。
+默认使用仓库根目录的 `compose.yaml` 管理完整四容器。发布时推送 `main` 和对应版本 tag；GitHub Actions 验证、构建并发布镜像，将成功发布的版本更新为 `ghcr.io/s450586793/makerhub:latest`。等待构建成功后，在飞牛的 Compose 目录执行：
+
+```bash
+docker compose pull
+docker compose up -d --remove-orphans
+```
+
+App 和 Worker 使用同一镜像，由 Compose 的依赖关系、健康检查和 `restart: unless-stopped` 管理。常规部署和更新不安装、启用额外的冻结监控或发布专用 systemd unit。
+
+`scripts/makerhub_monitor.py` 仅保留为已有冻结部署迁出的兼容工具，不是标准 Compose 的启动或更新依赖。已有实例迁回标准 Compose 时，应停用旧监控，避免镜像或配置变更触发保护停机。迁出前如需使用旧监控的 `stop`，仍须验证监控进程与精确容器身份，只停止所属 App / Worker。
 
 ## 数据和目录
 
@@ -77,7 +82,7 @@
 .venv/bin/python -m unittest tests.test_self_update tests.test_github_changelog
 ```
 
-宿主机监控改动后运行：
+仅在修改历史冻结监控兼容代码时运行：
 
 ```bash
 .venv/bin/python -m pytest -q tests/test_makerhub_monitor.py tests/test_release_contract.py

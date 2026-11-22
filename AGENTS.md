@@ -15,6 +15,8 @@ Important current UI direction:
 
 Release and Git notes:
 
+- Use standard Docker Compose for deployment and updates: publish the GitHub image, then run `docker compose pull` and `docker compose up -d --remove-orphans` on the NAS. Preserve the instance's data mounts, ports, and environment settings.
+- Let Docker manage restarts with `restart: unless-stopped`. Do not add host-side frozen configuration checks, per-release systemd supervisors, or container ID locks to ordinary deployments; the legacy monitor is only for migrating old frozen instances out.
 - Only push to GitHub when the user explicitly asks to push.
 - Every user-facing change needs a version bump and update notes before release: patch for small fixes, minor for feature-level changes, major for breaking or migration-heavy changes.
 - When an explicit push includes a user-facing version change, treat it as a release rather than a `main`-only push: push the matching annotated `v<VERSION>` tag after `main`, wait for GitHub Actions, and verify the GitHub Release plus `ghcr.io/s450586793/makerhub:v<VERSION>` before reporting completion. A normal `main` push must not be presented as a web-updatable release.
