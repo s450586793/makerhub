@@ -39,10 +39,11 @@ function frameDocument(config, nonce) {
       // 等待 iframe 获得可见尺寸，避免隐藏时把题图永久缩成十分之一。
       const observer = new ResizeObserver(([entry]) => {
         const { width, height } = entry.contentRect;
-        if (width <= 16 || height <= 0) return;
+        if (width <= 16 || height <= 16) return;
         observer.disconnect();
         try {
-          const rem = Math.min(1, (width - 16) / 340);
+          // 原生面板同时适配窄屏宽度与横屏高度，保留四周操作边距。
+          const rem = Math.min(1, (width - 16) / 340, (height - 16) / 404);
           window.initGeetest4({ ...settings.config, rem, onError: () => send("error") }, (captcha) => {
             captcha.onReady(() => { send("ready"); captcha.showCaptcha(); });
             captcha.onSuccess(() => send("success", { proof: captcha.getValidate() }));

@@ -3,28 +3,29 @@
     <div
       v-if="visible"
       class="submit-dialog account-verification-dialog"
+      :class="{ 'account-verification-dialog--challenge': showChallenge }"
       role="dialog"
       aria-modal="true"
-      aria-labelledby="account-verification-title"
+      :aria-label="`${platformLabel}验证`"
       @click.self="requestClose"
       @keydown="handleDialogKeydown"
     >
-      <div ref="panel" class="submit-dialog__panel account-verification-dialog__panel">
-        <header class="account-verification-dialog__header">
-          <h2 id="account-verification-title">{{ platformLabel }}验证</h2>
-          <button ref="closeButton" class="button button-secondary button-small" type="button" @click="requestClose">关闭</button>
-        </header>
-        <p class="account-verification-dialog__message" role="status" aria-live="polite">
-          {{ state.message || (showChallenge ? "请完成下方验证码。" : "正在准备验证码…") }}
-        </p>
-        <div v-show="showChallenge" ref="captchaHost" class="account-verification-dialog__captcha" :aria-busy="sdkLoading">
-          <span v-if="sdkLoading" class="account-verification-dialog__loading" role="status">正在加载验证码…</span>
-        </div>
-        <p v-if="state.error || sdkError" class="form-status is-error account-verification-dialog__error" role="alert">{{ sdkError || state.error }}</p>
-        <footer v-if="canRetry || state.completed" class="submit-dialog__actions account-verification-dialog__actions">
-          <button v-if="canRetry" class="button button-primary button-small" type="button" @click="restart">重试</button>
-          <button v-else class="button button-primary button-small" type="button" @click="requestClose">完成</button>
-        </footer>
+      <div ref="panel" class="account-verification-dialog__panel" tabindex="-1">
+        <div v-show="showChallenge" ref="captchaHost" class="account-verification-dialog__captcha" :aria-busy="sdkLoading"></div>
+        <section v-if="!showChallenge || sdkLoading" class="account-verification-dialog__status">
+          <header class="account-verification-dialog__header">
+            <h2>{{ platformLabel }}验证</h2>
+            <button ref="closeButton" class="button button-secondary button-small" type="button" @click="requestClose">关闭</button>
+          </header>
+          <p class="account-verification-dialog__message" role="status" aria-live="polite">
+            {{ sdkLoading ? "正在加载验证码…" : (state.message || "正在准备验证码…") }}
+          </p>
+          <p v-if="state.error || sdkError" class="form-status is-error account-verification-dialog__error" role="alert">{{ sdkError || state.error }}</p>
+          <footer v-if="canRetry || state.completed" class="submit-dialog__actions account-verification-dialog__actions">
+            <button v-if="canRetry" class="button button-primary button-small" type="button" @click="restart">重试</button>
+            <button v-else class="button button-primary button-small" type="button" @click="requestClose">完成</button>
+          </footer>
+        </section>
       </div>
     </div>
   </Teleport>
@@ -77,6 +78,11 @@ function restoreFocus() {
   previousFocus = null;
 }
 
+function focusDialog() {
+  const target = closeButton.value || captchaHost.value?.querySelector("iframe") || panel.value;
+  target?.focus({ preventScroll: true });
+}
+
 function requestClose() {
   clearSdk();
   void controller.close();
@@ -105,7 +111,11 @@ async function mountChallenge(key) {
     sdk = createGeetestFrame({
       container: captchaHost.value,
       challenge,
-      onReady: () => { if (current()) sdkLoading.value = false; },
+      onReady: () => {
+        if (!current()) return;
+        sdkLoading.value = false;
+        void nextTick(() => { if (current()) focusDialog(); });
+      },
       onSuccess: (proof) => {
         if (!current()) return;
         sdkLoading.value = false;
@@ -118,8 +128,7 @@ async function mountChallenge(key) {
       },
       onClose: () => {
         if (!current()) return;
-        sdkLoading.value = false;
-        sdkError.value = "验证码已关闭，请重试。";
+        requestClose();
       },
     });
   } catch (error) {
@@ -147,7 +156,7 @@ function handleDialogKeydown(event) {
 }
 
 function keepDialogFocus(event) {
-  if (props.visible && panel.value && !panel.value.contains(event.target)) closeButton.value?.focus({ preventScroll: true });
+  if (props.visible && panel.value && !panel.value.contains(event.target)) focusDialog();
 }
 
 watch(() => [props.visible, props.action], async ([visible], previous) => {
@@ -164,7 +173,7 @@ watch(() => [props.visible, props.action], async ([visible], previous) => {
   if (!previous?.[0]) previousFocus = document.activeElement;
   restart();
   await nextTick();
-  if (props.visible) closeButton.value?.focus();
+  if (props.visible) focusDialog();
 }, { immediate: true });
 
 watch(challengeKey, mountChallenge);
@@ -180,20 +189,37 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .account-verification-dialog {
-  padding: 16px;
+  padding: 0;
   background: color-mix(in srgb, var(--bg) 72%, transparent);
   backdrop-filter: none;
 }
 
+.account-verification-dialog--challenge {
+  background: transparent;
+}
+
 .account-verification-dialog__panel {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100dvh;
+  min-width: 0;
+  overflow: hidden;
+  outline: none;
+}
+
+.account-verification-dialog__status {
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  width: min(420px, 100%);
+  gap: var(--space-3);
+  width: min(360px, calc(100% - 32px));
   min-width: 0;
   max-height: calc(100dvh - 32px);
   overflow-y: auto;
-  padding: 16px;
+  padding: var(--space-4);
   border: 1px solid var(--border-strong);
   border-radius: 8px;
   text-align: left;
@@ -214,8 +240,8 @@ onBeforeUnmount(() => {
   font-size: 18px;
 }
 
-.account-verification-dialog__panel .account-verification-dialog__message,
-.account-verification-dialog__panel .account-verification-dialog__error {
+.account-verification-dialog__message,
+.account-verification-dialog__error {
   margin: 0;
   font-size: 13px;
   line-height: 1.5;
@@ -223,14 +249,10 @@ onBeforeUnmount(() => {
 }
 
 .account-verification-dialog__captcha {
-  position: relative;
-  flex: 0 0 440px;
+  position: absolute;
+  inset: 0;
   min-width: 0;
-  height: 440px;
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-soft);
 }
 
 .account-verification-dialog__captcha :deep(iframe) {
@@ -238,24 +260,10 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   border: 0;
-}
-
-.account-verification-dialog__loading {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  color: var(--muted);
-  font-size: 13px;
-  pointer-events: none;
+  color-scheme: light;
 }
 
 .account-verification-dialog__actions {
   flex-shrink: 0;
-}
-
-@media (max-width: 600px) {
-  .account-verification-dialog { padding: 8px; }
-  .account-verification-dialog__panel { max-height: calc(100dvh - 16px); padding: 12px; }
 }
 </style>

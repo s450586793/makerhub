@@ -101,6 +101,24 @@ test("replacing or closing a challenge destroys its SDK and rejects late callbac
   page.unmount();
 });
 
+test("the native captcha close button cancels the dialog and restores the entry focus", async () => {
+  const page = dialog();
+  await page.sync();
+  await page.setState();
+  const frame = page.frames[0];
+  frame.options.onClose();
+  assert.equal(frame.destroyed, true);
+  assert.deepEqual(page.emitted, [["close"]]);
+  assert.equal(page.calls.at(-1).operation, "close");
+  assert.equal(page.sdkError.value, "");
+  frame.options.onSuccess({ captcha_id: "late" });
+  assert.equal(page.calls.some((call) => call.operation === "complete"), false);
+  page.props.visible = false;
+  await page.sync();
+  assert.equal(page.restored(), 1);
+  page.unmount();
+});
+
 test("SDK errors expose retry and Escape restores focus while composition Escape is ignored", async () => {
   const page = dialog();
   await page.sync();
@@ -130,7 +148,7 @@ test("focus returning from the isolated iframe cannot escape to the underlying p
   assert.equal(page.listeners.size, 0);
 });
 
-test("official captcha dialog stays compact in light, dark, mobile and short screens", {
+test("only the native captcha is shown and stays inside light, dark, mobile and short screens", {
   skip: !process.env.MAKERHUB_TEST_CHROMIUM && "Set MAKERHUB_TEST_CHROMIUM to run Chromium integration tests",
 }, async (t) => {
   const browser = await puppeteer.launch({ executablePath: process.env.MAKERHUB_TEST_CHROMIUM,
@@ -197,13 +215,15 @@ test("official captcha dialog stays compact in light, dark, mobile and short scr
       Vue.createApp({ render: () => Vue.h(Dialog, { visible: true, platform: "cn" }) }).mount("#fixture");
     ` });
     await page.waitForSelector(".account-verification-dialog__panel");
-    const loading = await page.$eval(".account-verification-dialog__panel", (panel) => ({
+    const loading = await page.$eval(".account-verification-dialog__status", (panel) => ({
       width: panel.getBoundingClientRect().width, height: panel.getBoundingClientRect().height,
       closeFocused: document.activeElement.textContent === "关闭",
+      background: getComputedStyle(panel).backgroundColor, color: getComputedStyle(panel).color,
     }));
     assert.ok(loading.width <= 420 && loading.width <= width - 16, `${name}: compact width`);
     assert.ok(loading.height < 230, `${name}: no reserved browser canvas`);
     assert.equal(loading.closeFocused, true);
+    assert.notEqual(loading.background, loading.color, `${name}: status theme is readable`);
     await page.evaluate((challenge) => window.setDialogState({ session_id: "layout", platform: "cn", status: "challenge",
       loading: false, completed: false, challenge }), { ...challenge, captcha_id: "11111111111111111111111111111111" });
     await page.waitForSelector("iframe");
@@ -213,24 +233,28 @@ test("official captcha dialog stays compact in light, dark, mobile and short scr
     await page.waitForFunction(() => document.querySelector(".account-verification-dialog__captcha")?.getAttribute("aria-busy") === "false");
     const loaded = await page.$eval(".account-verification-dialog__panel", (panel) => {
       const bounds = panel.getBoundingClientRect();
-      return { width: bounds.width, top: bounds.top, bottom: bounds.bottom, scrollable: panel.scrollHeight > panel.clientHeight,
+      return { width: bounds.width, height: bounds.height, top: bounds.top, bottom: bounds.bottom,
         frameWidth: panel.querySelector("iframe").getBoundingClientRect().width,
-        background: getComputedStyle(panel).backgroundColor, color: getComputedStyle(panel).color };
+        frameHeight: panel.querySelector("iframe").getBoundingClientRect().height,
+        background: getComputedStyle(panel).backgroundColor, borderWidth: getComputedStyle(panel).borderWidth };
     });
-    assert.ok(loaded.width <= 420 && loaded.frameWidth > 0 && loaded.frameWidth <= loaded.width, `${name}: iframe has a measurable width and fits panel`);
+    assert.equal(loaded.frameWidth, width, `${name}: native overlay fills viewport width`);
+    assert.equal(loaded.frameHeight, height, `${name}: native overlay fills viewport height`);
+    assert.equal(loaded.background, "rgba(0, 0, 0, 0)", `${name}: no application panel background`);
+    assert.equal(loaded.borderWidth, "0px", `${name}: no application panel border`);
+    assert.equal(await page.$(".account-verification-dialog__status"), null, `${name}: no duplicate title or explanation`);
     const captcha = await frame.$eval(".geetest_box", (box) => ({
-      width: box.getBoundingClientRect().width,
+      width: box.getBoundingClientRect().width, top: box.getBoundingClientRect().top, bottom: box.getBoundingClientRect().bottom,
       imageWidth: box.querySelector(".geetest_window").getBoundingClientRect().width,
     }));
-    assert.ok(captcha.width >= loaded.frameWidth * 0.85 && captcha.width <= loaded.frameWidth, `${name}: challenge uses the available width`);
+    assert.ok(captcha.width <= 340 && captcha.width <= loaded.frameWidth - 16, `${name}: native challenge fits width`);
     assert.ok(captcha.imageWidth >= captcha.width * 0.85, `${name}: challenge image remains readable`);
     if (width <= 390) assert.ok(captcha.width >= 240, `${name}: mobile challenge is not reduced to a thumbnail`);
+    assert.ok(captcha.top >= 8 && captcha.bottom <= height - 8, `${name}: native challenge fits height`);
     await frame.focus(".geetest_slider");
     await page.keyboard.press("ArrowRight");
     assert.ok(await frame.$eval(".geetest_slider", (slider) => Number(slider.value)) > 0, `${name}: captcha slider accepts keyboard input`);
-    assert.ok(loaded.top >= 8 && loaded.bottom <= height - 8, `${name}: fits viewport`);
-    assert.notEqual(loaded.background, loaded.color, `${name}: theme is readable`);
-    if (height === 360) assert.equal(loaded.scrollable, true, `${name}: short screens can scroll entire challenge`);
+    assert.ok(loaded.top >= 0 && loaded.bottom <= height, `${name}: fits viewport`);
     if (screenshotDir) await page.screenshot({ path: join(screenshotDir, `${name}-geetest.png`) });
     await page.evaluate(() => window.setDialogState({ status: "failed", loading: false, completed: false, message: "请重试。", challenge: null }));
     await page.waitForFunction(() => document.querySelector(".account-verification-dialog__actions")?.textContent.includes("重试"));
