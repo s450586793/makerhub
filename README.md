@@ -163,6 +163,7 @@ services:
   cloakbrowser:
     image: cloakhq/cloakbrowser-manager@sha256:44836e982192e8fedb28617f2d39192bdef91f8dd62cf36c522c96d7d8e15914
     container_name: makerhub-cloakbrowser
+    init: true
     ports:
       - "${MAKERHUB_CLOAKBROWSER_BIND_ADDRESS:-127.0.0.1}:9050:8080"
     environment:
