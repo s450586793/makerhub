@@ -93,18 +93,26 @@ test("the source page remains a secondary external browsing action", async () =>
   assert.doesNotMatch(attribute(sourceLink, "class"), /\bbutton-primary\b/);
 });
 
-test("source browsing falls back to the correct platform homepage", async () => {
+test("source browsing falls back to the model page before the platform homepage", async () => {
   for (const [platform, homepage] of [["cn", "https://makerworld.com.cn"], ["global", "https://makerworld.com"]]) {
     const links = await renderActions({ status: "verification_required", source: platform });
     assert.equal(attribute(links.find((node) => linkText(node) === "访问源页面"), "href"), homepage);
+    const modelLinks = await renderActions({ status: "missing", model_id: "132602", source: platform });
+    assert.equal(attribute(modelLinks.find((node) => linkText(node) === "访问源页面"), "href"), `${homepage}/zh/models/132602`);
+    assert.equal(helpers.missingVerificationHref({ model_id: "not-a-model", source: platform }), homepage);
   }
 });
 
 test("tasks that do not need account verification omit the recovery entry", async () => {
-  for (const status of ["queued", "running", "failed", "completed", ""]) {
+  for (const status of ["missing", "http_error", "download_limited", "not_found", "queued", "running", "failed", "completed", ""]) {
     const links = await renderActions({ status, model_url: modelUrl, source: "cn" });
     assert.equal(links.some((node) => attribute(node, "href") === "/settings?tab=accounts"), false);
     assert.equal(links.some((node) => linkText(node) === "处理账号验证"), false);
+    const sourceLink = links.find((node) => linkText(node) === "访问源页面");
+    assert.ok(sourceLink, `${status || "unknown"} tasks must expose the source page`);
+    assert.equal(attribute(sourceLink, "href"), modelUrl);
+    assert.equal(attribute(sourceLink, "target"), "_blank");
+    assert.match(attribute(sourceLink, "rel"), /\bnoopener\b/);
   }
 });
 

@@ -361,7 +361,6 @@
               处理账号验证
             </RouterLink>
             <a
-              v-if="needsManualVerification(item) || needsRedemption(item)"
               class="button button-secondary button-small"
               :href="missingVerificationHref(item)"
               target="_blank"
@@ -547,7 +546,9 @@ function missingVerificationHref(item) {
   if (url.startsWith("http://") || url.startsWith("https://")) {
     return url;
   }
-  return sourceHomepageForMissingItem(item);
+  const homepage = sourceHomepageForMissingItem(item);
+  const modelId = String(item?.model_id || "").trim();
+  return /^\d+$/.test(modelId) ? `${homepage}/zh/models/${modelId}` : homepage;
 }
 
 function missingActionHint(item) {
