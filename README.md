@@ -14,7 +14,7 @@
   <a href="https://github.com/s450586793/makerhub/pkgs/container/makerhub"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-makerhub-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-> 当前版本：`v0.23.4`
+> 当前版本：`v0.23.5`
 >
 > MakerHub 基于 [mw_archive_py](https://github.com/sonicmingit/mw_archive_py) 的抓取思路二次重构而来，感谢原作者 [sonicmingit](https://github.com/sonicmingit) 的开源分享。
 
@@ -371,6 +371,10 @@ npm --prefix frontend run build
 
 ## 更新记录
 
+### 2026-11-23 · v0.23.5
+
+- 修复待重新下载列表的标题挤压、窄屏按钮重叠和错误空状态提示，兼容深浅主题。
+
 ### 2026-11-23 · v0.23.4
 
 - 积分兑换模型明确显示“待兑换”，停止当作下载故障自动重试，保留模型资料。
@@ -382,12 +386,12 @@ npm --prefix frontend run build
 - MW 图形验证去掉重复外框，直接显示原生验证码面板，手机完整显示，保留异常重试。
 - 模型卡片上下显示采集时间和发布时间，窄卡片自动换行，兼容深浅色主题；未记录及本地模型发布时间显示“—”。
 
+<details>
+<summary>历史版本</summary>
+
 ### 2026-11-19 · v0.23.2
 
 - 修复验证码题图缩得过小的问题，等待弹窗获得实际尺寸后再初始化，手机窄屏完整显示。
-
-<details>
-<summary>历史版本</summary>
 
 ### 2026-11-18 · v0.23.1
 

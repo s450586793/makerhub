@@ -393,7 +393,7 @@
           加载更多
         </button>
       </div>
-      <p v-else class="empty-copy">当前没有缺失 3MF 任务。</p>
+      <p v-if="!payload.missing_3mf.items.length" class="empty-copy">当前没有缺失 3MF 任务。</p>
     </article>
 
   </section>

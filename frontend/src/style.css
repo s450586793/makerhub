@@ -3374,6 +3374,16 @@ html[data-theme="dark"] .system-update-progress.is-failed .system-update-progres
   background: var(--brand);
 }
 
+@media (min-width: 721px) {
+  .table-like__row--missing {
+    grid-template-columns: 100px minmax(0, 1fr) 140px minmax(164px, 264px);
+  }
+}
+
+.table-like__row--missing > span {
+  overflow-wrap: anywhere;
+}
+
 .missing-actions {
   display: flex;
   gap: 6px;
@@ -3381,9 +3391,10 @@ html[data-theme="dark"] .system-update-progress.is-failed .system-update-progres
   align-items: center;
 }
 
-.missing-actions .button {
+.table-like__row--missing .missing-actions .button {
   flex: 0 0 auto;
   max-width: 100%;
+  margin: 0;
 }
 
 .submit-dialog {
