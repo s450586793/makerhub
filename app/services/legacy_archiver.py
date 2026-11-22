@@ -451,6 +451,7 @@ def _should_pause_three_mf_fetch(failure_info: Any) -> bool:
         "cookie_invalid",
         "download_limited",
         "http_error",
+        "redemption_required",
     }
 
 
@@ -2588,6 +2589,11 @@ def _browser_three_mf_authorization_failure(
     payload: Optional[dict] = None,
     source: str = "",
 ) -> dict:
+    if isinstance(payload, dict) and payload.get("code") == "MAKERHUB_REDEMPTION_REQUIRED":
+        return {
+            "state": "redemption_required",
+            "message": describe_three_mf_failure("redemption_required", source=source),
+        }
     failure = _classify_3mf_fetch_failure(
         status_code=status_code,
         text=text,

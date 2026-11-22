@@ -361,13 +361,13 @@
               处理账号验证
             </RouterLink>
             <a
-              v-if="needsManualVerification(item)"
+              v-if="needsManualVerification(item) || needsRedemption(item)"
               class="button button-secondary button-small"
               :href="missingVerificationHref(item)"
               target="_blank"
               rel="noreferrer noopener"
             >
-              访问源页面
+              {{ needsRedemption(item) ? "前往兑换" : "访问源页面" }}
             </a>
             <button
               class="button button-secondary button-small"
@@ -529,6 +529,10 @@ function needsManualVerification(item) {
   return ["verification_required", "cloudflare", "auth_required", "cookie_invalid"].includes(status);
 }
 
+function needsRedemption(item) {
+  return String(item?.status || "").toLowerCase() === "redemption_required";
+}
+
 function sourceHomepageForMissingItem(item) {
   const source = String(item?.source || "").toLowerCase();
   const url = String(item?.model_url || "");
@@ -570,6 +574,7 @@ function formatMissingStatus(status) {
   if (normalized === "cloudflare") return "Cloudflare 校验";
   if (normalized === "auth_required" || normalized === "cookie_invalid") return "Cookie 失效";
   if (normalized === "download_limited") return "到达自动下载上限";
+  if (normalized === "redemption_required") return "待兑换";
   if (normalized === "not_found") return "源端无文件";
   return status || "missing";
 }

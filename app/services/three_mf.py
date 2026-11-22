@@ -25,6 +25,7 @@ _THREE_MF_FAILURE_PRIORITY = {
     "cloudflare": 55,
     "cookie_invalid": 50,
     "auth_required": 50,
+    "redemption_required": 45,
     "not_downloadable": 40,
     "http_error": 30,
     "not_found": 20,
@@ -255,6 +256,8 @@ def _default_three_mf_failure_message(state: str, source: str) -> str:
         return "下载 3MF 需要有效登录态，请检查 Cookie / token 是否过期。"
     if state == "cookie_invalid":
         return _default_three_mf_failure_message("auth_required", source)
+    if state == "redemption_required":
+        return "该模型需要先在 MakerWorld 兑换，完成兑换后可手动重新下载。"
     if state == THREE_MF_NOT_DOWNLOADABLE_STATE:
         return "该模型采用仅限平台打印的许可，不提供 3MF 文件下载。"
     if state == "not_found":

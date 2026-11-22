@@ -430,10 +430,22 @@ function authorizationWaitError(error) {
     : "3MF authorization response unavailable");
 }
 
-export function threeMfDownloadActionScore(candidate = {}) {
-  if (!candidate.visible || candidate.disabled || candidate.inDescription || candidate.target === "_blank") return 0;
+function isEnabledThreeMfAction(candidate) {
+  if (!candidate.visible || candidate.disabled || candidate.inDescription || candidate.target === "_blank") return false;
   const href = String(candidate.href || "").trim();
-  if (href && href !== "#" && !/^javascript:void\(0\);?$/i.test(href)) return 0;
+  return !href || href === "#" || /^javascript:void\(0\);?$/i.test(href);
+}
+
+function isThreeMfRedemptionAction(candidate) {
+  if (!isEnabledThreeMfAction(candidate)) return false;
+  const primary = /primary/i.test([candidate.className, candidate.testId, candidate.tracking].join(" "));
+  return primary && [candidate.text, candidate.ariaLabel, candidate.title].some((value) => (
+    /^(?:兑换|兌換|redeem)$/i.test(String(value || "").replace(/\s+/g, " ").trim())
+  ));
+}
+
+export function threeMfDownloadActionScore(candidate = {}) {
+  if (!isEnabledThreeMfAction(candidate)) return 0;
   const ownText = [
     candidate.text,
     candidate.ariaLabel,
@@ -688,6 +700,9 @@ export async function coordinateThreeMfAuthorization(page, options = {}) {
     if (error?.code === "MAKERHUB_CROWDFUNDING") {
       return { status_code: 200, payload: { code: "MAKERHUB_CROWDFUNDING" } };
     }
+    if (error?.code === "MAKERHUB_REDEMPTION_REQUIRED") {
+      return { status_code: 402, payload: { code: "MAKERHUB_REDEMPTION_REQUIRED" } };
+    }
     if (error?.code === "MAKERHUB_CLOUDFLARE") {
       return withDiagnostics({
         status_code: 403,
@@ -731,6 +746,7 @@ export async function findThreeMfDownloadButton(page, timeoutMs, { verifyPage } 
     let bestHandle = null;
     let bestScore = 0;
     let crowdfunding = false;
+    let redemption = false;
     for (const handle of handles) {
       let candidate;
       try {
@@ -786,6 +802,7 @@ export async function findThreeMfDownloadButton(page, timeoutMs, { verifyPage } 
           }
         } catch {}
       }
+      if (isThreeMfRedemptionAction(candidate)) redemption = true;
       const score = threeMfDownloadActionScore(candidate);
       if (score > bestScore) {
         await bestHandle?.dispose().catch(() => undefined);
@@ -794,6 +811,11 @@ export async function findThreeMfDownloadButton(page, timeoutMs, { verifyPage } 
       } else {
         await handle.dispose().catch(() => undefined);
       }
+    }
+    if (redemption && !bestHandle) {
+      const error = new Error("model requires point redemption before 3MF download");
+      error.code = "MAKERHUB_REDEMPTION_REQUIRED";
+      throw error;
     }
     if (crowdfunding && !bestHandle) {
       const error = new Error("crowdfunding model skips 3MF archival");

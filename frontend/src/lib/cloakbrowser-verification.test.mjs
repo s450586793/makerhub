@@ -12,6 +12,7 @@ import {
 } from "../../../app/services/cloakbrowser_verification.mjs";
 import {
   coordinateThreeMfAuthorization,
+  findThreeMfDownloadButton,
   readAuthorizationResponse,
   threeMfDownloadActionScore,
 } from "../../../app/services/cloakbrowser_bridge.mjs";
@@ -157,6 +158,88 @@ test("3MF discovery rejects tag search links even when their labels describe mod
       visible: true, text: "无 AMS 3D打印模型下载", href,
     }), 0);
   }
+});
+
+test("3MF coordinator reports point redemption before any download input", async () => {
+  const page = fakeAuthorizationPage([]);
+  let waiterAborted = false;
+  page.waitForResponse = (_matcher, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => {
+      waiterAborted = true;
+      reject(signal.reason);
+    }, { once: true });
+  });
+  page.mouse = { click: async () => assert.fail("redemption must not be clicked") };
+  const result = await coordinateThreeMfAuthorization(page, {
+    findButton: async () => {
+      const error = new Error("model requires point redemption");
+      error.code = "MAKERHUB_REDEMPTION_REQUIRED";
+      throw error;
+    },
+  });
+
+  assert.deepEqual(result, { status_code: 402, payload: { code: "MAKERHUB_REDEMPTION_REQUIRED" } });
+  assert.equal(waiterAborted, true);
+});
+
+test("3MF discovery recognizes an enabled model redemption action without clicking", async (t) => {
+  let clockReads = 0;
+  t.mock.method(Date, "now", () => clockReads++ < 2 ? 0 : 15001);
+  let disposed = 0;
+  const page = fakeAuthorizationPage([]);
+  page.mouse = { click: async () => assert.fail("redemption must not be clicked") };
+  page.$$ = async () => [false, true].map((visible) => ({
+    evaluate: async () => ({ visible, disabled: false, text: "兑换", className: "MuiButton-containedPrimary" }),
+    dispose: async () => { disposed++; },
+  }));
+
+  await assert.rejects(findThreeMfDownloadButton(page, 1), {
+    code: "MAKERHUB_REDEMPTION_REQUIRED",
+  });
+  assert.equal(disposed, 2);
+});
+
+test("3MF discovery ignores redemption mentions and unavailable or unrelated controls", async (t) => {
+  let clockReads = 0;
+  t.mock.method(Date, "now", () => clockReads++ < 2 ? 0 : 15001);
+  const candidates = [
+    { text: "兑换", className: "primaryButton", visible: false },
+    { text: "兑换", className: "primaryButton", disabled: true },
+    { text: "兑换", className: "primaryButton", inDescription: true },
+    { text: "兑换", className: "primaryButton", href: "/zh/rewards" },
+    { text: "兑换", className: "primaryButton", target: "_blank" },
+    { text: "兑换", className: "navigation-link" },
+    { text: "如何兑换模型", className: "primaryButton" },
+    { text: "购买耗材", className: "primaryButton", contextText: "兑换模型 下载 3MF" },
+  ];
+  const page = fakeAuthorizationPage([]);
+  page.$$ = async () => candidates.map((candidate) => ({
+    evaluate: async () => ({ visible: true, disabled: false, ...candidate }),
+    dispose: async () => {},
+  }));
+
+  await assert.rejects(findThreeMfDownloadButton(page, 1), (error) => (
+    !error.code && /did not expose an enabled 3MF download action/.test(error.message)
+  ));
+});
+
+test("3MF discovery keeps an available download ahead of a redemption control", async () => {
+  const candidates = [
+    { text: "兑换", className: "primaryButton" },
+    { text: "Download 3MF", className: "primaryButton" },
+  ];
+  const clicked = [];
+  const page = fakeAuthorizationPage([fakeAuthorizationResponse()]);
+  page.mouse = { click: async (index) => clicked.push(index) };
+  page.$$ = async () => candidates.map((candidate, index) => ({
+    evaluate: async (_fn, operation) => operation === "download-click-point"
+      ? { x: index, y: 30 } : { visible: true, disabled: false, ...candidate },
+    dispose: async () => {},
+  }));
+
+  const result = await coordinateThreeMfAuthorization(page, { authorizationTimeout: 1000 });
+  assert.equal(result.status_code, 200);
+  assert.deepEqual(clicked, [1]);
 });
 
 test("3MF download avoids Puppeteer isolated-world handle clicks", async () => {

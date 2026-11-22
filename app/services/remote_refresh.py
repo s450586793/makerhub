@@ -633,7 +633,8 @@ def _missing_3mf_message_from_instance(instance: dict[str, Any], *, source: str 
     download_message = str(instance.get("downloadMessage") or "").strip()
 
     if download_state or download_message:
-        return "missing", describe_three_mf_failure(download_state, download_message, source=source, url=url)
+        status = "redemption_required" if download_state == "redemption_required" else "missing"
+        return status, describe_three_mf_failure(download_state, download_message, source=source, url=url)
     return "missing", "等待重新下载"
 
 

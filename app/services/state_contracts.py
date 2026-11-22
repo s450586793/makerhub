@@ -53,6 +53,7 @@ MISSING_3MF_STATUSES = frozenset(
         "auth_required",
         "cookie_invalid",
         "pending_download",
+        "redemption_required",
     }
 )
 

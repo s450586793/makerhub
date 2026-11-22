@@ -11,7 +11,7 @@ const source = readFileSync(new URL("../pages/TasksPage.vue", import.meta.url), 
 const { descriptor } = parse(source);
 const helperNames = [
   "getMissingKey", "isMissingActionBusy", "isRetryLocked", "retryLabel",
-  "needsManualVerification", "sourceHomepageForMissingItem", "missingVerificationHref",
+  "needsManualVerification", "needsRedemption", "sourceHomepageForMissingItem", "missingVerificationHref",
   "missingActionHint", "formatMissingStatus",
 ];
 const pageFunctions = babelParse(descriptor.scriptSetup.content, { sourceType: "module" }).program.body
@@ -42,7 +42,7 @@ const render = new Function("Vue", compile(actionsTemplate.loc.source, {
   prefixIdentifiers: true,
 }).code)(Vue);
 
-async function renderActions(item) {
+async function renderActionControls(item) {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: ["/", "/settings"].map((path) => ({ path, component: { render: () => null } })),
@@ -55,7 +55,11 @@ async function renderActions(item) {
   });
   app.use(router);
   const html = await renderToString(app);
-  return elements(parseTemplate(html), (node) => node.tag === "a");
+  return elements(parseTemplate(html), (node) => node.tag === "a" || node.tag === "button");
+}
+
+async function renderActions(item) {
+  return (await renderActionControls(item)).filter((node) => node.tag === "a");
 }
 
 function linkText(node) {
@@ -118,4 +122,19 @@ test("recovery guidance uses the linked browser and waits for the download check
 test("task status labels distinguish Cloudflare from manual verification", () => {
   assert.equal(helpers.formatMissingStatus("verification_required"), "需要验证");
   assert.equal(helpers.formatMissingStatus("cloudflare"), "Cloudflare 校验");
+});
+
+test("redemption-required tasks show their source page and allow a manual download retry", async () => {
+  const controls = await renderActionControls({ status: "redemption_required", model_url: modelUrl, source: "cn" });
+  const sourceLink = controls.find((node) => node.tag === "a" && linkText(node) === "前往兑换");
+  assert.equal(helpers.formatMissingStatus("redemption_required"), "待兑换");
+  assert.equal(helpers.needsManualVerification({ status: "redemption_required" }), false);
+  assert.ok(sourceLink, "redemption must link to the model's source page");
+  assert.equal(attribute(sourceLink, "href"), modelUrl);
+  assert.equal(attribute(sourceLink, "target"), "_blank");
+  assert.match(attribute(sourceLink, "rel"), /\bnoopener\b/);
+  assert.equal(controls.some((node) => attribute(node, "href") === "/settings?tab=accounts"), false);
+  const retryButton = controls.find((node) => node.tag === "button" && linkText(node) === "重新下载");
+  assert.ok(retryButton, "the user must be able to retry after redeeming on MakerWorld");
+  assert.equal(retryButton.props.some((prop) => prop.name === "disabled"), false);
 });
