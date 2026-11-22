@@ -62,6 +62,11 @@
           <span>{{ authorName }}</span>
         </div>
 
+        <div class="gallery-card__times">
+          <span :title="`采集时间：${collectTime.full}`">采集 {{ collectTime.date }}<span v-if="collectTime.clock" class="gallery-card__time-clock">{{ collectTime.clock }}</span></span>
+          <span :title="`发布时间：${publishTime.full}`">发布 {{ publishTime.date }}<span v-if="publishTime.clock" class="gallery-card__time-clock">{{ publishTime.clock }}</span></span>
+        </div>
+
         <div class="gallery-card__meta-side">
           <div class="gallery-card__stats">
             <span class="gallery-stat">
@@ -117,6 +122,7 @@
 import { computed, ref } from "vue";
 import { useRouter } from "vue-router";
 
+import { formatServerDateTime } from "../lib/helpers";
 import { buildModelDetailRoute, storeModelReturnState } from "../lib/modelNavigation";
 import { setPageCache } from "../lib/pageCache";
 
@@ -171,6 +177,10 @@ const titleText = computed(() => String(props.model.title || "未命名模型").
 const titleInitial = computed(() => titleText.value.slice(0, 1) || "M");
 const authorName = computed(() => String(props.model.author?.name || "未知作者").trim() || "未知作者");
 const authorInitial = computed(() => String(props.model.author?.name || "作").trim().slice(0, 1) || "作");
+const collectTime = computed(() => formatModelTime(props.model.collect_ts, props.model.collect_date));
+const publishTime = computed(() => String(props.model.source || "").trim().toLowerCase() === "local"
+  ? formatModelTime(0, "")
+  : formatModelTime(props.model.publish_ts, props.model.publish_date));
 const sourceBadgeLabel = computed(() => {
   const source = String(props.model.source || "").trim().toLowerCase();
   if (source === "cn") return "国内";
@@ -273,6 +283,18 @@ function onAuthorAvatarError() {
   if (props.model.author?.avatar_remote_url && authorAvatarSrc.value !== props.model.author.avatar_remote_url) {
     authorAvatarSrc.value = props.model.author.avatar_remote_url;
   }
+}
+
+function formatModelTime(timestamp, date) {
+  const seconds = Number(timestamp);
+  const instant = new Date(seconds * 1000);
+  if (seconds > 0 && Number.isFinite(instant.getTime())) {
+    const full = formatServerDateTime(instant.toISOString(), { fallback: "—" });
+    const [day, clock = ""] = full.split(" ");
+    return { date: day.replaceAll("/", "-"), clock, full };
+  }
+  const fallback = String(date || "").trim() || "—";
+  return { date: fallback, clock: "", full: fallback };
 }
 
 function formatCompactStat(value) {
